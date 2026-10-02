@@ -16,9 +16,12 @@
  *
  * Esta es la visibilidad "protección WORM de artefactos" de esta pantalla:
  * NO existe un endpoint público para disparar `proteger-artefacto`
- * manualmente con un `file_id` arbitrario (ver nota en `+page.svelte`) — la
- * protección/renovación WORM es, por diseño, RECONCILIACIÓN-ONLY
- * (`SYSTEM_RECONCILER_ID`), y esta lista es el único punto de visibilidad
+ * manualmente con un `file_id` arbitrario (ver nota en `+page.svelte`). Lo
+ * es de hecho desde AREA-08-16: storage exige `X-Internal-Token` en
+ * `/proteger-indice`, `/proteger-artefacto` y `/aip`, y el gateway no las
+ * enruta. La protección WORM la dispara archive-service (síncrona al cerrar,
+ * con la identidad firmada del usuario, o por RECONCILIACIÓN con
+ * `SYSTEM_RECONCILER_ID`), y esta lista es el único punto de visibilidad
  * externo sobre su estado.
  */
 

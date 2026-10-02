@@ -112,9 +112,11 @@ clearance igual o superior concede ese clearance.
   ese caso, así que el selector de permisos se resuelve solo; la casilla de `is_root` en
   el formulario de usuario necesita un chequeo explícito de `is_root` del propio caller
   (expuesto en `GET /auth/me` o `EffectivePermissions`).
-- `app/ops/grant_root.py` no tiene test de integración automatizado (igual que sus dos
-  scripts hermanos) — se valida contra Postgres real de forma manual antes de cada cambio,
-  siguiendo la práctica ya establecida del proyecto para scripts de ops.
+- `app/ops/grant_root.py` tiene test de integración contra Postgres real
+  (`tests/integration/test_grant_root_integration.py`, AREA-13-07): concesión con asiento
+  único, idempotencia, dry-run sin escritura, rollback conjunto si el asiento falla y
+  validación del slug. Igual que sus scripts hermanos (purga y rotación de KEK), que
+  también lo tienen.
 
 ## Alternativas descartadas
 

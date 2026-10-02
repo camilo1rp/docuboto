@@ -55,6 +55,8 @@ from app.schemas.archive import (
     HistorialAccesoEntry,
     IndiceItem,
     LapidaResponse,
+    LegalHoldRequest,
+    LegalHoldResponse,
     LoteEliminacionItem,
     LoteEliminacionItemPublico,
     LoteEliminacionPublico,
@@ -365,6 +367,88 @@ class ArchiveService:
             "publicable": row["publicable"],
             "publicado_at": row["publicado_at"],
         }
+
+    async def set_legal_hold(
+        self,
+        expediente_id: uuid.UUID,
+        payload: LegalHoldRequest,
+        max_clearance: int,
+        *,
+        actor: str,
+        canal: str = "system",
+    ) -> LegalHoldResponse:
+        """Declara o levanta el legal hold del expediente (AREA-08-07).
+
+        Único camino de usuario hacia el freeze de litigio de storage: el hold ya
+        no es un campo del body de ninguna ruta de protección. Archive decide el
+        permiso, comprueba que el expediente es VISIBLE para el llamante (clearance
+        en el `WHERE` de la lectura: `404` neutro si no existe o lo supera) y
+        orquesta el acto en storage con token interno + identidad firmada.
+
+        Storage asienta el acto atómico con sus filas; archive deja además SU
+        asiento (`archive.expediente_legal_hold_fijado/levantado`) con motivo y
+        acta. Si storage falla no hay asiento de archive: el acto no ocurrió.
+        """
+        expediente = await self._repo.get_expediente_by_id(
+            expediente_id, max_clearance=max_clearance
+        )
+        if expediente is None:
+            raise _expediente_not_found(expediente_id)
+
+        from app.clients import storage_client  # perezoso, mismo patrón que arriba
+
+        try:
+            res = await storage_client.fijar_legal_hold_internal(
+                tenant_slug=self._tenant_slug,
+                actor_id=actor,
+                expediente_id=str(expediente.id),
+                activo=payload.activo,
+                motivo=payload.motivo,
+                acta_ref=payload.acta_ref,
+            )
+        except storage_client.StorageLegalHoldError as exc:
+            if exc.status == status.HTTP_404_NOT_FOUND:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "sin_objetos_protegidos",
+                        "detail": str(exc),
+                        "status": 404,
+                    },
+                ) from exc
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error": "storage_unavailable", "detail": str(exc), "status": 503},
+            ) from exc
+
+        async with self._conn.transaction():
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action=(
+                    "archive.expediente_legal_hold_fijado"
+                    if payload.activo
+                    else "archive.expediente_legal_hold_levantado"
+                ),
+                object_type="expediente",
+                object_ref=expediente.code,
+                actor=actor,
+                canal=canal,
+                payload={
+                    "motivo": payload.motivo,
+                    "acta_ref": payload.acta_ref,
+                    "objetos_afectados": res["objetos_afectados"],
+                    "objetos_sin_cambio": res["objetos_sin_cambio"],
+                },
+            )
+        return LegalHoldResponse(
+            expediente_id=expediente.id,
+            code=expediente.code,
+            activo=payload.activo,
+            objetos_afectados=int(res["objetos_afectados"]),
+            objetos_sin_cambio=int(res["objetos_sin_cambio"]),
+        )
 
     async def list_expedientes(
         self,

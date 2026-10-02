@@ -16,6 +16,8 @@ from httpx import ASGITransport, AsyncClient
 from app.core.config import settings
 from app.main import app
 
+AUTH_CACHE_MAC_SECRET_TEST = "test-auth-cache-mac-secret"
+
 
 def _make_validate_response(
     valid: bool,
@@ -23,17 +25,21 @@ def _make_validate_response(
     username: str = "testuser",
     tenant_slug: str = "icetex",
     roles: list[str] | None = None,
+    expires_in: int | None = 300,
 ) -> httpx.Response:
-    return httpx.Response(
-        status_code=200,
-        json={
-            "valid": valid,
-            "user_id": user_id,
-            "username": username,
-            "tenant_slug": tenant_slug,
-            "roles": roles or ["viewer"],
-        },
-    )
+    # La forma REAL de `ValidateResponse` (auth-service): incluye `expires_in`
+    # desde AREA-02-12. Un doble que lo omitiera volvería a esconder que el tope
+    # del TTL por `exp` dependía de un campo que el productor no emitía.
+    cuerpo = {
+        "valid": valid,
+        "user_id": user_id,
+        "username": username,
+        "tenant_slug": tenant_slug,
+        "roles": roles or ["viewer"],
+    }
+    if expires_in is not None:
+        cuerpo["expires_in"] = expires_in
+    return httpx.Response(status_code=200, json=cuerpo)
 
 
 @pytest.fixture
@@ -89,6 +95,7 @@ async def test_client(mock_redis, mock_http_client):
         app.state.rate_limit_per_tenant = 10_000
         app.state.rate_limit_login_per_ip = settings.rate_limit_login_per_ip
         app.state.auth_cache_ttl = settings.auth_cache_ttl
+        app.state.auth_cache_mac_secret = AUTH_CACHE_MAC_SECRET_TEST
         yield client, mock_http_client, mock_redis
 
 
@@ -98,8 +105,9 @@ def make_validate_response(
     username: str = "testuser",
     tenant_slug: str = "icetex",
     roles: list[str] | None = None,
+    expires_in: int | None = 300,
 ) -> httpx.Response:
-    return _make_validate_response(valid, user_id, username, tenant_slug, roles)
+    return _make_validate_response(valid, user_id, username, tenant_slug, roles, expires_in)
 
 
 def wire_upstream(

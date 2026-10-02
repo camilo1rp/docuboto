@@ -65,12 +65,12 @@ router = APIRouter(prefix="/api/v1/auth/me/totp", tags=["totp"])
 internal_router = APIRouter(prefix="/internal/totp", tags=["totp-internal"])
 
 # Restablecimiento ADMINISTRATIVO del segundo factor de OTRA persona.
-# Gate a nivel de router, igual que `rbac.py`: en este servicio
-# `USUA_PERM_ADMIN` con nivel 1 es la competencia administrativa, y todos
-# los actos de administración de usuarios (incluido dar de baja a un
-# miembro de un grupo) usan ese mismo umbral. Exigir aquí un nivel mayor
-# que en el resto dejaría el botón visible y la llamada denegada, que es el
-# defecto simétrico y falla en silencio.
+# Gate a nivel de router (`USUA_PERM_ADMIN`, nivel 1: leer) más el del propio
+# endpoint con `min_crud=3`, igual que las escrituras de `rbac.py`: quitarle el
+# segundo factor a OTRA persona es un acto de administración de usuarios, y a
+# nivel de lectura lo podía hacer quien solo tenía el permiso para consultar
+# la auditoría (AREA-01-01). Todos los actos de administración de usuarios
+# comparten el umbral 3, para que el botón y la llamada coincidan.
 admin_router = APIRouter(
     prefix="/api/v1/auth",
     tags=["totp-admin"],
@@ -114,6 +114,7 @@ async def _resolve_tenant_slug_for_aad(
 
 @admin_router.post(
     "/users/{user_id}/totp/revoke",
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
     response_model=TotpAdminRevokeResponse,
     summary="Restablece el segundo factor de otra persona (queda lista para re-enrolar)",
 )

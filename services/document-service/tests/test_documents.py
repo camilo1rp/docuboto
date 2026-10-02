@@ -768,13 +768,12 @@ async def test_update_document_no_read_up_404(
 async def test_update_document(
     client_with_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """PATCH updates subject and status, returns updated radicado."""
+    """PATCH updates subject, returns updated radicado."""
     client, mock_conn = client_with_conn
     doc_id = uuid.uuid4()
     updated = make_radicado_record(
         doc_id=doc_id,
         subject="Asunto actualizado",
-        status="distributed",
     )
 
     # update: fetchrow → updated radicado, fetch → [] (no anexos)
@@ -783,14 +782,37 @@ async def test_update_document(
 
     response = await client.patch(
         f"/api/v1/documents/{doc_id}",
-        json={"subject": "Asunto actualizado", "status": "distributed"},
+        json={"subject": "Asunto actualizado"},
         headers=TENANT_HEADERS,
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["subject"] == "Asunto actualizado"
-    assert body["status"] == "distributed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valor", ["distributed", "closed", "in_progress", "registered", None])
+async def test_patch_con_status_es_422_status_managed_by_workflow(
+    client_with_conn: tuple[AsyncClient, AsyncMock], valor: str | None
+) -> None:
+    """ADR-028: el estado del radicado lo mueve el flujo. Un `status` en el PATCH se
+    RECHAZA con 422 explícito (no se ignora en silencio: el cliente creería que
+    cambió) y no se toca la base."""
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+
+    response = await client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"subject": "Asunto", "status": valor},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "status_managed_by_workflow"
+    assert not any(
+        "UPDATE radicados" in str(c.args[0]) for c in mock_conn.fetchrow.await_args_list
+    )
 
 
 @pytest.mark.asyncio

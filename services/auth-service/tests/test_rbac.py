@@ -641,7 +641,7 @@ async def test_add_member_failure_leaves_no_audit_entry(
 ) -> None:
     mock_append = _patch_audit(monkeypatch)
     conn = AsyncMock()
-    conn.execute.side_effect = asyncpg.ForeignKeyViolationError("fk")
+    conn.fetchval.side_effect = asyncpg.ForeignKeyViolationError("fk")
     _override_conn(conn)
 
     resp = await client.post(

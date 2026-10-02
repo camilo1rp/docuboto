@@ -463,6 +463,13 @@ async def signature_env(client_with_conn, monkeypatch):
     comportamiento real por defecto de producción.
     """
     client, conn = client_with_conn
+    # AREA-04-07: el sello institucional en /sign-xml exige X-Internal-Token (lo
+    # manda archive-service junto a la identidad firmada). Los tests de este
+    # fixture ejercen ESA ruta legítima, así que el cliente lo lleva por defecto.
+    from app.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "signature_internal_token", "itest-internal-token-abc123")
+    client.headers["X-Internal-Token"] = "itest-internal-token-abc123"
     table = _FakeFirmaTable()
     conn.fetchrow.side_effect = table.fetchrow
 

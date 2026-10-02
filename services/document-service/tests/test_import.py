@@ -58,7 +58,7 @@ def _pkg(entities, *, tamper_binary=False, tamper_schema=False, bad_member=False
                 "tipo_entidad": "radicado", "numero_radicado": tn, "tipo": "E",
                 "asunto": "Acta", "nivel_seguridad": e.get("nivel", 1),
                 "fecha_radicacion": "2026-03-01T10:00:00Z",
-                "metadata_sistema": {"status": "registered", "pages": 1},
+                "metadata_sistema": {"status": e.get("status", "registered"), "pages": 1},
                 "metadata_contextual": {"k": "v"}, "disposicion": None,
                 "clasificacion": None, "antecedente": e.get("antecedente"),
                 "anexos": anexos_json, "historial": [],
@@ -211,3 +211,69 @@ async def test_anexo_without_archivo_rejected() -> None:
     with pytest.raises(PackageValidationError, match="sin archivo/sha256"):
         await _run(svc, pkg)
     svc._repo.insert_radicado.assert_not_awaited()
+
+
+# --- ADR-028: el estado que cruza la frontera es de un conjunto cerrado ---------------
+
+
+@pytest.mark.asyncio
+async def test_un_paquete_con_un_radicado_anulado_se_rechaza_entero() -> None:
+    """`anulado` sin el acto de anulación que lo justifique (causal, aprobador,
+    asiento) crearía un radicado anulado imposible de explicar. Todo-o-nada."""
+    svc = _svc()
+    pkg = _pkg(
+        [
+            {"tracking": "2026-DEMO-E-000001"},
+            {"tracking": "2026-DEMO-E-000002", "status": "anulado"},
+        ]
+    )
+    with pytest.raises(PackageValidationError, match="no valida contra el esquema"):
+        await _run(svc, pkg)
+    svc._repo.insert_radicado.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_un_estado_desconocido_tambien_se_rechaza() -> None:
+    svc = _svc()
+    with pytest.raises(PackageValidationError, match="no valida contra el esquema"):
+        await _run(svc, _pkg([{"tracking": "2026-DEMO-E-000001", "status": "archivado"}]))
+
+
+@pytest.mark.parametrize("estado", ["registered", "distributed", "in_progress", "closed"])
+@pytest.mark.asyncio
+async def test_los_cuatro_estados_importables_pasan(estado: str) -> None:
+    svc = _svc()
+    report = await _run(svc, _pkg([{"tracking": "2026-DEMO-E-000001", "status": estado}]))
+    assert report["importados"] == 1
+    assert svc._repo.insert_radicado.await_args.args[0]["status"] == estado
+
+
+def test_el_esquema_publicado_lista_exactamente_esos_estados() -> None:
+    enum = RADICADO_SCHEMA["properties"]["metadata_sistema"]["properties"]["status"]["enum"]
+    assert enum == ["registered", "distributed", "in_progress", "closed"]
+    assert "anulado" not in enum
+
+
+@pytest.mark.asyncio
+async def test_el_asiento_de_importacion_registra_el_status_de_origen_de_cada_radicado() -> None:
+    svc = _svc()
+    pkg = _pkg(
+        [
+            {"tracking": "2026-DEMO-E-000001", "status": "closed"},
+            {"tracking": "2026-DEMO-E-000002"},  # sin `status` explícito en la fuente: registered
+        ]
+    )
+    with (
+        patch(
+            "app.services.import_service.storage_client.upload_bytes",
+            new=AsyncMock(return_value=ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
+        ),
+        patch("app.services.import_service.audit.append", new=AsyncMock(return_value="h")) as audit,
+    ):
+        await svc.import_package(zip_bytes=pkg, max_clearance=1, actor=None)
+    payload = audit.await_args.kwargs["payload"]
+    assert payload["status_origen"] == {
+        "2026-DEMO-E-000001": "closed",
+        "2026-DEMO-E-000002": "registered",
+    }
+    assert payload["radicados_importados"] == ["2026-DEMO-E-000001", "2026-DEMO-E-000002"]

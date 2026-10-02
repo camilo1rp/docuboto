@@ -166,7 +166,9 @@ async def test_no_se_puede_desanular_por_patch(
     """El caso concreto: `{"status": "registered"}` sobre un anulado.
 
     Era la ruta lateral completa — deshacer una anulación aprobada por supervisor
-    con un PATCH gateado solo por `PERM_RADI`.
+    con un PATCH gateado solo por `PERM_RADI`. Desde ADR-028 la puerta está
+    cerrada ANTES: el PATCH rechaza `status` con 422 (el 409 de `anulado` sigue
+    cubierto por el test de arriba, con un campo editable).
     """
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True
@@ -181,7 +183,9 @@ async def test_no_se_puede_desanular_por_patch(
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
 
-    assert resp.status_code == 409
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "status_managed_by_workflow"
+    assert not any("UPDATE radicados" in s for s in _sqls(mock_conn))
 
 
 async def test_update_document_gate_y_guard_van_en_el_where(

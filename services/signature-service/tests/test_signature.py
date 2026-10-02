@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -110,11 +110,17 @@ async def test_sign_xml_happy_path(client_with_conn) -> None:
     client, conn = client_with_conn
     conn.fetchrow.return_value = _firma_row(b"<indice/>", USER)
 
-    resp = await client.post(
-        "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<indice/>", "objeto_tipo": "radicado", "objeto_id": "exp-1"},
-        headers=TENANT_HEADERS,
-    )
+    # El objeto debe existir y ser visible (AREA-04-07): la consulta propia se
+    # resuelve aparte para no mezclarla con la fila de firma de este mock.
+    with patch(
+        "app.routers.signature.CadenaRepository.objeto_visible",
+        new=AsyncMock(return_value=True),
+    ):
+        resp = await client.post(
+            "/api/v1/signature/sign-xml",
+            json={"payload_xml": "<indice/>", "objeto_tipo": "radicado", "objeto_id": "exp-1"},
+            headers=TENANT_HEADERS,
+        )
     assert resp.status_code == 201
     body = resp.json()
     assert body["provider"] == "nativa"

@@ -280,3 +280,84 @@ async def test_audit_missing_tenant_is_400(client: AsyncClient) -> None:
     _override(conn)
     resp = await client.get("/api/v1/audit")  # sin X-Tenant-Slug
     assert resp.status_code == 400
+
+
+_LECTOR_N1 = Caller(
+    user_id=uuid.uuid4(),
+    keycloak_sub="kc-n1",
+    is_root=False,
+    permissions={"USUA_PERM_ADMIN": 1},
+)
+
+
+@pytest.mark.asyncio
+async def test_verify_no_regala_el_total_a_quien_no_tiene_clearance_maximo(
+    client: AsyncClient,
+) -> None:
+    """AREA-03-03: `total` (verify) − `X-Total-Count` (listado recortado) era el
+    número exacto de asientos clasificados ocultos. Con clearance 1 la respuesta
+    trae solo `ok` y `total_roturas`: ni `total`, ni `verificados`, ni ids."""
+    rota_7 = _audit_row(id=7, hash="tampered", prev_hash=None)
+    conn = _conn_con_cursor([rota_7])
+    conn.fetchval.return_value = 1  # clearance efectivo del llamante
+    _override(conn, _LECTOR_N1)
+
+    resp = await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["total_roturas"] == 1
+    assert body["total"] is None
+    assert body["verificados"] is None
+    assert body["broken_id"] is None
+    assert body["roturas"] == []
+
+
+@pytest.mark.asyncio
+async def test_verify_con_clearance_maximo_conserva_el_detalle(client: AsyncClient) -> None:
+    """Control positivo (anti-vacuidad): clearance 3 recibe el detalle completo."""
+    rota_7 = _audit_row(id=7, hash="tampered", prev_hash=None)
+    conn = _conn_con_cursor([rota_7])
+    conn.fetchval.return_value = 3
+    _override(conn, _LECTOR_N1)
+
+    body = (await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)).json()
+
+    assert body["total"] == 1
+    assert body["broken_id"] == 7
+    assert body["roturas"] == [{"id": 7, "motivo": "hash"}]
+
+
+@pytest.mark.asyncio
+async def test_verify_root_conserva_el_detalle_sin_consultar_clearance(
+    client: AsyncClient,
+) -> None:
+    """ROOT ve todo (bypass): detalle completo aunque su fila de clearance diga 1."""
+    conn = _conn_con_cursor([_audit_row(id=7, hash="tampered", prev_hash=None)])
+    conn.fetchval.return_value = 1
+    root = Caller(
+        user_id=uuid.uuid4(),
+        keycloak_sub="kc-root",
+        is_root=True,
+        permissions={"USUA_PERM_ADMIN": 3},
+    )
+    _override(conn, root)
+
+    body = (await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)).json()
+
+    assert body["total"] == 1
+    assert body["broken_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_verify_clearance_intermedio_tambien_se_recorta(client: AsyncClient) -> None:
+    """El umbral es «clearance MÁXIMO», no «mayor que 1»."""
+    conn = _conn_con_cursor([_audit_row(id=7, hash="tampered", prev_hash=None)])
+    conn.fetchval.return_value = 2
+    _override(conn, _LECTOR_N1)
+
+    body = (await client.get("/api/v1/audit/verify", headers=TENANT_HEADERS)).json()
+
+    assert body["total"] is None
+    assert body["roturas"] == []

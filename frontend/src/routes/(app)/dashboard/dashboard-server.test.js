@@ -36,9 +36,10 @@ const parentWithUser =
  * Construye un documento mínimo de /documents.
  *
  * `registered` por defecto, que es el estado que el sistema escribe al radicar.
- * El doble usaba `distributed`: un estado al que el flujo no lleva nunca (solo un
- * botón manual de la vista Lista), y con él la suite aprobaba un panel que en la
- * base real no mostraba nada.
+ * El doble usaba `distributed`, que antes de ADR-028 el flujo no escribía nunca,
+ * y con él la suite aprobaba un panel que en la base real no mostraba nada.
+ * Hoy repartir sí lo escribe, pero un radicado sin reparto sigue `registered`, y
+ * la suite debe cubrir también ese camino.
  */
 function makeDoc(overrides = {}) {
   return {

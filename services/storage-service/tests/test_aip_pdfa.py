@@ -34,7 +34,7 @@ import app.core.config as config_module
 from app.services.aip_builder import validate_premis_xml
 from app.services.pdfa import PdfaResult, StubPdfaValidator, get_pdfa_validator, run_pdfa_validation
 from tests.conftest import (
-    TENANT_HEADERS,
+    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -87,7 +87,6 @@ def _base_payload(*, doc_file_id: uuid.UUID, nombre: str = "oficio.pdf") -> dict
         ],
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
 
 
@@ -152,7 +151,7 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -222,7 +221,7 @@ async def test_pdfa_validation_enabled_stub_emits_no_evaluado_and_aip_still_pack
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -311,7 +310,7 @@ async def test_pdfa_validation_skips_non_pdf_document(client_with_conn, monkeypa
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id, nombre="nota.txt"),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -358,7 +357,7 @@ async def test_pdfa_validation_ignores_declared_mime_type_uses_sniff(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id, nombre="disfrazado.pdf"),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text

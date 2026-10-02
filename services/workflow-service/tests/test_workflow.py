@@ -48,6 +48,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
+from app.repositories.workflow_repository import _holder_condition, _nivel_poseedor_condition
 from tests.conftest import (
     RADICADO_ID,
     STEP_ID,
@@ -484,15 +485,20 @@ async def test_complete_step(
     args = mock_redis.xadd.call_args[0]
     assert args[1]["event_type"] == "workflow.step.completed"
 
-    # El `UPDATE` ancla la autorización por tenencia (assigned_to = actor O
-    # assigned_to IS NULL) en el MISMO statement — sin ventana TOCTOU.
+    # El `UPDATE` ancla la autorización por tenencia en el MISMO statement —sin
+    # ventana TOCTOU— con la ÚNICA definición de poseedor del servicio
+    # (`_holder_condition`) y solo sobre un paso ACTIVO.
     update_calls = [
         c for c in mock_conn.fetchrow.await_args_list if "UPDATE flow_steps" in c.args[0]
     ]
     assert len(update_calls) == 1
     sql = update_calls[0].args[0]
-    assert "assigned_to = $4 OR assigned_to IS NULL" in sql
-    assert update_calls[0].args[-1] == USER_ID  # actor real, no assigned_to
+    assert _holder_condition(4) in sql
+    assert "status IN ('pending', 'in_progress')" in sql
+    assert update_calls[0].args[-2] == USER_ID  # actor real, no assigned_to
+    # Y el no-read-up del actor viaja en el MISMO `UPDATE` ([A], RF-SEG-08).
+    assert _nivel_poseedor_condition(5) in sql
+    assert update_calls[0].args[-1] == 3  # clearance resuelto (autouse: 3)
 
     # La traza forense (Canal A) asienta el actor REAL, no `assigned_to` (Bloqueante 2).
     audit_calls = [
@@ -519,7 +525,9 @@ async def test_complete_step_paso_ajeno_404(
     byte-a-byte indistinguible de "no existe": mismo 404 `step_not_found`
     (no-oráculo, gemelo de rollback/devolver)."""
     client, mock_conn, mock_redis = client_with_conn
-    mock_conn.fetchrow.return_value = None  # WHERE assigned_to=$4 OR IS NULL no matchea
+    # 1) `get_by_id` (resuelve el radicado para el cerrojo, ADR-028) -> el paso
+    # existe; 2) el `UPDATE` anclado a la tenencia no matchea -> None.
+    mock_conn.fetchrow.side_effect = [make_step_record(step_id=STEP_ID), None]
 
     response = await client.patch(
         f"/api/v1/workflows/{STEP_ID}/complete",
@@ -724,6 +732,7 @@ async def test_execute_transaction_anular(
         "descripcion": None,
         "requires_permission": "PERM_ANULAR",
         "target_step_status": "cancelled",
+        "requires_holder": False,
         "activo": True,
     }
     latest = make_step_record(step_status="pending", to_dept="Jurídica")
@@ -758,6 +767,7 @@ async def test_execute_transaction_sin_permiso_del_tipo_403(
         "descripcion": None,
         "requires_permission": "PERM_ANULAR",
         "target_step_status": "cancelled",
+        "requires_holder": False,
         "activo": True,
     }
     mock_conn.fetchrow.return_value = tt  # get_transaction_type → tt
@@ -805,6 +815,7 @@ async def test_execute_transaction_tipo_abierto_cae_al_suelo_de_tramitar(
         "descripcion": None,
         "requires_permission": None,  # tipo abierto
         "target_step_status": None,
+        "requires_holder": False,
         "activo": True,
     }
     latest = make_step_record(step_status="pending")
@@ -848,6 +859,7 @@ async def test_execute_transaction_deja_traza_forense_en_audit_log(
         "descripcion": None,
         "requires_permission": "PERM_ANULAR",
         "target_step_status": "cancelled",
+        "requires_holder": False,
         "activo": True,
     }
     latest = make_step_record(step_status="pending", to_dept="Jurídica")
@@ -894,6 +906,7 @@ async def test_execute_transaction_audit_failure_aborta_la_transaccion(
         "descripcion": None,
         "requires_permission": None,
         "target_step_status": None,
+        "requires_holder": False,
         "activo": True,
     }
     latest = make_step_record(step_status="pending")
@@ -945,6 +958,7 @@ async def test_execute_transaction_no_flow(
         "descripcion": None,
         "requires_permission": "PERM_INFORMAR",
         "target_step_status": None,
+        "requires_holder": False,
         "activo": True,
     }
     # get_transaction_type → tt, get_latest_step → None
@@ -1137,11 +1151,16 @@ async def test_devolver_not_current_holder_is_neutral_404(
     )
     mock_conn.fetchrow.return_value = current
 
-    resp = await client.post(
-        f"/api/v1/workflows/{RADICADO_ID}/devolver",
-        json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
-        headers=TENANT_HEADERS,
-    )
+    # `es_poseedor` (una sola definición de poseedor, `_holder_condition`) dice que no.
+    with patch(
+        "app.services.workflow_service.WorkflowRepository.es_poseedor",
+        new=AsyncMock(return_value=False),
+    ):
+        resp = await client.post(
+            f"/api/v1/workflows/{RADICADO_ID}/devolver",
+            json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
+            headers=TENANT_HEADERS,
+        )
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "no_active_step"
     # Mismo cuerpo exacto que "sin paso activo" (no-oráculo: byte-a-byte igual).
@@ -1222,16 +1241,20 @@ async def test_rollback_by_non_holder_is_neutral_no_active_step(
     current = make_step_record(
         step_number=2, step_status="pending", to_dept="B", assigned_to=other_holder
     )
-    mock_conn.fetchrow.return_value = current  # solo se consulta get_current
+    mock_conn.fetchrow.return_value = current  # solo se consulta el paso activo
 
-    response = await client.post(
-        f"/api/v1/workflows/{RADICADO_ID}/rollback",
-        json={"motivo": ROLLBACK_MOTIVO},
-        headers=TENANT_HEADERS,
-    )
+    with patch(
+        "app.services.workflow_service.WorkflowRepository.es_poseedor",
+        new=AsyncMock(return_value=False),
+    ):
+        response = await client.post(
+            f"/api/v1/workflows/{RADICADO_ID}/rollback",
+            json={"motivo": ROLLBACK_MOTIVO},
+            headers=TENANT_HEADERS,
+        )
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "no_active_step"
-    # Solo UNA llamada a fetchrow (get_current); ni get_previous_step ni
+    # Solo UNA llamada a fetchrow (paso activo); ni get_previous_step ni
     # apply_rollback (que también usarían fetchrow) se invocaron.
     assert mock_conn.fetchrow.await_count == 1
 
@@ -1384,6 +1407,7 @@ async def test_reassign_cascade_deja_traza_forense_en_audit_log(
         "from_dept": "Dirección Jurídica",
         "to_assigned_to": str(to_assigned_to),
         "reassigned": 2,
+        "skipped_terminal": 0,
     }
 
 

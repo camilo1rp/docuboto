@@ -39,7 +39,12 @@ async def list_urd(
     return await URDService(conn).list(user_id)
 
 
-@router.post("/{user_id}/urd", response_model=URDResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{user_id}/urd",
+    response_model=URDResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
 async def create_urd(
     user_id: uuid.UUID,
     payload: URDCreate,
@@ -74,7 +79,11 @@ async def create_urd(
         )
 
 
-@router.delete("/{user_id}/urd/{urd_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{user_id}/urd/{urd_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
 async def delete_urd(
     user_id: uuid.UUID,
     urd_id: uuid.UUID,

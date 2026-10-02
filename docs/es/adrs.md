@@ -34,6 +34,7 @@ Los archivos completos están en `docs/es/adr/`.
 | [ADR-025](adr/ADR-025-trd-instrumento-convalidado-versionado.md) | La TRD es un instrumento convalidado, no una tabla de configuración: versionado append-only y fijación de la versión que gobierna cada expediente | Implementado (Increment 1+2) |
 | [ADR-026](adr/ADR-026-tvd-fondo-acumulado.md) | La TVD es el mismo instrumento con otro contenido: discriminador `tipo_instrumento` sobre `trd_series`, no tabla propia (registro y circuito de convalidación + amarre y calendario del fondo acumulado) | Implementado (Increment 1+2) |
 | [ADR-027](adr/ADR-027-sustitucion-almacen-objetos-rustfs.md) | MinIO archivó su proyecto libre y retiró sus imágenes: el almacén pasa a **RustFS**, y el motor lo elige una batería de conformidad WORM contra un S3 real (RustFS 7/7, MinIO 7/7, Garage 0/7), no un folleto | Implementado |
+| [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md) | El flujo mueve el estado del radicado: una función pura escrita en la misma transacción que el paso, cierre solo por «Finalizar trámite», `closed`/`anulado` terminales (409) y tenencia en `marcar_leido`; remediación de auditoría: clearance y tenencia en `assign`/`transfer`, la anulación cancela el paso, evidencia inmutable del backfill | Implementado |
 
 ## Cómo proponer un nuevo ADR
 

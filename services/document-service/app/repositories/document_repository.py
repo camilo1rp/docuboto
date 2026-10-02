@@ -423,11 +423,12 @@ class DocumentRepository:
         inexistente — el router traduce ambos al mismo 404 neutro.
 
         `AND status <> 'anulado'` va en el MISMO `WHERE`, por el mismo motivo.
-        `DocumentUpdate.status` admite `registered`, así que sin esta condición un
-        PATCH gateado solo por `PERM_RADI` **deshacía una anulación** aprobada por el
+        Hasta ADR-028 `DocumentUpdate.status` admitía `registered`, así que sin esta
+        condición un PATCH gateado solo por `PERM_RADI` **deshacía una anulación** aprobada por el
         circuito de dos pasos con visto bueno de supervisor — sin causal, sin
         aprobador y (hasta este cambio) sin traza. Es la misma ruta lateral que ya se
-        cerró en el PATCH de expedientes.
+        cerró en el PATCH de expedientes. Hoy el router rechaza `status` (422) y el
+        guard queda como defensa en profundidad: el estado lo mueve el flujo.
         """
         fields: list[str] = []
         params: list[object] = []
@@ -446,11 +447,6 @@ class DocumentRepository:
         if payload.observations is not None:
             fields.append(f"observations = ${idx}")
             params.append(payload.observations)
-            idx += 1
-
-        if payload.status is not None:
-            fields.append(f"status = ${idx}")
-            params.append(payload.status)
             idx += 1
 
         if payload.pages is not None:

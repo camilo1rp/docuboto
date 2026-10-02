@@ -47,7 +47,12 @@ describe("codigoError", () => {
 
 describe("mensajeError", () => {
   it("saca el mensaje humano del sobre anidado", () => {
-    expect(mensajeError(ANIDADO, "por defecto")).toBe("No active flow step found");
+    // `no_active_step` ya no sirve de muestra: tiene mensaje propio (ADR-028,
+    // ver tenencia.test.js). Aquí interesa el sobre, no el código.
+    const otro = {
+      detail: { error: "document_not_found", detail: "Radicado no encontrado", status: 404 },
+    };
+    expect(mensajeError(otro, "por defecto")).toBe("Radicado no encontrado");
   });
 
   it("NUNCA devuelve un objeto", () => {

@@ -78,7 +78,6 @@ def _base_payload(file_id: uuid.UUID, **overrides) -> dict:
         "tipo": "acta_transferencia",
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
     payload.update(overrides)
     return payload
@@ -111,7 +110,7 @@ async def test_proteger_artefacto_happy_path_acta_transferencia(client_with_conn
     resp = await client.post(
         "/api/v1/preservacion/proteger-artefacto",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -155,7 +154,7 @@ async def test_proteger_artefacto_second_call_is_idempotent_no_reupload(client_w
     resp = await client.post(
         "/api/v1/preservacion/proteger-artefacto",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 200, resp.text
@@ -184,7 +183,7 @@ async def test_proteger_artefacto_fixity_mismatch_blocks_upload(client_with_conn
     resp = await client.post(
         "/api/v1/preservacion/proteger-artefacto",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 409
@@ -204,7 +203,7 @@ async def test_proteger_artefacto_rejects_invalid_tipo(client_with_conn) -> None
     resp = await client.post(
         "/api/v1/preservacion/proteger-artefacto",
         json=_base_payload(uuid.uuid4(), tipo="aip"),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 422
@@ -230,7 +229,7 @@ async def test_proteger_artefacto_default_tipo_is_indice_when_omitted(client_wit
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
     resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto", json=payload, headers=TENANT_HEADERS
+        "/api/v1/preservacion/proteger-artefacto", json=payload, headers=INTERNAL_HEADERS
     )
 
     assert resp.status_code == 201, resp.text
@@ -274,12 +273,12 @@ async def test_proteger_artefacto_indice_and_acta_same_expediente_do_not_collide
     resp_indice = await client.post(
         "/api/v1/preservacion/proteger-artefacto",
         json=_base_payload(file_id_indice, expediente_id="EXP-9", tipo="indice"),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     resp_acta = await client.post(
         "/api/v1/preservacion/proteger-artefacto",
         json=_base_payload(file_id_acta, expediente_id="EXP-9", tipo="acta_transferencia"),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp_indice.status_code == 201, resp_indice.text
@@ -407,7 +406,7 @@ async def test_proteger_indice_alias_forces_tipo_indice_even_if_body_declares_ac
         "/api/v1/preservacion/proteger-indice",
         # El body pide 'acta_transferencia' -- el router lo pisa igual.
         json=_base_payload(file_id, expediente_id="EXP-7", tipo="acta_transferencia"),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text

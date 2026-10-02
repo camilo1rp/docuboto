@@ -24,6 +24,17 @@ async def _sin_circuito(borrador_id: str, tenant_slug: str) -> dict:
     """Doble de `signature_client.get_estado_circuito`: no hay circuito abierto."""
     return {"pendiente": False, "completo": False, "solicitud_id": None}
 
+
+@pytest.fixture(autouse=True)
+def _circuito_sin_abrir(monkeypatch) -> None:
+    """`radicar` (como `aprobar`) consulta a signature-service si hay un circuito
+    abierto (E23, RF-PRO-09) y responde 503 `circuito_no_verificable` si no puede
+    saberlo —fail-closed, correcto—. Sin este doble la consulta sale de verdad, no
+    hay signature-service en el carril unitario y los tests de radicación recibían
+    503 en vez de lo que miden. Los tests del gate (`test_circuito_ata.py`) y
+    `test_aprobar_borrador` sobrescriben este valor por su cuenta."""
+    monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _sin_circuito)
+
 NOW = datetime.now(tz=UTC)
 
 

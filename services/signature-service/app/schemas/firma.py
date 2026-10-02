@@ -16,7 +16,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
+from app.core.constants import CADENA_OBJETO_TIPOS, XADES_ELIGIBLE_OBJETO_TIPOS
 
 
 class SignXmlRequest(BaseModel):
@@ -39,6 +39,20 @@ class SignXmlRequest(BaseModel):
     formato: str | None = Field(default="XAdES", max_length=20)
     indice_id: str | None = None
     version: int | None = None
+
+    @field_validator("objeto_tipo")
+    @classmethod
+    def _objeto_tipo_cerrado(cls, v: str) -> str:
+        # Conjunto CERRADO: el sello institucional (XADES_ELIGIBLE, además
+        # gateado por token interno en el router) y los tipos firmables de una
+        # cadena. Un texto libre dejaba firmar «cualquier cosa» a nombre de un
+        # objeto que no existe (hallazgo AREA-04-07).
+        if v not in XADES_ELIGIBLE_OBJETO_TIPOS | CADENA_OBJETO_TIPOS:
+            raise ValueError(
+                f"objeto_tipo debe ser uno de "
+                f"{sorted(XADES_ELIGIBLE_OBJETO_TIPOS | CADENA_OBJETO_TIPOS)}"
+            )
+        return v
 
 
 class InternalSignIndiceRequest(BaseModel):

@@ -128,3 +128,23 @@ describe("WorkflowCard — I10 (revisión UX): boardBusy deshabilita esta tarjet
     expect(scoped.getByRole("button", { name: /trasladar/i })).not.toBeDisabled();
   });
 });
+
+describe("WorkflowCard — tenencia (ADR-028)", () => {
+  it("con poseedor=false oculta todas las acciones de ejecución (aunque canTramitar) y deja Detalle", () => {
+    render(WorkflowCard, { props: { step: step(), canTramitar: true, poseedor: false } });
+    for (const n of [/^en trámite$/i, /trasladar/i, /^trámite$/i, /completar/i, /revertir/i]) {
+      expect(screen.queryByRole("button", { name: n })).toBeNull();
+    }
+    expect(screen.getByRole("button", { name: /detalle/i })).toBeTruthy();
+  });
+  it("Revertir solo con el paso pending (rollback, R19), no con in_progress", () => {
+    render(WorkflowCard, { props: { step: step({ status: "in_progress" }), poseedor: true } });
+    expect(screen.queryByRole("button", { name: /revertir/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /completar/i })).toBeTruthy();
+  });
+
+  it("con poseedor=true (default) las ofrece", () => {
+    render(WorkflowCard, { props: { step: step(), poseedor: true } });
+    expect(screen.getByRole("button", { name: /^en trámite$/i })).toBeTruthy();
+  });
+});

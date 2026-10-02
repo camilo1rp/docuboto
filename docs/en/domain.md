@@ -85,6 +85,21 @@ Example: 2024-ICETEX-E-001234
 - It resets to 000001 every January 1st
 - Assignment is **atomic** (transaction with a lock on the `tracking_sequences` table)
 
+#### Radicado status: moved by the workflow (ADR-028)
+
+`registered → distributed → in_progress → closed`, plus `anulado`. **Status is not edited**: workflow-service writes it in the same transaction as the step, as in Orfeo, where distributing is a status change.
+
+| Act | Resulting status |
+|---|---|
+| Register (no distribution) | `registered` |
+| Assign, transfer, return, roll back, reassign (the step is left `pending`) | `distributed` |
+| `marcar_leido` **by the holder** of the step | `in_progress` |
+| Complete a step without marking it as read | `distributed` (kept; declared) |
+| **Finish processing** (explicit act by the holder, with a comment) | `closed` |
+| Annulment (written by document-service) | `anulado` |
+
+`closed` and `anulado` are **terminal**: no processing act moves them (`409 radicado_terminal`). The only way to close is "Finish processing"; completing the last step does not close. **Holder** = has the step assigned, or the step belongs to their dependencia and nobody holds it. **Outgoing** and **internal** radicados have no outward distribution: their status only moves when a step touches them. Annulment does not cancel the active step (declared). See [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md).
+
 ---
 
 ### Expediente

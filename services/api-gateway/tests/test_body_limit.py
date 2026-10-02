@@ -29,7 +29,7 @@ from tests.conftest import make_validate_response, wire_upstream
 
 pytestmark = pytest.mark.asyncio
 
-_AUTH = {"Authorization": "Bearer tok", "X-Tenant-Slug": "icetex"}
+_AUTH = {"Authorization": "Bearer tok"}
 
 
 def _upstream_ok() -> httpx.Response:

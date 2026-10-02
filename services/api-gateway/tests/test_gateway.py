@@ -574,19 +574,15 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/knowledge/search": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
         # del storage-service se expone (el frontend sube directo);
-        # /preservacion/ sigue expuesto (fuera del alcance de esta remediación).
+        # /preservacion/ se admite SUBRUTA A SUBRUTA (AREA-08-16): plan,
+        # eventos, migrar-formato, migraciones. Los actos de sistema
+        # (/proteger-*, /aip*, /*-internal) NO se enrutan: ver
+        # `test_preservacion_actos_de_sistema_no_se_enrutan`.
         "/api/v1/storage/upload": "http://storage:8005",
-        "/api/v1/preservacion/proteger-indice": "http://storage:8005",
-        # E10 Increment C: /preservacion/aip/{id} SIGUE enrutando por el mismo
-        # prefijo blanket (el gateway no distingue sub-rutas) — el gate real
-        # ahora vive en storage-service (X-Internal-Token, D-02): una llamada
-        # externa a este path llega al upstream pero storage-service la
-        # rechaza con 401 porque el gateway NUNCA reenvía X-Internal-Token
-        # (no está en FORWARDED_REQUEST_HEADERS). El único acceso EXTERNO
-        # legítimo al AIP pasa por el mediador de archive-service:
-        # GET /api/v1/expedientes/{id}/aip (ver archive-service/app/routers/
-        # expedientes.py::get_aip).
-        "/api/v1/preservacion/aip/EXP-2024-0001": "http://storage:8005",
+        "/api/v1/preservacion/plan": "http://storage:8005",
+        "/api/v1/preservacion/plan/versions": "http://storage:8005",
+        "/api/v1/preservacion/migrar-formato": "http://storage:8005",
+        "/api/v1/preservacion/migraciones/abc": "http://storage:8005",
         # Continuación E10 Increment C (RF-SEG-08): mismo criterio que
         # /preservacion/aip/{id} — /preservacion/eventos SIGUE enrutando por
         # el prefijo blanket, pero storage-service ahora exige
@@ -705,34 +701,50 @@ async def test_client_x_canal_header_is_not_forwarded(test_client):
     )
 
 
-async def test_client_x_internal_token_header_is_not_forwarded(test_client):
-    """E10 Increment C: un cliente externo NO puede forjar X-Internal-Token
-    para alcanzar `GET /preservacion/aip/{id}` directamente en storage-service
-    (D-02) — el gateway enruta el prefijo blanket `/api/v1/preservacion/`
-    (sin distinguir sub-rutas), pero `X-Internal-Token` no está en
-    `FORWARDED_REQUEST_HEADERS`, así que aunque un cliente lo envíe, storage-
-    service nunca lo recibe y responde 401 fail-closed. El único acceso
-    EXTERNO legítimo al AIP es el mediador `GET /api/v1/expedientes/{id}/aip`
-    de archive-service."""
-    client, http_client, _ = test_client
+def test_preservacion_actos_de_sistema_no_se_enrutan():
+    """AREA-08-16: el gateway admite subrutas de /preservacion/ una a una. Los
+    actos de SISTEMA (sellar el WORM, empaquetar el AIP, legal hold, gemelas
+    `*-internal`) no tienen ruta desde el exterior: un JWT de usuario no puede
+    ocupar el singleton WORM irreversible de un expediente ajeno. El único
+    acceso externo al AIP es el mediador de archive-service
+    `GET /api/v1/expedientes/{id}/aip`."""
+    from unittest.mock import MagicMock
 
-    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    wire_upstream(http_client, httpx.Response(
-            status_code=401,
-            json={"detail": {"error": "missing_internal_token"}},
-            headers={"content-type": "application/json"},
-        )
-    )
+    from app.routers.proxy import _route_to_upstream
 
-    await client.get(
+    state = MagicMock()
+    state.storage_service_url = "http://storage:8005"
+    for path in (
+        "/api/v1/preservacion/proteger-indice",
+        "/api/v1/preservacion/proteger-artefacto",
+        "/api/v1/preservacion/aip",
         "/api/v1/preservacion/aip/EXP-2024-0001",
-        headers={"Authorization": "Bearer valid-token", "X-Internal-Token": "forged"},
+        "/api/v1/preservacion/aip-internal",
+        "/api/v1/preservacion/proteger-indice-internal",
+        "/api/v1/preservacion/proteger-artefacto-internal",
+        "/api/v1/preservacion/renovar-retencion-internal",
+        "/api/v1/preservacion/legal-hold-internal",
+        "/api/v1/preservacion/export-zip-internal",
+        "/api/v1/preservacion/",
+        "/api/v1/preservacion",
+    ):
+        assert _route_to_upstream(path, state) is None, path
+
+
+async def test_preservacion_proteger_con_jwt_valido_es_404_y_no_reenvia(test_client):
+    client, http_client, _ = test_client
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    http_client.build_request.reset_mock()
+
+    response = await client.post(
+        "/api/v1/preservacion/proteger-artefacto",
+        json={"file_id": "x"},
+        headers={"Authorization": "Bearer valid-token"},
     )
 
-    forwarded = http_client.build_request.call_args.kwargs["headers"]
-    assert "X-Internal-Token" not in forwarded, (
-        "Client-supplied X-Internal-Token must never reach an upstream service"
-    )
+    assert response.status_code == 404
+    assert response.json()["error"] == "route_not_found"
+    http_client.build_request.assert_not_called()
 
 
 async def test_client_x_internal_token_header_is_not_forwarded_for_eventos(test_client):
@@ -1000,3 +1012,77 @@ async def test_la_disponibilidad_sigue_siendo_publica(test_client):
         assert (await client.get("/health")).status_code == 200
     finally:
         app.state.openapi_publico = True
+
+
+# ---------------------------------------------------------------------------
+# AREA-02-03: la identidad forjada por el cliente no llega al upstream
+# ---------------------------------------------------------------------------
+
+_IDENTIDAD_FORJADA = {
+    "X-Tenant-Slug": "otra",
+    "X-User-Id": "00000000-0000-0000-0000-00000000dead",
+    "X-User-Roles": "admin",
+    "X-Identity-Signature": "deadbeef",
+}
+
+
+async def test_la_identidad_forjada_no_pisa_la_del_gateway_en_ruta_autenticada(test_client):
+    """Token de `icetex` + cabeceras de identidad de OTRA entidad: el upstream
+    recibe la identidad VALIDADA, sin duplicados ni 'admin' del cliente."""
+    client, http_client, _ = test_client
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    wire_upstream(http_client, httpx.Response(200, json={"ok": True}))
+
+    r = await client.get(
+        "/api/v1/dependencias/",
+        headers={"Authorization": "Bearer valid-token", **_IDENTIDAD_FORJADA},
+    )
+
+    assert r.status_code == 200
+    enviado = http_client.build_request.call_args.kwargs["headers"]
+    por_nombre = {k.lower(): v for k, v in enviado.items()}
+    assert len(por_nombre) == len(enviado), f"cabeceras duplicadas (mayúsculas): {sorted(enviado)}"
+    assert por_nombre["x-tenant-slug"] == "icetex"
+    assert por_nombre["x-user-id"] == "user-123"
+    assert "admin" not in por_nombre["x-user-roles"]
+    assert por_nombre["x-identity-signature"] != "deadbeef"
+
+
+async def test_la_identidad_forjada_no_llega_al_upstream_en_ruta_publica(test_client):
+    """En /public no hay identidad inyectada: la única defensa es la allowlist."""
+    client, http_client, _ = test_client
+    wire_upstream(http_client, httpx.Response(200, json={"ok": True}))
+
+    r = await client.post("/api/v1/public/icetex/pqrs", json={}, headers=_IDENTIDAD_FORJADA)
+
+    assert r.status_code == 200
+    enviado = {k.lower() for k in http_client.build_request.call_args.kwargs["headers"]}
+    for cabecera in _IDENTIDAD_FORJADA:
+        assert cabecera.lower() not in enviado, f"{cabecera} cruzó el gateway sin identidad"
+
+
+def test_la_identidad_del_gateway_gana_aunque_la_allowlist_se_ensanche(monkeypatch):
+    """Defensa en profundidad: aunque alguien añada una cabecera de identidad a
+    la allowlist, el valor inyectado por el gateway (`extra`) debe pisar al del
+    cliente. Fija el ORDEN de `headers.update(extra)` con independencia de la
+    allowlist (AREA-02-03)."""
+    from starlette.requests import Request
+
+    from app.core import proxy
+
+    monkeypatch.setattr(
+        proxy, "FORWARDED_REQUEST_HEADERS", proxy.FORWARDED_REQUEST_HEADERS | {"x-tenant-slug"}
+    )
+    peticion = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": [(b"x-tenant-slug", b"otra")],
+            "client": ("1.2.3.4", 1),
+        }
+    )
+
+    headers = proxy._build_upstream_headers(peticion, {"x-tenant-slug": "icetex"})
+
+    assert headers["x-tenant-slug"] == "icetex"

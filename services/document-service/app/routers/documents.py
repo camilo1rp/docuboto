@@ -704,6 +704,20 @@ async def update_document(
     aparte y con el umbral de escritura. El acto nuevo entra con su nivel correcto sin
     tocar el de los que ya existían.
     """
+    # ADR-028: el estado lo mueve el flujo. Se rechaza EXPLÍCITAMENTE (422): un
+    # campo ignorado en silencio haría creer al cliente que el estado cambió.
+    if "status" in payload.model_fields_set:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "status_managed_by_workflow",
+                "detail": (
+                    "El estado del radicado lo gobierna el flujo de trámite "
+                    "(asignar, marcar leído, finalizar), no se edita con PATCH."
+                ),
+                "status": 422,
+            },
+        )
     service = _build_service(conn, _tenant_slug(request))
     actor = _get_registered_by(request)
     if payload.doc_class is not None and not await check_permission(

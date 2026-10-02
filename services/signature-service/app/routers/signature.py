@@ -34,11 +34,11 @@ import uuid
 from datetime import UTC
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
-from app.core.clearance import get_actor, require_permission
+from app.core.clearance import get_actor, require_permission, resolve_caller_clearance
 from app.core.config import settings
-from app.core.constants import SYSTEM_RECONCILER_ID
+from app.core.constants import SYSTEM_RECONCILER_ID, XADES_ELIGIBLE_OBJETO_TIPOS
 from app.core.database import get_tenant_conn
 from app.core.http_clients import (
     SigningKeyRevocationStatusUnavailableError,
@@ -69,13 +69,16 @@ router = APIRouter(prefix="/api/v1/signature", tags=["signature"])
     "/sign-xml",
     response_model=FirmaResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("PERM_FIRMA"))],
+    # Escritura (firma = crear un acto): `min_crud=2`. A nivel 1 (lectura) un
+    # usuario generaba firmas a nombre de cualquier objeto (AREA-04-07).
+    dependencies=[Depends(require_permission("PERM_FIRMA", min_crud=2))],
 )
 async def sign_xml(
     payload: SignXmlRequest,
     request: Request,
     actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    x_internal_token: str | None = Header(default=None),
 ) -> FirmaResponse:
     """
     Firma electrónica de un payload XML o hash de documento (RF-FIR-11..14).
@@ -89,8 +92,35 @@ async def sign_xml(
       (RF-FIR-12), no reproducible sin conocer el secreto del servicio.
     - El acto de firma queda registrado en audit_log (RF-FIR-14).
 
+    El SELLO INSTITUCIONAL (``objeto_tipo`` del allow-set XAdES) exige además
+    ``X-Internal-Token`` (D-02): el sello es de la ENTIDAD, no de quien llama, y
+    un humano con ``PERM_FIRMA`` nivel 1 podía estampárselo a un XML arbitrario
+    llamando directo y saltándose los gates de archive-service (expediente
+    cerrado, permiso, versión del índice). La única ruta humana legítima es
+    ``IndexService.firmar_indice`` / sellado del acta, que llega desde archive
+    con identidad firmada Y token. El resto de tipos (HMAC nativo) queda acotado
+    por ``SignXmlRequest.objeto_tipo`` (422 fuera del conjunto).
+
     TODO (RF-FIR-13): reto 2FA ligado al hash_documento — diferido a F4.
     """
+    if payload.objeto_tipo in XADES_ELIGIBLE_OBJETO_TIPOS:
+        require_internal_token(x_internal_token)
+    else:
+        # Tipos de cadena (HMAC nativo): el objeto debe EXISTIR y ser visible
+        # para el firmante (no-read-up, RF-SEG-08). `404` neutro para «no existe»
+        # y «te supera el clearance»: no es un oráculo sobre objetos reservados.
+        clearance = await resolve_caller_clearance(conn, actor)
+        if payload.objeto_id is None or not await CadenaRepository(conn).objeto_visible(
+            payload.objeto_id, clearance
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "objeto_no_encontrado",
+                    "detail": "El objeto a firmar no existe",
+                    "status": 404,
+                },
+            )
     tenant_slug: str = request.headers.get("X-Tenant-Slug", "")
     return await signing_service.sign_payload(
         conn=conn,

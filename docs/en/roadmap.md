@@ -28,14 +28,25 @@ OrpycaMCP has followed **two complementary plans**:
 
 ### specDrive status by epic (and what is still pending)
 
-> **Open domain decision (2026-10-01): radicado status and workflow progress do not talk to each
-> other.** Distributing and processing on the board advance the steps (`flow_steps`); the
-> radicado stays `registered` unless someone manually presses "Distribute"/"In progress" in the
-> inbox List view. The dashboard no longer depends on it — it reads the inbox and alerts from
-> `registered` — but the inbox drawer's "Return" button and the search status filters still do.
-> The two ways out are not equivalent: have the workflow move the radicado's status (as in Orfeo,
-> where distributing is a status change) or drop `distributed`/`in_progress` from the radicado and
-> derive "where it stands" from its steps.
+> **Domain decision resolved (2026-10-02, [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md)): the workflow moves the radicado's status.**
+> Radicado status and step progress used to be two machines that did not talk to each other
+> (open decision of 2026-10-01). Now workflow-service writes `radicados.status` in the same
+> transaction as the step: distributing, transferring, returning, rolling back and reassigning
+> leave `distributed`; the holder's `marcar_leido` leaves `in_progress`; and **only** "Finish
+> processing" (`POST /workflows/{id}/finalizar`) closes (`closed`). `closed` and `anulado` are
+> terminal (`409 radicado_terminal`) and the radicado `PATCH` rejects `status` (`422`). Backend,
+> MCP (`finalizar_tramite`), migrations (backfill `013`) and real-Postgres tests: ✅.
+> **Pending**: the frontend ("Finish processing" button, removing the manual
+> "Distribute"/"In progress" from the List view, translating the 409). **Declared out of scope,
+> on purpose**: outgoing and internal radicados have no outward distribution (their status only
+> moves when a step touches them); `rollback` only from `pending`; completing a step without
+> marking it as read leaves `distributed`; completing an `in_progress` step leaves
+> `in_progress`; the **"reopen"** act (MoReq: controlled reopening with admin permission) is left
+> for its own increment.
+> **Audit remediation (2026-10-02) ✅ on the backend**: `assign`/`transfer` require clearance and
+> holding the step, `finalizar` requires level 3 and `motivo_cierre`, **annulment cancels the
+> step** (and migration `015` cleans up zombies), import rejects `anulado` (+ migration `034`
+> `CHECK`), the backfill leaves immutable evidence with an anchor entry. See the ADR (R1-R14).
 
 Every item below is delivered unless explicitly marked as pending. Scope statements are deliberately honest (RF-FIR-15): where something is _verifiable but not accredited_, it says so.
 
@@ -61,6 +72,8 @@ Every item below is delivered unless explicitly marked as pending. Scope stateme
 
 - **Real Object-Lock/WORM on MinIO** ✅ Increment A (ADR-023: per-tenant preservation bucket, signed index under `Retention(COMPLIANCE)` derived from the TRD, disposition gate, legal hold).
 - **Real AIP + PREMIS v3** ✅ Increment B (BagIt RFC 8493 with real bytes + recomputed fixity, uploaded to the WORM bucket and covered by the disposition gate), **full PREMIS v3 conformance** ✅ Increment C1a (validated against the LoC's official vendored `premis.xsd`), and a **best-effort AIP replica** ✅ Increment C1b (one immutable WORM copy to a configurable target — by default a second bucket on the same MinIO, honestly labelled "local replica, not cross-site"; cross-site via `MINIO_SECONDARY_*` — triggered by `num_copias≥2`, non-fatal).
+- **Seal and WORM are system-only** ✅ (2026-10, audit of 2026-10-02, T1): `/signature/sign-xml` requires `X-Internal-Token` for the institutional seal and `objeto_tipo` is a closed set; storage seals `/aip`, `/proteger-indice` and `/proteger-artefacto` behind the internal token, the gateway routes `/preservacion/` through an allow-list, a second protection with another `file_id` answers `409`, and `legal_hold` leaves the body and is governed by `legal-hold-internal` (motive + atomic audit entry). _Pending_: an archive user endpoint orchestrating the legal hold (permission TBD) and raising `PERM_FIRMA`'s `min_crud`.
+- **RBAC without escalation and a hardened token** ✅ (2026-10, audit of 2026-10-02, T2): RBAC/URD/clearance writes and administrative removal of 2FA and signing key require `USUA_PERM_ADMIN` level 3; joining a group applies clearance no-write-up in the `INSERT`; `PATCH`/`DELETE /groups/{id}`; `typ`/`azp`/mandatory claims in the JWT; gateway validation cache with real `expires_in` and sealed with a MAC; `/audit/verify` without `total` or ids for callers below maximum clearance; 2FA audit entries atomic with the removal; the level census reads router gates. _Pending_: own audit-read permission (migration + backfill), opaque id in the audit listing, raising `min_crud` on signature chain/webhooks/DLQ/third parties, per-service Redis ACLs and asymmetric identity signing.
 - **WORM wiring of the index on closure** ✅ Inc. 1 (Ac. AGN 001/2024 art. 4.3.2.6): the WORM capability existed but **nothing triggered it** → the signed index was deletable despite its seal. archive now protects it after signing at closure (best-effort synchronous trigger + a third reconciliation phase, `run_once_worm`, which never blocks closure), with a **TOTAL** retention derived from the TRD (`gestión+central`, `fecha_inicio`=closure) and **fail-closed when there is no TRD** (never a default over an irreversible COMPLIANCE lock); `worm_*` columns orthogonal to `estado` (archive migration `029`), atomic mark+entry; storage gains idempotency (partial unique index, migration `009`, + short-circuit + a **session advisory lock per `(tenant, expediente)`** preventing duplicate irreversible WORM objects under a race) and the internal `proteger-indice-internal` endpoint for reconciliation. MinIO Object-Lock in dev — **NOT an accredited repository**.
 - **WORM wiring of the signed transfer acta** ✅ Inc. 2 (Anexo FUID): a mirror of Inc. 1 over the instrument that evidences the FUID handover — `proteger-indice` is **generalized to `proteger-artefacto`** with `tipo ∈ {indice, acta_transferencia}` (storage migration `010`; `/proteger-indice[-internal]` remain as hard aliases), archive gains `proteger_worm_acta` (best-effort synchronous trigger + a fourth phase, `run_once_actas_worm`) with `worm_*` columns in `transferencia_acta_firma` (archive migration `030`), TRD TOTAL retention with **`fecha_inicio = firmado_at` of the acta** (not closure — an acta is signed later in secondary transfers) and fail-closed without a TRD.
 - **Disposition-gate remedy** ✅ (Ley 594/2000 arts. 24–26): the Medium finding from Inc. 2 (acta and index do not expire together → mandated deletion was postponed until the acta expired) is closed with a **CONTENT** (`indice`/`aip`, blocking) vs **CONTROL INSTRUMENT** (`acta_transferencia`, outlives the content and does not block it) taxonomy; `legal_hold` remains unconditional, fail-closed on an unclassified `tipo` (guard test in CI).

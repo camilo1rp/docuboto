@@ -8,6 +8,7 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 import hashlib
+import hmac
 import json
 import logging
 
@@ -131,14 +132,20 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
         # explícito de esta caché, no un olvido.
         cache_key = _validation_key(authorization)
         redis = getattr(request.app.state, "redis", None)
+        # Sin secreto MAC la caché se APAGA (fail-closed): una entrada sin
+        # integridad es la que cualquiera con la contraseña de Redis podría forjar.
+        mac_secret: str = getattr(request.app.state, "auth_cache_mac_secret", "") or ""
+        if not mac_secret:
+            redis = None
         payload = None
         if redis is not None:
             try:
                 crudo = await redis.get(cache_key)
                 if crudo:
-                    payload = json.loads(crudo)
+                    payload = _leer_entrada_cache(crudo, cache_key, mac_secret)
             except Exception:  # noqa: BLE001 — la caché nunca decide el acceso
                 logger.debug("Fallo leyendo la caché de validación", exc_info=True)
+                payload = None
 
         if payload is not None:
             return await _continuar_con_identidad(request, call_next, payload)
@@ -172,12 +179,13 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
 
         # Solo se cachea el SÍ. Un `valid: false` cacheado ahorraría poco y
         # retrasaría el momento en que un token recién emitido empieza a funcionar.
-        if redis is not None and payload.get("valid", False):
+        ttl = _ttl_validacion(payload, request.app.state.auth_cache_ttl)
+        if redis is not None and payload.get("valid", False) and ttl > 0:
             try:
                 await redis.set(
                     cache_key,
-                    json.dumps(payload),
-                    ex=_ttl_validacion(payload, request.app.state.auth_cache_ttl),
+                    _sellar_entrada_cache(payload, cache_key, mac_secret),
+                    ex=ttl,
                 )
             except Exception:  # noqa: BLE001 — la caché nunca decide el acceso
                 logger.debug("Fallo escribiendo la caché de validación", exc_info=True)
@@ -210,12 +218,47 @@ def _validation_key(authorization: str) -> str:
     return f"authvalidate:{huella}"
 
 
+def _mac_cache(cache_key: str, cuerpo: str, secreto: str) -> str:
+    """MAC (HMAC-SHA256) de la entrada, ligado a SU clave.
+
+    Incluir `cache_key` impide mover una entrada válida de un token a otro. El
+    secreto es EXCLUSIVO del gateway (`AUTH_CACHE_MAC_SECRET`): quien solo tenga
+    la contraseña de Redis no puede forjar una identidad cacheada.
+    """
+    return hmac.new(
+        secreto.encode(), f"{cache_key}\x1e{cuerpo}".encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def _sellar_entrada_cache(payload: dict, cache_key: str, secreto: str) -> str:
+    cuerpo = json.dumps(payload)
+    return f"{_mac_cache(cache_key, cuerpo, secreto)}.{cuerpo}"
+
+
+def _leer_entrada_cache(crudo: str | bytes, cache_key: str, secreto: str) -> dict | None:
+    """Devuelve el payload si el MAC verifica y es un SÍ; si no, `None` (se
+    consulta a auth-service). Una entrada sin MAC, con MAC ajeno o con
+    `valid != True` se descarta."""
+    texto = crudo.decode() if isinstance(crudo, bytes) else crudo
+    mac, sep, cuerpo = texto.partition(".")
+    if not sep or not hmac.compare_digest(mac, _mac_cache(cache_key, cuerpo, secreto)):
+        return None
+    payload = json.loads(cuerpo)
+    if not isinstance(payload, dict) or payload.get("valid") is not True:
+        return None
+    return payload
+
+
 def _ttl_validacion(payload: dict, ttl_maximo: int) -> int:
-    """TTL acotado por el `exp` del token: nunca sobrevive a su caducidad."""
+    """TTL acotado por el `exp` del token: nunca sobrevive a su caducidad.
+
+    Sin `expires_in` utilizable devuelve 0 = NO cachear (antes usaba el máximo,
+    y como `/validate` nunca lo emitía, el tope por `exp` era inerte).
+    """
     restante = payload.get("expires_in")
-    if isinstance(restante, int) and restante > 0:
+    if isinstance(restante, int) and not isinstance(restante, bool) and restante > 0:
         return max(1, min(ttl_maximo, restante))
-    return ttl_maximo
+    return 0
 
 
 async def _continuar_con_identidad(request: Request, call_next, payload: dict) -> Response:

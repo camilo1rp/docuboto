@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     # ventana durante la cual un token revocado seguiría siendo aceptado. Se acota
     # además al `expires_in` del propio token, para no resucitar uno caducado.
     auth_cache_ttl: int = 15
+    # Secreto EXCLUSIVO del gateway con el que se sella (HMAC-SHA256) cada entrada
+    # de esa caché. Sin él la caché queda apagada (fail-closed): una entrada sin
+    # integridad la forja quien tenga solo la contraseña de Redis.
+    auth_cache_mac_secret: str = ""
     proxy_timeout: float = 30.0
     # Timeout largo SOLO para el asistente conversacional (E18): el loop LLM
     # (varias iteraciones Claude + llamadas a tools vía gateway) supera con

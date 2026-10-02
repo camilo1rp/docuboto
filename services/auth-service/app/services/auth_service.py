@@ -23,6 +23,7 @@ use its credentials to perform the password grant on behalf of the caller.
 
 import logging
 import re
+import time
 
 import asyncpg
 import httpx
@@ -219,6 +220,7 @@ class AuthService:
                 username=username,
                 tenant_slug=tenant_slug,
                 roles=claims.get("roles", []),
+                expires_in=max(0, int(claims["exp"]) - int(time.time())),
             )
         except PyJWTError:
             return ValidateResponse(valid=False)

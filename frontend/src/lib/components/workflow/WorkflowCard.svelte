@@ -42,6 +42,8 @@
                   toast, sin spinner, sin `aria-disabled`).
     canTramitar   boolean (default true) — espejo de PERM_TRAMITAR; el padre lo calcula
                   desde el JWT (D-05: el backend siempre re-valida)
+    poseedor      boolean (default true) — tenencia del paso (ADR-028): las acciones de
+                  ejecución solo se ofrecen al poseedor, no a quien solo lo ve
 
   Eventos: verDetalle, trasladar, tramite, completar, revertir, enTramite (solo
   se dispara desde el botón "Marcar en trámite", visible solo cuando
@@ -58,6 +60,10 @@
   export let busy = false;
   export let boardBusy = false;
   export let canTramitar = true;
+  /** ADR-028: ¿soy el POSEEDOR del paso? (`$lib/utils/tenencia.js`, lo calcula el
+   * padre). Un colega de la dependencia VE el paso pero no lo posee: el backend
+   * le da 404 `no_active_step`/`step_not_found` en todo acto que lo mueve. */
+  export let poseedor = true;
 
   const dispatch = createEventDispatcher();
 
@@ -140,7 +146,7 @@
       Detalle
     </button>
 
-    {#if canTramitar && isActionable}
+    {#if canTramitar && poseedor && isActionable}
       {#if step.status === "pending"}
         <button
           type="button"
@@ -179,15 +185,18 @@
         <i class="fas fa-check" aria-hidden="true"></i>
         Completar
       </button>
-      <button
-        type="button"
-        class="wf-card-btn wf-card-btn--danger"
-        disabled={actionsDisabled}
-        on:click={() => dispatch("revertir")}
-      >
-        <i class="fas fa-rotate-left" aria-hidden="true"></i>
-        Revertir
-      </button>
+      {#if step.status === "pending"}
+        <!-- R19: rollback solo cancela un paso aún `pending` -->
+        <button
+          type="button"
+          class="wf-card-btn wf-card-btn--danger"
+          disabled={actionsDisabled}
+          on:click={() => dispatch("revertir")}
+        >
+          <i class="fas fa-rotate-left" aria-hidden="true"></i>
+          Revertir
+        </button>
+      {/if}
     {/if}
   </div>
 </article>

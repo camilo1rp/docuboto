@@ -95,6 +95,8 @@ def build_jwt_claims(
         "tenant_slug": tenant_slug,
         "realm_access": {"roles": roles or ["operator"]},
         "iss": settings.expected_issuer,
+        "typ": "Bearer",
+        "azp": "orpycamcp-frontend",
         "iat": now - 60,
         "exp": (now - 10) if expired else (now + 300),
     }

@@ -235,6 +235,7 @@ async def revoke_signing_key(
 
 @admin_router.post(
     "/{user_id}/signing-key/revoke",
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
     response_model=SigningKeyRevokeResponse,
     summary="Admin-revoke another user's signing-key credential (USUA_PERM_ADMIN)",
 )

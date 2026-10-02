@@ -108,7 +108,18 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # pasa SIEMPRE por el mediador de document-service
         # (`GET /api/v1/documents/{id}/anexos/{file_id}/download`).
         ("/api/v1/storage/upload", app_state.storage_service_url),
-        ("/api/v1/preservacion/", app_state.storage_service_url),
+        # preservación (E10) — LISTA DE ADMISIÓN de subrutas, no el prefijo
+        # entero (AREA-08-16). `/proteger-indice`, `/proteger-artefacto`, `/aip`,
+        # `/*-internal` y `/legal-hold-internal` son actos de SISTEMA: los
+        # invoca archive-service (con X-Internal-Token) y NO se enrutan desde el
+        # exterior. Con el prefijo completo, un JWT de usuario con
+        # USUA_PERM_EXPEDIENTE:3 ocupaba el singleton WORM irreversible de
+        # cualquier expediente con un file_id arbitrario. Una subruta nueva de
+        # storage queda cerrada hasta que se admita aquí a propósito.
+        ("/api/v1/preservacion/plan", app_state.storage_service_url),
+        ("/api/v1/preservacion/eventos", app_state.storage_service_url),
+        ("/api/v1/preservacion/migrar-formato", app_state.storage_service_url),
+        ("/api/v1/preservacion/migraciones/", app_state.storage_service_url),
         # workflow-service
         ("/api/v1/workflows/", app_state.workflow_service_url),
         # El motor de reglas usa prefijo singular `workflow/rules` (E05); enrutarlo.

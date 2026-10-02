@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +20,7 @@ import asyncpg
 from app.core.clearance import resolve_caller_clearance
 from app.core.database import tenant_schema
 from app.models.flow import FlowStep
+from app.services.estado_radicado import ESTADOS_TERMINALES, derivar_estado_radicado
 
 
 def _clearance_condition(idx: int) -> str:
@@ -32,6 +34,47 @@ def _clearance_condition(idx: int) -> str:
     return (
         f"COALESCE((SELECT nivel_seguridad FROM radicados "
         f"WHERE id = flow_steps.radicado_id), 1) <= ${idx}"
+    )
+
+
+def _user_depts_subquery(idx: int) -> str:
+    """Nombres de las dependencias ACTIVAS a las que pertenece el usuario `$idx`
+    (URD activa). Compartido por el alcance de bandeja (`_own_scope_condition`)
+    y por la tenencia (`_holder_condition`): una sola definición de «mi
+    dependencia», para que ambos ejes no puedan divergir."""
+    return (
+        f"SELECT d.nombre FROM urd_usuaroldep u "
+        f"JOIN dependencias d ON d.codigo = u.depe_id "
+        f"WHERE u.user_id = ${idx} AND u.is_active = TRUE AND d.activo = TRUE"
+    )
+
+
+def _holder_condition(idx: int, alias: str = "") -> str:
+    """Poseedor del paso activo (ADR-028): asignado a `$idx`, o paso de
+    dependencia SIN dueño (`assigned_to IS NULL`) y `$idx` pertenece a ella.
+
+    Más estrecho que `_own_scope_condition` a propósito: aquello es visibilidad
+    de bandeja (un miembro de la dependencia VE lo asignado a un colega); esto
+    es tenencia (solo el dueño, o cualquiera de la dependencia si nadie lo
+    tiene). NULL-safe: sin `$idx` ninguna rama casa (fail-closed)."""
+    return (
+        f"(assigned_to = ${idx} OR "
+        f"(assigned_to IS NULL AND to_dept IN ({_user_depts_subquery(idx)})))"
+    )
+
+
+def _nivel_poseedor_condition(idx: int, tabla: str = "flow_steps") -> str:
+    """No-read-up (RF-SEG-08) para los actos por TENENCIA: el nivel del radicado
+    del paso va EN el `WHERE`, no en una comprobación previa. Tener el paso (o
+    pertenecer a su dependencia) no basta si el radicado está por encima del
+    clearance del actor: un miembro de nivel 1 de la dependencia no cierra un
+    reservado repartido a ella sin dueño. Ausencia de fila en `radicados` = no
+    casa (fail-closed; difiere de `_clearance_condition`, que es de lectura).
+    El resultado es el mismo que «no hay paso»: el llamante responde su 404
+    neutro, sin oráculo."""
+    return (
+        "EXISTS (SELECT 1 FROM radicados rn "
+        f"WHERE rn.id = {tabla}.radicado_id AND rn.nivel_seguridad <= ${idx})"
     )
 
 
@@ -62,19 +105,62 @@ def _own_scope_condition(idx: int) -> str:
     `radicados` de otro servicio — ambas asumen el schema del tenant
     totalmente provisionado.
     """
+    return f"(assigned_to = ${idx} OR to_dept IN ({_user_depts_subquery(idx)}))"
+
+
+def _no_terminal_condition(tabla: str = "flow_steps") -> str:
+    """Excluye de los listados los pasos activos de radicados terminales
+    (`closed`/`anulado`, ADR-028). Un paso activo bajo un terminal es un zombi
+    (p. ej. una anulación o un cierre manual anteriores al ADR): no se puede
+    cerrar ni tramitar, así que mostrarlo en bandeja/vencidos solo estorba.
+    Defensa en profundidad: la anulación ya cancela el paso y la migración 015
+    saneó los existentes. Un radicado sin fila en `radicados` NO se excluye
+    (mismo criterio que `_clearance_condition`)."""
     return (
-        f"(assigned_to = ${idx} OR to_dept IN ("
-        f"SELECT d.nombre FROM urd_usuaroldep u "
-        f"JOIN dependencias d ON d.codigo = u.depe_id "
-        f"WHERE u.user_id = ${idx} AND u.is_active = TRUE AND d.activo = TRUE"
-        f"))"
+        "NOT EXISTS (SELECT 1 FROM radicados rt "
+        f"WHERE rt.id = {tabla}.radicado_id AND rt.status IN ('closed', 'anulado'))"
     )
+
+
+# Clase del cerrojo de ALCANCE (par de enteros de `pg_advisory_xact_lock`, un
+# espacio de claves distinto del cerrojo por radicado, que usa la forma de un
+# solo `bigint`). Ver `lock_radicado` y `reassign_cascade`.
+_LOCK_CLASE_ALCANCE = 28_000
+
+
+@dataclass(slots=True)
+class Tenencia:
+    """Quién posee el paso activo de un radicado, visto desde un actor."""
+
+    hay_activo: bool
+    poseedor: bool
+
+
+@dataclass(slots=True)
+class EstadoCambio:
+    """Un cambio de `radicados.status` producido por un acto del flujo."""
+
+    radicado_id: uuid.UUID
+    tracking_number: str
+    antes: str
+    despues: str
+    flow_event_id: uuid.UUID | None
+
+
+@dataclass(slots=True)
+class CascadeResult:
+    reassigned: int
+    skipped_terminal: int = 0
+    cambios: list[EstadoCambio] = field(default_factory=list)
 
 
 class WorkflowRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
         self._tenant_slug = tenant_slug
+        # Id del último `flow_events` escrito por esta instancia (lo lee el
+        # servicio para la clave de dedup de `estado_cambiado`).
+        self.last_flow_event_id: uuid.UUID | None = None
 
     async def _set_search_path(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
@@ -86,17 +172,264 @@ class WorkflowRepository:
         return await resolve_caller_clearance(self._conn, user_id)
 
     async def lock_radicado(self, radicado_id: uuid.UUID) -> None:
-        """Serializa las aperturas de paso de un radicado dentro de la transacción.
+        """Serializa los actos sobre un radicado dentro de la transacción.
 
-        `pg_advisory_xact_lock` y no un `SELECT ... FOR UPDATE` porque no hay una
-        fila natural que bloquear: lo que se protege es la SECUENCIA de pasos, no
-        un registro. Se libera solo al terminar la transacción, y solo afecta a
-        este radicado.
+        Tres cerrojos, siempre en este orden:
+          1. advisory de ALCANCE del tenant, COMPARTIDO: los actos de distintos
+             radicados no se estorban. Existe para que la cascada
+             (`reassign_cascade`) lo tome EXCLUSIVO una sola vez en lugar de un
+             cerrojo por radicado: cada `pg_advisory_xact_lock` ocupa una ranura de
+             la tabla de cerrojos (`max_locks_per_transaction`) y un barrido de
+             cientos de radicados la agotaba.
+          2. advisory del RADICADO, exclusivo: protege la SECUENCIA de pasos (no hay
+             una fila natural que bloquear para eso).
+          3. fila del radicado (`FOR UPDATE`): serializa con quien escribe el
+             radicado sin pasar por el advisory (la anulación de document-service).
+             Todos los escritores toman «fila del radicado, luego sus pasos»: sin
+             ciclos de interbloqueo.
+        Se liberan solos al terminar la transacción.
         """
         await self._set_search_path()
+        # La fila va como subconsulta (no un `execute` aparte) para no añadir un
+        # viaje por acto; sin fila (radicado inexistente) no bloquea nada.
         await self._conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtext($1))", str(radicado_id)
+            "SELECT pg_advisory_xact_lock_shared($1, hashtext(current_schema())), "
+            "pg_advisory_xact_lock(hashtext($2)), "
+            "(SELECT 1 FROM radicados WHERE id = $3 FOR UPDATE)",
+            _LOCK_CLASE_ALCANCE,
+            str(radicado_id),
+            radicado_id,
         )
+
+    async def sincronizar_estado_radicado(
+        self, radicado_id: uuid.UUID, *, finalizar: bool = False
+    ) -> tuple[str, str] | None:
+        """Escribe `radicados.status` según el paso activo (ADR-028) y devuelve
+        `(antes, despues)`; `None` si el radicado no existe.
+
+        Debe llamarse DENTRO de la transacción del acto, DESPUÉS de mutar los
+        pasos: lee el estado ya mutado y bloquea la fila del radicado
+        (`FOR UPDATE`) hasta el commit. NO decide la política de terminales: si
+        `antes` es terminal no escribe nada y lo devuelve tal cual, para que el
+        servicio responda 409 y revierta el acto entero.
+
+        El `UPDATE ... WHERE status IS DISTINCT FROM` es idempotente y no toca
+        `updated_at` si nada cambia.
+        """
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT status FROM radicados WHERE id = $1 FOR UPDATE", radicado_id
+        )
+        if row is None:
+            return None
+        actual: str = row["status"]
+        pasos = await self._conn.fetchrow(
+            """
+            SELECT (SELECT status FROM flow_steps
+                     WHERE radicado_id = $1 AND status IN ('pending', 'in_progress')
+                     ORDER BY step_number DESC LIMIT 1) AS activo,
+                   EXISTS (SELECT 1 FROM flow_steps WHERE radicado_id = $1) AS tiene_pasos
+            """,
+            radicado_id,
+        )
+        despues = derivar_estado_radicado(
+            actual,
+            pasos["activo"] if pasos else None,
+            tiene_pasos=bool(pasos and pasos["tiene_pasos"]),
+            finalizar=finalizar,
+        )
+        if despues != actual and actual not in ESTADOS_TERMINALES:
+            await self._conn.execute(
+                "UPDATE radicados SET status = $2, updated_at = now() "
+                "WHERE id = $1 AND status IS DISTINCT FROM $2",
+                radicado_id,
+                despues,
+            )
+        return actual, despues
+
+    async def es_poseedor(
+        self, radicado_id: uuid.UUID, actor: uuid.UUID | None, *, max_clearance: int
+    ) -> bool:
+        """¿`actor` posee el paso activo del radicado? (`_holder_condition`) y el
+        radicado está a su alcance (`_nivel_poseedor_condition`)."""
+        await self._set_search_path()
+        return bool(
+            await self._conn.fetchval(
+                "SELECT 1 FROM flow_steps WHERE radicado_id = $1 "
+                "AND status IN ('pending', 'in_progress') "
+                f"AND {_holder_condition(2)} AND {_nivel_poseedor_condition(3)} LIMIT 1",
+                radicado_id,
+                actor,
+                max_clearance,
+            )
+        )
+
+    async def tenencia(self, radicado_id: uuid.UUID, actor: uuid.UUID | None) -> Tenencia:
+        """Si hay paso activo y si `actor` lo posee, en UNA lectura (misma
+        `_holder_condition` que `es_poseedor`: una sola definición de poseedor)."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT EXISTS (SELECT 1 FROM flow_steps WHERE radicado_id = $1 "
+            "                AND status IN ('pending', 'in_progress')) AS hay_activo, "
+            "       EXISTS (SELECT 1 FROM flow_steps WHERE radicado_id = $1 "
+            "                AND status IN ('pending', 'in_progress') "
+            f"               AND {_holder_condition(2)}) AS poseedor",
+            radicado_id,
+            actor,
+        )
+        return Tenencia(
+            hay_activo=bool(row and row["hay_activo"]),
+            poseedor=bool(row and row["poseedor"]),
+        )
+
+    async def clearance_para_acto(self, actor: uuid.UUID | None) -> int:
+        """Clearance REAL del actor de un acto de trámite (RF-SEG-08).
+
+        Distinto de `CLEARANCE_SIN_RESTRICCION` (la precondición interna de
+        `rollback`/`devolver`, que se anclan a una tenencia YA existente): abrir o
+        mover un paso sobre un radicado NO es un acto de quien ya lo tiene, así que
+        el no-read-up/no-write-up aplica. Fail-closed a PUBLICA sin identidad."""
+        await self._set_search_path()
+        return await resolve_caller_clearance(self._conn, actor)
+
+    async def get_active_step_for_update(
+        self, radicado_id: uuid.UUID, *, max_clearance: int
+    ) -> FlowStep | None:
+        """Paso activo del radicado (acto de tenencia), con el no-read-up del
+        actor en el `WHERE`: un radicado por encima de su clearance es «sin paso»."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM flow_steps WHERE radicado_id = $1 "
+            "AND status IN ('pending', 'in_progress') "
+            f"AND {_nivel_poseedor_condition(2)} "
+            "ORDER BY step_number DESC LIMIT 1 FOR UPDATE",
+            radicado_id,
+            max_clearance,
+        )
+        return _row_to_model(row) if row is not None else None
+
+    async def ultimo_paso_si_lo_poseia(
+        self, radicado_id: uuid.UUID, actor: uuid.UUID | None, *, max_clearance: int
+    ) -> FlowStep | None:
+        """Último paso del radicado SI ya está `completed` y `actor` era su poseedor
+        (`_holder_condition`), el radicado no es terminal y está a su alcance
+        (`max_clearance`); si no, `None`. Es lo que permite «Finalizar» a quien
+        completó su paso y no repartió el radicado a nadie más: exigir un paso activo
+        obligaba a inventar un reparto ficticio para poder cerrar."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM (SELECT * FROM flow_steps WHERE radicado_id = $1 "
+            "ORDER BY step_number DESC LIMIT 1) ultimo "
+            "WHERE ultimo.status = 'completed' "
+            f"AND {_holder_condition(2, 'ultimo.')} "
+            f"AND {_no_terminal_condition('ultimo')} "
+            f"AND {_nivel_poseedor_condition(3, 'ultimo')}",
+            radicado_id,
+            actor,
+            max_clearance,
+        )
+        return _row_to_model(row) if row is not None else None
+
+    async def puede_repartir_sin_paso_activo(
+        self, radicado_id: uuid.UUID, actor: uuid.UUID | None, *, max_clearance: int
+    ) -> bool:
+        """Quién puede repartir un radicado que NO tiene paso activo (`assign`/
+        `transfer`; el reparto de sistema no pasa por aquí).
+
+        - Con historial (todo completado, sin cerrar): solo quien poseía el último
+          paso (`ultimo_paso_si_lo_poseia`: misma definición de poseedor, no
+          terminal, clearance en el `WHERE`).
+        - Sin ningún paso (nadie lo ha repartido): solo quien lo radicó,
+          `radicados.registered_by = actor` (id interno de `auth_users`, el mismo
+          `X-User-Id` que document-service guarda al radicar), con clearance.
+        Sin `actor` ninguna rama casa (NULL-safe, fail-closed). Se llama tras
+        `lock_radicado`."""
+        await self._set_search_path()
+        if await self._conn.fetchval(
+            "SELECT 1 FROM flow_steps WHERE radicado_id = $1 LIMIT 1", radicado_id
+        ):
+            return (
+                await self.ultimo_paso_si_lo_poseia(radicado_id, actor, max_clearance=max_clearance)
+                is not None
+            )
+        return bool(
+            await self._conn.fetchval(
+                "SELECT 1 FROM radicados WHERE id = $1 AND registered_by = $2 "
+                "AND nivel_seguridad <= $3",
+                radicado_id,
+                actor,
+                max_clearance,
+            )
+        )
+
+    async def contexto_cierre(self, radicado_id: uuid.UUID) -> dict[str, bool | None]:
+        """Hechos del radicado que el asiento de `finalizar` deja como evidencia.
+
+        `tiene_respuesta`: existe un radicado de Salida que lo responde
+        (`radicados.responde_a`, document-service). `en_expediente`: está vinculado
+        a un expediente (`expediente_radicados`, archive-service). Ambas tablas
+        viven en el mismo schema de tenant. Cada lectura va en su SAVEPOINT: si la
+        tabla/columna aún no existe en este tenant (el otro servicio migra aparte)
+        el resultado es `None` («no consta») y NO se aborta la transacción del acto.
+        """
+        await self._set_search_path()
+        return {
+            "tiene_respuesta": await self._leer_opcional(
+                "SELECT EXISTS (SELECT 1 FROM radicados WHERE responde_a = $1 "
+                "AND doc_type = 'S' AND status <> 'anulado')",
+                radicado_id,
+            ),
+            "en_expediente": await self._leer_opcional(
+                "SELECT EXISTS (SELECT 1 FROM expediente_radicados "
+                "WHERE radicado_id = $1 AND estado = 'vinculado')",
+                radicado_id,
+            ),
+        }
+
+    async def _leer_opcional(self, sql: str, *args: Any) -> bool | None:
+        try:
+            async with self._conn.transaction():
+                valor = await self._conn.fetchval(sql, *args)
+        except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+            return None
+        return None if valor is None else bool(valor)
+
+    async def apply_finalizar(
+        self,
+        *,
+        current: FlowStep,
+        actor: uuid.UUID | None,
+        comentario: str,
+        motivo_cierre: str,
+    ) -> FlowStep:
+        """Cierra el paso activo como `completed` y deja su evento `finalizar`,
+        atómicamente (ADR-028). Si `current` ya está cerrado (el actor completó su
+        paso y no repartió) no hay nada que cerrar: solo se deja el evento. El
+        estado del radicado lo escribe después
+        `sincronizar_estado_radicado(finalizar=True)`."""
+        await self._set_search_path()
+        now = datetime.now(tz=UTC)
+        async with self._conn.transaction():
+            if current.status in ("pending", "in_progress"):
+                row = await self._conn.fetchrow(
+                    "UPDATE flow_steps SET status = 'completed', completed_at = $1 "
+                    "WHERE id = $2 RETURNING *",
+                    now,
+                    current.id,
+                )
+            else:
+                row = None
+            await self._insert_flow_event(
+                radicado_id=current.radicado_id,
+                tracking_number=current.tracking_number,
+                tipo_tx="finalizar",
+                from_dept=current.to_dept,
+                to_dept=current.to_dept,
+                actor=actor,
+                comentario=comentario,
+                detalles={"step_number": current.step_number, "motivo_cierre": motivo_cierre},
+            )
+        return _row_to_model(row) if row is not None else current
 
     async def get_next_step_number(self, radicado_id: uuid.UUID) -> int:
         await self._set_search_path()
@@ -106,17 +439,28 @@ class WorkflowRepository:
         )
         return val
 
-    async def get_radicado_tracking_number(self, radicado_id: uuid.UUID) -> str | None:
-        """Resuelve el `tracking_number` REAL desde `radicados` (Bloqueante 3).
+    async def get_radicado_tracking_number(
+        self, radicado_id: uuid.UUID, *, max_clearance: int
+    ) -> str | None:
+        """Resuelve el `tracking_number` REAL desde `radicados` (Bloqueante 3) y, en
+        la MISMA lectura, aplica el no-read-up (RF-SEG-08): el `nivel_seguridad`
+        va en el `WHERE`, no en una comprobación previa. Se llama DESPUÉS de
+        `lock_radicado`, que ya retiene la fila (`FOR UPDATE`): una reclasificación
+        concurrente (document-service) espera, y no se abre un paso sobre un radicado
+        que acaba de dejar de estar al alcance.
 
         `_create_step` (assign/transfer) nunca debe confiar en el `tracking_number`
         del cuerpo: es un campo libre del cliente que termina en `flow_events`
         (append-only) y en `public.audit_log.object_ref` sin más verificación.
-        `None` = el radicado no existe (fail-closed: el llamante debe 404).
+        `None` = el radicado no existe O queda por encima del clearance del
+        llamante (mismo resultado a propósito: sin oráculo; el llamante responde 404).
         """
         await self._set_search_path()
         return await self._conn.fetchval(
-            "SELECT tracking_number FROM radicados WHERE id = $1", radicado_id
+            "SELECT tracking_number FROM radicados "
+            "WHERE id = $1 AND nivel_seguridad <= $2",
+            radicado_id,
+            max_clearance,
         )
 
     async def dependencia_activa(self, nombre: str) -> bool:
@@ -231,14 +575,17 @@ class WorkflowRepository:
         actor: uuid.UUID | None,
         comentario: str | None,
         detalles: dict[str, Any],
-    ) -> None:
-        # Asume search_path ya fijado por el método llamante.
+    ) -> uuid.UUID:
+        # Asume search_path ya fijado por el método llamante. El id se genera aquí
+        # (no con RETURNING) para poder devolverlo sin cambiar la forma de la
+        # sentencia: el evento `estado_cambiado` lo usa en su clave de dedup.
+        event_id = uuid.uuid4()
         await self._conn.execute(
             """
             INSERT INTO flow_events (
                 radicado_id, tracking_number, tipo_tx,
-                from_dept, to_dept, actor, comentario, detalles
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                from_dept, to_dept, actor, comentario, detalles, id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
             """,
             radicado_id,
             tracking_number,
@@ -248,7 +595,10 @@ class WorkflowRepository:
             actor,
             comentario,
             json.dumps(detalles or {}),
+            event_id,
         )
+        self.last_flow_event_id = event_id
+        return event_id
 
     async def list_flow_events(
         self, radicado_id: uuid.UUID, max_clearance: int = 3
@@ -349,7 +699,7 @@ class WorkflowRepository:
         """
         await self._set_search_path()
 
-        conditions = ["status IN ('pending', 'in_progress')"]
+        conditions = ["status IN ('pending', 'in_progress')", _no_terminal_condition()]
         params: list[object] = []
         idx = 1
 
@@ -400,17 +750,27 @@ class WorkflowRepository:
         return _row_to_model(row) if row is not None else None
 
     async def complete_step(
-        self, step_id: uuid.UUID, notes: str | None, actor: uuid.UUID | None
+        self,
+        step_id: uuid.UUID,
+        notes: str | None,
+        actor: uuid.UUID | None,
+        *,
+        max_clearance: int,
     ) -> FlowStep | None:
         """Cierra un paso, anclando autorización y mutación en el MISMO `UPDATE`
         (Bloqueantes 1+2): sin ventana TOCTOU entre "¿es tuyo?" y "ciérralo".
 
-        `assigned_to = $4 OR assigned_to IS NULL`: un paso de dependencia sin
-        dueño (los que genera `apply_devolucion`) sigue siendo cerrable por
-        quien tramita — no se rompe ese caso legítimo. Si el `WHERE` no casa
-        (paso ajeno o inexistente), `row` es `None` y el llamante responde el
-        MISMO 404 `step_not_found` en ambos casos (no-oráculo, gemelo de
-        `rollback`/`devolver`): no se distingue "no es tuyo" de "no existe".
+        Solo el POSEEDOR (`_holder_condition`: asignado a él, o paso de
+        dependencia sin dueño —los que genera `apply_devolucion`— y él pertenece a
+        ella) y solo un paso ACTIVO. Antes era `assigned_to = $4 OR assigned_to IS
+        NULL` sin filtrar estado: cualquiera con PERM_TRAMITAR cerraba un paso sin
+        dueño de OTRA dependencia, y un paso ya cerrado se «re-cerraba». Es la
+        misma definición de poseedor que `finalizar` y `marcar_leido`. Si el
+        `WHERE` no casa (paso ajeno, inexistente o ya cerrado), `row` es `None` y
+        el llamante responde el MISMO 404 `step_not_found` en ambos casos (no-oráculo,
+        gemelo de `rollback`/`devolver`). Idem si el radicado está por encima del
+        clearance del actor (`_nivel_poseedor_condition`, en el mismo `WHERE`):
+        no se distingue "no es tuyo" de "no existe".
 
         `actor` (el ejecutor real, no `assigned_to`) queda en `flow_events.actor`
         — antes se asentaba `row["assigned_to"]`, que en una tabla append-only
@@ -421,18 +781,22 @@ class WorkflowRepository:
         now = datetime.now(tz=UTC)
         async with self._conn.transaction():
             row = await self._conn.fetchrow(
-                """
+                f"""
                 UPDATE flow_steps
                    SET status = 'completed',
                        completed_at = $1,
                        notes = COALESCE($2, notes)
-                 WHERE id = $3 AND (assigned_to = $4 OR assigned_to IS NULL)
+                 WHERE id = $3
+                   AND status IN ('pending', 'in_progress')
+                   AND {_holder_condition(4)}
+                   AND {_nivel_poseedor_condition(5)}
                 RETURNING *
                 """,
                 now,
                 notes,
                 step_id,
                 actor,
+                max_clearance,
             )
             if row is None:
                 return None
@@ -468,7 +832,7 @@ class WorkflowRepository:
         ``own_scope_user_id``: ver docstring de `list_pending` (gemelo exacto,
         `box`/`doc_type` es ortogonal al eje de alcance)."""
         await self._set_search_path()
-        conditions = ["status IN ('pending', 'in_progress')"]
+        conditions = ["status IN ('pending', 'in_progress')", _no_terminal_condition()]
         params: list[object] = []
         idx = 1
         if doc_type is not None:
@@ -513,6 +877,7 @@ class WorkflowRepository:
              WHERE status IN ('pending', 'in_progress')
                AND due_at IS NOT NULL AND due_at < now()
                AND overdue_notified = false
+               AND """ + _no_terminal_condition() + """
              ORDER BY due_at ASC
             """
         )
@@ -536,7 +901,7 @@ class WorkflowRepository:
         return list(
             await self._conn.fetch(
                 "SELECT code, nombre, descripcion, requires_permission, "
-                "target_step_status, activo FROM transaction_types "
+                "target_step_status, requires_holder, activo FROM transaction_types "
                 "WHERE activo ORDER BY code"
             )
         )
@@ -545,15 +910,24 @@ class WorkflowRepository:
         await self._set_search_path()
         return await self._conn.fetchrow(
             "SELECT code, nombre, descripcion, requires_permission, "
-            "target_step_status, activo FROM transaction_types WHERE code = $1",
+            "target_step_status, requires_holder, activo FROM transaction_types "
+            "WHERE code = $1",
             code,
         )
 
-    async def get_latest_step(self, radicado_id: uuid.UUID) -> FlowStep | None:
+    async def get_latest_step(
+        self, radicado_id: uuid.UUID, *, max_clearance: int
+    ) -> FlowStep | None:
+        """Último paso del radicado, con el no-read-up del actor en el `WHERE`:
+        un radicado por encima de su clearance es «sin flujo», igual que uno
+        inexistente (las transacciones sin `requires_holder` no leían nivel)."""
         await self._set_search_path()
         row = await self._conn.fetchrow(
-            "SELECT * FROM flow_steps WHERE radicado_id = $1 " "ORDER BY step_number DESC LIMIT 1",
+            "SELECT * FROM flow_steps WHERE radicado_id = $1 "
+            f"AND {_nivel_poseedor_condition(2)} "
+            "ORDER BY step_number DESC LIMIT 1",
             radicado_id,
+            max_clearance,
         )
         return _row_to_model(row) if row is not None else None
 
@@ -602,6 +976,7 @@ class WorkflowRepository:
                 json.dumps(detalles or {}),
             )
         assert event is not None
+        self.last_flow_event_id = event["id"]
         return event
 
     # ------------------------------------------------------------------
@@ -631,8 +1006,13 @@ class WorkflowRepository:
         previous: FlowStep,
         actor: uuid.UUID | None,
         comentario: str | None = None,
-    ) -> FlowStep:
+        max_clearance: int,
+    ) -> FlowStep | None:
         """Cancela el paso actual y reactiva el anterior, atómicamente (RF-FLU-08).
+
+        Repite la condición de tenencia en el propio `UPDATE` (`pending` + poseedor
+        + nivel): `None` si ya no la cumple (carrera con otro acto), y entonces no
+        se toca nada.
 
         `comentario` es el motivo de la reversión (`RollbackRequest.motivo`,
         obligatorio desde el router) — queda en `flow_events.comentario`, gemelo
@@ -640,11 +1020,18 @@ class WorkflowRepository:
         await self._set_search_path()
         now = datetime.now(tz=UTC)
         async with self._conn.transaction():
-            await self._conn.execute(
-                "UPDATE flow_steps SET status='cancelled', completed_at=$1 WHERE id=$2",
+            cancelado = await self._conn.fetchval(
+                "UPDATE flow_steps SET status='cancelled', completed_at=$1 "
+                "WHERE id=$2 AND status = 'pending' "
+                f"AND {_holder_condition(3)} AND {_nivel_poseedor_condition(4)} "
+                "RETURNING id",
                 now,
                 current.id,
+                actor,
+                max_clearance,
             )
+            if cancelado is None:
+                return None
             row = await self._conn.fetchrow(
                 """
                 UPDATE flow_steps SET status='pending', completed_at=NULL
@@ -672,17 +1059,27 @@ class WorkflowRepository:
         causal: str,
         comentario: str | None,
         actor: uuid.UUID | None,
-    ) -> FlowStep:
+        max_clearance: int,
+    ) -> FlowStep | None:
         """Devuelve el radicado al remitente/origen con causal (RF-FLU): cierra el
-        paso actual como 'returned' y crea un paso nuevo hacia `to_dept`, atómicamente."""
+        paso actual como 'returned' y crea un paso nuevo hacia `to_dept`, atómicamente.
+        Repite la condición de tenencia en el `UPDATE` (activo + poseedor + nivel):
+        `None` si ya no la cumple, sin crear el paso nuevo."""
         await self._set_search_path()
         now = datetime.now(tz=UTC)
         async with self._conn.transaction():
-            await self._conn.execute(
-                "UPDATE flow_steps SET status='returned', completed_at=$1 WHERE id=$2",
+            cerrado = await self._conn.fetchval(
+                "UPDATE flow_steps SET status='returned', completed_at=$1 "
+                "WHERE id=$2 AND status IN ('pending', 'in_progress') "
+                f"AND {_holder_condition(3)} AND {_nivel_poseedor_condition(4)} "
+                "RETURNING id",
                 now,
                 current.id,
+                actor,
+                max_clearance,
             )
+            if cerrado is None:
+                return None
             row = await self._conn.fetchrow(
                 """
                 INSERT INTO flow_steps (
@@ -718,9 +1115,16 @@ class WorkflowRepository:
         from_dept: str | None,
         to_assigned_to: uuid.UUID,
         actor: uuid.UUID | None,
-    ) -> int:
+    ) -> CascadeResult:
         """Reasigna en una transacción todos los pasos activos del origen al nuevo
-        responsable, sin dejar radicados huérfanos (RF-FLU-08). Devuelve el conteo."""
+        responsable, sin dejar radicados huérfanos (RF-FLU-08).
+
+        ADR-028: reasignar equivale a que el nuevo responsable NO ha leído el
+        radicado (Orfeo `LEIDO=0`), así que el paso vuelve a `pending` y el
+        radicado a `distributed`. Los radicados terminales (`closed`/`anulado`)
+        se EXCLUYEN —ni se reasigna su paso ni se les toca el estado— y se
+        cuentan en `skipped_terminal` (pasos omitidos). Concurrencia: un único
+        cerrojo de alcance + cerrojos de fila ordenados (ver comentarios abajo)."""
         await self._set_search_path()
         conds = ["status IN ('pending', 'in_progress')"]
         params: list[object] = []
@@ -735,28 +1139,88 @@ class WorkflowRepository:
             idx += 1
         where = " AND ".join(conds)
 
+        result = CascadeResult(reassigned=0)
         async with self._conn.transaction():
-            rows = await self._conn.fetch(f"SELECT * FROM flow_steps WHERE {where}", *params)
+            # UN solo cerrojo EXCLUSIVO de alcance, en vez de uno por radicado: cada
+            # `pg_advisory_xact_lock` ocupa una ranura de la tabla de cerrojos
+            # (`max_locks_per_transaction`, 64 por defecto y compartida) y un barrido
+            # de cientos de radicados la agotaba a mitad de la reasignación. Los
+            # actos de trámite toman el MISMO cerrojo en modo compartido
+            # (`lock_radicado`), así que mientras dura la cascada ninguno corre, y los
+            # que ya corrían terminaron antes de que ésta lo obtuviera: la lectura de
+            # pasos de abajo es consistente. Orden fijo (alcance primero) => sin ciclos
+            # con `lock_radicado`. Coste: la cascada, un acto administrativo raro,
+            # detiene brevemente el trámite de ESE tenant; un barrido por lotes
+            # habría dejado cada lote parcialmente aplicado y sin asiento atómico.
+            await self._conn.execute(
+                "SELECT pg_advisory_xact_lock($1, hashtext(current_schema()))",
+                _LOCK_CLASE_ALCANCE,
+            )
+            # Cerrojo de FILA de los radicados (no ocupa ranuras: va en la tupla),
+            # SIEMPRE en orden de id y también para los que aparezcan tras releer —
+            # `document-service` (anulación) no usa el cerrojo advisory y esto es lo
+            # que lo serializa con la cascada.
+            estados: dict[uuid.UUID, str] = {}
+            while True:
+                rows = await self._conn.fetch(
+                    f"SELECT * FROM flow_steps WHERE {where} "
+                    "ORDER BY radicado_id, step_number",
+                    *params,
+                )
+                nuevos = sorted({r["radicado_id"] for r in rows} - estados.keys(), key=str)
+                if not nuevos:
+                    break
+                for fila in await self._conn.fetch(
+                    "SELECT id, status FROM radicados WHERE id = ANY($1::uuid[]) "
+                    "ORDER BY id FOR UPDATE",
+                    nuevos,
+                ):
+                    estados[fila["id"]] = fila["status"]
+                for rid in nuevos:  # sin fila en `radicados`: no es terminal
+                    estados.setdefault(rid, "")
+            por_radicado: dict[uuid.UUID, list[asyncpg.Record]] = {}
             for r in rows:
-                await self._conn.execute(
-                    "UPDATE flow_steps SET assigned_to=$1 WHERE id=$2",
-                    to_assigned_to,
-                    r["id"],
-                )
-                await self._insert_flow_event(
-                    radicado_id=r["radicado_id"],
-                    tracking_number=r["tracking_number"],
-                    tipo_tx="reassign",
-                    from_dept=r["to_dept"],
-                    to_dept=r["to_dept"],
-                    actor=actor,
-                    comentario=None,
-                    detalles={
-                        "from_assigned_to": str(r["assigned_to"]) if r["assigned_to"] else None,
-                        "to_assigned_to": str(to_assigned_to),
-                    },
-                )
-        return len(rows)
+                por_radicado.setdefault(r["radicado_id"], []).append(r)
+            for rid in sorted(por_radicado, key=str):
+                pasos = por_radicado[rid]
+                if estados.get(rid) in ESTADOS_TERMINALES:
+                    result.skipped_terminal += len(pasos)
+                    continue
+                last_event: uuid.UUID | None = None
+                for r in pasos:
+                    await self._conn.execute(
+                        "UPDATE flow_steps SET assigned_to=$1, status='pending' WHERE id=$2",
+                        to_assigned_to,
+                        r["id"],
+                    )
+                    last_event = await self._insert_flow_event(
+                        radicado_id=r["radicado_id"],
+                        tracking_number=r["tracking_number"],
+                        tipo_tx="reassign",
+                        from_dept=r["to_dept"],
+                        to_dept=r["to_dept"],
+                        actor=actor,
+                        comentario=None,
+                        detalles={
+                            "from_assigned_to": (
+                                str(r["assigned_to"]) if r["assigned_to"] else None
+                            ),
+                            "to_assigned_to": str(to_assigned_to),
+                        },
+                    )
+                    result.reassigned += 1
+                estado = await self.sincronizar_estado_radicado(rid)
+                if estado is not None and estado[0] != estado[1]:
+                    result.cambios.append(
+                        EstadoCambio(
+                            radicado_id=rid,
+                            tracking_number=pasos[0]["tracking_number"],
+                            antes=estado[0],
+                            despues=estado[1],
+                            flow_event_id=last_event,
+                        )
+                    )
+        return result
 
 
 def _row_to_model(row: asyncpg.Record) -> FlowStep:

@@ -175,6 +175,45 @@ class TotpService:
         except Exception:  # noqa: BLE001 — best-effort, never fails the request.
             logger.warning("TOTP audit append failed (action=%s)", action, exc_info=True)
 
+    async def _audit_strict(
+        self,
+        *,
+        user_id: uuid.UUID,
+        tenant_slug: str,
+        action: str,
+        payload: dict | None = None,
+        actor: uuid.UUID | None = None,
+    ) -> None:
+        """Asiento ATÓMICO con el acto (regla 6): sin `except` y sin salida
+        silenciosa. Va DENTRO de la `conn.transaction()` que retira el factor:
+        si el asiento falla, la baja se revierte entera. Es el modo de los actos
+        que REDUCEN la protección de una cuenta (desenrolar, restablecer por
+        admin); los eventos corroborantes (`totp.verificado`, fallos) siguen en
+        `_audit_event`, best-effort.
+        """
+        if not _AUDIT_AVAILABLE:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "error": "auditoria_no_disponible",
+                    "detail": (
+                        "Auditoría inmutable no disponible — no se puede retirar un "
+                        "segundo factor sin traza"
+                    ),
+                    "status": 500,
+                },
+            )
+        await _audit.append(
+            self._conn,
+            tenant_slug=tenant_slug,
+            service=_SERVICE,
+            action=action,
+            object_type="totp",
+            object_ref=str(user_id),
+            actor=str(actor or user_id),
+            payload=payload or {},
+        )
+
     def _assert_not_locked(self, row: asyncpg.Record) -> None:
         now = datetime.now(UTC)
         if row["locked_until"] is not None and row["locked_until"] > now:
@@ -481,6 +520,9 @@ class TotpService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": "no_totp", "detail": "No TOTP credential to revoke", "status": 404},
             )
+        # El asiento va DENTRO de cada transacción que retira el factor (AREA-04-04):
+        # antes iba después, con `except` silencioso, y una baja podía quedar sin
+        # traza.
         action = "totp.desenrolado"
         if row["estado"] == "activo":
             if not step_up_code and not step_up_recovery_code:
@@ -503,19 +545,26 @@ class TotpService:
                     )
                     await self._repo.revoke(row["id"])
                     await self._repo.delete_recovery_codes(user_id)
+                    await self._audit_strict(
+                        user_id=user_id, tenant_slug=tenant_slug, action=action
+                    )
             else:
+                action = "totp.desenrolado_con_recuperacion"
                 async with self._conn.transaction():
                     if not await self._consume_recovery_code(user_id, step_up_recovery_code):
                         raise _step_up_invalido()
                     await self._repo.revoke(row["id"])
                     await self._repo.delete_recovery_codes(user_id)
-                action = "totp.desenrolado_con_recuperacion"
+                    await self._audit_strict(
+                        user_id=user_id, tenant_slug=tenant_slug, action=action
+                    )
         else:
             async with self._conn.transaction():
                 await self._repo.revoke(row["id"])
                 await self._repo.delete_recovery_codes(user_id)
-
-        await self._audit_event(user_id=user_id, tenant_slug=tenant_slug, action=action)
+                await self._audit_strict(
+                    user_id=user_id, tenant_slug=tenant_slug, action=action
+                )
 
     # ------------------------------------------------------------------
     # Revoke (restablecimiento ADMINISTRATIVO)
@@ -593,18 +642,19 @@ class TotpService:
         async with self._conn.transaction():
             await self._repo.revoke(row["id"])
             await self._repo.delete_recovery_codes(target_user_id)
-
-        await self._audit_event(
-            user_id=target_user_id,
-            tenant_slug=tenant_slug,
-            action="totp.restablecido_por_admin",
-            actor=admin_user_id,
-            payload={
-                "motivo": motivo,
-                "estado_previo": estado_previo,
-                "codigos_recuperacion_eliminados": codigos,
-            },
-        )
+            # Atómico con la baja (AREA-04-04): un administrador quitándole el
+            # segundo factor a otra persona NO puede quedar sin asiento.
+            await self._audit_strict(
+                user_id=target_user_id,
+                tenant_slug=tenant_slug,
+                action="totp.restablecido_por_admin",
+                actor=admin_user_id,
+                payload={
+                    "motivo": motivo,
+                    "estado_previo": estado_previo,
+                    "codigos_recuperacion_eliminados": codigos,
+                },
+            )
 
         return TotpAdminRevokeResponse(
             usuario_id=str(target_user_id),

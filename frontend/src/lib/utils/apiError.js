@@ -104,6 +104,25 @@ export function codigoError(data) {
 }
 
 /**
+ * Códigos de los actos de trámite (ADR-028) con su mensaje para la persona.
+ * Se consultan ANTES que el `detail` del backend: el texto ya viene en español
+ * pero habla del sistema, y aquí hay que decir qué hacer. `no_active_step` es a
+ * propósito ambiguo —«no hay paso» y «no es suyo» son el mismo 404 sin oráculo—.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_ACTO_TRAMITE = {
+  radicado_terminal: "El radicado está cerrado o anulado y ya no admite actos de trámite.",
+  no_active_step: "Este trámite no está a su cargo: no tiene paso activo o lo posee otra persona.",
+  no_flow:
+    "No se encontró el flujo de este radicado: no existe, no tiene pasos o está por encima de su nivel de acceso.",
+  step_not_found:
+    "Ese paso ya no está abierto o no está a su cargo. Actualice la bandeja para ver el estado actual.",
+  radicado_not_found: "No se encontró el radicado, o está por encima de su nivel de acceso.",
+  status_managed_by_workflow:
+    "El estado del radicado lo mueve el flujo de trámite y no se edita a mano. Use «Marcar en trámite» o «Finalizar trámite».",
+};
+
+/**
  * Mensaje legible de un cuerpo de respuesta. **Nunca devuelve un objeto**: ese
  * es justo el fallo que motivó este módulo — un `[object Object]` en un aviso
  * de error deja a la persona sin saber qué pasó ni cómo arreglarlo.
@@ -114,6 +133,8 @@ export function codigoError(data) {
 export function mensajeError(data, porDefecto) {
   if (typeof data === "string" && data.trim()) return data;
   if (data && typeof data === "object") {
+    const delActo = MENSAJES_ACTO_TRAMITE[codigoError(data) ?? ""];
+    if (delActo) return delActo;
     if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
     const validacion = mensajeDeValidacion(data.detail);
     if (validacion) return validacion;

@@ -91,6 +91,15 @@ def _get_secondary_minio() -> Minio:
     return _secondary_minio
 
 
+def replica_target(primary_minio: Minio, tenant_slug: str) -> tuple[Minio, str]:
+    """Cliente y bucket donde vive (o viviría) la réplica del AIP del tenant:
+    el endpoint secundario si está configurado, el primario con bucket propio
+    si no. Mismo criterio que :func:`replicate_aip`; lo usa el acto de legal
+    hold para alcanzar TAMBIÉN la copia (AREA-08-07)."""
+    client = _get_secondary_minio() if settings.minio_secondary_endpoint else primary_minio
+    return client, replica_bucket_name(tenant_slug)
+
+
 @dataclass(slots=True)
 class ReplicaResult:
     """Resultado de un intento de réplica. `replicate_aip` solo devuelve esto

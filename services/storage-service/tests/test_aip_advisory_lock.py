@@ -38,7 +38,6 @@ import app.services.aip_service as aip_service_module
 from app.services.preservation_worm_service import _worm_lock_key
 from tests.conftest import (
     INTERNAL_HEADERS,
-    TENANT_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -76,7 +75,6 @@ def _base_payload(doc_file_id: uuid.UUID, **overrides) -> dict:
         ],
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
     payload.update(overrides)
     return payload
@@ -176,7 +174,7 @@ async def test_empaquetar_aip_acquires_and_releases_advisory_lock(client_with_co
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert resp.status_code == 201, resp.text
 
@@ -206,7 +204,7 @@ async def test_empaquetar_aip_releases_lock_on_fixity_mismatch(client_with_conn)
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert resp.status_code == 409
 
@@ -293,7 +291,7 @@ async def test_empaquetar_aip_idempotent_shortcircuit_on_identical_content(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     # El router fija `status_code=201` en el decorador (a diferencia de
@@ -350,7 +348,7 @@ async def test_empaquetar_aip_different_content_does_not_shortcircuit(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text

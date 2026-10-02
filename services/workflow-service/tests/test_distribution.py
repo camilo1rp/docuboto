@@ -171,11 +171,35 @@ async def test_auto_distribute_sigue_funcionando_con_dependencia_valida() -> Non
     # 1) get_next_step_number → 1; 2) dependencia_activa(to_dept) → True (dentro
     # de auto_distribute); 3) get_radicado_tracking_number (_create_step) → OK;
     # 4) dependencia_activa(to_dept) (_create_step) → True; 5) get_next_step_number
-    # (_create_step) → 1; 6) audit.append prev_hash → None
-    conn.fetchval.side_effect = [1, 1, TRACKING_NUMBER, 1, 1, None]
+    # (_create_step) → 1; 6) audit.append prev_hash → None.
+    # RN-8: entre 3) y 4) `_create_step` re-comprueba «sin pasos» DENTRO del cerrojo
+    # (otro `get_next_step_number` → 1).
+    conn.fetchval.side_effect = [1, 1, TRACKING_NUMBER, 1, 1, 1, None]
     conn.fetch.return_value = [_rule_row()]
     conn.fetchrow.return_value = make_step_record(action="assign")
 
     dept = await auto_distribute(conn, "demo", _PAYLOAD)
 
     assert dept == "Dirección Jurídica"
+
+
+@pytest.mark.asyncio
+async def test_rn8_la_guarda_autoritativa_va_dentro_del_cerrojo() -> None:
+    """RN-8: la guarda de `auto_distribute` (fuera del cerrojo) la pasan DOS entregas
+    simultáneas del mismo evento; la segunda ya encuentra el radicado repartido al
+    re-comprobar dentro de `_create_step` y NO crea otro paso ni asiento.
+
+    `conn.fetchval`: 1) guarda externa → 1 (aún sin pasos); 2) dependencia_activa;
+    3) tracking (`_create_step`); 4) `get_next_step_number` DENTRO del cerrojo → 2
+    (la otra entrega ya lo repartió)."""
+    conn = _conn()
+    conn.fetchval.side_effect = [1, 1, TRACKING_NUMBER, 2]
+    conn.fetch.return_value = [_rule_row()]
+
+    dept = await auto_distribute(conn, "demo", _PAYLOAD)
+
+    assert dept is None
+    conn.fetchrow.assert_not_awaited()  # ni INSERT del paso ni lectura posterior
+    assert not [
+        c for c in conn.execute.await_args_list if "INSERT INTO public.audit_log" in str(c.args[0])
+    ]

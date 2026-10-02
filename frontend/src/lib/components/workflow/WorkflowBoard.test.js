@@ -21,9 +21,30 @@
  *  - Cada tarjeta ofrece las 4 acciones como botones visibles (no solo un
  *    menú oculto) — ruta de teclado íntegra.
  */
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/svelte";
 import WorkflowBoard from "./WorkflowBoard.svelte";
+import { initSession, clearSession } from "$lib/stores/auth.js";
+
+// ADR-028: las acciones son del POSEEDOR. Sesión por defecto: soy YO y
+// pertenezco a «Jurídica» (el to_dept de los pasos de prueba, sin dueño).
+const YO = "aaaaaaaa-0000-0000-0000-000000000001";
+const OTRO = "bbbbbbbb-0000-0000-0000-000000000002";
+function login() {
+  initSession({
+    sub: "kc-sub",
+    user_id: YO,
+    email: "o@orpyca.com",
+    name: "Op",
+    preferred_username: "op",
+    roles: [],
+    tenant_slug: "icetex",
+    permissions: ["PERM_TRAMITAR"],
+    dependencias: [{ codigo: 7, nombre: "Jurídica", sigla: "JUR" }],
+    context: { user_id: YO, active_depe_id: 7, available_depts: [{ depe_id: 7, is_active: true }] },
+  });
+}
+beforeEach(login);
 
 const STEP_ID = "22222222-2222-2222-2222-222222222222";
 const RAD_ID = "11111111-1111-1111-1111-111111111111";
@@ -68,6 +89,7 @@ function jsonResponse(body, status = 200) {
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
+  clearSession();
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
 });
@@ -243,7 +265,7 @@ describe("WorkflowBoard — todas las acciones son botones visibles (paridad de 
     globalThis.fetch = mockFetchRouter([
       [
         "/bandeja/api/inbox",
-        () => jsonResponse({ items: [step({ status: "in_progress" })], total: 1 }),
+        () => jsonResponse({ items: [step({ status: "pending" })], total: 1 }),
       ],
     ]);
 
@@ -253,7 +275,7 @@ describe("WorkflowBoard — todas las acciones son botones visibles (paridad de 
     const card = screen.getByText("2026-ICETEX-E-000001").closest("article");
     const scoped = within(card);
     expect(scoped.getByRole("button", { name: /trasladar/i })).toBeTruthy();
-    expect(scoped.getByRole("button", { name: /trámite/i })).toBeTruthy();
+    expect(scoped.getByRole("button", { name: /^trámite$/i })).toBeTruthy();
     expect(scoped.getByRole("button", { name: /completar/i })).toBeTruthy();
     expect(scoped.getByRole("button", { name: /revertir/i })).toBeTruthy();
   });
@@ -375,5 +397,67 @@ describe("WorkflowBoard — hint de arrastre solo con puntero fino (revisión UX
     const hint = screen.getByText(/suelte aquí una tarjeta de pendientes para avanzarla/i);
     expect(hint.tagName).toBe("SPAN");
     expect(hint.className).toContain("wf-board__drag-hint");
+  });
+});
+
+describe("WorkflowBoard — tenencia (ADR-028)", () => {
+  const colega = () => step({ assigned_to: OTRO });
+
+  it("paso asignado a un colega de mi dependencia: se ve pero no ofrece ninguna acción de ejecución", async () => {
+    globalThis.fetch = mockFetchRouter([
+      ["/bandeja/api/inbox", () => jsonResponse({ items: [colega()], total: 1 })],
+    ]);
+    render(WorkflowBoard, { props: { source: "inbox", dependencias: [] } });
+    await waitFor(() => expect(screen.getByText("2026-ICETEX-E-000001")).toBeTruthy());
+    for (const n of [/^en trámite$/i, /trasladar/i, /^trámite$/i, /completar/i, /revertir/i]) {
+      expect(screen.queryByRole("button", { name: n })).toBeNull();
+    }
+    expect(screen.getByRole("button", { name: /ver detalle/i })).toBeTruthy();
+  });
+
+  it("paso mío: ofrece Marcar en trámite y las demás acciones", async () => {
+    globalThis.fetch = mockFetchRouter([
+      ["/bandeja/api/inbox", () => jsonResponse({ items: [step({ assigned_to: YO })], total: 1 })],
+    ]);
+    render(WorkflowBoard, { props: { source: "inbox", dependencias: [] } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^en trámite$/i })).toBeTruthy());
+    expect(screen.getByRole("button", { name: /completar/i })).toBeTruthy();
+  });
+
+  it("sin sesión (usuario desconocido): fail-closed, ninguna acción", async () => {
+    clearSession();
+    globalThis.fetch = mockFetchRouter([
+      ["/bandeja/api/inbox", () => jsonResponse({ items: [step()], total: 1 })],
+    ]);
+    render(WorkflowBoard, { props: { source: "inbox", dependencias: [] } });
+    await waitFor(() => expect(screen.getByText("2026-ICETEX-E-000001")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /completar/i })).toBeNull();
+  });
+
+  it("arrastre: la tarjeta de un colega no es arrastrable y soltarla no llama al backend", async () => {
+    const f = mockFetchRouter([
+      ["/bandeja/api/inbox", () => jsonResponse({ items: [colega()], total: 1 })],
+    ]);
+    globalThis.fetch = f;
+    const { container } = render(WorkflowBoard, { props: { source: "inbox", dependencias: [] } });
+    await waitFor(() => expect(screen.getByText("2026-ICETEX-E-000001")).toBeTruthy());
+    const li = /** @type {HTMLElement} */ (container.querySelector("li.wf-card"));
+    expect(li.getAttribute("draggable")).toBe("false");
+    const dt = { setData: vi.fn(), effectAllowed: "" };
+    await fireEvent.dragStart(li, { dataTransfer: dt });
+    const zona = /** @type {HTMLElement} */ (
+      container.querySelector('[aria-labelledby="wf-col-en-tramite"]')
+    );
+    await fireEvent.drop(zona, { dataTransfer: dt });
+    expect(f.mock.calls.some(([u]) => String(u).includes("/transactions"))).toBe(false);
+  });
+
+  it("arrastre: la tarjeta propia sí es arrastrable", async () => {
+    globalThis.fetch = mockFetchRouter([
+      ["/bandeja/api/inbox", () => jsonResponse({ items: [step({ assigned_to: YO })], total: 1 })],
+    ]);
+    const { container } = render(WorkflowBoard, { props: { source: "inbox", dependencias: [] } });
+    await waitFor(() => expect(screen.getByText("2026-ICETEX-E-000001")).toBeTruthy());
+    expect(container.querySelector("li.wf-card")?.getAttribute("draggable")).toBe("true");
   });
 });

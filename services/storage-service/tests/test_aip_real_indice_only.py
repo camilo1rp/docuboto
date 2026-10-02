@@ -31,7 +31,7 @@ import pytest
 
 import app.core.config as config_module
 from tests.conftest import (
-    TENANT_HEADERS,
+    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -68,7 +68,6 @@ def _indice_only_payload(*, indice_file_id: uuid.UUID, **overrides) -> dict:
         "indice_file_id": str(indice_file_id),
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
     payload.update(overrides)
     return payload
@@ -151,7 +150,7 @@ async def test_empaquetar_aip_indice_only_happy_path(client_with_conn) -> None:
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_indice_only_payload(indice_file_id=indice_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -221,7 +220,7 @@ async def test_empaquetar_aip_indice_only_recalculates_fixity_and_blocks_on_mism
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_indice_only_payload(indice_file_id=indice_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 409
@@ -241,7 +240,7 @@ async def test_empaquetar_aip_totally_empty_is_422_never_reaches_minio(client_wi
     payload = _indice_only_payload(indice_file_id=uuid.uuid4())
     del payload["indice_file_id"]
 
-    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=TENANT_HEADERS)
+    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 422
     mock_conn.fetchrow.assert_not_called()

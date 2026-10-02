@@ -28,7 +28,7 @@ from app.repositories.workflow_repository import WorkflowRepository
 from app.schemas.rules import RuleEvaluationRequest
 from app.schemas.workflow import FlowStepCreate
 from app.services.rules_service import WorkflowRulesService
-from app.services.workflow_service import WorkflowService
+from app.services.workflow_service import WorkflowService, YaDistribuidoError
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,8 @@ async def auto_distribute(
     tracking_number = payload["tracking_number"]
 
     repo = WorkflowRepository(conn, tenant_slug)
-    # Idempotencia (RN-8): un radicado ya con pasos no se redistribuye.
+    # Idempotencia (RN-8), guarda barata y FUERA del cerrojo: evita evaluar reglas
+    # de más. La autoritativa es la de `_create_step`, dentro del cerrojo.
     if await repo.get_next_step_number(radicado_id) > 1:
         return None
 
@@ -139,18 +140,25 @@ async def auto_distribute(
             )
         return None
 
-    await WorkflowService(conn, tenant_slug).assign(
-        FlowStepCreate(
-            radicado_id=radicado_id,
-            tracking_number=tracking_number,
-            to_dept=result.assign_to_dept,
-            action="assign",
-            notes=result.assign_notes,
-            doc_type=payload.get("doc_type"),
-            due_at=payload.get("due_date"),
-        ),
-        assigned_by=SYSTEM_USER,
-    )
+    try:
+        await WorkflowService(conn, tenant_slug).assign(
+            FlowStepCreate(
+                radicado_id=radicado_id,
+                tracking_number=tracking_number,
+                to_dept=result.assign_to_dept,
+                action="assign",
+                notes=result.assign_notes,
+                doc_type=payload.get("doc_type"),
+                due_at=payload.get("due_date"),
+            ),
+            assigned_by=SYSTEM_USER,
+            # Actor de sistema: sin clearance ni tenencia que comprobar (ADR-028).
+            sistema=True,
+        )
+    except YaDistribuidoError:
+        # RN-8, comprobado DENTRO del cerrojo del radicado: otra entrega del mismo
+        # evento ya lo repartió entre la guarda de arriba y aquí. Nada que hacer.
+        return None
     logger.info(
         "Radicado %s autoasignado a '%s' por la regla '%s'",
         tracking_number,

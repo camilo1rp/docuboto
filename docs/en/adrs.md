@@ -34,6 +34,7 @@ The full files are in `docs/es/adr/`.
 | [ADR-025](adr/ADR-025-trd-instrumento-convalidado-versionado.md) | The TRD is a convalidated instrument, not a configuration table: append-only versioning and pinning of the version that governs each expediente | Implemented (Increments 1+2) |
 | [ADR-026](adr/ADR-026-tvd-fondo-acumulado.md) | The TVD is the same instrument with different content: a `tipo_instrumento` discriminator on `trd_series`, not its own table (registration and convalidation circuit for an accumulated fonds) | Implemented (Increment 1) |
 | [ADR-027](adr/ADR-027-sustitucion-almacen-objetos-rustfs.md) | MinIO archived its open-source project and pulled its images: the object store moves to **RustFS**, and the engine is chosen by a WORM conformance battery against a real S3 (RustFS 7/7, MinIO 7/7, Garage 0/7), not by a datasheet | Implemented |
+| [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md) | The workflow moves the radicado's status: one pure function written in the same transaction as the step, closing only via an explicit "Finish processing", `closed`/`anulado` terminal (409) and holder-only `marcar_leido`; audit remediation: clearance and holder gates on `assign`/`transfer`, annulment cancels the step, immutable backfill evidence | Implemented |
 
 ## How to propose a new ADR
 

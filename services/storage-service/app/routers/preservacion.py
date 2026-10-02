@@ -31,6 +31,8 @@ from app.schemas.preservacion import (
     EventoCreate,
     EventoResponse,
     ExportZipCreate,
+    LegalHoldRequest,
+    LegalHoldResponse,
     MigracionResponse,
     MigrarFormatoRequest,
     PlanCreate,
@@ -60,6 +62,7 @@ from app.services.preservation_worm_service import (
     PreservationDisabledError,
     PreservationWormService,
     WormObjectNotFoundError,
+    WormSingletonConflictError,
 )
 from app.services.storage_service import StorageService
 
@@ -217,7 +220,7 @@ def _map_empaquetar_aip_error(exc: Exception) -> HTTPException:
         "Empaqueta el AIP real (BagIt + PREMIS v3) de un expediente y lo sube "
         "al bucket WORM (E10 Increment B, RF-PRE-05/07)"
     ),
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+    dependencies=[Depends(require_internal_token)],
 )
 async def empaquetar_aip(
     payload: AipCreate,
@@ -406,6 +409,11 @@ def _map_proteger_indice_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "fixity_mismatch", "detail": str(exc), "status": 409},
         )
+    if isinstance(exc, WormSingletonConflictError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "worm_singleton_conflict", "detail": str(exc), "status": 409},
+        )
     if isinstance(exc, ObjectLockNotEnabledError):
         return HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -422,7 +430,7 @@ def _map_proteger_indice_error(exc: Exception) -> HTTPException:
         "Protege bajo WORM (MinIO Object Lock) el índice electrónico firmado "
         "de un expediente (E10 Increment A, RF-PRE-03)"
     ),
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+    dependencies=[Depends(require_internal_token)],
 )
 async def proteger_indice(
     payload: ProtegerIndiceRequest,
@@ -454,6 +462,7 @@ async def proteger_indice(
         FileNotFoundForPreservationError,
         InvalidRetentionError,
         FixityMismatchError,
+        WormSingletonConflictError,
         ObjectLockNotEnabledError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
@@ -504,6 +513,7 @@ async def proteger_indice_internal(
         FileNotFoundForPreservationError,
         InvalidRetentionError,
         FixityMismatchError,
+        WormSingletonConflictError,
         ObjectLockNotEnabledError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
@@ -519,7 +529,7 @@ async def proteger_indice_internal(
         "Protege bajo WORM (MinIO Object Lock) un artefacto firmado de un "
         "expediente -- índice o acta de transferencia (E10 Inc.2 wiring)"
     ),
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+    dependencies=[Depends(require_internal_token)],
 )
 async def proteger_artefacto(
     payload: ProtegerIndiceRequest,
@@ -540,6 +550,7 @@ async def proteger_artefacto(
         FileNotFoundForPreservationError,
         InvalidRetentionError,
         FixityMismatchError,
+        WormSingletonConflictError,
         ObjectLockNotEnabledError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
@@ -647,11 +658,54 @@ async def proteger_artefacto_internal(
         FileNotFoundForPreservationError,
         InvalidRetentionError,
         FixityMismatchError,
+        WormSingletonConflictError,
         ObjectLockNotEnabledError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return JSONResponse(status_code=http_status, content=response.model_dump(mode="json"))
+
+
+def _map_legal_hold_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, PreservationDisabledError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
+        )
+    if isinstance(exc, WormObjectNotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "worm_object_not_found", "detail": str(exc), "status": 404},
+        )
+    raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
+
+
+@router.post(
+    "/legal-hold-internal",
+    response_model=LegalHoldResponse,
+    summary=(
+        "Fija o levanta el legal hold de los objetos WORM de un expediente "
+        "(acto explícito, con motivo y asiento). Solo SISTEMA (D-02)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def legal_hold_internal(
+    payload: LegalHoldRequest,
+    request: Request,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> LegalHoldResponse:
+    """Único camino para declarar o levantar un legal hold (AREA-08-07): ya no
+    es un campo del body de ninguna ruta de protección. Lo orquesta
+    archive-service (dueño del permiso y del acto administrativo); `motivo` y
+    `acta_ref` quedan en el asiento. Actor: el de la identidad firmada si la
+    trae, `SYSTEM_RECONCILER_ID` si no."""
+    service = PreservationWormService(conn, tenant_slug)
+    actor = _actor(request) or str(SYSTEM_RECONCILER_ID)
+    try:
+        return await service.fijar_legal_hold(payload, actor=actor)
+    except (PreservationDisabledError, WormObjectNotFoundError) as exc:
+        raise _map_legal_hold_error(exc) from exc
 
 
 @router.post(

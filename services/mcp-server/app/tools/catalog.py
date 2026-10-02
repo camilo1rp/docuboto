@@ -838,9 +838,11 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="actualizar_radicado",
         description=(
-            "Corrige campos del radicado: asunto, dependencia destino, observaciones, "
-            "estado y número de folios. El número de radicado es INMUTABLE y no se "
-            "toca por aquí; para el tipo documental está `tipificar_radicado`."
+            "Corrige campos del radicado: asunto, dependencia destino, observaciones "
+            "y número de folios. El número de radicado es INMUTABLE y no se toca por "
+            "aquí; el ESTADO lo mueve el flujo (asignar, marcar leído, "
+            "`finalizar_tramite`) y no se edita; para el tipo documental está "
+            "`tipificar_radicado`."
         ),
         method="PATCH",
         path="/api/v1/documents/{document_id}",
@@ -878,16 +880,10 @@ CATALOG: tuple[Tool, ...] = (
                 description="Observaciones.",
                 label="Observaciones",
             ),
-            Param(
-                name="status",
-                # Los cinco literales del schema MENOS `anulado`: anular es un acto
-                # del circuito de anulación, con causal y aprobador, y el backend
-                # tampoco lo admite por esta vía. Ofrecerlo aquí sugeriría que se
-                # puede anular editando un campo.
-                enum=("registered", "distributed", "in_progress", "closed"),
-                description="Estado del trámite del radicado.",
-                label="Estado",
-            ),
+            # SIN `status` (ADR-028): el estado del radicado lo mueve el flujo
+            # (asignar, marcar leído, finalizar) y el PATCH lo rechaza con 422
+            # `status_managed_by_workflow`. Ofrecerlo aquí sería ofrecer un acto
+            # que el backend ya no admite; para cerrar está `finalizar_tramite`.
             Param(
                 name="pages",
                 type="integer",
@@ -1390,6 +1386,58 @@ CATALOG: tuple[Tool, ...] = (
                 label="Paso de trámite",
             ),
             Param(name="notes", description="Notas de cierre del paso.", label="Notas"),
+        ),
+    ),
+    Tool(
+        name="finalizar_tramite",
+        description=(
+            "FINALIZA el trámite: cierra el paso activo y el radicado pasa a `closed`. "
+            "Es el único acto que cierra un radicado y NO se deshace. Solo lo puede "
+            "hacer quien TIENE el radicado en trámite (el poseedor del paso activo)."
+        ),
+        method="POST",
+        path="/api/v1/workflows/{radicado_id}/finalizar",
+        path_params=("radicado_id",),
+        permission="PERM_TRAMITAR",
+        # Acto irreversible: nivel 3 en el backend (`require_permission(
+        # "PERM_TRAMITAR", min_crud=3)`); el catálogo lo espeja para que el gate
+        # del MCP no ofrezca un cierre que el backend va a rechazar con 403.
+        min_crud=3,
+        write=True,
+        destructive=True,
+        # Confirmar «un cierre» no es confirmar ESTE cierre: la frase fija se
+        # teclea de memoria. Se exige reproducir el identificador del radicado,
+        # que solo se conoce mirando la tarjeta (escalera de confirmación).
+        confirmar_con="radicado_id",
+        epic="E05",
+        operacion="Finalizar el trámite de un radicado (irreversible)",
+        fallback=(
+            "Sin permiso de trámite, o sin tener el radicado asignado, el cierre lo "
+            "hace quien lo tiene en trámite; puede pedírsele indicando el radicado."
+        ),
+        params=(
+            _P_RADICADO_ID,
+            Param(
+                name="comentario",
+                required=True,
+                min_length=5,
+                max_length=500,
+                description="Motivo del cierre del trámite (queda en la hoja de ruta).",
+                label="Comentario",
+            ),
+            # `FinalizarRequest.motivo_cierre` (R11): obligatorio y tipificado, y el
+            # esquema del cuerpo es `additionalProperties: false`. Sin declararlo,
+            # toda llamada daba 422 (el modelo no tenía cómo enviarlo).
+            Param(
+                name="motivo_cierre",
+                required=True,
+                enum=("respondido", "nrr", "traslado_competencia", "otro"),
+                description=(
+                    "Por qué se cierra: `respondido` (se contestó), `nrr` (no requiere "
+                    "respuesta), `traslado_competencia` (no es de esta entidad) u `otro`."
+                ),
+                label="Motivo de cierre",
+            ),
         ),
     ),
     Tool(

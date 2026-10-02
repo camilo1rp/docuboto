@@ -136,7 +136,6 @@ def _payload(expediente_id: str, doc_file_id: uuid.UUID) -> AipCreate:
         documentos=[{"document_id": "R-1", "nombre": "oficio.pdf", "file_id": doc_file_id}],
         retencion_anios=5,
         fecha_inicio="2026-01-01",
-        legal_hold=False,
     )
 
 

@@ -10,7 +10,10 @@
 """Endpoints de administración RBAC (E08).
 
 Todos exigen el permiso `USUA_PERM_ADMIN` del llamante, resuelto en la BD del tenant
-por request (ADR-013); ROOT hace bypass. El api-gateway inyecta la identidad validada
+por request (ADR-013); ROOT hace bypass. Las LECTURAS bastan con el nivel 1; toda
+ESCRITURA (usuarios, grupos, membresías, permisos de grupo) exige `min_crud=3`: con
+el gate de router a nivel 1, quien tenía el permiso solo para leer la auditoría
+podía crear usuarios, entrar en grupos y concederse permisos (AREA-01-01). El api-gateway inyecta la identidad validada
 (`X-User-Id`/`X-Tenant-Slug`).
 """
 
@@ -21,6 +24,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 
 from app.core.authz import Caller, get_caller, require_permission
 from app.core.database import get_tenant_conn
+from app.repositories.clearance_repository import MAX_LEVEL, ClearanceRepository
 from app.repositories.rbac_repository import RBACRepository
 from app.schemas.rbac import (
     EffectivePermissions,
@@ -28,6 +32,7 @@ from app.schemas.rbac import (
     GroupPermissionItem,
     GroupPermissionSet,
     GroupResponse,
+    GroupUpdate,
     PermissionResponse,
     UserCreate,
     UserPickItem,
@@ -91,7 +96,12 @@ def _not_found(detail: str) -> HTTPException:
 
 
 # --- usuarios ---------------------------------------------------------------
-@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/users",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
 async def create_user(
     payload: UserCreate,
     request: Request,
@@ -144,7 +154,12 @@ async def user_permissions(
 
 
 # --- grupos -----------------------------------------------------------------
-@router.post("/groups", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/groups",
+    response_model=GroupResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
 async def create_group(
     payload: GroupCreate,
     request: Request,
@@ -162,6 +177,64 @@ async def create_group(
     except asyncpg.UniqueViolationError:
         raise _conflict(f"Ya existe un grupo con el nombre «{payload.name}»")
     return GroupResponse(**dict(row))
+
+
+@router.patch(
+    "/groups/{group_id}",
+    response_model=GroupResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def update_group(
+    group_id: uuid.UUID,
+    payload: GroupUpdate,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> GroupResponse:
+    fields = {k: getattr(payload, k) for k in payload.model_fields_set}
+    if fields.get("name", "x") is None:
+        fields.pop("name")  # el nombre es NOT NULL: `null` equivale a «no tocar»
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "empty_patch", "detail": "Nada que actualizar", "status": 400},
+        )
+    try:
+        row = await RBACService(conn).update_group(
+            group_id=group_id,
+            fields=fields,
+            tenant_slug=request.headers.get("X-Tenant-Slug"),
+            actor=str(caller.user_id),
+        )
+    except asyncpg.UniqueViolationError:
+        raise _conflict("Ya existe un grupo con ese nombre")
+    if row is None:
+        raise _not_found("No existe el grupo")
+    return GroupResponse(**dict(row))
+
+
+@router.delete(
+    "/groups/{group_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def delete_group(
+    group_id: uuid.UUID,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> None:
+    """Elimina un grupo vacío. 409 si tiene miembros o URD (hay que retirarlos
+    antes: borrar el grupo les quitaría permisos y clearance sin que nadie lo decida)."""
+    outcome = await RBACService(conn).delete_group(
+        group_id=group_id,
+        tenant_slug=request.headers.get("X-Tenant-Slug"),
+        actor=str(caller.user_id),
+    )
+    if outcome == "missing":
+        raise _not_found("No existe el grupo")
+    if outcome == "in_use":
+        raise _conflict("El grupo tiene miembros o usuarios con URD: retírelos antes de eliminarlo")
 
 
 @router.get("/groups", response_model=list[GroupResponse])
@@ -187,7 +260,11 @@ async def list_permissions(
 
 
 # --- membresías y permisos de grupo ----------------------------------------
-@router.post("/groups/{group_id}/members/{user_id}", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/groups/{group_id}/members/{user_id}",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
 async def add_member(
     group_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -202,13 +279,23 @@ async def add_member(
             group_id=group_id,
             tenant_slug=request.headers.get("X-Tenant-Slug"),
             actor=str(caller.user_id),
+            caller_is_root=caller.is_root,
+            caller_level=(
+                MAX_LEVEL
+                if caller.is_root
+                else await ClearanceRepository(conn).caller_max_level(caller.user_id)
+            ),
         )
     except asyncpg.ForeignKeyViolationError:
         raise _not_found("No existe el usuario o el grupo")
     return {"status": "ok"}
 
 
-@router.delete("/groups/{group_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/groups/{group_id}/members/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
 async def remove_member(
     group_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -259,7 +346,11 @@ async def list_group_permissions(
     return [GroupPermissionItem(**dict(r)) for r in rows]
 
 
-@router.put("/groups/{group_id}/permissions/{permission_id}", status_code=status.HTTP_200_OK)
+@router.put(
+    "/groups/{group_id}/permissions/{permission_id}",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
 async def set_group_permission(
     group_id: uuid.UUID,
     permission_id: uuid.UUID,

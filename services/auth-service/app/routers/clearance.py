@@ -55,7 +55,7 @@ async def list_security_levels(
 @router.put(
     "/groups/{group_id}/clearance",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def set_group_clearance(
     group_id: uuid.UUID,

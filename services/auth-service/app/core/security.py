@@ -112,8 +112,23 @@ async def validate_token(token: str) -> dict[str, Any]:
         issuer=settings.expected_issuer,  # reject tokens from another realm/IdP
         # Keycloak access tokens may omit 'aud' for bearer-only flows; issuer is
         # verified instead. 'verify_iss' is enabled implicitly by passing issuer.
-        options={"verify_aud": False},
+        options={
+            "verify_aud": False,
+            # Sin `exp`/`iat`/`iss`/`sub` el token no se acepta: PyJWT solo valida
+            # `exp` SI viene, así que un token sin él valdría para siempre.
+            "require": ["exp", "iat", "iss", "sub"],
+        },
     )
+
+    # Un ID token (typ=ID) comparte firma, `iss` y `sub` con el access token y
+    # lleva el mapper `tenant_slug`, pero se filtra más fácil (id_token_hint en la
+    # URL de logout, registros): no es una credencial de API.
+    if payload.get("typ") != "Bearer":
+        raise InvalidTokenError("typ debe ser 'Bearer' (no se aceptan ID/refresh tokens)")
+    # Cualquier otro cliente del realm con el mapper emitiría tokens válidos en
+    # toda la API: solo los clientes declarados (fail-closed si la lista es vacía).
+    if payload.get("azp") not in settings.allowed_azp_set:
+        raise InvalidTokenError("azp no pertenece a un cliente autorizado")
 
     return _extract_claims(payload)
 

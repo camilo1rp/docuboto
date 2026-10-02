@@ -1062,7 +1062,6 @@ class DocumentService:
         "subject",
         "dest_dept",
         "observations",
-        "status",
         "pages",
         "doc_class",
         "metadata",

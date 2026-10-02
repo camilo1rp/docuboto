@@ -45,7 +45,7 @@ from app.schemas.preservacion import AipCreate
 from app.services.aip_service import _resolve_pdfa_profile
 from app.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
 from tests.conftest import (
-    TENANT_HEADERS,
+    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -212,7 +212,6 @@ def _base_payload(*, doc_file_id: uuid.UUID, pdfa_profile: str | None) -> dict:
         "documentos": [{"document_id": "R-1", "nombre": "oficio.pdf", "file_id": str(doc_file_id)}],
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
     if pdfa_profile is not None:
         body["pdfa_profile"] = pdfa_profile
@@ -283,7 +282,7 @@ async def _run_pdfa_e2e(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id, pdfa_profile=pdfa_profile),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert resp.status_code == 201, resp.text
 

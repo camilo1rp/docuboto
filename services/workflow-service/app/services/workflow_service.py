@@ -28,7 +28,11 @@ from app.core.clearance import (
 from app.core.database import tenant_schema
 from app.core.redis_client import get_redis
 from app.models.flow import FlowStep
-from app.repositories.workflow_repository import WorkflowRepository
+from app.repositories.workflow_repository import (
+    CascadeResult,
+    EstadoCambio,
+    WorkflowRepository,
+)
 from app.schemas.workflow import (
     FlowEventResponse,
     FlowHistoryResponse,
@@ -38,6 +42,7 @@ from app.schemas.workflow import (
     TransactionRequest,
     TransactionTypeResponse,
 )
+from app.services.estado_radicado import ESTADOS_TERMINALES
 
 
 class RollbackError(Exception):
@@ -46,6 +51,11 @@ class RollbackError(Exception):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class YaDistribuidoError(Exception):
+    """El reparto de SISTEMA llegó tarde: el radicado ya tiene pasos (RN-8). No es
+    un fallo: el reparto automático es idempotente y lo trata como «nada que hacer»."""
 
 
 class TransactionError(Exception):
@@ -59,6 +69,7 @@ class TransactionError(Exception):
 _STREAM = "orpycamcp.workflow.events"
 _EVT_CREATED = "workflow.step.created"
 _EVT_COMPLETED = "workflow.step.completed"
+_EVT_ESTADO = "workflow.radicado.estado_cambiado"
 
 _SERVICE = "workflow-service"
 
@@ -143,16 +154,104 @@ def _no_active_step_error(radicado_id: uuid.UUID) -> HTTPException:
     )
 
 
+def _radicado_terminal_error() -> HTTPException:
+    """409 de ADR-028: el radicado está `closed`/`anulado` y no admite actos de
+    trámite. Se lanza DENTRO de la transacción del acto, así que lo revierte."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "error": "radicado_terminal",
+            "detail": "El radicado está cerrado o anulado y no admite actos de trámite",
+            "status": 409,
+        },
+    )
+
+
 class WorkflowService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
         self._repo = WorkflowRepository(conn, tenant_slug)
         self._tenant_slug = tenant_slug
+        # Cambios de estado del radicado producidos por el acto en curso; se
+        # emiten como evento SOLO tras el commit (best-effort).
+        self._cambios: list[EstadoCambio] = []
 
-    async def assign(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStepResponse:
-        """Create the first step or re-assign a radicado to a dependencia."""
-        step = await self._create_step(payload, assigned_by)
+    def _iniciar_acto(self) -> None:
+        """Vacía los cambios de estado de un acto anterior. Un acto que revierte
+        (409 terminal, fallo de auditoría) deja aquí cambios que NUNCA se
+        confirmaron; sin esto, el siguiente acto de la MISMA instancia los
+        emitiría como si hubieran ocurrido."""
+        self._cambios = []
+
+    async def _sincronizar(
+        self,
+        radicado_id: uuid.UUID,
+        tracking_number: str,
+        *,
+        finalizar: bool = False,
+    ) -> dict[str, str] | None:
+        """Mueve `radicados.status` según el paso activo (ADR-028).
+
+        Se llama DENTRO de la `conn.transaction()` del acto, DESPUÉS de mutar el
+        paso y ANTES de `audit.append`: si el radicado es terminal se lanza 409 y
+        la transacción entera (paso + evento) revierte. Devuelve el
+        `{"antes","despues"}` para el payload del asiento, o `None` si no cambió.
+        """
+        estado = await self._repo.sincronizar_estado_radicado(radicado_id, finalizar=finalizar)
+        if estado is None:
+            return None
+        antes, despues = estado
+        if antes in ESTADOS_TERMINALES:
+            raise _radicado_terminal_error()
+        if antes == despues:
+            return None
+        self._cambios.append(
+            EstadoCambio(
+                radicado_id=radicado_id,
+                tracking_number=tracking_number,
+                antes=antes,
+                despues=despues,
+                flow_event_id=self._repo.last_flow_event_id,
+            )
+        )
+        return {"antes": antes, "despues": despues}
+
+    async def _emitir_cambios(self, actor: uuid.UUID | None) -> None:
+        """Evento `workflow.radicado.estado_cambiado` por cada cambio, tras el
+        commit. Best-effort: la BD es la fuente de verdad, un fallo de Redis no
+        aborta el acto."""
+        cambios, self._cambios = self._cambios, []
+        for c in cambios:
+            try:
+                await events.emit(
+                    get_redis(),
+                    _STREAM,
+                    _EVT_ESTADO,
+                    tenant_slug=self._tenant_slug,
+                    actor=str(actor) if actor else None,
+                    dedup_key=f"{c.radicado_id}:{c.despues}:{c.flow_event_id}",
+                    payload={
+                        "radicado_id": str(c.radicado_id),
+                        "tracking_number": c.tracking_number,
+                        "antes": c.antes,
+                        "despues": c.despues,
+                    },
+                )
+            except Exception:  # noqa: BLE001 — best-effort tras commit.
+                logger.warning("No se pudo emitir %s", _EVT_ESTADO, exc_info=True)
+
+    async def assign(
+        self, payload: FlowStepCreate, assigned_by: uuid.UUID, *, sistema: bool = False
+    ) -> FlowStepResponse:
+        """Create the first step or re-assign a radicado to a dependencia.
+
+        `sistema=True` SOLO lo pasa el reparto automático al radicar
+        (`distribution.auto_distribute`): el actor de sistema no es un usuario, no
+        tiene clearance ni tenencia que comprobar. Ninguna ruta HTTP puede pasarlo.
+        """
+        step = await self._create_step(payload, assigned_by, sistema=sistema)
         await self._publish(_EVT_CREATED, step)
+        await self._emitir_cambios(assigned_by)
         return _to_response(step)
 
     async def transfer(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStepResponse:
@@ -168,6 +267,7 @@ class WorkflowService:
             )
         step = await self._create_step(payload, assigned_by)
         await self._publish(_EVT_CREATED, step)
+        await self._emitir_cambios(assigned_by)
         return _to_response(step)
 
     async def get_history(
@@ -233,6 +333,7 @@ class WorkflowService:
         """Ejecuta una transacción de trámite (RF-FLU-01): valida el tipo, exige el
         permiso que el tipo declara, aplica el efecto de estado y registra el evento
         append-only."""
+        self._iniciar_acto()
         tt = await self._repo.get_transaction_type(payload.tipo_tx)
         if tt is None:
             raise TransactionError("unknown_transaction")
@@ -260,9 +361,11 @@ class WorkflowService:
         # legítimo.
         required_perm = tt["requires_permission"] or _PERMISO_SUELO
         await self._require_permission(actor, required_perm)
-        latest = await self._repo.get_latest_step(radicado_id)
-        if latest is None:
-            raise TransactionError("no_flow")
+        # Clearance REAL del actor (RF-SEG-08): va al `WHERE` de cada lectura de
+        # paso de abajo. Un radicado por encima de él es «sin flujo» (`no_flow`),
+        # igual que uno inexistente: ninguna transacción (con o sin tenencia)
+        # devuelve el `tracking_number`/`to_dept` de un reservado ajeno.
+        nivel = await self._repo.clearance_para_acto(actor)
         # Auditoría forense (Canal A, cierre de deuda declarada 2026-07-30):
         # object_ref = tracking_number de `latest` (ya resuelto server-side por
         # `_create_step`/`WorkflowRepository._row_to_model` al crear el paso,
@@ -272,6 +375,27 @@ class WorkflowService:
         # mismo patrón que `rollback`/`complete_step`): si la traza falla, la
         # transacción de trámite entera revierte.
         async with self._conn.transaction():
+            # Cerrojo por radicado ANTES de leer el paso: serializa este acto con
+            # cualquier otro que mueva el mismo radicado (ADR-028).
+            await self._repo.lock_radicado(radicado_id)
+            latest = await self._repo.get_latest_step(radicado_id, max_clearance=nivel)
+            if latest is None:
+                raise TransactionError("no_flow")
+            # Tenencia (ADR-028): `requires_holder` cierra el hueco por el que
+            # cualquiera con PERM_TRAMITAR podía marcar como leído un radicado
+            # ajeno. No poseedor => el MISMO 404 `no_active_step` que "no hay
+            # paso activo" (no-oráculo).
+            #
+            # Toda transacción que MUEVE el paso (`target_step_status`) exige
+            # tenencia, lo declare o no su fila del catálogo: el catálogo es
+            # configurable por el tenant, y una fila nueva que cancele o cierre un
+            # paso sin la bandera permitiría a cualquiera con el permiso mover un
+            # trámite ajeno. Además el gate va ANTES de `_sincronizar`: así el 409
+            # `radicado_terminal` no se le revela a quien no posee nada (oráculo).
+            if (
+                tt["requires_holder"] or tt["target_step_status"] is not None
+            ) and not await self._repo.es_poseedor(radicado_id, actor, max_clearance=nivel):
+                raise _no_active_step_error(radicado_id)
             event = await self._repo.apply_transaction(
                 latest=latest,
                 tipo_tx=payload.tipo_tx,
@@ -280,6 +404,12 @@ class WorkflowService:
                 comentario=payload.comentario,
                 detalles=payload.detalles,
             )
+            # Solo las transacciones que mueven el paso (`target_step_status`)
+            # sincronizan el estado; informar/agendar siguen permitidas incluso
+            # sobre un radicado terminal.
+            estado = None
+            if tt["target_step_status"] is not None:
+                estado = await self._sincronizar(radicado_id, latest.tracking_number)
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -293,8 +423,10 @@ class WorkflowService:
                     "comentario": payload.comentario,
                     "target_step_status": tt["target_step_status"],
                     "requires_permission": required_perm,
+                    **({"estado_radicado": estado} if estado else {}),
                 },
             )
+        await self._emitir_cambios(actor)
         return _to_event_response(event)
 
     async def inbox(
@@ -388,9 +520,10 @@ class WorkflowService:
     ) -> FlowStepResponse:
         """Revierte la última asignación (solo si el paso sigue pending) (RF-FLU-08).
 
-        `CLEARANCE_SIN_RESTRICCION`: revertir un trámite es una acción de gestión,
-        ortogonal al clearance de LECTURA (ver docstring de la constante) — no es
-        una lectura expuesta al llamante, es la pre-condición interna de la reversión.
+        Clearance REAL del actor en el `WHERE` de la lectura del paso (RF-SEG-08):
+        tener el paso no basta si el radicado está por encima de su nivel (antes
+        iba con `CLEARANCE_SIN_RESTRICCION`). Paso y tenencia se leen DENTRO de la
+        transacción, tras el cerrojo, y `apply_rollback` repite la condición.
 
         Autorización por TENENCIA (espejo exacto de `devolver`): `rollback` y
         `devolver` son ambas acciones del TENEDOR ACTUAL del paso activo — difieren
@@ -409,19 +542,35 @@ class WorkflowService:
         dónde enviarlo): si `audit.append` falla, la reversión entera revierte —
         no queda un rollback sin motivo auditable.
         """
-        current = await self._repo.get_current(radicado_id, max_clearance=CLEARANCE_SIN_RESTRICCION)
-        if current is None or current.status != "pending":
-            raise RollbackError("no_active_step")
-        if current.assigned_to != actor:
-            # No-oráculo: mismo código que "no hay paso activo" (ver docstring).
-            raise RollbackError("no_active_step")
-        previous = await self._repo.get_previous_step(radicado_id, current.step_number)
-        if previous is None:
-            raise RollbackError("cannot_rollback_initial")
+        self._iniciar_acto()
+        nivel = await self._repo.clearance_para_acto(actor)
         async with self._conn.transaction():
+            await self._repo.lock_radicado(radicado_id)
+            # Lectura del paso Y de la tenencia DENTRO de la transacción y tras el
+            # cerrojo (antes iban fuera: otro acto podía mover el paso entre la
+            # comprobación y la escritura). `apply_rollback` repite la condición.
+            current = await self._repo.get_active_step_for_update(radicado_id, max_clearance=nivel)
+            if (
+                current is None
+                or current.status != "pending"
+                or not await self._repo.es_poseedor(radicado_id, actor, max_clearance=nivel)
+            ):
+                # No-oráculo: mismo código que "no hay paso activo" (ver docstring).
+                raise RollbackError("no_active_step")
+            previous = await self._repo.get_previous_step(radicado_id, current.step_number)
+            if previous is None:
+                raise RollbackError("cannot_rollback_initial")
             reactivated = await self._repo.apply_rollback(
-                current=current, previous=previous, actor=actor, comentario=motivo
+                current=current,
+                previous=previous,
+                actor=actor,
+                comentario=motivo,
+                max_clearance=nivel,
             )
+            if reactivated is None:
+                raise RollbackError("no_active_step")
+            # ADR-028: el paso anterior vuelve a `pending` => `distributed`.
+            estado = await self._sincronizar(radicado_id, current.tracking_number)
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -434,8 +583,10 @@ class WorkflowService:
                     "from_dept": current.to_dept,
                     "to_dept": previous.to_dept,
                     "motivo": motivo,
+                    **({"estado_radicado": estado} if estado else {}),
                 },
             )
+        await self._emitir_cambios(actor)
         return _to_response(reactivated)
 
     async def devolver(
@@ -453,9 +604,10 @@ class WorkflowService:
         asignado actualmente puede devolverlo.  No hay permiso RBAC global para
         esta acción (RF-FLU / Orfeo legacy).
 
-        `CLEARANCE_SIN_RESTRICCION`: la lectura interna del paso activo es
-        pre-condición de la acción, no una lectura expuesta — la autorización real
-        es la verificación de tenencia de abajo (`assigned_to == actor`).
+        Tenencia = `_holder_condition` (la misma de `finalizar`/`complete_step`: asignado
+        al actor, o paso de su dependencia sin dueño) más el clearance REAL del actor
+        en el `WHERE` (RF-SEG-08). Se lee dentro de la transacción tras el cerrojo y
+        `apply_devolucion` la repite.
 
         No-oráculo (M2/RF-SEG-08, mismo criterio que `rollback`): un no-tenedor
         recibe el MISMO 404 `no_active_step` que el caso "sin paso activo" — YA NO
@@ -466,22 +618,34 @@ class WorkflowService:
         para leerlo. Se pierde el mensaje específico "solo el tenedor puede
         devolverlo" — es el precio del no-oráculo.
         """
-        current = await self._repo.get_current(radicado_id, max_clearance=CLEARANCE_SIN_RESTRICCION)
-        if current is None or current.assigned_to != actor:
-            raise _no_active_step_error(radicado_id)
+        self._iniciar_acto()
+        nivel = await self._repo.clearance_para_acto(actor)
         # Auditoría forense (Canal A, cierre de deuda declarada 2026-07-30):
         # mismo criterio que `rollback` — `audit.append` DENTRO de la misma
         # transacción que envuelve `apply_devolucion` (savepoint sobre su tx
         # interna). Si la traza falla, la devolución entera revierte: no queda
         # un cambio de dependencia sin asiento forense.
         async with self._conn.transaction():
+            await self._repo.lock_radicado(radicado_id)
+            # Paso y tenencia tras el cerrojo (sin ventana TOCTOU) y con UNA sola
+            # definición de poseedor (`_holder_condition`); `apply_devolucion` la repite.
+            current = await self._repo.get_active_step_for_update(radicado_id, max_clearance=nivel)
+            if current is None or not await self._repo.es_poseedor(
+                radicado_id, actor, max_clearance=nivel
+            ):
+                raise _no_active_step_error(radicado_id)
             new_step = await self._repo.apply_devolucion(
                 current=current,
                 to_dept=to_dept,
                 causal=causal,
                 comentario=comentario,
                 actor=actor,
+                max_clearance=nivel,
             )
+            if new_step is None:
+                raise _no_active_step_error(radicado_id)
+            # ADR-028: el paso nuevo nace `pending` => `distributed`.
+            estado = await self._sincronizar(radicado_id, current.tracking_number)
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -495,8 +659,10 @@ class WorkflowService:
                     "to_dept": to_dept,
                     "causal": causal,
                     "comentario": comentario,
+                    **({"estado_radicado": estado} if estado else {}),
                 },
             )
+        await self._emitir_cambios(actor)
         return _to_response(new_step)
 
     async def reassign_cascade(
@@ -506,7 +672,7 @@ class WorkflowService:
         from_dept: str | None,
         to_assigned_to: uuid.UUID,
         actor: uuid.UUID | None,
-    ) -> int:
+    ) -> CascadeResult:
         """Reasigna todos los pasos activos del origen al nuevo responsable (RF-FLU-08).
 
         Hallazgo C: `to_assigned_to` no se verificaba — un UUID equivocado aparcaba
@@ -514,6 +680,7 @@ class WorkflowService:
         aparecían en NINGUNA bandeja (denegación de servicio silenciosa del trámite).
         Fail-closed: 422 si el destino no existe, antes de tocar `flow_steps`.
         """
+        self._iniciar_acto()
         if not await self._repo.user_exists(to_assigned_to):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -537,12 +704,29 @@ class WorkflowService:
         # patrón que `rollback`/`devolver`/`execute_transaction`): si la traza
         # falla, ninguna reasignación queda persistida.
         async with self._conn.transaction():
-            reassigned = await self._repo.reassign_cascade(
+            result = await self._repo.reassign_cascade(
                 from_assigned_to=from_assigned_to,
                 from_dept=from_dept,
                 to_assigned_to=to_assigned_to,
                 actor=actor,
             )
+            # ADR-028: un asiento `estado_radicado` por radicado cuyo estado cambió
+            # (la reasignación devuelve el paso a `pending` => `distributed`).
+            for c in result.cambios:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="workflow.estado_radicado",
+                    object_type="radicado",
+                    object_ref=c.tracking_number,
+                    actor=str(actor) if actor else None,
+                    payload={
+                        "antes": c.antes,
+                        "despues": c.despues,
+                        "origen": "reasignacion_cascada",
+                    },
+                )
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -555,10 +739,13 @@ class WorkflowService:
                     "from_assigned_to": str(from_assigned_to) if from_assigned_to else None,
                     "from_dept": from_dept,
                     "to_assigned_to": str(to_assigned_to),
-                    "reassigned": reassigned,
+                    "reassigned": result.reassigned,
+                    "skipped_terminal": result.skipped_terminal,
                 },
             )
-        return reassigned
+        self._cambios = list(result.cambios)
+        await self._emitir_cambios(actor)
+        return result
 
     async def get_current(
         self,
@@ -568,8 +755,8 @@ class WorkflowService:
         canal: str = "system",
     ) -> FlowStepResponse:
         """RF-SEG-08 (no-read-up): resuelve el clearance REAL del llamante (a
-        diferencia de `rollback`/`devolver`, que usan `CLEARANCE_SIN_RESTRICCION`
-        para su pre-condición interna — esta es la lectura HTTP-facing).
+        diferencia del reparto de sistema, que no tiene usuario — esta es la lectura
+        HTTP-facing).
 
         RF-BUS-10: deja traza best-effort de la consulta SOLO tras una lectura
         exitosa (si no hay paso activo, no hay nada que auditar como "consultado").
@@ -638,17 +825,28 @@ class WorkflowService:
         (mismo criterio que `_create_step`): si la traza forense falla, el
         cierre entero revierte — no queda un cierre sin auditar.
         """
+        not_found = HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "step_not_found",
+                "detail": "No existe el paso de flujo indicado",
+                "status": 404,
+            },
+        )
+        self._iniciar_acto()
+        nivel = await self._repo.clearance_para_acto(actor)
+        # ADR-028: el radicado se resuelve ANTES de abrir la transacción para poder
+        # tomar su cerrojo; un paso inexistente da el mismo 404 de siempre.
+        existing = await self._repo.get_by_id(step_id)
+        if existing is None:
+            raise not_found
         async with self._conn.transaction():
-            step = await self._repo.complete_step(step_id, payload.notes, actor)
+            await self._repo.lock_radicado(existing.radicado_id)
+            step = await self._repo.complete_step(step_id, payload.notes, actor, max_clearance=nivel)
             if step is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={
-                        "error": "step_not_found",
-                        "detail": "No existe el paso de flujo indicado",
-                        "status": 404,
-                    },
-                )
+                raise not_found
+            # Completar sin marcar leído deja `distributed`: declarado (ADR-028).
+            estado = await self._sincronizar(step.radicado_id, step.tracking_number)
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -657,9 +855,88 @@ class WorkflowService:
                 object_type="radicado",
                 object_ref=step.tracking_number,
                 actor=str(actor) if actor else None,
-                payload={"step_id": str(step_id), "to_dept": step.to_dept},
+                payload={
+                    "step_id": str(step_id),
+                    "to_dept": step.to_dept,
+                    **({"estado_radicado": estado} if estado else {}),
+                },
             )
         await self._publish(_EVT_COMPLETED, step)
+        await self._emitir_cambios(actor)
+        return _to_response(step)
+
+    async def finalizar(
+        self,
+        radicado_id: uuid.UUID,
+        *,
+        comentario: str,
+        motivo_cierre: str,
+        actor: uuid.UUID,
+    ) -> FlowStepResponse:
+        """«Finalizar trámite» (ADR-028): único acto que cierra un radicado.
+
+        Solo el POSEEDOR del paso activo — o, si no hay paso activo, quien poseía
+        el último paso ya completado (completó el suyo y no repartió: exigir un
+        paso activo obligaba a inventar un reparto ficticio para poder cerrar).
+        Cierra ese paso como `completed` y el radicado pasa a `closed` en la misma
+        transacción, con `flow_events` (`tipo_tx='finalizar'`) y asiento. Un
+        no-poseedor, o un radicado ya terminal, recibe el MISMO 404
+        `no_active_step` (no-oráculo: no se distingue «cerrado» de «no es tuyo»
+        sin clearance).
+
+        `motivo_cierre` (tipificado, obligatorio) y la evidencia del cierre
+        (`tiene_respuesta`, `fuera_de_plazo`, `en_expediente`, paso y evento) van
+        en el evento y en el asiento: quien audite un cierre necesita saber si el
+        trámite se respondió y si se cerró a tiempo sin reconstruirlo.
+        """
+        self._iniciar_acto()
+        nivel = await self._repo.clearance_para_acto(actor)
+        async with self._conn.transaction():
+            await self._repo.lock_radicado(radicado_id)
+            current = await self._repo.get_active_step_for_update(radicado_id, max_clearance=nivel)
+            if current is None:
+                current = await self._repo.ultimo_paso_si_lo_poseia(
+                    radicado_id, actor, max_clearance=nivel
+                )
+                if current is None:
+                    raise _no_active_step_error(radicado_id)
+            elif not await self._repo.es_poseedor(radicado_id, actor, max_clearance=nivel):
+                raise _no_active_step_error(radicado_id)
+            step = await self._repo.apply_finalizar(
+                current=current,
+                actor=actor,
+                comentario=comentario,
+                motivo_cierre=motivo_cierre,
+            )
+            flow_event_id = self._repo.last_flow_event_id
+            estado = await self._sincronizar(
+                radicado_id, current.tracking_number, finalizar=True
+            )
+            contexto = await self._repo.contexto_cierre(radicado_id)
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="workflow.finalizar",
+                object_type="radicado",
+                object_ref=current.tracking_number,
+                actor=str(actor),
+                payload={
+                    "to_dept": current.to_dept,
+                    "comentario": comentario,
+                    "motivo_cierre": motivo_cierre,
+                    "step_id": str(current.id),
+                    "flow_event_id": str(flow_event_id) if flow_event_id else None,
+                    "tiene_respuesta": contexto["tiene_respuesta"],
+                    "en_expediente": contexto["en_expediente"],
+                    "fuera_de_plazo": (
+                        current.due_at < datetime.now(tz=UTC) if current.due_at else None
+                    ),
+                    **({"estado_radicado": estado} if estado else {}),
+                },
+            )
+        await self._publish(_EVT_COMPLETED, step)
+        await self._emitir_cambios(actor)
         return _to_response(step)
 
     # ------------------------------------------------------------------
@@ -848,37 +1125,19 @@ class WorkflowService:
             },
         )
 
-    async def _create_step(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStep:
-        # Bloqueante 3: el tracking_number del CUERPO nunca es de fiar (campo libre
-        # del cliente) — se resuelve SIEMPRE desde `radicados`, que además sirve de
-        # comprobación de existencia del radicado (`flow_steps` no tiene FK). Sin
-        # esto, un `radicado_id` inventado + el `tracking_number` de OTRO radicado
-        # generaban un paso fantasma público (el predicado de clearance no
-        # encuentra la fila) y una entrada forense atribuyendo un movimiento sobre
-        # el radicado de otra persona.
-        tracking_number = await self._repo.get_radicado_tracking_number(payload.radicado_id)
-        if tracking_number is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "radicado_not_found",
-                    "detail": "No existe el radicado indicado",
-                    "status": 404,
-                },
-            )
-        # Agujero de disponibilidad cerrado: `to_dept`/`from_dept` son texto libre
-        # del cliente (VARCHAR(100), sin FK — ver `_own_scope_condition`), y hasta
-        # ahora nadie los comprobaba contra el catálogo `dependencias` antes de
-        # escribir. Un `to_dept` con una errata o inventado no coincide con el
-        # alcance propio de NINGÚN usuario (`_own_scope_condition` correlaciona
-        # por nombre exacto contra `dependencias.nombre`): el paso queda
-        # `pending` en BD pero invisible en toda bandeja — pérdida silenciosa de
-        # un radicado dentro del flujo. Fail-closed ANTES de la transacción: no
-        # se escribe ninguna fila si el destino (o el origen, en `transfer`) no
-        # es una dependencia activa del catálogo.
-        await self._validate_dept_catalog(payload.to_dept, field="to_dept")
-        if payload.from_dept is not None:
-            await self._validate_dept_catalog(payload.from_dept, field="from_dept")
+    async def _create_step(
+        self, payload: FlowStepCreate, assigned_by: uuid.UUID, *, sistema: bool = False
+    ) -> FlowStep:
+        self._iniciar_acto()
+        # Clearance REAL del actor (RF-SEG-08): abrir o mover un paso sobre un
+        # radicado reservado desde un nivel inferior es un write-up, y el 404 que
+        # lo corta debe ser indistinguible de «no existe». Solo el reparto
+        # automático (actor de sistema, sin usuario) va sin restricción.
+        max_clearance = (
+            CLEARANCE_SIN_RESTRICCION
+            if sistema
+            else await self._repo.clearance_para_acto(assigned_by)
+        )
         # El número de paso se resuelve DENTRO de la transacción, más abajo, y no
         # aquí: calcularlo antes deja una ventana en la que dos peticiones
         # simultáneas obtienen el mismo `MAX+1`, cierran el paso activo las dos y
@@ -893,6 +1152,65 @@ class WorkflowService:
             # aperturas de paso de ESTE radicado sin bloquear las de los demás.
             # Es el mismo patrón con el que se serializa la cadena de auditoría.
             await self._repo.lock_radicado(payload.radicado_id)
+            # Bloqueante 3: el tracking_number del CUERPO nunca es de fiar (campo
+            # libre del cliente) — se resuelve SIEMPRE desde `radicados`, que además
+            # comprueba existencia (`flow_steps` no tiene FK) y, EN EL MISMO
+            # `WHERE`, el no-read-up. Va DENTRO de la transacción y tras el cerrojo:
+            # lo que se lee es lo que se escribe, sin ventana entre medias. Sin
+            # esto, un `radicado_id` inventado + el `tracking_number` de OTRO
+            # radicado generaban un paso fantasma público y una entrada forense
+            # atribuyendo un movimiento sobre el radicado de otra persona.
+            tracking_number = await self._repo.get_radicado_tracking_number(
+                payload.radicado_id, max_clearance=max_clearance
+            )
+            if tracking_number is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "radicado_not_found",
+                        "detail": "No existe el radicado indicado",
+                        "status": 404,
+                    },
+                )
+            # Tenencia: con un paso activo, SOLO su poseedor puede repartirlo o
+            # trasladarlo. Sin esto B se autoasignaba cualquier radicado ajeno
+            # (y luego `finalizar` lo cerraba). Mismo 404 neutro que «no hay paso».
+            # Redistribuir el paso de OTRO es la reasignación en cascada
+            # (`USUA_PERM_ADMIN`); no se expone por `assign`/`transfer`. Va ANTES
+            # de `_sincronizar`, así el 409 `radicado_terminal` tampoco se revela.
+            if sistema:
+                # RN-8: la idempotencia del reparto automático se decide AQUÍ, tras
+                # el cerrojo (la guarda de `auto_distribute` va fuera de él y dos
+                # entregas simultáneas del mismo evento la pasaban las dos).
+                if await self._repo.get_next_step_number(payload.radicado_id) > 1:
+                    raise YaDistribuidoError(str(payload.radicado_id))
+            else:
+                tenencia = await self._repo.tenencia(payload.radicado_id, assigned_by)
+                if tenencia.hay_activo:
+                    if not tenencia.poseedor:
+                        raise _no_active_step_error(payload.radicado_id)
+                # Sin paso activo tampoco es de cualquiera: con historial, el
+                # poseedor del último paso; sin ninguno, quien radicó. Mismo 404.
+                elif not await self._repo.puede_repartir_sin_paso_activo(
+                    payload.radicado_id, assigned_by, max_clearance=max_clearance
+                ):
+                    raise _no_active_step_error(payload.radicado_id)
+            # Agujero de disponibilidad cerrado: `to_dept`/`from_dept` son texto libre
+            # del cliente (VARCHAR(100), sin FK — ver `_own_scope_condition`), y hasta
+            # ahora nadie los comprobaba contra el catálogo `dependencias` antes de
+            # escribir. Un `to_dept` con una errata o inventado no coincide con el
+            # alcance propio de NINGÚN usuario (`_own_scope_condition` correlaciona
+            # por nombre exacto contra `dependencias.nombre`): el paso queda
+            # `pending` en BD pero invisible en toda bandeja — pérdida silenciosa de
+            # un radicado dentro del flujo. Fail-closed ANTES de escribir: no
+            # se escribe ninguna fila si el destino (o el origen, en `transfer`) no
+            # es una dependencia activa del catálogo (el 422 revierte la transacción,
+            # que hasta aquí solo ha tomado cerrojos). Va DESPUÉS de resolver el
+            # radicado y la tenencia: un radicado inaccesible da siempre el mismo 404,
+            # sin importar si el cuerpo trae además una dependencia inválida.
+            await self._validate_dept_catalog(payload.to_dept, field="to_dept")
+            if payload.from_dept is not None:
+                await self._validate_dept_catalog(payload.from_dept, field="from_dept")
             step_number = await self._repo.get_next_step_number(payload.radicado_id)
             # Complete whichever step is currently active before opening a new one.
             await self._repo.complete_active_step(payload.radicado_id)
@@ -909,6 +1227,9 @@ class WorkflowService:
                 doc_type=payload.doc_type,
                 due_at=payload.due_at,
             )
+            # ADR-028: el radicado pasa a `distributed` en la MISMA transacción
+            # que el paso (409 y reversión total si es terminal).
+            estado = await self._sincronizar(payload.radicado_id, tracking_number)
             # Auditoría forense transversal (E08 §9, Canal A): además del historial
             # operativo flow_events (Canal B), cada transacción de trámite deja traza
             # legal en public.audit_log. object_ref = tracking_number RESUELTO desde
@@ -921,7 +1242,11 @@ class WorkflowService:
                 object_type="radicado",
                 object_ref=tracking_number,
                 actor=str(assigned_by) if assigned_by else None,
-                payload={"to_dept": payload.to_dept, "from_dept": payload.from_dept},
+                payload={
+                    "to_dept": payload.to_dept,
+                    "from_dept": payload.from_dept,
+                    **({"estado_radicado": estado} if estado else {}),
+                },
             )
         return step
 

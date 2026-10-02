@@ -134,6 +134,11 @@ async def sign_xml(
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
     headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    # El sello institucional de `/sign-xml` es de la ENTIDAD y exige además el
+    # token interno (D-02, AREA-04-07): la identidad firmada atribuye el acto al
+    # humano, el token prueba que la llamada la hace archive-service y no un JWT
+    # de usuario directo. Sin él el sellado caería a `pendiente_firma` en silencio.
+    headers["X-Internal-Token"] = settings.signature_internal_token
     try:
         async with httpx.AsyncClient(
             base_url=settings.signature_service_url, timeout=10.0
@@ -258,6 +263,11 @@ async def sign_xml_outcome(
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
     headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    # El sello institucional de `/sign-xml` es de la ENTIDAD y exige además el
+    # token interno (D-02, AREA-04-07): la identidad firmada atribuye el acto al
+    # humano, el token prueba que la llamada la hace archive-service y no un JWT
+    # de usuario directo. Sin él el sellado caería a `pendiente_firma` en silencio.
+    headers["X-Internal-Token"] = settings.signature_internal_token
     try:
         async with httpx.AsyncClient(
             base_url=settings.signature_service_url, timeout=10.0

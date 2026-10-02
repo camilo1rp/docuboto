@@ -51,7 +51,6 @@ def _payload(**overrides) -> dict:
         ],
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
     payload.update(overrides)
     return payload

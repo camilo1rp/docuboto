@@ -223,6 +223,10 @@ class ImportService:
         # el mismo número → UniqueViolation en el savepoint → se OMITE, sin abortar el
         # lote ni degradar a 500.
         importados: list[str] = []
+        # Estado con el que llegó cada radicado en el paquete: la importación
+        # conserva el `status` de origen (es una restauración, no un acto del
+        # flujo, ADR-028), así que el asiento debe decir con cuál entró cada uno.
+        status_origen: dict[str, str] = {}
         pendientes_antecedente: list[tuple[uuid.UUID, str]] = []
         relaciones = 0
         no_resueltos: list[str] = []
@@ -236,6 +240,9 @@ class ImportService:
                     omit_existentes.append(tracking)  # carrera con otro import
                     continue
                 importados.append(tracking)
+                status_origen[tracking] = (entity.get("metadata_sistema") or {}).get(
+                    "status", "registered"
+                )
                 if entity.get("antecedente"):
                     pendientes_antecedente.append((rid, entity["antecedente"]))
 
@@ -253,7 +260,13 @@ class ImportService:
             # Auditoría DURA (no best-effort) DENTRO de la tx: si el asiento del acto de
             # ingesta masiva falla, TODO el import revierte — nunca datos sin traza.
             await self._audit(
-                import_uuid, actor, importados, omit_existentes, omit_clearance, no_resueltos
+                import_uuid,
+                actor,
+                importados,
+                omit_existentes,
+                omit_clearance,
+                no_resueltos,
+                status_origen,
             )
 
         return {
@@ -340,7 +353,9 @@ class ImportService:
         )
         return rid
 
-    async def _audit(self, import_uuid, actor, importados, omit_ex, omit_cl, no_resueltos) -> None:
+    async def _audit(
+        self, import_uuid, actor, importados, omit_ex, omit_cl, no_resueltos, status_origen
+    ) -> None:
         # DURA (no swallow): un fallo aquí propaga y revierte el import (trazabilidad
         # fail-closed para una ingesta masiva). El payload incluye la LISTA de números
         # importados (procedencia, cadena de custodia — MoReq/inv. 8), no solo conteos.
@@ -354,6 +369,7 @@ class ImportService:
             actor=str(actor) if actor else None,
             payload={
                 "radicados_importados": importados,
+                "status_origen": status_origen,
                 "omitidos_existentes": len(omit_ex),
                 "omitidos_clearance": len(omit_cl),
                 "antecedentes_no_resueltos": no_resueltos,

@@ -75,6 +75,23 @@ def _require_audit_available() -> None:
         )
 
 
+def _forbid_clearance_membership() -> HTTPException:
+    """403 no-write-up: entrar en un grupo cuyo techo de clearance supera el del
+    propio llamante lo subiría de nivel (RF-SEG-08). Sin asiento, mismo criterio
+    que `_forbid_root_grant`."""
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "no_write_up",
+            "detail": (
+                "No puede agregar a ese grupo: su techo de clearance supera el "
+                "clearance efectivo del llamante (no-write-up, RF-SEG-08)."
+            ),
+            "status": 403,
+        },
+    )
+
+
 def _forbid_root_grant() -> HTTPException:
     """403 para cualquier vía que intente conceder ``USUA_PERM_ROOT`` sin que el
     llamante ya sea ROOT (cierre del hallazgo Alto: auto-escalada a ROOT).
@@ -213,6 +230,66 @@ class RBACService:
             )
         return row
 
+    async def update_group(
+        self,
+        *,
+        group_id: uuid.UUID,
+        fields: dict[str, str | None],
+        tenant_slug: str | None,
+        actor: str,
+    ) -> asyncpg.Record | None:
+        _require_audit_available()
+        tenant = _audit_tenant(tenant_slug)
+        async with self._conn.transaction():
+            # El «antes» se lee con la fila bloqueada, en la misma tx (MoReq/ISO
+            # 15489: la traza debe permitir reconstruir el valor anterior).
+            previo = await self._repo.get_group_for_update(group_id)
+            if previo is None:
+                return None
+            row = await self._repo.update_group(group_id, fields=fields)
+            if row is None:
+                return None
+            await _audit.append(
+                self._conn,
+                tenant_slug=tenant,
+                service=_SERVICE,
+                action="rbac.grupo_actualizado",
+                object_type="grupo",
+                object_ref=str(group_id),
+                actor=actor,
+                payload={
+                    "campos": sorted(fields),
+                    "antes": {k: previo[k] for k in sorted(fields)},
+                    "despues": {k: row[k] for k in sorted(fields)},
+                },
+            )
+        return row
+
+    async def delete_group(
+        self,
+        *,
+        group_id: uuid.UUID,
+        tenant_slug: str | None,
+        actor: str,
+    ) -> str:
+        _require_audit_available()
+        tenant = _audit_tenant(tenant_slug)
+        async with self._conn.transaction():
+            previo = await self._repo.get_group_for_update(group_id)
+            outcome = await self._repo.delete_group_if_unused(group_id)
+            if outcome == "deleted" and previo is not None:
+                await _audit.append(
+                    self._conn,
+                    tenant_slug=tenant,
+                    service=_SERVICE,
+                    action="rbac.grupo_eliminado",
+                    object_type="grupo",
+                    object_ref=str(group_id),
+                    actor=actor,
+                    payload={"name": previo["name"], "description": previo["description"]},
+                )
+        return outcome
+
     async def add_member(
         self,
         *,
@@ -220,11 +297,25 @@ class RBACService:
         user_id: uuid.UUID,
         tenant_slug: str | None,
         actor: str,
+        caller_is_root: bool,
+        caller_level: int,
     ) -> None:
+        # No-write-up (RF-SEG-08): un administrador no-ROOT no entra en un grupo
+        # cuyo techo de clearance supera el suyo. El gate vive en el INSERT
+        # (`add_membership_guarded`); aquí solo se traduce `denied` a 403, sin
+        # asiento (regla de negocio de un endpoint al que SÍ tiene acceso, mismo
+        # criterio que `PUT /groups/{g}/clearance`).
         _require_audit_available()
         tenant = _audit_tenant(tenant_slug)
         async with self._conn.transaction():
-            await self._repo.add_membership(user_id=user_id, group_id=group_id)
+            outcome = await self._repo.add_membership_guarded(
+                user_id=user_id,
+                group_id=group_id,
+                caller_is_root=caller_is_root,
+                caller_level=caller_level,
+            )
+            if outcome == "denied":
+                raise _forbid_clearance_membership()
             await _audit.append(
                 self._conn,
                 tenant_slug=tenant,

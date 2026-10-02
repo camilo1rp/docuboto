@@ -20,6 +20,7 @@ from app.schemas.workflow import (
     CascadeReassignRequest,
     CascadeReassignResponse,
     DevolucionRequest,
+    FinalizarRequest,
     FlowEventResponse,
     FlowHistoryResponse,
     FlowStepComplete,
@@ -118,13 +119,15 @@ async def reassign_cascade(
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> CascadeReassignResponse:
     service = WorkflowService(conn, tenant_slug)
-    count = await service.reassign_cascade(
+    result = await service.reassign_cascade(
         from_assigned_to=payload.from_assigned_to,
         from_dept=payload.from_dept,
         to_assigned_to=payload.to_assigned_to,
         actor=actor,
     )
-    return CascadeReassignResponse(reassigned=count)
+    return CascadeReassignResponse(
+        reassigned=result.reassigned, skipped_terminal=result.skipped_terminal
+    )
 
 
 @router.get(
@@ -366,6 +369,30 @@ async def rollback_radicado(
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": exc.code, "detail": "No se puede revertir", "status": 409},
         )
+
+
+@router.post(
+    "/{radicado_id}/finalizar",
+    response_model=FlowStepResponse,
+    summary="Finalizar trámite: cierra el radicado (ADR-028)",
+    # Es el acto IRREVERSIBLE: nivel 3 (no el 1 por defecto, que es el de LEER).
+    # ADEMÁS exige ser poseedor del paso activo (se comprueba en el servicio, con
+    # 404 neutro). Un nivel de lectura sobre PERM_TRAMITAR no basta para cerrar.
+    dependencies=[Depends(require_permission("PERM_TRAMITAR", min_crud=3))],
+)
+async def finalizar_radicado(
+    radicado_id: uuid.UUID,
+    payload: FinalizarRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID = Depends(_require_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> FlowStepResponse:
+    return await WorkflowService(conn, tenant_slug).finalizar(
+        radicado_id,
+        comentario=payload.comentario,
+        motivo_cierre=payload.motivo_cierre,
+        actor=actor,
+    )
 
 
 @router.get(

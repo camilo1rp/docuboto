@@ -50,6 +50,12 @@ puede alcanzarlo. A diferencia de `get_aip` (que distingue "no hay AIP" de
 lista (vacía si no hay eventos) — no hay 404 legítimo que distinguir; solo
 ``StorageEventosError`` ante un fallo real de infraestructura.
 
+AREA-08-16 / AREA-08-07: `/proteger-indice`, `/proteger-artefacto` y `/aip` de
+storage exigen `X-Internal-Token` (los clientes de este módulo lo envían junto a
+la identidad firmada cuando hay humano) y el gateway no las enruta. `legal_hold`
+YA NO viaja en ningún body: storage lo rechaza con 422; se declara solo por el
+acto interno `POST /preservacion/legal-hold-internal`.
+
 `proteger_indice_worm`/`proteger_indice_worm_internal` (E10 Inc.1, cableado
 WORM del índice) — gemelo ESTRUCTURADO al estilo de
 `signature_client.sign_xml_outcome`/`sign_indice_internal`: dos funciones,
@@ -205,7 +211,6 @@ async def proteger_indice_worm(
     expediente_id: str,
     retencion_anios: int,
     fecha_inicio: date,
-    legal_hold: bool = False,
 ) -> WormProtectionOutcome:
     """Disparo SÍNCRONO (usuario real, `origen="close"`) — ver el docstring
     del módulo para el contrato completo."""
@@ -214,7 +219,6 @@ async def proteger_indice_worm(
         "expediente_id": expediente_id,
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
-        "legal_hold": legal_hold,
     }
     # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
     # cuando la inyecta el gateway: el middleware que la verifica se dispara por
@@ -222,6 +226,10 @@ async def proteger_indice_worm(
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
     headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
+    # la identidad firmada atribuye el acto al humano que cierra, el token prueba
+    # que llama archive-service y no un JWT de usuario directo.
+    headers["X-Internal-Token"] = settings.storage_internal_token
     try:
         async with httpx.AsyncClient(
             base_url=settings.storage_service_url, timeout=15.0
@@ -242,7 +250,6 @@ async def proteger_indice_worm_internal(
     expediente_id: str,
     retencion_anios: int,
     fecha_inicio: date,
-    legal_hold: bool = False,
 ) -> WormProtectionOutcome:
     """Gemelo SISTEMA (D-02, `X-Internal-Token`, `origen="reconciliation"`) —
     ver el docstring del módulo para el contrato completo."""
@@ -251,7 +258,6 @@ async def proteger_indice_worm_internal(
         "expediente_id": expediente_id,
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
-        "legal_hold": legal_hold,
     }
     headers = {
         "X-Tenant-Slug": tenant_slug,
@@ -279,7 +285,6 @@ async def proteger_artefacto_worm(
     tipo: str,
     retencion_anios: int,
     fecha_inicio: date,
-    legal_hold: bool = False,
     # De QUÉ es `expediente_id` (storage, migración 014): el acta de
     # eliminación pertenece a un LOTE. El default conserva el contrato de
     # todos los llamadores anteriores.
@@ -295,7 +300,6 @@ async def proteger_artefacto_worm(
         "tipo": tipo,
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
-        "legal_hold": legal_hold,
         "objeto_tipo": objeto_tipo,
     }
     # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
@@ -304,6 +308,10 @@ async def proteger_artefacto_worm(
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
     headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
+    # la identidad firmada atribuye el acto al humano que cierra, el token prueba
+    # que llama archive-service y no un JWT de usuario directo.
+    headers["X-Internal-Token"] = settings.storage_internal_token
     try:
         async with httpx.AsyncClient(
             base_url=settings.storage_service_url, timeout=15.0
@@ -327,7 +335,6 @@ async def proteger_artefacto_worm_internal(
     tipo: str,
     retencion_anios: int,
     fecha_inicio: date,
-    legal_hold: bool = False,
     # De QUÉ es `expediente_id` (storage, migración 014): el acta de
     # eliminación pertenece a un LOTE. El default conserva el contrato de
     # todos los llamadores anteriores.
@@ -342,7 +349,6 @@ async def proteger_artefacto_worm_internal(
         "tipo": tipo,
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
-        "legal_hold": legal_hold,
         "objeto_tipo": objeto_tipo,
     }
     headers = {
@@ -476,6 +482,62 @@ async def renovar_retencion_worm_internal(
     return _worm_renewal_outcome_from_response(resp, contexto=f"renovacion:{tipo}")
 
 
+class StorageLegalHoldError(Exception):
+    """storage-service no pudo aplicar el legal hold. `status` es el código HTTP
+    que archive debe traducir (404 sin objetos protegidos, 503 preservación
+    apagada o storage inalcanzable/ilegible)."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+async def fijar_legal_hold_internal(
+    *,
+    tenant_slug: str,
+    actor_id: str,
+    expediente_id: str,
+    activo: bool,
+    motivo: str,
+    acta_ref: str,
+) -> dict:
+    """Acto de legal hold (AREA-08-07) contra `POST
+    /preservacion/legal-hold-internal`: token interno (D-02) + identidad
+    FIRMADA del humano que lo decide, para que el asiento de storage lo
+    atribuya a él y no a SISTEMA. Lanza `StorageLegalHoldError`; no es
+    best-effort: un freeze que no se aplicó no puede darse por declarado."""
+    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    headers["X-Internal-Token"] = settings.storage_internal_token
+    body = {
+        "expediente_id": expediente_id,
+        "activo": activo,
+        "motivo": motivo,
+        "acta_ref": acta_ref,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=60.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/legal-hold-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise StorageLegalHoldError(503, f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code == 200:
+        try:
+            data: dict = resp.json()
+            int(data["objetos_afectados"])
+            int(data["objetos_sin_cambio"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+        return data
+    if resp.status_code == 404:
+        raise StorageLegalHoldError(404, "el expediente no tiene objetos WORM protegidos")
+    if resp.status_code == 503:
+        raise StorageLegalHoldError(503, "la protección WORM está desactivada")
+    raise StorageLegalHoldError(503, f"storage-service respondió {resp.status_code}")
+
+
 @dataclass(slots=True)
 class AipPackagingOutcome:
     """Resultado ESTRUCTURADO de un intento de empaquetado del AIP (E10 debt,
@@ -519,14 +581,14 @@ async def empaquetar_aip_internal(
     indice_file_id: uuid.UUID | None,
     retencion_anios: int,
     fecha_inicio: date,
-    legal_hold: bool = False,
     pdfa_profile: str | None = None,
 ) -> AipPackagingOutcome:
     """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST /preservacion/aip`
     — único llamador: `AipWiringService` (reconciliación-only, actúa con
-    `SYSTEM_RECONCILER_ID`, sin `X-User-Id` real — la ruta pública exige
-    `require_permission(min_crud=3)`, que SIEMPRE rechazaría con 403 un actor
-    sin fila en `auth_users`, mismo motivo que `proteger_indice_worm_internal`).
+    `SYSTEM_RECONCILER_ID`, sin `X-User-Id` real — la ruta base `POST /aip`
+    también exige `X-Internal-Token` desde AREA-08-16, pero atribuye el acto al
+    `X-User-Id` firmado; la gemela `-internal` fija el actor de sistema, mismo
+    motivo que `proteger_indice_worm_internal`).
 
     Timeout deliberadamente MAYOR (120s) que el resto de este cliente: a
     diferencia de `proteger_indice_worm[_internal]` (sube un XML ya en
@@ -550,7 +612,6 @@ async def empaquetar_aip_internal(
         "documentos": documentos,
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
-        "legal_hold": legal_hold,
     }
     if indice_file_id is not None:
         body["indice_file_id"] = str(indice_file_id)

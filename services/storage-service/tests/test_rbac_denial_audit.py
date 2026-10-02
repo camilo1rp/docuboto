@@ -22,19 +22,16 @@ mismo `clearance.py` compartido) aplica igual a ambos:
 
 from __future__ import annotations
 
-import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from tests.conftest import TENANT_HEADERS
 
-_PAYLOAD = {
-    "file_id": str(uuid.uuid4()),
-    "expediente_id": "EXP-1",
-    "retencion_anios": 5,
-    "fecha_inicio": "2026-01-01",
-}
+# `/proteger-indice` pasó a X-Internal-Token (AREA-08-16); `/eventos` (POST)
+# conserva el gate RBAC `USUA_PERM_EXPEDIENTE` min_crud=3 que estos tests miden.
+_RUTA = "/api/v1/preservacion/eventos"
+_PAYLOAD = {"object_ref": "EXP-1", "tipo": "INGESTA"}
 
 
 def _audit_insert_calls(mock_conn: AsyncMock) -> list:
@@ -51,7 +48,7 @@ async def test_denial_of_identified_user_is_audited(client_with_conn) -> None:
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
     response = await client.post(
-        "/api/v1/preservacion/proteger-indice", json=_PAYLOAD, headers=TENANT_HEADERS
+        _RUTA, json=_PAYLOAD, headers=TENANT_HEADERS
     )
 
     assert response.status_code == 403
@@ -75,7 +72,7 @@ async def test_denial_without_identity_is_not_audited(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True  # aunque "hubiera" permiso, sin identidad no aplica
 
     response = await client.post(
-        "/api/v1/preservacion/proteger-indice",
+        _RUTA,
         json=_PAYLOAD,
         headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]},
     )
@@ -96,7 +93,7 @@ async def test_denial_survives_audit_failure(client_with_conn) -> None:
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.post(
-            "/api/v1/preservacion/proteger-indice", json=_PAYLOAD, headers=TENANT_HEADERS
+            _RUTA, json=_PAYLOAD, headers=TENANT_HEADERS
         )
 
     assert response.status_code == 403

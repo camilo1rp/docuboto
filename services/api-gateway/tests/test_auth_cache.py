@@ -17,17 +17,20 @@ tomando un advisory lock por tenant: una fila por request en un registro con
 valor probatorio.
 """
 
+import hashlib
+import hmac as _hmac
+import json
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-from app.middleware.auth import _ttl_validacion, _validation_key
-from tests.conftest import make_validate_response, wire_upstream
+from app.middleware.auth import _mac_cache, _ttl_validacion, _validation_key
+from tests.conftest import AUTH_CACHE_MAC_SECRET_TEST, make_validate_response, wire_upstream
 
 pytestmark = pytest.mark.asyncio
 
-_AUTH = {"Authorization": "Bearer tok-123", "X-Tenant-Slug": "icetex"}
+_AUTH = {"Authorization": "Bearer tok-123"}
 
 
 class _RedisFalso:
@@ -162,6 +165,132 @@ def test_el_ttl_no_excede_el_maximo_configurado() -> None:
     assert _ttl_validacion({"expires_in": 3600}, 15) == 15
 
 
-@pytest.mark.parametrize("payload", [{}, {"expires_in": None}, {"expires_in": 0}, {"expires_in": -5}])
-def test_sin_expires_in_utilizable_se_usa_el_maximo(payload: dict) -> None:
-    assert _ttl_validacion(payload, 15) == 15
+@pytest.mark.parametrize("payload", [{}, {"expires_in": None}, {"expires_in": 0}, {"expires_in": -5}, {"expires_in": True}])
+def test_sin_expires_in_utilizable_no_se_cachea(payload: dict) -> None:
+    """TTL 0 = no cachear: el máximo ya no es el sustituto de un `exp` ausente."""
+    assert _ttl_validacion(payload, 15) == 0
+
+
+async def test_el_ttl_cableado_usa_la_respuesta_real_de_validate(test_client) -> None:
+    """AREA-02-12: auth-service responde con la forma REAL (`expires_in` incluido)
+    y lo que llega a Redis es `ex <= expires_in`, no el máximo de 15."""
+    client, http_client, _ = test_client
+    app = client._transport.app  # type: ignore[attr-defined]
+    redis = _RedisFalso()
+    app.state.redis = redis
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True, expires_in=3))
+    wire_upstream(http_client, httpx.Response(200, json={"ok": True}))
+
+    await client.get("/api/v1/documents/", headers=_AUTH)
+
+    assert redis.ttls[_validation_key("Bearer tok-123")] <= 3
+
+
+async def test_sin_expires_in_no_se_cachea(test_client) -> None:
+    client, http_client, _ = test_client
+    app = client._transport.app  # type: ignore[attr-defined]
+    redis = _RedisFalso()
+    app.state.redis = redis
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True, expires_in=None))
+    wire_upstream(http_client, httpx.Response(200, json={"ok": True}))
+
+    await client.get("/api/v1/documents/", headers=_AUTH)
+
+    assert redis.datos == {}
+
+
+# ---------------------------------------------------------------------------
+# Integridad de la entrada (AREA-02-02)
+# ---------------------------------------------------------------------------
+
+_KEY_FORJADO = _validation_key("Bearer forjado")
+_FORJADA = {"valid": True, "tenant_slug": "otra", "user_id": "X", "username": "x", "roles": ["admin"]}
+
+
+def _con_mac(clave: str, payload: dict, secreto: str = AUTH_CACHE_MAC_SECRET_TEST) -> str:
+    cuerpo = json.dumps(payload)
+    return f"{_mac_cache(clave, cuerpo, secreto)}.{cuerpo}"
+
+
+async def test_una_entrada_sin_mac_se_descarta_y_se_consulta_a_auth(test_client) -> None:
+    """(a) Quien solo tiene la contraseña de Redis no forja identidades."""
+    client, http_client, _ = test_client
+    app = client._transport.app  # type: ignore[attr-defined]
+    redis = _RedisFalso()
+    redis.datos[_KEY_FORJADO] = json.dumps(_FORJADA)
+    app.state.redis = redis
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=False))
+
+    r = await client.get("/api/v1/documents/", headers={"Authorization": "Bearer forjado"})
+
+    assert r.status_code == 401
+    assert http_client.get.await_count == 1
+
+
+async def test_una_entrada_movida_a_otro_token_no_se_hereda(test_client) -> None:
+    """(b) El MAC va ligado a la clave: la entrada válida de A no sirve a B."""
+    client, http_client, _ = test_client
+    app = client._transport.app  # type: ignore[attr-defined]
+    redis = _RedisFalso()
+    redis.datos[_KEY_FORJADO] = _con_mac(_validation_key("Bearer token-A"), _FORJADA)
+    app.state.redis = redis
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=False))
+
+    r = await client.get("/api/v1/documents/", headers={"Authorization": "Bearer forjado"})
+
+    assert r.status_code == 401
+    assert http_client.get.await_count == 1
+
+
+async def test_una_entrada_del_propio_gateway_se_reutiliza(test_client) -> None:
+    """(c) Control positivo: lo que el gateway escribió se sirve sin llamar a auth."""
+    client, http_client, _ = test_client
+    app = client._transport.app  # type: ignore[attr-defined]
+    redis = _RedisFalso()
+    redis.datos[_KEY_FORJADO] = _con_mac(_KEY_FORJADO, _FORJADA)
+    app.state.redis = redis
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=False))
+    wire_upstream(http_client, httpx.Response(200, json={"ok": True}))
+
+    r = await client.get("/api/v1/documents/", headers={"Authorization": "Bearer forjado"})
+
+    assert r.status_code == 200
+    assert http_client.get.await_count == 0
+
+
+async def test_una_entrada_con_mac_valido_pero_valid_false_da_401(test_client) -> None:
+    """(d) Coherente con el camino sin caché: `valid` se recomprueba."""
+    client, http_client, _ = test_client
+    app = client._transport.app  # type: ignore[attr-defined]
+    redis = _RedisFalso()
+    redis.datos[_KEY_FORJADO] = _con_mac(_KEY_FORJADO, {**_FORJADA, "valid": False})
+    app.state.redis = redis
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=False))
+
+    r = await client.get("/api/v1/documents/", headers={"Authorization": "Bearer forjado"})
+
+    assert r.status_code == 401
+    assert http_client.get.await_count == 1
+
+
+async def test_sin_secreto_mac_la_cache_esta_apagada(test_client) -> None:
+    """Fail-closed: sin `AUTH_CACHE_MAC_SECRET` no se lee ni se escribe la caché."""
+    client, http_client, _ = test_client
+    app = client._transport.app  # type: ignore[attr-defined]
+    redis = _RedisFalso()
+    app.state.redis = redis
+    app.state.auth_cache_mac_secret = ""
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    wire_upstream(http_client, httpx.Response(200, json={"ok": True}))
+
+    await client.get("/api/v1/documents/", headers=_AUTH)
+    await client.get("/api/v1/documents/", headers=_AUTH)
+
+    assert http_client.get.await_count == 2
+    assert redis.datos == {}
+
+
+def test_el_mac_cubre_clave_y_cuerpo() -> None:
+    esperado = _hmac.new(b"s", b"k\x1ecuerpo", hashlib.sha256).hexdigest()
+    assert _mac_cache("k", "cuerpo", "s") == esperado
+    assert _mac_cache("k2", "cuerpo", "s") != esperado

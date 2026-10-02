@@ -78,6 +78,8 @@ class TransactionTypeResponse(BaseModel):
     descripcion: str | None = None
     requires_permission: str | None = None
     target_step_status: str | None = None
+    # ADR-028: el tipo solo lo ejecuta el poseedor del paso activo.
+    requires_holder: bool = False
     activo: bool = True
 
 
@@ -101,6 +103,20 @@ class RollbackRequest(BaseModel):
     motivo: str = Field(..., min_length=5, max_length=500)
 
 
+class FinalizarRequest(BaseModel):
+    """«Finalizar trámite» (ADR-028): cierra el radicado. El comentario es
+    obligatorio —el cierre es irreversible—, mismo rango que el motivo del
+    rollback."""
+
+    comentario: str = Field(..., min_length=5, max_length=500)
+    # Por qué se cierra. Tipificado y OBLIGATORIO: «Finalizar» es el único acto que
+    # cierra y no se deshace, y quien audite el cierre necesita saber en qué
+    # consistió sin leer prosa libre. `nrr` = «no requiere respuesta» (el trámite
+    # no genera respuesta; NO es la transacción `nrr` del catálogo, que no cierra
+    # nada). `traslado_competencia` = se remite a la entidad competente.
+    motivo_cierre: Literal["respondido", "nrr", "traslado_competencia", "otro"]
+
+
 class DevolucionRequest(BaseModel):
     to_dept: str = Field(..., min_length=1, max_length=100)
     causal: str = Field(..., min_length=1, max_length=15)
@@ -121,6 +137,8 @@ class CascadeReassignRequest(BaseModel):
 
 class CascadeReassignResponse(BaseModel):
     reassigned: int
+    # Pasos NO reasignados porque su radicado es terminal (closed/anulado), ADR-028.
+    skipped_terminal: int = 0
 
 
 class PendingListResponse(BaseModel):

@@ -13,8 +13,14 @@
  *
  * A diferencia de `/firmas/api/[id]/sign` (que firma el turno ACTIVO de una
  * cadena ya creada), esta ruta firma un `payload_xml` arbitrario de una sola
- * vez, sin cadena ni segundo factor — el backend la gatea solo con
- * PERM_FIRMA. El firmante se toma del JWT (RF-FIR-11); nunca del body.
+ * vez, sin cadena ni segundo factor — el backend la gatea con PERM_FIRMA.
+ * El firmante se toma del JWT (RF-FIR-11); nunca del body.
+ *
+ * AREA-04-07: el SELLO INSTITUCIONAL (`objeto_tipo` indice /
+ * acta_transferencia / acta_eliminacion) ya NO es alcanzable desde aquí: el
+ * backend exige además `X-Internal-Token`, que solo envía archive-service, y
+ * este proxy responde 401/403 para esos tipos. `objeto_tipo` queda acotado a
+ * ese conjunto más radicado / expediente / borrador (HMAC nativo; 422 fuera).
  *
  * POST { payload_xml, objeto_tipo, objeto_id?, formato?, indice_id?, version? }
  *   → FirmaResponse (201)

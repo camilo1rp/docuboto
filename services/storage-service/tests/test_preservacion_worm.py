@@ -18,7 +18,6 @@ put_object, get_object_lock_config, etc.) y sus argumentos.
 from __future__ import annotations
 
 import hashlib
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -75,7 +74,6 @@ def _base_payload(file_id: uuid.UUID, **overrides) -> dict:
         "expediente_id": "EXP-1",
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
     payload.update(overrides)
     return payload
@@ -101,7 +99,7 @@ async def test_proteger_indice_happy_path(client_with_conn) -> None:
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -181,7 +179,7 @@ async def test_proteger_indice_happy_path_direct_retain_until(client_with_conn) 
         json=_base_payload(
             file_id, retencion_anios=None, fecha_inicio=None, retain_until=direct_until
         ),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -191,39 +189,19 @@ async def test_proteger_indice_happy_path_direct_retain_until(client_with_conn) 
 
 
 @pytest.mark.asyncio
-async def test_proteger_indice_legal_hold_true_reaches_minio_and_audit(client_with_conn) -> None:
-    """`legal_hold=True` se propaga al `put_object` real y queda en el payload de
-    auditoría — es lo único, junto a `retain_until` futuro, que bloquea la purga
-    (ver `test_purge_worm_gate.py::test_purge_blocked_by_legal_hold_even_if_retain_until_past`)."""
+async def test_proteger_indice_legal_hold_en_el_body_es_422(client_with_conn) -> None:
+    """AREA-08-07: `legal_hold` ya no se declara al proteger (no tenía acto
+    inverso y bloqueaba la disposición para siempre). Ni siquiera `false`."""
     client, mock_conn, mock_minio = client_with_conn
-    file_id = uuid.uuid4()
-    record = _file_record(file_id)
-    worm_row = make_worm_row(expediente_id="EXP-1", object_key=record["object_key"], legal_hold=True)
-
-    _grant_permission(mock_conn)
-    mock_conn.fetchrow.side_effect = [
-        None, record, worm_row, {"id": uuid.uuid4()}, {"id": uuid.uuid4()}
-    ]
-    mock_minio.get_object = _minio_get_object(_INDICE_XML)
-
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id, legal_hold=True),
-        headers=TENANT_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["legal_hold"] is True
-    put_call = mock_minio.put_object.await_args
-    assert put_call.kwargs["legal_hold"] is True
-
-    audit_inserts = [
-        c
-        for c in mock_conn.execute.call_args_list
-        if c.args and "INSERT INTO public.audit_log" in c.args[0]
-    ]
-    audit_payload = json.loads(audit_inserts[0].args[8])
-    assert audit_payload["legal_hold"] is True
+    for valor in (True, False):
+        resp = await client.post(
+            "/api/v1/preservacion/proteger-indice",
+            json=_base_payload(uuid.uuid4(), legal_hold=valor),
+            headers=INTERNAL_HEADERS,
+        )
+        assert resp.status_code == 422, resp.text
+    mock_minio.put_object.assert_not_awaited()
+    mock_conn.fetchrow.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -239,7 +217,7 @@ async def test_proteger_indice_rejects_retain_until_beyond_max_years(client_with
         json=_base_payload(
             uuid.uuid4(), retencion_anios=None, fecha_inicio=None, retain_until=too_far
         ),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 400
@@ -266,7 +244,7 @@ async def test_proteger_indice_provisions_bucket_when_absent(client_with_conn) -
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -303,7 +281,7 @@ async def test_proteger_indice_bucket_exists_without_lock_is_rejected(client_wit
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 500
@@ -325,7 +303,7 @@ async def test_proteger_indice_fixity_mismatch_blocks_upload(client_with_conn) -
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 409
@@ -378,7 +356,7 @@ async def test_proteger_indice_canonicalizes_expediente_id_whitespace(client_wit
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id, expediente_id="  EXP   RARO  "),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -401,7 +379,7 @@ async def test_proteger_indice_rejects_blank_expediente_id(client_with_conn) -> 
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(uuid.uuid4(), expediente_id="   "),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 422
@@ -416,7 +394,7 @@ async def test_proteger_indice_file_not_found(client_with_conn) -> None:
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(uuid.uuid4()),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 404
@@ -436,7 +414,7 @@ async def test_proteger_indice_rejects_past_retain_until(client_with_conn) -> No
             fecha_inicio=None,
             retain_until="2020-01-01T00:00:00Z",
         ),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 400
@@ -456,7 +434,7 @@ async def test_proteger_indice_rejects_retention_below_floor(client_with_conn) -
         json=_base_payload(
             uuid.uuid4(), retencion_anios=None, fecha_inicio=None, retain_until=soon
         ),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 400
@@ -485,7 +463,7 @@ async def test_proteger_indice_bucket_name_derived_from_claim_not_body(client_wi
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=payload,
-        headers=TENANT_HEADERS,  # X-Tenant-Slug: demo
+        headers=INTERNAL_HEADERS,  # X-Tenant-Slug: demo
     )
 
     assert resp.status_code == 201, resp.text
@@ -503,7 +481,7 @@ async def test_proteger_indice_disabled_by_feature_flag(client_with_conn, monkey
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(uuid.uuid4()),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 503
@@ -527,7 +505,7 @@ async def test_proteger_indice_second_call_is_idempotent_no_reupload(client_with
     existing = make_worm_row(
         worm_id=existing_worm_id, expediente_id="EXP-1", object_key=f"{existing_file_id}/indice.xml"
     )
-    existing["file_id"] = existing_file_id
+    existing["file_id"] = file_id  # MISMO file_id: reintento legítimo
 
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [existing]  # get_by_expediente_and_tipo: YA existe
@@ -535,7 +513,7 @@ async def test_proteger_indice_second_call_is_idempotent_no_reupload(client_with
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 200, resp.text
@@ -582,7 +560,7 @@ async def test_proteger_indice_second_call_different_expediente_is_not_idempoten
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id, expediente_id="EXP-2"),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -704,7 +682,7 @@ async def test_proteger_indice_acquires_and_releases_advisory_lock(client_with_c
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert resp.status_code == 201, resp.text
 
@@ -735,7 +713,7 @@ async def test_proteger_indice_releases_lock_on_idempotent_shortcircuit(client_w
     resp = await client.post(
         "/api/v1/preservacion/proteger-indice",
         json=_base_payload(file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert resp.status_code == 200, resp.text
     mock_minio.put_object.assert_not_awaited()  # no re-sube

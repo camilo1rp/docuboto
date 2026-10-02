@@ -218,8 +218,8 @@
         {/if}
 
         <svelte:fragment slot="footer">
-          <!-- Al tablero, no a `?status=distributed`: el flujo no lleva el radicado
-               a ese estado, así que ese filtro abría la bandeja vacía. -->
+          <!-- Al tablero, no a `?status=distributed`: el tablero lista los PASOS del
+               flujo (lo que hay que tramitar), que es lo que este módulo cuenta. -->
           <a href="/bandeja" class="module-link">
             Ver toda la bandeja
             <i class="fas fa-arrow-right" aria-hidden="true"></i>

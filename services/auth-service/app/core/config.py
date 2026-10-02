@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     # el issuer público para que la validación del `iss` no rechace tokens válidos.
     keycloak_issuer: str | None = None
 
+    # Clientes del realm (claim `azp`) cuyos tokens se aceptan como credencial de
+    # API, separados por comas. Lista VACÍA = no se acepta ninguno (fail-closed).
+    # Añade aquí cualquier cliente real nuevo del realm (p. ej. un cliente de
+    # servicio para integraciones) o sus tokens darán 401.
+    allowed_azp: str = "orpycamcp-frontend,api-gateway"
+
+    @property
+    def allowed_azp_set(self) -> frozenset[str]:
+        return frozenset(c.strip() for c in self.allowed_azp.split(",") if c.strip())
+
     # JWKS public key cache TTL (seconds)
     jwks_cache_ttl: int = 600
 

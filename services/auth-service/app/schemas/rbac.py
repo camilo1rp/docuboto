@@ -42,6 +42,14 @@ class GroupCreate(BaseModel):
     description: str | None = None
 
 
+class GroupUpdate(BaseModel):
+    """PATCH parcial de un grupo: solo se tocan los campos enviados (enviar
+    `description: null` la borra)."""
+
+    name: str | None = Field(None, min_length=1, max_length=120)
+    description: str | None = None
+
+
 class GroupResponse(BaseModel):
     id: uuid.UUID
     name: str

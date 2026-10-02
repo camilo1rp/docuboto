@@ -26,7 +26,7 @@ import pytest
 
 import app.core.config as config_module
 import app.services.aip_replica_service as aip_replica_module
-from tests.conftest import TENANT_HEADERS, TENANT_SLUG, make_worm_row, minio_get_object
+from tests.conftest import INTERNAL_HEADERS, TENANT_SLUG, make_worm_row, minio_get_object
 
 _DOC_CONTENT = b"contenido real del oficio radicado"
 _DOC_SHA256 = hashlib.sha256(_DOC_CONTENT).hexdigest()
@@ -40,12 +40,13 @@ def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _grant_permission(mock_conn, *, num_copias) -> None:
-    """1.º fetchval = gate require_permission (concedido); 2.º = num_copias
+    """(AREA-08-16: la ruta ya no pasa por `require_permission`, solo por el token
+    interno, así que ya no hay `fetchval` de permiso.) 1.º fetchval = num_copias
     del plan vigente (`PreservacionRepository.current_num_copias`, vía
     ``fetchval`` — deliberadamente NO consume la lista de ``fetchrow``, ver
-    docstring del método); 3.º = `prev_hash` de `audit.append` (cadena de
+    docstring del método); 2.º = `prev_hash` de `audit.append` (cadena de
     hash del audit_log — `None` = sin registro previo, válido)."""
-    mock_conn.fetchval.side_effect = [True, num_copias, None]
+    mock_conn.fetchval.side_effect = [num_copias, None]
 
 
 def _doc_record(file_id: uuid.UUID) -> dict:
@@ -68,7 +69,6 @@ def _base_payload(*, doc_file_id: uuid.UUID) -> dict:
         ],
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
 
 
@@ -162,7 +162,7 @@ async def test_replica_disabled_by_default_no_replica_attempted(client_with_conn
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -202,7 +202,7 @@ async def test_replica_num_copias_uno_no_replica(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -235,7 +235,7 @@ async def test_replica_local_success_provisions_bucket_and_copies(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -303,7 +303,7 @@ async def test_replica_num_copias_mayor_a_dos_registra_deficit_honesto(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -347,7 +347,7 @@ async def test_replica_fallo_es_best_effort_no_fatal(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text  # el AIP primario NO se ve afectado
@@ -402,7 +402,7 @@ async def test_replica_bucket_derivado_del_claim_no_del_body(
     payload["tenant_slug"] = "attacker-tenant"  # campo no declarado -- debe ser ignorado
 
     resp = await client.post(
-        "/api/v1/preservacion/aip", json=payload, headers=TENANT_HEADERS
+        "/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS
     )
 
     assert resp.status_code == 201, resp.text
@@ -437,7 +437,7 @@ async def test_replica_sin_plan_de_preservacion_no_replica(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -495,7 +495,7 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text

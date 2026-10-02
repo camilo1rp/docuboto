@@ -37,7 +37,7 @@ import pytest
 import app.core.config as config_module
 import app.services.aip_service as aip_service_module
 from tests.conftest import (
-    TENANT_HEADERS,
+    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -86,7 +86,6 @@ def _base_payload(*, doc_file_id: uuid.UUID) -> dict:
         "documentos": [{"document_id": "R-1", "nombre": "oficio.pdf", "file_id": str(doc_file_id)}],
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
 
 
@@ -143,7 +142,7 @@ async def _run_empaquetado(client, mock_conn, mock_minio, *, doc_file_id, doc_re
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert resp.status_code == 201, resp.text
     return resp

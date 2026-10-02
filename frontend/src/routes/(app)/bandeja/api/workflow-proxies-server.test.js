@@ -29,6 +29,7 @@ import { POST as transferPost } from "./transfer/+server.js";
 import { PATCH as completePatch } from "./steps/[stepId]/complete/+server.js";
 import { POST as transactionsPost } from "./[id]/transactions/+server.js";
 import { POST as rollbackPost } from "./[id]/rollback/+server.js";
+import { POST as finalizarPost } from "./[id]/finalizar/+server.js";
 import { GET as historyGet } from "./[id]/history/+server.js";
 import { GET as eventsGet } from "./[id]/events/+server.js";
 import { GET as currentGet } from "./[id]/current/+server.js";
@@ -639,6 +640,75 @@ describe("bandeja/api/[id]/current GET", () => {
       const res = await currentGet({ locals: SESSION_LOCALS, params: { id: RAD_ID } });
       expect(res.status).toBe(404);
       expect((await res.json()).error).toBe("no_active_step");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("bandeja/api/[id]/finalizar POST (ADR-028)", () => {
+  const body = (comentario, extra = {}) => ({
+    json: async () => ({ comentario, motivo_cierre: "respondido", ...extra }),
+  });
+
+  it.each([[undefined], [null], [""], ["otra"], ["RESPONDIDO"], [7]])(
+    "motivo_cierre=%j inválido o ausente: 422 sin llamar al gateway",
+    async (motivo) => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = forbidFetch();
+      try {
+        const res = await finalizarPost({
+          locals: SESSION_LOCALS,
+          params: { id: RAD_ID },
+          request: body("Trámite concluido.", { motivo_cierre: motivo }),
+        });
+        expect(res.status).toBe(422);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
+
+  it.each([[undefined], [""], ["   "], ["abcd"], ["x".repeat(501)]])(
+    "comentario=%j inválido: 422 sin llamar al gateway",
+    async (comentario) => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = forbidFetch();
+      try {
+        const res = await finalizarPost({
+          locals: SESSION_LOCALS,
+          params: { id: RAD_ID },
+          request: body(comentario),
+        });
+        expect(res.status).toBe(422);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
+
+  it("reenvía SOLO { comentario, motivo_cierre } (allowlist) a /workflows/{id}/finalizar y propaga 409/404", async () => {
+    const originalFetch = globalThis.fetch;
+    const f = mockFetchOnce({ error: "radicado_terminal", status: 409 }, 409);
+    globalThis.fetch = f;
+    try {
+      const res = await finalizarPost({
+        locals: SESSION_LOCALS,
+        params: { id: RAD_ID },
+        request: body("  Trámite concluido.  ", {
+          status: "closed",
+          motivo_cierre: "traslado_competencia",
+        }),
+      });
+      expect(res.status).toBe(409);
+      const [u, init] = f.mock.calls[0];
+      expect(String(u)).toContain(`/workflows/${RAD_ID}/finalizar`);
+      expect(JSON.parse(init.body)).toEqual({
+        comentario: "Trámite concluido.",
+        motivo_cierre: "traslado_competencia",
+      });
+      expect(init.headers.Authorization).toBe("Bearer tok-abc");
+      expect(init.headers["X-Tenant-Slug"]).toBe("icetex");
     } finally {
       globalThis.fetch = originalFetch;
     }

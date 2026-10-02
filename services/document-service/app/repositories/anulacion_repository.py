@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import asyncpg
@@ -169,11 +170,16 @@ class AnulacionRepository:
         aprobar: bool,
         decidido_por: uuid.UUID | None,
         observacion: str | None,
-    ) -> asyncpg.Record:
-        """Aprueba/rechaza atómicamente; al aprobar marca el radicado como anulado."""
+    ) -> asyncpg.Record | None:
+        """Aprueba/rechaza atómicamente; al aprobar marca el radicado como anulado.
+
+        `None` si la solicitud ya no estaba `solicitada` (la decidió otro entre la
+        lectura y la escritura): el servicio responde 409 `anulacion_ya_decidida`
+        y revierte. Antes un `assert` aquí convertía esa carrera en un 500."""
         estado = "aprobada" if aprobar else "rechazada"
         async with self._conn.transaction():
-            # La decisión se condiciona al estado PENDIENTE, dentro del propio
+            # La decisión se condiciona al estado `solicitada` (pendiente de decidir),
+            # dentro del propio
             # UPDATE. Sin esa condición, dos aprobaciones simultáneas —o una
             # aprobación sobre algo ya rechazado— se aplicaban las dos y la
             # última ganaba, reescribiendo quién decidió y cuándo sobre un acto
@@ -183,15 +189,77 @@ class AnulacionRepository:
             row = await self._conn.fetchrow(
                 f"UPDATE radicado_anulacion SET estado=$2, decidido_por=$3, "
                 f"decidido_at=now(), observacion=$4 "
-                f"WHERE id=$1 AND estado = 'pendiente' RETURNING {_COLS}",
+                f"WHERE id=$1 AND estado = 'solicitada' RETURNING {_COLS}",
                 anulacion_id,
                 estado,
                 decidido_por,
                 observacion,
             )
-            if aprobar:
+            # Solo si la decisión OCURRIÓ: sin fila, alguien la resolvió antes y el
+            # servicio corta con 409 (y revierte); no hay que tocar el radicado.
+            if aprobar and row is not None:
                 await self._conn.execute(
                     "UPDATE radicados SET status='anulado' WHERE id=$1", radicado_id
                 )
-        assert row is not None
+                await self._cancelar_pasos_activos(
+                    radicado_id, anulacion_id=anulacion_id, decidido_por=decidido_por
+                )
         return row
+
+    async def _cancelar_pasos_activos(
+        self,
+        radicado_id: uuid.UUID,
+        *,
+        anulacion_id: uuid.UUID,
+        decidido_por: uuid.UUID | None,
+    ) -> int:
+        """Cancela el paso de flujo activo del radicado, en la MISMA transacción que
+        lo anula (ADR-028).
+
+        Un radicado `anulado` es terminal para el flujo: sin esto su paso seguía
+        `pending`/`in_progress` —un zombi en la bandeja, en los vencidos y en la
+        cascada— y no se podía cerrar (todo acto sobre un terminal da 409). Se
+        escribe aquí y no vía evento porque tiene que ser ATÓMICO con el cambio de
+        estado: con un consumidor asíncrono habría una ventana en la que el
+        radicado está anulado y su paso sigue vivo, y un evento perdido la dejaría
+        abierta para siempre. `flow_steps`/`flow_events` son del workflow-service
+        pero viven en este mismo schema de tenant (ADR-002/012); la regla de qué
+        estado toma el paso es la misma que la de la transacción `anular` del
+        catálogo (`cancelled`), y el evento operativo (`tipo_tx='anulacion'`) es
+        append-only como todos.
+
+        Orden de cerrojos: la fila del radicado (ya tomada por el UPDATE de arriba)
+        y luego sus pasos — el mismo orden que los actos del workflow-service.
+        Si el tenant aún no tiene las tablas del flujo (se migra aparte) no hay
+        pasos que cancelar: el SAVEPOINT absorbe el error sin abortar la anulación.
+        Devuelve cuántos pasos canceló.
+        """
+        try:
+            async with self._conn.transaction():
+                pasos = await self._conn.fetch(
+                    "UPDATE flow_steps SET status = 'cancelled', completed_at = now() "
+                    "WHERE radicado_id = $1 AND status IN ('pending', 'in_progress') "
+                    "RETURNING id, tracking_number, step_number, to_dept",
+                    radicado_id,
+                )
+                for paso in pasos:
+                    await self._conn.execute(
+                        "INSERT INTO flow_events (radicado_id, tracking_number, tipo_tx, "
+                        "from_dept, to_dept, actor, comentario, detalles) "
+                        "VALUES ($1, $2, 'anulacion', $3, $3, $4, $5, $6::jsonb)",
+                        radicado_id,
+                        paso["tracking_number"],
+                        paso["to_dept"],
+                        decidido_por,
+                        "Paso cancelado por la anulación del radicado",
+                        json.dumps(
+                            {
+                                "step_id": str(paso["id"]),
+                                "step_number": paso["step_number"],
+                                "anulacion_id": str(anulacion_id),
+                            }
+                        ),
+                    )
+        except asyncpg.UndefinedTableError:
+            return 0
+        return len(pasos)

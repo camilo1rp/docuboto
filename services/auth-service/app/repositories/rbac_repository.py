@@ -150,6 +150,48 @@ class RBACRepository:
             description,
         )
 
+    async def update_group(
+        self, group_id: uuid.UUID, *, fields: dict[str, str | None]
+    ) -> asyncpg.Record | None:
+        """UPDATE parcial. Las claves de `fields` son del esquema Pydantic
+        (`name`/`description`), nunca del cliente: no hay identificador libre."""
+        sets = [f"{col} = ${i}" for i, col in enumerate(fields, start=2)]
+        return await self._conn.fetchrow(
+            f"UPDATE auth_groups SET {', '.join(sets)} WHERE id = $1 "
+            "RETURNING id, name, description",
+            group_id,
+            *fields.values(),
+        )
+
+    async def get_group_for_update(self, group_id: uuid.UUID) -> asyncpg.Record | None:
+        """Lee el grupo bloqueando la fila: el «antes» del asiento no puede
+        cambiar entre esta lectura y el UPDATE de la misma transacción."""
+        return await self._conn.fetchrow(
+            "SELECT id, name, description FROM auth_groups WHERE id = $1 FOR UPDATE",
+            group_id,
+        )
+
+    async def delete_group_if_unused(self, group_id: uuid.UUID) -> str:
+        """Borra el grupo SOLO si no tiene miembros ni URD, en UNA sentencia (sin
+        ventana entre comprobar y borrar: `ON DELETE CASCADE` se llevaría por
+        delante una membresía que entrase en medio).
+
+        Devuelve `'deleted'`, `'in_use'` o `'missing'`.
+        """
+        borrado = await self._conn.fetchval(
+            """
+            DELETE FROM auth_groups g
+            WHERE g.id = $1
+              AND NOT EXISTS (SELECT 1 FROM auth_memberships m WHERE m.group_id = g.id)
+              AND NOT EXISTS (SELECT 1 FROM urd_usuaroldep u WHERE u.rol_id = g.id)
+            RETURNING g.id
+            """,
+            group_id,
+        )
+        if borrado is not None:
+            return "deleted"
+        return "in_use" if await self.get_group(group_id) is not None else "missing"
+
     async def list_groups(self) -> list[asyncpg.Record]:
         return await self._conn.fetch("SELECT id, name, description FROM auth_groups ORDER BY name")
 
@@ -183,6 +225,51 @@ class RBACRepository:
             user_id,
             group_id,
         )
+
+    async def add_membership_guarded(
+        self,
+        *,
+        user_id: uuid.UUID,
+        group_id: uuid.UUID,
+        caller_is_root: bool,
+        caller_level: int,
+    ) -> str:
+        """Alta de membresía con el no-write-up de clearance EN el `INSERT`.
+
+        El clearance efectivo es `MAX(role_clearance.max_level)` sobre las
+        membresías, así que entrar en un grupo de techo mayor que el propio sube
+        el clearance de inmediato. El gate va en el `WHERE` de la escritura (no en
+        una comprobación previa): un grupo sin `role_clearance` cuenta como 1.
+
+        Devuelve `'added'`, `'exists'` (ya era miembro) o `'denied'` (no-write-up).
+        """
+        inserted = await self._conn.fetchval(
+            """
+            WITH ins AS (
+                INSERT INTO auth_memberships (user_id, group_id)
+                SELECT $1, $2
+                WHERE $3::bool
+                   OR COALESCE(
+                        (SELECT max_level FROM role_clearance WHERE group_id = $2), 1
+                      ) <= $4
+                ON CONFLICT (user_id, group_id) DO NOTHING
+                RETURNING 1
+            )
+            SELECT count(*) FROM ins
+            """,
+            user_id,
+            group_id,
+            caller_is_root,
+            caller_level,
+        )
+        if inserted:
+            return "added"
+        existe = await self._conn.fetchval(
+            "SELECT 1 FROM auth_memberships WHERE user_id = $1 AND group_id = $2",
+            user_id,
+            group_id,
+        )
+        return "exists" if existe else "denied"
 
     async def remove_membership(self, *, user_id: uuid.UUID, group_id: uuid.UUID) -> None:
         await self._conn.execute(

@@ -54,6 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.rate_limit_pqrs_per_ip = settings.rate_limit_pqrs_per_ip
     app.state.rate_limit_cosecha_per_ip = settings.rate_limit_cosecha_per_ip
     app.state.auth_cache_ttl = settings.auth_cache_ttl
+    app.state.auth_cache_mac_secret = settings.auth_cache_mac_secret
 
     try:
         redis_client = await aioredis.from_url(settings.redis_url)

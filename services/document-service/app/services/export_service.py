@@ -60,6 +60,10 @@ class ExportTooLargeError(Exception):
 
 # JSON Schema publicado de la entidad radicado — se incluye EN el paquete para que
 # un tercero (u OrpycaMCP en INT-05) valide cada `radicados/*.json` antes de ingerir.
+# Estados con los que un radicado puede cruzar una frontera de interoperabilidad
+# (export/import). `anulado` NO está: ver el comentario en `RADICADO_SCHEMA`.
+ESTADOS_IMPORTABLES: tuple[str, ...] = ("registered", "distributed", "in_progress", "closed")
+
 RADICADO_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": f"https://orpyca.com/schemas/radicado-{SCHEMA_VERSION}.json",
@@ -80,7 +84,15 @@ RADICADO_SCHEMA: dict[str, Any] = {
         "fecha_radicacion": {"type": "string", "format": "date-time"},
         "fecha_actualizacion": {"type": ["string", "null"], "format": "date-time"},
         "antecedente": {"type": ["string", "null"]},
-        "metadata_sistema": {"type": "object"},
+        # `status`, si viene, es de un conjunto CERRADO que EXCLUYE `anulado`: el
+        # export no incluye anulados (`export_repository`: `status <> 'anulado'`) y
+        # un paquete que lo declare no trae el acto de anulación (causal, aprobador,
+        # asiento) que lo justificaría — importarlo crearía un radicado anulado SIN
+        # anulación, imposible de explicar y de deshacer. Se rechaza al validar.
+        "metadata_sistema": {
+            "type": "object",
+            "properties": {"status": {"enum": list(ESTADOS_IMPORTABLES)}},
+        },
         "metadata_contextual": {"type": "object"},
         "disposicion": {"type": ["object", "null"]},
         "clasificacion": {

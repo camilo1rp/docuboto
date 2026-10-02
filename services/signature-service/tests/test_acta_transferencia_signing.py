@@ -22,7 +22,7 @@ prefijo `acta-transferencia-` y NUNCA se publica `firma.indice.firmado`
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -196,11 +196,18 @@ async def test_sign_xml_other_objeto_tipo_falls_back_to_nativa_retrocompat(
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await client.post(
-        "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<radicado/>", "objeto_tipo": "radicado"},
-        headers=TENANT_HEADERS,
-    )
+    with (
+        patch(
+            "app.routers.signature.CadenaRepository.objeto_visible",
+            new=AsyncMock(return_value=True),
+        ),
+        patch("app.routers.signature.resolve_caller_clearance", new=AsyncMock(return_value=1)),
+    ):
+        resp = await client.post(
+            "/api/v1/signature/sign-xml",
+            json={"payload_xml": "<radicado/>", "objeto_tipo": "radicado", "objeto_id": "R-1"},
+            headers=TENANT_HEADERS,
+        )
     assert resp.status_code == 201
     assert resp.json()["provider"] == "nativa"
     assert uploads == []

@@ -99,6 +99,37 @@ class CadenaRepository:
             # tabla para no perder las que SÍ están.
             return await self._resolver_nivel_por_tabla(objeto_id)
 
+    async def objeto_visible(self, objeto_id: str, max_clearance: int) -> bool:
+        """¿El identificador resuelve a un objeto REAL cuyo nivel no supera el
+        clearance del llamante? (AREA-04-07, ruta cruda ``/sign-xml``.)
+
+        El clearance viaja DENTRO de la consulta (``FILTER``), no en una
+        comprobación posterior: autorización y lectura son un solo acto. Visible
+        solo si hay al menos una coincidencia y NINGUNA excede el clearance (el
+        lado seguro si el id coincide en dos tablas). Fail-closed: tabla ausente
+        en el schema => esa fuente no aporta, y sin coincidencias => ``False``.
+        No consulta ``objeto_tipo`` (lo elige el cliente), igual que
+        :meth:`resolver_nivel_por_objeto`.
+        """
+        total = 0
+        visibles = 0
+        for table, id_cols in CADENA_NIVEL_AUTORITATIVO.values():
+            where = " OR ".join(f"{col} = $1" for col in id_cols)
+            try:
+                row = await self._conn.fetchrow(
+                    "SELECT COUNT(*) AS total, "
+                    "COUNT(*) FILTER (WHERE nivel_seguridad <= $2) AS visibles "
+                    f"FROM {table} WHERE {where}",
+                    objeto_id,
+                    max_clearance,
+                )
+            except asyncpg.UndefinedTableError:
+                continue
+            if row is not None:
+                total += int(row["total"])
+                visibles += int(row["visibles"])
+        return total > 0 and total == visibles
+
     async def objeto_anulado(self, objeto_id: str) -> bool | None:
         """¿El identificador apunta a un radicado ANULADO?
 

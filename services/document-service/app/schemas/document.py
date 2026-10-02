@@ -94,7 +94,12 @@ class DocumentUpdate(BaseModel):
     subject: str | None = Field(default=None, min_length=1, max_length=2000)
     dest_dept: str | None = Field(default=None, max_length=100)
     observations: str | None = None
-    status: Literal["registered", "distributed", "in_progress", "closed"] | None = None
+    # ADR-028: el estado del radicado lo mueve el FLUJO (workflow-service), no el
+    # PATCH. El campo se conserva SOLO para poder rechazarlo con un error
+    # explícito (`status_managed_by_workflow`, ver el router): quitarlo del
+    # schema no basta, Pydantic ignoraría el extra y el cliente creería que
+    # cambió el estado. Nunca llega al repositorio ni al asiento.
+    status: Any = Field(default=None, exclude=True)
     pages: int | None = Field(default=None, ge=0)
     # **Tipificar** un radicado ya creado (E03/E04). Hasta ahora `doc_class` solo
     # se podía fijar AL RADICAR: un documento mal tipificado en ventanilla —o

@@ -85,6 +85,21 @@ Ejemplo: 2024-ICETEX-E-001234
 - Se reinicia en 000001 cada 1 de enero
 - La asignación es **atómica** (transacción con bloqueo en tabla `tracking_sequences`)
 
+#### Estado del radicado: lo mueve el flujo (ADR-028)
+
+`registered → distributed → in_progress → closed`, más `anulado`. **El estado no se edita**: lo escribe el workflow-service en la misma transacción que el paso, igual que en Orfeo, donde repartir es un cambio de estado.
+
+| Acto | Estado resultante |
+|---|---|
+| Radicar (sin reparto) | `registered` |
+| Asignar, trasladar, devolver, revertir, reasignar (el paso queda `pending`) | `distributed` |
+| `marcar_leido` **del poseedor** del paso | `in_progress` |
+| Completar un paso sin marcarlo leído | `distributed` (se conserva; declarado) |
+| **Finalizar trámite** (acto explícito del poseedor, con comentario) | `closed` |
+| Anulación (la escribe document-service) | `anulado` |
+
+`closed` y `anulado` son **terminales**: ningún acto de trámite los mueve (`409 radicado_terminal`). El único cierre es «Finalizar trámite»; completar el último paso no cierra. **Poseedor** = tiene el paso asignado, o el paso es de su dependencia y nadie lo tiene. Las **salidas** e **internos** no tienen reparto fuera: su estado solo se mueve cuando un paso los toca. **La anulación cancela el paso activo** en la misma transacción (un anulado no deja pasos zombi). Asignar o trasladar exige **tenencia** (solo el poseedor del paso activo) y **clearance** sobre el radicado; «Finalizar» exige nivel 3 y un **motivo de cierre** (`respondido`, `nrr`, `traslado_competencia`, `otro`). Completar un paso `in_progress` deja el radicado `in_progress` (declarado); reabrir un cerrado queda fuera por ahora. Ver [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md).
+
 **Reclasificación de seguridad (E08).** El `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) se fija al radicar pero puede **reclasificarse** después vía `PATCH /documents/{id}/security-level` (paridad con el *Cambio Nivel de Seguridad* de Orfeo). Es un cambio del **control de acceso**, no del contenido ni del número: la inmutabilidad del radicado queda intacta. Exige permiso `PERM_RECLASIFICAR`, respeta *no-read-up* (no se puede reclasificar lo que no se puede leer → `404` neutro) y *no-write-up* (no se puede fijar por encima del propio *clearance* → `403`), y **el acto debe motivarse** (motivo obligatorio + fundamento jurídico opcional), registrándose en el `audit_log` inmutable. El cambio se propaga por evento al `signature-service`, que re-sincroniza el nivel de las cadenas de firma del objeto.
 
 ---

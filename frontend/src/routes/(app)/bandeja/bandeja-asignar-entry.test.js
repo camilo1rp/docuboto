@@ -76,6 +76,7 @@ function jsonResponse(body, status = 200) {
 function loginConTramitar() {
   initSession({
     sub: "u-1",
+    user_id: "int-1",
     email: "operador@orpyca.com",
     name: "Operador",
     preferred_username: "operador",
@@ -86,10 +87,11 @@ function loginConTramitar() {
 }
 
 /** Enruta las llamadas que dispara openDrawer() para el radicado DOC. */
-function mockDrawerFetch({ currentStatus }) {
+function mockDrawerFetch({ currentStatus, doc = { ...DOC, registered_by: "int-1" }, steps = [] }) {
   return vi.fn(async (url) => {
     const u = url.toString();
-    if (u === `/bandeja/api/${DOC.id}`) return jsonResponse(DOC);
+    if (u === `/bandeja/api/${DOC.id}`) return jsonResponse(doc);
+    if (u === `/bandeja/api/${DOC.id}/history`) return jsonResponse({ steps });
     if (u.startsWith(`/anulaciones/api/${DOC.id}`)) return jsonResponse({}, 404);
     if (u === `/bandeja/api/${DOC.id}/current`) {
       return currentStatus === 200
@@ -111,6 +113,58 @@ describe("/bandeja — punto de entrada de Asignar (vista Lista, cajón de detal
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /asignar a flujo/i })).toBeTruthy(),
     );
+  });
+
+  it("registered_by nulo (importado/ingesta): NO ofrece 'Asignar a flujo' (R16, fail-closed)", async () => {
+    loginConTramitar();
+    globalThis.fetch = mockDrawerFetch({
+      currentStatus: 404,
+      doc: { ...DOC, registered_by: null },
+    });
+    render(BandejaPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /ver detalle/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 3, name: DOC.tracking_number })).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(`/bandeja/api/${DOC.id}/current`),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("button", { name: /asignar a flujo/i })).toBeNull();
+  });
+
+  it("radicado de OTRA persona sin pasos: NO ofrece 'Asignar a flujo'", async () => {
+    loginConTramitar();
+    globalThis.fetch = mockDrawerFetch({
+      currentStatus: 404,
+      doc: { ...DOC, registered_by: "otro" },
+    });
+    render(BandejaPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /ver detalle/i }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 3, name: DOC.tracking_number })).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(`/bandeja/api/${DOC.id}/history`),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("button", { name: /asignar a flujo/i })).toBeNull();
+  });
+
+  it("con historial: quien radicó pero no poseía el último paso NO ve 'Asignar a flujo'", async () => {
+    loginConTramitar();
+    globalThis.fetch = mockDrawerFetch({
+      currentStatus: 404,
+      steps: [{ step_number: 1, status: "completed", assigned_to: "otro", to_dept: "Jurídica" }],
+    });
+    render(BandejaPage, {
+      props: { data: baseData({ documents: [{ ...DOC, status: "distributed" }] }) },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /ver detalle/i }));
+    await waitFor(() =>
+      expect(globalThis.fetch).toHaveBeenCalledWith(`/bandeja/api/${DOC.id}/history`),
+    );
+    expect(screen.queryByRole("button", { name: /asignar a flujo/i })).toBeNull();
   });
 
   it("con paso activo (200), NO ofrece 'Asignar a flujo' — ya existe Trasladar en el Tablero", async () => {

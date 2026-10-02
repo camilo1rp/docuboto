@@ -86,7 +86,6 @@ def _base_payload(*, doc_file_id: uuid.UUID, indice_file_id: uuid.UUID | None = 
         ],
         "retencion_anios": 5,
         "fecha_inicio": "2026-01-01",
-        "legal_hold": False,
     }
     if indice_file_id is not None:
         payload["indice_file_id"] = str(indice_file_id)
@@ -185,7 +184,7 @@ async def test_empaquetar_aip_happy_path_bag_and_premis(client_with_conn) -> Non
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id, indice_file_id=indice_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -320,7 +319,7 @@ async def test_empaquetar_aip_fixity_mismatch_blocks_upload(client_with_conn) ->
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 409
@@ -342,9 +341,11 @@ async def test_empaquetar_aip_fixity_mismatch_blocks_upload(client_with_conn) ->
 
 
 @pytest.mark.asyncio
-async def test_empaquetar_aip_forbidden_without_permission(client_with_conn) -> None:
+async def test_empaquetar_aip_sin_token_interno_es_401(client_with_conn) -> None:
+    """AREA-08-16: `/aip` ya no se autoriza por RBAC de usuario sino por
+    `X-Internal-Token`; un JWT/identidad de humano sin token no pasa."""
     client, mock_conn, mock_minio = client_with_conn
-    _deny_permission(mock_conn)
+    _grant_permission(mock_conn)
 
     resp = await client.post(
         "/api/v1/preservacion/aip",
@@ -352,7 +353,7 @@ async def test_empaquetar_aip_forbidden_without_permission(client_with_conn) -> 
         headers=TENANT_HEADERS,
     )
 
-    assert resp.status_code == 403
+    assert resp.status_code == 401
     mock_minio.put_object.assert_not_awaited()
 
 
@@ -365,7 +366,7 @@ async def test_empaquetar_aip_file_not_found(client_with_conn) -> None:
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=uuid.uuid4()),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 404
@@ -381,7 +382,7 @@ async def test_empaquetar_aip_disabled_by_feature_flag(client_with_conn, monkeyp
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=uuid.uuid4()),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 503
@@ -403,7 +404,7 @@ async def test_empaquetar_aip_rejects_retention_beyond_max_years(client_with_con
             fecha_inicio=None,
             retain_until=too_far,
         ),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 400
@@ -422,7 +423,7 @@ async def test_empaquetar_aip_requires_at_least_one_documento(client_with_conn) 
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=payload,
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 422
@@ -450,7 +451,7 @@ async def test_empaquetar_aip_rejects_unsafe_nombre(client_with_conn, nombre: st
     payload = _base_payload(doc_file_id=uuid.uuid4())
     payload["documentos"][0]["nombre"] = nombre
 
-    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=TENANT_HEADERS)
+    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 422
     mock_conn.fetchrow.assert_not_called()
@@ -470,7 +471,7 @@ async def test_empaquetar_aip_rejects_duplicate_nombre(client_with_conn) -> None
         {"document_id": "R-2", "nombre": "oficio.pdf", "file_id": str(uuid.uuid4())}
     )
 
-    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=TENANT_HEADERS)
+    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 422
     mock_conn.fetchrow.assert_not_called()
@@ -546,7 +547,7 @@ async def test_empaquetar_aip_without_indice_excludes_indice_tag_file(client_wit
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),  # sin indice_file_id
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -665,7 +666,7 @@ async def test_empaquetar_aip_multiple_documentos_payload_oxum_and_manifest(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=payload,
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 201, resp.text
@@ -715,7 +716,7 @@ async def test_empaquetar_aip_premis_invalid_blocks_upload(
     resp = await client.post(
         "/api/v1/preservacion/aip",
         json=_base_payload(doc_file_id=doc_file_id),
-        headers=TENANT_HEADERS,
+        headers=INTERNAL_HEADERS,
     )
 
     assert resp.status_code == 500

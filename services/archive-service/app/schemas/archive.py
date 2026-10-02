@@ -255,6 +255,31 @@ class PublicacionResponse(BaseModel):
     publicado_at: datetime | None = None
 
 
+class LegalHoldRequest(BaseModel):
+    """Acto de declarar o levantar el legal hold (freeze de litigio) de un
+    expediente (AREA-08-07; Ley 594/2000 art. 4, Ac. AGN 001/2024 4.3.2.6).
+
+    `motivo` y `acta_ref` son obligatorios en AMBOS sentidos: un freeze que
+    bloquea la disposición final sin acto que lo respalde es un bloqueo
+    arbitrario, y levantarlo sin acto es la forma de deshacerlo sin dar
+    cuentas. Quedan en el asiento de archive y en el de storage.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    activo: bool
+    motivo: str = Field(..., min_length=10, max_length=2000)
+    acta_ref: str = Field(..., min_length=1, max_length=255)
+
+
+class LegalHoldResponse(BaseModel):
+    expediente_id: uuid.UUID
+    code: str
+    activo: bool
+    objetos_afectados: int
+    objetos_sin_cambio: int
+
+
 class ExpedienteDisposicionResult(BaseModel):
     """Respuesta de `POST /{id}/close` y `POST /{id}/transfer`.
 

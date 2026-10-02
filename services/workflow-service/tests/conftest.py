@@ -18,15 +18,17 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.core.database import get_db_conn
 from app.main import app
+from app.repositories.workflow_repository import Tenencia
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -133,6 +135,38 @@ def _make_mock_redis() -> MagicMock:
     redis = MagicMock()
     redis.xadd = AsyncMock(return_value="1-0")
     return redis
+
+
+@pytest.fixture(autouse=True)
+def _sin_sincronizacion_de_estado() -> Generator[AsyncMock, None, None]:
+    """ADR-028: por defecto la sincronización del estado del radicado es un no-op.
+
+    Los tests unitarios de este directorio dirigen una conexión MOCK con
+    secuencias de `fetchrow`/`fetchval` pensadas para el acto que prueban; la
+    consulta real de `sincronizar_estado_radicado` (`radicados` + `flow_steps`)
+    las desordenaría sin aportar señal. Su lógica SQL y su atomicidad las prueban
+    los tests de `tests/integration/` contra Postgres real; aquí se prueba el
+    CABLEADO (qué actos la llaman y qué hacen con su respuesta) sobrescribiendo
+    el valor de retorno del mock que este fixture entrega.
+
+    Por la misma razón se neutralizan las tres lecturas que añadió la remediación
+    de auditoría a `assign`/`transfer`/`finalizar` (clearance del actor, tenencia
+    del paso y contexto del cierre): por defecto el actor alcanza todo, no hay
+    paso activo ajeno y el contexto «no consta». Los tests que prueban ESA lógica
+    sobrescriben estos mocks (`app.services.workflow_service.WorkflowRepository.*`).
+    """
+    repo = "app.services.workflow_service.WorkflowRepository"
+    with (
+        patch(f"{repo}.sincronizar_estado_radicado", new=AsyncMock(return_value=None)) as sync,
+        patch(f"{repo}.clearance_para_acto", new=AsyncMock(return_value=3)),
+        patch(f"{repo}.tenencia", new=AsyncMock(return_value=Tenencia(False, False))),
+        patch(f"{repo}.puede_repartir_sin_paso_activo", new=AsyncMock(return_value=True)),
+        patch(
+            f"{repo}.contexto_cierre",
+            new=AsyncMock(return_value={"tiene_respuesta": None, "en_expediente": None}),
+        ),
+    ):
+        yield sync
 
 
 @pytest_asyncio.fixture(scope="function")

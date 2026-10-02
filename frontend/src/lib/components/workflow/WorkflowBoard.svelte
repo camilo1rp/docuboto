@@ -56,7 +56,9 @@
   Props:
     source        'inbox'|'pending'     — endpoint de origen (default 'inbox')
     dependencias  Array<{value,label}>  — catálogo SSR de dependencias activas
-    canTramitar   boolean (default true) — espejo de PERM_TRAMITAR (D-05); gatea
+    canTramitar   boolean (default true) — espejo de PERM_TRAMITAR (D-05); además, cada
+                  acción de ejecución y el arrastre exigen la TENENCIA del paso
+                  (ADR-028, `$lib/utils/tenencia.js`); gatea
                   las acciones de ejecución de cada WorkflowCard, nunca "Ver detalle"
 
   Eventos:
@@ -76,6 +78,12 @@
   import WorkflowCard from "./WorkflowCard.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import { userId, sessionUser } from "$lib/stores/auth.js";
+  import {
+    esPoseedor,
+    puedeMarcarEnTramite,
+    nombresDeDependenciasDelUsuario,
+  } from "$lib/utils/tenencia.js";
 
   /** @type {'inbox'|'pending'} */
   export let source = "inbox";
@@ -84,6 +92,11 @@
   export let canTramitar = true;
 
   const dispatch = createEventDispatcher();
+
+  // ADR-028: tenencia. Los actos que mueven el paso (trasladar, trámite,
+  // completar, revertir, marcar en trámite y el arrastre) son del POSEEDOR; un
+  // colega ve la tarjeta pero no la acciona (el backend da 404).
+  $: misDependencias = nombresDeDependenciasDelUsuario($sessionUser);
 
   const ENDPOINT = { inbox: "/bandeja/api/inbox", pending: "/bandeja/api/pending" };
   // Límite pedido a /inbox|/pending (A4, revisión UX): esta vista NO pagina —
@@ -293,7 +306,10 @@
 
   /** @param {DragEvent} e @param {any} step */
   function onDragStart(e, step) {
-    if (step.status !== "pending") return;
+    if (!canTramitar || !puedeMarcarEnTramite(step, $userId, misDependencias)) {
+      e.preventDefault();
+      return;
+    }
     draggingId = step.id;
     e.dataTransfer?.setData("text/plain", step.id);
     if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
@@ -306,7 +322,9 @@
     e.preventDefault();
     const step = pendientes.find((s) => s.id === draggingId);
     draggingId = "";
-    if (step) marcarEnTramite(step);
+    if (step && canTramitar && puedeMarcarEnTramite(step, $userId, misDependencias)) {
+      marcarEnTramite(step);
+    }
   }
   /** @param {DragEvent} e */
   function allowDrop(e) {
@@ -403,13 +421,16 @@
               <li
                 class="wf-card"
                 class:wf-card--dragging={draggingId === step.id}
-                draggable="true"
+                draggable={canTramitar && puedeMarcarEnTramite(step, $userId, misDependencias)
+                  ? "true"
+                  : "false"}
                 on:dragstart={(e) => onDragStart(e, step)}
                 on:dragend={onDragEnd}
               >
                 <WorkflowCard
                   {step}
                   {canTramitar}
+                  poseedor={esPoseedor(step, $userId, misDependencias)}
                   busy={busyStepId === step.id}
                   boardBusy={!!busyStepId && busyStepId !== step.id}
                   on:verDetalle={() => verDetalle(step)}
@@ -461,6 +482,7 @@
                 <WorkflowCard
                   {step}
                   {canTramitar}
+                  poseedor={esPoseedor(step, $userId, misDependencias)}
                   busy={busyStepId === step.id}
                   boardBusy={!!busyStepId && busyStepId !== step.id}
                   on:verDetalle={() => verDetalle(step)}
@@ -491,6 +513,7 @@
                 <WorkflowCard
                   {step}
                   {canTramitar}
+                  poseedor={esPoseedor(step, $userId, misDependencias)}
                   busy={busyStepId === step.id}
                   boardBusy={!!busyStepId && busyStepId !== step.id}
                   on:verDetalle={() => verDetalle(step)}

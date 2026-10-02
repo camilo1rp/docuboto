@@ -50,6 +50,26 @@ comportamiento correcto —hasta ahora esa puerta admitía documentos en entidad
 habían habilitado la radicación en línea, dejándolos fuera de la bandeja de toda
 dependencia— pero es un cambio visible.
 
+### Cierre de la auditoría del 2 de octubre de 2026 (tanda T1)
+
+El sello institucional de la entidad y el bloqueo de inmutabilidad (WORM) dejaron de ser
+alcanzables con la sesión de un usuario: ahora solo los aplica el servicio de archivo, con
+credencial interna. Antes, cualquier usuario con permiso de firma podía estampar el sello de
+la entidad sobre un documento arbitrario, y uno con permiso de expedientes podía ocupar el
+bloqueo irreversible de un expediente ajeno o fijar una retención por litigio sin acto que
+la levantara. La retención por litigio ahora se declara y se levanta por un acto propio, con
+motivo obligatorio y asiento de auditoría.
+
+### Cierre de la auditoría del 2 de octubre de 2026 (tanda T2)
+
+Administrar usuarios, grupos y permisos ya no se puede hacer con el permiso de solo lectura:
+quien lo recibía únicamente para consultar la auditoría podía crear usuarios y concederse
+permisos. Tampoco se puede entrar en un grupo con más nivel de acceso a documentos reservados
+que el propio. El token de acceso se valida con más rigor (tipo y cliente emisor), la caché de
+validación del gateway quedó sellada e indica cuánto le queda al token, la verificación de la
+cadena de auditoría deja de revelar a un perfil sin habilitación cuántos asientos clasificados
+existen, y quitar el segundo factor a otra persona queda siempre asentado en la misma operación.
+
 ### Qué no cubre este resumen
 
 Por su naturaleza, esta página no detalla los vectores concretos. El informe completo,

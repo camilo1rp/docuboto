@@ -34,9 +34,11 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import uuid
 from datetime import datetime
 
 import asyncpg
+from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
 from miniopy_async.retention import Retention
 from orpycamcp_common import audit
 
@@ -51,17 +53,24 @@ from app.repositories.file_repository import FileRepository
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
 from app.schemas.preservacion import (
+    LegalHoldRequest,
+    LegalHoldResponse,
     ProtegerIndiceRequest,
     ProtegerIndiceResponse,
     RenovarRetencionRequest,
     RenovarRetencionResponse,
 )
+from app.services.aip_replica_service import replica_target
 from app.services.retention_policy import InvalidRetentionError, validate_retain_until
 
 logger = logging.getLogger(__name__)
 
 _SERVICE = "storage-service"
 _BUCKET_PREFIX = "orpycamcp"
+
+# Códigos S3 que significan «esa copia no existe» (la réplica del AIP es
+# best-effort al crearse): se toleran al fijar/levantar un legal hold.
+_REPLICA_AUSENTE = frozenset({"NoSuchKey", "NoSuchBucket", "NoSuchVersion"})
 
 # Reexportado: módulos que ya hacían `from app.services.preservation_worm_service
 # import InvalidRetentionError` (routers/preservacion.py) siguen funcionando sin
@@ -74,6 +83,7 @@ __all__ = [
     "PreservationDisabledError",
     "PreservationWormService",
     "WormObjectNotFoundError",
+    "WormSingletonConflictError",
     "preservation_bucket_name",
 ]
 
@@ -92,6 +102,12 @@ class FixityMismatchError(Exception):
     El objeto NO se sube a WORM en este caso — no tiene sentido fijar
     inmutablemente algo cuya integridad ya está en duda.
     """
+
+
+class WormSingletonConflictError(Exception):
+    """El artefacto singleton `(expediente_id, tipo)` ya está protegido bajo
+    WORM con un `file_id` DISTINTO del que llega (AREA-08-16). No se sube nada:
+    la protección COMPLIANCE es irreversible y no se «corrige» después."""
 
 
 class WormObjectNotFoundError(Exception):
@@ -182,6 +198,17 @@ class PreservationWormService:
             payload.expediente_id, payload.tipo
         )
         if existing is not None:
+            # Defensa en profundidad (AREA-08-16): la idempotencia es por
+            # (expediente, tipo), NO por file_id. Sin esta comparación, quien
+            # llegara primero con OTRO file_id ocupaba el singleton y el
+            # llamador legítimo recibía 200 «ya protegido» sobre un archivo que
+            # no es el suyo. Filas anteriores a la migración 009 no guardan
+            # file_id (None): no hay con qué comparar y se conserva el 200.
+            if existing["file_id"] is not None and existing["file_id"] != payload.file_id:
+                raise WormSingletonConflictError(
+                    f"expediente_id={payload.expediente_id} tipo={payload.tipo} ya está "
+                    f"protegido con otro file_id"
+                )
             logger.info(
                 "Protección WORM ya existe para expediente_id=%s tipo=%s "
                 "(idempotente, sin re-subir; worm_id=%s)",
@@ -537,6 +564,162 @@ class PreservationWormService:
                 },
             )
         return _worm_row_to_renovacion_response(row, renovado=True)
+
+
+    # -- AREA-08-07: legal hold como acto explícito, con motivo y asiento ---
+
+    async def fijar_legal_hold(
+        self, payload: LegalHoldRequest, actor: str | None
+    ) -> LegalHoldResponse:
+        """Fija o levanta el legal hold de TODOS los objetos WORM del
+        expediente (`objeto_tipo='expediente'`): sobre la `version_id` exacta de
+        cada fila en el almacén, sobre la RÉPLICA del AIP (si existe), en la
+        fila (`legal_hold`) y con asiento en `audit_log`.
+
+        Serializado por advisory lock de sesión `(tenant, expediente)`: dos
+        actos concurrentes (fijar y levantar) calculaban sus «pendientes» cada
+        uno por su lado y la fila podía acabar distinta del Object Lock.
+
+        El almacén no es transaccional, así que el ORDEN de cada sentido es el
+        que deja el error en el lado conservador:
+
+        - FIJAR: almacén primero (un exceso de hold es seguro), luego fila +
+          asiento juntos en una `conn.transaction()`.
+        - LEVANTAR: asiento de SOLICITUD primero (tx propia, antes de tocar el
+          almacén), luego almacén, luego fila + asiento de levantamiento. Si algo
+          falla tras liberar, queda constancia de que se intentó y la fila sigue
+          en `legal_hold=true` (el gate de disposición bloquea): reintentable, y
+          nunca un objeto liberado sin ningún asiento.
+
+        Filas que ya están en el estado pedido no se tocan ni se asientan."""
+        if not settings.preservation_enabled:
+            raise PreservationDisabledError(
+                "La protección WORM está desactivada (PRESERVATION_ENABLED=false)"
+            )
+        lock_key = _worm_lock_key(self._tenant_slug, payload.expediente_id, "legal_hold")
+        await self._conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+        try:
+            return await self._fijar_legal_hold_locked(payload, actor)
+        finally:
+            await self._conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+
+    async def _fijar_legal_hold_locked(
+        self, payload: LegalHoldRequest, actor: str | None
+    ) -> LegalHoldResponse:
+        filas = await self._worm_repo.list_for_expediente(payload.expediente_id)
+        if not filas:
+            raise WormObjectNotFoundError(
+                f"Sin objetos WORM protegidos para expediente_id={payload.expediente_id}"
+            )
+        pendientes = [f for f in filas if bool(f["legal_hold"]) != payload.activo]
+
+        def _base(f: asyncpg.Record) -> dict[str, object]:
+            return {
+                "expediente_id": payload.expediente_id,
+                "tipo": f["tipo"],
+                "worm_object_id": str(f["id"]),
+                "motivo": payload.motivo,
+                "acta_ref": payload.acta_ref,
+            }
+
+        if not payload.activo:
+            # Constancia ANTES de liberar nada en el almacén.
+            async with self._conn.transaction():
+                for f in pendientes:
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action="worm.legal_hold_levantamiento_solicitado",
+                        object_type="file",
+                        object_ref=str(f["file_id"]) if f["file_id"] else payload.expediente_id,
+                        actor=actor,
+                        payload=_base(f),
+                    )
+
+        minio = get_minio()
+        copias: dict[uuid.UUID, list[str]] = {}
+        try:
+            for f in pendientes:
+                copias[f["id"]] = await self._aplicar_hold_almacen(minio, f, payload.activo)
+        except Exception as exc:
+            if not payload.activo:
+                await self._asentar_fallo_levantamiento(payload, actor, exc)
+            raise
+
+        accion = "worm.legal_hold_fijado" if payload.activo else "worm.legal_hold_levantado"
+        async with self._conn.transaction():
+            for f in pendientes:
+                await self._worm_repo.set_legal_hold(f["id"], activo=payload.activo)
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action=accion,
+                    object_type="file",
+                    object_ref=str(f["file_id"]) if f["file_id"] else payload.expediente_id,
+                    actor=actor,
+                    payload={**_base(f), "copias_alcanzadas": copias[f["id"]]},
+                )
+        return LegalHoldResponse(
+            expediente_id=payload.expediente_id,
+            activo=payload.activo,
+            objetos_afectados=len(pendientes),
+            objetos_sin_cambio=len(filas) - len(pendientes),
+        )
+
+    async def _aplicar_hold_almacen(
+        self, minio: Minio, fila: asyncpg.Record, activo: bool
+    ) -> list[str]:
+        """Aplica/levanta el hold en el objeto primario (`version_id` exacta) y,
+        para el AIP, en su réplica. Devuelve las copias alcanzadas
+        (`bucket/key`). La réplica es opcional por diseño (best-effort al crear
+        el AIP): su AUSENCIA (`NoSuchKey`/`NoSuchBucket`) se tolera; cualquier
+        otro error aborta el acto (reintentable) para no declarar un freeze que
+        deja una copia sin bloquear."""
+        op = "enable_object_legal_hold" if activo else "disable_object_legal_hold"
+        await getattr(minio, op)(fila["bucket"], fila["object_key"], version_id=fila["version_id"])
+        alcanzadas = [f"{fila['bucket']}/{fila['object_key']}"]
+        if fila["tipo"] == "aip":
+            client, bucket = replica_target(minio, self._tenant_slug)
+            try:
+                await getattr(client, op)(bucket, fila["object_key"])
+                alcanzadas.append(f"{bucket}/{fila['object_key']}")
+            except S3Error as exc:
+                if exc.code not in _REPLICA_AUSENTE:
+                    raise
+                logger.info(
+                    "Sin réplica del AIP que alcanzar (bucket=%s, key=%s): %s",
+                    bucket,
+                    fila["object_key"],
+                    exc.code,
+                )
+        return alcanzadas
+
+    async def _asentar_fallo_levantamiento(
+        self, payload: LegalHoldRequest, actor: str | None, exc: Exception
+    ) -> None:
+        """Constancia (best-effort) de que el levantamiento falló en el almacén:
+        la fila sigue en `legal_hold=true` y el acto es reintentable."""
+        try:
+            async with self._conn.transaction():
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="worm.legal_hold_levantamiento_fallido",
+                    object_type="expediente",
+                    object_ref=payload.expediente_id,
+                    actor=actor,
+                    payload={
+                        "expediente_id": payload.expediente_id,
+                        "motivo": payload.motivo,
+                        "acta_ref": payload.acta_ref,
+                        "error": type(exc).__name__,
+                    },
+                )
+        except Exception:  # noqa: BLE001 — la excepción original es la que importa.
+            logger.exception("No se pudo asentar el fallo del levantamiento de legal hold")
 
 
 def _worm_lock_key(tenant_slug: str, expediente_id: str, tipo: str = "indice") -> int:

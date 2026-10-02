@@ -25,8 +25,9 @@
 
   Acciones inline implementadas (T-08, sin T-08b):
     - Ver detalle en drawer (sin navegar)
-    - PATCH /documents/{id} para actualizar estado (distributed / in_progress)
-      → Solo si el usuario tiene permiso PERM_RADI o PERM_RADI_ENTRADA.
+    - El estado del radicado NO se edita aquí (ADR-028): lo mueve el flujo en
+      el backend. Desde el detalle, el POSEEDOR del paso activo puede «Marcar en
+      trámite» (marcar_leido) y «Finalizar trámite» (cierra, irreversible).
     - TODO T-08b: anular, devolver, responder, VoBo.
 -->
 <script>
@@ -40,7 +41,7 @@
   import { page } from "$app/stores";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
-  import { permissions, permissionLevels } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels, userId, sessionUser } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
   // que leen la cookie httpOnly en el servidor — el token nunca llega al cliente (D-05).
@@ -56,6 +57,15 @@
   import UserPicker from "$lib/components/ui/UserPicker.svelte";
   import HojaRuta from "$lib/components/workflow/HojaRuta.svelte";
   import WorkflowBoard from "$lib/components/workflow/WorkflowBoard.svelte";
+  import FinalizarTramiteModal from "$lib/components/workflow/FinalizarTramiteModal.svelte";
+  import {
+    nombresDeDependenciasDelUsuario,
+    puedeMarcarEnTramite,
+    puedeFinalizarTramite,
+    poseiaUltimoPaso,
+    puedeDevolver,
+    puedeAsignarAFlujo,
+  } from "$lib/utils/tenencia.js";
   import AsignarModal from "$lib/components/workflow/AsignarModal.svelte";
   import DisposicionRadicadoDrawer from "$lib/components/features/disposicion/DisposicionRadicadoDrawer.svelte";
   import PublicacionRadicadoDrawer from "$lib/components/features/publicacion/PublicacionRadicadoDrawer.svelte";
@@ -184,6 +194,14 @@
   /** @type {boolean|null} */
   let hasActiveStep = null;
   let hasActiveStepLoading = false;
+  // Paso activo del radicado del drawer (GET /current): de su TENENCIA dependen
+  // «Marcar en trámite», «Finalizar trámite» y «Devolver» (ADR-028).
+  /** @type {import('$lib/types/api.js').FlowStepResponse|null} */
+  let currentStep = null;
+  let modalFinalizar = false;
+  /** Pasos del radicado (GET /history): solo se piden SIN paso activo, para el
+   * caso «poseía el último paso» de Finalizar (ADR-028 R12). */
+  let historialPasos = [];
 
   // F6: Salidas que responden a este radicado (GET /documents/{id}/respuestas,
   // no-read-up ya aplicado por document-service). Sección "Respuestas" del detalle.
@@ -375,6 +393,7 @@
     drawerOpen = true;
     anulacionStatus = null;
     hasActiveStep = null;
+    currentStep = null;
 
     // Cargar detalle completo (incluye anexos y metadata)
     detailLoading = true;
@@ -411,21 +430,7 @@
     // 404 no_active_step = no tiene (caso normal, no se notifica como error).
     // Cualquier otro resultado (403, 5xx, red caída) deja hasActiveStep en
     // null — no se ofrece el botón, pero tampoco se afirma que no tiene paso.
-    hasActiveStepLoading = true;
-    try {
-      const res = await fetch(`/bandeja/api/${encodeURIComponent(doc.id)}/current`);
-      if (res.status === 200) {
-        hasActiveStep = true;
-      } else if (res.status === 404) {
-        hasActiveStep = false;
-      } else {
-        hasActiveStep = null;
-      }
-    } catch {
-      hasActiveStep = null;
-    } finally {
-      hasActiveStepLoading = false;
-    }
+    await cargarPasoActual(doc.id);
 
     // F6: Salidas que responden a este radicado. Lista vacía es el caso normal
     // (no toda Entrada tiene respuesta vinculada) — no se notifica como error.
@@ -454,10 +459,52 @@
     }
   }
 
+  /**
+   * Carga el paso activo del radicado (`GET /current`): 200 = lo hay, 404
+   * `no_active_step` = no (caso normal). Cualquier otro resultado deja el estado
+   * en «no se sabe» (null) y NO se ofrece ningún acto: no se afirma lo que la
+   * pantalla no puede saber.
+   * @param {string} docId
+   */
+  async function cargarPasoActual(docId) {
+    hasActiveStepLoading = true;
+    try {
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(docId)}/current`);
+      if (res.status === 200) {
+        currentStep = await res.json().catch(() => null);
+        hasActiveStep = true;
+        historialPasos = [];
+      } else {
+        currentStep = null;
+        hasActiveStep = res.status === 404 ? false : null;
+        historialPasos = hasActiveStep === false ? await cargarHistorialPasos(docId) : [];
+      }
+    } catch {
+      currentStep = null;
+      hasActiveStep = null;
+    } finally {
+      hasActiveStepLoading = false;
+    }
+  }
+
+  /** Pasos del radicado; ante cualquier fallo, null (ni Finalizar ni Asignar: fail-closed). */
+  async function cargarHistorialPasos(docId) {
+    try {
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(docId)}/history`);
+      if (!res.ok) return null;
+      const datos = await res.json().catch(() => null);
+      return Array.isArray(datos?.steps) ? datos.steps : null;
+    } catch {
+      return null;
+    }
+  }
+
   function closeDrawer() {
     drawerOpen = false;
     selectedDoc = null;
     anulacionStatus = null;
+    currentStep = null;
+    historialPasos = [];
     hasActiveStep = null;
     hasActiveStepLoading = false;
     respuestas = [];
@@ -973,35 +1020,49 @@
   // ---------------------------------------------------------------------------
 
   /**
-   * Avanza el estado de un radicado (solo transiciones válidas).
-   * Solo disponible si el usuario tiene permisos de operador.
-   * Llama al endpoint local /bandeja/api/[id] — el backend re-valida RBAC.
+   * «Marcar en trámite»: transacción de catálogo `marcar_leido` (ADR-028). Solo
+   * la ofrece la tenencia del paso activo; el backend la re-valida (404
+   * `no_active_step` a un no-poseedor) y es quien mueve el estado a `in_progress`.
+   * POST /bandeja/api/[id]/transactions
    * @param {string} docId
-   * @param {'distributed'|'in_progress'} newStatus
    */
-  async function advanceStatus(docId, newStatus) {
+  async function marcarEnTramite(docId) {
     if (actionLoading) return;
     actionLoading = true;
     try {
-      const res = await fetch(`/bandeja/api/${docId}`, {
-        method: "PATCH",
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(docId)}/transactions`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify({ tipo_tx: "marcar_leido" }),
       });
-      const updated = await res.json();
-      if (!res.ok) throw updated;
-      // Actualizar en la lista local para evitar reload completo
-      documents = documents.map((d) => (d.id === docId ? { ...d, status: updated.status } : d));
-      // Actualizar en el drawer si está abierto
-      if (selectedDoc?.id === docId) {
-        selectedDoc = { ...selectedDoc, status: updated.status };
-      }
-      notifySuccess(`Estado actualizado a "${STATUS_LABELS[newStatus] ?? newStatus}".`);
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw result;
+      notifySuccess("El radicado quedó en trámite.");
+      await refrescarTrasActo(docId);
     } catch (err) {
-      notifyError(mensajeError(err, "No se pudo actualizar el estado."));
+      notifyError(mensajeError(err, "No se pudo marcar el radicado en trámite."));
     } finally {
       actionLoading = false;
     }
+  }
+
+  /** Tras un acto de trámite: el estado y el paso salen de nuevo del servidor. */
+  async function refrescarTrasActo(docId) {
+    await loadDocuments();
+    try {
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(docId)}`);
+      if (res.ok && selectedDoc?.id === docId) selectedDoc = await res.json();
+    } catch {
+      /* el listado ya se refrescó; el detalle se actualiza al reabrir */
+    }
+    if (selectedDoc?.id === docId) await cargarPasoActual(docId);
+  }
+
+  /** El trámite quedó finalizado (modal de confirmación). */
+  async function onFinalizado() {
+    const id = selectedDoc?.id;
+    modalFinalizar = false;
+    if (id) await refrescarTrasActo(id);
   }
 
   // ---------------------------------------------------------------------------
@@ -1061,8 +1122,31 @@
     $permissions.includes("PERM_FIRMA") && $permissions.includes("PERM_RADI");
   let modalCadenaFirma = false;
   // Pre-computed para evitar condiciones largas en template (printWidth)
-  $: canDevolverInDrawer =
-    canDevolver && (selectedDoc?.status === "in_progress" || selectedDoc?.status === "distributed");
+  // ADR-028: el acto depende de la TENENCIA del paso activo, no del estado del
+  // radicado (que ahora lo mueve el flujo). El backend re-valida.
+  $: misDependencias = nombresDeDependenciasDelUsuario($sessionUser);
+  $: canTramitarPaso = $permissions.includes("PERM_TRAMITAR");
+  $: canDevolverInDrawer = canDevolver && puedeDevolver(currentStep, $userId, misDependencias);
+  $: canMarcarEnTramite =
+    canTramitarPaso && puedeMarcarEnTramite(currentStep, $userId, misDependencias);
+  // «Finalizar»: PERM_TRAMITAR a nivel >=3 (min_crud=3; con 2 el backend da 403)
+  // Y tenencia: paso activo propio, o —sin paso activo— haber poseído el último
+  // paso completado de un radicado no terminal (R12).
+  $: nivelTramitar = $permissionLevels["PERM_TRAMITAR"] ?? 0;
+  $: ultimoPasoPropio =
+    !currentStep &&
+    hasActiveStep === false &&
+    poseiaUltimoPaso(historialPasos, selectedDoc?.status, $userId, misDependencias)
+      ? historialPasos.reduce((a, b) => (b.step_number > a.step_number ? b : a))
+      : null;
+  $: canFinalizarTramite = puedeFinalizarTramite({
+    nivel: nivelTramitar,
+    step: currentStep,
+    historial: historialPasos,
+    radicadoStatus: selectedDoc?.status,
+    userId: $userId,
+    dependencias: misDependencias,
+  });
   // `?radicado=<uuid>` abre su detalle. Es lo que permite que un resultado de
   // búsqueda lleve REALMENTE al radicado: la bandeja lista lo que tramita la
   // dependencia activa, así que lo buscado casi nunca está en ella, y el enlace
@@ -1105,6 +1189,18 @@
   // administra ni tramita, aunque el backend no la restrinja por permiso (solo
   // por clearance/no-read-up): espejo de RBAC, no fuente de verdad (D-05).
   $: canAsignarFlujo = $permissions.includes("PERM_TRAMITAR");
+  // ADR-028 R16: sin paso activo solo reparte quien poseía el último paso
+  // completado o, sin pasos, quien radicó (`registered_by`; nulo => nadie).
+  $: canAsignarSinPaso =
+    canAsignarFlujo &&
+    puedeAsignarAFlujo({
+      step: currentStep,
+      historial: historialPasos,
+      radicadoStatus: selectedDoc?.status,
+      registeredBy: selectedDoc?.registered_by,
+      userId: $userId,
+      dependencias: misDependencias,
+    });
   $: canVerPendientesEquipo =
     $permissions.includes("USUA_PERM_ADMIN") || $permissions.includes("PERM_TRAMITAR");
   // Nivel seleccionado como entero (para mostrar/ocultar campos opcionales de reserva en template)
@@ -1357,32 +1453,6 @@
                         Detalle
                       </button>
 
-                      <!-- Acción inline: avanzar estado (T-08 básico) -->
-                      {#if canManage}
-                        {#if doc.status === "registered"}
-                          <button
-                            class="action-btn action-btn--advance"
-                            type="button"
-                            aria-label="Distribuir radicado {doc.tracking_number}"
-                            disabled={actionLoading}
-                            on:click={() => advanceStatus(doc.id, "distributed")}
-                          >
-                            <i class="fas fa-paper-plane" aria-hidden="true"></i>
-                            Distribuir
-                          </button>
-                        {:else if doc.status === "distributed"}
-                          <button
-                            class="action-btn action-btn--advance"
-                            type="button"
-                            aria-label="Iniciar trámite del radicado {doc.tracking_number}"
-                            disabled={actionLoading}
-                            on:click={() => advanceStatus(doc.id, "in_progress")}
-                          >
-                            <i class="fas fa-play" aria-hidden="true"></i>
-                            Iniciar trámite
-                          </button>
-                        {/if}
-                      {/if}
                       <!-- T-08b: Anular inline; otras acciones en el drawer de detalle -->
                       {#if canAnular && admiteAnulacion(doc) && doc.status !== "closed" && doc.status !== "anulado"}
                         <button
@@ -1698,27 +1768,6 @@
   <!-- Footer de acciones del drawer -->
   <svelte:fragment slot="footer">
     {#if selectedDoc && canManage}
-      {#if selectedDoc.status === "registered"}
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={actionLoading}
-          on:click={() => advanceStatus(selectedDoc.id, "distributed")}
-        >
-          <i class="fas fa-paper-plane" aria-hidden="true"></i>
-          Distribuir
-        </Button>
-      {:else if selectedDoc.status === "distributed"}
-        <Button
-          variant="primary"
-          size="sm"
-          disabled={actionLoading}
-          on:click={() => advanceStatus(selectedDoc.id, "in_progress")}
-        >
-          <i class="fas fa-play" aria-hidden="true"></i>
-          Iniciar trámite
-        </Button>
-      {/if}
       <!-- T-08b: acciones de operador -->
       {#if canResponder && selectedDoc.doc_type === "E"}
         <Button
@@ -1770,7 +1819,29 @@
         </Button>
       {/if}
     {/if}
-    {#if selectedDoc && canAsignarFlujo && !hasActiveStepLoading && hasActiveStep === false}
+    {#if selectedDoc && canMarcarEnTramite}
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={actionLoading}
+        on:click={() => marcarEnTramite(selectedDoc.id)}
+      >
+        <i class="fas fa-play" aria-hidden="true"></i>
+        Marcar en trámite
+      </Button>
+    {/if}
+    {#if selectedDoc && canFinalizarTramite}
+      <Button
+        variant="secondary"
+        size="sm"
+        disabled={actionLoading}
+        on:click={() => (modalFinalizar = true)}
+      >
+        <i class="fas fa-flag-checkered" aria-hidden="true"></i>
+        Finalizar trámite
+      </Button>
+    {/if}
+    {#if selectedDoc && canAsignarSinPaso && !hasActiveStepLoading && hasActiveStep === false}
       <!-- T-ASIGNAR: solo aplica a radicados SIN paso de flujo (ver openDrawer).
            Los que ya tienen uno se trasladan desde el Tablero (Trasladar). -->
       <Button variant="secondary" size="sm" disabled={actionLoading} on:click={openModalAsignar}>
@@ -1888,6 +1959,14 @@
     </Button>
   </svelte:fragment>
 </Modal>
+
+<!-- Modal: Finalizar trámite (irreversible, ADR-028) -->
+<FinalizarTramiteModal
+  open={modalFinalizar}
+  step={currentStep ?? ultimoPasoPropio}
+  on:close={() => (modalFinalizar = false)}
+  on:success={onFinalizado}
+/>
 
 <!-- Modal: Devolver en flujo -->
 <Modal

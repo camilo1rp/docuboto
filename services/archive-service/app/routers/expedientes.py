@@ -42,6 +42,8 @@ from app.schemas.archive import (
     ExpedienteSearchResponse,
     ExpedienteUpdate,
     HistorialAccesoEntry,
+    LegalHoldRequest,
+    LegalHoldResponse,
     PublicacionRequest,
     PublicacionResponse,
     RadicadoLink,
@@ -300,6 +302,34 @@ async def set_publicacion_expediente(
         canal=canal,
     )
     return PublicacionResponse(**resultado)
+
+
+@router.post(
+    "/{expediente_id}/legal-hold",
+    response_model=LegalHoldResponse,
+    summary="Declarar o levantar el legal hold (freeze de litigio) del expediente",
+    # Acto administrativo de custodia, no de operación diaria: nivel de ADMIN con
+    # escritura. El permiso de operar expedientes (USUA_PERM_EXPEDIENTE) es el que
+    # hoy tiene cualquier tramitador y NO basta para congelar la disposición.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def set_legal_hold_expediente(
+    expediente_id: uuid.UUID,
+    payload: LegalHoldRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    canal: str = Depends(_optional_canal),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> LegalHoldResponse:
+    """Congela (o libera) la disposición final de los objetos WORM del expediente.
+
+    Motivo y acta son obligatorios en ambos sentidos. `404` neutro si el
+    expediente no existe o supera el clearance del llamante.
+    """
+    clearance = await resolve_caller_clearance(conn, actor.id)
+    return await ArchiveService(conn, tenant_slug).set_legal_hold(
+        expediente_id, payload, clearance, actor=actor.audit_actor, canal=canal
+    )
 
 
 @router.post(

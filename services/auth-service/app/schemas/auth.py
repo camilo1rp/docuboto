@@ -37,6 +37,10 @@ class ValidateResponse(BaseModel):
     username: str = ""
     tenant_slug: str | None = None
     roles: list[str] = []
+    #: Segundos que le quedan al token (`exp - ahora`, >= 0). El api-gateway acota
+    #: con él el TTL de su caché de validación: sin este campo la caché nunca
+    #: sabría cuándo caduca el token y usaría siempre su máximo.
+    expires_in: int | None = None
 
 
 class UserInfoResponse(BaseModel):

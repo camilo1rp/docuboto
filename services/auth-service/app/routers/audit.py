@@ -47,6 +47,7 @@ def _tenant_slug(request: Request) -> str:
 @router.get("/verify", response_model=AuditVerifyResponse)
 async def verify_audit_chain(
     request: Request,
+    caller: Caller = Depends(get_caller),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> AuditVerifyResponse:
     """Recalcula la cadena de hash del tenant y reporta si está íntegra.
@@ -62,9 +63,33 @@ async def verify_audit_chain(
     una sola fila mala dejaba la verificación inservible para siempre, y decía
     menos de lo que la entidad puede demostrar. `broken_id` se conserva —es
     `roturas[0].id`— y el resto de campos son aditivos.
+
+    **Recorte por clearance (AREA-03-03)**: la verificación se hace entera, pero
+    quien no tiene el clearance máximo solo recibe `ok` y `total_roturas`. El
+    `total` de la cadena menos el `X-Total-Count` del listado recortado es
+    exactamente cuántos asientos de objetos por encima de su nivel hay (y
+    repitiéndolo, cuándo ocurren); y los `id` son una secuencia global entre
+    entidades. El detalle (`total`, `verificados`, `broken_id`, `roturas[].id`)
+    queda para el clearance máximo.
     """
     slug = _tenant_slug(request)
     res = await audit_lib.verify_chain(conn, slug)
+    max_level = (
+        MAX_LEVEL
+        if caller.is_root
+        else await ClearanceRepository(conn).caller_max_level(caller.user_id)
+    )
+    if max_level < MAX_LEVEL:
+        return AuditVerifyResponse(
+            tenant_slug=slug,
+            ok=res.ok,
+            broken_id=None,
+            total=None,
+            verificados=None,
+            total_roturas=res.total_roturas,
+            roturas=[],
+            roturas_omitidas=0,
+        )
     return AuditVerifyResponse(
         tenant_slug=slug,
         ok=res.ok,
@@ -102,9 +127,10 @@ async def list_audit(
     **Residuo declarado (RF-FIR-15)**: `id` es una secuencia monótona y va en la
     respuesta, así que los huecos entre ids visibles revelan CUÁNTAS entradas se
     ocultaron y, por los `ts` vecinos, cuándo — inferencia de volumen de trámite
-    clasificado, sin contenido. No se cierra porque `id` es la clave que casa con
-    `broken_id` de `/audit/verify`; cerrarlo exigiría un identificador opaco por
-    entrada y el `id` crudo solo para clearance máximo.
+    clasificado, sin contenido. `/audit/verify` YA NO es un segundo canal para ese
+    mismo dato (AREA-03-03: sin `total` ni `id` para quien no tiene el clearance
+    máximo), pero el `id` del listado sigue crudo: cerrarlo exige un identificador
+    opaco por entrada (HMAC del id por entidad) y migrar a quien lo consume.
     """
     slug = _tenant_slug(request)
     filters = {

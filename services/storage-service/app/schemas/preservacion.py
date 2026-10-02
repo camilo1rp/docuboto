@@ -16,7 +16,7 @@ import uuid
 from datetime import UTC, date, datetime, time
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _TIPO = Literal[
     "INGESTA", "FIJACION", "MIGRACION", "VALIDACION_PDFA", "WORM", "REPLICA", "RENOVACION"
@@ -132,12 +132,34 @@ class RetentionMixin(BaseModel):
     extremos (RF-PRE-03): o `retain_until` directo, o `retencion_anios` +
     `fecha_inicio` (nunca ambos). `storage-service` no conoce la TRD; el
     llamador (archive-service) aporta el plazo ya resuelto o los insumos.
+
+    `legal_hold` YA NO es un campo del body (AREA-08-07): un freeze de litigio
+    fijado al proteger no tiene acto inverso en el contrato de protección y
+    bloquea la disposición para siempre. Se declara SOLO por el acto interno
+    `POST /legal-hold-internal` (con motivo y asiento), que también lo levanta.
+    Enviarlo aquí da 422 en vez de ignorarse en silencio (sin `extra="forbid"`
+    general: el resto de campos ajenos, p. ej. un `tenant_slug` hostil, se
+    siguen ignorando como antes).
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _rechaza_legal_hold(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "legal_hold" in data:
+            raise ValueError(
+                "legal_hold no se declara al proteger: use el acto interno "
+                "POST /legal-hold-internal (con motivo y acta_ref)"
+            )
+        return data
 
     retain_until: datetime | None = None
     retencion_anios: int | None = Field(default=None, ge=1, le=100)
     fecha_inicio: date | None = None
-    legal_hold: bool = False
+
+    @property
+    def legal_hold(self) -> bool:
+        """Toda protección nace SIN legal hold (ver docstring de la clase)."""
+        return False
 
     @model_validator(mode="after")
     def _check_retention_source(self) -> RetentionMixin:
@@ -414,8 +436,9 @@ class ProtegerIndiceRequest(RetentionMixin):
     `files` NO tiene, en este incremento, un enlace a expediente/documento —
     storage-service no puede verificar por sí mismo que `file_id` sea
     efectivamente el artefacto firmado DEL `expediente_id` declarado. Ese
-    vínculo es responsabilidad exclusiva del llamador: el contrato del gateway
-    establece que **solo archive-service** invoca este endpoint, y que
+    vínculo es responsabilidad exclusiva del llamador: **solo archive-service**
+    invoca estas rutas — lo hace cumplir el gateway (no enruta
+    `/proteger-*` ni `/aip`) y `X-Internal-Token` en storage (AREA-08-16) — y
     garantiza (a) `file_id` referencia el artefacto firmado correspondiente al
     `tipo` declarado (E15/E06 para 'indice', H-H/E06 para 'acta_transferencia')
     y (b) `expediente_id` es el identificador CANÓNICO que también usará al
@@ -503,10 +526,11 @@ class RenovarRetencionRequest(RetentionMixin):
 
     Semántica MONOTÓNICA: la fecha resuelta debe ser ESTRICTAMENTE mayor que
     el ``retain_until`` ya persistido, o la llamada es un no-op idempotente
-    (200, SIN tocar MinIO). ``legal_hold`` (heredado de `RetentionMixin`) se
-    IGNORA en este flujo -- la renovación es puramente de fecha; el freeze de
-    litigio se gestiona por separado (roadmap, `active_lock_for_expediente`
-    ya lo trata como bloqueo incondicional aparte de `retain_until`).
+    (200, SIN tocar MinIO). El ``legal_hold`` NO existe aquí --
+    la renovación es puramente de fecha; el freeze de
+    litigio se gestiona por el acto aparte `POST /legal-hold-internal`
+    (`active_lock_for_expediente` lo trata como bloqueo incondicional
+    aparte de `retain_until`).
 
     `tipo='aip'` (E10 debt: extensión de la renovación al AIP OAIS, fast-follow
     del cableado del AIP): a diferencia de `indice`/`acta_transferencia`
@@ -573,3 +597,36 @@ class MigracionResponse(BaseModel):
     motivo: str | None
     iniciada_por: uuid.UUID | None
     iniciada_at: datetime
+
+
+# ── Legal hold (freeze de litigio) — acto interno (AREA-08-07) ─────────
+
+
+class LegalHoldRequest(BaseModel):
+    """Fija o levanta el legal hold de TODOS los objetos WORM de un expediente.
+
+    Solo por la ruta interna (`X-Internal-Token`): lo orquesta archive-service,
+    que es quien decide el permiso y comprueba el acto administrativo. `motivo`
+    y `acta_ref` son OBLIGATORIOS y viajan al asiento de auditoría: un freeze
+    que bloquea la disposición final (Ley 594/2000) sin acto que lo respalde es
+    un bloqueo arbitrario.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expediente_id: str = Field(..., min_length=1, max_length=255)
+    activo: bool
+    motivo: str = Field(..., min_length=10, max_length=2000)
+    acta_ref: str = Field(..., min_length=1, max_length=255)
+
+    @field_validator("expediente_id")
+    @classmethod
+    def _canonicalize_expediente_id(cls, value: str) -> str:
+        return canonicalize_expediente_id(value)
+
+
+class LegalHoldResponse(BaseModel):
+    expediente_id: str
+    activo: bool
+    objetos_afectados: int
+    objetos_sin_cambio: int

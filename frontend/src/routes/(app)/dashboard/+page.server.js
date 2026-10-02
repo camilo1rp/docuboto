@@ -45,15 +45,15 @@ import { mensajeError } from "$lib/utils/apiError.js";
 
 // Estados de un radicado ABIERTO —ni cerrado ni anulado—, para las alertas de plazo.
 //
-// `registered` va el PRIMERO y no es un descuido. Repartir y tramitar por el flujo
-// avanzan los PASOS (`flow_steps`), no el radicado: el estado del radicado solo
-// pasa a `distributed`/`in_progress` si alguien pulsa a mano los botones de la
-// vista Lista de la bandeja, un camino paralelo al tablero que casi nadie usa. Con
-// la lista anterior (`distributed`, `in_progress`) el módulo pedía estados que en
-// la práctica no se alcanzan: medido el 2026-10-01, los 208 radicados en
-// `registered`, 127 con el plazo VENCIDO y el panel diciendo «No hay radicados con
-// fecha límite de respuesta cercana». Un plazo de respuesta corre desde que se
-// radica, no desde que alguien lo toca.
+// `registered` va el PRIMERO y no es un descuido. Desde ADR-028 el flujo SÍ mueve
+// el estado del radicado (repartir → `distributed`, marcar leído → `in_progress`,
+// finalizar → `closed`), pero un radicado que aún no entró a ningún flujo —y las
+// Salidas/Internos sin reparto, que no lo hacen nunca— sigue en `registered`. Antes
+// de ADR-028 el flujo no escribía el estado y la lista `distributed`/`in_progress`
+// no se alcanzaba: medido el 2026-10-01, los 208 radicados en `registered`, 127 con
+// el plazo VENCIDO y el panel diciendo «No hay radicados con fecha límite de
+// respuesta cercana». Un plazo de respuesta corre desde que se radica, no desde que
+// alguien lo toca.
 const ALERT_STATUSES = ["registered", "distributed", "in_progress"];
 
 const WIDGET_LIMIT = 5; // ítems visibles por módulo en el tablero

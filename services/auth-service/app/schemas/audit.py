@@ -46,8 +46,12 @@ class AuditVerifyResponse(BaseModel):
     #: Lo que la entidad puede AFIRMAR, que es más que «pasa o no pasa»: un
     #: registro append-only no se puede reparar, así que tras una rotura lo
     #: útil es saber cuántas hay, cuáles, y cuántos asientos SÍ verifican.
-    total: int = 0
-    verificados: int = 0
+    #: `total`, `verificados`, `broken_id` y `roturas[].id` van a `None`/vacío para
+    #: un llamante cuyo clearance no es el máximo (AREA-03-03): `total` restado de
+    #: `X-Total-Count` del listado recortado daba el número EXACTO de asientos
+    #: clasificados ocultos, y los `id` (globales entre entidades) filtran volumen.
+    total: int | None = 0
+    verificados: int | None = 0
     total_roturas: int = 0
     roturas: list[RoturaCadenaOut] = []
     #: Roturas contadas pero no enumeradas (tope del verificador).

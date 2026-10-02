@@ -180,6 +180,21 @@ class PreservacionWormRepository:
             retain_until,
         )
 
+    async def set_legal_hold(self, worm_id: uuid.UUID, *, activo: bool) -> asyncpg.Record | None:
+        """Fija el `legal_hold` de una fila (AREA-08-07). Único escritor de la
+        columna después del INSERT: el acto interno `fijar_legal_hold`."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"""
+            UPDATE preservacion_worm_objeto
+            SET legal_hold = $2
+            WHERE id = $1
+            RETURNING {_COLS}
+            """,
+            worm_id,
+            activo,
+        )
+
     async def list_for_expediente(self, expediente_id: str) -> list[asyncpg.Record]:
         await self._sp()
         return list(

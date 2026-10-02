@@ -29,11 +29,13 @@ Lee DATABASE_URL del entorno. Idempotente y re-ejecutable.
 """
 
 import asyncio
+import hashlib
 import os
 import re
 from pathlib import Path
 
 import asyncpg
+from orpycamcp_common import audit
 from orpycamcp_common import migrations as ledger
 
 # Nombre del servicio dueño de estas migraciones. Es lo único que distingue a un
@@ -89,6 +91,97 @@ def _mapa_propio(directory: Path) -> dict[str, list[str]]:
     return {p.name: [SERVICIO] for p in _sql_files(directory)}
 
 
+# Migraciones de datos que dejan una tabla de evidencia de solo inserción y que
+# necesitan un asiento-ANCLA en `public.audit_log`. El asiento lo escribe esta
+# APLICACIÓN (`audit.append`, que firma la cadena de hash): nunca el SQL de la
+# migración — un INSERT directo ya contaminó la cadena una vez y la rompe.
+# archivo -> (tabla de evidencia, acción del asiento, columna de orden estable)
+_ANCLAS: dict[str, tuple[str, str, str]] = {
+    "013_radicado_estado_desde_flujo.sql": (
+        "radicado_estado_recalculo",
+        "workflow.estado_radicado.backfill",
+        "radicado_id",
+    ),
+    "015_sanear_pasos_zombi.sql": (
+        "flow_step_saneamiento",
+        "workflow.flow_step.saneamiento",
+        "step_id",
+    ),
+}
+_SERVICIO_ANCLA = "workflow-service"
+
+
+async def _slug_del_schema(conn: asyncpg.Connection, schema: str) -> str:
+    """`tenant_{slug con _}` -> slug real (el de `audit_log.tenant_slug`).
+
+    El schema normaliza los guiones a guiones bajos y esa conversión no se invierte
+    por texto (`a_b` puede venir de `a-b` o de `a_b`): se resuelve contra
+    `public.tenants`. Sin la tabla (entorno aislado) se cae al sufijo del schema.
+    """
+    if await conn.fetchval("SELECT to_regclass('public.tenants')") is not None:
+        slug = await conn.fetchval(
+            "SELECT slug FROM public.tenants WHERE 'tenant_' || replace(slug, '-', '_') = $1",
+            schema,
+        )
+        if slug:
+            return str(slug)
+    return schema.removeprefix("tenant_")
+
+
+async def anclar_evidencia(
+    conn: asyncpg.Connection, schema: str, archivo: str, *, tenant_slug: str | None = None
+) -> bool:
+    """Asiento-ancla de una migración de datos: conteo + SHA-256 del contenido
+    ORDENADO de su tabla de evidencia. Devuelve `True` si escribió el asiento.
+
+    Una vez por tenant: si ya existe el asiento (mismo tenant, acción y tabla) no
+    escribe otro. Sin filas de evidencia (la migración no cambió nada) tampoco:
+    no hay nada que anclar. Debe correr en la transacción de la migración, con el
+    `search_path` ya fijado al schema del tenant.
+    """
+    tabla, accion, orden = _ANCLAS[archivo]
+    if await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".{tabla}') is None:
+        return False
+    # `schema` y `tabla` salen de information_schema / de la constante de arriba.
+    filas = await conn.fetch(f'SELECT * FROM "{schema}".{tabla} ORDER BY {orden}, id')
+    if not filas:
+        return False
+    slug = tenant_slug or await _slug_del_schema(conn, schema)
+    ya = await conn.fetchval(
+        "SELECT 1 FROM public.audit_log WHERE tenant_slug = $1 AND action = $2 "
+        "AND object_ref = $3 LIMIT 1",
+        slug,
+        accion,
+        tabla,
+    )
+    if ya:
+        return False
+    # Contenido canónico: una línea por fila, columnas en el orden de la tabla,
+    # SIN `id`/`at` (los genera la base, no son contenido). Reproducible fuera de
+    # la base con la misma consulta.
+    columnas = [c for c in filas[0].keys() if c not in ("id", "at")]
+    contenido = "\n".join("|".join(str(f[c]) for c in columnas) for f in filas)
+    await audit.append(
+        conn,
+        tenant_slug=slug,
+        service=_SERVICIO_ANCLA,
+        action=accion,
+        object_type="migracion",
+        object_ref=tabla,
+        actor="system:migracion",
+        canal="system",
+        payload={
+            "schema": schema,
+            "archivo": archivo,
+            "tabla": tabla,
+            "filas": len(filas),
+            "columnas": columnas,
+            "sha256": hashlib.sha256(contenido.encode("utf-8")).hexdigest(),
+        },
+    )
+    return True
+
+
 async def _apply_global(conn: asyncpg.Connection) -> None:
     files = _sql_files(GLOBAL_DIR)
     if not files:
@@ -136,6 +229,8 @@ async def _apply_tenant(conn: asyncpg.Connection) -> None:
             async with conn.transaction():
                 await conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await conn.execute(path.read_text())
+                if path.name in _ANCLAS and await anclar_evidencia(conn, schema, path.name):
+                    print(f"  anchor [{schema}] {path.name} -> audit_log")
                 await ledger.record(conn, schema, SERVICIO, path.name)
         await conn.execute("SET search_path = public")
 
