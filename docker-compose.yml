@@ -174,6 +174,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
+      - MCP_ORIGIN_SECRET=${MCP_ORIGIN_SECRET:-orpycamcp_mcp_origin_dev}
       - AUTH_CACHE_MAC_SECRET=${AUTH_CACHE_MAC_SECRET:-orpycamcp_auth_cache_mac_dev}
       # Documentación navegable, SOLO en desarrollo. En producción el catálogo
       # describe la superficie entera —incluidos los endpoints internos que el
@@ -222,6 +223,9 @@ services:
       # credenciales del stack local; en producción viene del entorno con
       # `${VAR:?}`, que aborta el despliegue si falta.
       - MCP_PROPOSAL_SECRET=${MCP_PROPOSAL_SECRET:-orpycamcp_dev_proposal_secret}
+      # Firma de la marca de origen del canal (AREA-11-04) y verificación de la IP real
+      # que firma el gateway (AREA-11-08). Sin él, el asistente asienta canal 'api'.
+      - MCP_ORIGIN_SECRET=${MCP_ORIGIN_SECRET:-orpycamcp_mcp_origin_dev}
       # STT (ADR-020): `disabled` por defecto — no hay «stub» honesto de
       # transcripción, así que sin proveedor el endpoint se NIEGA en vez de
       # aproximar lo que se dijo. `whisper` exige levantar el perfil `assistant`.
@@ -510,7 +514,8 @@ services:
     ports:
       - "127.0.0.1:19002:8002"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
@@ -792,6 +797,11 @@ services:
       # variable las pantallas públicas se declaran no habilitadas en vez de
       # apuntar a un inquilino inventado.
       - PORTAL_TENANT_SLUG=demo
+      # Autorización de tratamiento de datos (Ley 1581/2012, AREA-09-08): versión y enlace de la
+      # política que la ENTIDAD publica. Sin versión, la constancia dice «sin-politica-publicada»
+      # (la verdad, no una versión inventada); sin URL, la casilla no lleva enlace.
+      - POLITICA_TRATAMIENTO_VERSION=${POLITICA_TRATAMIENTO_VERSION:-}
+      - POLITICA_TRATAMIENTO_URL=${POLITICA_TRATAMIENTO_URL:-}
       # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
       # back-channel logout y los proxys +server.js al gateway). Nunca llegan al cliente.
       - INTERNAL_API_URL=http://api-gateway:8080

@@ -28,11 +28,27 @@ ENTIDAD con su NIT, y tratarla como «ciudadano» obligaba a escribir el nombre 
 la empresa en el campo de una persona natural.
 """
 
+import re
 import uuid
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+#: Formato de la `Idempotency-Key` pública: la genera el cliente (un UUID basta).
+IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+
+
+def _rechazar_honeypot(valor: str | None) -> None:
+    """Trampa para bots (AREA-02-07): un campo que ninguna persona ve ni rellena.
+
+    Si llega con contenido, quien envía es un script que rellena todo lo que ve en
+    el HTML. Se rechaza en la validación del esquema —ANTES de resolver el tipo, la
+    dependencia o consumir un número— y con un mensaje genérico: decir qué campo es
+    la trampa le enseñaría al bot a omitirlo.
+    """
+    if valor is not None and valor.strip():
+        raise ValueError("La solicitud no pudo procesarse.")
 
 
 class PublicVerifyResponse(BaseModel):
@@ -43,6 +59,21 @@ class PublicVerifyResponse(BaseModel):
     status: str
     registered_at: datetime
     dest_dept: str | None = None
+
+
+class VentanillaEstado(BaseModel):
+    """¿Está operativa la ventanilla de esta entidad? (AREA-09-07).
+
+    Un 503 `ventanilla_no_habilitada` es el comportamiento correcto (fail-closed),
+    pero se descubría al primer ciudadano. Esto permite comprobarlo ANTES: desde un
+    script de despliegue o desde el propio formulario.
+    """
+
+    habilitada: bool
+    #: Hay al menos una dependencia activa con `depe_rad_tp2` (recibe lo de fuera).
+    dependencia_receptora: bool
+    #: Cuántos tipos documentales admite la ventanilla pública.
+    tipos_admitidos: int
 
 
 class TipoVentanilla(BaseModel):
@@ -89,6 +120,21 @@ class VentanillaRadicacion(BaseModel):
     # asunto —que va al lado— sí lo tenía. 20.000 caracteres es más de lo que
     # ocupa un derecho de petición extenso y deja el abuso fuera.
     descripcion: str = Field(..., min_length=1, max_length=20000)
+
+    # --- Autorización de tratamiento de datos personales (Ley 1581/2012) ------
+    # `Literal[True]`: no hay valor «falso» válido —quien no autoriza no radica por
+    # esta puerta—. La versión de la política la fija el cliente a partir de la que
+    # la entidad publicó; el servidor la persiste con el instante y la IP.
+    acepta_tratamiento: Literal[True]
+    politica_version: str = Field(..., min_length=1, max_length=50)
+
+    #: Honeypot (AREA-02-07). Invisible en el formulario; debe llegar vacío.
+    sitio_web: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _sin_honeypot(self) -> "VentanillaRadicacion":
+        _rechazar_honeypot(self.sitio_web)
+        return self
 
     @model_validator(mode="after")
     def _canal_de_respuesta_si_se_identifica(self) -> "VentanillaRadicacion":
@@ -142,6 +188,16 @@ class PqrsCreate(BaseModel):
     # asunto —que va al lado— sí lo tenía. 20.000 caracteres es más de lo que
     # ocupa un derecho de petición extenso y deja el abuso fuera.
     descripcion: str = Field(..., min_length=1, max_length=20000)
+    #: Autorización de tratamiento (Ley 1581/2012) — ver `VentanillaRadicacion`.
+    acepta_tratamiento: Literal[True]
+    politica_version: str = Field(..., min_length=1, max_length=50)
+    #: Honeypot (AREA-02-07).
+    sitio_web: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _sin_honeypot(self) -> "PqrsCreate":
+        _rechazar_honeypot(self.sitio_web)
+        return self
 
 
 class PqrsResponse(BaseModel):

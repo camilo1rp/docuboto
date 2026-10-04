@@ -136,3 +136,56 @@ async def test_no_intenta_crear_meses_que_solapan_con_el_default(db_conn: asyncp
         assert primera > f"audit_log_{ultimo:%Y_%m}", (
             "se intentó particionar un mes que el default todavía ocupa"
         )
+
+
+# ---------------------------------------------------------------------------
+# AREA-03-06 — la sonda de /health/ready contra Postgres REAL
+# ---------------------------------------------------------------------------
+
+
+async def test_la_sonda_marca_degraded_si_falta_el_mes_siguiente_y_ok_al_crearlo(
+    db_conn: asyncpg.Connection,
+):
+    """Con la partición del mes siguiente ausente la sonda dice `degraded`; tras
+    crearla, `ok`. Todo dentro de una transacción que se revierte (DDL
+    transaccional), así que no deja particiones lejanas en la base compartida.
+
+    Mutación: que la sonda devuelva `ok` fijo -> la primera aserción cae."""
+    from app.core.audit_partitions import estado_particion_siguiente
+
+    nombre, momento = _mes_libre(offset_meses=90)
+    # `ahora` = el mes ANTERIOR al libre, para que «el mes siguiente» sea `nombre`.
+    ahora = (momento.replace(day=1) - timedelta(days=1)).replace(day=15)
+    inicio = momento.replace(day=1)
+    fin = (inicio + timedelta(days=32)).replace(day=1)
+
+    tx = db_conn.transaction()
+    await tx.start()
+    try:
+        assert await estado_particion_siguiente(db_conn, ahora) == "degraded"
+        await db_conn.execute(
+            f"CREATE TABLE public.{nombre} PARTITION OF public.audit_log "
+            f"FOR VALUES FROM ('{inicio.date()}') TO ('{fin.date()}')"
+        )
+        assert await estado_particion_siguiente(db_conn, ahora) == "ok"
+    finally:
+        await tx.rollback()
+
+
+async def test_el_trigger_de_sentencia_de_004_bloquea_incluso_sin_filas(db_conn: asyncpg.Connection):
+    """AREA-03-05. UPDATE/DELETE con 0 filas afectadas NO disparan el trigger de
+    FILA de 002: solo el de SENTENCIA (`trg_audit_log_no_mutation`, migración 004)
+    los rechaza. Con 1 fila, cualquiera de los dos bastaba y ningún test distinguía
+    a 004.
+
+    Mutación: quitar `CREATE TRIGGER trg_audit_log_no_mutation` de 004 -> estas
+    sentencias dejan de fallar y el test cae. Solo es ejercible de verdad cuando el
+    job corre las migraciones REALES de auth-service (el conftest de archive/document
+    ya no crea su copia en CI)."""
+    for sentencia in (
+        "UPDATE public.audit_log SET action = 'x' WHERE false",
+        "DELETE FROM public.audit_log_default WHERE false",
+        "UPDATE public.audit_log_default SET action = 'x' WHERE false",
+    ):
+        with pytest.raises(asyncpg.PostgresError):
+            await db_conn.execute(sentencia)

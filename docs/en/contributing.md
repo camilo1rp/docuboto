@@ -57,4 +57,4 @@ git commit -m "feat(document): implement entrada document registration"
 - [ ] `docs/es/api.md` updated if I changed endpoints
 - [ ] `CHANGELOG.md` has an entry for this change
 - [ ] No hardcoded credentials
-- [ ] SQLAlchemy models have Alembic migrations
+- [ ] If I changed the schema, I added a numbered `.sql` migration (no ORM, no Alembic, ADR-003)

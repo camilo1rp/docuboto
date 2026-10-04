@@ -99,7 +99,7 @@ async def test_update_estado_invalid_transition(client_with_conn) -> None:
     # registrado → entregado no es válido (debe pasar por en_transito)
     resp = await client.post(
         f"/api/v1/envios/{sid}/estado",
-        json={"estado": "entregado"},
+        json={"estado": "entregado", "acuse_file_id": str(uuid.uuid4()), "acuse_sha256": "a" * 64},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 409

@@ -54,7 +54,7 @@ import { fail, redirect } from "@sveltejs/kit";
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { coerceSchemaValue } from "$lib/utils/schemaField.js";
-import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+import { campoError, codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 const STATUS_ALLOWLIST = ["open", "closed", "transferred"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -220,6 +220,8 @@ function extractErrorDetail(body, res) {
   return {
     error: codigoError(body) ?? "upstream_error",
     detail: mensajeError(body, `Error ${res.status} al crear el expediente.`),
+    // Propiedad de metadatos que incumple (`a.b`), si el backend la nombra.
+    field: campoError(body),
   };
 }
 
@@ -430,10 +432,11 @@ export const actions = {
     if (!res.ok) {
       // 422 metadata_validation_failed (serie TRD con plantilla activa) u
       // otro error del backend: se propaga el detail al formulario.
-      const { error, detail } = extractErrorDetail(body, res);
+      const { error, detail, field } = extractErrorDetail(body, res);
       return fail(res.status, {
         error,
         detail,
+        field,
         values: { ...formValues, meta: metaRawValues },
       });
     }

@@ -43,13 +43,18 @@ async def _radicar_con(
     doc = await DocumentService(conn, slug).create(
         DocumentCreate(
             doc_type="E",
+            doc_class="Petición",
+            dest_dept_code=1,
             subject=asunto,
             sender_name="quien sea",
             actores=[{"tercero_id": tercero_id, "rol": "remitente", "principal": True}],
         ),
         registered_by=None,
     )
-    await conn.execute("UPDATE radicados SET nivel_seguridad = $2 WHERE id = $1", doc.id, nivel)
+    await conn.execute("UPDATE radicados SET nivel_seguridad = $2, clasificacion_fundamento = "
+        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END WHERE id = $1",
+        doc.id,
+        nivel,)
 
 
 async def _sembrar(tenant_ctx: tuple[str, asyncpg.Connection]):

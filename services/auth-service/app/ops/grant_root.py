@@ -58,10 +58,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import re
 import sys
 
 import asyncpg
+from orpycamcp_common.tenant import slug_valido, tenant_schema
 
 from app.repositories.rbac_repository import RBACRepository
 
@@ -91,17 +91,15 @@ def _require_dsn() -> str:
         )
     return _DSN
 
-# Mismo patrón que el slug validado por tenant-service (core/database._SLUG_RE) —
-# este script es un canal de confianza (acceso directo a la BD, no HTTP), pero
-# igual se valida la forma del slug para no construir un identificador de schema
-# arbitrario a partir de un argumento de línea de comandos.
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,98}$")
+# Este script es un canal de confianza (acceso directo a la BD, no HTTP), pero
+# igual se valida la forma del slug (validador único de `orpycamcp_common.tenant`)
+# para no construir un identificador de schema arbitrario desde la línea de comandos.
 
 
 def _schema_for(slug: str) -> str:
-    if not slug or not _SLUG_RE.match(slug):
+    if not slug_valido(slug):
         raise SystemExit(f"--tenant inválido: {slug!r}")
-    return f"tenant_{slug.replace('-', '_')}"
+    return tenant_schema(slug)
 
 
 async def _grant(conn: asyncpg.Connection, *, tenant: str, username: str, dry_run: bool) -> int:
@@ -135,6 +133,7 @@ async def _grant(conn: asyncpg.Connection, *, tenant: str, username: str, dry_ru
             object_ref=str(updated["id"]),
             actor="system:ops-grant-root",
             payload={"username": updated["username"], "tenant": tenant},
+            canal="system",
         )
     print(f"OK: '{updated['username']}' ({updated['id']}) ahora es ROOT en '{tenant}'")
     return 0

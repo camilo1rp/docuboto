@@ -82,6 +82,7 @@ class PinarService:
             object_ref=object_ref,
             actor=str(actor) if actor else None,
             payload=payload or {},
+            canal=audit.CANAL_PETICION,
         )
 
     # --- helpers -----------------------------------------------------------

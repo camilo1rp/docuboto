@@ -24,6 +24,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.services import origen
 from app.tools.catalog import ArgError, Invocable, Tool, coerce_args
 
 _SIN_CUERPO = ("GET", "DELETE", "HEAD")
@@ -48,15 +49,6 @@ class PreparedCall:
     path: str
     query: dict[str, Any]
     body: dict[str, Any] | None
-
-
-def _forward_headers(authorization: str | None, tenant_slug: str | None) -> dict:
-    headers: dict[str, str] = {}
-    if authorization:
-        headers["Authorization"] = authorization
-    if tenant_slug:
-        headers["X-Tenant-Slug"] = tenant_slug
-    return headers
 
 
 def authorize(
@@ -154,11 +146,13 @@ async def execute(
     idempotency_key: str | None = None,
 ) -> httpx.Response:
     """Envía la llamada ya preparada."""
-    headers = _forward_headers(authorization, tenant_slug)
+    headers = origen.cabeceras_de_origen(authorization, tenant_slug)
     if idempotency_key:
-        # Hoy no la honra ningún servicio (verificado). Se emite igual porque es
-        # inocua y es el gancho para que cada épica la implemente; se documenta
-        # como pendiente, no como garantía.
+        # Ningún servicio la honra como idempotencia (verificado): se emite como
+        # gancho para que cada épica la implemente y, desde AREA-11-04, como
+        # CORRELACIÓN: `audit.append` la copia a `payload.correlacion` en los
+        # asientos de canal 'mcp', atando el asiento a la propuesta firmada que lo
+        # autorizó. Se documenta como pendiente, no como garantía.
         headers["Idempotency-Key"] = idempotency_key
     return await client.request(
         prepared.method,
@@ -176,9 +170,14 @@ async def dispatch(
     *,
     authorization: str | None,
     tenant_slug: str | None,
+    idempotency_key: str | None = None,
 ) -> httpx.Response:
     """Prepara y envía. Se conserva porque es lo que consumen los tres transportes."""
     prepared = build_request(tool, args)
     return await execute(
-        client, prepared, authorization=authorization, tenant_slug=tenant_slug
+        client,
+        prepared,
+        authorization=authorization,
+        tenant_slug=tenant_slug,
+        idempotency_key=idempotency_key,
     )

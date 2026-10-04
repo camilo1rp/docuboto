@@ -88,3 +88,7 @@ class AssistantMessageResponse(BaseModel):
     # no la lea sigue funcionando igual que antes, y por eso el contrato del
     # proxy BFF no necesita despliegue coordinado.
     propuestas: list[Propuesta] = Field(default_factory=list)
+    #: Números de radicado del texto que NO aparecen en ningún resultado de
+    #: consulta de la conversación (AREA-11-04): el modelo los escribió sin que el
+    #: sistema los haya devuelto. Vacía en el caso normal; aditiva, como `propuestas`.
+    no_verificados: list[str] = Field(default_factory=list)

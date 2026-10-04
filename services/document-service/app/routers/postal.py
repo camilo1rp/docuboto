@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -20,6 +21,8 @@ from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_conn, tenant_schema
 from app.schemas.postal import (
     CallbackResult,
+    CredencialRotacion,
+    CredencialRotada,
     ShipmentCreate,
     ShipmentResponse,
     ShipmentStatusUpdate,
@@ -28,6 +31,10 @@ from app.schemas.postal import (
 from app.services.postal_service import PostalService
 
 router = APIRouter(tags=["postal"])
+
+#: Mismo conjunto cerrado que `ShipmentCreate.operador`: un operador desconocido es 422
+#: y no una fila de credencial para un nombre inventado.
+_OperadorPath = Literal["4-72", "servientrega", "otro"]
 
 _USER_HEADER = "X-User-Id"
 
@@ -135,6 +142,30 @@ async def update_estado(
     actor = _caller_id(request)
     svc = PostalService(conn, tenant_slug=request.headers.get("X-Tenant-Slug"))
     return await svc.update_estado(shipment_id, payload, clearance, actor)
+
+
+@router.put(
+    "/api/v1/envios/operadores/{operador}/credencial",
+    response_model=CredencialRotada,
+    summary="Rotar el secreto HMAC del webhook de un operador postal (admin)",
+    # Administración de la entidad: quien tiene este secreto puede declarar
+    # entregados o devueltos los envíos de TODA la entidad, así que es el nivel más
+    # alto de gestión, no el de quien despacha correspondencia.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=5))],
+)
+async def rotar_credencial(
+    operador: _OperadorPath,
+    payload: CredencialRotacion,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> CredencialRotada:
+    """El secreto nuevo entra por el cuerpo y NO se devuelve nunca (ni se asienta).
+
+    Mientras dure `gracia_horas` valen el nuevo y el anterior: el operador cambia el
+    suyo cuando pueda y sus callbacks no caen en 401 a mitad de la rotación.
+    """
+    svc = PostalService(conn, tenant_slug=request.headers.get("X-Tenant-Slug"))
+    return await svc.rotar_credencial(operador, payload, _caller_id(request))
 
 
 @router.get(

@@ -241,6 +241,34 @@ class PersonalSigningService:
                     "status": 422,
                 },
             )
+        # La credencial (y el TOTP que se verificará contra ella) son las del
+        # dueño del BEARER; el acto se atribuye a `X-User-Id`. Si no son la misma
+        # persona se corta aquí, antes de pedir ningún factor ni firmar (AREA-04-05).
+        if str(status_body.get("user_id") or "") != str(actor):
+            if _AUDIT_AVAILABLE:
+                async with self._conn.transaction():
+                    await _audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action="firma.identidad_incoherente",
+                        object_type=payload.objeto_tipo,
+                        object_ref=payload.objeto_id,
+                        actor=str(actor),
+                        payload={"via": "signing_key_status", "ruta": "sign-personal"},
+                        canal=_audit.CANAL_PETICION,
+                    )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "identidad_incoherente",
+                    "detail": (
+                        "La credencial presentada no corresponde al usuario al que se "
+                        "atribuye la firma"
+                    ),
+                    "status": 403,
+                },
+            )
         cert_pem = status_body["cert_pem"]
 
         # --- 4. Firma (propaga HTTPException tal cual en cualquier fallo) ---
@@ -331,6 +359,7 @@ class PersonalSigningService:
                         "version": payload.version,
                         "origen": "manual",
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
 
         d = dict(row)

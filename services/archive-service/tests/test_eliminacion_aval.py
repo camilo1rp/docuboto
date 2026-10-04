@@ -33,7 +33,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, USER_ID
 
 LOTE = uuid.uuid4()
 BASE = f"/api/v1/eliminacion/lotes/{LOTE}"
@@ -62,10 +62,18 @@ def _lote_row(estado="avalado") -> dict:
     }
 
 
-def _diagnostico(estado: str, *, abierta: bool, hasta=date(2026, 9, 30)) -> dict:
+def _diagnostico(
+    estado: str, *, abierta: bool, hasta=date(2026, 9, 30), creado_por=None
+) -> dict:
     """Lo que devuelve la lectura de DIAGNÓSTICO tras una transición fallida.
     No es una guarda: solo compone la frase."""
-    return {"estado": estado, "publicado_hasta": hasta, "publicidad_abierta": abierta}
+    return {
+        "estado": estado,
+        "publicado_hasta": hasta,
+        "publicidad_abierta": abierta,
+        "creado_por": creado_por or uuid.uuid4(),
+        "avalado_por": None,
+    }
 
 
 # ── El aval ──────────────────────────────────────────────────────────────────
@@ -131,6 +139,57 @@ async def test_no_se_avala_con_el_plazo_todavia_abierto_y_el_409_DICE_hasta_cuan
     assert detalle["error"] == "publicidad_en_curso"
     # La fecha va en el mensaje: sin ella, «vuelva más tarde» no dice cuándo.
     assert "2026-09-30" in detalle["detail"]
+
+
+@pytest.mark.asyncio
+async def test_quien_propuso_el_lote_no_lo_avala_y_la_guarda_va_EN_EL_SQL(
+    client_with_conn,
+) -> None:
+    """AREA-06-01: separación de funciones. La guarda es `creado_por <> $5` en
+    el `WHERE` de la transición —no una comprobación previa en Python, que deja
+    una ventana—, y el 409 lo explica con su propio código: el remedio es OTRA
+    persona, no esperar. La prueba contra Postgres real (que el UPDATE no toca
+    fila) vive en `integration/test_eliminacion_lote_estados.py`."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [
+        None,
+        _diagnostico("publicado", abierta=False, creado_por=USER_ID),
+    ]
+
+    resp = await client.post(f"{BASE}/avalar", json=AVAL, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "separacion_de_funciones"
+    sql = mock_conn.fetchrow.await_args_list[0].args[0]
+    assert "creado_por <> $5" in sql, sql
+    # Y el intento deja constancia.
+    asientos = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str)
+        and "INSERT INTO public.audit_log" in c.args[0]
+        and "archive.eliminacion_separacion_denegada" in c.args
+    ]
+    assert asientos
+
+
+@pytest.mark.asyncio
+async def test_avalar_exige_nivel_4_y_no_basta_el_3(client_with_conn) -> None:
+    """El aval habilita la destrucción: pide el nivel que el catálogo reserva a
+    los actos irreversibles. El doble RBAC responde según el `min_crud` que se
+    le pasa de verdad, así que bajar el gate a 3 hace fallar este test."""
+    client, mock_conn = client_with_conn
+
+    async def _rbac(sql, *args):
+        if "gp.crud >= $3" in sql:
+            return args[2] <= 3
+        return 1
+
+    mock_conn.fetchval.side_effect = _rbac
+
+    resp = await client.post(f"{BASE}/avalar", json=AVAL, headers=TENANT_HEADERS)
+    assert resp.status_code == 403
 
 
 @pytest.mark.asyncio

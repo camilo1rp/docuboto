@@ -129,6 +129,7 @@ async def create_webhook(
                 "event_types": payload.event_types,
                 "con_secret": payload.secret is not None,
             },
+            canal=_audit.CANAL_PETICION,
         )
     return WebhookResponse(**dict(row))
 
@@ -179,4 +180,5 @@ async def delete_webhook(
                 "url_sha256": _huella_url(row["url"]),
                 "event_types": list(row["event_types"]),
             },
+            canal=_audit.CANAL_PETICION,
         )

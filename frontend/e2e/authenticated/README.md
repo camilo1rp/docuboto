@@ -14,6 +14,17 @@ determinista y sin infraestructura. Corren con su propio config.
   puerta de sesión de la suite.
 - `login-flow.spec.js`, `bandeja-operador.spec.js`, `asistente-dock.spec.js` — los
   flujos de operador.
+- **`rbac-restringido.spec.js`** — dos perfiles: `consulta` (sin `USUA_PERM_ADMIN`)
+  no ve «Administración» y forzar `/admin/usuarios` o `/admin/trd` termina en
+  `/403`; `e2e2` sí entra. `consulta` es del grupo «Consulta (solo lectura, nivel 1)»
+  de `scripts/seed_demo.py` (y está en `infra/keycloak/realm-dev.json`).
+- **`firma-gate-orden.spec.js`** — el gate de orden de la firma (AREA-05-08): sobre el
+  borrador con circuito de dos turnos que siembra `seed_demo.py` (texto editado tras
+  abrirlo), un usuario fuera de la cadena (`e2e1`) recibe `403 no_es_firmante` sin
+  `documento_modificado` ni `version`, y el firmante con turno (`jefe`), `409
+  documento_modificado` (control positivo).
+- **`axe-vistas-clave.spec.js`** — `@axe-core/playwright` en 7 vistas clave, WCAG 2.1
+  AA: falla con violaciones `serious`/`critical`.
 - **`adaptabilidad-app.spec.js`** — 17 pantallas × 3 anchos (móvil 390, portátil
   1366, escritorio 1920), midiendo desplazamiento horizontal y tablas estrujadas
   con un navegador de verdad. Existe porque ese defecto lo reportó una persona

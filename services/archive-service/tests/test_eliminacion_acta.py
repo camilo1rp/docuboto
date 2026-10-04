@@ -108,6 +108,8 @@ def _acta_row(*, firma_estado="pendiente_firma", last_error=None) -> dict:
         "worm_object_id": None,
         "worm_retain_until": None,
         "worm_last_error": None,
+        "worm_reconcile_intentos": 0,
+        "worm_reconcile_agotado": False,
     }
 
 
@@ -389,16 +391,45 @@ async def test_reintentar_una_ya_firmada_no_es_un_error(client_with_conn) -> Non
     # reconciliación, así que el doble tiene que devolverlo de verdad.
     mock_conn.execute.return_value = "UPDATE 1"
     mock_conn.fetchval.return_value = 1
+    protegida = {**_acta_row(firma_estado="firmado"), "worm_protegido_at": datetime.now(tz=UTC)}
     mock_conn.fetchrow.side_effect = [
-        _acta_row(firma_estado="firmado"),  # el retry lee el acta
-        _acta_row(firma_estado="firmado"),  # y la relee para responder
+        protegida,  # el retry lee el acta
+        protegida,  # y la relee para responder
         _CLEARANCE,
     ]
 
-    resp = await client.post(f"{BASE}/acta/firmar", headers=TENANT_HEADERS)
+    with _worm(_WormOk()) as proteger:
+        resp = await client.post(f"{BASE}/acta/firmar", headers=TENANT_HEADERS)
 
     assert resp.status_code == 200
     assert resp.json()["firma_estado"] == "firmado"
+    # Firmada Y protegida: no hay nada que reintentar.
+    proteger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reintentar_una_firmada_SIN_candado_completa_el_candado(client_with_conn) -> None:
+    """AREA-06-02: `ejecutar` exige el candado, y el único desbloqueo manual
+    (`/acta/firmar`) devolvía en cuanto veía `firmado` sin reintentar el WORM:
+    un acta firmada y sin candado no tenía salida salvo esperar a un job que no
+    existía."""
+    client, mock_conn = client_with_conn
+    mock_conn.execute.return_value = "UPDATE 1"
+    mock_conn.fetchval.return_value = 1
+    firmada = _acta_row(firma_estado="firmado")  # worm_protegido_at = None
+    mock_conn.fetchrow.side_effect = [
+        firmada,  # el retry lee el acta
+        firmada,  # el cableado la relee
+        firmada,  # y responde
+        _CLEARANCE,
+    ]
+
+    with _worm(_WormOk()) as proteger:
+        resp = await client.post(f"{BASE}/acta/firmar", headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200
+    proteger.assert_awaited_once()
+    assert proteger.await_args.kwargs["objeto_tipo"] == "lote"
 
 
 # ── Leerla: entera o nada ────────────────────────────────────────────────────
@@ -585,6 +616,61 @@ async def test_si_el_candado_falla_el_ACTA_SIGUE_firmada(client_with_conn) -> No
     assert resp.json()["firma_estado"] == "firmado"
     sql = " ".join(str(c.args[0]) for c in mock_conn.execute.call_args_list)
     assert "worm_last_error" in sql
+    # AREA-06-02: y el fallo PROGRAMA su reintento. Antes solo contaba el
+    # intento: `worm_reconcile_proximo_at` quedaba NULL y la fila sin dueño.
+    assert "worm_reconcile_proximo_at" in sql
+    llamada = next(
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "worm_last_error = $2" in c.args[0]
+    )
+    # (sql, lote_id, motivo, proximo_at, agotado)
+    assert llamada[2] == "worm_no_obtenido"
+    assert llamada[3] is not None and llamada[3] > datetime.now(tz=UTC)
+    assert llamada[4] is False
+
+
+@pytest.mark.asyncio
+async def test_agotados_los_intentos_el_acta_se_marca_agotada_y_deja_asiento(
+    client_with_conn,
+) -> None:
+    """Sin proximo_at y con asiento de sistema: la visibilidad de un acta que
+    ya no se reintenta sola."""
+    from app.core.config import settings
+
+    client, mock_conn = client_with_conn
+    _entorno_firmada(mock_conn)
+    # La fila que lee el cableado ya trae los intentos previos al umbral.
+    previa = {
+        **_acta_row(firma_estado="firmado"),
+        "worm_reconcile_intentos": settings.indice_reconciliation_max_intentos - 1,
+    }
+    mock_conn.fetchrow.side_effect = [
+        {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
+        _lote_row(),
+        {"id": LOTE},
+        previa,
+        previa,
+        _CLEARANCE,
+    ]
+
+    with _sellado(signed=_Firmada()), _worm(_WormFallo()):
+        await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
+
+    llamada = next(
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "worm_last_error = $2" in c.args[0]
+    )
+    assert llamada[3] is None and llamada[4] is True
+    asientos = [
+        c.args
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str)
+        and "INSERT INTO public.audit_log" in c.args[0]
+        and "archive.eliminacion_acta_worm_reconcile_agotado" in c.args
+    ]
+    assert asientos
 
 
 @pytest.mark.asyncio

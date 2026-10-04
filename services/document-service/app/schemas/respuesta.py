@@ -22,6 +22,11 @@ class RespuestaRapidaCreate(BaseModel):
     subject: str | None = Field(default=None, max_length=2000)
     dest_dept: str | None = Field(default=None, max_length=100)
     dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    #: Ac. AGN 060/2001 §5.2: una Salida exige origen y tipo documental. Si se
+    #: omiten, hereda los del antecedente: la dependencia que RECIBIÓ la Entrada
+    #: es la que responde, y el tipo se toma del antecedente hasta que se tipifique.
+    origin_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    doc_class: str | None = Field(default=None, max_length=100)
     observations: str | None = None
     response_days: int | None = Field(default=None, ge=1, le=3650)
     metadata: dict[str, Any] = Field(default_factory=dict)

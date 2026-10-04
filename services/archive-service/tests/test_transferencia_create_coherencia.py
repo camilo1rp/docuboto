@@ -33,7 +33,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS, USER_ID, make_expediente_record
+from tests.conftest import (
+    TENANT_HEADERS,
+    USER_ID,
+    indice_firmado_row,
+    make_expediente_record,
+)
 
 NOW = datetime.now(tz=UTC)
 
@@ -52,6 +57,21 @@ def _ubicacion_row(**kw) -> dict:
     }
     base.update(kw)
     return base
+
+
+def _unidad(ubicacion_id: uuid.UUID) -> dict:
+    """Una unidad de conservación del expediente EN `ubicacion_id`: su tenencia física
+    localizada. Con el par origen/destino aportado hace falta (AREA-07-06): sin tenencia
+    el par es 422 `ubicacion_sin_tenencia` y estos tests no llegarían a la coherencia."""
+    return {
+        "unidad_id": uuid.uuid4(),
+        "tipo": "caja",
+        "codigo": "C-1",
+        "signatura": "S-1",
+        "ubicacion_id": ubicacion_id,
+        "folio_inicio": 1,
+        "folio_fin": 10,
+    }
 
 
 def _transfer_row(**kw) -> dict:
@@ -128,10 +148,11 @@ async def test_create_primaria_origen_incoherente_422(client_with_conn) -> None:
     # primaria exige gestion->central; aquí origen es 'central' (incoherente).
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_id, tipo_archivo="central"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(origen_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -159,10 +180,11 @@ async def test_create_primaria_destino_incoherente_422(client_with_conn) -> None
     # origen correcto (gestion), destino incoherente (esperado central, es historico).
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_id, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="historico"),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(origen_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -195,10 +217,11 @@ async def test_create_secundaria_origen_incoherente_422(client_with_conn) -> Non
     # secundaria exige central->historico; origen aquí es 'gestion' (incoherente).
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_id, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="historico"),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(origen_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -226,10 +249,11 @@ async def test_create_secundaria_destino_incoherente_422(client_with_conn) -> No
     # origen correcto (central), destino incoherente (esperado historico, es gestion).
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_id, tipo_archivo="central"),
         _ubicacion_row(id=destino_id, tipo_archivo="gestion"),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(origen_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -263,8 +287,9 @@ async def test_create_origen_igual_destino_422(client_with_conn) -> None:
     # llegar a `FisicoRepository.get_ubicacion` (sin fetchrow adicional).
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(same_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -297,10 +322,11 @@ async def test_create_ubicacion_origen_not_found_422(client_with_conn) -> None:
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         None,  # ubicacion_origen_id no existe
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(origen_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -333,6 +359,7 @@ async def test_create_primaria_coherente_201(client_with_conn) -> None:
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_id, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
@@ -344,7 +371,7 @@ async def test_create_primaria_coherente_201(client_with_conn) -> None:
             ubicacion_destino_id=destino_id,
         ),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(origen_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -376,6 +403,7 @@ async def test_create_secundaria_coherente_201(client_with_conn) -> None:
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_id, tipo_archivo="central"),
         _ubicacion_row(id=destino_id, tipo_archivo="historico"),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
@@ -388,7 +416,7 @@ async def test_create_secundaria_coherente_201(client_with_conn) -> None:
             ubicacion_destino_id=destino_id,
         ),
     ]
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = [[], [_unidad(origen_id)]]
 
     resp = await client.post(
         "/api/v1/transferencias",
@@ -428,6 +456,7 @@ async def test_create_solo_origen_sin_destino_422(client_with_conn) -> None:
     # corta antes.
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
     ]
     mock_conn.fetch.return_value = []
 
@@ -454,6 +483,7 @@ async def test_create_solo_destino_sin_origen_422(client_with_conn) -> None:
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
     ]
     mock_conn.fetch.return_value = []
 
@@ -482,6 +512,7 @@ async def test_create_sin_ninguna_ubicacion_201_topologia_opcional(client_with_c
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
         # quien prepara, resuelta antes del INSERT.
         _depe_row(),

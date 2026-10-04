@@ -40,9 +40,11 @@ from jwt import PyJWTError
 
 from app.core.authz import Caller, get_caller, require_permission
 from app.core.database import get_db_conn, get_tenant_conn, tenant_schema
+from app.core.internal_auth import require_internal_token
 from app.core.security import validate_token
 from app.repositories.rbac_repository import RBACRepository
 from app.schemas.totp import (
+    InternalTotpStatusResponse,
     InternalTotpVerifyRequest,
     InternalTotpVerifyResponse,
     TotpActivateRequest,
@@ -293,9 +295,14 @@ async def internal_verify_totp(
         user = await rbac.get_user_by_keycloak_sub(claims["user_id"])
         if user is None:
             return InternalTotpVerifyResponse(valido=False, motivo="no_activo")
-        return await TotpService(conn).verify(
+        resultado = await TotpService(conn).verify(
             user["id"], tenant_slug, payload.code, contexto=payload.contexto
         )
+        if resultado.valido:
+            # Dice DE QUIÉN era el factor verificado: el llamante lo cruza con el
+            # actor al que atribuye el acto (AREA-04-05).
+            resultado = resultado.model_copy(update={"user_id": user["id"]})
+        return resultado
     except asyncpg.UndefinedTableError:
         # Tenant not provisioned yet — same fail-closed criterion as AuthService.validate().
         logger.warning(
@@ -303,6 +310,68 @@ async def internal_verify_totp(
             tenant_slug,
         )
         return InternalTotpVerifyResponse(valido=False, motivo="no_activo")
+    finally:
+        try:
+            await conn.execute("SET search_path = public")
+        except Exception:
+            pass
+
+
+@internal_router.get(
+    "/status",
+    response_model=InternalTotpStatusResponse,
+    dependencies=[Depends(require_internal_token)],
+    summary="Does the bearer's owner have an ACTIVE TOTP? (signature-service only)",
+)
+async def internal_totp_status(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> InternalTotpStatusResponse:
+    """Lo consulta signature-service para NO aceptar el OTP-correo de quien ya
+    tiene un TOTP activo en un acto de nivel >= 2 (AREA-04-02): el factor más
+    débil de los dos enrolados no puede ser el que se exija.
+
+    Doble gate como ``/internal/signing-key/status``: ``X-Internal-Token`` (el
+    llamador es un servicio) y la identidad derivada del ``Authorization``
+    reenviado (D1: nunca de un parámetro). Content-free: solo ``activo`` y el
+    ``user_id`` del dueño del bearer. Fail-closed: sin tenant, sin usuario
+    aprovisionado o tenant sin aprovisionar -> ``activo=False`` sin ``user_id``
+    (el llamante trata la falta de ``user_id`` como identidad no confirmada).
+    """
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "missing_token", "detail": "Falta la cabecera Authorization", "status": 401},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        claims = await validate_token(credentials.credentials)
+    except PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "invalid_token", "detail": "El token es inválido o expiró", "status": 401},
+        )
+
+    tenant_slug = claims.get("tenant_slug")
+    if not tenant_slug:
+        return InternalTotpStatusResponse(activo=False)
+
+    schema = tenant_schema(tenant_slug)
+    await conn.execute(f'SET search_path = "{schema}", public')
+    try:
+        user = await RBACRepository(conn).get_user_by_keycloak_sub(claims["user_id"])
+        if user is None:
+            return InternalTotpStatusResponse(activo=False)
+        estado = await TotpService(conn).status(user["id"])
+        return InternalTotpStatusResponse(
+            activo=estado.estado == "activo", user_id=user["id"]
+        )
+    except asyncpg.UndefinedTableError:
+        logger.warning(
+            "internal_totp_status: tenant '%s' not provisioned; treating as inactive",
+            tenant_slug,
+        )
+        return InternalTotpStatusResponse(activo=False)
     finally:
         try:
             await conn.execute("SET search_path = public")

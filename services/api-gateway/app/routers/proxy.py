@@ -116,6 +116,7 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # USUA_PERM_EXPEDIENTE:3 ocupaba el singleton WORM irreversible de
         # cualquier expediente con un file_id arbitrario. Una subruta nueva de
         # storage queda cerrada hasta que se admita aquí a propósito.
+        ("/api/v1/preservacion/estado", app_state.storage_service_url),
         ("/api/v1/preservacion/plan", app_state.storage_service_url),
         ("/api/v1/preservacion/eventos", app_state.storage_service_url),
         ("/api/v1/preservacion/migrar-formato", app_state.storage_service_url),
@@ -160,6 +161,12 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/knowledge/search", app_state.knowledge_service_url),
         ("/api/v1/knowledge/antecedentes", app_state.knowledge_service_url),
         ("/api/v1/knowledge/rag", app_state.knowledge_service_url),
+        # CC-02: aceptación humana de una sugerencia del RAG (solo quien la generó).
+        ("/api/v1/knowledge/suggestions/", app_state.knowledge_service_url),
+        # Admin DLQ (AREA-10-10): inspección y reproceso del dead-letter de la
+        # ingesta. Cada ruta exige PERM_DLQ_ADMIN en knowledge-service; /ingest
+        # sigue sin enrutarse.
+        ("/api/v1/knowledge/admin/", app_state.knowledge_service_url),
     ]
     # Also match exact prefix without trailing slash
     for prefix, base_url in routing:

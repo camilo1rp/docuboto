@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.clients.document_client import DocumentPurgaError
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, USER_ID
 
 LOTE = uuid.uuid4()
 RUTA = f"/api/v1/eliminacion/lotes/{LOTE}/ejecutar"
@@ -42,11 +42,19 @@ EXP_A = uuid.uuid4()
 EXP_B = uuid.uuid4()
 
 
-def _estado(estado="avalado") -> dict:
-    return {"estado": estado, "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False}
+def _estado(estado="avalado", *, avalado_por=None) -> dict:
+    return {
+        "estado": estado,
+        "publicado_hasta": date(2026, 8, 15),
+        "publicidad_abierta": False,
+        "creado_por": uuid.uuid4(),
+        # Distinto del llamante de los tests (`USER_ID`): la separación de
+        # funciones exige que quien ejecuta no sea quien avaló.
+        "avalado_por": avalado_por or uuid.uuid4(),
+    }
 
 
-def _acta(firma_estado="firmado", last_error=None) -> dict:
+def _acta(firma_estado="firmado", last_error=None, *, worm=True) -> dict:
     return {
         "lote_id": LOTE,
         "acta_xml": "<actaEliminacion/>",
@@ -62,6 +70,9 @@ def _acta(firma_estado="firmado", last_error=None) -> dict:
         "acreditado": False,
         "last_error": last_error,
         "firmado_at": datetime(2026, 8, 29, tzinfo=UTC),
+        # AREA-06-02: `ejecutar` exige el candado WORM del acta.
+        "worm_protegido_at": datetime(2026, 8, 29, tzinfo=UTC) if worm else None,
+        "worm_last_error": None,
     }
 
 
@@ -182,12 +193,60 @@ async def test_un_lote_inexistente_da_404(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ejecutar_exige_nivel_3(client_with_conn) -> None:
+async def test_ejecutar_exige_nivel_4_y_no_basta_el_3(client_with_conn) -> None:
+    """AREA-06-01: ejecutar y avalar piden crud 4 (el más alto que el catálogo
+    reserva a los actos irreversibles), no el 3 de las fases reversibles. El
+    doble de la consulta RBAC responde según el `min_crud` que de verdad se le
+    pasa, así que un gate bajado a 3 deja de dar 403 y este test lo ve."""
     client, mock_conn = client_with_conn
-    mock_conn.fetchval.return_value = 0
+
+    async def _rbac(sql, *args):
+        if "gp.crud >= $3" in sql:
+            return args[2] <= 3  # el llamante tiene nivel 3
+        return 1
+
+    mock_conn.fetchval.side_effect = _rbac
 
     resp = await client.post(RUTA, headers=TENANT_HEADERS)
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_NO_ejecuta_quien_avalo_y_NO_se_destruye_nada(client_with_conn) -> None:
+    """AREA-06-01: separación de funciones. La guarda va ANTES del bucle de
+    destrucción; con la guarda movida después, el spy contaría una purga y el
+    expediente ya estaría borrado cuando se dijera que no."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.side_effect = [_estado(avalado_por=USER_ID)]
+
+    with _purga() as purga:
+        resp = await client.post(RUTA, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "separacion_de_funciones"
+    purga.assert_not_awaited()
+    sql = " ".join(str(c.args[0]) for c in mock_conn.execute.call_args_list)
+    assert "DELETE FROM expedientes" not in sql
+    assert "INSERT INTO expediente_lapida" not in sql
+
+
+@pytest.mark.asyncio
+async def test_NO_se_destruye_con_el_acta_firmada_pero_sin_candado_WORM(
+    client_with_conn,
+) -> None:
+    """AREA-06-02: el acta es lo único que sobrevive a lo eliminado; sin
+    candado, el objeto firmado podría borrarse del almacén justo después."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.side_effect = [_estado(), _acta(worm=False)]
+
+    with _purga() as purga:
+        resp = await client.post(RUTA, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "acta_sin_worm"
+    purga.assert_not_awaited()
 
 
 # ── La destrucción ───────────────────────────────────────────────────────────

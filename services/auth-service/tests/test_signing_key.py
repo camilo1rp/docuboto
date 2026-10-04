@@ -232,6 +232,7 @@ def _key_row(
     certificado_fingerprint: str | None = None,
     user_ca_fingerprint: str | None = None,
     revocado_at: datetime | None = None,
+    motivo_revocacion: str | None = None,
 ) -> dict:
     private_key = private_key or generate_keypair()
     private_key_pem = private_key_to_pem(private_key)
@@ -260,7 +261,7 @@ def _key_row(
         # Incremento 2 (Baja #4) — revocación + anclaje de la sub-CA.
         "revocado_at": revocado_at,
         "revocado_por": None,
-        "motivo_revocacion": None,
+        "motivo_revocacion": motivo_revocacion,
         "certificado_fingerprint": certificado_fingerprint,
         "user_ca_fingerprint": user_ca_fingerprint,
     }
@@ -739,6 +740,9 @@ async def test_internal_status_resolves_from_bearer(
         _clear()
     assert resp.status_code == 200, resp.text
     assert resp.json()["estado"] == "activo"
+    # AREA-04-05: dice DE QUIÉN es la credencial, para que signature-service la
+    # cruce con el actor al que atribuye el acto.
+    assert resp.json()["user_id"] == str(_user_row()["id"])
     assert "PRIVATE KEY" not in resp.text
 
 
@@ -1203,7 +1207,7 @@ async def test_self_revoke_success_atomic_with_audit(
         resp = await client.request(
             "DELETE",
             "/api/v1/auth/me/signing-key",
-            json={"step_up_totp_code": code, "motivo": "sospecha de compromiso"},
+            json={"step_up_totp_code": code, "motivo": "key_compromise"},
             headers=TENANT_HEADERS,
         )
     finally:
@@ -1219,7 +1223,7 @@ async def test_self_revoke_success_atomic_with_audit(
     assert "revocado_por" in revoke_calls[0].args[0]
     assert revoke_calls[0].args[1] == active_row["id"]
     assert revoke_calls[0].args[2] == USER_ID  # revocado_por = el propio titular
-    assert revoke_calls[0].args[3] == "sospecha de compromiso"
+    assert revoke_calls[0].args[3] == "key_compromise"
 
     revocada_calls = [
         c for c in _patch_audit.await_args_list if c.kwargs.get("action") == "signing_key.revocada"
@@ -1229,7 +1233,7 @@ async def test_self_revoke_success_atomic_with_audit(
     assert kwargs["actor"] == str(USER_ID)
     assert kwargs["object_ref"] == str(USER_ID)
     assert kwargs["payload"]["via"] == "self"
-    assert kwargs["payload"]["motivo"] == "sospecha de compromiso"
+    assert kwargs["payload"]["motivo"] == "key_compromise"
 
 
 @pytest.mark.asyncio
@@ -1250,7 +1254,7 @@ async def test_self_revoke_fails_closed_without_audit_lib(
         resp = await client.request(
             "DELETE",
             "/api/v1/auth/me/signing-key",
-            json={"step_up_totp_code": "000000", "motivo": "sospecha de compromiso"},
+            json={"step_up_totp_code": "000000", "motivo": "key_compromise"},
             headers=TENANT_HEADERS,
         )
     finally:
@@ -1329,7 +1333,7 @@ async def test_admin_revoke_success_atomic_with_audit(
     try:
         resp = await client.post(
             f"/api/v1/auth/admin/users/{OTHER_USER_ID}/signing-key/revoke",
-            json={"motivo": "offboarding"},
+            json={"motivo": "cessation_of_operation"},
             headers=TENANT_HEADERS,
         )
     finally:
@@ -1351,7 +1355,7 @@ async def test_admin_revoke_success_atomic_with_audit(
     assert kwargs["actor"] == str(USER_ID)  # el admin, NO el titular
     assert kwargs["object_ref"] == str(OTHER_USER_ID)  # el titular revocado
     assert kwargs["payload"]["via"] == "admin"
-    assert kwargs["payload"]["motivo"] == "offboarding"
+    assert kwargs["payload"]["motivo"] == "cessation_of_operation"
 
 
 @pytest.mark.asyncio
@@ -1375,7 +1379,7 @@ async def test_admin_revoke_fails_closed_without_audit_lib(
     try:
         resp = await client.post(
             f"/api/v1/auth/admin/users/{OTHER_USER_ID}/signing-key/revoke",
-            json={"motivo": "offboarding"},
+            json={"motivo": "cessation_of_operation"},
             headers=TENANT_HEADERS,
         )
     finally:
@@ -1441,7 +1445,10 @@ async def test_revocation_status_revocado(client: AsyncClient) -> None:
     revoked_at = datetime.now(UTC)
     conn.fetchrow.side_effect = [
         _key_row(
-            estado="revocado", certificado_fingerprint="deadbeef", revocado_at=revoked_at
+            estado="revocado",
+            certificado_fingerprint="deadbeef",
+            revocado_at=revoked_at,
+            motivo_revocacion="key_compromise",
         )
     ]
     _override_internal(conn)
@@ -1457,6 +1464,43 @@ async def test_revocation_status_revocado(client: AsyncClient) -> None:
     body = resp.json()
     assert body["status"] == "revocado"
     assert body["revocado_at"] is not None
+    # /verify de signature-service lo usa para invalidar hacia atrás.
+    assert body["motivo_revocacion"] == "key_compromise"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ruta", ["self", "admin"])
+async def test_revoke_rechaza_motivo_fuera_del_vocabulario(
+    client: AsyncClient, ruta: str
+) -> None:
+    """El motivo es un código cerrado (RFC 5280), no texto libre: sin él /verify
+    no puede distinguir una salida de personal de un compromiso de clave."""
+    conn = _make_conn()
+    admin_caller = Caller(
+        user_id=USER_ID,
+        keycloak_sub="admin-sub",
+        is_root=False,
+        permissions={"USUA_PERM_ADMIN": 3},
+    )
+    _override_public(conn, caller=admin_caller if ruta == "admin" else None)
+    try:
+        if ruta == "self":
+            resp = await client.request(
+                "DELETE",
+                "/api/v1/auth/me/signing-key",
+                json={"step_up_totp_code": "000000", "motivo": "sospecha de compromiso"},
+                headers=TENANT_HEADERS,
+            )
+        else:
+            resp = await client.post(
+                f"/api/v1/auth/admin/users/{OTHER_USER_ID}/signing-key/revoke",
+                json={"motivo": "offboarding"},
+                headers=TENANT_HEADERS,
+            )
+    finally:
+        _clear()
+    assert resp.status_code == 422, resp.text
+    conn.fetchrow.assert_not_awaited()
 
 
 @pytest.mark.asyncio

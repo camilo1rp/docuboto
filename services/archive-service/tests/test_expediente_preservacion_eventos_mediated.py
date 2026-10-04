@@ -16,6 +16,8 @@ Call sequence (ArchiveService.get_eventos_preservacion):
   fetchval — D-08 gate (require_permission)
   fetchrow — resolve_caller_clearance (caller_clearance)
   fetchrow — get_expediente_by_id (visibilidad, filtrada por clearance)
+  fetchrow — AipRepository.get_aip_object_id (AREA-07-15: el AIP es un `object_ref` más)
+  [document_client.fetch_anexos_internal — solo si hay radicados vigentes]
   [storage_client.list_eventos — HTTP mediado, mockeado aparte]
 """
 
@@ -60,6 +62,7 @@ async def test_get_eventos_sufficient_clearance_returns_eventos(
     mock_conn.fetchrow.side_effect = [
         {"is_root": True, "max_level": None},  # resolve_caller_clearance
         exp,  # get_expediente_by_id (visible: 3 <= 3)
+        None,  # get_aip_object_id: sin AIP todavía
     ]
     mock_conn.fetch.return_value = []
     payload = [_evento_payload(object_ref=str(EXPEDIENTE_ID))]
@@ -78,7 +81,7 @@ async def test_get_eventos_sufficient_clearance_returns_eventos(
     assert body[0]["object_ref"] == str(EXPEDIENTE_ID)
     assert body[0]["detalle"]["algoritmo"] == "SHA-256"
     mock_list_eventos.assert_awaited_once_with(
-        tenant_slug="demo", object_ref=str(EXPEDIENTE_ID)
+        tenant_slug="demo", object_refs=[str(EXPEDIENTE_ID)]
     )
 
 
@@ -92,7 +95,7 @@ async def test_get_eventos_empty_list_is_200_not_404(
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=1)
     mock_conn.fetchval.return_value = True
-    mock_conn.fetchrow.side_effect = [None, exp]
+    mock_conn.fetchrow.side_effect = [None, exp, None]
     mock_conn.fetch.return_value = []
 
     with patch(
@@ -119,7 +122,7 @@ async def test_get_eventos_deja_asiento_de_acceso(
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
     mock_conn.fetchval.return_value = True
-    mock_conn.fetchrow.side_effect = [{"is_root": True, "max_level": None}, exp]
+    mock_conn.fetchrow.side_effect = [{"is_root": True, "max_level": None}, exp, None]
     mock_conn.fetch.return_value = []
     payload = [_evento_payload(object_ref=str(EXPEDIENTE_ID))]
     append = AsyncMock()
@@ -197,7 +200,7 @@ async def test_get_eventos_storage_unavailable_returns_503(
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=1)
     mock_conn.fetchval.return_value = True  # D-08 gate granted
-    mock_conn.fetchrow.side_effect = [None, exp]
+    mock_conn.fetchrow.side_effect = [None, exp, None]
     mock_conn.fetch.return_value = []
 
     with patch(
@@ -232,3 +235,82 @@ async def test_get_eventos_requires_permission_gate(
 
     assert response.status_code == 403
     mock_list_eventos.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# AREA-07-15 — los eventos de ficheros y AIP también son del expediente
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_eventos_incluye_el_aip_y_los_file_id_de_los_anexos(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """`list_eventos` recibe el expediente, el id del AIP y los `file_id` de los anexos
+    VIGENTES; antes solo el expediente y la pestaña Preservación omitía el resto."""
+    from tests.conftest import make_radicado_link_record
+
+    client, mock_conn = client_with_conn
+    exp = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=1)
+    rad_vigente, rad_excluido = uuid.uuid4(), uuid.uuid4()
+    aip_id, file_a, file_b = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [None, exp, {"aip_worm_object_id": aip_id}]
+    mock_conn.fetch.return_value = [
+        make_radicado_link_record(radicado_id=rad_vigente, estado="vinculado"),
+        make_radicado_link_record(radicado_id=rad_excluido, estado="excluido"),
+    ]
+    anexos = {
+        str(rad_vigente): [
+            {"file_id": str(file_a), "filename": "a.pdf"},
+            {"file_id": str(file_b), "filename": "b.pdf"},
+        ]
+    }
+
+    with (
+        patch("app.clients.document_client.fetch_anexos_internal", new=AsyncMock(return_value=anexos)) as doc,
+        patch("app.clients.storage_client.list_eventos", new=AsyncMock(return_value=[])) as lista,
+    ):
+        response = await client.get(
+            f"/api/v1/expedientes/{EXPEDIENTE_ID}/preservacion/eventos",
+            headers=TENANT_HEADERS,
+        )
+
+    assert response.status_code == 200
+    refs = lista.await_args.kwargs["object_refs"]
+    assert refs == [str(EXPEDIENTE_ID), str(aip_id), str(file_a), str(file_b)]
+    # solo los radicados vigentes, y con el clearance del llamante (sin fuga de existencia)
+    assert doc.await_args.kwargs["radicado_ids"] == [rad_vigente]
+    assert doc.await_args.kwargs["max_clearance"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_eventos_con_document_service_caido_es_503_no_una_lista_parcial(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Una lista de eventos sin los de los ficheros presentada como completa es peor que
+    un error: fail-closed."""
+    from app.clients.document_client import DocumentClientError
+    from tests.conftest import make_radicado_link_record
+
+    client, mock_conn = client_with_conn
+    exp = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=1)
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [None, exp, None]
+    mock_conn.fetch.return_value = [make_radicado_link_record(estado="vinculado")]
+
+    with (
+        patch(
+            "app.clients.document_client.fetch_anexos_internal",
+            new=AsyncMock(side_effect=DocumentClientError("caído")),
+        ),
+        patch("app.clients.storage_client.list_eventos", new=AsyncMock(return_value=[])) as lista,
+    ):
+        response = await client.get(
+            f"/api/v1/expedientes/{EXPEDIENTE_ID}/preservacion/eventos",
+            headers=TENANT_HEADERS,
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "document_service_unavailable"
+    lista.assert_not_awaited()

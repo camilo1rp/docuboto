@@ -102,7 +102,8 @@ async def test_el_asunto_de_un_radicado_reclasificado_por_encima_del_nivel_no_se
         await _procesar(slug, job)
         # El radicado del ítem 1 se reclasifica DESPUÉS a reservado (nivel 3).
         await conn.execute(
-            "UPDATE radicados SET nivel_seguridad = 3 WHERE id = "
+            "UPDATE radicados SET nivel_seguridad = 3, "
+            "clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)' WHERE id = "
             "(SELECT result_id FROM batch_job_items WHERE job_id = $1 AND item_index = 1)",
             job,
         )

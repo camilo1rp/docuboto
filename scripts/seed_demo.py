@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import os
 import sys
 from typing import Any
@@ -155,6 +156,16 @@ PERMISOS_DEMO = (
 # `PERM_RECLASIFICAR` y aun así no ver nunca un documento reservado — y el
 # recorrido de clasificación quedaría enseñando una pantalla vacía.
 CLEARANCE_DEMO = 3  # 1=Pública 2=Reservada 3=Clasificada
+
+# Avalar y ejecutar un lote de eliminación piden `USUA_PERM_TRD` con crud>=4
+# (AREA-06-01): son los actos que habilitan y ejecutan la destrucción, y el nivel
+# 3 de las fases reversibles ya no basta. Sin ningún perfil con 4 el recorrido
+# de eliminación del demo queda cortado en el aval, y se lee como «la pantalla
+# no funciona». Los DOS grupos de gestión lo llevan (`secretaria` y los
+# firmantes), así que propone una persona, avala otra y ejecuta una tercera: la
+# separación de funciones (quien propone no avala, quien avala no ejecuta) se
+# puede recorrer entera. `consulta` NO lo tiene.
+CRUD_POR_PERMISO_GESTION = {"USUA_PERM_TRD": 4}
 
 # Tercer grupo, con el MISMO juego de permisos y nivel CRUD que el demo pero
 # clearance **2**. Existe por una razón concreta: con solo los niveles 1 y 3, el
@@ -520,6 +531,7 @@ async def _montar_grupo(
     crud: int,
     clearance: int,
     miembros: tuple[str, ...],
+    crud_por_permiso: dict[str, int] | None = None,
 ) -> int:
     """Crea (o converge) un grupo con sus permisos, su clearance y su gente.
 
@@ -561,6 +573,15 @@ async def _montar_grupo(
         list(permisos),
         crud,
     )
+    # Excepciones de nivel por permiso: el resto del grupo queda en `crud`.
+    for permiso, nivel in (crud_por_permiso or {}).items():
+        await conn.execute(
+            "UPDATE auth_group_permissions SET crud = $3 WHERE group_id = $1 "
+            "AND permission_id = (SELECT id FROM auth_permissions WHERE nombre = $2)",
+            grupo_id,
+            permiso,
+            nivel,
+        )
     await conn.execute(
         "INSERT INTO role_clearance (group_id, max_level) VALUES ($1, $2) "
         "ON CONFLICT (group_id) DO UPDATE SET max_level = EXCLUDED.max_level",
@@ -674,6 +695,7 @@ async def aprovisionar(api_base: str) -> None:
             nombre=GRUPO_DEMO,
             permisos=PERMISOS_DEMO,
             crud=3,
+            crud_por_permiso=CRUD_POR_PERMISO_GESTION,
             clearance=CLEARANCE_DEMO,
             # Todos los firmantes al mismo grupo: este demo enseña QUÉ hace el
             # sistema, no cómo repartir competencias entre cargos. Un reparto de
@@ -682,7 +704,7 @@ async def aprovisionar(api_base: str) -> None:
             miembros=(USUARIO, *(f for f in FIRMANTES if f != USUARIO_INTERMEDIO)),
         )
         ok(
-            f"«{GRUPO_DEMO}» con {n_demo} permisos, nivel CRUD 3, "
+            f"«{GRUPO_DEMO}» con {n_demo} permisos, nivel CRUD 3 (TRD en 4), "
             f"clearance {CLEARANCE_DEMO}; «{USUARIO}» dentro"
         )
 
@@ -691,11 +713,12 @@ async def aprovisionar(api_base: str) -> None:
             nombre=GRUPO_INTERMEDIO,
             permisos=PERMISOS_DEMO,
             crud=3,
+            crud_por_permiso=CRUD_POR_PERMISO_GESTION,
             clearance=CLEARANCE_INTERMEDIO,
             miembros=(USUARIO_INTERMEDIO,),
         )
         ok(
-            f"«{GRUPO_INTERMEDIO}» con {n_med} permisos, nivel CRUD 3, "
+            f"«{GRUPO_INTERMEDIO}» con {n_med} permisos, nivel CRUD 3 (TRD en 4), "
             f"clearance {CLEARANCE_INTERMEDIO}; «{USUARIO_INTERMEDIO}» dentro "
             "(el peldaño intermedio del no-read-up)"
         )
@@ -1139,6 +1162,104 @@ def _ya_existe(respuesta: Any) -> bool:
 
 
 async def _firmar(
+    api: Api, user_id: str, creado: dict[str, Any], exp: dict[str, Any], salida: dict[str, Any]
+) -> dict[str, Any]:
+    """Firma de la Salida y del expediente, y además el circuito sobre un BORRADOR."""
+    creado = await _firmar_base(api, user_id, creado, exp, salida)
+    return await _circuito_sobre_borrador(api, user_id, creado)
+
+
+CUERPO_BORRADOR_V1 = (
+    "Respetado(a) ciudadano(a):\n\nSe informa que su solicitud fue atendida "
+    "favorablemente.\n\nCordialmente,"
+)
+CUERPO_BORRADOR_V2 = CUERPO_BORRADOR_V1.replace(
+    "atendida favorablemente", "atendida favorablemente (texto editado tras abrir el circuito)"
+)
+
+
+async def _circuito_sobre_borrador(
+    api: Api, user_id: str, creado: dict[str, Any]
+) -> dict[str, Any]:
+    """Un borrador con circuito de DOS turnos cuyo texto cambia tras abrirlo.
+
+    Deja en el entorno el caso del gate de orden de `cadena_service` (AREA-05-08):
+    la pertenencia a la cadena y el turno se comprueban ANTES que el estado del
+    documento. Con el texto cambiado y la cadena todavía `pendiente`, quien NO está
+    en la cadena debe recibir `403 no_es_firmante` sin que su respuesta revele que
+    existe un circuito, que el texto cambió ni la versión vigente
+    (`documento_modificado`/`version`); y el firmante con turno SÍ recibe
+    `409 documento_modificado` — control positivo.
+    La prueba e2e `frontend/e2e/authenticated/firma-gate-orden.spec.js` lo ejerce.
+
+    **Por qué el cambio de texto va por SQL.** Editar el borrador por la API emite el
+    evento de invalidación, que cierra la cadena en segundos (`invalidada`): entonces
+    los dos reciben `409 solicitud_no_pendiente` y el gate de orden no se ejerce. El
+    caso que el gate existe para cubrir es el OTRO: la invalidación es *at-least-once*
+    y puede retrasarse, y en esa ventana la cadena sigue `pendiente` con el texto ya
+    cambiado. Para tener esa ventana de forma estable, el texto se cambia en la base
+    sin pasar por el servicio —la misma frontera que el aprovisionamiento: es
+    preparar el escenario, no gestión documental— y por eso no hay evento. El
+    servidor además IGNORA la huella que mande el cliente y fija la vigente.
+    """
+    paso("Circuito sobre un borrador: dos turnos y texto cambiado en la ventana de invalidación")
+    asunto = f"Borrador con circuito de firma {MARCA}"
+    borrador, ya = await buscar_o_crear(
+        api,
+        "/api/v1/borradores",
+        {
+            "doc_type": "S",
+            "subject": asunto,
+            "dest_dept": "Ciudadana María Fernanda Ruiz",
+            "cuerpo": CUERPO_BORRADOR_V1,
+        },
+        buscar_en="/api/v1/borradores",
+        clave="subject",
+    )
+    creado["borrador_circuito"] = borrador
+    if ya:
+        # Idempotente: el escenario ya está montado (y abrir otro circuito sobre un
+        # texto ya cambiado quedaría con la huella nueva, sin nada que demostrar).
+        ok("borrador con circuito ya sembrado: se reutiliza")
+        return creado
+    ok("borrador del circuito redactado")
+
+    firmantes = await ids_de(api, FIRMANTES[:2])
+    solicitud = await api.post(
+        "/api/v1/signature/requests",
+        json={
+            "objeto_tipo": "borrador",
+            "objeto_id": borrador["id"],
+            "titulo": f"Circuito de dos turnos sobre un borrador {MARCA}",
+            # El servidor fija la huella VIGENTE del texto: la del cliente se ignora.
+            "payload_sha256": hashlib.sha256(CUERPO_BORRADOR_V1.encode("utf-8")).hexdigest(),
+            "firmantes": firmantes,
+            "roles": ["firma", "firma"],
+        },
+        esperado=(200, 201, 403, 409, 422, 503),
+    )
+    if not _id_cadena(solicitud):
+        if _ya_existe(solicitud):
+            ok("circuito del borrador ya sembrado")
+        else:
+            aviso(f"el circuito sobre el borrador no se pudo abrir: {str(solicitud)[:140]}")
+        return creado
+    ok(f"circuito de {len(firmantes)} turnos abierto sobre el borrador: {' → '.join(FIRMANTES[:2])}")
+
+    # Cambiar el texto SIN emitir el evento de invalidación (ver el docstring).
+    conn = await asyncpg.connect(_dsn())
+    try:
+        await conn.execute(f'SET search_path TO "tenant_{TENANT}", public')
+        await conn.execute(
+            "UPDATE borrador SET cuerpo = $2 WHERE id = $1::uuid", borrador["id"], CUERPO_BORRADOR_V2
+        )
+    finally:
+        await conn.close()
+    ok("texto cambiado con la cadena todavía pendiente: el gate de orden se puede ejercer")
+    return creado
+
+
+async def _firmar_base(
     api: Api, user_id: str, creado: dict[str, Any], exp: dict[str, Any], salida: dict[str, Any]
 ) -> dict[str, Any]:
     """El paso de firma, en su propia función porque se llega por dos caminos.

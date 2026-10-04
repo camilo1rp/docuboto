@@ -48,6 +48,8 @@ from typing import Any
 
 import asyncpg
 
+from orpycamcp_common.request_log import canal_actual, idempotency_key_actual, request_id_actual
+
 logger = logging.getLogger(__name__)
 
 # Cuando un evento no pertenece a ningún tenant (p. ej. refresh/logout de auth),
@@ -61,6 +63,15 @@ SYSTEM_TENANT = "__system__"
 #   mcp    — petición originada en el MCP-server
 #   system — operación interna de un job/worker
 VALID_CANALES: frozenset[str] = frozenset({"api", "ui", "mcp", "system"})
+
+#: Valor (NO es un canal) con que el llamante declara «el acto es de una PETICIÓN:
+#: asienta el canal que el gateway derivó (`X-Canal`)». Es una declaración, no un
+#: valor por omisión: `append` exige `canal=` en cada llamada (AREA-03-07), de modo
+#: que el que escribe el asiento elige entre `CANAL_PETICION` (acto de una persona
+#: que entra por la API, la UI o el MCP) y `"system"` (job, worker, consumidor, CLI).
+#: Antes `canal` valía `None` y caía a `'api'`: 109 asientos de trabajos de purga, WORM
+#: y reconciliación decían `'api'` aunque nadie hubiera hecho una petición.
+CANAL_PETICION = "peticion"
 
 
 def _validate_canal(canal: str) -> None:
@@ -168,20 +179,44 @@ async def append(
     action: str,
     object_type: str,
     object_ref: str | None = None,
+    canal: str,
     actor: str | None = None,
-    canal: str = "api",
     payload: dict[str, Any] | None = None,
 ) -> str:
     """Añade una entrada de auditoría y devuelve su hash.
+
+    ``canal`` es OBLIGATORIO (sin valor por omisión, AREA-03-07): ``CANAL_PETICION``
+    para un acto que ejecuta una petición —hereda el `X-Canal` que derivó el gateway,
+    ver `request_log.canal_actual`, y si la petición no lo trae (llamada directa al
+    servicio) es ``'api'``— o un canal concreto (``'system'`` en jobs, workers,
+    consumidores de eventos y herramientas de línea de comandos).
 
     Se ejecuta dentro de una (sub)transacción para que el advisory lock por
     tenant garantice el orden de la cadena. Si ``conn`` ya está en transacción,
     ``conn.transaction()`` crea un savepoint.
     """
+    if canal == CANAL_PETICION:
+        canal = canal_actual() or "api"
     _validate_canal(canal)
 
     tenant = tenant_slug or SYSTEM_TENANT
     payload = payload or {}
+    if canal == "mcp" and "correlacion" not in payload:
+        # Un acto que entra por el asistente/MCP deja, además del canal, la huella
+        # para atarlo a su turno y a la propuesta firmada que lo autorizó
+        # (AREA-11-04): `request_id` del gateway e `Idempotency-Key` (el `jti` de la
+        # propuesta). Solo en el canal 'mcp', para no alterar el contenido de los
+        # asientos del resto de canales.
+        correlacion = {
+            k: v
+            for k, v in (
+                ("request_id", request_id_actual()),
+                ("idempotency_key", idempotency_key_actual()),
+            )
+            if v
+        }
+        if correlacion:
+            payload = {**payload, "correlacion": correlacion}
 
     # El instante lo fija la APLICACIÓN, no el DEFAULT de la tabla.
     #
@@ -233,7 +268,7 @@ async def append_denial(
     actor: str | None,
     perm_name: str,
     min_crud: int = 1,
-    canal: str = "api",
+    canal: str = CANAL_PETICION,
     motivo: str = "permiso_insuficiente",
 ) -> None:
     """Deja traza de un intento de acceso DENEGADO por el gate RBAC (RF-SEG / MoReq).

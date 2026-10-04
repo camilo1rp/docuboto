@@ -34,18 +34,17 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
+from orpycamcp_common.tenant import slug_valido
 
 from app.core.config import settings
 from app.providers.base import SignerRef
 
 # Mismo patrón que app/core/database.py — un slug válido nunca contiene
 # separadores de path, así que no hace falta sanear "../" por separado.
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,54}$")
 
 # Cache SOLO del certificado PÚBLICO (evita I/O repetido en cargas sucesivas del
 # mismo tenant). La clave privada NUNCA entra aquí — ver `load_seal`.
@@ -121,7 +120,7 @@ class TsaSealNotFoundError(RuntimeError):
 
 
 def _validate_slug(tenant_slug: str) -> str:
-    if not tenant_slug or not _SLUG_RE.match(tenant_slug):
+    if not slug_valido(tenant_slug):
         raise ValueError(f"Invalid tenant slug: {tenant_slug!r}")
     return tenant_slug
 

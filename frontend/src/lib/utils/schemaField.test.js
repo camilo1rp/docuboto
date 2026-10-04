@@ -68,12 +68,63 @@ describe("resolveSchemaControl — mapeo tipo-de-schema -> control", () => {
     expect(resolveSchemaControl({ type: ["null", "number"] })).toEqual({ kind: "number" });
   });
 
-  it("object -> no soportado (null)", () => {
+  it("object sin propiedades -> no soportado (null)", () => {
     expect(resolveSchemaControl({ type: "object", properties: {} })).toBeNull();
   });
 
-  it("array -> no soportado (null)", () => {
-    expect(resolveSchemaControl({ type: "array", items: { type: "string" } })).toBeNull();
+  it("array de escalares -> lista repetible (AREA-12-05)", () => {
+    const c = resolveSchemaControl({ type: "array", items: { type: "string" } });
+    expect(c).toEqual({ kind: "array", item: { kind: "text" } });
+  });
+
+  it("array de enum -> el elemento es un select", () => {
+    const c = resolveSchemaControl({ type: "array", items: { enum: ["a", "b"] } });
+    expect(c?.kind).toBe("array");
+    expect(c?.item.kind).toBe("select");
+  });
+
+  it("array de objetos / de arrays / sin items -> no soportado (null)", () => {
+    expect(
+      resolveSchemaControl({
+        type: "array",
+        items: { type: "object", properties: { a: { type: "string" } } },
+      }),
+    ).toBeNull();
+    expect(
+      resolveSchemaControl({ type: "array", items: { type: "array", items: { type: "string" } } }),
+    ).toBeNull();
+    expect(resolveSchemaControl({ type: "array" })).toBeNull();
+  });
+
+  it("object de un nivel -> grupo con sus propiedades soportadas", () => {
+    const c = resolveSchemaControl({
+      type: "object",
+      required: ["ciudad"],
+      properties: { ciudad: { type: "string" }, piso: { type: "integer" }, raro: { $ref: "#/x" } },
+    });
+    expect(c?.kind).toBe("object");
+    expect(c?.properties.map(([k]) => k)).toEqual(["ciudad", "piso"]);
+    expect(c?.required).toEqual(["ciudad"]);
+  });
+
+  it("object con una propiedad OBLIGATORIA no soportada -> null (siempre acabaría en 422)", () => {
+    expect(
+      resolveSchemaControl({
+        type: "object",
+        required: ["raro"],
+        properties: { raro: { $ref: "#/x" }, ok: { type: "string" } },
+      }),
+    ).toBeNull();
+  });
+
+  it("object dentro de object -> no soportado: solo un nivel", () => {
+    expect(
+      resolveSchemaControl({
+        type: "object",
+        required: ["interno"],
+        properties: { interno: { type: "object", properties: { a: { type: "string" } } } },
+      }),
+    ).toBeNull();
   });
 
   it("$ref -> no soportado (null)", () => {
@@ -145,7 +196,49 @@ describe("coerceSchemaValue — coerción del valor crudo de FormData al tipo de
     expect(coerceSchemaValue({ type: "string", format: "date" }, "2026-07-15")).toBe("2026-07-15");
   });
 
-  it("constructo no soportado (object) -> siempre undefined, aunque llegue un raw", () => {
+  it("constructo no soportado (object sin properties) -> siempre undefined, aunque llegue un raw", () => {
     expect(coerceSchemaValue({ type: "object" }, '{"a":1}')).toBeUndefined();
+  });
+
+  describe("compuestos (AREA-12-05)", () => {
+    const LISTA_NUM = { type: "array", items: { type: "number" } };
+    const GRUPO = {
+      type: "object",
+      required: ["ciudad"],
+      properties: {
+        ciudad: { type: "string" },
+        piso: { type: "integer" },
+        tags: { type: "array", items: { type: "string" } },
+      },
+    };
+
+    it("array: coerciona cada elemento al tipo de `items`", () => {
+      expect(coerceSchemaValue(LISTA_NUM, '["1","2.5"]')).toEqual([1, 2.5]);
+    });
+
+    it("array: descarta vacíos e inválidos; sin elementos -> undefined", () => {
+      expect(coerceSchemaValue(LISTA_NUM, '["1","","abc"]')).toEqual([1]);
+      expect(coerceSchemaValue(LISTA_NUM, '["",""]')).toBeUndefined();
+      expect(coerceSchemaValue(LISTA_NUM, "[]")).toBeUndefined();
+    });
+
+    it("JSON ilegible o de otra forma -> undefined (no se envía basura)", () => {
+      expect(coerceSchemaValue(LISTA_NUM, "[1,")).toBeUndefined();
+      expect(coerceSchemaValue(LISTA_NUM, '{"a":1}')).toBeUndefined();
+      expect(coerceSchemaValue(GRUPO, "[1]")).toBeUndefined();
+    });
+
+    it("object: tipa cada propiedad y deja pasar la lista anidada", () => {
+      expect(
+        coerceSchemaValue(GRUPO, JSON.stringify({ ciudad: "Bogota", piso: "3", tags: ["a", "b"] })),
+      ).toEqual({ ciudad: "Bogota", piso: 3, tags: ["a", "b"] });
+    });
+
+    it("object: solo claves que el schema declara (allowlist) y omite las vacías", () => {
+      expect(
+        coerceSchemaValue(GRUPO, JSON.stringify({ ciudad: "Cali", piso: "", extra: "x" })),
+      ).toEqual({ ciudad: "Cali" });
+      expect(coerceSchemaValue(GRUPO, JSON.stringify({ extra: "x" }))).toBeUndefined();
+    });
   });
 });

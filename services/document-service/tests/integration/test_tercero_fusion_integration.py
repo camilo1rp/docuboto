@@ -64,6 +64,8 @@ async def _radicar_con(
     doc = await DocumentService(conn, slug).create(
         DocumentCreate(
             doc_type="E",
+            doc_class="Petición",
+            dest_dept_code=1,
             subject=asunto,
             sender_name="quien sea",
             actores=[{"tercero_id": tercero_id, "rol": "remitente", "principal": True}],

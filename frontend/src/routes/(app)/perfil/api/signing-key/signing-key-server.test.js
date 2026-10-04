@@ -165,7 +165,7 @@ describe("DELETE /perfil/api/signing-key (auto-revocación)", () => {
     },
   );
 
-  it("allowlist: solo step_up_totp_code y motivo (recortado a 500) viajan", async () => {
+  it("allowlist: solo step_up_totp_code y motivo (del vocabulario cerrado) viajan", async () => {
     let capturedBody;
     globalThis.fetch = vi.fn(async (input, init) => {
       capturedBody = JSON.parse(init.body);
@@ -176,13 +176,26 @@ describe("DELETE /perfil/api/signing-key (auto-revocación)", () => {
       request: {
         json: async () => ({
           step_up_totp_code: "123456",
-          motivo: "salida del funcionario",
+          motivo: "cessation_of_operation",
           user_id: "otro-usuario",
           cert_pem: "no-debería-reenviarse",
         }),
       },
     });
     expect(res.status).toBe(200);
-    expect(capturedBody).toEqual({ step_up_totp_code: "123456", motivo: "salida del funcionario" });
+    expect(capturedBody).toEqual({ step_up_totp_code: "123456", motivo: "cessation_of_operation" });
+  });
+
+  it("un motivo fuera del vocabulario cerrado no viaja (texto libre descartado)", async () => {
+    let capturedBody;
+    globalThis.fetch = vi.fn(async (input, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ estado: "revocado" }), { status: 200 });
+    });
+    await revokeDelete({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ step_up_totp_code: "123456", motivo: "sospecha de compromiso" }) },
+    });
+    expect(capturedBody).toEqual({ step_up_totp_code: "123456" });
   });
 });

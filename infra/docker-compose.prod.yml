@@ -37,6 +37,25 @@ volumes:
   redis-data:
   # Keycloak uses external PostgreSQL, no separate volume
 
+# Migraciones al arrancar (AREA-13-08). Cada servicio con base de datos espera a su
+# `migrate-<servicio>`: un contenedor de un solo uso que corre `migrations/runner.py`
+# con la conexión del PROPIETARIO (MIGRATIONS_DATABASE_URL) sobre la MISMA imagen
+# inmutable que va a servir. Si la migración falla, el servicio no arranca
+# (`service_completed_successfully`, fail-closed), así que una versión nunca sirve
+# contra un esquema que no es el suyo. El runner es idempotente y serializa por
+# `pg_advisory_lock`, de modo que repetir `up -d` o escalar réplicas es seguro.
+x-migracion: &migracion
+  restart: "no"
+  command: ["python", "migrations/runner.py"]
+  depends_on:
+    postgres:
+      condition: service_healthy
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
 
   # ─── Infrastructure ───────────────────────────────────────────────────────────
@@ -288,19 +307,19 @@ services:
   # ─── Application Services ──────────────────────────────────────────────────────
 
   api-gateway:
-    build:
-      # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
-      context: ..
-      dockerfile: services/api-gateway/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/api-gateway:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     # Sin container_name fijo: este servicio escala (deploy.replicas), los nombres
     # deben ser únicos por réplica (Compose los genera como proyecto-servicio-N).
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
       AUTH_CACHE_MAC_SECRET: ${AUTH_CACHE_MAC_SECRET:?AUTH_CACHE_MAC_SECRET es obligatorio}
       KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: orpycamcp
@@ -351,16 +370,14 @@ services:
         max-file: "3"
 
   auth-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/auth-service/.
-      context: ..
-      dockerfile: services/auth-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/auth-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-auth-service-prod
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
@@ -393,6 +410,8 @@ services:
     expose:
       - "8001"
     depends_on:
+      migrate-auth:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -417,15 +436,14 @@ services:
         max-file: "3"
 
   tenant-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/tenant-service/.
-      context: ..
-      dockerfile: services/tenant-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/tenant-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-tenant-service-prod
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
@@ -435,6 +453,8 @@ services:
     expose:
       - "8002"
     depends_on:
+      migrate-tenant:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -459,11 +479,10 @@ services:
         max-file: "3"
 
   document-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/document-service/.
-      context: ..
-      dockerfile: services/document-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: unless-stopped
     environment:
@@ -476,7 +495,6 @@ services:
       # del año siguiente, contradiciendo la fecha de su propio acuse.
       TZ_RADICACION: ${TZ_RADICACION:-America/Bogota}
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
@@ -494,6 +512,8 @@ services:
     expose:
       - "8003"
     depends_on:
+      migrate-document:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -519,23 +539,14 @@ services:
         max-file: "3"
 
   storage-service:
-    build:
-      # Contexto en la RAÍZ (ADR-010, mismo motivo que signature-service más
-      # abajo): el Dockerfile instala shared/orpycamcp_common, que NO existe
-      # dentro de services/storage-service/ -- `context: ../services/storage-service`
-      # (como estaba antes) rompería ese COPY. target=production (E10
-      # Increment C2b) añade Java + veraPDF CLI real y corre como usuario
-      # NO-root -- ver comentarios en services/storage-service/Dockerfile
-      # para el detalle completo (la imagen de dev, target por defecto, se
-      # mantiene slim, sin Java).
-      context: ..
-      dockerfile: services/storage-service/Dockerfile
-      target: production
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
@@ -569,6 +580,8 @@ services:
     expose:
       - "8005"
     depends_on:
+      migrate-storage:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -596,16 +609,14 @@ services:
         max-file: "3"
 
   workflow-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/workflow-service/.
-      context: ..
-      dockerfile: services/workflow-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/workflow-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-workflow-service-prod
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
@@ -615,6 +626,8 @@ services:
     expose:
       - "8006"
     depends_on:
+      migrate-workflow:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -639,16 +652,14 @@ services:
         max-file: "3"
 
   archive-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/archive-service/.
-      context: ..
-      dockerfile: services/archive-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/archive-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-archive-service-prod
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
@@ -665,6 +676,8 @@ services:
     expose:
       - "8004"
     depends_on:
+      migrate-archive:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -689,16 +702,14 @@ services:
         max-file: "3"
 
   notification-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/notification-service/.
-      context: ..
-      dockerfile: services/notification-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/notification-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-notification-service-prod
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
@@ -724,6 +735,8 @@ services:
     expose:
       - "8007"
     depends_on:
+      migrate-notification:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -749,14 +762,14 @@ services:
 
   signature-service:
     # Firma electrónica (E06). Contexto raíz: el Dockerfile instala shared/orpycamcp_common (ADR-010).
-    build:
-      context: ..
-      dockerfile: services/signature-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/signature-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-signature-service-prod
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       # En prod el navegador y los servicios usan el MISMO hostname público de
       # Keycloak (DNS real), así que el `iss` coincide sin override: expected_issuer
       # se deriva de KEYCLOAK_URL. NO se setea KEYCLOAK_ISSUER (a diferencia de dev,
@@ -801,6 +814,8 @@ services:
     expose:
       - "8008"
     depends_on:
+      migrate-signature:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -827,16 +842,14 @@ services:
   knowledge-service:
     # Capa de conocimiento (E21, pgvector). INTERNAL_SERVICE_TOKEN obligatorio:
     # sin él la ingesta queda fail-closed (D-02 / RF-SEG-08) y rechaza todo /ingest.
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/knowledge-service/.
-      context: ..
-      dockerfile: services/knowledge-service/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/knowledge-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-knowledge-service-prod
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       INTERNAL_SERVICE_TOKEN: ${KNOWLEDGE_INTERNAL_TOKEN:?Knowledge internal token required}
       # Faltaba, igual que en signature: la ingesta event-driven (E21) consume
       # orpycamcp.document.events. Sin esto el índice semántico nunca se puebla y
@@ -850,6 +863,8 @@ services:
     expose:
       - "8011"
     depends_on:
+      migrate-knowledge:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -879,13 +894,10 @@ services:
 
   mcp-server:
     # Capa MCP (E18): fachada cliente del api-gateway. Sin BD/Redis/MinIO.
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common
-      # (ADR-010), que NO existe dentro de services/mcp-server/. Cambió al
-      # añadirse el gate de escritura, cuya comprobación de secretos al arrancar
-      # vive en la librería compartida.
-      context: ..
-      dockerfile: services/mcp-server/Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/mcp-server:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-mcp-server-prod
     restart: unless-stopped
     environment:
@@ -897,6 +909,8 @@ services:
       # que el resto de secretos (ver .env.example).
       MCP_PROPOSAL_SECRET: ${MCP_PROPOSAL_SECRET:?MCP_PROPOSAL_SECRET es obligatorio}
       MCP_PROPOSAL_SECRET_PREVIOUS: ${MCP_PROPOSAL_SECRET_PREVIOUS:-}
+      # Marca de origen del canal 'mcp' (AREA-11-04) e IP real firmada (AREA-11-08).
+      MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
     networks:
       - orpycamcp-net
     expose:
@@ -931,9 +945,10 @@ services:
     #   - INTERNAL_* → cómo alcanza el SSR al gateway dentro de la red Docker
     # ORIGIN + PROTOCOL_HEADER/HOST_HEADER son IMPRESCINDIBLES tras un proxy: sin
     # ellos adapter-node deriva mal `url.origin` y arma un redirect_uri inválido.
-    build:
-      context: ../frontend
-      dockerfile: Dockerfile
+    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
+    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Para construir en el propio servidor: infra/docker-compose.build.yml.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/frontend:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
     restart: unless-stopped
     environment:
@@ -984,3 +999,58 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ─── Migraciones (un contenedor de un solo uso por servicio con base de datos) ───
+  migrate-auth:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/auth-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-tenant:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/tenant-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-document:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-storage:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-workflow:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/workflow-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-archive:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/archive-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-notification:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/notification-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-signature:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/signature-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
+  migrate-knowledge:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/knowledge-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}

@@ -11,6 +11,7 @@ import uuid
 
 import asyncpg
 
+from app.core import audit as audit_core
 from app.repositories.tenant_repository import TenantRepository
 from app.schemas.tenant import TenantCreate, TenantResponse, TenantUpdate
 
@@ -27,23 +28,58 @@ class TenantNotFoundError(Exception):
     pass
 
 
+# Los actos sobre el registro de entidades son de plataforma: no pertenecen al
+# tenant afectado (su `audit_log` lo ve la propia entidad) sino al sistema.
+_SYSTEM_TENANT = "__system__"
+_ACTOR_SERVICIO = "service:tenant-internal-token"
+
+
 class TenantService:
     def __init__(self, conn: asyncpg.Connection) -> None:
+        self._conn = conn
         self._repo = TenantRepository(conn)
 
-    async def create(self, payload: TenantCreate) -> TenantResponse:
-        if await self._repo.exists_slug(payload.slug):
-            raise DuplicateSlugError(payload.slug)
-        if await self._repo.exists_code(payload.code):
-            raise DuplicateCodeError(payload.code)
+    async def create(
+        self, payload: TenantCreate, *, actor: uuid.UUID | None = None
+    ) -> TenantResponse:
+        """Registra la entidad. NO crea el esquema ni sus tablas.
 
-        tenant = await self._repo.create(
-            slug=payload.slug,
-            name=payload.name,
-            code=payload.code,
-            status=payload.status,
-        )
-        await self._repo.create_schema(payload.slug)
+        El esquema `tenant_{slug}` lo provisiona `scripts/init_tenant.py` (rol
+        propietario + migraciones de los 11 servicios). Este servicio opera con
+        el rol de aplicación, que no puede ejecutar DDL: por eso la fila nace
+        con `provisioning_status='pending'` y la provisión la pasa a `active`.
+        Alta y asiento van en la MISMA transacción (ADR-010).
+        """
+        audit_core.require_audit_available()
+        async with self._conn.transaction():
+            if await self._repo.exists_slug(payload.slug):
+                raise DuplicateSlugError(payload.slug)
+            if await self._repo.exists_code(payload.code):
+                raise DuplicateCodeError(payload.code)
+
+            tenant = await self._repo.create(
+                slug=payload.slug,
+                name=payload.name,
+                code=payload.code,
+                status=payload.status,
+            )
+            await audit_core.append(
+                self._conn,
+                tenant_slug=_SYSTEM_TENANT,
+                action="tenant.created",
+                object_type="tenant",
+                object_ref=tenant.slug,
+                actor=actor or _ACTOR_SERVICIO,
+                canal="system",
+                payload={
+                    "despues": {
+                        "name": tenant.name,
+                        "code": tenant.code,
+                        "status": tenant.status,
+                    },
+                    "provisioning_status": "pending",
+                },
+            )
 
         return TenantResponse(
             id=tenant.id,
@@ -105,14 +141,38 @@ class TenantService:
             updated_at=tenant.updated_at,
         )
 
-    async def update(self, tenant_id: uuid.UUID, payload: TenantUpdate) -> TenantResponse:
-        tenant = await self._repo.update(
-            tenant_id,
-            name=payload.name,
-            status=payload.status,
-        )
-        if tenant is None:
-            raise TenantNotFoundError(str(tenant_id))
+    async def update(
+        self,
+        tenant_id: uuid.UUID,
+        payload: TenantUpdate,
+        *,
+        actor: uuid.UUID | None = None,
+    ) -> TenantResponse:
+        audit_core.require_audit_available()
+        async with self._conn.transaction():
+            before = await self._repo.get_for_update(tenant_id)
+            if before is None:
+                raise TenantNotFoundError(str(tenant_id))
+            tenant = await self._repo.update(
+                tenant_id,
+                name=payload.name,
+                status=payload.status,
+            )
+            if tenant is None:
+                raise TenantNotFoundError(str(tenant_id))
+            await audit_core.append(
+                self._conn,
+                tenant_slug=_SYSTEM_TENANT,
+                action="tenant.updated",
+                object_type="tenant",
+                object_ref=tenant.slug,
+                actor=actor or _ACTOR_SERVICIO,
+                canal="system",
+                payload={
+                    "antes": {"name": before.name, "status": before.status},
+                    "despues": {"name": tenant.name, "status": tenant.status},
+                },
+            )
         return TenantResponse(
             id=tenant.id,
             slug=tenant.slug,

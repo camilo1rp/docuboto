@@ -103,6 +103,16 @@ def _endpoint() -> str:
 @pytest.fixture(scope="module")
 def gate():
     if os.environ.get("RUN_S3_WORM") != "1":
+        if os.environ.get("RUN_INTEGRATION") == "1" and os.environ.get("CI"):
+            # AREA-13-01: en CI, un tier de integración que llega aquí sin
+            # `RUN_S3_WORM` NO puede saltarse en silencio: la batería WORM contra
+            # S3 real es la condición de adopción del motor y salía `skipped` en
+            # verde. El job `storage-worm-real` es quien la corre (con RustFS fijado
+            # por digest); `test-integration` la excluye con `--ignore`.
+            pytest.fail(
+                "CI con RUN_INTEGRATION=1 pero sin RUN_S3_WORM=1: la batería WORM "
+                "real no puede saltarse en CI (job `storage-worm-real`)."
+            )
         pytest.skip("exige RUN_S3_WORM=1 y un almacén S3 real (ver el docstring)")
 
 

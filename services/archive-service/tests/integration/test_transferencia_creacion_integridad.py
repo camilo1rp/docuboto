@@ -39,7 +39,7 @@ from orpycamcp_common import audit
 
 from app.core.actor import Actor
 from app.core.database import tenant_schema
-from app.schemas.fisico import UbicacionCreate
+from app.schemas.fisico import ExpedienteUnidadLink, UbicacionCreate, UnidadCreate
 from app.schemas.transferencia import (
     TransferenciaCreate,
     TransferenciaRechazo,
@@ -69,6 +69,22 @@ async def _make_ubicacion(conn: asyncpg.Connection, slug: str, *, tipo_archivo: 
             tipo_archivo=tipo_archivo,
         )
     )
+
+
+async def _dar_tenencia(
+    conn: asyncpg.Connection, slug: str, expediente_id: uuid.UUID, ubicacion_id: uuid.UUID
+) -> None:
+    """Tenencia física LOCALIZADA: una unidad de conservación en `ubicacion_id` vinculada al
+    expediente. Desde AREA-07-06 un par origen/destino sin tenencia es 422
+    `ubicacion_sin_tenencia`, así que estos tests (que ejercen la coherencia con
+    ubicaciones reales) la necesitan para llegar a ella."""
+    fisico = FisicoService(conn, slug)
+    unidad = await fisico.create_unidad(
+        UnidadCreate(
+            tipo="caja", codigo=f"itest-un-{uuid.uuid4().hex[:8]}", ubicacion_id=ubicacion_id
+        )
+    )
+    await fisico.link_expediente(unidad.id, ExpedienteUnidadLink(expediente_id=expediente_id))
 
 
 async def _payload_of(conn: asyncpg.Connection, slug: str, *, action: str, object_ref: str) -> dict:
@@ -326,6 +342,7 @@ async def test_h_m_primaria_coherente_con_ubicaciones_reales_201(
     created = await _seed_expediente_closed(conn, slug, "itest h-m primaria coherente real")
     origen = await _make_ubicacion(conn, slug, tipo_archivo="gestion")
     destino = await _make_ubicacion(conn, slug, tipo_archivo="central")
+    await _dar_tenencia(conn, slug, created.id, origen.id)
 
     service = TransferenciaService(conn, slug)
     actor = Actor(id=uuid.uuid4(), username="itest-hm-primaria-real-ok")
@@ -359,6 +376,7 @@ async def test_h_m_secundaria_incoherente_con_ubicaciones_reales_422_y_audita(
     # secundaria exige central->historico; aquí origen es 'gestion' (incoherente).
     origen = await _make_ubicacion(conn, slug, tipo_archivo="gestion")
     destino = await _make_ubicacion(conn, slug, tipo_archivo="historico")
+    await _dar_tenencia(conn, slug, created.id, origen.id)
 
     service = TransferenciaService(conn, slug)
     actor = Actor(id=uuid.uuid4(), username="itest-hm-secundaria-real-bad")
@@ -385,8 +403,8 @@ async def test_h_m_secundaria_incoherente_con_ubicaciones_reales_422_y_audita(
     finally:
         await second_conn.close()
 
-    # La validación de coherencia corre ANTES de la tx -- nunca llegó a
-    # intentarse el INSERT.
+    # La validación de coherencia corre DENTRO de la tx (AREA-07-06) y antes del INSERT:
+    # nunca llegó a intentarse, y la tx se revirtió.
     assert count_total == 0
 
     payload = await _payload_of(

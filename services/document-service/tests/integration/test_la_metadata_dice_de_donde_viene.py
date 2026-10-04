@@ -46,8 +46,10 @@ async def _seed_radicado(
         f"""
         INSERT INTO "{schema}".radicados
             (tracking_number, doc_type, year, sequence, subject, tenant_code,
-             origin_dept, origin_dept_code, dest_dept, dest_dept_code, nivel_seguridad)
-        VALUES ($1, 'E', 2026, 1, 'itest origen', 'ITEST', $2, $3, $4, $5, $6)
+             origin_dept, origin_dept_code, dest_dept, dest_dept_code, nivel_seguridad,
+             clasificacion_fundamento)
+        VALUES ($1, 'E', 2026, 1, 'itest origen', 'ITEST', $2, $3, $4, $5, $6,
+                CASE WHEN $6::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END)
         RETURNING id
         """,
         tracking_number,
@@ -205,3 +207,26 @@ async def test_el_no_read_up_sigue_recortando(
 
     assert publico in meta
     assert reservado not in meta
+
+
+@pytest.mark.integration
+async def test_devuelve_el_numero_de_radicado_y_la_tipologia_que_guarda_la_tabla(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """AREA-07-02 / AREA-06-08: archive-service coteja con esto lo que declara
+    quien vincula. Sin la columna en el `SELECT`, la respuesta no traería el
+    número y archive fallaría cerrado (503) para todo vínculo."""
+    slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+    rad_id = await _seed_radicado(conn, schema, tracking_number="2026-ITEST-E-000006")
+    await conn.execute(
+        f'UPDATE "{schema}".radicados SET doc_class = $2 WHERE id = $1', rad_id, "COR-PET"
+    )
+
+    await conn.execute(f'SET search_path TO "{schema}", public')
+    meta = await DocumentRepository(conn, slug).list_radicado_metadata_internal(
+        [rad_id], max_clearance=3
+    )
+
+    assert meta[rad_id]["tracking_number"] == "2026-ITEST-E-000006"
+    assert meta[rad_id]["doc_class"] == "COR-PET"

@@ -53,7 +53,9 @@ async def _plantilla_que_hace_fallar(conn: asyncpg.Connection) -> None:
 
 async def _crear(conn, slug, actor, clases: list[str | None]) -> uuid.UUID:
     docs = [
-        BatchDocumentCreate(doc_type="E", subject=f"Doc {i}", doc_class=c)
+        BatchDocumentCreate(
+            doc_type="E", dest_dept_code=1, subject=f"Doc {i}", doc_class=c or "Petición"
+        )
         for i, c in enumerate(clases)
     ]
     return await BatchService(conn, slug).create_batch_documents(

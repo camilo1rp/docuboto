@@ -323,8 +323,17 @@ async def test_patch_trd_serie_borrador_substantive_change_edits_in_place(
     existing = make_trd_serie_record(
         serie_id=serie_id, code="100", retention_years=5, estado="borrador"
     )
+    # AREA-06-07: el juego legado se DERIVA de las dos fases. PATCH {retention_years: 99}
+    # se traduce a gestión=99 y central=max(total-99, 0)=0 (total vigente 10), y la fila
+    # que devuelve el UPDATE ya viene coherente con eso.
     updated = make_trd_serie_record(
-        serie_id=serie_id, code="100", retention_years=99, estado="borrador"
+        serie_id=serie_id,
+        code="100",
+        retention_years=99,
+        total_retention=99,
+        archivo_gestion_years=99,
+        archivo_central_years=0,
+        estado="borrador",
     )
     mock_conn.fetchrow.side_effect = [existing, updated]
 
@@ -344,6 +353,10 @@ async def test_patch_trd_serie_borrador_substantive_change_edits_in_place(
         c for c in mock_conn.fetchrow.call_args_list if "UPDATE trd_series" in c.args[0]
     )
     assert "retention_years" in update_call.args[0]
+    # y traducido a las fases que usa el calendario (antes el PATCH cambiaba números que
+    # ningún cálculo leía): gestión, central, y el legado derivado de ambas.
+    assert "archivo_gestion_years" in update_call.args[0]
+    assert 99 in update_call.args and 0 in update_call.args
 
 
 @pytest.mark.asyncio
@@ -401,6 +414,9 @@ async def test_create_trd_serie_version_clones_vigente_as_new_borrador(
         version=2,
         estado="borrador",
         retention_years=8,
+        total_retention=10,
+        archivo_gestion_years=8,
+        archivo_central_years=2,
         supersede_a=vigente["id"],
     )
     mock_conn.fetchrow.side_effect = [vigente, nueva]

@@ -217,6 +217,9 @@
  * @property {'registrado'|'en_transito'|'entregado'|'devuelto'|'fallido'} estado
  * @property {string|null}                                    destinatario
  * @property {string|null}                                    direccion
+ * @property {string|null}                                    [motivo_devolucion]
+ * @property {string|null}                                    [acuse_file_id]
+ * @property {string|null}                                    [acuse_sha256]
  * @property {string}                                         created_at
  * @property {string}                                         updated_at
  * @property {ShipmentEvent[]}                                eventos

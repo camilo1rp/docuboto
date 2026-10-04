@@ -14,7 +14,9 @@ integradores externos sin el contenido que sí podían recibir (y, si el consumi
 cambiara de criterio, filtraría un reservado). OMI-01.
 
 Qué vigila: el censo se DERIVA con `ast` de cada `events.emit(...)` en document-service
-y workflow-service. Los que no declaran nivel están en `SIN_NIVEL_DECLARADOS` (declarados,
+y workflow-service **y de cada `outbox.encolar(...)`** (AREA-09-05: desde T13 document-service
+encola sus eventos en el outbox transaccional en vez de emitirlos tras el commit; el
+guardián tiene que seguirlos o el censo se vaciaría en silencio). Los que no declaran nivel están en `SIN_NIVEL_DECLARADOS` (declarados,
 no aprobados): la lista solo puede BAJAR. Un emisor nuevo sin nivel rompe el test.
 """
 
@@ -49,11 +51,28 @@ def _declara_nivel(payload: ast.expr) -> bool:
     return False
 
 
+def _es_llamada(n: ast.AST, objeto: str, metodo: str) -> bool:
+    return (
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == metodo
+        and isinstance(n.func.value, ast.Name)
+        and n.func.value.id == objeto
+    )
+
+
 def _censo() -> dict[str, bool]:
     censo: dict[str, bool] = {}
     for svc in SERVICIOS:
         for f in sorted((RAIZ / "services" / svc / "app").rglob("*.py")):
             for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
+                # Outbox: `outbox.encolar(conn, stream=, event_type=, ..., payload=)`.
+                if _es_llamada(n, "outbox", "encolar"):
+                    tipo = next((k.value for k in n.keywords if k.arg == "event_type"), None)
+                    payload = next((k.value for k in n.keywords if k.arg == "payload"), None)
+                    if tipo is not None and payload is not None:
+                        censo[f"{svc}::{f.name}::{ast.unparse(tipo)}"] = _declara_nivel(payload)
+                    continue
                 if not (
                     isinstance(n, ast.Call)
                     and isinstance(n.func, ast.Attribute)

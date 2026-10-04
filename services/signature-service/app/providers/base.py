@@ -161,6 +161,10 @@ class SignerRef:
     # extensa arriba. `None` (default) preserva el camino existente
     # (`key_pem` en proceso, sello institucional o HMAC nativo) sin cambios.
     remote_sign: Callable[[bytes], Awaitable[bytes]] | None = None
+    # Entidad (``tenant_slug``) en cuyo schema vivirá la firma. Solo la usa el
+    # proveedor ``nativa``: la clave HMAC se deriva por entidad y el mensaje la
+    # ata (AREA-04-11). Los proveedores XAdES la ignoran.
+    tenant_slug: str = ""
 
 
 @dataclass(slots=True)

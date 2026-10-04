@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS public.audit_log (
     ts           TIMESTAMPTZ NOT NULL DEFAULT now(),
     service      TEXT        NOT NULL,           -- 'document-service', ...
     actor        TEXT,                           -- user_id (o 'system')
-    canal        TEXT        NOT NULL DEFAULT 'api', -- 'api' | 'ui' | 'mcp'
+    canal        TEXT        NOT NULL DEFAULT 'api', -- 'api' | 'ui' | 'mcp' | 'system' (la
+                                                 -- aplicación lo declara SIEMPRE: `audit.append`
+                                                 -- no tiene valor por omisión, AREA-03-07)
     action       TEXT        NOT NULL,           -- 'radicado.creado', 'expediente.cerrado', ...
     object_type  TEXT        NOT NULL,
     object_ref   TEXT,                           -- tracking/uuid del objeto

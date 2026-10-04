@@ -13,6 +13,7 @@ import json
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -34,6 +35,35 @@ def _circuito_sin_abrir(monkeypatch) -> None:
     503 en vez de lo que miden. Los tests del gate (`test_circuito_ata.py`) y
     `test_aprobar_borrador` sobrescriben este valor por su cuenta."""
     monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _sin_circuito)
+
+@pytest.fixture(autouse=True)
+def _datos_minimos_derivados(monkeypatch, request) -> None:
+    """Ac. AGN 060/2001 §5.2 (AREA-09-02): `radicar` deriva tipo documental y
+    dependencias del borrador con consultas propias. Los mocks de este módulo
+    contestan `True` a cualquier `fetchval`, que no es un tipo documental: se
+    sustituye SOLO esa derivación para que los tests midan lo suyo (el orden,
+    el render, la tenencia). La derivación real se prueba en
+    `test_datos_minimos_ac060.py` y contra Postgres en
+    `integration/test_datos_minimos_integration.py`; el test que opta por la
+    real lo marca con `@pytest.mark.derivacion_real`."""
+    if request.node.get_closest_marker("derivacion_real"):
+        return
+    from app.services import borrador_service as svc
+
+    async def _derivados(self, row, registered_by, datos=None):
+        return "Oficio", 1, 1
+
+    monkeypatch.setattr(svc.BorradorService, "_datos_minimos_del_borrador", _derivados)
+
+    # Con tipo documental, `create` consulta la plantilla de metadatos con un
+    # `fetchrow` más, que descuadraba las secuencias de estos mocks.
+    from app.repositories.metadata_repository import MetadataRepository
+
+    async def _sin_plantilla(self, doc_class):
+        return None
+
+    monkeypatch.setattr(MetadataRepository, "get_active_template", _sin_plantilla)
+
 
 NOW = datetime.now(tz=UTC)
 
@@ -1284,3 +1314,67 @@ async def test_devolver_sin_permiso_403(client_with_conn) -> None:
     )
 
     assert resp.status_code == 403
+
+
+# ---- AREA-09-02: datos mínimos del radicado (Ac. AGN 060/2001 §5.2) ----
+
+@pytest.mark.asyncio
+async def test_radicar_borrador_sin_datos_derivables_es_422_antes_del_numero(
+    client_with_conn, monkeypatch
+) -> None:
+    """El cableado, no solo la pieza: `radicar` llama a la derivación y rechaza
+    ANTES de `tracking_sequences` (el consecutivo no se devuelve)."""
+    from app.services import borrador_service as svc
+
+    async def _nada(self, row, registered_by, datos=None):
+        return None, None, None
+
+    monkeypatch.setattr(svc.BorradorService, "_datos_minimos_del_borrador", _nada)
+    client, mock_conn = client_with_conn
+    bid, rid = uuid.uuid4(), uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.side_effect = _radicar_side_effects(
+        bid, rid, make_radicado_record(doc_id=rid, doc_type="S"), cuerpo=None
+    )
+    resp = await client.post(
+        f"/api/v1/borradores/{bid}/radicar", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "datos_minimos_incompletos"
+
+
+@pytest.mark.derivacion_real
+@pytest.mark.asyncio
+async def test_la_derivacion_del_borrador_usa_plantilla_dependencia_y_urd() -> None:
+    from app.services.borrador_service import BorradorService
+
+    padre = uuid.uuid4()
+    conn = AsyncMock()
+
+    async def _fetchval(query: str, *a: object):
+        if "FROM plantilla" in query:
+            return "Oficio"
+        if "FROM dependencias" in query:
+            return 4
+        if "dest_dept_code FROM radicados" in query:
+            return 20
+        raise AssertionError(query)
+
+    conn.fetchval.side_effect = _fetchval
+    conn.fetch.return_value = [{"depe_id": 9}, {"depe_id": 20}]
+    svc = BorradorService(conn, "demo")
+    row = {
+        "doc_type": "S",
+        "plantilla_id": uuid.uuid4(),
+        "dest_dept": "Jurídica",
+        "radicado_padre_id": padre,
+    }
+    tipo, origen, destino = await svc._datos_minimos_del_borrador(row, uuid.uuid4())
+    assert (tipo, origen, destino) == ("Oficio", 20, 4)  # el padre está en SU dependencia
+
+    # Sin el padre en sus dependencias → la de menor código; sin URD → None.
+    row["radicado_padre_id"] = None
+    assert (await svc._datos_minimos_del_borrador(row, uuid.uuid4()))[1] == 9
+    conn.fetch.return_value = []
+    assert (await svc._datos_minimos_del_borrador(row, uuid.uuid4()))[1] is None

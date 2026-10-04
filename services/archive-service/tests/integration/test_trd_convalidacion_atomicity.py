@@ -38,6 +38,7 @@ from app.schemas.archive import (
     TrdSerieVersionCreate,
 )
 from app.services.archive_service import ArchiveService
+from tests.conftest import datos_radicado
 
 from .conftest import convalidate_for_test
 
@@ -200,9 +201,7 @@ async def test_ratificacion_migrada_no_new_row_and_clears_only_matching_motivo(
     )
     await archive.link_radicado(
         exp.id,
-        RadicadoLink(
-            radicado_id=uuid.uuid4(), tracking_number=f"2026-ITEST-E-{uuid.uuid4().hex[:6]}"
-        ),
+        RadicadoLink(**datos_radicado()),
         user_id=None,
     )
     await archive.close_expediente(exp.id)
@@ -335,10 +334,7 @@ async def test_list_expedientes_revision_pendiente_paginated_and_tenant_scoped(
         )
         await archive.link_radicado(
             exp.id,
-            RadicadoLink(
-                radicado_id=uuid.uuid4(),
-                tracking_number=f"2026-ITEST-E-{uuid.uuid4().hex[:6]}",
-            ),
+            RadicadoLink(**datos_radicado()),
             user_id=None,
         )
         await archive.close_expediente(exp.id)

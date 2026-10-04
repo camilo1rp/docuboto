@@ -171,6 +171,7 @@ class TotpService:
                 object_ref=str(user_id),
                 actor=str(actor or user_id),
                 payload=payload or {},
+                canal=_audit.CANAL_PETICION,
             )
         except Exception:  # noqa: BLE001 — best-effort, never fails the request.
             logger.warning("TOTP audit append failed (action=%s)", action, exc_info=True)
@@ -212,6 +213,7 @@ class TotpService:
             object_ref=str(user_id),
             actor=str(actor or user_id),
             payload=payload or {},
+            canal=_audit.CANAL_PETICION,
         )
 
     def _assert_not_locked(self, row: asyncpg.Record) -> None:

@@ -12,47 +12,59 @@ Cada institución (tenant) tiene su propio schema de base de datos (`tenant_{slu
 
 ## ¿Cómo agregar una institución?
 
+El alta es una **operación de plataforma**, no de aplicación: `/api/v1/tenants` **no se expone por el
+api-gateway, a propósito** (cualquier usuario autenticado de una entidad podría enumerar y escribir
+el registro de las demás; hallazgo crítico 2026-07). La hace `scripts/init_tenant.py` (que
+`scripts/init-tenant.sh` ejecuta en un contenedor, con el rol propietario de la base):
+
 ```bash
-# Con token de superadmin
-curl -X POST 'http://localhost:19080/api/v1/tenants/' \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "slug": "gobernacion_caldas",
-    "name": "Gobernación de Caldas",
-    "code": "GCAL"
-  }'
+./scripts/init-tenant.sh gobernacion-caldas "Gobernación de Caldas" GCAL
 ```
 
 Esto:
-1. Inserta en `public.tenants`
-2. Crea el schema `tenant_gobernacion_caldas`
-3. Ejecuta las migraciones Alembic en ese schema
-4. Crea el bucket `orpycamcp-gobernacion_caldas-documents` en el almacén de objetos
+1. Valida el slug (`^[a-z0-9-]+$`: minúsculas, dígitos y **guion**, sin guion bajo) y lo registra en `public.tenants`
+2. Crea el schema `tenant_gobernacion_caldas` (el guion pasa a guion bajo) y el `GRANT USAGE` del rol de aplicación
+3. Aplica las migraciones `.sql` numeradas de cada servicio (`migrations/global/` y `migrations/tenant/`), con el ejecutor `migrations/runner.py` y el libro único `public.schema_migrations`
+4. Pasa la entidad de `provisioning_status='pending'` a `active`
+
+`POST /tenants` del tenant-service (interno, sin ruta en el gateway) solo registra la fila `pending` y deja
+su asiento en `audit_log`: el servicio opera con el rol de aplicación y **no ejecuta DDL**. Tampoco toca el
+almacén de objetos: los buckets (`orpycamcp-{slug}-documents`, y los de preservación) los crea el
+storage-service la primera vez que los necesita.
 
 ## ¿Qué puede salir mal?
 
 - **Slug duplicado**: el sistema devuelve `409 Conflict`
+- **Slug no válido** (mayúsculas, guion bajo, guion inicial, menos de 2 o más de 54 caracteres; el mismo validador que todos los servicios, `orpycamcp_common.tenant`): `422`; el schema se llama `tenant_{slug}` y PostgreSQL trunca los identificadores a 63 bytes sin avisar
 - **Schema ya existe**: el provisioning es idempotente, no falla
-- **Almacén de objetos no disponible**: la creación del tenant falla y se hace rollback de la BD
+- **Migración fallida**: la entidad queda en `pending` y no atiende peticiones hasta que la provisión termine
 
 ## ¿Cómo funciona el aislamiento en cada request?
 
-El JWT del usuario incluye el claim `tenant_slug`. El middleware de FastAPI lo extrae y ejecuta:
+El gateway valida el JWT (claim `tenant_slug`) y reenvía el tenant al servicio. La dependencia
+`get_tenant_conn` **valida el slug con `orpycamcp_common.tenant` (un solo validador: `^[a-z0-9][a-z0-9-]{1,53}$`, falla cerrado con `400 invalid_tenant`), lo
+convierte en nombre de schema y lo entrecomilla** antes de fijar el `search_path` en una conexión
+`asyncpg`; el nombre de un schema no admite `$1`, así que la validación es lo que impide la inyección:
 
 ```python
-await session.execute(text(f"SET search_path TO tenant_{tenant_slug}, public"))
+schema = tenant_schema(slug)  # ^[a-z0-9][a-z0-9-]{1,53}$ -> "tenant_" + slug.replace("-", "_")
+async with pool.acquire() as conn:
+    await conn.execute(f'SET search_path = "{schema}", public')
 ```
 
-Todas las queries de esa sesión operan en el schema correcto automáticamente.
+Todas las consultas de esa conexión operan en el schema correcto. **Nunca** interpole un slug sin
+validar ni sin comillas en un `SET search_path`.
 
 ## Nomenclatura de recursos
 
 | Recurso | Patrón | Ejemplo |
 |---|---|---|
-| Schema PostgreSQL | `tenant_{slug}` | `tenant_gobernacion_caldas` |
-| Bucket de documentos | `orpycamcp-{slug}-documents` | `orpycamcp-gobernacion_caldas-documents` |
-| Bucket de plantillas | `orpycamcp-{slug}-templates` | `orpycamcp-gobernacion_caldas-templates` |
-| Stream Redis | `orpycamcp.{slug}.{service}.events` | `orpycamcp.gcal.document.events` |
+| Schema PostgreSQL | `tenant_{slug con guion → guion bajo}` | `tenant_gobernacion_caldas` |
+| Bucket de documentos | `orpycamcp-{slug}-documents` | `orpycamcp-gobernacion-caldas-documents` |
+| Bucket de preservación (WORM) | `orpycamcp-{slug}-preservation` | `orpycamcp-gobernacion-caldas-preservation` |
+| Stream Redis (compartido por todas las entidades) | `orpycamcp.{service}.events` | `orpycamcp.document.events` |
+
+El stream **no lleva el slug**: es uno por servicio, y la entidad viaja dentro del sobre firmado del
+evento (ADR-010).
 
 <!-- TODO: translate to English -->

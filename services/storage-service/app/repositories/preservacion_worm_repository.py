@@ -28,6 +28,7 @@ import uuid
 from datetime import datetime
 
 import asyncpg
+from orpycamcp_common.tenant import tenant_schema
 
 _COLS = (
     "id, expediente_id, tipo, bucket, object_key, version_id, sha256, "
@@ -49,7 +50,8 @@ _COLS = (
 class PreservacionWormRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
-        self._schema = f"tenant_{tenant_slug.replace('-', '_')}"
+        # Antes NO validaba el slug (los gemelos sí): `tenant_schema` lanza ValueError.
+        self._schema = tenant_schema(tenant_slug)
 
     async def _sp(self) -> None:
         await self._conn.execute(f'SET search_path = "{self._schema}", public')

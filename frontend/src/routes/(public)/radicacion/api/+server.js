@@ -47,10 +47,16 @@ export async function POST({ request, fetch }) {
     );
   }
 
+  // `Idempotency-Key` (AREA-02-07): la genera el navegador por envío y el backend la
+  // ata al radicado, de modo que un reintento de red devuelve el MISMO número en vez de
+  // gastar otro consecutivo. Se reenvía solo si viene; el multipart sigue intacto.
+  const clave = request.headers?.get?.("idempotency-key");
+
   try {
     const res = await fetch(`${API_V1}/public/${encodeURIComponent(PUBLIC_TENANT)}/ventanilla`, {
       method: "POST",
       body: cuerpo,
+      ...(clave ? { headers: { "Idempotency-Key": clave } } : {}),
     });
     const datos = await res.json().catch(() => null);
     if (!res.ok) {

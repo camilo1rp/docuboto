@@ -264,3 +264,36 @@ async def test_el_tenant_se_sanea_antes_de_entrar_en_la_clave(cliente):
     assert all(k.count(":") == 4 for k in claves), (
         f"el slug sin sanear mete separadores extra en la clave y hace alias: {claves}"
     )
+
+
+async def test_dos_entidades_tras_un_mismo_proxy_no_comparten_el_cubo_por_ip(cliente):
+    """AREA-11-08: el mcp-server es un proxy de confianza para TODAS las entidades.
+
+    Como no reenviaba la IP del cliente, todas las llamadas del asistente caían en
+    el cubo por IP de su contenedor. Con la IP reenviada en `X-Forwarded-For`, dos
+    entidades que entran por el mismo salto de confianza cuentan aparte.
+    """
+    client, _ = cliente
+    app.state.trusted_proxies = "127.0.0.0/8"  # el par del transporte de prueba
+    app.state.rate_limit_per_ip = 2
+    app.state.rate_limit_per_usuario = 10_000
+    try:
+        def desde(usuario: str, ip: str) -> dict[str, str]:
+            return {"Authorization": f"Bearer token-de-{usuario}", "X-Forwarded-For": ip}
+
+        for _ in range(2):
+            ok = await client.get("/api/v1/documents", headers=desde("ana", "198.51.100.1"))
+            assert ok.status_code != 429
+        agotada = await client.get("/api/v1/documents", headers=desde("ana", "198.51.100.1"))
+        assert agotada.status_code == 429
+
+        de_otra_entidad = await client.get(
+            "/api/v1/documents", headers=desde("beto", "198.51.100.2")
+        )
+        assert de_otra_entidad.status_code != 429, (
+            "dos clientes con X-Forwarded-For distintos por el mismo salto de confianza "
+            "comparten el cubo por IP"
+        )
+    finally:
+        app.state.rate_limit_per_ip = 10_000
+        app.state.trusted_proxies = settings.trusted_proxies

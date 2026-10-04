@@ -53,6 +53,7 @@ async def ejecutar(
     permissions: set[str],
     is_root: bool,
     levels: dict[str, int] | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Ejecuta el procedimiento y devuelve el parte de lo ocurrido.
 
@@ -67,7 +68,7 @@ async def ejecutar(
     salidas: dict[str, Any] = {}
     parte: list[dict[str, Any]] = []
 
-    for paso in proc.pasos:
+    for n, paso in enumerate(proc.pasos, start=1):
         if paso.si_hay and args.get(paso.si_hay) in (None, ""):
             parte.append(
                 {
@@ -114,7 +115,14 @@ async def ejecutar(
         preparada = build_request(herramienta, argumentos)
         try:
             resp = await execute(
-                client, preparada, authorization=authorization, tenant_slug=tenant_slug
+                client,
+                preparada,
+                authorization=authorization,
+                tenant_slug=tenant_slug,
+                # Un procedimiento son varios actos: cada paso lleva su propia
+                # clave (`<jti>:<n>`) para que, el día que un servicio la honre
+                # como idempotencia, dos pasos distintos no se tomen por uno.
+                idempotency_key=f"{idempotency_key}:{n}" if idempotency_key else None,
             )
         except httpx.RequestError as exc:
             parte.append(

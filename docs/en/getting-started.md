@@ -74,18 +74,14 @@ The response includes the assigned `radicado` (tracking) number (e.g.: `2024-DEM
 
 A `tenant` is an institution served by a shared OrpycaMCP installation.
 
+Onboarding an institution is a platform operation: `/api/v1/tenants` is **not exposed by the gateway**
+(see [Multi-tenancy](multi-tenancy.md)). Use the provisioning script:
+
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/tenants' \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "slug": "mi_entidad",
-    "name": "Mi Entidad Pública",
-    "code": "MENT"
-  }'
+./scripts/init-tenant.sh mi-entidad "Mi Entidad Pública" MENT
 ```
 
-This automatically provisions the `tenant_mi_entidad` schema (each tenant's isolated database schema, named `tenant_{slug}`) in PostgreSQL.
+This provisions the `tenant_mi_entidad` schema (each tenant's isolated database schema, named `tenant_{slug}`) in PostgreSQL (the slug takes lowercase letters, digits and hyphens; the hyphen becomes an underscore in the schema), applies the migrations and activates the institution.
 
 ## Load initial TRD (seed)
 

@@ -15,6 +15,9 @@ import uuid
 
 import asyncpg
 
+from app.core.constants import CADENA_NIVEL_AUTORITATIVO
+from app.core.secret_derivation import KEY_VERSION_LEGACY
+
 _COLS = (
     "id, objeto_tipo, objeto_id, formato_solicitado, firmante_id, "
     "payload_sha256, firma_blob, provider, sello_tiempo, created_at, "
@@ -25,7 +28,7 @@ _COLS = (
     "crl_next_update, archive_timestamp_present, archive_timestamp_at, "
     "archive_tsa_cert_fingerprint, revocation_provenance, archive_timestamp_token, "
     "ocsp_present, ocsp_responder_fingerprint, ocsp_cert_status, ocsp_produced_at, "
-    "ocsp_this_update, ocsp_next_update, ocsp_response_der"
+    "ocsp_this_update, ocsp_next_update, ocsp_response_der, key_version"
 )
 
 
@@ -80,6 +83,10 @@ class FirmaRepository:
         ``ocsp_response_der`` es la ``BasicOCSPResponse`` DER en base64 —
         material PÚBLICO (igual que ``archive_timestamp_token``), NUNCA la
         clave privada del responder OCSP.
+
+        ``key_version`` (migración 020, AREA-04-11) es el esquema del HMAC de la
+        firma nativa: 1 para lo que se firma hoy, 0 para lo anterior. Sin él,
+        ``/verify`` no sabría con qué clave recomputar.
         """
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma (id, objeto_tipo, objeto_id, formato_solicitado,
@@ -93,11 +100,11 @@ class FirmaRepository:
                 revocation_provenance, archive_timestamp_token,
                 ocsp_present, ocsp_responder_fingerprint, ocsp_cert_status,
                 ocsp_produced_at, ocsp_this_update, ocsp_next_update,
-                ocsp_response_der)
+                ocsp_response_der, key_version)
                 VALUES (COALESCE($1, gen_random_uuid()),
                         $2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
                         $18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,
-                        $33,$34,$35,$36,$37)
+                        $33,$34,$35,$36,$37,$38)
                 RETURNING {_COLS}""",
             data.get("id"),
             data["objeto_tipo"],
@@ -151,12 +158,32 @@ class FirmaRepository:
             data.get("ocsp_this_update"),
             data.get("ocsp_next_update"),
             data.get("ocsp_response_der"),
+            # Esquema del HMAC de la firma NATIVA (migración 020, AREA-04-11).
+            # El llamante de la rama nativa lo pasa SIEMPRE desde `signer.firmar`;
+            # las demás (XAdES) no tienen HMAC de servicio y quedan en 0, que es
+            # también el DEFAULT de la columna — escrito aquí explícito porque un
+            # NULL explícito ignoraría el DEFAULT y la columna es NOT NULL.
+            data.get("key_version", KEY_VERSION_LEGACY),
         )
         assert row is not None
         return row
 
-    async def get(self, firma_id: uuid.UUID) -> asyncpg.Record | None:
+    async def get(
+        self, firma_id: uuid.UUID, *, max_clearance: int | None = None
+    ) -> asyncpg.Record | None:
         """La firma, con el NOMBRE de quien firmó resuelto.
+
+        ``max_clearance`` (AREA-04-10): con valor, la firma de un objeto
+        (radicado o expediente) cuyo nivel de seguridad supera ese clearance NO
+        se devuelve — la consulta da ``None``, indistinguible de un UUID que no
+        existe. El nivel viaja **dentro del ``WHERE``** y no en una comprobación
+        posterior: así quien no alcanza el objeto no puede distinguir «existe y
+        no puedo verlo» de «no existe» ni por el código ni por el cuerpo. Una
+        firma sobre un objeto que no resuelve contra radicados/expedientes
+        (índice, acta: no tienen nivel propio aquí) es visible, igual que en
+        ``/sign-xml``. ``None`` (llamada de servicio a servicio sin usuario
+        detrás, p. ej. archive-service verificando el sellado del índice) no
+        aplica el gate.
 
         El comprobante de firma titulaba «Firmante» y enseñaba
         `50b64803-568d-49f7-9299-cb140279d947`: un certificado que no dice
@@ -180,20 +207,65 @@ class FirmaRepository:
         # devuelve el JOIN para un sello del sistema.
         # Se comprueba la COLUMNA y no la tabla, por el mismo motivo que en
         # `TransferenciaRepository.get_acta`: la tabla puede existir sin ella.
-        if await self._conn.fetchval(
-            """SELECT EXISTS (
-                   SELECT 1 FROM information_schema.columns
-                    WHERE table_schema = current_schema()
-                      AND table_name = 'auth_users'
-                      AND column_name = 'username')"""
-        ):
-            return await self._conn.fetchrow(
-                f"""SELECT {cols}, u.username AS firmante_nombre
-                      FROM firma f
-                      LEFT JOIN auth_users u ON u.id::text = f.firmante_id::text
-                     WHERE f.id = $1""",
-                firma_id,
+        con_nombre = bool(
+            await self._conn.fetchval(
+                """SELECT EXISTS (
+                       SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'auth_users'
+                          AND column_name = 'username')"""
             )
-        return await self._conn.fetchrow(
-            f"SELECT {cols} FROM firma f WHERE f.id = $1", firma_id
         )
+        select = f"SELECT {cols}, u.username AS firmante_nombre" if con_nombre else f"SELECT {cols}"
+        join = "LEFT JOIN auth_users u ON u.id::text = f.firmante_id::text" if con_nombre else ""
+        args: list[object] = [firma_id]
+        gate = ""
+        if max_clearance is not None:
+            args.append(max_clearance)
+            try:
+                return await self._conn.fetchrow(
+                    f"{select} FROM firma f {join} WHERE f.id = $1 "
+                    f"{self._gate_nivel(CADENA_NIVEL_AUTORITATIVO)}",
+                    *args,
+                )
+            except asyncpg.UndefinedTableError:
+                # Alguna tabla dueña del nivel falta en este schema (tenant sin
+                # document- o archive-service): se descartan SOLO las ausentes.
+                presentes = await self._tablas_presentes(
+                    [t for t, _ in CADENA_NIVEL_AUTORITATIVO.values()]
+                )
+                fuentes = {
+                    k: v for k, v in CADENA_NIVEL_AUTORITATIVO.items() if v[0] in presentes
+                }
+                gate = self._gate_nivel(fuentes)
+                # Sin NINGUNA tabla dueña del nivel no hay `$2` en la consulta:
+                # pasarlo igual lo rechaza el servidor (lo cazó el tier real).
+                return await self._conn.fetchrow(
+                    f"{select} FROM firma f {join} WHERE f.id = $1 {gate}",
+                    *(args if fuentes else args[:1]),
+                )
+        return await self._conn.fetchrow(f"{select} FROM firma f {join} WHERE f.id = $1", *args)
+
+    @staticmethod
+    def _gate_nivel(fuentes: dict[str, tuple[str, tuple[str, ...]]]) -> str:
+        """Fragmento ``AND NOT EXISTS (...)`` del no-read-up, con ``$2`` = clearance.
+
+        Tablas y columnas salen de ``CADENA_NIVEL_AUTORITATIVO`` (constante del
+        módulo), jamás del request. Se compara contra ``f.objeto_id`` por la
+        identidad natural y por el UUID, igual que ``resolver_nivel_por_objeto``.
+        """
+        partes = []
+        for tabla, id_cols in fuentes.values():
+            on = " OR ".join(f"o.{c} = f.objeto_id" for c in id_cols)
+            partes.append(
+                f"AND NOT EXISTS (SELECT 1 FROM {tabla} o WHERE ({on}) AND o.nivel_seguridad > $2)"
+            )
+        return " ".join(partes)
+
+    async def _tablas_presentes(self, tablas: list[str]) -> set[str]:
+        rows = await self._conn.fetch(
+            """SELECT table_name FROM information_schema.tables
+                WHERE table_schema = current_schema() AND table_name = ANY($1::text[])""",
+            tablas,
+        )
+        return {r["table_name"] for r in rows}

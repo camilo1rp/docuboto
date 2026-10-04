@@ -33,6 +33,17 @@
  */
 export const IDENTIDADES = ["e2e1", "e2e2", "e2e3"];
 
+/**
+ * Identidad RESTRINGIDA: `consulta`, del grupo «Consulta (solo lectura, nivel 1)»
+ * de `scripts/seed_demo.py` — PERM_RADI y USUA_PERM_EXPEDIENTE con nivel 1, SIN
+ * USUA_PERM_ADMIN. Es el segundo rol que la suite necesitaba: con tres
+ * identidades del mismo grupo, un control que debía desaparecer y un backend que
+ * debía negarse eran indistinguibles de que no hubiera control ninguno.
+ * No forma parte de `IDENTIDADES` (el reparto de cuota) a propósito: su sujeto de
+ * prueba es justo que NO es como `operador`.
+ */
+export const RESTRINGIDA = "consulta";
+
 /** Dónde queda el estado de sesión de cada identidad. */
 export function estadoDe(usuario) {
   return `playwright/.auth/${usuario}.json`;

@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -128,6 +128,28 @@ def _only_replica_bucket_missing(bucket: str) -> bool:
     return bucket != _REPLICA_BUCKET
 
 
+def _minio_get_con_replica(
+    mock_minio, *, bytes_de_la_replica: bytes | None = None
+) -> AsyncMock:
+    """`get_object` del almacén: el documento en su bucket y, para el bucket réplica,
+    los bytes del ZIP que el primario acaba de subir (un almacén que COPIA bien) o los
+    que se indiquen (un almacén que corrompe la copia)."""
+
+    async def _get(bucket, _key, *_a, **_k):
+        if bucket == _REPLICA_BUCKET:
+            contenido = bytes_de_la_replica
+            if contenido is None:
+                contenido = mock_minio.put_object.await_args_list[0].args[2].getvalue()
+        else:
+            contenido = _DOC_CONTENT
+        obj = MagicMock()
+        obj.read = AsyncMock(return_value=contenido)
+        obj.close = MagicMock()
+        return obj
+
+    return AsyncMock(side_effect=_get)
+
+
 def _make_mock_secondary_minio() -> AsyncMock:
     """Cliente MinIO del SEGUNDO endpoint (réplica cross-site).
 
@@ -141,6 +163,18 @@ def _make_mock_secondary_minio() -> AsyncMock:
     minio.bucket_exists = AsyncMock(return_value=False)  # bucket réplica aún no existe
     minio.make_bucket = AsyncMock()
     minio.put_object = AsyncMock(return_value=AsyncMock(version_id="v1"))
+    minio._ultima_retencion = None
+
+    def _recordar(*_a, **kw):
+        minio._ultima_retencion = kw.get("retention")
+        return MagicMock(version_id="v1")
+
+    minio.put_object = AsyncMock(side_effect=_recordar)
+
+    async def _retencion(*_a, **_k):
+        return minio._ultima_retencion
+
+    minio.get_object_retention = AsyncMock(side_effect=_retencion)
     return minio
 
 
@@ -229,7 +263,7 @@ async def test_replica_local_success_provisions_bucket_and_copies(
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
-    mock_minio.get_object = minio_get_object(_DOC_CONTENT)
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
 
     resp = await client.post(
@@ -297,7 +331,7 @@ async def test_replica_num_copias_mayor_a_dos_registra_deficit_honesto(
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
-    mock_minio.get_object = minio_get_object(_DOC_CONTENT)
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
 
     resp = await client.post(
@@ -340,7 +374,7 @@ async def test_replica_fallo_es_best_effort_no_fatal(
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="fallo")]
-    mock_minio.get_object = minio_get_object(_DOC_CONTENT)
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
     mock_minio.copy_object = AsyncMock(side_effect=RuntimeError("MinIO replica endpoint unreachable"))
 
@@ -375,7 +409,9 @@ async def test_replica_fallo_es_best_effort_no_fatal(
     import json as _json
 
     detalle = _json.loads(replica_evt[0].args[6])
-    assert "MinIO replica endpoint unreachable" in detalle["motivo_fallo"]
+    # AREA-08-04: solo el TIPO de la excepción, nunca su texto (host/bucket/request-id).
+    assert detalle["motivo_fallo"] == "RuntimeError"
+    assert "unreachable" not in detalle["motivo_fallo"]
 
 
 @pytest.mark.asyncio
@@ -395,7 +431,7 @@ async def test_replica_bucket_derivado_del_claim_no_del_body(
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
-    mock_minio.get_object = minio_get_object(_DOC_CONTENT)
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
 
     payload = _base_payload(doc_file_id=doc_file_id)
@@ -478,6 +514,7 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
     monkeypatch.setattr(config_module.settings, "minio_secondary_secret_key", "sec-secret")
 
     secondary_minio = _make_mock_secondary_minio()
+    secondary_minio.get_object = _minio_get_con_replica(mock_minio)
     # Singleton perezoso del módulo: se fuerza a None y se sustituye el
     # constructor para que la próxima llamada devuelva NUESTRO mock (nunca un
     # cliente real hacia "secondary.minio.local").
@@ -490,7 +527,7 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
-    mock_minio.get_object = minio_get_object(_DOC_CONTENT)
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
 
     resp = await client.post(
         "/api/v1/preservacion/aip",
@@ -537,3 +574,160 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
     assert detalle["target"] == "cross-site"
     assert "cross-site" in detalle["nota"]
     assert "NO es copia geográfica" not in detalle["nota"]
+
+
+# ---------------------------------------------------------------------------
+# AREA-08-04 — la réplica se RELEE (retención + fixity), el secundario se valida y
+# el motivo de fallo no filtra el texto del almacén.
+# ---------------------------------------------------------------------------
+
+
+async def _empaquetar_con_replica(client_with_conn, monkeypatch, *, estado_replica: str):
+    client, mock_conn, mock_minio = client_with_conn
+    doc_file_id = uuid.uuid4()
+    retain_until = datetime(2031, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    _grant_permission(mock_conn, num_copias=2)
+    mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
+        doc_file_id=doc_file_id, aip_id=uuid.uuid4(), retain_until=retain_until
+    ) + [_replica_evento_row(resultado=estado_replica)]
+    mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
+    return client, mock_conn, mock_minio, doc_file_id
+
+
+@pytest.mark.asyncio
+async def test_replica_con_bytes_distintos_no_es_ok(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La copia releída no tiene el SHA-256 del ZIP -> `ok=False`, motivo
+    `fixity_replica`. Antes el evento REPLICA decía `ok` sobre una copia que nadie
+    había mirado."""
+    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+        client_with_conn, monkeypatch, estado_replica="fallo"
+    )
+    mock_minio.get_object = _minio_get_con_replica(
+        mock_minio, bytes_de_la_replica=b"bytes corruptos de la copia"
+    )
+
+    resp = await client.post(
+        "/api/v1/preservacion/aip",
+        json=_base_payload(doc_file_id=doc_file_id),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["replicado"] is False
+    replica_evt = [
+        c for c in mock_conn.fetchrow.call_args_list
+        if c.args and "INSERT INTO preservacion_evento" in c.args[0] and c.args[2] == "REPLICA"
+    ][0]
+    assert replica_evt.args[3] == "fallo"
+    import json as _json
+
+    assert _json.loads(replica_evt.args[6])["motivo_fallo"] == "fixity_replica"
+
+
+@pytest.mark.asyncio
+async def test_replica_con_retencion_distinta_no_es_ok(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El almacén acepta la copia pero la retención releída es más corta -> no ok."""
+    from miniopy_async.retention import Retention
+
+    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+        client_with_conn, monkeypatch, estado_replica="fallo"
+    )
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
+    primera = {"hecha": False}
+
+    async def _retencion(bucket, *_a, **_k):
+        # primario: lo pedido; réplica: una retención corta
+        if bucket == _REPLICA_BUCKET:
+            return Retention("COMPLIANCE", datetime(2026, 1, 1, tzinfo=UTC))
+        primera["hecha"] = True
+        return Retention("COMPLIANCE", datetime(2031, 1, 1, tzinfo=UTC))
+
+    mock_minio.get_object_retention = AsyncMock(side_effect=_retencion)
+
+    resp = await client.post(
+        "/api/v1/preservacion/aip",
+        json=_base_payload(doc_file_id=doc_file_id),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["replicado"] is False
+    import json as _json
+
+    replica_evt = [
+        c for c in mock_conn.fetchrow.call_args_list
+        if c.args and "INSERT INTO preservacion_evento" in c.args[0] and c.args[2] == "REPLICA"
+    ][0]
+    assert _json.loads(replica_evt.args[6])["motivo_fallo"] == "RetencionNoVerificadaError"
+
+
+@pytest.mark.asyncio
+async def test_secundario_igual_al_primario_se_etiqueta_local(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`MINIO_SECONDARY_ENDPOINT` == `MINIO_ENDPOINT` (aunque con esquema o mayúsculas)
+    NO es cross-site: target `local`, copia server-side en el primario."""
+    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+        client_with_conn, monkeypatch, estado_replica="ok"
+    )
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
+    monkeypatch.setattr(config_module.settings, "minio_endpoint", "minio:9000")
+    monkeypatch.setattr(
+        config_module.settings, "minio_secondary_endpoint", "http://MINIO:9000/"
+    )
+    monkeypatch.setattr(
+        aip_replica_module,
+        "_get_secondary_minio",
+        lambda: pytest.fail("no debe usarse un cliente secundario para el mismo host"),
+    )
+
+    resp = await client.post(
+        "/api/v1/preservacion/aip",
+        json=_base_payload(doc_file_id=doc_file_id),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["replica_target"] == "local"
+    mock_minio.copy_object.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_motivo_de_fallo_s3_no_filtra_host_ni_request_id(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un `S3Error` cuyo texto lleva host y request-id llega al evento solo como
+    `S3Error:<code>`."""
+    from miniopy_async import S3Error
+
+    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+        client_with_conn, monkeypatch, estado_replica="fallo"
+    )
+    mock_minio.get_object = _minio_get_con_replica(mock_minio)
+    mock_minio.copy_object = AsyncMock(
+        side_effect=S3Error(
+            "AccessDenied", "denegado en minio:9000 bucket x", "/b/k", "REQID-123", "HOSTID-9", None
+        )
+    )
+
+    resp = await client.post(
+        "/api/v1/preservacion/aip",
+        json=_base_payload(doc_file_id=doc_file_id),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+    import json as _json
+
+    replica_evt = [
+        c for c in mock_conn.fetchrow.call_args_list
+        if c.args and "INSERT INTO preservacion_evento" in c.args[0] and c.args[2] == "REPLICA"
+    ][0]
+    motivo = _json.loads(replica_evt.args[6])["motivo_fallo"]
+    assert motivo == "S3Error:AccessDenied"
+    assert "minio:9000" not in replica_evt.args[6] and "REQID" not in replica_evt.args[6]

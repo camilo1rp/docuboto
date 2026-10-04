@@ -32,9 +32,21 @@ from app.jobs.disposicion_alerta import run_once as _disposicion_alerta_once
 from app.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from app.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
 from app.jobs.indice_reconciliation import (
+    run_once_actas_eliminacion_worm as _reconcile_actas_eliminacion_worm_once,
+)
+from app.jobs.indice_reconciliation import (
     run_once_actas_worm as _reconcile_actas_worm_once,
 )
 from app.jobs.indice_reconciliation import run_once_aip as _reconcile_aip_once
+from app.jobs.indice_reconciliation import (
+    run_once_firmas_personales_worm as _reconcile_firmas_personales_worm_once,
+)
+from app.jobs.indice_reconciliation import (
+    run_once_fixity_premis as _reconcile_fixity_premis_once,
+)
+from app.jobs.indice_reconciliation import (
+    run_once_origen_legado as _completar_origen_legado_once,
+)
 from app.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
 from app.jobs.indice_reconciliation import (
     run_once_worm_renovacion as _reconcile_worm_renovacion_once,
@@ -86,6 +98,7 @@ async def _indice_reconciliation_loop() -> None:
     OAIS al cierre, `run_once_aip`) — piggyback en el MISMO ciclo, mismo
     criterio: reactiva a "el índice ya quedó firmado+protegido bajo WORM",
     sin kill-switch/intervalo propio."""
+    request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     while True:
         try:
             await _reconcile_indices_once()
@@ -115,6 +128,13 @@ async def _indice_reconciliation_loop() -> None:
                 "Fallo en la barrida de cableado del AIP",
                 exc_info=True,
             )
+        try:
+            await _completar_origen_legado_once()
+        except Exception:
+            logger.warning(
+                "Fallo en el backfill del origen de vínculos legados",
+                exc_info=True,
+            )
         await asyncio.sleep(settings.indice_reconciliation_interval_seconds)
 
 
@@ -126,12 +146,14 @@ async def _acta_reconciliation_loop() -> None:
     `_indice_reconciliation_loop`, el loop NUNCA muere por una excepción.
 
     Incluye la 4ª fase (E10 Inc.2 wiring, cableado WORM del acta,
-    `run_once_actas_worm`) en el MISMO ciclo/cadencia que el sellado — mismo
+    `run_once_actas_worm`, y su gemela del acta de eliminación,
+    `run_once_actas_eliminacion_worm`, AREA-06-02) en el MISMO ciclo/cadencia que el sellado — mismo
     criterio que ató `run_once_worm` al ciclo del índice
     (`_indice_reconciliation_loop`): tan estrechamente acoplada a "el acta ya
     quedó 'firmado'" que no amerita kill-switch/intervalo propio. Un fallo en
     la fase WORM tampoco debe impedir que la siguiente iteración reintente el
     sellado."""
+    request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     while True:
         try:
             await _reconcile_actas_once()
@@ -145,6 +167,27 @@ async def _acta_reconciliation_loop() -> None:
         except Exception:
             logger.warning(
                 "Fallo en la barrida de reconciliación WORM del acta",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_actas_eliminacion_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del acta de eliminación",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_firmas_personales_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida WORM de las firmas personales del acta",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_fixity_premis_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida del evento PREMIS de fixity de la recepción",
                 exc_info=True,
             )
         await asyncio.sleep(settings.acta_reconciliation_interval_seconds)
@@ -162,6 +205,7 @@ async def _disposicion_alerta_loop() -> None:
 
     **Este bucle no ejecuta ninguna disposición.** Cuenta y avisa; decidir es
     de una persona y ejecutar (RF-TRD-07) todavía no existe."""
+    request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     while True:
         try:
             await _disposicion_alerta_once()

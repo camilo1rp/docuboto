@@ -284,6 +284,9 @@ def _make_mock_minio() -> MagicMock:
         return MagicMock(version_id="v1")
 
     minio.put_object = AsyncMock(side_effect=_recordar_retencion)
+    # La copia server-side de la réplica local también lleva retención, y ahora se
+    # relee (AREA-08-04): el doble de un almacén que CUMPLE la recuerda igual.
+    minio.copy_object = AsyncMock(side_effect=_recordar_retencion)
 
     async def _leer_retencion(*_args, **_kwargs):
         return getattr(minio, "_ultima_retencion", None)

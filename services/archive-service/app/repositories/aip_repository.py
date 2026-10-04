@@ -52,6 +52,55 @@ class AipRepository:
         assert row is not None
         return row
 
+    async def get_aip_object_id(self, expediente_id: uuid.UUID) -> uuid.UUID | None:
+        """`preservacion_worm_objeto.id` del AIP empaquetado del expediente, o `None`
+        (sin fila, o todavía no empaquetado). Lectura plana, sin gate: el llamador ya
+        resolvió la visibilidad del expediente (AREA-07-15)."""
+        row = await self._conn.fetchrow(
+            "SELECT aip_worm_object_id FROM expediente_aip WHERE expediente_id = $1",
+            expediente_id,
+        )
+        return row["aip_worm_object_id"] if row is not None else None
+
+    async def reintentar_manual(
+        self, expediente_id: uuid.UUID, *, max_clearance: int
+    ) -> asyncpg.Record | None:
+        """Devuelve a `pendiente` un AIP `agotado` (AREA-07-14): reintento MANUAL, el único
+        camino fuera del job, que solo pasa a `agotado` y nunca vuelve.
+
+        Un solo UPDATE y las dos condiciones EN EL WHERE: `estado = 'agotado'` (un AIP
+        `empaquetado` u `omitido` no se re-arma: sería re-sellar un paquete de archivo
+        ya inmutable) y el clearance del llamante contra el `nivel_seguridad` VIGENTE
+        del expediente (RF-SEG-08: va en la consulta, no en una comprobación previa).
+        `None` cuando no aplica por CUALQUIERA de las dos razones, indistinguibles: el
+        llamador responde un 404 neutro. `intentos` vuelve a 0 y `proximo_intento_at` a
+        `now()` para que la siguiente barrida lo recoja; `ultimo_error` se conserva (lo
+        que explica por qué se agotó) y se devuelve como `error_previo` para el asiento."""
+        return await self._conn.fetchrow(
+            """
+            WITH previo AS (
+                SELECT ea.expediente_id, ea.intentos, ea.ultimo_error
+                  FROM expediente_aip ea
+                 WHERE ea.expediente_id = $1
+                   AND ea.estado = 'agotado'
+                   AND EXISTS (
+                       SELECT 1 FROM expedientes e
+                        WHERE e.id = ea.expediente_id AND e.nivel_seguridad <= $2
+                   )
+                   FOR UPDATE
+            )
+            UPDATE expediente_aip ea
+               SET estado = 'pendiente', intentos = 0, proximo_intento_at = now()
+              FROM previo
+             WHERE ea.expediente_id = previo.expediente_id
+            RETURNING ea.expediente_id, ea.estado,
+                      previo.intentos AS intentos_previos,
+                      previo.ultimo_error AS error_previo
+            """,
+            expediente_id,
+            max_clearance,
+        )
+
     async def mark_empaquetado(
         self,
         expediente_id: uuid.UUID,

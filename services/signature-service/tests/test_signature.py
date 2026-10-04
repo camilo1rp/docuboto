@@ -36,36 +36,121 @@ NOW = datetime.now(tz=UTC)
 # ---------------------------------------------------------------------------
 
 
+TENANT = "demo"
+OBJ = {"tenant_slug": TENANT, "objeto_tipo": "indice", "objeto_id": "exp-1"}
+
+
+def _firmar(payload: bytes = b"<indice/>", **over) -> dict:
+    kw = {**OBJ, **over}
+    return signer.firmar(payload, str(USER), SELLO_STR, settings.signature_secret, **kw)
+
+
+def _verificar(firma: dict, payload: bytes = b"<indice/>", **over) -> bool:
+    kw = {"key_version": firma["key_version"], **OBJ, **over}
+    firmante = kw.pop("firmante", str(USER))
+    sello = kw.pop("sello", SELLO_STR)
+    secret = kw.pop("secret", settings.signature_secret)
+    return signer.verificar(payload, firmante, firma["firma_blob"], sello, secret, **kw)
+
+
 def test_signer_hmac_verify_roundtrip() -> None:
     """Sign and verify succeed for same inputs."""
-    secret = settings.signature_secret
-    result = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)
-    assert signer.verificar(b"<indice/>", str(USER), result["firma_blob"], SELLO_STR, secret) is True
+    assert _verificar(_firmar()) is True
 
 
 def test_signer_detects_tampered_payload() -> None:
-    secret = settings.signature_secret
-    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
-    assert signer.verificar(b"<indice ALTERADO/>", str(USER), blob, SELLO_STR, secret) is False
+    assert _verificar(_firmar(), b"<indice ALTERADO/>") is False
 
 
 def test_signer_detects_wrong_firmante() -> None:
-    secret = settings.signature_secret
-    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
-    assert signer.verificar(b"<indice/>", str(uuid.uuid4()), blob, SELLO_STR, secret) is False
+    assert _verificar(_firmar(), firmante=str(uuid.uuid4())) is False
 
 
 def test_signer_non_reproducible_without_secret() -> None:
     """firma_blob is not reproducible by a caller who doesn't know the secret."""
-    secret = settings.signature_secret
-    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
-    assert signer.verificar(b"<indice/>", str(USER), blob, SELLO_STR, "wrong-secret") is False
+    assert _verificar(_firmar(), secret="wrong-secret") is False
 
 
 def test_signer_detects_wrong_sello_tiempo() -> None:
-    secret = settings.signature_secret
-    blob = signer.firmar(b"<indice/>", str(USER), SELLO_STR, secret)["firma_blob"]
-    assert signer.verificar(b"<indice/>", str(USER), blob, "2025-06-01T00:00:00+00:00", secret) is False
+    assert _verificar(_firmar(), sello="2025-06-01T00:00:00+00:00") is False
+
+
+# --- AREA-04-11: clave por entidad y mensaje que ata entidad+objeto ----------
+
+
+def test_firma_nativa_no_verifica_en_otro_tenant() -> None:
+    """Una fila copiada a otro schema (restauración, import) deja de verificar.
+
+    Mismo blob, mismo firmante, mismo sello, mismo objeto: solo cambia la entidad.
+    """
+    firma = _firmar(tenant_slug="a")
+    assert _verificar(firma, tenant_slug="a") is True
+    assert _verificar(firma, tenant_slug="b") is False
+
+
+def test_firma_nativa_no_verifica_sobre_otro_objeto() -> None:
+    firma = _firmar()
+    assert _verificar(firma, objeto_id="exp-2") is False
+    assert _verificar(firma, objeto_tipo="radicado") is False
+
+
+def test_firma_nativa_nueva_sale_en_key_version_actual() -> None:
+    from app.core.secret_derivation import KEY_VERSION_HKDF
+
+    assert _firmar()["key_version"] == KEY_VERSION_HKDF == 1
+
+
+def test_firma_nativa_legada_key_version_0_sigue_verificando() -> None:
+    """Las firmas anteriores a la 020 NO se rompen: se verifican con el esquema
+    original. El HMAC se calcula a mano, con la fórmula literal de entonces, para
+    no probar el código con sí mismo."""
+    import hashlib
+    import hmac
+
+    payload = b"<indice/>"
+    sha = hashlib.sha256(payload).hexdigest()
+    blob = hmac.new(
+        settings.signature_secret.encode(),
+        f"{sha}|{USER}|{SELLO_STR}".encode(),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    assert signer.verificar(
+        payload, str(USER), blob, SELLO_STR, settings.signature_secret,
+        key_version=0, **OBJ,
+    ) is True
+    # …y el mismo blob NO verifica como v1 (la versión no es decorativa).
+    assert signer.verificar(
+        payload, str(USER), blob, SELLO_STR, settings.signature_secret,
+        key_version=1, **OBJ,
+    ) is False
+
+
+def test_key_version_desconocida_no_verifica() -> None:
+    firma = _firmar()
+    assert _verificar(firma, key_version=7) is False
+
+
+def test_clave_derivada_distinta_por_proposito_y_entidad() -> None:
+    from app.core.secret_derivation import derive_key
+
+    r = settings.signature_secret
+    assert derive_key(r, purpose="firma_nativa", tenant_slug="a") != derive_key(
+        r, purpose="otp", tenant_slug="a"
+    )
+    assert derive_key(r, purpose="firma_nativa", tenant_slug="a") != derive_key(
+        r, purpose="firma_nativa", tenant_slug="b"
+    )
+    assert derive_key(r, purpose="otp", tenant_slug="a") == derive_key(
+        r, purpose="otp", tenant_slug="a"
+    )
+
+
+@pytest.mark.parametrize("slug", ["", None])
+def test_derivar_clave_sin_entidad_se_rechaza(slug) -> None:
+    from app.core.secret_derivation import derive_key
+
+    with pytest.raises(ValueError):
+        derive_key(settings.signature_secret, purpose="otp", tenant_slug=slug or "")
 
 
 # ---------------------------------------------------------------------------
@@ -75,11 +160,12 @@ def test_signer_detects_wrong_sello_tiempo() -> None:
 
 def _firma_row(payload: bytes, firmante: uuid.UUID) -> dict:
     """Build a fake DB row matching FirmaRepository._COLS."""
-    r = signer.firmar(payload, str(firmante), SELLO_STR, settings.signature_secret)
+    r = signer.firmar(payload, str(firmante), SELLO_STR, settings.signature_secret, **OBJ)
     return {
         "id": uuid.uuid4(),
         "objeto_tipo": "indice",
         "objeto_id": "exp-1",
+        "key_version": r["key_version"],
         "formato_solicitado": "XAdES",
         "firmante_id": firmante,
         "payload_sha256": r["payload_sha256"],

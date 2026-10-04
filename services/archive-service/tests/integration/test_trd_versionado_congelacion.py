@@ -51,6 +51,7 @@ from app.schemas.archive import (
     TrdSerieVersionCreate,
 )
 from app.services.archive_service import ArchiveService
+from tests.conftest import datos_radicado
 
 from .conftest import DSN, convalidate_for_test
 
@@ -82,10 +83,7 @@ async def _seed_closed_expediente(
     radicado_id = uuid.uuid4()
     await archive.link_radicado(
         expediente.id,
-        RadicadoLink(
-            radicado_id=radicado_id,
-            tracking_number=f"2026-ITEST-E-{uuid.uuid4().hex[:6]}",
-        ),
+        RadicadoLink(**datos_radicado(radicado_id)),
         user_id=None,
     )
     await archive.close_expediente(expediente.id)

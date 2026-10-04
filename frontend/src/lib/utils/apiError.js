@@ -104,6 +104,24 @@ export function codigoError(data) {
 }
 
 /**
+ * Propiedad a la que el backend atribuye un 422 de metadatos (`field`, ruta con
+ * puntos: `a.b`, `lista.1`), en el sobre plano o en el anidado. `null` si el
+ * fallo no es atribuible a una propiedad concreta.
+ * @param {any} data
+ * @returns {string|null}
+ */
+export function campoError(data) {
+  if (!data || typeof data !== "object") return null;
+  const campo =
+    typeof data.field === "string"
+      ? data.field
+      : data.detail && typeof data.detail === "object" && typeof data.detail.field === "string"
+        ? data.detail.field
+        : null;
+  return campo || null;
+}
+
+/**
  * Códigos de los actos de trámite (ADR-028) con su mensaje para la persona.
  * Se consultan ANTES que el `detail` del backend: el texto ya viene en español
  * pero habla del sistema, y aquí hay que decir qué hacer. `no_active_step` es a

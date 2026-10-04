@@ -247,3 +247,5 @@ async def test_create_expediente_invalid_metadata_is_422(
 
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"] == "metadata_validation_failed"
+    # AREA-12-05: el sobre dice QUÉ propiedad falla, para marcar el control.
+    assert resp.json()["detail"]["field"] == "contrato_num"

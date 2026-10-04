@@ -185,6 +185,7 @@ class TerceroService:
             object_ref=str(fila["id"]),
             actor=str(actor) if actor else None,
             payload={"tipo": fila["tipo"], "nombre": fila["nombre"]},
+            canal=audit.CANAL_PETICION,
         )
         return dict(fila), True
 
@@ -305,6 +306,7 @@ class TerceroService:
                     if any(e.get(c) is not None for c in _CAMPOS_CONTACTO)
                 ),
             },
+            canal=audit.CANAL_PETICION,
         )
         return vinculados
 
@@ -517,6 +519,7 @@ class TerceroService:
                     "absorbido_nombre": absorbido["nombre"],  # type: ignore[index]
                     "vinculos_heredados": heredados,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return {
             "superviviente_id": superviviente_id,

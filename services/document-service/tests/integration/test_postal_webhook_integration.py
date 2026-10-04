@@ -119,7 +119,7 @@ async def test_credential_and_delivery_tenant_isolation(two_tenant_ctx) -> None:
         "INSERT INTO postal_operator_credential (operador, webhook_secret) VALUES ('4-72', 'secret-A')"
     )
     repo_a = PostalRepository(conn)
-    assert await repo_a.get_operator_credential("4-72") == "secret-A"
+    assert (await repo_a.get_operator_credential("4-72"))["webhook_secret"] == "secret-A"
 
     # Desde B: no existe.
     await conn.execute(f'SET search_path = "{tenant_schema(slug_b)}", public')

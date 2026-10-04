@@ -17,9 +17,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from orpycamcp_common import events, identidad, request_log
 
+from app.core.clearance import url_es_local
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.core.redis_client import close_redis, init_redis
+from app.routers.admin_deadletter import router as admin_deadletter_router
 from app.routers.health import router as health_router
 from app.routers.knowledge import router as knowledge_router
 from app.services.embeddings import get_provider
@@ -62,48 +64,24 @@ def _assert_embedding_dim_matches_provider() -> None:
 
 
 def _warn_if_ollama_url_not_local() -> None:
-    """Guard de RESIDENCIA de `ollama_local` (remediación de auditoría Baja).
+    """Aviso de arranque cuando `OLLAMA_URL` no es local.
 
-    La barrera dura de soberanía (`is_generatable`/`is_embeddable`) trata
-    `ollama_local` como SOBERANO por NOMBRE, pero su destino real es
-    `OLLAMA_URL`, configurable. Si un operador apunta `OLLAMA_URL` a un host
-    PÚBLICO, material Reservado/Clasificado egresaría a un tercero bajo la
-    etiqueta "local" — saltándose el espíritu de la barrera. No podemos
-    hacerlo fatal (ollama en `http://ollama:11434` dentro de la red Docker es
-    válido y habitual), así que EMITIMOS UN WARNING claro al arranque cuando el
-    provider local de ollama apunta a un host que no es loopback / red privada
-    / hostname de contenedor. El operador es dueño del despliegue; el warning
-    hace la decisión visible y auditable (`OLLAMA_URL` debe ser local confiable
-    cuando se procese material reservado)."""
-    import ipaddress
-    from urllib.parse import urlparse
-
-    uses_local_ollama = (
-        settings.ai_provider == "ollama_local" or settings.embedding_provider == "ollama"
-    )
-    if not uses_local_ollama:
+    La residencia de `ollama_local` ya NO depende de este aviso: `is_generatable`
+    exige que el host de `OLLAMA_URL` sea local (`url_es_local`) y, si no lo es,
+    excluye del contexto del RAG todo chunk de nivel >= RESERVADA (AREA-11-12,
+    fail-closed). El warning queda para que el operador entienda por qué el RAG
+    cae a Patrón A con material reservado. Para `EMBEDDING_PROVIDER=ollama` la
+    ingesta de nivel >= 2 ya estaba bloqueada por nombre (`is_embeddable`)."""
+    if settings.ai_provider != "ollama_local" and settings.embedding_provider != "ollama":
         return
-    host = (urlparse(settings.ollama_url).hostname or "").strip()
-    if not host:
+    if url_es_local(settings.ollama_url):
         return
-    # Loopback / hostname de contenedor (sin punto, p. ej. "ollama") / *.local
-    # → local confiable, sin ruido.
-    if host in ("localhost",) or "." not in host or host.endswith(".local"):
-        return
-    try:
-        ip = ipaddress.ip_address(host)
-        if ip.is_loopback or ip.is_private or ip.is_link_local:
-            return
-    except ValueError:
-        # Hostname con dominio (FQDN público) — no es un host local reconocible.
-        pass
     logger.warning(
-        "OLLAMA_URL=%r no parece un endpoint LOCAL/privado, pero AI_PROVIDER/"
-        "EMBEDDING_PROVIDER usa ollama tratado como SOBERANO: material "
-        "Reservado/Clasificado egresaría a ese host bajo la etiqueta 'local'. "
-        "Asegúrate de que OLLAMA_URL sea un endpoint local confiable operado por "
-        "el propio despliegue si se procesa material reservado (E21, barrera dura "
-        "de soberanía).",
+        "OLLAMA_URL=%r no es un endpoint LOCAL/privado: el material nivel >= "
+        "RESERVADA NO se enviará a ese host (el RAG lo excluye del contexto y cae "
+        "a Patrón A). Para usarlo con material reservado, apunta OLLAMA_URL a un "
+        "host loopback, de la red privada, de contenedor o *.local operado por el "
+        "propio despliegue (E21, barrera dura de soberanía).",
         settings.ollama_url,
     )
 
@@ -135,7 +113,8 @@ app = FastAPI(
     title="OrpycaMCP — Knowledge Service",
     description=(
         "Capa de conocimiento ADVISORIA y derivada (E21, ADR-006): recuperación "
-        "semántica (pgvector) con pre-filtrado ACL. Opt-in por tenant; no es fuente "
+        "semántica (pgvector) con pre-filtrado ACL. La ingesta y el proveedor de IA son "
+        "GLOBALES de la instalación (no hay opt-in por entidad, OMI-04); no es fuente "
         "de verdad. Embeddings con proveedor pluggable (local_st por defecto)."
     ),
     version="1.0.0",
@@ -153,4 +132,5 @@ app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="knowledge-service")
 
 app.include_router(knowledge_router)
+app.include_router(admin_deadletter_router)
 app.include_router(health_router)

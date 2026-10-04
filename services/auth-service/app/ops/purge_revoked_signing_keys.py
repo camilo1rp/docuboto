@@ -127,6 +127,7 @@ async def _purge_tenant(
                             "serial": row["serial"],
                             "certificado_fingerprint": row["certificado_fingerprint"],
                         },
+                        canal="system",
                     )
             hechas += 1
         except Exception as exc:  # noqa: BLE001 — aísla el fallo por-fila

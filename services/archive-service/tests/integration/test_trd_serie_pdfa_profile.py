@@ -48,6 +48,7 @@ from app.core.database import tenant_schema
 from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate, TrdSerieUpdate
 from app.services.aip_wiring_service import AipWiringService
 from app.services.archive_service import ArchiveService
+from tests.conftest import datos_radicado
 
 from .conftest import DSN, convalidate_for_test
 
@@ -251,10 +252,7 @@ async def _seed_ready_with_serie(
     radicado_id = uuid.uuid4()
     await archive.link_radicado(
         created.id,
-        RadicadoLink(
-            radicado_id=radicado_id,
-            tracking_number=f"2026-ITEST-E-{uuid.uuid4().hex[:6]}",
-        ),
+        RadicadoLink(**datos_radicado(radicado_id)),
         user_id=None,
     )
     await archive.close_expediente(created.id)

@@ -35,7 +35,7 @@ async def _anexo(tenant_ctx: tuple[str, asyncpg.Connection]):
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
     doc = await DocumentService(conn, slug).create(
-        DocumentCreate(doc_type="E", subject="Con anexo", sender_name="x"), registered_by=None
+        DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Con anexo", sender_name="x"), registered_by=None
     )
     anexo_id = await conn.fetchval(
         "INSERT INTO anexos (radicado_id, file_id, filename) VALUES ($1, $2, 'a.pdf') "
@@ -117,7 +117,7 @@ async def test_el_anexo_de_otro_radicado_no_se_firma_por_este(
     _storage(monkeypatch)
     slug, conn, _doc, anexo_id = await _anexo(tenant_ctx)
     otro = await DocumentService(conn, slug).create(
-        DocumentCreate(doc_type="E", subject="Otro", sender_name="x"), registered_by=None
+        DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Otro", sender_name="x"), registered_by=None
     )
     with pytest.raises(HTTPException) as exc:
         await SignatureService(conn, slug).firmar(
@@ -147,7 +147,7 @@ async def test_el_anexo_de_un_radicado_reservado_es_404_neutro(
 
     monkeypatch.setattr(storage_client, "fetch_file_sha256", _espia)
     slug, conn, doc, anexo_id = await _anexo(tenant_ctx)
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3 WHERE id = $1", doc.id)
+    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)' WHERE id = $1", doc.id)
     with pytest.raises(HTTPException) as exc:
         await SignatureService(conn, slug).firmar(
             doc.id,

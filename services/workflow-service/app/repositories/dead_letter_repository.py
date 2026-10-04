@@ -43,9 +43,12 @@ class DeadLetterRepository:
     ) -> asyncpg.Record | None:
         """Insert a dead-letter row; return the row if inserted, None on conflict.
 
-        ON CONFLICT (event_id) DO NOTHING makes the insert idempotent: if the
-        same event_id has already been persisted (e.g. XADD ok but XACK failed
-        causing a redelivery) the second call is a no-op and returns None.
+        ON CONFLICT (origin_group, event_id) DO NOTHING makes the insert idempotent
+        PER GROUP: if this group already persisted the same event_id (e.g. XADD ok
+        but XACK failed causing a redelivery) the second call is a no-op and returns
+        None. A DIFFERENT group parking the same event is NOT a conflict: the table is
+        shared by four consumers and each must leave its own row and audit entry
+        (AREA-10-07).
         Callers must skip the audit.append when None is returned.
         """
         return await self._conn.fetchrow(
@@ -54,7 +57,7 @@ class DeadLetterRepository:
                 (event_id, event_type, correlation_id, tenant_slug,
                  payload, failure, origin_stream, origin_group, dead_lettered_at)
             VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, now())
-            ON CONFLICT (event_id) DO NOTHING
+            ON CONFLICT (origin_group, event_id) DO NOTHING
             RETURNING event_id
             """,
             event_id,
@@ -149,7 +152,7 @@ class DeadLetterRepository:
         volumen (Fase 5, no un flujo de alto tráfico). Si el conjunto real alcanza
         el cap, las filas más antiguas quedan fuera del ``ORDER BY ... LIMIT`` sin
         que este método lo señale — es responsabilidad del CALLER (router) detectar
-        `len(resultado) >= cap` y avisar (log + header ``X-Truncated``, ADR-021
+        `len(resultado) > cap` y avisar (log + header ``X-Truncated``, ADR-021
         pulido Fase 5 "Baja").
 
         El caller (router) es responsable de NO serializar ``payload`` al cliente:
@@ -162,7 +165,9 @@ class DeadLetterRepository:
             params.append(origin_stream)
             extra = f" AND origin_stream = ${len(params)}"
         cap_ph = len(params) + 1
-        params.append(cap)
+        # cap + 1: la fila sobrante distingue «hay más» de «hay justo cap» (X-Truncated
+        # no debe dispararse con exactamente cap candidatas).
+        params.append(cap + 1)
         sql = (
             "SELECT event_id, event_type, origin_stream, origin_group, status, "
             "       dead_lettered_at, resolved_at, payload "

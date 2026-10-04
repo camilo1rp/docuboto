@@ -284,6 +284,29 @@
           "demo"
         ]
       }
+    },
+    {
+      "username": "consulta",
+      "email": "consulta@demo.orpycamcp.local",
+      "emailVerified": true,
+      "firstName": "Consulta",
+      "lastName": "Demo",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "orpycamcp_dev",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "operator"
+      ],
+      "attributes": {
+        "tenant_slug": [
+          "demo"
+        ]
+      }
     }
   ],
   "loginTheme": "orpyca",

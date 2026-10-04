@@ -100,12 +100,10 @@ class Settings(BaseSettings):
     # Ventana de tolerancia de reloj (RFC 6238): acepta timesteps en
     # [T-skew, T+skew]. 1 = ±30s con periodo=30s.
     totp_skew_steps: int = 1
-    # Reservado (NOMBRE fijado, NO implementado en este incremento): forzar
-    # TOTP según nivel_seguridad del acto. Ver signature-service._gate_2fa,
-    # que hoy exige 2FA (OTP-correo o TOTP, a elección del cliente) para
-    # nivel_seguridad >= 2 vía firma_2fa_required — TOTP es un satisfactor
-    # alternativo dentro de ese gate, nunca un requisito adicional propio.
-    totp_requerido_por_nivel: bool = False
+    # (Sin `totp_requerido_por_nivel`: era una clave reservada que nadie leía. El
+    # forzado de TOTP por nivel vive en signature-service, que consulta
+    # `GET /internal/totp/status` y rechaza el OTP-correo cuando el actor ya
+    # tiene TOTP activo en un acto de nivel >= 2 — AREA-04-02.)
 
     # --- Firma electrónica PERSONAL PKI por-usuario (E17/F4, Incremento 1) ---
     # Clave AES-256 (32 bytes, base64) para cifrar en reposo la clave privada

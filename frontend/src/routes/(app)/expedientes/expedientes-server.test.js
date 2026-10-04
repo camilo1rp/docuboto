@@ -826,4 +826,77 @@ describe("expedientes/+page.server.js#actions.create — construcción de `metad
     expect(result.status).toBe(422);
     expect(result.data.values.meta).toEqual({ motivo: "Motivo escrito por el usuario" });
   });
+
+  describe("compuestos array/object (AREA-12-05)", () => {
+    const COMPUESTO = {
+      activo: true,
+      json_schema: {
+        required: ["etiquetas", "ubicacion"],
+        properties: {
+          etiquetas: { type: "array", items: { type: "string" } },
+          cifras: { type: "array", items: { type: "number" } },
+          ubicacion: {
+            type: "object",
+            required: ["ciudad"],
+            properties: { ciudad: { type: "string" }, piso: { type: "integer" } },
+          },
+        },
+      },
+    };
+
+    it("el JSON del control repetible y del grupo llega TIPADO a metadata", async () => {
+      const calls = installTemplateThenCreateFetch({ templateBody: [COMPUESTO] });
+      const fd = new FormData();
+      fd.set("name", "Con compuestos");
+      fd.set("trd_serie_id", SERIE_ID);
+      fd.set("meta_etiquetas", JSON.stringify(["a", "b"]));
+      fd.set("meta_cifras", JSON.stringify(["1", "2.5"]));
+      fd.set("meta_ubicacion", JSON.stringify({ ciudad: "Bogota", piso: "3", extra: "x" }));
+      try {
+        await actions.create({
+          request: { formData: async () => fd },
+          cookies: { get: () => "tok" },
+          locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+        });
+      } catch {
+        // redirect esperado
+      }
+      expect(JSON.parse(calls[1].init.body).metadata).toEqual({
+        etiquetas: ["a", "b"],
+        cifras: [1, 2.5],
+        ubicacion: { ciudad: "Bogota", piso: 3 },
+      });
+    });
+
+    it("el 422 con `field` lo devuelve al formulario para marcar el control", async () => {
+      const calls = [];
+      globalThis.fetch = vi.fn(async (input, init) => {
+        calls.push({ input, init });
+        if (calls.length === 1) return { ok: true, status: 200, json: async () => [COMPUESTO] };
+        return {
+          ok: false,
+          status: 422,
+          json: async () => ({
+            detail: {
+              error: "metadata_validation_failed",
+              detail: "'ciudad' is a required property",
+              status: 422,
+              field: "ubicacion.ciudad",
+            },
+          }),
+        };
+      });
+      const fd = new FormData();
+      fd.set("name", "Falla");
+      fd.set("trd_serie_id", SERIE_ID);
+      fd.set("meta_etiquetas", JSON.stringify(["a"]));
+      const result = await actions.create({
+        request: { formData: async () => fd },
+        cookies: { get: () => "tok" },
+        locals: { accessToken: "tok", user: { tenant_slug: "icetex" } },
+      });
+      expect(result.status).toBe(422);
+      expect(result.data.field).toBe("ubicacion.ciudad");
+    });
+  });
 });

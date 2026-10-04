@@ -26,6 +26,17 @@ from pydantic import BaseModel, Field, field_validator
 
 _TOTP_CODE_RE = re.compile(r"\d{6}")
 
+# Vocabulario cerrado de motivo de revocación (RFC 5280 reasonCode; CHECK en la
+# migración tenant 019). `key_compromise` invalida hacia atrás en /verify.
+MotivoRevocacion = Literal[
+    "key_compromise",
+    "superseded",
+    "cessation_of_operation",
+    "affiliation_changed",
+    "privilege_withdrawn",
+    "unspecified",
+]
+
 
 def _validate_totp_code(v: str) -> str:
     if not _TOTP_CODE_RE.fullmatch(v):
@@ -67,12 +78,12 @@ class SigningKeyRevokeRequest(BaseModel):
     que solo lo exige sobre una credencial ``activo``): revocar es un acto
     destructivo explícito sobre la propia capacidad de firma, gateado por el
     segundo factor del titular — verificado-y-consumido vía ``TotpService``,
-    igual que ``load_and_sign_digest``. ``motivo`` es texto libre opcional,
-    nunca material de firma.
+    igual que ``load_and_sign_digest``. ``motivo`` es un código del
+    vocabulario cerrado :data:`MotivoRevocacion`, opcional.
     """
 
     step_up_totp_code: str = Field(...)
-    motivo: str | None = Field(default=None, max_length=500)
+    motivo: MotivoRevocacion | None = None
 
     @field_validator("step_up_totp_code")
     @classmethod
@@ -90,7 +101,7 @@ class AdminSigningKeyRevokeRequest(BaseModel):
     permiso administrativo ya es el gate; el TOTP del admin, si lo tiene, no
     es relevante para revocar la clave de OTRO usuario)."""
 
-    motivo: str | None = Field(default=None, max_length=500)
+    motivo: MotivoRevocacion | None = None
 
 
 class SigningKeyStatusResponse(BaseModel):
@@ -105,6 +116,10 @@ class SigningKeyStatusResponse(BaseModel):
     not_before: datetime | None = None
     not_after: datetime | None = None
     activated_at: datetime | None = None
+    # Solo lo puebla `GET /internal/signing-key/status`: el `auth_users.id` del
+    # dueño del bearer, para que signature-service compruebe que es el actor al
+    # que atribuye el acto (AREA-04-05). `None` en el endpoint de autoservicio.
+    user_id: uuid.UUID | None = None
 
 
 class InternalSignDigestRequest(BaseModel):
@@ -183,3 +198,6 @@ class SigningKeyRevocationStatusResponse(BaseModel):
 
     status: Literal["vigente", "revocado", "desconocido"]
     revocado_at: datetime | None = None
+    # Código del vocabulario cerrado (None = no informado). Lo usa /verify para
+    # invalidar hacia atrás cuando es `key_compromise`.
+    motivo_revocacion: MotivoRevocacion | None = None

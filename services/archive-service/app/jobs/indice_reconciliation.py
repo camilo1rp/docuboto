@@ -40,16 +40,20 @@ import asyncpg
 from orpycamcp_common import audit
 
 from app.clients import signature_client
+from app.clients.notification_client import NotificationDeliveryError, enviar_aviso
 from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.database import acquire_tenant, close_pool, create_pool, get_pool
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.repositories.aip_repository import AipRepository
+from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.transferencia_repository import TransferenciaRepository
 from app.services.aip_wiring_service import AipWiringService
+from app.services.archive_service import ArchiveService
 from app.services.backoff import next_backoff_seconds
 from app.services.index_service import IndexService
+from app.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
 from app.services.transferencia_service import TransferenciaService
 
 logger = logging.getLogger(__name__)
@@ -94,15 +98,26 @@ async def _reconciliar_indice(
     permanece 'pendiente_firma' hasta intervención manual — NUNCA se inventa
     conformidad)."""
     repo = IndexRepository(conn)
-    outcome = await signature_client.sign_indice_internal(
-        tenant_slug=slug,
-        payload_xml=row["xml"],
-        objeto_id=str(row["expediente_id"]),
-        indice_id=str(row["id"]),
-        version=row["version"],
-    )
+    # AREA-07-01: el XSD se valida ANTES de pedir el sello también aquí, porque este
+    # job firma por su cuenta (`sign_indice_internal`) sin pasar por `IndexService`.
+    # Un índice que no valida no se sella: sigue el camino de fallo (backoff y, al
+    # agotarse, aviso) con el motivo `xsd_invalido`.
+    error_xsd = validar_indice_xml(row["xml"])
+    if error_xsd is not None:
+        logger.warning(
+            "Índice %s (tenant=%s) no valida contra su XSD: %s", row["id"], slug, error_xsd
+        )
+        outcome = None
+    else:
+        outcome = await signature_client.sign_indice_internal(
+            tenant_slug=slug,
+            payload_xml=row["xml"],
+            objeto_id=str(row["expediente_id"]),
+            indice_id=str(row["id"]),
+            version=row["version"],
+        )
 
-    if outcome.signed is not None:
+    if outcome is not None and outcome.signed is not None:
         async with conn.transaction():
             affected = await repo.mark_signed(
                 row["id"], outcome.signed.firma_id, outcome.signed.minio_key_firmado
@@ -142,7 +157,10 @@ async def _reconciliar_indice(
     # en vez del motivo de DOMINIO, dejando `reconcile_ultimo_error` y el
     # asiento `archive.indice_reconcile_agotado` inconsistentes con
     # `archive.indice_firma_pendiente` para la MISMA causa raíz.
-    motivo = "sello_ausente" if outcome.seal_absent else "sellado_xades_no_obtenido"
+    if outcome is None:
+        motivo = MOTIVO_XSD_INVALIDO
+    else:
+        motivo = "sello_ausente" if outcome.seal_absent else "sellado_xades_no_obtenido"
     proximo_at = (
         None
         if agotado
@@ -181,10 +199,60 @@ async def _reconciliar_indice(
                     "motivo": motivo,
                 },
             )
+        # AREA-07-03: el asiento de arriba deja constancia, pero nadie lo lee solo.
+        # El aviso va DESPUÉS del commit (el correo no se puede deshacer) y es
+        # best-effort: que no salga no revierte el estado `agotado`.
+        await _avisar_indice_agotado(conn, slug, row)
         return "agotado"
 
     await repo.bump_intento(row["id"], proximo_at=proximo_at, ultimo_error=motivo, agotado=agotado)
     return "fallido"
+
+
+_ASUNTO_INDICE_AGOTADO = "Índice electrónico sin sellar: requiere intervención"
+
+
+def _cuerpo_indice_agotado() -> str:
+    """Sin números de radicado, asuntos ni códigos de expediente: el correo sale de
+    la institución (mismo criterio que el aviso de disposición vencida)."""
+    return (
+        "Un índice electrónico de expediente agotó los reintentos automáticos de "
+        "sellado y sigue sin firmar. Un expediente con el índice sin firmar no puede "
+        "transferirse.\n\n"
+        "Puede revisarlo en Administración → Preservación, sección «Índices pendientes "
+        "de firma», y reintentar el sellado desde allí una vez resuelta la causa."
+    )
+
+
+async def _avisar_indice_agotado(
+    conn: asyncpg.Connection, slug: str, row: asyncpg.Record
+) -> int:
+    """Avisa a quien puede repararlo (los mismos permisos que `POST /indice/firmar` y
+    el clearance del expediente). Devuelve cuántos avisos salieron; NUNCA lanza."""
+    enviados = 0
+    try:
+        destinatarios = await ArchiveRepository(conn, slug).list_destinatarios_indice_agotado(
+            row["expediente_id"]
+        )
+        for d in destinatarios:
+            try:
+                await enviar_aviso(
+                    recipient_email=d["email"],
+                    subject=_ASUNTO_INDICE_AGOTADO,
+                    body=_cuerpo_indice_agotado(),
+                    tenant_slug=slug,
+                )
+                enviados += 1
+            except NotificationDeliveryError as exc:
+                logger.warning(
+                    "Aviso de índice agotado: no se pudo avisar en tenant=%s: %s", slug, exc
+                )
+    except Exception:  # noqa: BLE001 — best-effort: el aviso no revierte el estado.
+        logger.warning(
+            "Aviso de índice agotado: fallo resolviendo destinatarios tenant=%s", slug,
+            exc_info=True,
+        )
+    return enviados
 
 
 async def run_once() -> dict[str, int]:
@@ -686,6 +754,269 @@ async def run_once_actas_worm() -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Backfill del origen de los vínculos legados (AREA-07-01)
+# ---------------------------------------------------------------------------
+
+
+async def run_once_origen_legado() -> dict[str, int]:
+    """Una barrida: por cada tenant activo, completa productora/formato/tamaño de hasta
+    `indice_reconciliation_batch_size` vínculos legados de expedientes ABIERTOS. Idempotente
+    (`origen_completado_at`): cada vínculo se intenta una vez."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    total = {"vistos": 0, "completados": 0, "sin_cambios": 0}
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:origen_legado'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    continue
+                try:
+                    resumen = await ArchiveService(conn, slug).completar_origen_legado(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for k, v in resumen.items():
+                        total[k] += v
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:origen_legado'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en el backfill del origen de vínculos para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+    return total
+
+
+# ---------------------------------------------------------------------------
+# WORM de las firmas PERSONALES del acta (AREA-07-10)
+# ---------------------------------------------------------------------------
+#
+# Gemela de `run_once_actas_worm` para `transferencia_acta_firma_personal_worm` (migración
+# 057): lo que `firmar_personal` no pudo proteger post-commit (storage caído, retención TRD sin
+# resolver) se repite con backoff. Reutiliza `proteger_worm_firma_personal`.
+
+
+async def run_once_firmas_personales_worm() -> dict[str, int]:
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:firma_personal_worm'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    continue
+                try:
+                    rows = await TransferenciaRepository(conn, slug).list_firma_personal_worm_pending(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    service = TransferenciaService(conn, slug)
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        resultado = await service.proteger_worm_firma_personal(
+                            row["firma_personal_id"], actor_id=None, origen="reconciliation"
+                        )
+                        if resultado == "protegido":
+                            summary["protegidos"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:firma_personal_worm'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida WORM de las firmas personales para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Evento PREMIS del fixity-check de la recepción (AREA-07-05)
+# ---------------------------------------------------------------------------
+#
+# `recibir()` registra el evento en storage-service post-commit y best-effort; esta fase lo
+# repite con backoff cuando falló (storage caído en ese instante). Mismo ciclo/cadencia que el
+# WORM del acta. Reutiliza `TransferenciaService.registrar_fixity_premis`, el MISMO método del
+# disparo síncrono, así que no duplica la lógica de reintento ni la idempotencia (`dedup_key`).
+
+
+async def run_once_fixity_premis() -> dict[str, int]:
+    """Una barrida: por cada tenant activo, hasta `indice_reconciliation_batch_size`
+    recepciones con el evento PREMIS del fixity-check sin confirmar."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {"pendientes_vistos": 0, "registrados": 0, "fallidos": 0, "agotados": 0}
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:fixity_premis'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    continue
+                try:
+                    rows = await TransferenciaRepository(conn, slug).list_fixity_premis_pending(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    service = TransferenciaService(conn, slug)
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        resultado = await service.registrar_fixity_premis(
+                            row["transferencia_id"], origen="reconciliation"
+                        )
+                        if resultado == "registrado":
+                            summary["registrados"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:fixity_premis'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida del evento PREMIS de fixity para tenant=%s "
+                "— se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# WORM del ACTA DE ELIMINACIÓN (AREA-06-02)
+# ---------------------------------------------------------------------------
+#
+# Gemela de `run_once_actas_worm` para el acta del lote de eliminación
+# (RF-TRD-07, fase 4). Existía el índice parcial
+# `ix_eliminacion_acta_firma_worm_pendiente` (migración 050) y NINGÚN consumidor:
+# el cableado era de un solo intento y un fallo del almacén dejaba el acta sin
+# candado para siempre. Ahora `ejecutar_lote_eliminacion` exige el candado antes
+# de destruir, así que esta barrida es lo que desbloquea la ejecución sin
+# intervención manual. Mismo ciclo/cadencia que `run_once_actas_worm`.
+
+
+async def _reconciliar_worm_acta_eliminacion(
+    conn: asyncpg.Connection, slug: str, row: asyncpg.Record
+) -> str:
+    """Intenta proteger bajo WORM UN acta de eliminación 'firmado' pendiente.
+    Delgado a propósito: reutiliza el MISMO método del disparo síncrono, con la
+    atribución de sistema (`SYSTEM_RECONCILER_ID`)."""
+    service = ArchiveService(conn, slug)
+    return await service._proteger_worm_acta_eliminacion(
+        row["lote_id"], actor=SYSTEM_RECONCILER_ID
+    )
+
+
+async def run_once_actas_eliminacion_worm() -> dict[str, int]:
+    """Una barrida completa: por cada tenant activo, hasta
+    `indice_reconciliation_batch_size` actas de eliminación 'firmado' sin
+    proteger bajo WORM. Fallos por-tenant o por-acta quedan aislados."""
+    pool = get_pool()
+    slugs = await list_active_tenants(pool)
+    summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
+
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock("
+                    "hashtext('orpycamcp:archive:acta_eliminacion_worm_reconcile'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    logger.debug(
+                        "Reconciliación WORM del acta de eliminación: tenant=%s ya está "
+                        "siendo procesado por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+                    continue
+                try:
+                    rows = await ArchiveRepository(
+                        conn, slug
+                    ).list_worm_pending_actas_eliminacion(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        try:
+                            resultado = await _reconciliar_worm_acta_eliminacion(
+                                conn, slug, row
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Fallo reconciliando WORM del acta de eliminación "
+                                "lote_id=%s tenant=%s — se omite en esta barrida",
+                                row["lote_id"],
+                                slug,
+                                exc_info=True,
+                            )
+                            summary["fallidos"] += 1
+                            continue
+                        if resultado == "protegido":
+                            summary["protegidos"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock("
+                        "hashtext('orpycamcp:archive:acta_eliminacion_worm_reconcile'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del acta de eliminación "
+                "para tenant=%s — se omite este tenant en esta barrida",
+                slug,
+                exc_info=True,
+            )
+
+    logger.info(
+        "Reconciliación WORM del acta de eliminación completada: "
+        "pendientes_vistos=%d protegidos=%d fallidos=%d agotados=%d tenants=%d",
+        summary["pendientes_vistos"],
+        summary["protegidos"],
+        summary["fallidos"],
+        summary["agotados"],
+        len(slugs),
+    )
+    return summary
+
+
+# ---------------------------------------------------------------------------
 # Quinta fase — renovación de retención WORM para series de disposición
 # Conservación Total (E10 debt)
 # ---------------------------------------------------------------------------
@@ -1096,8 +1427,12 @@ async def _main() -> None:
         await run_once_actas()
         await run_once_worm()
         await run_once_actas_worm()
+        await run_once_actas_eliminacion_worm()
         await run_once_worm_renovacion()
         await run_once_aip()
+        await run_once_origen_legado()
+        await run_once_firmas_personales_worm()
+        await run_once_fixity_premis()
     finally:
         await close_pool()
 

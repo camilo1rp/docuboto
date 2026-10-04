@@ -25,6 +25,7 @@ from orpycamcp_common import health as health_common
 
 from app.core.database import get_pool
 from app.core.redis_client import get_redis
+from app.workers.document_consumer import DEADLETTER_STREAM
 
 router = APIRouter(tags=["health"])
 
@@ -57,12 +58,21 @@ async def ready() -> JSONResponse:
     # El consumidor de distribución automática se informa pero NO decide el 503:
     # el servicio atiende peticiones mientras reintenta. Que APAREZCA aquí es lo
     # que hace visible un consumidor muerto — el fallo mudo que este bloque cierra.
+    detalle = None
     estado = events.consumer_status().get(_CONSUMIDOR)
     if estado is not None:
         checks["consumer"] = "ok" if estado["corriendo"] else "reiniciando"
+        # 13-12: tamaño de la DLQ y último barrido de reclamación. Informa, no decide el 503.
+        informe = await health_common.consumer_report(get_redis(), estado, DEADLETTER_STREAM)
+        checks["dead_letter"] = informe["dead_letter"]
+        detalle = informe["detalle"]
 
     listo = checks["database"] == "ok" and checks["redis"] == "ok"
     return JSONResponse(
         status_code=200 if listo else 503,
-        content={"status": "ready" if listo else "not_ready", "checks": checks},
+        content={
+            "status": "ready" if listo else "not_ready",
+            "checks": checks,
+            "consumer": detalle,
+        },
     )

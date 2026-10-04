@@ -25,8 +25,8 @@ quien la comprueba no diverjan.
 
 La firma XAdES-B real al cierre (E06 Inc.1, RT-16) vive en `firmar_indice` /
 `firmar_indice_retry`: best-effort — si falla, el índice queda 'pendiente_firma'
-(no bloquea el cierre) y es reintentable. La validación XSD estricta (lxml)
-queda como evolutivo.
+(no bloquea el cierre) y es reintentable. El XML se valida contra su XSD con lxml
+(`index_xsd.validar_indice_xml`) ANTES de pedir el sello (AREA-07-01).
 """
 
 from __future__ import annotations
@@ -73,7 +73,8 @@ from app.services.index_builder import (
     count_vigentes,
     xml_sha256,
 )
-from app.services.retention_math import total_trd_years
+from app.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
+from app.services.retention_math import base_worm, total_trd_years
 
 if TYPE_CHECKING:
     from app.clients.signature_client import SignedIndice
@@ -341,6 +342,7 @@ class IndexService:
                 "version": version,
                 "xsd_version": XSD_VERSION,
             },
+            canal=audit.CANAL_PETICION,
         )
         return RebuildResult(
             version=version,
@@ -511,7 +513,7 @@ class IndexService:
 
     async def _mark_pendiente_audited(
         self, indice_id: uuid.UUID, expediente_id: uuid.UUID, *, tenant_slug: str,
-        actor_id: str | None, motivo: str,
+        actor_id: str | None, motivo: str, detalle: str | None = None,
     ) -> None:
         """Marca 'pendiente_firma' y su asiento de auditoría como un ÚNICO acto (H5):
         antes vivían en dos commits distintos (autocommit aquí + `audit.append` de
@@ -527,7 +529,12 @@ class IndexService:
                 object_type="expediente_indice",
                 object_ref=await self._ref_de_expediente(expediente_id),
                 actor=actor_id,
-                payload={"expediente_id": str(expediente_id), "motivo": motivo},
+                payload={
+                    "expediente_id": str(expediente_id),
+                    "motivo": motivo,
+                    **({"detalle": detalle} if detalle else {}),
+                },
+                canal=audit.CANAL_PETICION,
             )
 
     async def _current_signable_or_none(
@@ -555,6 +562,19 @@ class IndexService:
             await self._mark_pendiente_audited(
                 current["id"], expediente_id, tenant_slug=tenant_slug,
                 actor_id=actor_id, motivo="sin_actor_id",
+            )
+            return None
+        # AREA-07-01: el XML se valida contra su XSD ANTES de pedir el sello. Sellar
+        # (XAdES-T) y proteger (WORM) un índice que su propio contrato rechaza es
+        # irreversible; aquí se degrada a pendiente con motivo y asiento, sin firmar.
+        error_xsd = validar_indice_xml(current["xml"])
+        if error_xsd is not None:
+            logger.warning(
+                "Índice %s no valida contra su XSD (%s): no se sella", current["id"], error_xsd
+            )
+            await self._mark_pendiente_audited(
+                current["id"], expediente_id, tenant_slug=tenant_slug,
+                actor_id=actor_id, motivo=MOTIVO_XSD_INVALIDO, detalle=error_xsd[:300],
             )
             return None
         # Devuelve TAMBIEN el `actor_id`, no solo la fila: la garantia "si hay
@@ -642,6 +662,7 @@ class IndexService:
                         "firma_id": str(signed.firma_id),
                         "origen": "manual",
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         if not affected:
             raise HTTPException(
@@ -732,6 +753,7 @@ class IndexService:
                                 "firma_id": str(outcome.signed.firma_id),
                                 "origen": "close",
                             },
+                            canal=audit.CANAL_PETICION,
                         )
                 # S1 (RF-FIR-14): `affected=0` -> otro proceso (típicamente
                 # el job de reconciliación, ver `app/jobs/indice_reconciliation.py`)
@@ -812,7 +834,10 @@ class IndexService:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
                     "error": "index_signing_failed",
-                    "detail": "signature-service no pudo sellar el índice; queda pendiente_firma",
+                    "detail": (
+                        "No se pudo sellar el índice (signature-service, o el XML no valida "
+                        "contra su XSD: el motivo queda en pendientes-firma); sigue pendiente_firma"
+                    ),
                     "status": 503,
                 },
             )
@@ -1214,27 +1239,16 @@ class IndexService:
         validación en ambos extremos del cableado, igual que
         `validate_retain_until` ya hace del lado de storage-service).
 
-        ADR-026 (Increment 2, D4) — fail-closed TAMBIÉN para
-        `exp.origen == 'fondo_acumulado'`: esta función usa `fecha_inicio=
-        exp.closed_at` (hoy, en la práctica), que es EXACTAMENTE la base
-        incorrecta que D4 advierte que produce un `retain_until` COMPLIANCE
-        imborrable durante décadas de más. El Increment 2 relaja la Capa 4
-        (migración 041) y por primera vez permite que un expediente de fondo
-        acumulado se CIERRE -- pero cablear WORM con la fecha correcta
-        (`fecha_extrema_final`, más el clamp de calendario ya vencido, D4.4)
-        es explícitamente el Increment 3 de ese ADR. Hasta que ese incremento
-        exista, ningún fondo acumulado debe alimentar Object-Lock: el `None`
-        de aquí dispara el backoff habitual (`_bump_worm_backoff`,
-        `motivo='trd_sin_retencion'`) -- no revienta, no cablea, solo
-        pospone -- exactamente lo que D4 exige ("ningún test... exige
-        integración... antes de habilitar cualquier ruta WORM para fondo
-        acumulado")."""
+        ADR-026 (Increment 3, D4, AREA-06-04): para `exp.origen == 'fondo_acumulado'`
+        la fecha base NO es `closed_at` (la del registro: alargaría décadas un lock
+        COMPLIANCE sobre documentación ya vencida) sino la `fecha_extrema_final`
+        del fondo con el clamp de `retention_math.base_worm`
+        (`retain_until = max(hoy + margen, fecha_extrema_final + total)`). Antes
+        devolvía `None` y el índice quedaba SIN Object-Lock de forma indefinida."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.closed_at is None or exp.trd_serie_id is None:
-            return None
-        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
@@ -1242,7 +1256,16 @@ class IndexService:
         total = total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
         if total is None:
             return None
-        return total, exp.closed_at.date()
+        inicio = base_worm(
+            origen=exp.origen,
+            closed_at=exp.closed_at,
+            fecha_extrema_final=exp.fecha_extrema_final,
+            total_years=total,
+            margen_dias=settings.worm_fondo_acumulado_margen_dias,
+        )
+        if inicio is None:
+            return None
+        return total, inicio
 
     async def _resolve_ct_retencion_anios(self, expediente_id: uuid.UUID) -> int | None:
         """Total TRD (ambas fases) del expediente -- versión de RENOVACIÓN
@@ -1252,19 +1275,13 @@ class IndexService:
         (aunque en la práctica siempre está poblado -- un índice solo llega a
         `worm_protegido_at IS NOT NULL` tras el cierre).
 
-        ADR-026 (Increment 2, D4): inalcanzable en la práctica hoy --
-        `_resolve_worm_retention` ya nunca protege un fondo acumulado
-        (fail-closed, ver esa docstring), así que ningún índice de fondo
-        acumulado llega a `worm_protegido_at IS NOT NULL` y por tanto nunca
-        entra en la ventana de renovación. Guard igual, por defensa en
-        profundidad: no depender de esa invariante ajena para no cablear
-        WORM con la fecha equivocada."""
+        ADR-026 (Increment 3, D4): sin guard para fondo acumulado. La renovación usa
+        siempre `fecha_inicio=hoy`, así que la base de la fecha extrema no interviene:
+        un fondo de Conservación Total se renueva igual que cualquier otra serie."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.trd_serie_id is None:
-            return None
-        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:

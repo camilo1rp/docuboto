@@ -134,8 +134,8 @@ async def test_el_lote_termina_y_crea_los_radicados(
         servicio = BatchService(conn, slug)
         peticion = BatchDocumentsRequest(
             documents=[
-                BatchDocumentCreate(doc_type="E", subject="Lote — primer documento"),
-                BatchDocumentCreate(doc_type="E", subject="Lote — segundo documento"),
+                BatchDocumentCreate(doc_type="E", doc_class="Petición", dest_dept_code=1, subject="Lote — primer documento"),
+                BatchDocumentCreate(doc_type="E", doc_class="Petición", dest_dept_code=1, subject="Lote — segundo documento"),
             ]
         )
         job_id = await servicio.create_batch_documents(peticion, uuid.uuid4())
@@ -183,7 +183,7 @@ async def test_los_items_quedan_con_su_numero_de_radicado(
         servicio = BatchService(conn, slug)
         job_id = await servicio.create_batch_documents(
             BatchDocumentsRequest(
-                documents=[BatchDocumentCreate(doc_type="S", subject="Lote — salida")]
+                documents=[BatchDocumentCreate(doc_type="S", doc_class="Petición", origin_dept_code=1, subject="Lote — salida")]
             ),
             uuid.uuid4(),
         )

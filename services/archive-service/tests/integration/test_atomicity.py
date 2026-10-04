@@ -50,8 +50,9 @@ from app.schemas.transferencia import (
 from app.services.archive_service import ArchiveService
 from app.services.batch_service import BatchArchiveService
 from app.services.transferencia_service import TransferenciaService
+from tests.conftest import registrar_radicado
 
-from .conftest import DSN
+from .conftest import DSN, huella_en_almacen
 
 # ---------------------------------------------------------------------------
 # (a) Camino feliz: commit real + cadena de auditoría íntegra.
@@ -162,6 +163,7 @@ async def test_create_expediente_rollback_reverts_sequence_and_audit(
         object_type="expediente",
         object_ref="EXP-ITEST-SEED",
         payload={"seed": True},
+        canal="api",
     )
 
     service = ArchiveService(conn, slug)
@@ -480,6 +482,7 @@ async def test_audit_log_trigger_rejects_update_and_delete(
         object_type="expediente",
         object_ref="EXP-ITEST-PROBE",
         payload={"probe": True},
+        canal="api",
     )
 
     existing = await conn.fetchval(
@@ -554,7 +557,10 @@ async def test_link_radicado_rollback_reverts_link_index_and_audit_on_natural_fa
         "ADD CONSTRAINT ck_itest_link_boom CHECK (accion <> 'radicado_vinculado')"
     )
 
-    payload = RadicadoLink(radicado_id=uuid.uuid4(), tracking_number="2026-ITEST-E-000001")
+    payload = RadicadoLink(
+        radicado_id=registrar_radicado("2026-ITEST-E-000001"),
+        tracking_number="2026-ITEST-E-000001",
+    )
 
     with pytest.raises(asyncpg.exceptions.CheckViolationError):
         await service.link_radicado(created.id, payload, user_id=None)
@@ -635,7 +641,7 @@ async def test_link_radicado_concurrent_distinct_radicados_no_duplicate_order(
         try:
             own_service = ArchiveService(own_conn, slug)
             payload = RadicadoLink(
-                radicado_id=uuid.uuid4(),
+                radicado_id=registrar_radicado(f"2026-ITEST-E-{i:06d}"),
                 tracking_number=f"2026-ITEST-E-{i:06d}",
             )
             await own_service.link_radicado(expediente_id, payload, user_id=None)
@@ -1216,17 +1222,18 @@ async def _seed_transferencia_lista_para_recibir_con_documento(
             created.id,
             nivel_seguridad,
         )
-    radicado_id = uuid.uuid4()
+    radicado_id = registrar_radicado("2026-ITEST-E-000001")
     content_hash = hashlib.sha256(f"{radicado_id}-contenido-original".encode()).hexdigest()
-    await archive.link_radicado(
-        created.id,
-        RadicadoLink(
-            radicado_id=radicado_id,
-            tracking_number="2026-ITEST-E-000001",
-            content_hash=content_hash,
-        ),
-        user_id=None,
-    )
+    with huella_en_almacen(radicado_id, content_hash):
+        await archive.link_radicado(
+            created.id,
+            RadicadoLink(
+                radicado_id=radicado_id,
+                tracking_number="2026-ITEST-E-000001",
+                content_hash=content_hash,
+            ),
+            user_id=None,
+        )
     await archive.close_expediente(created.id)
     await conn.execute(
         f'UPDATE "{schema}".expediente_indice SET estado = \'firmado\', firma_id = $2 '
@@ -1991,14 +1998,22 @@ async def test_transfer_expediente_denied_still_open_audits_failure_and_chain_st
 async def _seed_expediente_closed(
     conn: asyncpg.Connection, slug: str, name: str
 ) -> ExpedienteDisposicionResult:
-    """Expediente 'closed' sin exigir índice firmado -- precondición de
-    `create()`/`enviar()`/`rechazar()` (a diferencia de `recibir()`, ninguno
-    de los tres valida el estado del índice electrónico)."""
+    """Expediente 'closed' con el índice FIRMADO -- precondición de `create()`/`enviar()`/
+    `rechazar()`. Desde AREA-07-03 `create()` también exige el índice firmado (antes solo
+    `recibir()`), así que el seed lo deja firmado con SQL directo, el mismo bypass del otro
+    seed (no hay sellado XAdES real ni HTTP a signature-service en este tier)."""
+    schema = tenant_schema(slug)
     archive = ArchiveService(conn, slug)
     created = await archive.create_expediente(
         payload=ExpedienteCreate(name=name, nivel_seguridad=1), opened_by=None
     )
     await archive.close_expediente(created.id)
+    await conn.execute(
+        f'UPDATE "{schema}".expediente_indice SET estado = \'firmado\', firma_id = $2 '
+        "WHERE expediente_id = $1 AND estado <> 'firmado'",
+        created.id,
+        uuid.uuid4(),
+    )
     return created
 
 

@@ -16,12 +16,19 @@
  * recibe nada o si aún está cargando.
  */
 
-import { API_V1, PUBLIC_TENANT } from "$lib/utils/config.server.js";
+import {
+  API_V1,
+  POLITICA_URL,
+  POLITICA_VERSION,
+  PUBLIC_TENANT,
+} from "$lib/utils/config.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ fetch }) {
+  // La política viaja en TODA respuesta: el formulario no se puede enviar sin ella.
+  const politica = { version: POLITICA_VERSION, url: POLITICA_URL };
   if (!PUBLIC_TENANT) {
-    return { tipos: [], habilitada: false };
+    return { tipos: [], habilitada: false, politica };
   }
   try {
     const res = await fetch(
@@ -31,8 +38,8 @@ export async function load({ fetch }) {
     // Sin tipos declarados la ventanilla NO está operativa: el backend
     // rechazaría cualquier radicación con 422. Decirlo aquí evita que alguien
     // rellene un formulario entero para chocar contra un error al final.
-    return { tipos, habilitada: Array.isArray(tipos) && tipos.length > 0 };
+    return { tipos, habilitada: Array.isArray(tipos) && tipos.length > 0, politica };
   } catch {
-    return { tipos: [], habilitada: false };
+    return { tipos: [], habilitada: false, politica };
   }
 }

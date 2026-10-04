@@ -208,10 +208,31 @@ async def test_list_filter_fail_closed_on_resolution_error(client_with_conn) -> 
 # --------------------------------------------------------- list: cap signaling [1]
 @pytest.mark.asyncio
 async def test_list_sets_truncated_header_when_cap_reached(client_with_conn) -> None:
-    """ADR-021, pulido Fase 5 "Baja" [1]: cuando el conjunto candidato alcanza
-    ``DEADLETTER_CANDIDATE_CAP``, el listado deja de ser silencioso — señala el
-    truncamiento con el header ``X-Truncated: true`` (además del log.warning, no
-    verificable aquí sin capturar logs)."""
+    """"El repositorio pide cap + 1 filas: MÁS de cap candidatas prueba que el listado
+    quedó truncado y la respuesta lo señala con X-Truncated (AREA-10-08)."""
+    client, conn, _redis = client_with_conn
+    conn.fetch.return_value = [_summary_row() for _ in range(DEADLETTER_CANDIDATE_CAP + 1)]
+    with (
+        patch(
+            "app.routers.admin_deadletter.resolve_caller_clearance",
+            AsyncMock(return_value=3),
+        ),
+        patch(
+            "app.routers.admin_deadletter.resolve_deadletter_levels",
+            AsyncMock(return_value={EVT: 3}),
+        ),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.headers["X-Truncated"] == "true"
+    # la fila sobrante (cap + 1) solo sirve para detectar el truncado: no se cuenta ni se entrega.
+    assert resp.headers["X-Total-Count"] == str(DEADLETTER_CANDIDATE_CAP)
+
+
+@pytest.mark.asyncio
+async def test_list_exactly_cap_does_not_set_truncated_header_when_cap_reached(client_with_conn) -> None:
+    """AREA-10-08: con EXACTAMENTE cap candidatas no hay nada fuera de la ventana, así
+    que X-Truncated no se emite (antes saltaba con ``len == cap``: falso positivo)."""
     client, conn, _redis = client_with_conn
     conn.fetch.return_value = [_summary_row() for _ in range(DEADLETTER_CANDIDATE_CAP)]
     with (
@@ -226,7 +247,7 @@ async def test_list_sets_truncated_header_when_cap_reached(client_with_conn) -> 
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
-    assert resp.headers["X-Truncated"] == "true"
+    assert "X-Truncated" not in resp.headers
 
 
 @pytest.mark.asyncio
@@ -833,7 +854,7 @@ async def test_repo_list_scoped_for_clearance_includes_payload_and_caps() -> Non
     assert "payload" in sql
     assert "LIMIT" in sql
     assert "OFFSET" not in sql  # sin paginación SQL — se pagina en app tras filtrar
-    assert params == ["demo", "pending", DLQ_GROUP, 1000]
+    assert params == ["demo", "pending", DLQ_GROUP, 1001]  # cap + 1 (AREA-10-08)
 
 
 @pytest.mark.asyncio
@@ -862,3 +883,13 @@ def test_las_rutas_del_dlq_toman_la_identidad_de_get_actor() -> None:
         if ruta.path.endswith(("/{event_id}", "/{event_id}/replay", "/{event_id}/discard")):
             llamadas = [d.call for d in ruta.dependant.dependencies]
             assert get_actor in llamadas, ruta.path
+
+
+@pytest.mark.asyncio
+async def test_repo_list_scoped_pide_una_fila_de_mas_para_detectar_el_truncado() -> None:
+    """AREA-10-08: el LIMIT es cap + 1 (la fila sobrante distingue «hay más» de
+    «hay justo cap»)."""
+    conn = AsyncMock()
+    conn.fetch.return_value = []
+    await DeadLetterRepository(conn).list_scoped_for_clearance("demo", "grp")
+    assert conn.fetch.call_args[0][-1] == DEADLETTER_CANDIDATE_CAP + 1

@@ -20,7 +20,7 @@
 
   Las cinco fases están SIEMPRE a la vista, con la que va y las que quedan,
   porque quien publica un inventario tiene que saber que faltan tres pasos
-  antes de que se destruya nada — y que el último todavía no está construido.
+  antes de que se destruya nada — y que el último lo ejecuta una persona distinta de quien avaló.
 -->
 <script>
   import { invalidateAll } from "$app/navigation";
@@ -29,7 +29,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
-  import { permissions, permissionLevels } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels, userId } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { mensajeError } from "$lib/utils/apiError.js";
@@ -55,6 +55,16 @@
     $permissions.includes("USUA_PERM_TRD") &&
     ($permissionLevels["USUA_PERM_TRD"] ?? 0) >= 3 &&
     data.sinPermiso !== true;
+
+  // Avalar y ejecutar piden `USUA_PERM_TRD` con crud>=4 (los actos que habilitan
+  // y ejecutan lo irreversible), no el 3 de las fases reversibles. Y la
+  // separación de funciones: quien propuso el lote no lo avala y quien lo avaló
+  // no lo ejecuta. El backend las impone las dos (403 / 409); esto solo evita
+  // ofrecer un botón que siempre respondería que no. Se compara contra el id
+  // INTERNO (`userId`), nunca contra `sub`.
+  $: nivelIrreversible = puedeActuar && ($permissionLevels["USUA_PERM_TRD"] ?? 0) >= 4;
+  $: puedeAvalar = nivelIrreversible && (!$userId || detalle?.creado_por !== $userId);
+  $: puedeEjecutar = nivelIrreversible && (!$userId || detalle?.avalado_por !== $userId);
 
   const ESTADO_LABEL = {
     borrador: "Borrador",
@@ -214,7 +224,8 @@
     <li><strong>3.</strong> Aval del Comité <span>(acta y acto administrativo)</span></li>
     <li><strong>4.</strong> Acta de eliminación firmada</li>
     <li class="elim__fases--pendiente">
-      <strong>5.</strong> Borrado seguro <span>(todavía no está construido)</span>
+      <strong>5.</strong> Borrado seguro
+      <span>(lo ejecuta otra persona, con el acta firmada y protegida)</span>
     </li>
   </ol>
 
@@ -341,12 +352,12 @@
               Publicar el inventario
             </Button>
           {/if}
-          {#if detalle.estado === "publicado" && !publicidadAbierta(detalle)}
+          {#if detalle.estado === "publicado" && !publicidadAbierta(detalle) && puedeAvalar}
             <Button variant="primary" on:click={() => abrir("avalar")}>
               Registrar el aval del Comité
             </Button>
           {/if}
-          {#if detalle.estado === "avalado" && acta?.firma_estado === "firmado"}
+          {#if detalle.estado === "avalado" && acta?.firma_estado === "firmado" && puedeEjecutar}
             <Button variant="danger" on:click={() => abrir("ejecutar")}>
               Ejecutar la eliminación
             </Button>
@@ -570,7 +581,7 @@
   </p>
   <p class="elim__aviso">
     Avalar <strong>autoriza</strong> la destrucción; no la ejecuta. Faltan el acta firmada y el borrado
-    seguro, que todavía no está construido.
+    seguro, que ejecuta <strong>otra persona</strong>: quien propone no avala y quien avala no ejecuta.
   </p>
   <FormField
     id="aval-acta"

@@ -49,11 +49,19 @@ CREATE TABLE IF NOT EXISTS email_mensaje (
 CREATE TABLE IF NOT EXISTS borrador (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(), documento_file_id UUID
 );
+CREATE TABLE IF NOT EXISTS postal_shipment (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), acuse_file_id UUID
+);
 """
 
 
 async def _archivo(
-    conn, slug: str, *, hace: timedelta = timedelta(0), sha256: str | None = None
+    conn,
+    slug: str,
+    *,
+    hace: timedelta = timedelta(0),
+    sha256: str | None = None,
+    uploaded_by: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Inserta una fila de `files`; `hace` la envejece (objeto preexistente)."""
     fid = uuid.uuid4()
@@ -65,7 +73,7 @@ async def _archivo(
         sha256=sha256 or uuid.uuid4().hex + uuid.uuid4().hex,
         bucket=f"orpycamcp-{slug}-documents",
         object_key=f"{fid}/anexo.pdf",
-        uploaded_by=None,
+        uploaded_by=uploaded_by,
     )
     if hace:
         await conn.execute(
@@ -245,11 +253,14 @@ async def test_un_objeto_reutilizado_por_dedup_no_se_purga(ctx) -> None:
     referencia: la purga no la ve. La marca `dedup_hit_at` es lo único que lo protege."""
     slug, conn = ctx
     contenido = b"contenido compartido por dedup"
-    fid = await _archivo(conn, slug, sha256=hashlib.sha256(contenido).hexdigest())
+    # La dedup es SOLO del mismo autor (AREA-08-09): la premisa de la prueba es que el MISMO
+    # usuario sube dos veces el mismo contenido, que sigue reutilizando el objeto.
+    autor = uuid.uuid4()
+    fid = await _archivo(conn, slug, sha256=hashlib.sha256(contenido).hexdigest(), uploaded_by=autor)
     minio = _minio_completo()
     with patch("app.services.storage_service.get_minio", return_value=minio):
         resp, created, _ = await StorageService(conn, slug).upload(
-            "otro.pdf", "application/pdf", contenido, None
+            "otro.pdf", "application/pdf", contenido, autor
         )
         assert (created, resp.id) == (False, fid), "premisa: la subida deduplicó"
         r = await StorageService(conn, slug).purge_orphan(
@@ -274,7 +285,8 @@ async def test_carrera_purga_vs_dedup_con_dos_conexiones(ctx) -> None:
     deja un objeto NUEVO y existente: nadie queda con un `file_id` colgante."""
     slug, conn = ctx
     contenido = b"contenido de la carrera"
-    fid = await _archivo(conn, slug, sha256=hashlib.sha256(contenido).hexdigest())
+    autor = uuid.uuid4()  # la dedup es solo del mismo autor (AREA-08-09)
+    fid = await _archivo(conn, slug, sha256=hashlib.sha256(contenido).hexdigest(), uploaded_by=autor)
     conn2 = await asyncpg.connect(dsn=_require_dsn())
     tomado, seguir = asyncio.Event(), asyncio.Event()
     original = FileRepository.referencias
@@ -301,7 +313,7 @@ async def test_carrera_purga_vs_dedup_con_dos_conexiones(ctx) -> None:
             )
             await asyncio.wait_for(tomado.wait(), 10)
             subida = asyncio.create_task(
-                StorageService(conn2, slug).upload("otro.pdf", "application/pdf", contenido, None)
+                StorageService(conn2, slug).upload("otro.pdf", "application/pdf", contenido, autor)
             )
             await asyncio.sleep(0.7)
             assert not subida.done(), (
@@ -334,3 +346,47 @@ async def test_si_falta_una_tabla_de_referencias_no_se_borra(ctx) -> None:
     assert "anexos" in (r.detalle or "")
     minio.remove_object.assert_not_awaited()
     assert await _existe(conn, fid)
+
+
+@pytest.mark.asyncio
+async def test_area_08_09_otro_autor_no_reutiliza_el_objeto_ni_ve_el_nombre_original(ctx) -> None:
+    """AREA-08-09 contra la base real: el mismo contenido subido por OTRO usuario crea su
+    propia fila (created=True, filename y autor propios) y no devuelve el `file_id` ni el
+    nombre original del ajeno. Ni el anónimo (sin autor) deduplica."""
+    slug, conn = ctx
+    contenido = b"anexo reservado de otro funcionario"
+    dueno, otro = uuid.uuid4(), uuid.uuid4()
+    fid = await _archivo(conn, slug, sha256=hashlib.sha256(contenido).hexdigest(), uploaded_by=dueno)
+    await conn.execute("UPDATE files SET filename = 'ASUNTO-RESERVADO.pdf' WHERE id = $1", fid)
+    minio = _minio_completo()
+    with patch("app.services.storage_service.get_minio", return_value=minio):
+        resp, created, _ = await StorageService(conn, slug).upload(
+            "mio.pdf", "application/pdf", contenido, otro
+        )
+        anon, created_anon, _ = await StorageService(conn, slug).upload(
+            "anonimo.pdf", "application/pdf", contenido, None
+        )
+        # control positivo: el DUEÑO sí reutiliza lo suyo
+        propio, created_propio, _ = await StorageService(conn, slug).upload(
+            "otra-vez.pdf", "application/pdf", contenido, dueno
+        )
+
+    assert created is True and resp.id != fid and resp.filename == "mio.pdf"
+    assert created_anon is True and anon.id != fid and anon.filename == "anonimo.pdf"
+    assert created_propio is False and propio.id == fid
+    # la marca de dedup solo se escribió sobre la fila DEL DUEÑO
+    assert await conn.fetchval("SELECT dedup_hit_at IS NOT NULL FROM files WHERE id = $1", fid)
+    assert not await conn.fetchval("SELECT dedup_hit_at IS NOT NULL FROM files WHERE id = $1", resp.id)
+
+
+@pytest.mark.asyncio
+async def test_el_carril_crea_toda_tabla_ajena_que_la_purga_consulta(ctx) -> None:
+    """Deriva de `REFERENCIAS_DE_ARCHIVO`: si alguien añade una referencia nueva (como
+    `postal_shipment.acuse_file_id`) y no la crea `_DDL_AJENAS`, `referencias()` falla
+    cerrado y TODA la suite de purga cae con «referenciado» sin decir por qué (6 rojos
+    reales). Aquí cae UNA prueba y con el nombre de la tabla."""
+    from app.repositories.file_repository import REFERENCIAS_DE_ARCHIVO
+
+    _, conn = ctx
+    faltan = [t for t, _ in REFERENCIAS_DE_ARCHIVO if await conn.fetchval("SELECT to_regclass($1)", t) is None]
+    assert not faltan, f"el carril de integración no crea estas tablas de referencias: {sorted(set(faltan))}"

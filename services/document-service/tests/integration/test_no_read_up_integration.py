@@ -41,7 +41,9 @@ _HASH = "a" * 64
 async def _seed_radicado(conn: asyncpg.Connection, *, nivel: int, doc_type: str = "E") -> uuid.UUID:
     return await conn.fetchval(
         "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, "
-        "tenant_code, nivel_seguridad) VALUES ($1, $2, 2026, 1, 'ASUNTO', 'DEMO', $3) "
+        "tenant_code, nivel_seguridad, clasificacion_fundamento) VALUES "
+        "($1, $2, 2026, 1, 'ASUNTO', 'DEMO', $3, "
+        "CASE WHEN $3::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) "
         "RETURNING id",
         f"2026-DEMO-{doc_type}-{uuid.uuid4().hex[:6]}",
         doc_type,

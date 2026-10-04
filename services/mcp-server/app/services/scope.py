@@ -41,6 +41,7 @@ from typing import Any
 
 import httpx
 
+from app.services import origen
 from app.services.identity import Identity
 from app.tools import catalog
 from app.tools.catalog import Tool
@@ -108,8 +109,9 @@ NO_OFRECIDAS: tuple[dict[str, str], ...] = (
             "modelo"
         ),
         "via_alternativa": (
-            "Deje el lote avalado y con su acta firmada; la ejecución se hace desde la "
-            "interfaz del sistema, con sesión propia"
+            "Deje el lote avalado y con su acta firmada y protegida; la ejecución se hace "
+            "desde la interfaz del sistema, con sesión propia, por una persona distinta "
+            "de quien lo avaló"
         ),
     },
     {
@@ -334,7 +336,7 @@ async def _leer(
     """
     try:
         resp = await gateway_client.get(
-            ruta, headers={"Authorization": authorization, "X-Tenant-Slug": tenant_slug}
+            ruta, headers=origen.cabeceras_de_origen(authorization, tenant_slug)
         )
     except httpx.RequestError:
         return None

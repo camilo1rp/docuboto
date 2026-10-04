@@ -96,4 +96,5 @@ class ClearanceService:
                     "previous_max_level": previous_level,
                     "new_max_level": max_level,
                 },
+                canal=_audit.CANAL_PETICION,
             )

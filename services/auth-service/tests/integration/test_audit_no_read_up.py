@@ -84,6 +84,7 @@ async def test_listado_recorta_por_clearance_y_es_fail_closed(
             object_type=object_type,
             object_ref=object_ref,
             actor="itest-actor",
+            canal="api",
         )
 
     await _append("radicado", "2026-ITEST-E-000001", "radicado.creado")
@@ -175,6 +176,7 @@ async def test_sin_tablas_fuente_las_entradas_clasificables_no_se_listan(
         object_type="radicado",
         object_ref="2026-ITEST-E-000001",
         actor="itest-actor",
+        canal="api",
     )
     await audit_lib.append(
         conn,
@@ -184,6 +186,7 @@ async def test_sin_tablas_fuente_las_entradas_clasificables_no_se_listan(
         object_type="usuario",
         object_ref="itest-user",
         actor="itest-actor",
+        canal="api",
     )
 
     repo = AuditQueryRepository(conn)
@@ -194,3 +197,59 @@ async def test_sin_tablas_fuente_las_entradas_clasificables_no_se_listan(
     # tablas fuente no existan (no se penaliza a quien sí está habilitado).
     todas = await AuditQueryRepository(conn).list(slug, {}, max_level=3, limit=50, offset=0)
     assert len(todas) == 2
+
+
+@pytest.mark.asyncio
+async def test_filtro_por_object_ref_de_un_expediente_une_codigo_uuid_e_indice(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """AREA-03-07: un expediente se nombra en `audit_log` de tres formas (código los
+    asientos nuevos, UUID del expediente y UUID del índice los viejos). Filtrar por el
+    código con `=` exacto perdía los otros dos y el historial salía incompleto.
+
+    Mutación: volver el filtro a `al.object_ref = $n` deja solo 1 de los 3.
+    """
+    slug, conn = tenant_ctx
+    await ensure_audit_log(conn)
+    await conn.execute(_MINIMAL_SOURCES)
+    await conn.execute(
+        "CREATE TABLE expediente_indice (id uuid PRIMARY KEY, expediente_id uuid NOT NULL)"
+    )
+    exp, otro, indice = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO expedientes (id, code, nivel_seguridad) VALUES "
+        "($1, 'EXP-ITEST-010', 1), ($2, 'EXP-ITEST-011', 1)",
+        exp,
+        otro,
+    )
+    await conn.execute("INSERT INTO expediente_indice VALUES ($1, $2)", indice, exp)
+
+    async def _append(object_type: str, object_ref: str, action: str) -> None:
+        await audit_lib.append(
+            conn,
+            tenant_slug=slug,
+            service="itest",
+            action=action,
+            object_type=object_type,
+            object_ref=object_ref,
+            actor="itest-actor",
+            canal="api",
+        )
+
+    await _append("expediente", "EXP-ITEST-010", "expediente.creado")
+    await _append("expediente", str(exp), "expediente.cerrado")
+    await _append("expediente_indice", str(indice), "archive.indice_firmado")
+    # Ruido que NO debe entrar: otro expediente, por código y por UUID.
+    await _append("expediente", "EXP-ITEST-011", "expediente.creado")
+    await _append("expediente", str(otro), "expediente.cerrado")
+
+    repo = AuditQueryRepository(conn)
+    filtro = {"object_ref": "EXP-ITEST-010"}
+    entradas = await repo.list(slug, filtro, max_level=3, limit=50, offset=0)
+    assert {e.object_ref for e in entradas} == {"EXP-ITEST-010", str(exp), str(indice)}
+    assert await repo.count(slug, filtro, max_level=3) == 3
+
+    # El recorte no-read-up sigue mandando: ensanchar la referencia no ensancha el acceso.
+    await conn.execute("UPDATE expedientes SET nivel_seguridad = 3 WHERE id = $1", exp)
+    oculto = await repo.list(slug, filtro, max_level=1, limit=50, offset=0)
+    assert oculto == []

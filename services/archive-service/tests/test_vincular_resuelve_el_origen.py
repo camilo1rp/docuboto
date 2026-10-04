@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.schemas.archive import RadicadoLink
 from app.services.archive_service import ArchiveService
 
 _RAD = uuid.uuid4()
@@ -53,41 +54,64 @@ def _metadata(**kwargs):
     )
 
 
+_META_COMPLETA = {
+    str(_RAD): {**_META[str(_RAD)], "tracking_number": "2026-X-E-000001", "doc_class": "COR-PET"}
+}
+
+
+def _enlace(**kwargs) -> RadicadoLink:
+    return RadicadoLink(radicado_id=_RAD, tracking_number="2026-X-E-000001", **kwargs)
+
+
+async def _resolver(clearance: int = 3, **kwargs):
+    with patch("app.services.archive_service.audit.append", AsyncMock()):
+        return await _servicio()._resolver_metadatos_vinculo(
+            [_enlace(**kwargs)], expediente_code="EXP-1", actor=None, clearance=clearance
+        )
+
+
 @pytest.mark.asyncio
 async def test_el_origen_sale_del_servicio_dueno_del_radicado() -> None:
-    with _metadata(return_value=_META):
-        meta = await _servicio()._origen_por_radicado([_RAD])
-    assert meta[str(_RAD)]["origin_dept"] == "Oficina de Contratacion"
-    assert meta[str(_RAD)]["formato"] == "application/pdf"
+    with _metadata(return_value=_META_COMPLETA), patch(
+        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+        AsyncMock(return_value={}),
+    ):
+        r = (await _resolver())[str(_RAD)]
+    assert (r["dep_codigo"], r["dep_nombre"]) == (120, "Oficina de Contratacion")
+    assert r["formato"] == "application/pdf"
+    assert r["tamano_bytes"] == 2048
 
 
 @pytest.mark.asyncio
-async def test_se_pide_SIN_recorte_de_clearance() -> None:
-    """Mismo criterio que la huella: es un acto de sistema componiendo el
-    índice. Recortarlo haría que dos archivistas produjeran índices distintos
-    del mismo expediente."""
-    espia = AsyncMock(return_value={})
-    with patch("app.clients.document_client.fetch_radicado_metadata_internal", espia):
-        await _servicio()._origen_por_radicado([_RAD])
-    assert espia.await_args.kwargs["max_clearance"] == 3
+async def test_se_pide_con_el_clearance_del_LLAMANTE() -> None:
+    """Hallazgo medio de T6: sin recorte, el 422 `desacuerdos` enumeraba la
+    tipologia/MIME/productora de un radicado reservado a quien no podia leerlo.
+    Mutacion: volver a `max_clearance=CLEARANCE_SIN_RESTRICCION` lo tumba."""
+    espia = AsyncMock(return_value=_META_COMPLETA)
+    with patch("app.clients.document_client.fetch_radicado_metadata_internal", espia), patch(
+        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+        AsyncMock(return_value={}),
+    ):
+        await _resolver(clearance=1)
+    assert espia.await_args.kwargs["max_clearance"] == 1
 
 
 @pytest.mark.asyncio
-async def test_si_document_service_no_responde_el_VINCULO_no_se_pierde() -> None:
-    """Best-effort: vincular no puede quedar preso de que otro servicio esté en
-    pie, y tanto el índice como el manifiesto saben declarar el hueco."""
+async def test_si_document_service_no_responde_el_vinculo_FALLA_CERRADO() -> None:
+    """Invierte lo que decía este test hasta AREA-07-02: vincular era
+    best-effort y sellaba en el índice el número de radicado que escribiera
+    quien vinculaba. Sin poder cotejarlo con quien lo guarda, no se vincula:
+    503, no un vínculo con datos sin contrastar."""
+    from fastapi import HTTPException
+
     from app.clients.document_client import DocumentClientError
 
-    with _metadata(side_effect=DocumentClientError("caído")):
-        assert await _servicio()._origen_por_radicado([_RAD]) == {}
-
-
-@pytest.mark.asyncio
-async def test_no_se_pregunta_por_nada_si_la_lista_esta_vacia() -> None:
-    espia = AsyncMock(return_value={})
-    with patch("app.clients.document_client.fetch_radicado_metadata_internal", espia):
-        assert await _servicio()._origen_por_radicado([]) == {}
-    espia.assert_not_awaited()
+    with _metadata(side_effect=DocumentClientError("caído")), pytest.raises(
+        HTTPException
+    ) as exc:
+        await _resolver()
+    assert exc.value.status_code == 503
+    assert exc.value.detail["error"] == "document_service_no_disponible"
 
 
 # ---------------------------------------------------------------------------

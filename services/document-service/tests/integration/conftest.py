@@ -257,6 +257,17 @@ async def _audit_log_ready() -> None:
                 )
             return
 
+        if os.environ.get("CI"):
+            # AREA-03-05: en CI la base nace virgen y el job aplica ANTES las
+            # migraciones globales REALES de auth-service (002-008). Crear aquí una
+            # copia propia del DDL haría que estos tests probaran el trigger de ESTE
+            # fichero y no el de producción: el trigger de sentencia de 004 quedaría
+            # sin ejercer. Si llegamos aquí en CI, el job olvidó migrar auth-service.
+            raise RuntimeError(
+                "public.audit_log no existe en CI: aplica antes las migraciones "
+                "globales de auth-service (`python ../auth-service/migrations/runner.py`)."
+            )
+
         async with conn.transaction():
             await conn.execute("SET LOCAL lock_timeout = '5s'")
             await conn.execute(_AUDIT_LOG_CREATE_DDL)
@@ -289,6 +300,24 @@ async def db_conn(_audit_log_ready: None) -> AsyncGenerator[asyncpg.Connection, 
         await conn.close()
 
 
+_OTROS_SERVICIOS_DDL = """
+CREATE TABLE IF NOT EXISTS dependencias (
+    codigo INT PRIMARY KEY, nombre TEXT NOT NULL,
+    activo BOOLEAN NOT NULL DEFAULT true, depe_rad_tp2 BOOLEAN NOT NULL DEFAULT false
+);
+CREATE TABLE IF NOT EXISTS tipos_documentales (
+    code TEXT PRIMARY KEY, nombre TEXT NOT NULL,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    admite_ventanilla_publica BOOLEAN NOT NULL DEFAULT false
+);
+CREATE TABLE IF NOT EXISTS urd_usuaroldep (
+    user_id UUID NOT NULL, depe_id INTEGER NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE
+);
+INSERT INTO dependencias (codigo, nombre) VALUES (1, 'Dirección General')
+    ON CONFLICT DO NOTHING;
+"""
+
+
 async def _provision_tenant_schema(conn: asyncpg.Connection, slug: str) -> str:
     """Crea `tenant_itest_<hex8>` y aplica las tenant migrations de
     document-service dentro de él. Devuelve el nombre de schema ya
@@ -299,6 +328,14 @@ async def _provision_tenant_schema(conn: asyncpg.Connection, slug: str) -> str:
         async with conn.transaction():
             await conn.execute(f'SET LOCAL search_path = "{schema}", public')
             await conn.execute(path.read_text())
+    # Tablas de OTROS servicios que document-service lee (su DDL no viaja en esta
+    # imagen): `dependencias` (tenant-service), `tipos_documentales` (archive-service)
+    # y `urd_usuaroldep` (auth). Forma mínima; la dependencia 1 es la que usan los
+    # radicados de prueba desde que Ac. AGN 060/2001 §5.2 hace obligatoria la dependencia
+    # (AREA-09-02).
+    async with conn.transaction():
+        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(_OTROS_SERVICIOS_DDL)
     return schema
 
 
@@ -379,3 +416,21 @@ async def tenant_flujo(
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
     await conn.execute(_FLUJO_MINIMO_DDL)
     return slug, conn
+
+
+@pytest.fixture(autouse=True)
+def _dependencia_desde_el_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`DocumentService._resolve_dependencia` habla con tenant-service por HTTP; en este
+    tier no hay tenant-service. Se sustituye por la MISMA regla leída de la tabla
+    `dependencias` del schema de prueba (existe y activa), no por un «todo vale»."""
+    from app.services.document_service import DocumentService, InvalidDependenciaError
+
+    async def _resolver(self: DocumentService, codigo: int) -> str:
+        nombre = await self._conn.fetchval(
+            "SELECT nombre FROM dependencias WHERE codigo = $1 AND activo", codigo
+        )
+        if nombre is None:
+            raise InvalidDependenciaError(f"La dependencia {codigo} no existe")
+        return str(nombre)
+
+    monkeypatch.setattr(DocumentService, "_resolve_dependencia", _resolver)

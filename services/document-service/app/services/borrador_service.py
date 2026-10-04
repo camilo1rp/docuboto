@@ -35,9 +35,11 @@ from app.clients.storage_client import (
     upload_artefacto,
 )
 from app.core.combinacion import SEGUNDA_PASADA, combinar, desconocidos, marcadores
+from app.core.datos_minimos import exigir_o_422
 from app.repositories.borrador_repository import BorradorRepository
 from app.schemas.borrador import (
     BorradorCreate,
+    BorradorRadicar,
     BorradorResponse,
     BorradorUpdate,
     CombinarRequest,
@@ -47,11 +49,13 @@ from app.schemas.borrador import (
     PlantillaResponse,
 )
 from app.schemas.document import DocumentCreate, DocumentResponse
+from app.services import outbox
 from app.services.contexto_combinacion import ContextoCombinacion
 
 logger = logging.getLogger(__name__)
 
 _SERVICE = "document-service"
+_STREAM = "orpycamcp.document.events"
 
 
 def _json_obj(raw: object) -> dict:
@@ -125,8 +129,10 @@ class BorradorService:
         tenant_slug: str = "",
         tenant_client: Any = None,
         signature_client: Any = None,
+        redis: Any = None,
     ) -> None:
         self._conn = conn
+        self._redis = redis
         self._repo = BorradorRepository(conn)
         self._slug = tenant_slug
         self._tenant_client = tenant_client
@@ -410,7 +416,35 @@ class BorradorService:
                     "version": row["version"],
                     "texto_cambio": antes["cuerpo_sha256"] != row["cuerpo_sha256"],
                 },
+                canal=audit.CANAL_PETICION,
             )
+            # AREA-09-16 (E23): el evento `documento.contenido_cambiado` nace en la
+            # misma tx que la edición (outbox) y SOLO si la huella del texto cambió,
+            # por la misma razón que la invalidación de abajo: guardar un cambio de
+            # asunto no invalida nada. Es limpieza de bandejas, no una garantía — la
+            # garantía síncrona es el 409 `documento_modificado` de signature-service.
+            pendiente = None
+            if antes["cuerpo_sha256"] != row["cuerpo_sha256"]:
+                pendiente = await outbox.encolar(
+                    self._conn,
+                    stream=_STREAM,
+                    event_type="documento.contenido_cambiado",
+                    tenant_slug=self._slug,
+                    actor=str(actor) if actor else None,
+                    dedup_key=f"{borrador_id}:{row['cuerpo_sha256']}",
+                    payload={
+                        "borrador_id": str(borrador_id),
+                        "radicado_padre_id": (
+                            str(row["radicado_padre_id"]) if row["radicado_padre_id"] else None
+                        ),
+                        "cuerpo_sha256": row["cuerpo_sha256"],
+                        "cuerpo_sha256_anterior": antes["cuerpo_sha256"],
+                        "version": row["version"],
+                        # Nivel heredado del padre (RF-SEG-08): el webhook recorta lo que sale
+                        # por él mirando este campo; un evento que no lo declara sale mínimo.
+                        "nivel_seguridad": row["nivel_seguridad"],
+                    },
+                )
 
         # Si el TEXTO cambió, los circuitos anteriores dejan de valer.
         #
@@ -429,6 +463,8 @@ class BorradorService:
         # guardar un cambio de asunto.
         if antes["cuerpo_sha256"] != row["cuerpo_sha256"]:
             await self._signature_client.invalidar_circuitos(str(borrador_id), self._slug)
+            if pendiente is not None:
+                await outbox.enviar(self._conn, self._redis, pendiente)
 
         return _bo(row)
 
@@ -452,6 +488,7 @@ class BorradorService:
                     "version": row["version"],
                     "cuerpo_sha256": row["cuerpo_sha256"],
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _bo(row)
 
@@ -677,6 +714,46 @@ class BorradorService:
         faltantes = guardados + [f for f in resultado.faltantes if f not in guardados]
         return rendido.contenido, faltantes
 
+    async def _datos_minimos_del_borrador(
+        self,
+        row: asyncpg.Record,
+        registered_by: uuid.UUID | None,
+        datos: BorradorRadicar | None = None,
+    ) -> tuple[str | None, int | None, int | None]:
+        """(tipo documental, origen, destino) derivables de un borrador.
+
+        - tipo documental: el de su plantilla (`plantilla.tipo_documental`);
+        - destino: el código de la dependencia ACTIVA cuyo nombre coincide con
+          `dest_dept` (sólo lo exige el Interno);
+        - origen (Salida): la dependencia del autor. Si responde a un radicado y
+          el autor pertenece a la que lo recibió, esa; si no, la de menor código
+          entre las suyas (determinista). Sin URD activa, `None` (se rechaza).
+        """
+        doc_class: str | None = datos.tipo_documental if datos else None
+        if doc_class is None and row["plantilla_id"] is not None:
+            doc_class = await self._conn.fetchval(
+                "SELECT tipo_documental FROM plantilla WHERE id = $1", row["plantilla_id"]
+            )
+        dest_code: int | None = datos.dest_dept_code if datos else None
+        if dest_code is None and row["dest_dept"]:
+            dest_code = await self._conn.fetchval(
+                "SELECT codigo FROM dependencias WHERE nombre = $1 AND activo "
+                "ORDER BY codigo LIMIT 1",
+                row["dest_dept"],
+            )
+        origin_code: int | None = datos.origin_dept_code if datos else None
+        if origin_code is None and row["doc_type"] == "S" and registered_by is not None:
+            propias = await self._repo.dependencias_del_usuario(registered_by)
+            if propias:
+                preferida: int | None = None
+                if row["radicado_padre_id"] is not None:
+                    preferida = await self._conn.fetchval(
+                        "SELECT dest_dept_code FROM radicados WHERE id = $1",
+                        row["radicado_padre_id"],
+                    )
+                origin_code = preferida if preferida in propias else min(propias)
+        return doc_class, origin_code, dest_code
+
     async def radicar(
         self,
         borrador_id: uuid.UUID,
@@ -684,6 +761,7 @@ class BorradorService:
         registered_by: uuid.UUID | None,
         *,
         max_clearance: int,
+        datos: BorradorRadicar | None = None,
     ) -> DocumentResponse:
         """Convierte el borrador en radicado real (reutiliza la radicación).
 
@@ -804,9 +882,27 @@ class BorradorService:
                         f"Heredada del radicado {padre['tracking_number']} "
                         "(clasificación vigente del antecedente)"
                     )[:300]
+        # Ac. AGN 060/2001 §5.2 (AREA-09-02): tipo documental y dependencia. El
+        # borrador no los guarda como columnas; se derivan de lo que sí sabe y,
+        # si no hay de dónde, se rechaza ANTES de consumir el número (el
+        # consecutivo no se devuelve): el render de arriba no gastó nada.
+        doc_class, origin_code, dest_code = await self._datos_minimos_del_borrador(
+            row, registered_by, datos
+        )
+        exigir_o_422(
+            row["doc_type"],
+            doc_class=doc_class,
+            origin_dept_code=origin_code,
+            dest_dept_code=dest_code,
+            ayuda="Use una plantilla con tipo documental y una dependencia "
+            "destino/origen reconocibles",
+        )
         payload = DocumentCreate(
             doc_type=row["doc_type"],
             subject=row["subject"],
+            doc_class=doc_class,
+            origin_dept_code=origin_code,
+            dest_dept_code=dest_code,
             dest_dept=row["dest_dept"],
             observations=row["cuerpo"],
             nivel_seguridad=nivel,

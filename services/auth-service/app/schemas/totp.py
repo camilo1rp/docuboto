@@ -16,6 +16,7 @@ una sola vez, al enrolar; el router agrega ``Cache-Control: no-store``)."""
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import datetime
 from typing import Literal
 
@@ -190,3 +191,20 @@ class InternalTotpVerifyResponse(BaseModel):
     locked_until: datetime | None = None
     timestep: int | None = None
     factor_tipo: Literal["totp"] | None = None
+    # `auth_users.id` de QUIEN se verificó (el dueño del bearer reenviado). El
+    # llamante lo compara con el actor al que atribuye el acto: sin este dato,
+    # un TOTP «válido» no decía de quién era y podía respaldar una firma
+    # atribuida a otra persona (AREA-04-05). Solo se puebla en `valido=True`.
+    user_id: uuid.UUID | None = None
+
+
+class InternalTotpStatusResponse(BaseModel):
+    """``GET /internal/totp/status`` — ¿tiene el dueño del bearer un TOTP ACTIVO?
+
+    Content-free a propósito: ni secreto ni contadores ni bloqueo, solo si el
+    segundo factor existe y a quién pertenece. ``user_id`` permite al llamante
+    comprobar que el bearer es del actor al que atribuye el acto (AREA-04-05).
+    """
+
+    activo: bool
+    user_id: uuid.UUID | None = None

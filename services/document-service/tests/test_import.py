@@ -61,7 +61,10 @@ def _pkg(entities, *, tamper_binary=False, tamper_schema=False, bad_member=False
                 "metadata_sistema": {"status": e.get("status", "registered"), "pages": 1,
                                  **e.get("sist_extra", {})},
                 "metadata_contextual": {"k": "v"}, "disposicion": None,
-                "clasificacion": None, "antecedente": e.get("antecedente"),
+                "clasificacion": e.get("clasificacion", (
+                    {"fundamento": "Ley 1712/2014 art. 19"} if e.get("nivel", 1) >= 2 else None
+                )),
+                "antecedente": e.get("antecedente"),
                 "anexos": anexos_json, "historial": [],
             }
             if tamper_schema:
@@ -134,6 +137,41 @@ async def test_schema_violation_aborts() -> None:
     with pytest.raises(PackageValidationError, match="no valida contra el esquema"):
         await _run(svc, pkg)
     svc._repo.insert_radicado.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clasificacion", [None, {}, {"fundamento": None}, {"fundamento": "  "}])
+async def test_clasificado_sin_fundamento_aborta_todo_el_paquete(clasificacion) -> None:
+    """AREA-09-04 (Ley 1712/2014 art. 19/28): `nivel >= 2` entra MOTIVADO o no entra.
+
+    Todo-o-nada: aunque otro radicado del paquete sea válido, no se ingiere NINGUNO.
+    Mutación: retirar la comprobación de `_validate` → importa y este test cae.
+    """
+    svc = _svc()
+    pkg = _pkg(
+        [
+            {"tracking": "2026-DEMO-E-000001"},
+            {"tracking": "2026-DEMO-E-000002", "nivel": 2, "clasificacion": clasificacion},
+        ]
+    )
+    with pytest.raises(PackageValidationError, match="sin clasificacion.fundamento"):
+        await _run(svc, pkg, clearance=3)
+    svc._repo.insert_radicado.assert_not_awaited()  # 0 filas
+
+
+@pytest.mark.asyncio
+async def test_clasificado_con_fundamento_entra() -> None:
+    svc = _svc()
+    pkg = _pkg(
+        [
+            {
+                "tracking": "2026-DEMO-E-000002",
+                "nivel": 2,
+                "clasificacion": {"fundamento": "Ley 1712/2014 art. 19"},
+            }
+        ]
+    )
+    assert (await _run(svc, pkg, clearance=3))["importados"] == 1
 
 
 @pytest.mark.asyncio

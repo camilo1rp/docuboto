@@ -12,16 +12,18 @@
 -- Espejo de la `evento_dead_letter` de workflow-service (ADR-021 Fase 2): almacena
 -- los eventos de `orpycamcp.document.events` que agotaron los reintentos del
 -- consumer-group `knowledge-ingest` sin poder ingestarse (fallo de embedding/BD).
--- El INSERT usa ON CONFLICT (event_id) DO NOTHING para idempotencia: un reintento
+-- El INSERT usa ON CONFLICT (origin_group, event_id) DO NOTHING para idempotencia por grupo: un reintento
 -- del mismo mensaje (XADD ok pero XACK falló, at-least-once) no produce
 -- duplicados ni dobles trazas en audit_log.
 --
--- NOTA (tabla física compartida, ver dead_letter_repository.py de workflow-service):
--- esta es una tabla NUEVA propia de knowledge-service (misma DDL que la de
--- workflow/signature/notification, pero una instancia distinta — cada servicio la
--- crea con `CREATE TABLE IF NOT EXISTS` sobre el MISMO schema del tenant). Las filas
--- se distinguen igualmente por `origin_group` ("knowledge-ingest") por si en el
--- futuro se comparte inspección/admin entre consumidores del mismo tenant.
+-- NOTA (tabla física COMPARTIDA, ver dead_letter_repository.py de workflow-service):
+-- esta NO es una instancia propia de knowledge-service. Misma DDL que la de
+-- workflow/signature/notification, creada con `CREATE TABLE IF NOT EXISTS` sobre la
+-- MISMA base y el MISMO schema de tenant: es UNA sola tabla física que el primero en
+-- migrar crea y los demás encuentran. Las filas se distinguen por `origin_group`
+-- ("knowledge-ingest"). Por eso la PK se corrige a (origin_group, event_id) en la
+-- migración 011_dead_letter_pk_por_grupo.sql (AREA-10-07): con PK solo por event_id,
+-- el aparcamiento del segundo grupo para un mismo evento se perdía en silencio.
 --
 -- Rollback:
 --   DROP TABLE IF EXISTS evento_dead_letter;

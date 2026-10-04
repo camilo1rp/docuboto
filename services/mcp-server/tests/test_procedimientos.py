@@ -318,3 +318,37 @@ async def test_un_paso_que_no_puede_invocar_NO_se_ejecuta_desde_el_procedimiento
     assert parte["completado"] is False
     estados = [p.get("estado") for p in parte.get("pasos", [])]
     assert "denegado" in estados or "omitido" in estados, parte
+
+
+# ---------------------------------------------------------------------------
+# AREA-11-04: cada paso lleva su propia Idempotency-Key (`<jti>:<n>`)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cada_paso_de_un_procedimiento_envia_su_propia_idempotency_key() -> None:
+    """El `jti` de la propuesta correlaciona el asiento con lo aprobado; en un
+    procedimiento hay varios actos, y la misma clave en dos pasos los haría pasar
+    por uno el día que un servicio la honre."""
+    proc = get_procedimiento("tramitar_peticion_ciudadana")
+    cliente = _cliente(
+        httpx.Response(201, json={"id": RAD_ID, "tracking_number": "2026-DEMO-E-000001"}),
+        httpx.Response(201, json={"step_id": "s-1"}),
+    )
+
+    parte = await procedure_runner.ejecutar(
+        cliente,
+        proc,
+        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept": "JUR"},
+        authorization="Bearer x",
+        tenant_slug="demo",
+        permissions=set(),
+        is_root=True,
+        idempotency_key="jti-1",
+    )
+
+    assert parte["completado"] is True
+    claves = [
+        c.kwargs["headers"].get("Idempotency-Key") for c in cliente.request.await_args_list
+    ]
+    assert claves == ["jti-1:1", "jti-1:2"], claves

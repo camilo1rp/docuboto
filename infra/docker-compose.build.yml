@@ -1,0 +1,98 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+# OrpycaMCP — construir las imágenes de producción en el propio servidor.
+#
+# Override OPCIONAL de infra/docker-compose.prod.yml (AREA-13-09). La producción
+# arranca de imágenes inmutables por SHA publicadas por CI; este fichero solo
+# existe para quien no tiene registro y construye localmente:
+#
+#   export ORPYCA_REGISTRY=local ORPYCA_TAG=$(git rev-parse HEAD)
+#   docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml build
+#
+# `build` etiqueta cada imagen con el `image:` del manifiesto, así que el tag SHA
+# queda en el host y `ORPYCA_TAG=<sha-anterior> up -d` sigue pudiendo volver.
+
+services:
+  api-gateway:
+    build:
+      # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
+      context: ..
+      dockerfile: services/api-gateway/Dockerfile
+  auth-service:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/auth-service/.
+      context: ..
+      dockerfile: services/auth-service/Dockerfile
+  tenant-service:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/tenant-service/.
+      context: ..
+      dockerfile: services/tenant-service/Dockerfile
+  document-service:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/document-service/.
+      context: ..
+      dockerfile: services/document-service/Dockerfile
+  storage-service:
+    build:
+      # Contexto en la RAÍZ (ADR-010, mismo motivo que signature-service más
+      # abajo): el Dockerfile instala shared/orpycamcp_common, que NO existe
+      # dentro de services/storage-service/ -- `context: ../services/storage-service`
+      # (como estaba antes) rompería ese COPY. target=production (E10
+      # Increment C2b) añade Java + veraPDF CLI real y corre como usuario
+      # NO-root -- ver comentarios en services/storage-service/Dockerfile
+      # para el detalle completo (la imagen de dev, target por defecto, se
+      # mantiene slim, sin Java).
+      context: ..
+      dockerfile: services/storage-service/Dockerfile
+      target: production
+  workflow-service:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/workflow-service/.
+      context: ..
+      dockerfile: services/workflow-service/Dockerfile
+  archive-service:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/archive-service/.
+      context: ..
+      dockerfile: services/archive-service/Dockerfile
+  notification-service:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/notification-service/.
+      context: ..
+      dockerfile: services/notification-service/Dockerfile
+  signature-service:
+    build:
+      context: ..
+      dockerfile: services/signature-service/Dockerfile
+  knowledge-service:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
+      # que NO existe dentro de services/knowledge-service/.
+      context: ..
+      dockerfile: services/knowledge-service/Dockerfile
+  mcp-server:
+    build:
+      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common
+      # (ADR-010), que NO existe dentro de services/mcp-server/. Cambió al
+      # añadirse el gate de escritura, cuya comprobación de secretos al arrancar
+      # vive en la librería compartida.
+      context: ..
+      dockerfile: services/mcp-server/Dockerfile
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile

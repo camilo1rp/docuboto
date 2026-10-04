@@ -67,7 +67,7 @@ DEADLETTER_STREAM = "orpycamcp.notification.deadletter"
 # app.core.constants so the worker, the admin router, and the retention job can
 # never drift apart. See the module docstring in app/core/constants.py.
 GROUP = DLQ_GROUP
-CONSUMER = "notification-service-1"
+CONSUMER = events.consumer_name("notification-service")
 _SERVICE = "notification-service"
 
 # Cadence for the PEL reclaim sweep (seconds).
@@ -113,7 +113,7 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
         so the helper can XACK.
 
     Idempotency:
-        ``INSERT … ON CONFLICT (event_id) DO NOTHING RETURNING event_id`` — a
+        ``INSERT … ON CONFLICT (origin_group, event_id) DO NOTHING RETURNING event_id`` — a
         second call with the same ``event_id`` returns None (no row), and the
         ``audit_log`` write is skipped.  This prevents a double-trace if XADD
         succeeded but XACK failed (at-least-once redelivery).
@@ -314,7 +314,10 @@ async def run() -> None:
                     await redis.xack(stream_name, GROUP, msg_id)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
+                    # R-5b: recuerda el error para que, si el mensaje queda huérfano, el
+                    # dead-letter lleve la causa y no un texto vacío.
+                    await events.record_failure(redis, GROUP, msg_id, exc)
                     # A-1: do NOT ack on failure.  The message stays in the PEL
                     # and reclaim_stale will retry it; after max_deliveries it
                     # escalates to the dead-letter stream with a durable record.
@@ -346,6 +349,7 @@ async def run() -> None:
                         max_deliveries=5,
                         deadletter_stream=DEADLETTER_STREAM,
                         on_dead_letter=_persist_dead_letter,
+                        status_name="notification",
                     )
                 except asyncio.CancelledError:
                     raise

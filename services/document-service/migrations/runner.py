@@ -34,6 +34,7 @@ import re
 from pathlib import Path
 
 import asyncpg
+from orpycamcp_common import audit
 from orpycamcp_common import migrations as ledger
 
 # Nombre del servicio dueño de estas migraciones. Es lo único que distingue a un
@@ -116,6 +117,63 @@ async def _tenant_schemas(conn: asyncpg.Connection) -> list[str]:
     return [r["schema_name"] for r in rows]
 
 
+ACCION_BACKFILL_FUNDAMENTO = "document.clasificacion_fundamento_backfill"
+ACTOR_BACKFILL_FUNDAMENTO = "system:migration-041"
+_PENDIENTE_MOTIVAR = "PENDIENTE DE MOTIVAR:%"
+
+
+async def asentar_backfill_fundamento(conn: asyncpg.Connection, schema: str, slug: str) -> int:
+    """Deja en `audit_log` un asiento por cada fila que la 041 rellenó (AREA-09-04).
+
+    La 041 es SQL y el asiento lleva la cadena de hashes, que solo la aplicación sabe
+    calcular (`audit.append`, con el advisory lock del tenant): por eso el backfill
+    se asienta AQUÍ, en el runner, y no con un INSERT a mano que rompería la cadena.
+    Idempotente: una fila con asiento previo (`action` + `object_ref`) no se repite,
+    así que sirve igual para entornos donde la 041 ya corrió. Devuelve cuántos asentó.
+    """
+    if (SERVICIO, "041_clasificado_con_fundamento.sql") not in await ledger.applied(conn, schema):
+        return 0
+    async with conn.transaction():
+        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        filas = await conn.fetch(
+            "SELECT r.tracking_number, r.clasificacion_fundamento FROM radicados r "
+            " WHERE r.nivel_seguridad >= 2 AND r.clasificacion_fundamento LIKE $1 "
+            "   AND NOT EXISTS (SELECT 1 FROM public.audit_log a "
+            "                    WHERE a.tenant_slug = $2 AND a.action = $3 "
+            "                      AND a.object_ref = r.tracking_number) "
+            " ORDER BY r.registered_at, r.tracking_number",
+            _PENDIENTE_MOTIVAR,
+            slug,
+            ACCION_BACKFILL_FUNDAMENTO,
+        )
+        for f in filas:
+            await audit.append(
+                conn,
+                tenant_slug=slug,
+                service=SERVICIO,
+                action=ACCION_BACKFILL_FUNDAMENTO,
+                object_type="radicado",
+                object_ref=f["tracking_number"],
+                actor=ACTOR_BACKFILL_FUNDAMENTO,
+                canal="system",
+                payload={
+                    "de": None,
+                    "a": f["clasificacion_fundamento"],
+                    "motivo": "AREA-09-04",
+                },
+            )
+    return len(filas)
+
+
+async def _slug_de_schema(conn: asyncpg.Connection, schema: str) -> str:
+    """Slug del registro de tenants; el guion bajo del schema no distingue `a-b` de `a_b`."""
+    slug = await conn.fetchval(
+        "SELECT slug FROM public.tenants WHERE 'tenant_' || replace(slug, '-', '_') = $1",
+        schema,
+    )
+    return slug or schema.removeprefix("tenant_")
+
+
 async def _apply_tenant(conn: asyncpg.Connection) -> None:
     files = _sql_files(TENANT_DIR)
     if not files:
@@ -137,6 +195,10 @@ async def _apply_tenant(conn: asyncpg.Connection) -> None:
                 await conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await conn.execute(path.read_text())
                 await ledger.record(conn, schema, SERVICIO, path.name)
+        await conn.execute("SET search_path = public")
+        n = await asentar_backfill_fundamento(conn, schema, await _slug_de_schema(conn, schema))
+        if n:
+            print(f"  audit [{schema}] {n} asiento(s) del backfill de la 041")
         await conn.execute("SET search_path = public")
 
 

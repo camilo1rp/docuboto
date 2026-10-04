@@ -58,6 +58,8 @@ def _indice_row(**kw) -> dict:
         "version": 0,
         "xml": _INDICE_XML,
         "xml_sha256": _INDICE_XML_SHA256,
+        # AREA-07-04: el sello que el acta ata al índice entregado.
+        "firma_id": uuid.uuid4(),
     }
     base.update(kw)
     return base
@@ -141,6 +143,8 @@ async def test_create_transferencia(client_with_conn) -> None:
     # get_expediente (closed) + fetch radicados, insert transferencia
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        # AREA-07-03: gate del índice firmado al PREPARAR la transferencia.
+        _indice_row(),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
         # quien prepara, resuelta antes del INSERT.
         _depe_row(),
@@ -427,6 +431,8 @@ async def test_create_transferencia_con_permiso_201(client_with_conn) -> None:
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        # AREA-07-03: gate del índice firmado al PREPARAR la transferencia.
+        _indice_row(),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
         # quien prepara, resuelta antes del INSERT.
         _depe_row(),
@@ -457,7 +463,12 @@ async def test_create_transferencia_audits_success(client_with_conn) -> None:
     mock_conn.fetchval.return_value = True  # D-08 gate + audit.append prev_hash
     exp_id = uuid.uuid4()
     exp_closed = make_expediente_record(exp_id=exp_id, exp_status="closed")
-    mock_conn.fetchrow.side_effect = [exp_closed, _depe_row(), _transfer_row(expediente_id=exp_id)]
+    mock_conn.fetchrow.side_effect = [
+        exp_closed,
+        _indice_row(),
+        _depe_row(),
+        _transfer_row(expediente_id=exp_id),
+    ]
     mock_conn.fetch.return_value = []
 
     resp = await client.post(

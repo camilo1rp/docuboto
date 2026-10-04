@@ -133,6 +133,7 @@ test-unit:
           - signature-service
           - knowledge-service
           - mcp-server
+          - whisper-service
   before_script:
     - pip install --quiet ./shared
     # Desde el `.lock`, no desde `requirements.txt`: es lo que instala el
@@ -168,7 +169,10 @@ test-unit-shared:
   # que el gate de tipos, que cubría 8 de 11 por una lista escrita a mano.
   before_script:
     - pip install --quiet ./shared
-    - pip install --quiet pytest pytest-asyncio
+    # PyYAML y packaging: los guardianes de manifiestos (compose, .gitlab-ci.yml) y de
+    # dependencias los necesitan; sin ellos fallan al importar (no se saltan).
+    # `cryptography` es el extra `kek` de shared/: `test_kek.py` lo importa.
+    - pip install --quiet pytest pytest-asyncio pyyaml packaging cryptography
   script:
     - cd shared
     - pytest tests/ -q --tb=short
@@ -199,6 +203,8 @@ test-integration:
           - archive-service
           - storage-service
           - knowledge-service
+          - signature-service
+          - workflow-service
   before_script:
     - pip install --quiet ./shared
     - pip install --quiet -r "services/$SERVICE/requirements.lock"
@@ -210,6 +216,13 @@ test-integration:
     # creado no. Sin esto, la provisión muere con
     # «operator class "gin_trgm_ops" does not exist»: la extensión `pg_trgm` la
     # crea `migrations/global/001_extensions.sql` de document-service.
+    #
+    # Antes de la propia, las migraciones GLOBALES REALES de auth-service (dueño
+    # de `public.audit_log`, 002-008): así los conftest de integración entran por
+    # su rama de VERIFICACIÓN y los tests ejercen los triggers append-only de
+    # producción —incluido el de sentencia de 004— y no una copia propia del
+    # conftest (AREA-03-05; con `CI` definido, esa copia es un fallo).
+    - '[ "$SERVICE" = "auth-service" ] || python ../auth-service/migrations/runner.py'
     - python migrations/runner.py
     # SIN `-m integration`: la convención de marcado NO es uniforme entre
     # servicios. archive-service marca `pytest.mark.integration`; auth-service
@@ -217,7 +230,17 @@ test-integration:
     # `-m integration` deseleccionaba sus 17 tests y el job pasaba en verde sin
     # ejecutar ninguno — exactamente el modo de fallo que este bloque corrige.
     # El directorio es el criterio; `RUN_INTEGRATION=1` es el gate.
-    - pytest -q tests/integration --tb=short
+    #
+    # La batería WORM contra S3 REAL de storage-service necesita un almacén de
+    # objetos en pie, que este job no tiene: la corre `storage-worm-real` (más
+    # abajo). Excluirla aquí es explícito y no un skip: su `gate` FALLA si
+    # `RUN_INTEGRATION=1` y `CI=true` sin `RUN_S3_WORM` (AREA-13-01).
+    - |
+      EXTRA=""
+      if [ "$SERVICE" = "storage-service" ]; then
+        EXTRA="--ignore=tests/integration/test_worm_object_lock_real_s3.py"
+      fi
+      pytest -q tests/integration --tb=short $EXTRA
   cache:
     key: "pip-$CI_COMMIT_REF_SLUG"
     paths:
@@ -274,6 +297,86 @@ storage-verapdf-subprocess:
   script:
     - cd services/storage-service
     - pytest tests/test_subprocess_verapdf_ci_smoke.py -q --tb=short
+  cache:
+    key: "pip-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip/
+
+# ─── Stage: Test — batería WORM contra S3 REAL (AREA-13-01, AREA-08-12) ───────
+# `test_worm_object_lock_real_s3.py` es la condición de adopción del almacén de
+# objetos: comprueba contra un S3 de verdad que COMPLIANCE impide el borrado. No
+# estaba en ningún job (`RUN_S3_WORM` no aparecía en ningún .yml): salía `skipped`.
+# RustFS va FIJADO por el mismo digest que `infra/docker-compose.prod.yml`: probar
+# otra imagen que la que se despliega es probar otro motor. Corre solo si cambia
+# alguno de los compose (donde vive la línea `image: rustfs/rustfs`), en tag, en MR
+# y a un clic; un guardián (`shared/tests/test_ci_guardianes_de_infra.py`) exige
+# que esa regla no se pierda. RustFS es joven y su compatibilidad on-disk con MinIO
+# está en preview: cambiar de tag SIN esta batería es exactamente el riesgo.
+storage-worm-real:
+  stage: test
+  image: python:3.11-slim
+  interruptible: true
+  services:
+    - name: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+      alias: rustfs
+  variables:
+    RUSTFS_ACCESS_KEY: orpycamcp
+    RUSTFS_SECRET_KEY: orpycamcp_dev
+    RUSTFS_VOLUMES: /data
+    RUN_INTEGRATION: "1"
+    RUN_S3_WORM: "1"
+    MINIO_ENDPOINT: "rustfs:9000"
+    MINIO_ACCESS_KEY: orpycamcp
+    MINIO_SECRET_KEY: orpycamcp_dev
+  before_script:
+    - pip install --quiet ./shared
+    - pip install --quiet -r services/storage-service/requirements.lock
+  script:
+    - cd services/storage-service
+    # Espera a que el almacén responda: sin esto, el primer test fallaría por
+    # conexión y parecería que el motor reprueba el WORM.
+    - |
+      for i in $(seq 1 30); do
+        python -c "import urllib.request; urllib.request.urlopen('http://rustfs:9000/health')" && break
+        sleep 2
+      done
+    - pytest -q tests/integration/test_worm_object_lock_real_s3.py --tb=short
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - changes:
+        - docker-compose*.yml
+        - infra/docker-compose.prod.yml
+    - when: manual
+      allow_failure: true
+  cache:
+    key: "pip-$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip/
+
+# ─── Stage: Test — humo de seguridad (AUTOMÁTICO en cada push) ────────────────
+# La decisión de costo (arriba) deja la suite por servicio a petición. Pero los
+# tests que comprueban que una ruta interna NO está abierta a la red no pueden
+# depender de que alguien pulse un botón: son baratos y son los que cierran
+# puertas. Corren solo ellos, en cada push (AREA-13-02).
+test-security-smoke:
+  stage: test
+  image: python:3.11-slim
+  interruptible: true
+  parallel:
+    matrix:
+      - SERVICE: api-gateway
+        TESTS: "tests/test_gateway.py -k 'internal or canal'"
+      - SERVICE: storage-service
+        TESTS: "tests/test_internal_token_gate.py tests/test_aip_internal_gate.py tests/test_eventos_internal_gate.py tests/test_purge_worm_gate.py"
+      - SERVICE: whisper-service
+        TESTS: "tests/test_transcribir_no_esta_abierto_a_la_red.py"
+  before_script:
+    - pip install --quiet ./shared
+    - pip install --quiet -r "services/$SERVICE/requirements.lock"
+  script:
+    - cd "services/$SERVICE"
+    - eval "pytest -q --tb=short $TESTS"
   cache:
     key: "pip-$CI_COMMIT_REF_SLUG"
     paths:
@@ -412,8 +515,8 @@ claude-update-docs:
 # Requisito previo de la vuelta atrás (ver «Actualización y vuelta atrás» en
 # docs/es/deployment.md): mientras el despliegue construya desde el árbol de
 # fuentes en el propio servidor, «la versión anterior» no existe en ningún sitio
-# y revertir es imposible. Con esto, cada commit de `main` deja imágenes
-# etiquetadas por SHA a las que se puede volver.
+# y revertir es imposible. Con esto, cada TAG (y cada commit que se
+# pida a mano) deja imágenes etiquetadas por SHA a las que se puede volver.
 #
 # `infra/DOCKER_REGISTRY.md` documenta un pipeline de GitHub Actions que NO
 # existe en este repositorio (no hay `.github/`). Este job lo sustituye.
@@ -430,11 +533,24 @@ build-images:
   interruptible: true
   variables:
     DOCKER_TLS_CERTDIR: "/certs"
+    TRIVY_VERSION: "0.58.0"
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    # Escáner de imágenes (AREA-13-13): `docker scan` está retirado del CLI de Docker.
+    # Binario de trivy con versión FIJADA; se escanea la imagen exportada (`docker
+    # save`), así que no hace falta el socket de Docker dentro del job.
+    - apk add --no-cache curl tar
+    - curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar -xz -C /usr/local/bin trivy
   script:
     - |
       set -e
+      # Falla el job con una CRÍTICA que tenga corrección disponible, ANTES del push:
+      # una imagen vulnerable no llega al registro (ni a `latest`).
+      escanear() {
+        docker save "$1" -o /tmp/imagen.tar
+        trivy image --input /tmp/imagen.tar --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress
+        rm -f /tmp/imagen.tar
+      }
       for dir in services/*/; do
         svc=$(basename "$dir")
         [ -f "$dir/Dockerfile" ] || continue
@@ -445,11 +561,13 @@ build-images:
         echo "── construyendo $svc"
         docker build -f "$df" -t "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHA" \
                               -t "$CI_REGISTRY_IMAGE/$svc:latest" "$ctx"
+        escanear "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHA"
         docker push "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHA"
         docker push "$CI_REGISTRY_IMAGE/$svc:latest"
       done
       docker build -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA" \
                                           -t "$CI_REGISTRY_IMAGE/frontend:latest" frontend
+      escanear "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA"
       docker push "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA"
       docker push "$CI_REGISTRY_IMAGE/frontend:latest"
   # Solo en un TAG, no en cada commit de `main`. Su razón de ser —que exista
@@ -556,73 +674,93 @@ notify-website-docs:
         "${CI_API_V4_URL}/projects/${ORPYCAWEB_PROJECT_ID}/trigger/pipeline"
     - echo "Sitio avisado. La documentación se republica en orpyca.com/docs en unos minutos."
 
-# ─── Scheduled: Weekly dependency audit ───────────────────────────────────────
-# Audita dependencias y, si hay hallazgos, abre un MR con el informe (no push a main).
+# ─── Auditoría de dependencias (semanal + en cada MR) ─────────────────────────
+# Fail-CLOSED y con umbral DETERMINISTA (AREA-13-14). Antes: `pip-audit ... || true`
+# convertía un fallo de red o de resolución en «0 paquetes con vulnerabilidades»; un
+# JSON ausente se saltaba con `continue`; y la decisión de fallar la tomaba
+# `claude -p`, con `exit 0` si no escribía nada: el job no podía fallar nunca.
+# Ahora: `pip-audit` sale 0 (limpio) o 1 (hay vulnerabilidades, legítimo) y
+# cualquier otro código es un fallo de la herramienta que detiene el job;
+# `scripts/audit_umbral.py` exige un informe válido por lockfile y falla si hay
+# alguna vulnerabilidad con corrección disponible; el modelo, solo redacta el
+# informe (y solo en la ejecución programada).
 dependency-audit:
   stage: validate
   image: node:20-slim
   interruptible: true
   before_script:
     - apt-get update -qq && apt-get install -y -qq git python3 python3-pip
-    - npm install -g @anthropic-ai/claude-code
     - pip3 install --quiet --break-system-packages pip-audit
-    - git config user.email "claude-bot@$CI_SERVER_HOST"
-    - git config user.name "Claude Bot [CI]"
-  script:
-    # `pip-audit` sin `-r` audita el entorno del propio job — es decir, las
-    # dependencias de pip-audit y de claude-code, no las del proyecto. El informe
-    # salía limpio siempre, y esa limpieza era el problema: parecía una auditoría.
-    # Se auditan los `.lock`, que es exactamente lo que instalan los Dockerfile.
     - |
-      : > audit.json
-      for lock in services/*/requirements.lock; do
-        svc=$(basename "$(dirname "$lock")")
-        echo "── auditando $svc"
-        pip-audit -r "$lock" --format json --output "audit-$svc.json" || true
-      done
-      python3 - <<'EOF'
-      import glob, json
-      todo = []
-      for f in sorted(glob.glob("audit-*.json")):
-          servicio = f[len("audit-"):-len(".json")]
-          try:
-              datos = json.load(open(f))
-          except Exception:
-              continue
-          for dep in datos.get("dependencies", datos if isinstance(datos, list) else []):
-              if dep.get("vulns"):
-                  todo.append({"servicio": servicio, **dep})
-      json.dump({"hallazgos": todo}, open("audit.json", "w"), indent=2)
-      print(f"{len(todo)} paquetes con vulnerabilidades conocidas")
-      EOF
-    - |
-      BRANCH="security/dependency-audit-${CI_PIPELINE_ID}"
-      git checkout -b "$BRANCH"
-
-      claude -p "
-        Audita el archivo audit.json con vulnerabilidades de dependencias Python.
-        Si hay vulnerabilidades HIGH o CRITICAL, crea/actualiza docs/es/security-audit.md
-        y docs/en/security-audit.md con los paquetes afectados, versiones seguras y pasos
-        para actualizar. Usa formato Keep a Changelog para la sección Security.
-        Si NO hay vulnerabilidades altas/críticas, no escribas nada.
-      " \
-      --allowedTools "Read,Write"
-
-      git add docs/
-      if git diff --staged --quiet; then
-        echo "Sin vulnerabilidades altas/críticas. No se abre MR."
-        exit 0
+      if [ "$CI_PIPELINE_SOURCE" = "schedule" ]; then
+        npm install -g @anthropic-ai/claude-code
+        git config user.email "claude-bot@$CI_SERVER_HOST"
+        git config user.name "Claude Bot [CI]"
       fi
-      git commit -m "security: dependency audit report [skip ci]"
-      git push "https://oauth2:$CI_BOT_TOKEN@$CI_SERVER_HOST/$CI_PROJECT_PATH.git" "$BRANCH" \
-        -o merge_request.create \
-        -o merge_request.target=main \
-        -o merge_request.title="security: informe de auditoría de dependencias" \
-        -o merge_request.label="security" \
-        -o merge_request.remove_source_branch
+  script:
+    # `pip-audit` sin `-r` audita el entorno del propio job, no las dependencias del
+    # proyecto: se auditan los `.lock` (lo que instalan los Dockerfile), incluido
+    # el `requirements-ml.lock` de knowledge-service.
+    - |
+      set -u
+      for lock in services/*/requirements*.lock; do
+        id="$(basename "$(dirname "$lock")")-$(basename "$lock" .lock)"
+        echo "── auditando $id"
+        set +e
+        pip-audit -r "$lock" --format json --output "audit-$id.json"
+        rc=$?
+        set -e
+        [ $rc -le 1 ] || { echo "pip-audit falló (código $rc) en $id"; exit $rc; }
+      done
+    - |
+      status=0
+      python3 scripts/audit_umbral.py . services/*/requirements*.lock || status=$?
+      echo "$status" > audit-status.txt
+    - |
+      if [ "$CI_PIPELINE_SOURCE" = "schedule" ]; then
+        BRANCH="security/dependency-audit-${CI_PIPELINE_ID}"
+        git checkout -b "$BRANCH"
+        claude -p "
+          Redacta el informe de docs/es/security-audit.md y docs/en/security-audit.md a
+          partir de audit.json (claves con_arreglo y sin_arreglo): paquetes afectados,
+          versiones seguras y pasos para actualizar, con la fecha de esta ejecución y el
+          pipeline $CI_PIPELINE_ID. Si no hay hallazgos, escribe solo la fecha y el
+          pipeline de esta ejecución limpia. No decides tú si el job falla.
+        " \
+        --allowedTools "Read,Write"
+        git add docs/
+        if ! git diff --staged --quiet; then
+          git commit -m "security: dependency audit report [skip ci]"
+          git push "https://oauth2:$CI_BOT_TOKEN@$CI_SERVER_HOST/$CI_PROJECT_PATH.git" "$BRANCH" \
+            -o merge_request.create \
+            -o merge_request.target=main \
+            -o merge_request.title="security: informe de auditoría de dependencias" \
+            -o merge_request.label="security" \
+            -o merge_request.remove_source_branch
+        fi
+      fi
+    # El umbral manda: informe escrito o no, el job falla si hay una vulnerabilidad
+    # corregible sin aplicar o una auditoría que no se pudo hacer.
+    - exit "$(cat audit-status.txt)"
   artifacts:
+    when: always
     paths:
       - audit.json
       - audit-*.json
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# `npm audit` sobre el frontend (AREA-13-14): solo se auditaba Python y existe
+# `frontend/package-lock.json`. Automático en cada pipeline; `--omit=dev` porque
+# lo que llega a producción es lo que importa y `--ignore-scripts` porque auditar
+# no debe ejecutar scripts de instalación de terceros.
+npm-audit:
+  stage: validate
+  image: node:22-alpine
+  interruptible: true
+  before_script:
+    - cd frontend
+    - npm ci --ignore-scripts
+  script:
+    - npm audit --omit=dev --audit-level=high

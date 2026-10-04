@@ -88,7 +88,7 @@ En el Incremento 1 **no hay CA acreditada ONAC** integrada: toda firma XAdES-B s
 - Sin **XAdES-LT/LTA** (material de validación a largo plazo, CRL/OCSP) → los niveles quedan reservados en el CHECK de `firma.xades_level`.
 - Sin **CA acreditada ONAC** → todo `no_acreditado`.
 - El índice sellado aún **omite metadatos RT-15** exigibles (formato, tamaño, foliación, fecha de incorporación): no rotular como "conforme completo" hasta cerrar RT-15.
-- `POST /verify` es **público** (oráculo de existencia por-tenant de bajo impacto: `firma_id` son UUID aleatorios); aceptado por contrato.
+- `POST /verify` **no es público**: por el gateway exige JWT (no está en `PUBLIC_PATHS`) y el tenant sale del token. Era un oráculo de existencia para cualquier usuario autenticado de la entidad (`firma_id` son UUID aleatorios, impacto bajo); desde AREA-04-10 (octubre de 2026) aplica el **no-read-up** —la firma de un objeto por encima del clearance del llamante da el mismo `404` que un UUID inexistente, con el nivel en el `WHERE`— y la verificación pública de verdad va por `/api/v1/public/` con código de verificación (E13).
 
 ### Nota de implementación (signxml + C14N exclusiva)
 
@@ -154,7 +154,7 @@ El XAdES-B de Inc.1 usa `SigningTime` del **reloj del servidor**, que no es opon
 
 - **Post-proceso** (`providers/local.py`): tras firmar XAdES-B con `XAdESSigner`, se canonicaliza el `ds:SignatureValue` (exc-c14n 1.0), se sella con la TSA y se inserta `<xades:UnsignedProperties>/<UnsignedSignatureProperties>/<SignatureTimeStamp>/<EncapsulatedTimeStamp>` con el token DER en base64. Es una propiedad **NO firmada** → **no invalida** el XAdES-B subyacente (no toca `SignedInfo`/`SignedProperties`).
 - **TSA local in-process** (`core/tsa.py` + `core/keys.py::load_tsa_seal`): par auto-firmado con **EKU `id-kp-timeStamping`** (crítico, RFC 3161), montado como secreto Docker read-only (patrón idéntico al sello institucional de Inc.1; una TSA **única del despliegue**, no per-tenant). El token `TimeStampToken` (CMS `SignedData`, `eContentType=id-ct-TSTInfo`) se construye con `asn1crypto` (`tsp`+`cms`) y se firma RSA-SHA256 con `cryptography`. La clave privada de la TSA **nunca** se persiste/loguea. `scripts/gen-dev-tsa-cert.sh` genera el par dev.
-- **Config**: `signer_timestamp_enabled` (default `True`), `tsa_url` (vacío → TSA local; puesto → **cliente remoto RFC 3161, stub delgado que falla explícito** con `TsaUnavailableError` — seguimiento para prod), `tsa_cert_dir`, `tsa_allow_dev_seal`. **Fail-closed**: con timestamp habilitado y sin TSA disponible, la firma falla (503 `timestamp_authority_unavailable` → el índice queda `pendiente_firma`, consistente con Inc.1); kill-switch `signer_timestamp_enabled=False` produce XAdES-B como antes.
+- **Config**: `signer_timestamp_enabled` (default `True`), `tsa_url` (vacío → TSA local; puesto → **cliente remoto RFC 3161 REAL** (`app/core/tsa.py::_request_remote_timestamp`: POST HTTP, comprueba nonce, EKU y token; antes fue un stub y ya no lo es), que si la TSA no responde o el token no es conforme falla explícito con `TsaUnavailableError`; acreditado = `tsa_url` **y** `tsa_acreditada`), `tsa_cert_dir`, `tsa_allow_dev_seal`. **Fail-closed**: con timestamp habilitado y sin TSA disponible, la firma falla (503 `timestamp_authority_unavailable` → el índice queda `pendiente_firma`, consistente con Inc.1); kill-switch `signer_timestamp_enabled=False` produce XAdES-B como antes.
 - **Persistencia**: migración tenant `012` añade `tsa_token`, `tsa_timestamp`, `tsa_cert_fingerprint`, `tsa_acreditado` a `firma` (el token TSA es **público**, no secreto). El CHECK de `xades_level` ya reservaba `'XAdES-T'`.
 - **Verificación** (`verify_xades` + `/verify`): si hay `SignatureTimeStamp`, valida que el `messageImprint` del `TSTInfo` cubre el `ds:SignatureValue` actual, la firma CMS del token, la EKU/vigencia del cert TSA, **y ata el cert TSA al `firma.tsa_cert_fingerprint` persistido** (pinning — sin él un cert auto-firmado arbitrario con EKU timeStamping se reportaría válido). Expone `sello_tiempo_valido`/`tsa_timestamp` en `VerifyResponse`.
 
@@ -169,7 +169,7 @@ El XAdES-B de Inc.1 usa `SigningTime` del **reloj del servidor**, que no es opon
 ### Relacionados (Inc.4)
 
 - RFC 3161 (Time-Stamp Protocol); ETSI EN 319 132 (perfil XAdES-T).
-- E06 tasks T-08 (cliente TSA) — realizado el modo local; el cliente remoto `TSA_URL` queda como stub para prod.
+- E06 tasks T-08 (cliente TSA) — realizado el modo local **y el cliente remoto `TSA_URL`** (RFC 3161 real, `tests/test_tsa_remota.py`); lo que falta es **contratar la TSA acreditada** (externo), no código.
 
 ---
 
@@ -246,8 +246,16 @@ TOTP es factor de **posesión de dispositivo** (más fuerte que el OTP-correo), 
 
 ### Consecuencias
 
-**Positivas**: segundo factor más fuerte, self-service, sin infra externa; secreto confinado a auth y cifrado con binding por tenant/usuario; anti-replay atómico + lockout; retrocompatibilidad total (el camino OTP-correo sigue intacto). **Negativas / límites (roadmap)**: **WebAuthn** (posesión + biometría/hardware) sigue pendiente; el forzado de TOTP por nivel/tenant (`totp_requerido_por_nivel`) queda reservado, no implementado; doble control para desenrolar firmantes `nivel>=2` es evolutivo. **97+208 tests verdes** (auth+signature); auditoría de seguridad APTO (1 Media remediada: incremento atómico del contador; 1 Baja remediada: fuente canónica del `tenant_slug` para el AAD).
+**Positivas**: segundo factor más fuerte, self-service, sin infra externa; secreto confinado a auth y cifrado con binding por tenant/usuario; anti-replay atómico + lockout; retrocompatibilidad total (el camino OTP-correo sigue intacto). **Negativas / límites (roadmap)**: **WebAuthn** (posesión + biometría/hardware) sigue pendiente; el forzado de TOTP por nivel/tenant (`totp_requerido_por_nivel`) quedó reservado y se **retiró** (T8, AREA-04-02): lo hace signature-service, que consulta `GET /internal/totp/status` y rechaza el OTP-correo (`409 totp_requerido`) cuando el actor ya tiene TOTP activo en un acto de nivel ≥ 2; doble control para desenrolar firmantes `nivel>=2` es evolutivo. **97+208 tests verdes** (auth+signature); auditoría de seguridad APTO (1 Media remediada: incremento atómico del contador; 1 Baja remediada: fuente canónica del `tenant_slug` para el AAD).
 
 ### Relacionados (Inc.6)
 
 - RFC 6238 (TOTP), RFC 4226 (HOTP), RFC 4648 (base32); RFC 5116 (AEAD/AES-GCM).
+
+## Addendum (2026-10-02, tanda T8): segundo factor coherente con el actor, claves por entidad
+
+- **Identidad (AREA-04-05).** La firma se atribuye a `X-User-Id` pero el OTP sale al correo del **bearer**, el TOTP se verifica contra el **bearer** y la credencial personal es la del **bearer**. Se asumía que eran la misma persona porque el gateway los deriva del mismo token; el comentario lo llamaba «fail-safe» y era al revés (quien tiene el bearer recibe el código y completa él mismo una firma atribuida a otro) — alcanzable desde un servicio interno comprometido, no desde fuera. Ahora `/me` (con `X-Tenant-Slug`), `/internal/totp/verify` y `/internal/signing-key/status` dicen **de quién** son (`user_id`) y signature-service exige que coincida con el actor: `403 identidad_incoherente` con asiento `firma.identidad_incoherente`, antes de crear el desafío, de marcar el turno o de pedir un factor. Un auth-service que no devuelva `user_id` se trata como incoherente (fail-closed).
+- **Factor más fuerte (AREA-04-02).** En nivel ≥ 2, con TOTP activo, el correo no vale (`409 totp_requerido`); fail-closed si no se puede consultar.
+- **Huella y claves.** La huella de una cadena de `radicado`/`expediente` no la declara el cliente (AREA-04-09). El HMAC de la firma nativa y el del OTP usan claves **HKDF por (propósito, entidad)** derivadas de `signature_secret`, el mensaje ata entidad+tipo+objeto (firma) o `challenge_id` (OTP), y `key_version` (migración `020`; DEFAULT 0 = esquema anterior, que sigue verificando) dice con qué esquema se produjo cada fila (AREA-04-11).
+- **Verificación.** `acreditado` sale de lo persistido y solo si la cripto valida (AREA-05-02); la revocación posterior a la firma no la invalida (AREA-04-13); el sello de tiempo se cruza con la vigencia del certificado firmante y con el ESSCertID (AREA-04-08).
+- **Aún abierto / decisión de la entidad**: el gate `FIRMA_PERSONAL_REQUIRE_XADES` sigue en `off` (activarlo exige enrolar certificados antes; ahora el arranque lo advierte y un canal de credenciales caído deja asiento `firma.fallback_nativa_canal_caido`, AREA-04-12); un vocabulario cerrado de motivos de revocación (para invalidar hacia atrás por compromiso de clave); HSM/KMS externo.

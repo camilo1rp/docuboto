@@ -179,7 +179,9 @@ async def list_dead_letters(
         origin_stream=origin_stream,
     )
 
-    if len(candidates) >= DEADLETTER_CANDIDATE_CAP:
+    # El repositorio pide cap + 1 filas: solo MÁS de cap candidatas prueba que hay
+    # filas fuera de la ventana (con exactamente cap no se trunca nada).
+    if len(candidates) > DEADLETTER_CANDIDATE_CAP:
         logger.warning(
             "DLQ candidate cap reached: tenant=%s origin_group=%s status=%s cap=%d — "
             "oldest pending rows are invisible; consider keyset pagination",
@@ -189,6 +191,7 @@ async def list_dead_letters(
             DEADLETTER_CANDIDATE_CAP,
         )
         response.headers["X-Truncated"] = "true"
+        candidates = candidates[:DEADLETTER_CANDIDATE_CAP]
 
     levels = await resolve_deadletter_levels(conn, candidates)
     visible = [row for row in candidates if caller_clearance >= levels[row["event_id"]]]
@@ -247,12 +250,12 @@ async def get_dead_letter(
                 object_type="evento",
                 object_ref=event_id,
                 actor=str(actor),
-                canal="api",
                 payload={
                     "previous_status": row["status"],
                     "event_type": row["event_type"],
                     "origin_stream": row["origin_stream"],
                 },
+                canal=_audit.CANAL_PETICION,
             )
 
     return DeadLetterDetail(
@@ -423,7 +426,6 @@ async def replay_dead_letter(
                 object_type="evento",
                 object_ref=event_id,
                 actor=str(actor),
-                canal="api",
                 payload={
                     "previous_status": row["status"],
                     "new_status": "resolved",
@@ -432,6 +434,7 @@ async def replay_dead_letter(
                     "origin_stream": row["origin_stream"],
                     "original_failure": failure_dict,
                 },
+                canal=_audit.CANAL_PETICION,
             )
 
     return DeadLetterActionResult(
@@ -514,7 +517,6 @@ async def discard_dead_letter(
                 object_type="evento",
                 object_ref=event_id,
                 actor=str(actor),
-                canal="api",
                 payload={
                     "previous_status": previous_status,
                     "new_status": "discarded",
@@ -523,6 +525,7 @@ async def discard_dead_letter(
                     "origin_stream": row["origin_stream"],
                     "original_failure": failure_dict,
                 },
+                canal=_audit.CANAL_PETICION,
             )
 
     return DeadLetterActionResult(

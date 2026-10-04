@@ -48,7 +48,17 @@ _FUID_NS = "urn:orpycamcp:fuid:v1"
 _SERVICE = "archive-service"
 
 
-def _fuid_to_xml(fuid: FuidResponse) -> str:
+def _fuid_to_xml(
+    fuid: FuidResponse,
+    *,
+    indice_version: int | None = None,
+    indice_firma_id: uuid.UUID | None = None,
+    indice_sha256: str | None = None,
+) -> str:
+    """XML canónico (C14N) del FUID. Los tres `indice_*` (AREA-07-04) solo los pasa
+    `recibir()`: el acta de entrega ata así la firma del índice que entregó DENTRO de
+    lo que se hashea y sella. Sin ellos el XML es idéntico al de siempre (la vista
+    previa `GET /fuid` y las actas anteriores no cambian)."""
     root = ET.Element(f"{{{_FUID_NS}}}fuid", attrib={"generado": fuid.generado_ts.isoformat()})
     # Cabecera del formato (Ac. AGN 042/2002, Anexo). El XML salía sin ella: una
     # lista de filas sin decir de qué entidad ni de qué oficina es el inventario
@@ -65,6 +75,17 @@ def _fuid_to_xml(fuid: FuidResponse) -> str:
         fuid.cabecera.oficina_productora or ""
     )
     ET.SubElement(cab, f"{{{_FUID_NS}}}objeto").text = fuid.cabecera.objeto or ""
+    if indice_firma_id is not None:
+        ind = ET.SubElement(
+            cab,
+            f"{{{_FUID_NS}}}indiceElectronico",
+            attrib={
+                "version": str(indice_version) if indice_version is not None else "",
+                "firmaId": str(indice_firma_id),
+                "sha256": indice_sha256 or "",
+            },
+        )
+        ind.text = None
     for r in fuid.rows:
         e = ET.SubElement(root, f"{{{_FUID_NS}}}registro", attrib={"orden": str(r.orden)})
         ET.SubElement(e, f"{{{_FUID_NS}}}expediente").text = r.expediente_code
@@ -152,6 +173,7 @@ class FisicoService:
                     object_ref=row["codigo"],
                     actor=str(actor) if actor else None,
                     payload={"id": str(row["id"]), "nivel": row["nivel"], "codigo": row["codigo"]},
+                    canal=audit.CANAL_PETICION,
                 )
         except asyncpg.UniqueViolationError:
             raise _conflict(f"Ya existe una ubicación con código '{payload.codigo}'")
@@ -203,6 +225,7 @@ class FisicoService:
                         for campo, valor in cambios.items()
                     },
                 },
+                canal=audit.CANAL_PETICION,
             )
         return await self._ubicacion_response(row)
 
@@ -255,6 +278,7 @@ class FisicoService:
                         "codigo": row["codigo"],
                         "signatura": row["signatura"],
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         except asyncpg.UniqueViolationError:
             raise _conflict(f"Signatura topográfica duplicada: '{signatura}'")
@@ -306,6 +330,7 @@ class FisicoService:
                         "folio_inicio": payload.folio_inicio,
                         "folio_fin": payload.folio_fin,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         except asyncpg.UniqueViolationError:
             raise _conflict("El expediente ya está vinculado a esta unidad")
@@ -364,13 +389,30 @@ class FisicoService:
         # unidad de su ubicación de control -- el asiento fija A QUIÉN se
         # prestó y la fecha PREVISTA de devolución, mismo patrón fail-closed
         # (tx envolviendo repo-write + `audit.append` al final) que TRD.
+        # No-read-up (RF-SEG-08, AREA-01-13): quien presta una unidad no puede
+        # sacar del estante contenido por encima de su clearance. El gate vive
+        # en el WHERE del INSERT; 0 filas = 403 y no se escribe nada.
+        max_clearance = await self._archive.caller_clearance(actor)
         async with self._conn.transaction():
             row = await self._repo.insert_prestamo(
                 unidad_id=unidad_id,
                 prestado_a=payload.prestado_a,
                 prestado_por=payload.prestado_por,
                 fecha_devolucion_esperada=payload.fecha_devolucion_esperada,
+                max_clearance=max_clearance,
             )
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={
+                        "error": "clearance_insuficiente",
+                        "detail": (
+                            "La unidad contiene expedientes por encima de su "
+                            "nivel de acceso: no puede prestarla."
+                        ),
+                        "status": 403,
+                    },
+                )
             await self._repo.insert_movimiento(
                 unidad_id=unidad_id,
                 accion="RETIRADO",
@@ -392,6 +434,7 @@ class FisicoService:
                     "prestado_por": payload.prestado_por,
                     "fecha_devolucion_esperada": payload.fecha_devolucion_esperada.isoformat(),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return self._prestamo_response(row)
 
@@ -436,6 +479,7 @@ class FisicoService:
                         else None
                     ),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return self._prestamo_response(row)
 

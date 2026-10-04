@@ -73,8 +73,8 @@ _DEV_POLICY_OID = "1.2.3.4.5.6.7.8.9.1"
 
 class TsaUnavailableError(RuntimeError):
     """No se pudo obtener un sello de tiempo (TSA local sin par montado, o
-    remota configurada vía ``tsa_url`` sin cliente implementado en este
-    incremento). El router lo traduce a 503 — ver ``app.routers.signature``.
+    remota configurada vía ``tsa_url`` que no respondió, no devolvió un token
+    conforme —nonce, EKU, ESSCertID— o excedió el tiempo). El router lo traduce a 503 — ver ``app.routers.signature``.
     """
 
 
@@ -126,7 +126,7 @@ def _request_remote_timestamp(signature_value_c14n: bytes) -> TimestampToken:
 
     Existe porque el sello de tiempo ACREDITADO no lo puede dar una TSA local
     por buena que sea: lo emite el prestador que la entidad contrata. Mientras
-    esto fue un stub, una instalación con TSA acreditada contratada no podía
+    esto fue un stub (ya no lo es), una instalación con TSA acreditada contratada no podía
     enchufarla — la acreditación se declaraba "propia de la instalación" y la
     instalación no tenía dónde conectarla.
 
@@ -315,6 +315,30 @@ def _build_local_timestamp_token(signature_value_c14n: bytes) -> TimestampToken:
                 }
             ),
             cms.CMSAttribute({"type": "signing_time", "values": cms.SetOfTime([cms.Time({"utc_time": gen_time})])}),
+            # RFC 5035 / RFC 3161 §2.4.2: el token declara QUÉ certificado de TSA
+            # lo firmó (ESSCertIDv2, SHA-256). Sin él, nada dentro de lo firmado
+            # liga el token a un certificado concreto (AREA-04-08).
+            cms.CMSAttribute(
+                {
+                    "type": "signing_certificate_v2",
+                    "values": tsp.SetOfSigningCertificatesV2(
+                        [
+                            tsp.SigningCertificateV2(
+                                {
+                                    "certs": [
+                                        tsp.ESSCertIDv2(
+                                            {
+                                                "hash_algorithm": algos.DigestAlgorithm({"algorithm": "sha256"}),
+                                                "cert_hash": hashlib.sha256(asn1_cert.dump()).digest(),
+                                            }
+                                        )
+                                    ]
+                                }
+                            )
+                        ]
+                    ),
+                }
+            ),
         ]
     )
     to_sign = signed_attrs.dump()
@@ -373,8 +397,8 @@ def build_timestamp_token(signature_value_c14n: bytes) -> TimestampToken:
 
     ``signature_value_c14n`` YA debe venir canonicalizado (exc-c14n 1.0) por
     el llamador (``app.providers.local.LocalSigner.sign``) — este módulo no
-    conoce XML, solo bytes a sellar. Despacha a TSA local o al stub remoto
-    según ``settings.tsa_url`` (ver docstring del módulo).
+    conoce XML, solo bytes a sellar. Despacha a la TSA local o al cliente RFC 3161
+    remoto (``_request_remote_timestamp``) según ``settings.tsa_url`` (ver docstring del módulo).
 
     Raises:
         TsaUnavailableError: ninguna TSA (local ni remota) pudo sellar.
@@ -389,6 +413,7 @@ def verify_timestamp_token(
     signature_value_c14n: bytes,
     *,
     expected_tsa_fingerprint: str | None,
+    signer_cert: x509.Certificate | None = None,
 ) -> TimestampVerifyOutcome:
     """Verifica un ``TimeStampToken`` RFC 3161 (E06 Inc.4, RT-16).
 
@@ -415,6 +440,16 @@ def verify_timestamp_token(
          invalida el sello — fail-closed, nunca se omite la comprobación.
       5. Los ``signedAttrs`` (``messageDigest`` sobre el ``eContent``) y la
          firma CMS (RSA-SHA256) verifican contra el certificado embebido.
+      6. (``signer_cert``, AREA-04-08) El ``genTime`` cae dentro de la vigencia
+         del certificado FIRMANTE: es lo que atestigua que la firma existió
+         mientras ese certificado era válido (el cruce que XAdES-T promete).
+         Se pasa solo para el ``SignatureTimeStamp``; el ``ArchiveTimeStamp``
+         se emite a propósito DESPUÉS de que el certificado caduque.
+      7. (RFC 5035, AREA-04-08) El atributo firmado ``signing-certificate-v2``
+         (o ``signing-certificate``, v1) nombra el certificado de la TSA con que
+         se verificó. Si está, su hash TIENE que coincidir. Si falta, se rechaza
+         solo con ``settings.tsa_esscertid_obligatorio`` (ver su comentario: los
+         tokens de la TSA local anteriores a este cambio no lo llevan).
 
     NO valida cadena de confianza contra una CA raíz (misma postura que
     ``verify_xades``: sin CA acreditada ONAC, no hay cadena que validar) —
@@ -423,14 +458,37 @@ def verify_timestamp_token(
     """
     try:
         return _verify_timestamp_token_inner(
-            token_der, signature_value_c14n, expected_tsa_fingerprint=expected_tsa_fingerprint
+            token_der,
+            signature_value_c14n,
+            expected_tsa_fingerprint=expected_tsa_fingerprint,
+            signer_cert=signer_cert,
         )
     except Exception as exc:  # noqa: BLE001 — cualquier fallo == sello inválido (fail-closed)
         return TimestampVerifyOutcome(False, motivo=f"sello_tiempo_invalido: {exc}")
 
 
+def _ess_cert_hash(attr: cms.CMSAttribute) -> tuple[str, bytes] | None:
+    """(algoritmo, hash) del primer ``ESSCertID[v2]`` de un atributo
+    ``signing-certificate[-v2]`` (RFC 5035), o ``None`` si no se puede leer."""
+    kind = attr["type"].native
+    certs = attr["values"][0]["certs"]
+    if len(certs) == 0:
+        return None
+    first = certs[0]
+    if kind == "signing_certificate_v2":
+        # RFC 5035: el algoritmo por defecto es SHA-256 y puede venir omitido.
+        algo = first["hash_algorithm"]["algorithm"].native if first["hash_algorithm"].contents else "sha256"
+    else:  # signing_certificate (v1) — siempre SHA-1
+        algo = "sha1"
+    return algo, first["cert_hash"].native
+
+
 def _verify_timestamp_token_inner(
-    token_der: bytes, signature_value_c14n: bytes, *, expected_tsa_fingerprint: str | None
+    token_der: bytes,
+    signature_value_c14n: bytes,
+    *,
+    expected_tsa_fingerprint: str | None,
+    signer_cert: x509.Certificate | None = None,
 ) -> TimestampVerifyOutcome:
     content_info = cms.ContentInfo.load(token_der)
     if content_info["content_type"].native != "signed_data":
@@ -481,15 +539,17 @@ def _verify_timestamp_token_inner(
     if not (tsa_cert.not_valid_before_utc <= gen_time <= tsa_cert.not_valid_after_utc):
         return TimestampVerifyOutcome(False, motivo="certificado_tsa_fuera_de_vigencia_al_sellar")
 
-    # NO se comprueba aquí que `gen_time` caiga también dentro de la vigencia
-    # del certificado FIRMANTE del índice (el sello institucional) — en
-    # XAdES-T ese cruce es lo que atestigua que la firma existió mientras el
-    # certificado de firma era válido. No es exigible para el perfil local de
-    # desarrollo (`tsa_acreditado` ya es False sin excepción) y el llamador
-    # (`app.providers.local.verify_xades`) no tiene aquí el certificado del
-    # firmante a mano sin refactorizar la firma de esta función — queda como
-    # roadmap explícito para cuando entre la TSA acreditada / perfil
-    # XAdES-LT/-LTA, no bloqueante en el Incremento 4.
+    # (6) El genTime dentro de la vigencia del certificado FIRMANTE (XAdES-T:
+    # el sello atestigua que la firma existió mientras ese certificado era
+    # válido). Antes quedaba como roadmap porque esta función no recibía el
+    # certificado; ahora lo pasa el llamador (`verify_xades`) para el
+    # `SignatureTimeStamp`. Sin `signer_cert` (el `ArchiveTimeStamp`, emitido a
+    # propósito después de que el certificado caduque) no se aplica.
+    if signer_cert is not None and not (
+        signer_cert.not_valid_before_utc <= gen_time <= signer_cert.not_valid_after_utc
+    ):
+        return TimestampVerifyOutcome(False, motivo="gentime_fuera_de_vigencia_firmante")
+
     signed_attrs = signer_info["signed_attrs"]
     if signed_attrs is None:
         return TimestampVerifyOutcome(False, motivo="token_sin_signed_attrs")
@@ -502,16 +562,34 @@ def _verify_timestamp_token_inner(
 
     content_type_attr: str | None = None
     message_digest_attr: bytes | None = None
+    ess_cert_id: tuple[str, bytes] | None = None
     for attr in fresh_attrs:
         if attr["type"].native == "content_type":
             content_type_attr = attr["values"][0].native
         elif attr["type"].native == "message_digest":
             message_digest_attr = attr["values"][0].native
+        elif attr["type"].native in ("signing_certificate_v2", "signing_certificate"):
+            ess_cert_id = _ess_cert_hash(attr)
 
     if content_type_attr != "tst_info":
         return TimestampVerifyOutcome(False, motivo="signed_attrs_content_type_no_coincide")
     if message_digest_attr != hashlib.sha256(tst_info_der).digest():
         return TimestampVerifyOutcome(False, motivo="signed_attrs_message_digest_no_coincide")
+
+    # (7) ESSCertID — liga el token al certificado de la TSA concreto. Va dentro
+    # de los `signedAttrs`, que la firma CMS de más abajo cubre: quitarlo o
+    # cambiarlo rompe esa firma.
+    if ess_cert_id is None:
+        if settings.tsa_esscertid_obligatorio:
+            return TimestampVerifyOutcome(False, motivo="tsa_sin_esscertid")
+    else:
+        algo, esperado = ess_cert_id
+        if algo not in ("sha256", "sha1"):
+            return TimestampVerifyOutcome(False, motivo="esscertid_algoritmo_no_soportado")
+        cert_der = tsa_cert.public_bytes(serialization.Encoding.DER)
+        actual = hashlib.sha256(cert_der).digest() if algo == "sha256" else hashlib.sha1(cert_der).digest()  # noqa: S324 — ESSCertID v1 (RFC 5035) lo fija en SHA-1; solo se COMPARA
+        if actual != esperado:
+            return TimestampVerifyOutcome(False, motivo="esscertid_no_coincide")
 
     if signer_info["digest_algorithm"]["algorithm"].native != "sha256":
         return TimestampVerifyOutcome(False, motivo="digest_algorithm_no_soportado")

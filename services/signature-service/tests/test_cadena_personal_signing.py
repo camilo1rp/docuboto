@@ -225,7 +225,7 @@ async def test_sign_with_active_personal_cert_produces_xades_personal(
     user_key, user_cert = _issue_user_cert()
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
 
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
     # Sin TSA montada en el entorno de test — XAdES-B basta para probar la
     # rama xades_personal (el sellado de tiempo real ya se cubre en
@@ -324,7 +324,7 @@ async def test_sign_with_anchored_personal_cert_persists_ca_fingerprint(
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
     ca_cert_pem = ca_cert.public_bytes(serialization.Encoding.PEM).decode()
 
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(
         monkeypatch, private_key=user_key, cert_pem=cert_pem, ca_cert_pem=ca_cert_pem
     )
@@ -405,7 +405,7 @@ async def test_sign_with_active_personal_cert_no_ca_cert_pem_leaves_ca_fingerpri
     user_key, user_cert = _issue_user_cert()
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
 
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
 
     from app.core.config import settings as signature_settings
@@ -506,7 +506,7 @@ async def test_sign_active_cert_without_totp_code_returns_409_totp_requerido(
 ) -> None:
     _patch_audit(monkeypatch)
     _patch_signing_key_status(
-        monkeypatch, body={"estado": "activo", "cert_pem": "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n"}
+        monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n"}
     )
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
 
@@ -553,7 +553,7 @@ async def test_sign_active_cert_wrong_totp_maps_auth_service_error(
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
 
     _patch_audit(monkeypatch)
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(
         monkeypatch,
         error=SignDigestRemoteError(
@@ -762,7 +762,8 @@ async def test_verify_native_hmac_unchanged_by_this_increment(client_with_conn) 
 
     sello_dt = datetime(2024, 1, 1, tzinfo=UTC)
     r = native_signer.firmar(
-        b"<indice/>", str(USER), sello_dt.isoformat(), signature_settings.signature_secret
+        b"<indice/>", str(USER), sello_dt.isoformat(), signature_settings.signature_secret,
+        tenant_slug="demo", objeto_tipo="indice", objeto_id="exp-1",
     )
     client, conn = client_with_conn
     conn.fetchrow.return_value = {
@@ -776,6 +777,7 @@ async def test_verify_native_hmac_unchanged_by_this_increment(client_with_conn) 
         "provider": r["provider"],
         "sello_tiempo": sello_dt,
         "created_at": sello_dt,
+        "key_version": r["key_version"],
     }
 
     resp = await client.post(

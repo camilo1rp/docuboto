@@ -15,7 +15,7 @@ Mismo patrón que ``app/clients/storage_client.py`` (Inc.1): llamadas
 DIRECTAS a ``notification-service``/``auth-service``, NO a través del
 api-gateway (decisión del usuario, Q3).
 
-Ambas funciones son usadas EXCLUSIVAMENTE por
+``get_signer_identity`` y ``send_otp_email`` son usadas por
 ``CadenaFirmaService.emitir_challenge`` con criterio FAIL-CLOSED: cualquier
 excepción aquí se traduce en un 503 ``canal_2fa_no_disponible`` que aborta
 por completo la emisión del challenge (rollback de la fila ya insertada,
@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import uuid
 from base64 import b64encode
+from dataclasses import dataclass
 
 import httpx
 
@@ -47,6 +48,16 @@ class TotpVerifyUnavailableError(RuntimeError):
     FAIL-CLOSED (mismo criterio que ``SignerEmailError``/``OtpEmailDeliveryError``):
     el llamante (``CadenaFirmaService._gate_2fa``) traduce esto en un 503
     ``canal_2fa_no_disponible`` que aborta la firma.
+    """
+
+
+class TotpStatusUnavailableError(RuntimeError):
+    """auth-service no respondió (o respondió con error) a ``GET /internal/totp/status``.
+
+    FAIL-CLOSED (AREA-04-02): no poder saber si el actor tiene TOTP no es lo
+    mismo que «no lo tiene». Si se leyera como «no lo tiene», bastaría con tumbar
+    auth-service para bajar el segundo factor del acto al correo. El llamante lo
+    traduce en 503 ``canal_2fa_no_disponible``.
     """
 
 
@@ -90,28 +101,40 @@ class SignDigestRemoteError(RuntimeError):
         super().__init__(f"auth-service sign-digest -> HTTP {status_code}: {detail}")
 
 
-async def get_signer_email(authorization: str | None) -> str:
-    """Resuelve el email del firmante autenticado vía ``auth-service GET /me``.
+@dataclass(frozen=True, slots=True)
+class SignerIdentity:
+    """Lo que auth-service ``/me`` dice del DUEÑO del bearer reenviado."""
 
-    Reenvía el header ``Authorization`` tal cual llegó a este servicio — el
-    firmante ya fue autenticado por ``auth-service /validate`` (el gateway
-    inyectó ``X-User-Id`` a partir de ese mismo bearer); ``/me`` simplemente
-    revalida el token y expone ``email``.
+    email: str
+    #: ``auth_users.id`` del dueño del bearer (cuando ``/me`` recibe
+    #: ``X-Tenant-Slug`` y el usuario está aprovisionado; si no, el ``sub`` de
+    #: Keycloak, que nunca coincide con un actor — fail-closed por construcción).
+    user_id: str
 
-    ASUNCIÓN EXPLÍCITA: este servicio confía en que ``X-User-Id`` (el actor,
-    usado en TODO el resto de ``emitir_challenge``) y el ``sub`` del bearer
-    reenviado aquí (de donde ``/me`` saca el email) identifican al MISMO
-    usuario — garantía que provee el api-gateway al derivar ambos del mismo
-    token en la misma request. Es fail-safe si esa garantía se rompiera (el
-    OTP llegaría al dueño del bearer, no al firmante, quien simplemente no
-    podría completar la firma), pero es una divergencia de fuente de
-    identidad real. Endurecimiento posible (no implementado aquí, fuera del
-    alcance de este incremento): que ``/me`` valide que su ``sub`` coincide
-    con ``X-User-Id`` antes de devolver el email.
+
+async def get_signer_identity(
+    authorization: str | None, tenant_slug: str
+) -> SignerIdentity:
+    """Resuelve email e identidad del firmante vía ``auth-service GET /me``.
+
+    Reenvía el ``Authorization`` TAL CUAL llegó (``/me`` revalida el token) y
+    añade ``X-Tenant-Slug``: sin él ``/me`` no tiene contexto de tenant y
+    devuelve el ``sub`` de Keycloak en lugar de ``auth_users.id``, que es el
+    que viaja como ``X-User-Id``.
+
+    **Devolver ``user_id`` es lo que cierra AREA-04-05.** Este servicio
+    atribuye el acto a ``X-User-Id`` (el actor) pero el OTP sale al correo del
+    BEARER. Antes se asumía que los dos eran la misma persona porque el gateway
+    los deriva del mismo token, y el docstring lo llamaba «fail-safe»: era al
+    revés — quien tiene el bearer recibe el código y completa él mismo una
+    firma atribuida a otro. El gateway lo impide desde fuera, no desde un
+    servicio interno comprometido que firma ``X-User-Id=<víctima>`` con su
+    propio bearer. El llamante compara ``user_id`` con el actor ANTES de crear
+    el desafío.
     """
     if not authorization:
         raise SignerEmailError("Authorization header missing")
-    headers = {"Authorization": authorization}
+    headers = {"Authorization": authorization, "X-Tenant-Slug": tenant_slug}
     try:
         async with httpx.AsyncClient(
             base_url=settings.auth_service_url, timeout=5.0
@@ -124,10 +147,14 @@ async def get_signer_email(authorization: str | None) -> str:
         raise SignerEmailError(
             f"auth-service → HTTP {resp.status_code} al resolver /me: {resp.text[:200]}"
         )
-    email = resp.json().get("email")
+    body = resp.json()
+    email = body.get("email")
     if not email:
         raise SignerEmailError("auth-service /me no devolvió email")
-    return email
+    user_id = body.get("user_id")
+    if not user_id:
+        raise SignerEmailError("auth-service /me no devolvió user_id")
+    return SignerIdentity(email=email, user_id=str(user_id))
 
 
 async def send_otp_email(
@@ -246,6 +273,43 @@ async def verify_totp(
             f"auth-service → HTTP {resp.status_code} al verificar TOTP: {resp.text[:200]}"
         )
     return resp.json()
+
+
+async def get_totp_status_remote(authorization: str | None) -> dict:
+    """Consulta ``GET /internal/totp/status`` (auth-service): ¿el dueño del
+    bearer tiene un TOTP ACTIVO? (AREA-04-02). Devuelve ``{"activo": bool,
+    "user_id": str | None}``.
+
+    Mismo doble gate que ``get_signing_key_status_remote`` (``Authorization``
+    TAL CUAL + ``X-Internal-Token``) y mismo timeout corto. FAIL-CLOSED: red,
+    timeout o HTTP != 200 -> :class:`TotpStatusUnavailableError`.
+    """
+    if not authorization:
+        raise TotpStatusUnavailableError("Authorization header missing")
+    headers = {
+        "Authorization": authorization,
+        "X-Internal-Token": settings.signing_key_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.auth_service_url, timeout=settings.totp_verify_timeout_seconds
+        ) as client:
+            resp = await client.get("/internal/totp/status", headers=headers)
+    except httpx.RequestError as exc:
+        raise TotpStatusUnavailableError(f"auth-service inalcanzable: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise TotpStatusUnavailableError(
+            f"auth-service → HTTP {resp.status_code} al consultar totp/status: "
+            f"{resp.text[:200]}"
+        )
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise TotpStatusUnavailableError(f"respuesta ilegible: {exc}") from exc
+    if not isinstance(body, dict) or "activo" not in body:
+        raise TotpStatusUnavailableError("respuesta ilegible: falta «activo»")
+    return body
 
 
 async def get_signing_key_status_remote(authorization: str | None) -> dict:

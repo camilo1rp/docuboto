@@ -20,7 +20,17 @@ contenido del documento).
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 
 from app.core.database import (
     get_db_conn,
@@ -29,10 +39,12 @@ from app.core.database import (
     tenant_schema,
 )
 from app.schemas.public import (
+    IDEMPOTENCY_KEY_RE,
     PqrsCreate,
     PqrsResponse,
     PublicVerifyResponse,
     TipoVentanilla,
+    VentanillaEstado,
     VentanillaRadicacion,
     VentanillaRespuesta,
 )
@@ -40,6 +52,39 @@ from app.services.document_service import DocumentService, InvalidTenantError
 from app.services.ventanilla_service import VentanillaService
 
 router = APIRouter(prefix="/api/v1/public", tags=["public"])
+
+
+def _clave_idempotencia(valor: str | None) -> str | None:
+    """Valida la `Idempotency-Key` pública; una clave mal formada es 422, no se ignora.
+
+    Ignorarla en silencio dejaría al cliente creyendo que su reintento está
+    protegido cuando no lo está.
+    """
+    if valor is None or not valor.strip():
+        return None
+    valor = valor.strip()
+    if not IDEMPOTENCY_KEY_RE.match(valor):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "idempotency_key_invalida",
+                "detail": "Idempotency-Key debe tener 16-128 caracteres [A-Za-z0-9_-].",
+                "status": 422,
+            },
+        )
+    return valor
+
+
+def _ip_declarada(request: Request) -> str | None:
+    """IP que declara el borde para la constancia de consentimiento (Ley 1581).
+
+    NO es una IP verificada por saltos de confianza: el gateway no la inyecta en las
+    rutas públicas, y `X-Forwarded-For` lo puede escribir el cliente. Por eso el campo
+    del radicado se llama `ip_declarada`.
+    """
+    crudo = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for") or ""
+    primero = crudo.split(",")[0].strip()
+    return primero[:64] or None
 
 
 @router.post(
@@ -51,10 +96,13 @@ router = APIRouter(prefix="/api/v1/public", tags=["public"])
 async def radicar_pqrs(
     tenant: str,
     payload: PqrsCreate,
+    request: Request,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     conn: asyncpg.Connection = Depends(get_db_conn),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> PqrsResponse:
+    clave = _clave_idempotencia(idempotency_key)
     schema = tenant_schema(tenant)  # valida el slug
     await conn.execute(f'SET search_path = "{schema}", public')
     try:
@@ -89,8 +137,15 @@ async def radicar_pqrs(
             email=payload.email,
             asunto=payload.asunto,
             descripcion=payload.descripcion,
+            acepta_tratamiento=payload.acepta_tratamiento,
+            politica_version=payload.politica_version,
         )
-        respuesta = await VentanillaService(conn, tenant).radicar(ventanilla, service)
+        respuesta = await VentanillaService(conn, tenant).radicar(
+            ventanilla,
+            service,
+            idempotency_key=clave,
+            ip=_ip_declarada(request),
+        )
     finally:
         await conn.execute("SET search_path = public")
     return PqrsResponse(
@@ -192,6 +247,33 @@ async def tipos_de_ventanilla(
         await conn.execute("SET search_path = public")
 
 
+@router.get(
+    "/{tenant}/ventanilla/estado",
+    response_model=VentanillaEstado,
+    summary="¿Está habilitada la ventanilla pública de la entidad? (verificación previa)",
+)
+async def estado_de_ventanilla(
+    tenant: str,
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> VentanillaEstado:
+    """Comprueba, sin radicar, lo que `POST /ventanilla` exige por dentro.
+
+    Un tenant inexistente responde `habilitada=false` (no un error que confirme si
+    existe), igual que `/ventanilla/tipos` responde lista vacía.
+    """
+    schema = tenant_schema(tenant)  # valida el slug (anti-inyección)
+    await conn.execute(f'SET search_path = "{schema}", public')
+    try:
+        return await VentanillaService(conn, tenant).estado()
+    except (
+        asyncpg.exceptions.UndefinedTableError,
+        asyncpg.exceptions.InvalidSchemaNameError,
+    ):
+        return VentanillaEstado(habilitada=False, dependencia_receptora=False, tipos_admitidos=0)
+    finally:
+        await conn.execute("SET search_path = public")
+
+
 @router.post(
     "/{tenant}/ventanilla",
     response_model=VentanillaRespuesta,
@@ -200,6 +282,7 @@ async def tipos_de_ventanilla(
 )
 async def radicar_en_ventanilla(
     tenant: str,
+    request: Request,
     datos: str = Form(
         ...,
         description=(
@@ -209,6 +292,7 @@ async def radicar_en_ventanilla(
         ),
     ),
     anexos: list[UploadFile] = File(default=[]),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     conn: asyncpg.Connection = Depends(get_db_conn),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
@@ -228,6 +312,7 @@ async def radicar_en_ventanilla(
     radicado es inmutable (Ley 594/2000), así que no puede quedar uno emitido
     al que le falten sus soportes.
     """
+    clave = _clave_idempotencia(idempotency_key)
     try:
         payload = VentanillaRadicacion.model_validate_json(datos)
     except ValueError as exc:
@@ -308,6 +393,12 @@ async def radicar_en_ventanilla(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
             )
-        return await VentanillaService(conn, tenant).radicar(payload, service, ficheros)
+        return await VentanillaService(conn, tenant).radicar(
+            payload,
+            service,
+            ficheros,
+            idempotency_key=clave,
+            ip=_ip_declarada(request),
+        )
     finally:
         await conn.execute("SET search_path = public")

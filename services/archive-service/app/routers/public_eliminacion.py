@@ -34,7 +34,7 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db_conn
 from app.schemas.archive import LoteEliminacionPublico
@@ -90,5 +90,19 @@ async def ver_publico(
     lote_id: uuid.UUID,
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> LoteEliminacionPublico:
+    # Mismo cierre que el listado (AREA-06-01-C): sin esto, un slug que no
+    # existe hacía fallar la consulta con `UndefinedTable` (500) y uno real con
+    # un UUID inventado daba 404 -- la diferencia le decía a cualquiera, sin
+    # token, qué entidades aloja la instalación. El 404 es el MISMO cuerpo que
+    # `get_lote_publico` da para un lote que no existe o no está publicado.
+    if not await _tenant_existe(conn, tenant):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "lote_no_encontrado",
+                "detail": "No hay ningún inventario publicado con ese identificador",
+                "status": 404,
+            },
+        )
     service = ArchiveService(conn, tenant)
     return await service.get_lote_publico(lote_id)

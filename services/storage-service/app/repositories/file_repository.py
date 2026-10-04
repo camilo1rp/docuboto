@@ -27,8 +27,8 @@ desde el proceso de disposición final del TRD.
 import uuid
 
 import asyncpg
+from orpycamcp_common.tenant import slug_valido, tenant_schema
 
-from app.core.database import TENANT_SLUG_RE
 from app.models.file_record import FileRecord
 
 _COLS = (
@@ -48,6 +48,7 @@ REFERENCIAS_DE_ARCHIVO: tuple[tuple[str, str], ...] = (
     ("anexos", "file_id"),  # document-service: anexo de cualquier radicado
     ("email_mensaje", "crudo_file_id"),  # document-service: correo original
     ("borrador", "documento_file_id"),  # document-service: PDF/A del borrador
+    ("postal_shipment", "acuse_file_id"),  # document-service: acuse de recibo del envío (T13)
     ("preservacion_worm_objeto", "file_id"),  # protegido bajo WORM (Object-Lock)
     ("preservacion_migracion", "file_id_origen"),
     ("preservacion_migracion", "file_id_destino"),
@@ -65,22 +66,30 @@ class FileRepository:
         # (forma canónica y habitual de un `tenant_slug`) y los normaliza a
         # guion bajo en el nombre de schema. NO acepta `_` crudo en el slug
         # de entrada — el guion bajo solo aparece tras la normalización.
-        if not tenant_slug or not TENANT_SLUG_RE.match(tenant_slug):
+        if not slug_valido(tenant_slug):
             raise InvalidTenantSlugError(f"Invalid tenant slug: {tenant_slug!r}")
         self._conn = conn
         self._slug = tenant_slug
-        self._schema = f"tenant_{tenant_slug.replace('-', '_')}"
+        self._schema = tenant_schema(tenant_slug)
 
     async def _set_search_path(self) -> None:
         await self._conn.execute(f'SET search_path = "{self._schema}", public')
 
-    async def find_by_sha256(self, sha256: str) -> FileRecord | None:
-        # Deduplicación de subidas nuevas: solo contra versiones vigentes y activas.
+    async def find_by_sha256(
+        self, sha256: str, uploaded_by: uuid.UUID
+    ) -> FileRecord | None:
+        # Deduplicación de subidas nuevas: solo contra versiones vigentes y activas
+        # **del mismo autor** (AREA-08-09 / SEC2-E03). Deduplicar entre autores
+        # devolvía la fila de otro —su `filename` original y su `id`— y un 200 en
+        # vez de un 201: un oráculo de existencia sobre anexos que quien sube no
+        # puede ver. `uploaded_by = $2` no casa NUNCA con NULL (anónimo/sistema).
         await self._set_search_path()
         row = await self._conn.fetchrow(
             f"SELECT {_COLS} FROM files "
-            "WHERE sha256 = $1 AND is_current AND deleted_at IS NULL LIMIT 1",
+            "WHERE sha256 = $1 AND uploaded_by = $2 "
+            "AND is_current AND deleted_at IS NULL LIMIT 1",
             sha256,
+            uploaded_by,
         )
         return _row_to_file_record(row) if row is not None else None
 

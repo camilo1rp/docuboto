@@ -585,3 +585,34 @@ async def test_un_lote_no_se_ejecuta_dos_veces(tenant_ctx) -> None:
 
     assert primera is not None and primera["estado"] == "ejecutado"
     assert segunda is None
+
+
+@pytest.mark.asyncio
+async def test_quien_propuso_el_lote_NO_lo_avala_y_otra_persona_SI(tenant_ctx) -> None:
+    """AREA-06-01, decidido por Postgres: `creado_por <> $5` en el `WHERE`. El
+    mismo UPDATE con otro avalador SÍ toca la fila (control positivo: sin él, un
+    `WHERE` que rechazara siempre pasaría la primera mitad). Mutación: quitar
+    `AND creado_por <> $5` hace fallar la primera aserción."""
+    schema, conn = tenant_ctx
+    lote_id, _ = await _sembrar_lote(conn, schema)
+    await _publicar(conn, lote_id, date.today() - timedelta(days=1))
+    repo = ArchiveRepository(conn, schema)
+    proponente = await conn.fetchval(
+        "SELECT creado_por FROM eliminacion_lotes WHERE id = $1", lote_id
+    )
+    aval = {
+        "acta_comite": "Acta 07",
+        "fecha_aval": date.today(),
+        "acto_administrativo": "Res. 512 de 2026",
+    }
+
+    propio = await repo.avalar_lote_eliminacion(lote_id, avalado_por=proponente, **aval)
+    assert propio is None
+    # El diagnóstico sabe DECIR por qué: el estado es el correcto y el plazo
+    # venció, así que lo único que queda es quién.
+    estado = await repo.get_lote_estado(lote_id)
+    assert estado["estado"] == "publicado" and estado["publicidad_abierta"] is False
+    assert estado["creado_por"] == proponente
+
+    ajeno = await repo.avalar_lote_eliminacion(lote_id, avalado_por=uuid.uuid4(), **aval)
+    assert ajeno is not None and ajeno["estado"] == "avalado"

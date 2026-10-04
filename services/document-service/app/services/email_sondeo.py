@@ -46,6 +46,7 @@ import uuid
 from dataclasses import dataclass, field
 
 import asyncpg
+from orpycamcp_common.request_log import canal_de_fondo
 
 from app.core.config import settings
 from app.core.database import tenant_schema
@@ -261,6 +262,7 @@ async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str) -> None:
     muere en silencio deja la ingesta parada sin que nadie se entere, y el
     síntoma sería «no llega correo», indistinguible de un buzón vacío.
     """
+    canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     sondeo = SondeoDeCorreo(tenant_slug)
     intervalo = max(30, settings.email_sondeo_intervalo_segundos)
     logger.info("sondeo de correo activo para «%s» cada %ss", tenant_slug, intervalo)

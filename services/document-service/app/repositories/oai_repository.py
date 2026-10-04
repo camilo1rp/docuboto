@@ -125,7 +125,13 @@ class OaiRepository:
         )
 
     async def get_public_anexo(self, tracking_number: str) -> asyncpg.Record | None:
-        """Primer anexo de un radicado PÚBLICO (para el `getContentStream` de CMIS).
+        """Primer anexo PUBLICABLE de un radicado PÚBLICO (`getContentStream` de CMIS).
+
+        Doble marca (AREA-07-12): el radicado debe ser público Y el anexo estar
+        marcado `publicable` por el acto de publicación. Publicar el expediente
+        de un asunto no es publicar cada soporte que lo acompaña (puede traer
+        datos personales de terceros): sin la marca por anexo, CMIS servía el
+        primero que encontrara.
 
         None si el radicado no es público/no existe o no tiene anexos — el recorte
         se construye con `_public("r")`, no se reescribe: servir los bytes es la
@@ -141,6 +147,7 @@ class OaiRepository:
               JOIN radicados r ON r.id = a.radicado_id
              WHERE r.tracking_number = $1
                AND {_public("r")}
+               AND a.publicable
              ORDER BY a.created_at
              LIMIT 1
             """,

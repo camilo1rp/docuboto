@@ -14,7 +14,7 @@ Same style as tests/test_cadena.py (mocked asyncpg.Connection, no real DB).
 Two techniques keep these tests deterministic, network-free and sleep-free:
 
 1. Outbound HTTP is never exercised — app.services.cadena_service imports
-   get_signer_email/send_otp_email by name, so they are monkeypatched directly
+   get_signer_identity/send_otp_email by name, so they are monkeypatched directly
    on the module (AsyncMock) instead of touching httpx/auth-service/notification-service.
 2. app.services.cadena_service._audit.append is monkeypatched to a no-op
    AsyncMock in every test here — it decouples these tests from
@@ -43,7 +43,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.core.config import settings
 from app.core.database import get_tenant_conn
-from app.core.http_clients import OtpEmailDeliveryError, SignerEmailError
+from app.core.http_clients import OtpEmailDeliveryError, SignerEmailError, SignerIdentity
 from app.core.otp import hmac_otp
 from app.main import app
 from app.services import cadena_service
@@ -93,7 +93,10 @@ def _challenge_row(
         "firmante_id": firmante_id,
         "hash_documento": hash_documento,
         "factor_tipo": "otp_email",
-        "otp_hash": hmac_otp(otp, settings.signature_secret),
+        "otp_hash": hmac_otp(
+            otp, settings.signature_secret, tenant_slug="demo", challenge_id=CHALLENGE_ID
+        ),
+        "key_version": 1,
         "estado": estado,
         "intentos": intentos,
         "max_intentos": max_intentos,
@@ -128,12 +131,17 @@ def _patch_email(
     monkeypatch: pytest.MonkeyPatch,
     *,
     email: str = "jdoe@example.com",
+    user_id: uuid.UUID = USER,
     get_email_error: Exception | None = None,
     send_email_error: Exception | None = None,
 ) -> tuple[AsyncMock, AsyncMock]:
-    mock_get = AsyncMock(side_effect=get_email_error) if get_email_error else AsyncMock(return_value=email)
+    mock_get = (
+        AsyncMock(side_effect=get_email_error)
+        if get_email_error
+        else AsyncMock(return_value=SignerIdentity(email=email, user_id=str(user_id)))
+    )
     mock_send = AsyncMock(side_effect=send_email_error) if send_email_error else AsyncMock(return_value=None)
-    monkeypatch.setattr("app.services.cadena_service.get_signer_email", mock_get)
+    monkeypatch.setattr("app.services.cadena_service.get_signer_identity", mock_get)
     monkeypatch.setattr("app.services.cadena_service.send_otp_email", mock_send)
     return mock_get, mock_send
 

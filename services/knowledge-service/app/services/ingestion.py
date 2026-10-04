@@ -21,10 +21,19 @@ Diseño del arquitecto (riesgos citados en los docstrings de cada función):
     `KnowledgeRepository.tombstone_by_source`) en vez de solo desclasificarlo
     localmente o borrar la fila (un DELETE liso reabriría la fuga que este mismo
     módulo cierra — ver `ingest_radicado_created`).
-  - R6: `document.radicado.reclassified` es un evento best-effort (ver
-    `document_service.py::reclassify`) — si se pierde, el índice queda con un nivel
-    desactualizado (lag). Es un residual conocido de este MVP, NO se corrige aquí con
-    un outbox (diferido).
+  - R6 (CERRADO en origen, AREA-09-05, 2026-10): `document.radicado.reclassified` ya no
+    es best-effort. document-service lo inserta en su OUTBOX (`eventos_salientes`) en la
+    MISMA transacción que el UPDATE del nivel y el asiento, lo publica tras el commit y
+    un relé del barrido reenvía lo que no salió (Redis caído). La entrega es
+    at-least-once con el MISMO `event_id`/`dedup_key`. OJO: `update_nivel_by_source` fija
+    el nivel EXACTO (sin GREATEST, para permitir bajas legítimas), así que un reenvío
+    TARDÍO de una reclasificación ANTERIOR (A pendiente por Redis caído, B ya aplicada)
+    BAJARÍA el chunk: «inocuo» solo vale para el mismo evento repetido, no para uno
+    reordenado. El cierre vive en el ORIGEN (hallazgo de auditoría, 2026-10): el relé
+    de document-service (`outbox._con_nivel_vivo`) publica el `nivel_nuevo` VIGENTE de
+    `radicados.nivel_seguridad`, no el que llevaba la fila al encolarse. Este módulo
+    NO compara `occurred_at` (red adicional NO construida), como tampoco existe aún un
+    barrido de reconciliación nivel-del-chunk vs `radicados.nivel_seguridad`.
 
 Fuga cerrada (hallazgo tenant-security-auditor, ver tombstone_by_source): un
 `created` REDELIVERED tarde (at-least-once) después de un `reclassified` que subió

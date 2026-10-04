@@ -97,7 +97,7 @@ describe("POST /admin/seguridad/claves/api", () => {
       request: {
         json: async () => ({
           user_id: TARGET_USER,
-          motivo: "salida del funcionario",
+          motivo: "cessation_of_operation",
           confirm: ADMIN_REVOKE_CONFIRM_PHRASE,
           // Campos ajenos que un cliente malicioso podría intentar colar:
           estado: "activo",
@@ -108,7 +108,7 @@ describe("POST /admin/seguridad/claves/api", () => {
 
     expect(res.status).toBe(200);
     expect(capturedUrl).toContain(`/auth/admin/users/${TARGET_USER}/signing-key/revoke`);
-    expect(capturedBody).toEqual({ motivo: "salida del funcionario" });
+    expect(capturedBody).toEqual({ motivo: "cessation_of_operation" });
     expect(capturedHeaders.Authorization).toBe("Bearer tok-abc");
     expect(capturedHeaders["X-Tenant-Slug"]).toBe("icetex");
     expect(capturedHeaders["X-User-Id"]).toBe(SESSION_LOCALS.user.sub);

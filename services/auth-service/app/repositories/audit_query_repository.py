@@ -124,7 +124,7 @@ class AuditQueryRepository:
                   AND c.relname = ANY($2::text[])
                 """,
                 schema,
-                ["radicados", "expedientes"],
+                ["radicados", "expedientes", "expediente_indice"],
             )
             self._sources = {r["relname"] for r in rows}
         return self._sources
@@ -165,7 +165,7 @@ class AuditQueryRepository:
         sources = await self._available_sources(schema)
 
         # `schema` viene de `tenant_schema()`, que solo devuelve nombres validados
-        # contra `^[a-z0-9][a-z0-9-]{0,98}$` — interpolarlo es seguro y elimina la
+        # contra el validador único (`orpycamcp_common.tenant`) — interpolarlo es seguro y elimina la
         # dependencia del `search_path` de la conexión.
         if "radicados" in sources:
             branches.append(
@@ -189,21 +189,55 @@ class AuditQueryRepository:
 
         return "(" + " OR ".join(branches) + ")", params
 
+    async def _object_ref_cond(self, schema: str, n: int) -> str:
+        """Condición del filtro `object_ref` = `$n`, tolerante a las tres formas con que
+        un asiento nombra el MISMO objeto (AREA-03-07).
+
+        Los asientos viejos de un expediente llevan su UUID, los de un índice el UUID
+        del índice y los nuevos el código; un `=` exacto perdía el resto, y el
+        historial de un expediente salía incompleto. El histórico no se reescribe: el
+        filtro lo resuelve en lectura. Se amplía por subconsulta (sin viaje extra) y
+        solo contra las tablas presentes; el recorte no-read-up se aplica DESPUÉS
+        sobre la misma fila, así que ensanchar la referencia no ensancha el acceso.
+        """
+        sources = await self._available_sources(schema)
+        ramas = [f"al.object_ref = ${n}"]
+        if "expedientes" in sources:
+            ramas.append(
+                f'al.object_ref IN (SELECT e.id::text FROM "{schema}".expedientes e '
+                f"WHERE e.code = ${n})"
+            )
+            if "expediente_indice" in sources:
+                ramas.append(
+                    f'al.object_ref IN (SELECT i.id::text FROM "{schema}".expediente_indice i '
+                    f'JOIN "{schema}".expedientes e ON e.id = i.expediente_id '
+                    f"WHERE e.code = ${n})"
+                )
+        if "radicados" in sources:
+            ramas.append(
+                f'al.object_ref IN (SELECT r.id::text FROM "{schema}".radicados r '
+                f"WHERE r.tracking_number = ${n})"
+            )
+        return "(" + " OR ".join(ramas) + ")"
+
     async def _where(
         self, tenant_slug: str, filters: dict[str, str | None], *, max_level: int
     ) -> tuple[str, list[Any]]:
         conds = ["al.tenant_slug = $1"]
         params: list[Any] = [tenant_slug]
         idx = 2
+        schema = tenant_schema(tenant_slug)
         for col in _FILTERABLE:
             val = filters.get(col)
-            if val is not None:
+            if val is None:
+                continue
+            if col == "object_ref":
+                conds.append(await self._object_ref_cond(schema, idx))
+            else:
                 conds.append(f"al.{col} = ${idx}")
-                params.append(val)
-                idx += 1
-        clause, clause_params = await self._clearance_clause(
-            max_level, idx, schema=tenant_schema(tenant_slug)
-        )
+            params.append(val)
+            idx += 1
+        clause, clause_params = await self._clearance_clause(max_level, idx, schema=schema)
         if clause:
             conds.append(clause)
             params.extend(clause_params)

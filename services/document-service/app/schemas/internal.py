@@ -51,6 +51,13 @@ class RadicadoMetaItem(BaseModel):
 
     subject: str
     doc_type: str
+    # Número de radicado y tipología (`doc_class`) tal como los guarda ESTE
+    # servicio (AREA-07-02 / AREA-06-08): archive-service los coteja al vincular
+    # en vez de sellar en el índice lo que escriba quien vincula. `doc_class`
+    # puede ser None (radicado sin tipología asignada) y su ausencia es una
+    # respuesta legítima, no un hueco que rellenar.
+    tracking_number: str | None = None
+    doc_class: str | None = None
     # Dependencia PRODUCTORA del documento: la de origen del radicado, no la de
     # quien lo archiva después. Nombre y código viajan JUNTOS porque el índice
     # electrónico solo emite <dependenciaProductora> cuando tiene los dos.

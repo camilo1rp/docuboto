@@ -223,6 +223,47 @@ docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
 It runs several months ahead on purpose: if the cron fails silently, there is
 slack before entries start landing in the default partition again.
 
+**A cron failure is visible without reading any log.** auth-service's
+`GET /health/ready` applies the same logic as `--verificar` (does next month's partition
+exist?) read-only and with the application role: if it is missing it answers **200** with
+`"degraded": ["audit_particiones"]` and `"audit_particiones": "degraded"` (an operations
+alert, it does not pull the service out of the balancer); if it cannot query, `unknown`
+and it does not accuse. Alert on that field in the monitoring you already have.
+
+### Daily audit-chain verification
+
+`verify_chain` only ran on demand (`GET /api/v1/audit/verify`) or on restore. Schedule it
+**daily**, with the module that `backup.sh` and `restore.sh` also use:
+
+```bash
+# Exit 0 if ALL chains are intact and none went backwards against the last anchor; 1 on a
+# break, a regression or an unreadable anchor. Read-only.
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps -T \
+    -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
+    auth-service python -m app.ops.verify_audit_chains \
+    --anclas - < /srv/orpyca/backups/anclas-auditoria.tsv
+```
+
+It walks `public.tenants`, every `tenant_slug` present in `audit_log` (including
+`__system__`) and those in the anchor; for each it recomputes the chain, requires the
+count not to drop and the anchored entry's hash not to change. **`backup.sh` invokes it
+before anchoring and does not anchor if it fails** (fail-closed: sealing an already
+broken chain as a "trusted end point" is worse than not anchoring), **but the backup
+still completes**: it is encrypted, sealed with `verificacion_auditoria=FALLIDA` and the
+script exits **3** at the end (alert on 3 and 4). `audit_log` is append-only, so a
+historical break can never be repaired: the responsible officer **declares** it in a
+baseline (`BACKUP_AUDIT_ROTURAS_DECLARADAS`, lines `ROTURA<TAB>slug<TAB>id<TAB>note`) and
+only a NEW break, a regression or a changed anchored hash fail again. If the object-lock
+retention could not be read completely the seal carries `retencion_capturada_completa=NO`
+and the script exits **4**; `restore.sh` refuses that backup unless
+`RESTORE_ACEPTAR_RETENCION_INCOMPLETA=1`. A previous version under live COMPLIANCE fails
+the restore unless `RESTORE_ACEPTAR_PERDIDA_VERSIONES=1`; the restore is recorded by
+`app.ops.registrar_restauracion` (`storage.restauracion` audit entry plus
+`preservacion_worm_objeto.version_id` update, one transaction). `restore.sh` reuses it instead of the previous heredoc.
+In development, `BACKUP_AUDIT_EXCLUIR_PREFIJOS="itest"` leaves out the disposable tenants
+the integration tests left behind (the record is append-only and cannot be deleted);
+**do not set it in production**.
+
 > History already in `audit_log_default` is **not moved**. Rewriting rows of an
 > append-only, hash-chained record means touching the evidentiary basis of the
 > whole archive, and tidying up old data does not justify it. The function starts
@@ -386,17 +427,14 @@ docker swarm join --token <TOKEN> manager-node-ip
 docker stack deploy -c docker-compose.prod.yml orpyca-mcp
 ```
 
-### Option 2: Kubernetes (recommended)
+### Option 2: Kubernetes (not supported yet)
 
-Convert to Helm charts:
-
-```bash
-# Convert docker-compose to Kubernetes
-docker-compose -f docker-compose.prod.yml config | docker-to-k8s > orpycamcp-k8s.yaml
-
-# Deploy on the K8s cluster
-kubectl apply -f orpycamcp-k8s.yaml
-```
+**The repository ships no Kubernetes manifests or Helm charts** (no `Chart.yaml`, no
+`kustomization`), and automatic conversion from Compose has not been tested: the `migrate-<service>`
+containers, the `service_completed_successfully` dependencies and file-based secrets do not translate
+by themselves. The supported route is Docker Compose (Option 1) or Swarm. If you scale replicas on any
+orchestrator, **review the in-memory state first**: the api-gateway limiter counts in Redis, but the
+assistant history, the MCP proposals' `jti` consumption and other caches are per process.
 
 ### Service scalability
 
@@ -448,6 +486,11 @@ guarantees worth knowing because they change how you operate it:
    cannot be read does not authorise deleting the previous one.
 3. An interrupted backup is renamed to `*.PARCIAL` and carries no `OK` seal file.
    `restore.sh` refuses any directory without that seal.
+4. **The audit chain is verified before it is anchored** (see "Daily audit-chain
+   verification"): a backup with a broken or regressed chain **fails** and writes no anchor.
+5. **The object store retention** (Object-Lock) is saved for **every version** of every
+   object —the exact `RetainUntilDate` instant and the legal hold (`LegalHold`)— in
+   `minio-retencion.tsv`.
 
 `custom` format (`-Fc`): already compressed, allows selective and parallel restore,
 and —what makes point 1 possible— can be inspected without restoring it.
@@ -474,6 +517,17 @@ confirmation: restoring destroys the current state and is irreversible.
 A database that starts proves nothing about the integrity of the legal trail, which
 is exactly what an archive must be able to demonstrate. If the chain is broken, the
 script reports the `id` of the first affected entry.
+
+**Retention is restored and counted (fail-closed).** After syncing the objects,
+`restore.sh` restores the time-based retention and the legal hold of the current version
+of every object, and **exits with an error** if a single valid retention or active legal
+hold is left unrestored (deletable objects behind a green message is the defect this
+prevents). An already expired retention is left as is. **Previous** versions with
+retention cannot be restored (the mirror only copies the current version) and are
+**reported**. Since after a restore the `version_id` in `preservacion_worm_objeto` no
+longer matches any object, the script writes `mapa-version-id-<date>.tsv`, next to the
+backups, with `OBJETO <bucket/key> <old version> <new version>`: the list for the record
+that ADR-027 requires.
 
 Two things that are not obvious:
 
@@ -506,15 +560,37 @@ Repeat it on your own installation at least once, and after every major upgrade.
 
 ### First things first: the version has to be a thing
 
-While the deployment uses `build:` against the source tree, **rollback is not
-possible**: going back means `git checkout` and rebuild, with the result subject to
-whatever the package registry holds that day. The prerequisite is publishing images
-with an immutable tag (the commit SHA) and switching the manifest from `build:` to
-`image:`.
+The production manifest (`infra/docker-compose.prod.yml`) **does not build**: every
+first-party service starts from `image: ${ORPYCA_REGISTRY}/<service>:${ORPYCA_TAG}`, and
+both variables are **mandatory** (`:?`; without them no `docker compose` command starts).
+The GitLab `build-images` job publishes `$CI_REGISTRY_IMAGE/<service>:$CI_COMMIT_SHA`
+(scanned with Trivy first), so `ORPYCA_REGISTRY=$CI_REGISTRY_IMAGE` and `ORPYCA_TAG=<sha>`
+name a version that exists and can be returned to. A guard
+(`shared/tests/test_prod_inmutable.py`) prevents reintroducing `build:` or a `latest` tag.
 
-`infra/DOCKER_REGISTRY.md` documents a GitHub Actions pipeline that **does not
-exist** in this repository (there is no `.github/`). Publishing per-service images
-tagged with `$CI_COMMIT_SHA` belongs to the GitLab pipeline.
+Without a registry, build on the server itself with the
+`infra/docker-compose.build.yml` override (it tags each image with the same name, so the
+SHA stays on the host and rollback still works):
+
+```bash
+export ORPYCA_REGISTRY=local ORPYCA_TAG=$(git rev-parse HEAD)
+docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml build
+```
+
+`infra/DOCKER_REGISTRY.md` documents the GitLab registry (`build-images` in
+`.gitlab-ci.yml`); there is no GitHub Actions pipeline in this repository.
+
+### Migrations on startup
+
+Every service with a database waits for its `migrate-<service>` (`auth`, `tenant`,
+`document`, `storage`, `workflow`, `archive`, `notification`, `signature`, `knowledge`): a
+one-shot container that runs `migrations/runner.py` with the owner connection on the
+**same immutable image** that is going to serve, and the service only starts if it
+finished successfully (`service_completed_successfully`). If a migration fails, the new
+version does not serve against a schema that is not its own. The runner is idempotent and
+serializes through `pg_advisory_lock`, so repeating `up -d` or scaling replicas is safe.
+Step 4 below remains valid to run them by hand **before** starting (e.g. to watch their
+output). The development compose does not do this: migrations are applied by hand there.
 
 ### Procedure
 
@@ -526,6 +602,7 @@ ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 docker compose -f infra/docker-compose.prod.yml images | tee /srv/orpyca/previous-version.txt
 
 # 3. Fetch the new version (without starting it yet).
+export ORPYCA_REGISTRY=<registry/project>   # e.g. registry.gitlab.com/group/orpycamcp
 export ORPYCA_TAG=<commit-sha>
 docker compose -f infra/docker-compose.prod.yml pull
 
@@ -555,6 +632,7 @@ audit chain does not verify. Do not wait to "see if it settles": the cost of goi
 back grows with every radicado that comes in.
 
 ```bash
+export ORPYCA_REGISTRY=<registry/project>
 export ORPYCA_TAG=<previous-sha>
 docker compose -f infra/docker-compose.prod.yml up -d
 ```
@@ -623,12 +701,20 @@ Configure alerts for:
 
 ### Pre-deployment security checklist
 
-- [ ] All services have TLS enabled
-- [ ] PostgreSQL is not externally accessible
+> What can be verified in the repository **already has a guard** that runs on every push
+> (`shared/tests/test_manifiesto_prod_seguro.py`): the production manifest publishes no
+> `ports:`, Redis carries `--requirepass ${REDIS_PASSWORD:?}`, every credential is
+> mandatory (`${VAR:?}`) and has no default, and third-party images carry a fixed tag or a
+> digest. What depends on the **host** is checked, from outside the server, with
+> `scripts/preflight-prod.sh <public-host>` (valid TLS, HTTP redirects to HTTPS, internal
+> ports closed). The rest remains manual.
+
+- [ ] All services have TLS enabled (`scripts/preflight-prod.sh`)
+- [ ] PostgreSQL is not externally accessible (manifest: guard; host: `preflight-prod.sh`)
 - [ ] The object store requires authentication (no public access)
-- [ ] Redis requires a password
+- [ ] Redis requires a password (manifest: guard)
 - [ ] Keycloak uses HTTPS with a valid certificate
-- [ ] Firewall blocks internal ports (5432, 6379, 9000)
+- [ ] Firewall blocks internal ports (5432, 6379, 9000) (`scripts/preflight-prod.sh`)
 - [ ] CORS configured restrictively
 - [ ] Audit logging enabled in PostgreSQL and Keycloak
 - [ ] Daily backup with recovery testing
@@ -656,14 +742,22 @@ differently per browser.
 
 ### Security audit
 
-```bash
-# Scan the Docker images for vulnerabilities
-docker scan api-gateway:latest
-docker scan postgres:15-alpine
+`docker scan` has been **removed** from the Docker CLI. The pipeline scans every
+first-party image with [Trivy](https://trivy.dev) in the `build-images` job, **before**
+publishing it: it fails on a `CRITICAL` vulnerability that has a fix available
+(`--ignore-unfixed`), so a vulnerable image never reaches the registry. By hand, with the
+immutable SHA tag (never `latest`):
 
-# Use Trivy for vulnerability analysis
-trivy image api-gateway:latest
+```bash
+trivy image --severity CRITICAL --ignore-unfixed "$ORPYCA_REGISTRY/api-gateway:$ORPYCA_TAG"
+trivy image --severity CRITICAL --ignore-unfixed pgvector/pgvector:pg15
 ```
+
+Dependencies are audited separately (`dependency-audit`: `pip-audit` over every
+`requirements*.lock`, fail-closed, on the weekly schedule and on every merge request;
+`npm-audit`: `npm audit --omit=dev --audit-level=high` over the frontend, on every
+pipeline). Neither is skipped silently: a missing or corrupt report is a failure, and so
+is a vulnerability with a fix available.
 
 ---
 

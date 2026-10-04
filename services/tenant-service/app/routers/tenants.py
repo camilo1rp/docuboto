@@ -10,8 +10,9 @@
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
+from app.core.audit import actor_from
 from app.core.database import get_db_conn
 from app.core.internal_auth import require_internal_token
 from app.schemas.tenant import TenantCreate, TenantResponse, TenantUpdate
@@ -42,16 +43,17 @@ router = APIRouter(
     "",
     response_model=TenantResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create a new tenant (institution)",
+    summary="Register a tenant (institution) — schema is provisioned by scripts/init_tenant.py",
 )
 async def create_tenant(
     payload: TenantCreate,
+    request: Request,
     response: Response,
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TenantResponse:
     service = TenantService(conn)
     try:
-        return await service.create(payload)
+        return await service.create(payload, actor=actor_from(request))
     except DuplicateSlugError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -148,11 +150,12 @@ async def get_tenant(
 async def update_tenant(
     tenant_id: uuid.UUID,
     payload: TenantUpdate,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TenantResponse:
     service = TenantService(conn)
     try:
-        return await service.update(tenant_id, payload)
+        return await service.update(tenant_id, payload, actor=actor_from(request))
     except TenantNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

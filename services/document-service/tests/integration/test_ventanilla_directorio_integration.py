@@ -60,6 +60,8 @@ async def _radicar_por_ventanilla(
         direccion=campos.get("direccion"),
         asunto=campos.get("asunto") or "Petición de prueba",
         descripcion="Cuerpo de la petición",
+        acepta_tratamiento=True,
+        politica_version="2026-01",
     )
     # El único doble de este test: la validación de la dependencia contra
     # tenant-service, que es HTTP a otro servicio. Todo lo demás va a Postgres

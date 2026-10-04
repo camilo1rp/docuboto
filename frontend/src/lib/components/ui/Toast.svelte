@@ -31,7 +31,7 @@
   };
 </script>
 
-<div class="op-toast-container" aria-label="Notificaciones">
+<div class="op-toast-container" role="region" aria-label="Notificaciones">
   {#each $toasts as toast (toast.id)}
     <div
       class="op-toast op-toast--{toast.type}"

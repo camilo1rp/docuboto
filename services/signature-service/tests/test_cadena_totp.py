@@ -70,7 +70,7 @@ _FIRMA_INS = {
 @pytest.mark.asyncio
 async def test_sign_with_valid_totp_success(monkeypatch: pytest.MonkeyPatch) -> None:
     audit_mock = _patch_audit(monkeypatch)
-    _patch_verify_totp(monkeypatch, result={"valido": True, "timestep": 12345, "factor_tipo": "totp"})
+    _patch_verify_totp(monkeypatch, result={"valido": True, "timestep": 12345, "factor_tipo": "totp", "user_id": str(USER)})
     conn = _make_conn()
     sol = _sol_row()
     sol_firmado = _sol_row(estado="firmado")
@@ -247,7 +247,7 @@ async def test_sign_totp_preferred_over_otp_email_when_both_present(
     channel (firma_challenge) is never even queried."""
     audit_mock = _patch_audit(monkeypatch)
     verify_mock = _patch_verify_totp(
-        monkeypatch, result={"valido": True, "timestep": 999, "factor_tipo": "totp"}
+        monkeypatch, result={"valido": True, "timestep": 999, "factor_tipo": "totp", "user_id": str(USER)}
     )
     conn = _make_conn()
     sol = _sol_row()
@@ -294,7 +294,7 @@ async def test_sign_totp_disabled_falls_back_to_2fa_requerido(
     """settings.totp_enabled=False -> totp_code is ignored entirely (as if
     absent); with no OTP-correo fields either, the usual 409 applies."""
     monkeypatch.setattr(settings, "totp_enabled", False)
-    verify_mock = _patch_verify_totp(monkeypatch, result={"valido": True})
+    verify_mock = _patch_verify_totp(monkeypatch, result={"valido": True, "user_id": str(USER)})
     conn = _make_conn()
     sol = _sol_row()
     turno = _turno_row(firmante_id=USER)
@@ -325,7 +325,7 @@ async def test_sign_totp_satisfies_mandatory_gate_for_clasificada(
     disabled — TOTP is a valid satisfactor there too (never a bypass)."""
     monkeypatch.setattr(settings, "firma_2fa_required", False)
     audit_mock = _patch_audit(monkeypatch)
-    _patch_verify_totp(monkeypatch, result={"valido": True, "timestep": 1, "factor_tipo": "totp"})
+    _patch_verify_totp(monkeypatch, result={"valido": True, "timestep": 1, "factor_tipo": "totp", "user_id": str(USER)})
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=3)
     sol_firmado = _sol_row(nivel_seguridad=3, estado="firmado")
@@ -366,7 +366,7 @@ async def test_sign_totp_satisfies_mandatory_gate_for_clasificada(
 @pytest.mark.asyncio
 async def test_batch_sign_with_totp_code_per_item(monkeypatch: pytest.MonkeyPatch) -> None:
     audit_mock = _patch_audit(monkeypatch)
-    _patch_verify_totp(monkeypatch, result={"valido": True, "timestep": 1, "factor_tipo": "totp"})
+    _patch_verify_totp(monkeypatch, result={"valido": True, "timestep": 1, "factor_tipo": "totp", "user_id": str(USER)})
     conn = _make_conn()
     sid = uuid.uuid4()
     sol = _sol_row()

@@ -152,6 +152,8 @@ async def test_pqrs_delega_en_la_ventanilla_y_llega_a_una_bandeja(client_with_co
                 "nombre": "Ciudadano X",
                 "asunto": "Solicitud de información",
                 "descripcion": "Requiero copia de...",
+                "acepta_tratamiento": True,
+                "politica_version": "2026-01",
             },
         )
 
@@ -185,7 +187,14 @@ async def test_pqrs_respeta_el_interruptor_de_la_entidad(client_with_conn) -> No
 
     resp = await client.post(
         "/api/v1/public/demo/pqrs",
-        json={"tipo": "peticion", "nombre": "X", "asunto": "A", "descripcion": "D"},
+        json={
+            "tipo": "peticion",
+            "nombre": "X",
+            "asunto": "A",
+            "descripcion": "D",
+            "acepta_tratamiento": True,
+            "politica_version": "2026-01",
+        },
     )
 
     assert resp.status_code == 503
@@ -197,6 +206,12 @@ async def test_pqrs_tenant_invalido_400(client_with_conn) -> None:
     client, _ = client_with_conn
     resp = await client.post(
         "/api/v1/public/Bad/pqrs",
-        json={"nombre": "X", "asunto": "A", "descripcion": "D"},
+        json={
+            "nombre": "X",
+            "asunto": "A",
+            "descripcion": "D",
+            "acepta_tratamiento": True,
+            "politica_version": "2026-01",
+        },
     )
     assert resp.status_code == 400

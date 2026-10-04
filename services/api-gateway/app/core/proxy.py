@@ -26,6 +26,11 @@ FORWARDED_REQUEST_HEADERS = {
     "user-agent",
     "x-forwarded-for",
     "x-request-id",
+    # AREA-11-04: el `jti` de la propuesta que el mcp-server emite como
+    # `Idempotency-Key`. Los servicios lo copian a `payload.correlacion` solo en los
+    # asientos de canal 'mcp' (que es el gateway quien decide, no esta cabecera), así
+    # que reenviarla no concede nada: sin ella la correlación moría en el gateway.
+    "idempotency-key",
     "accept",
     "accept-language",
     "accept-encoding",

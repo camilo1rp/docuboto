@@ -76,6 +76,19 @@ class BorradorCreate(BaseModel):
     radicado_padre_id: uuid.UUID | None = None
 
 
+class BorradorRadicar(BaseModel):
+    """Datos mínimos del radicado que el borrador no guarda (Ac. AGN 060/2001 §5.2).
+
+    Todos opcionales: lo que no se envíe se deriva (tipo de la plantilla, dependencia
+    destino por nombre, dependencia de origen de quien radica). Lo que se envíe MANDA
+    sobre la derivación, para que quien radica pueda elegir cuando hay más de una.
+    """
+
+    tipo_documental: str | None = Field(default=None, max_length=100)
+    origin_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
+
+
 class BorradorUpdate(BaseModel):
     subject: str | None = Field(default=None, max_length=2000)
     dest_dept: str | None = Field(default=None, max_length=100)

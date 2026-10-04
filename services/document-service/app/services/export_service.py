@@ -367,6 +367,7 @@ class ExportService:
                     "max_clearance": max_clearance,
                     "filtros": {"year": year, "doc_type": doc_type},
                 },
+                canal=audit.CANAL_PETICION,
             )
         except Exception:
             logger.warning("audit.append (radicado.export) failed", exc_info=True)

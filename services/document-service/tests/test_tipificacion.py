@@ -147,6 +147,8 @@ async def test_retipificar_revalida_los_metadatos_contra_el_tipo_nuevo(
 
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"] == "metadata_validation_failed"
+    # AREA-12-05: este es el 3.er sitio que emite el 422 y también nombra el campo.
+    assert resp.json()["detail"]["field"] == "numero_contrato"
 
 
 @pytest.mark.asyncio

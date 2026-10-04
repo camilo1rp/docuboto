@@ -63,6 +63,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
             "005_evento_dead_letter.sql",
             "006_deadletter_status.sql",
             "007_deadletter_origin_group_notnull_index.sql",
+            "010_dead_letter_pk_por_grupo.sql",  # el INSERT usa ON CONFLICT (origin_group, event_id)
         ):
             await c.execute((_MIGRACIONES / nombre).read_text())
         yield c

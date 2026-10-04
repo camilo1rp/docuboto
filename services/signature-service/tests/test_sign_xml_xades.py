@@ -380,6 +380,7 @@ class _FakeFirmaTable:
                 ocsp_this_update,
                 ocsp_next_update,
                 ocsp_response_der,
+                key_version,
             ) = args
             row = {
                 # Espeja `COALESCE($1, gen_random_uuid())` del repositorio real
@@ -425,6 +426,7 @@ class _FakeFirmaTable:
                 "ocsp_this_update": ocsp_this_update,
                 "ocsp_next_update": ocsp_next_update,
                 "ocsp_response_der": ocsp_response_der,
+                "key_version": key_version,
             }
             self.rows[str(row["id"])] = row
             return row
@@ -435,9 +437,15 @@ class _FakeFirmaTable:
             # usuarios, así que devuelve `None` — que es exactamente lo que
             # devuelve el JOIN por la izquierda cuando el firmante no es un
             # usuario del catálogo, el caso de los sellos del sistema.
-            (firma_id,) = args
+            # `args[1]`, si viene, es el clearance del gate no-read-up de
+            # `FirmaRepository.get` (AREA-04-10). Los objetos de esta tabla
+            # falsa (índice, acta) no tienen nivel propio: son visibles.
+            firma_id = args[0]
             row = self.rows.get(str(firma_id))
             return None if row is None else {**row, "firmante_nombre": None}
+        if "FROM auth_users" in q and "is_root" in q:
+            # resolve_caller_clearance: usuario normal, clearance PUBLICA.
+            return {"is_root": False, "max_level": None}
         raise AssertionError(f"Unexpected fetchrow query in _FakeFirmaTable: {query!r}")
 
 

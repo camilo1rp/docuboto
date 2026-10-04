@@ -54,7 +54,7 @@ from app.services.backoff import next_backoff_seconds
 # canónica (C14N) -- es el mismo cuerpo que congela el acta de entrega.
 from app.services.fisico_service import FisicoService, _fuid_to_xml
 from app.services.index_service import IndexService
-from app.services.retention_math import total_trd_years
+from app.services.retention_math import base_worm, total_trd_years
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,28 @@ _TIPO_ARCHIVO_ESPERADO: dict[str, tuple[str, str]] = {
 
 def _resp(row) -> TransferenciaResponse:
     return TransferenciaResponse(**dict(row))
+
+
+_CABECERA_FUID_OBLIGATORIA = ("unidadAdministrativa", "oficinaProductora", "objeto")
+
+
+def _cabecera_completa(acta_fuid_xml: str) -> bool:
+    """¿Trae el acta congelada las tres entradas con las que abre el Anexo FUID? (AREA-07-11)
+
+    Las actas anteriores a la migración 052 se sellaron con la cabecera en blanco y no
+    se rehacen (son probatorias). Se declara el hueco al LEER: un XML que no se puede
+    parsear cuenta como incompleto, nunca como completo."""
+    import xml.etree.ElementTree as ET
+
+    try:
+        raiz = ET.fromstring(acta_fuid_xml)
+    except ET.ParseError:
+        return False
+    cab = next((e for e in raiz if e.tag.rsplit("}", 1)[-1] == "cabecera"), None)
+    if cab is None:
+        return False
+    valores = {e.tag.rsplit("}", 1)[-1]: (e.text or "").strip() for e in cab}
+    return all(valores.get(campo) for campo in _CABECERA_FUID_OBLIGATORIA)
 
 
 def _firma_personal_gate_activo(nivel_seguridad: int) -> bool:
@@ -188,137 +210,55 @@ class TransferenciaService:
             #
             # Rama B (SIN tenencia localizada -- expediente puramente
             # electrónico, o físico sin `ubicacion_id` resuelta): la
-            # transferencia es LÓGICA, origen/destino físico son N/A. Se
-            # conserva el comportamiento H-M previo ("ambos o ninguno", SIN
-            # cotejo -- no hay ubicación actual contra la cual cotejar) --
-            # exigir topología física SIEMPRE haría imposible transferir un
-            # expediente electrónico, el caso de uso central de un DMS
-            # moderno; E17 (archivo físico) es explícitamente PARCIAL en el
-            # roadmap y no todo tenant tendrá su topología de `ubicacion`
-            # poblada. Residual declarado (RF-FIR-15): un expediente sin
-            # tenencia localizada que SÍ aporta el par no se cotea -- no peor
-            # que el status-quo previo a este incremento (antes NINGÚN origen
-            # se coteaba).
+            # transferencia es LÓGICA y origen/destino físico son N/A: NO se
+            # aportan (AREA-07-06: antes se aceptaba el par «ambos o ninguno»
+            # sin cotejo, un residual declarado; ahora el par sin tenencia es
+            # 422 `ubicacion_sin_tenencia`). Exigir topología física SIEMPRE
+            # haría imposible transferir un expediente electrónico, el caso de
+            # uso central de un DMS moderno.
             #
             # El destino NUNCA se cotea (en ninguna rama): es a DÓNDE VA, no
-            # dónde está -- solo se valida por coherencia de tipo, como hasta
-            # ahora.
+            # dónde está -- solo se valida por coherencia de tipo.
             #
-            # Lecturas PLANAS de `expediente_unidad`/`ubicacion` -- topología
-            # física, no CONTENIDO del expediente: a diferencia del FUID, no
-            # hay aquí concern de clearance/no-read-up. Va ANTES de la tx: son
-            # solo lecturas, nada que revertir todavía.
-            origen_id = payload.ubicacion_origen_id
-            destino_id = payload.ubicacion_destino_id
-            fisico_repo = FisicoRepository(self._conn, self._tenant)
-            units = await fisico_repo.units_of_expediente(payload.expediente_id)
-            current_ubicaciones = {
-                u["ubicacion_id"] for u in units if u["ubicacion_id"] is not None
-            }
-            tiene_tenencia_localizada = bool(current_ubicaciones)
-
-            if tiene_tenencia_localizada:
-                if origen_id is None or destino_id is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "error": "ubicaciones_requeridas_fisico",
-                            "detail": (
-                                "El expediente tiene tenencia física localizada -- "
-                                "ubicacion_origen_id y ubicacion_destino_id son "
-                                "obligatorios (Ley 594/2000 arts. 15/26, Anexo FUID "
-                                "Ac. AGN 001/2024)"
-                            ),
-                            "status": 422,
-                        },
-                    )
-            elif (origen_id is None) != (destino_id is None):
+            # Todo esto vive en `_validar_ubicaciones`, que corre DENTRO de la
+            # transacción del acto con la tenencia bloqueada `FOR SHARE`
+            # (AREA-07-06): leerla antes dejaba una ventana en la que la unidad
+            # podía moverse entre el cotejo y el INSERT.
+            #
+            # Gate del índice (AREA-07-03): un expediente cuyo índice no está
+            # firmado no puede ni PREPARAR la transferencia -- antes solo
+            # `recibir` lo exigía, y el defecto avanzaba hasta la última fase
+            # (enviada, a la espera de que el destino la recibiera y fallara).
+            # Mismo código de error que `recibir`.
+            current_indice = await self._index_repo.get_current(payload.expediente_id)
+            if current_indice is None or current_indice["estado"] != "firmado":
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_409_CONFLICT,
                     detail={
-                        "error": "ubicaciones_par_incompleto",
+                        "error": "indice_no_firmado",
                         "detail": (
-                            "ubicacion_origen_id y ubicacion_destino_id deben aportarse "
-                            "juntas (traspaso con topología física) o ninguna (sin "
-                            "topología física modelada)"
+                            "El expediente no puede transferirse sin índice electrónico "
+                            "firmado (Acuerdo AGN 001/2024 art. 4.3.2.4)"
                         ),
-                        "status": 422,
+                        "status": 409,
                     },
                 )
-            # Ambos, no solo `origen_id`: las validaciones de arriba ya
-            # garantizan "las dos o ninguna" (`ubicaciones_par_incompleto`),
-            # pero ese invariante vive en otra rama y aquí `destino_id` se usa
-            # igualmente. Explícito, mismo comportamiento.
-            if origen_id is not None and destino_id is not None:
-                if origen_id == destino_id:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "error": "ubicaciones_origen_destino_iguales",
-                            "detail": "ubicacion_origen_id y ubicacion_destino_id no pueden coincidir",
-                            "status": 422,
-                        },
-                    )
-                ub_origen = await fisico_repo.get_ubicacion(origen_id)
-                ub_destino = await fisico_repo.get_ubicacion(destino_id)
-                if ub_origen is None or ub_destino is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "error": "ubicacion_not_found",
-                            "detail": "ubicacion_origen_id o ubicacion_destino_id no existe",
-                            "status": 422,
-                        },
-                    )
-                # Cotejo (nuevo, solo rama A -- sin tenencia localizada no hay
-                # ubicación actual contra la cual cotejar). Va ANTES de la
-                # coherencia de tipo: "no es una ubicación actual del
-                # expediente" es un error fáctico más fuerte y específico que
-                # "es del tipo equivocado" -- el cotejo gana.
-                if tiene_tenencia_localizada and origen_id not in current_ubicaciones:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "error": "ubicacion_origen_no_actual",
-                            "detail": (
-                                "ubicacion_origen_id no es una ubicación actual del "
-                                "expediente (vínculo expediente_unidad)"
-                            ),
-                            "status": 422,
-                        },
-                    )
-                esperado_origen, esperado_destino = _TIPO_ARCHIVO_ESPERADO[payload.tipo]
-                if (
-                    ub_origen["tipo_archivo"] != esperado_origen
-                    or ub_destino["tipo_archivo"] != esperado_destino
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                        detail={
-                            "error": "ubicacion_incoherente_con_tipo",
-                            "detail": (
-                                f"Transferencia '{payload.tipo}' exige origen de tipo "
-                                f"'{esperado_origen}' y destino de tipo '{esperado_destino}' "
-                                "(Ley 594/2000 art. 23, ciclo vital del documento)"
-                            ),
-                            "status": 422,
-                        },
-                    )
-            # Cabecera del FUID (migración 052, Anexo FUID Ac. AGN 001/2024): la
-            # dependencia de quien PREPARA, resuelta AQUÍ y congelada con la
-            # transferencia. Es quien ENTREGA los documentos —la oficina
-            # productora del Anexo—, no quien los recibe; y se captura ahora
-            # porque entre preparar y recibir pueden pasar semanas en las que el
-            # preparador cambie de dependencia o la dependencia se renombre.
-            # Lectura PLANA de identidad/organigrama, fuera de la tx: no es
-            # contenido del expediente, no hay concern de clearance.
-            depe = await self._repo.dependencia_de_usuario(actor.id)
 
             # Atomicidad preparación<->auditoría (mismo patrón que
             # `ArchiveService.create_expediente`): INSERT + evento de hoja de
             # ruta + asiento forense son un único acto de negocio; `audit.append`
             # va LO ÚLTIMO (retiene el advisory lock del tenant el mínimo tiempo).
             async with self._conn.transaction():
+                await self._validar_ubicaciones(payload)
+                # Cabecera del FUID (migración 052, Anexo FUID Ac. AGN 001/2024): la
+                # dependencia de quien PREPARA, resuelta AQUÍ y congelada con la
+                # transferencia. Es quien ENTREGA los documentos —la oficina
+                # productora del Anexo—, no quien los recibe; y se captura ahora
+                # porque entre preparar y recibir pueden pasar semanas en las que el
+                # preparador cambie de dependencia o la dependencia se renombre.
+                # Lectura PLANA de identidad/organigrama: no es contenido del
+                # expediente, no hay concern de clearance.
+                depe = await self._repo.dependencia_de_usuario(actor.id)
                 # H-L (Media, Ac. AGN 001/2024 Tít. 4.4): a lo sumo UNA
                 # transferencia ACTIVA (preparada/enviada) por expediente
                 # (índice único parcial, migración 024). El gate `closed` de
@@ -350,6 +290,19 @@ class TransferenciaService:
                             ),
                         }
                     )
+                except asyncpg.ForeignKeyViolationError as fk:
+                    # AREA-07-08: la ubicación se valida arriba, pero otro proceso
+                    # puede borrarla entre ese cotejo y este INSERT; la FK lo
+                    # impide y antes salía como 500 SIN asiento (no pasaba por el
+                    # `except HTTPException`). Ahora es el mismo 422 y deja asiento.
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "ubicacion_not_found",
+                            "detail": "ubicacion_origen_id o ubicacion_destino_id no existe",
+                            "status": 422,
+                        },
+                    ) from fk
                 except asyncpg.UniqueViolationError as uv:
                     # Discrimina por CONSTRAINT, no solo por tipo de excepción:
                     # hoy el único índice único de `transferencias` (aparte del
@@ -409,6 +362,7 @@ class TransferenciaService:
                         if payload.ubicacion_destino_id
                         else None,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         except HTTPException as exc:
             # Denegación (H-B): mismo patrón best-effort que
@@ -429,6 +383,7 @@ class TransferenciaService:
                         "expediente_id": str(payload.expediente_id),
                         "motivo": motivo_de(exc),
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning(
@@ -437,6 +392,129 @@ class TransferenciaService:
                 )
             raise
         return _resp(row)
+
+    async def _validar_ubicaciones(self, payload: TransferenciaCreate) -> None:
+        """Rama A/B de la coherencia origen/destino de `create` (ver los comentarios
+        de ese método). Corre DENTRO de su transacción (AREA-07-06), con la tenencia
+        bloqueada `FOR SHARE`. Lanza `HTTPException` 422; no devuelve nada."""
+        origen_id = payload.ubicacion_origen_id
+        destino_id = payload.ubicacion_destino_id
+        fisico_repo = FisicoRepository(self._conn, self._tenant)
+        # AREA-07-06: la tenencia se lee DENTRO de la transacción del acto y con
+        # `FOR SHARE`, no antes: un movimiento de la unidad entre la lectura y el
+        # INSERT dejaba al acta cotejada contra una ubicación que ya no era la actual.
+        units = await fisico_repo.units_of_expediente(payload.expediente_id, lock_share=True)
+        current_ubicaciones = {
+            u["ubicacion_id"] for u in units if u["ubicacion_id"] is not None
+        }
+        tiene_tenencia_localizada = bool(current_ubicaciones)
+
+        if tiene_tenencia_localizada:
+            if origen_id is None or destino_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "ubicaciones_requeridas_fisico",
+                        "detail": (
+                            "El expediente tiene tenencia física localizada -- "
+                            "ubicacion_origen_id y ubicacion_destino_id son "
+                            "obligatorios (Ley 594/2000 arts. 15/26, Anexo FUID "
+                            "Ac. AGN 001/2024)"
+                        ),
+                        "status": 422,
+                    },
+                )
+        elif (origen_id is None) != (destino_id is None):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "ubicaciones_par_incompleto",
+                    "detail": (
+                        "ubicacion_origen_id y ubicacion_destino_id deben aportarse "
+                        "juntas (traspaso con topología física) o ninguna (sin "
+                        "topología física modelada)"
+                    ),
+                    "status": 422,
+                },
+            )
+        if not tiene_tenencia_localizada and origen_id is not None and destino_id is not None:
+            # AREA-07-06: sin tenencia localizada NO hay ubicación actual contra la cual
+            # cotejar el origen, y antes el par se aceptaba tal cual: el acta FUID
+            # atestiguaba un movimiento físico que ningún vínculo `expediente_unidad`
+            # sustenta (el residual que la rama B declaraba). Una transferencia lógica
+            # va SIN par; con par, hace falta tenencia que lo respalde.
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "ubicacion_sin_tenencia",
+                    "detail": (
+                        "El expediente no tiene tenencia física localizada (ninguna unidad "
+                        "de conservación con ubicación): una transferencia lógica no lleva "
+                        "ubicacion_origen_id ni ubicacion_destino_id, porque no hay "
+                        "ubicación actual contra la cual cotejarlas"
+                    ),
+                    "status": 422,
+                },
+            )
+        # Ambos, no solo `origen_id`: las validaciones de arriba ya
+        # garantizan "las dos o ninguna" (`ubicaciones_par_incompleto`),
+        # pero ese invariante vive en otra rama y aquí `destino_id` se usa
+        # igualmente. Explícito, mismo comportamiento.
+        if origen_id is not None and destino_id is not None:
+            if origen_id == destino_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "ubicaciones_origen_destino_iguales",
+                        "detail": "ubicacion_origen_id y ubicacion_destino_id no pueden coincidir",
+                        "status": 422,
+                    },
+                )
+            ub_origen = await fisico_repo.get_ubicacion(origen_id)
+            ub_destino = await fisico_repo.get_ubicacion(destino_id)
+            if ub_origen is None or ub_destino is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "ubicacion_not_found",
+                        "detail": "ubicacion_origen_id o ubicacion_destino_id no existe",
+                        "status": 422,
+                    },
+                )
+            # Cotejo (nuevo, solo rama A -- sin tenencia localizada no hay
+            # ubicación actual contra la cual cotejar). Va ANTES de la
+            # coherencia de tipo: "no es una ubicación actual del
+            # expediente" es un error fáctico más fuerte y específico que
+            # "es del tipo equivocado" -- el cotejo gana.
+            if tiene_tenencia_localizada and origen_id not in current_ubicaciones:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "ubicacion_origen_no_actual",
+                        "detail": (
+                            "ubicacion_origen_id no es una ubicación actual del "
+                            "expediente (vínculo expediente_unidad)"
+                        ),
+                        "status": 422,
+                    },
+                )
+            esperado_origen, esperado_destino = _TIPO_ARCHIVO_ESPERADO[payload.tipo]
+            if (
+                ub_origen["tipo_archivo"] != esperado_origen
+                or ub_destino["tipo_archivo"] != esperado_destino
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "ubicacion_incoherente_con_tipo",
+                        "detail": (
+                            f"Transferencia '{payload.tipo}' exige origen de tipo "
+                            f"'{esperado_origen}' y destino de tipo '{esperado_destino}' "
+                            "(Ley 594/2000 art. 23, ciclo vital del documento)"
+                        ),
+                        "status": 422,
+                    },
+                )
 
     async def _require(self, transferencia_id: uuid.UUID, target: str):
         existing = await self._repo.get(transferencia_id)
@@ -533,6 +611,7 @@ class TransferenciaService:
                         if existing["ubicacion_destino_id"]
                         else None,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         except HTTPException as exc:
             try:
@@ -548,6 +627,7 @@ class TransferenciaService:
                         "estado_actual": existing["estado"] if existing is not None else None,
                         "motivo": motivo_de(exc),
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning(
@@ -577,6 +657,9 @@ class TransferenciaService:
         # alterados de un expediente reservado en el cuerpo del error filtraría
         # contenido a quien no puede leerlo.
         fixity_fallidos: list[str] = []
+        # Solo conteos (sin UUID de radicados, que pueden ser reservados) de la fixity
+        # fallida, para el evento PREMIS `fallo` post-rollback (AREA-07-05 / Ac. AGN 003/2015).
+        fixity_fallo: dict | None = None
         try:
             existing = await self._require(transferencia_id, "recibida")
             # El índice electrónico firmado es el instrumento que da fe de
@@ -633,6 +716,34 @@ class TransferenciaService:
                     version=None,
                     max_clearance=CLEARANCE_SIN_RESTRICCION,
                 )
+                # AREA-07-04: la fila de `expediente_indice` que la fixity acaba de
+                # comparar (misma `version`), para atar al acta SU firma. Si el índice
+                # vigente cambió desde el pre-flight de arriba (otra versión), se lee
+                # la que usó la fixity: el acta debe señalar el sello de LO QUE SE
+                # VERIFICÓ, no el de lo que había antes. Una versión que no está
+                # firmada no se entrega (409), igual que en el pre-flight.
+                if current_indice.get("version") == fx.version:
+                    fila_indice = current_indice
+                else:
+                    fila_indice = await self._index_repo.get_version(
+                        existing["expediente_id"], fx.version
+                    )
+                if (
+                    fila_indice is None
+                    or fila_indice["estado"] != "firmado"
+                    or fila_indice.get("firma_id") is None
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "indice_no_firmado",
+                            "detail": (
+                                "El expediente no puede transferirse sin índice electrónico "
+                                "firmado (Acuerdo AGN 001/2024 art. 4.3.2.4)"
+                            ),
+                            "status": 409,
+                        },
+                    )
                 if not (fx.documentos_ok and fx.huella_indice_ok):
                     # El detalle por-documento (UUIDs) va al asiento forense
                     # indeleble, no a la respuesta: al actor de custodia (que
@@ -648,6 +759,15 @@ class TransferenciaService:
                         for d in fx.documentos
                         if not d.coincide and not d.sin_huella_declarada
                     ]
+                    fixity_fallo = {
+                        "origen": "recepcion_transferencia",
+                        "indice_version": fx.version,
+                        "huella_indice_ok": fx.huella_indice_ok,
+                        "num_documentos": len(fx.documentos),
+                        "num_documentos_fallidos": len(fixity_fallidos),
+                        "documentos_sin_huella": fx.documentos_sin_huella,
+                        "algoritmo": "SHA-256",
+                    }
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail={
@@ -753,7 +873,15 @@ class TransferenciaService:
                     oficina_productora=existing["oficina_productora_nombre"],
                     objeto=existing["objeto"],
                 )
-                acta_xml = _fuid_to_xml(fuid)
+                # AREA-07-04: la firma del índice entregado va DENTRO del XML que se
+                # hashea y se sella, no solo en una columna: el SHA anclado en
+                # `audit_log` y el XAdES del acta la cubren.
+                acta_xml = _fuid_to_xml(
+                    fuid,
+                    indice_version=fx.version,
+                    indice_firma_id=fila_indice["firma_id"],
+                    indice_sha256=fila_indice.get("xml_sha256"),
+                )
                 acta_sha = hashlib.sha256(acta_xml.encode("utf-8")).hexdigest()
                 await self._repo.insert_acta(
                     {
@@ -777,6 +905,9 @@ class TransferenciaService:
                         # `expediente_indice` cuya huella se comparó) -- sin
                         # consulta extra ni TOCTOU frente a la fixity congelada.
                         "indice_version": fx.version,
+                        # AREA-07-04 (migración 053): el sello y la huella de esa versión.
+                        "indice_firma_id": fila_indice["firma_id"],
+                        "indice_sha256": fila_indice.get("xml_sha256"),
                         # = el `generado` embebido en `acta_xml` (mismo
                         # instante sobre el que se calculó `acta_sha`) -- ya
                         # NO se regenera al vuelo con `now()`.
@@ -790,7 +921,25 @@ class TransferenciaService:
                 # aunque el proceso muera entre este commit y el intento de
                 # sellado post-commit (`_sellar_acta_post_commit`, más abajo,
                 # FUERA de la tx) -- el job de reconciliación converge igual.
-                await self._repo.insert_acta_firma_pendiente(transferencia_id)
+                # AREA-07-05: el detalle de la fixity de esta recepción queda en la fila de
+                # bookkeeping para poder registrar (y reintentar) su evento PREMIS.
+                fixity_detalle = {
+                    "origen": "recepcion_transferencia",
+                    "transferencia_id": str(transferencia_id),
+                    "indice_version": fx.version,
+                    "documentos_ok": fx.documentos_ok,
+                    "huella_indice_ok": fx.huella_indice_ok,
+                    "num_documentos": len(fx.documentos),
+                    "documentos_sin_huella": fx.documentos_sin_huella,
+                    "documentos_verificados": len(fx.documentos) - fx.documentos_sin_huella,
+                    # Una verificación con documentos sin huella NO cubre todo el acervo:
+                    # el evento PREMIS lo dice, no lo deja leer como fixity total.
+                    "verificacion": "parcial" if fx.documentos_sin_huella > 0 else "completa",
+                    "algoritmo": "SHA-256",
+                }
+                await self._repo.insert_acta_firma_pendiente(
+                    transferencia_id, fixity_premis_detalle=fixity_detalle
+                )
                 # `audit.append` LO ÚLTIMO dentro de la tx -- DOS asientos porque
                 # el acto muta DOS objetos (transferencia + expediente); dejar
                 # solo uno incompletaría la serie de auditoría del `object_type`
@@ -847,6 +996,7 @@ class TransferenciaService:
                         # encadenado no se puede reescribir sin romper la cadena.
                         "acta_fuid_sha256": acta_sha,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
                 await audit.append(
                     self._conn,
@@ -856,6 +1006,7 @@ class TransferenciaService:
                     object_type="expediente",
                     object_ref=transitioned.code,
                     actor=actor.audit_actor,
+                    canal=audit.CANAL_PETICION,
                 )
         except HTTPException as exc:
             try:
@@ -879,10 +1030,18 @@ class TransferenciaService:
                             else {}
                         ),
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning(
                     "audit.append(archive.transferencia_recibida_failed) failed", exc_info=True
+                )
+            if fixity_fallo is not None and existing is not None:
+                await self._registrar_fixity_fallo_premis(
+                    transferencia_id,
+                    expediente_id=existing["expediente_id"],
+                    detalle=fixity_fallo,
+                    agente=actor.audit_actor,
                 )
             raise
         # H-H (E06/F4): sellado SÍNCRONO ACOTADO del acta, SIEMPRE post-commit
@@ -894,7 +1053,125 @@ class TransferenciaService:
         await self._sellar_acta_post_commit(
             transferencia_id, acta_xml=acta_xml, indice_version=fx.version, actor=actor
         )
+        # AREA-07-05: el fixity-check de la recepción como evento PREMIS, también
+        # post-commit y best-effort (la reconciliación lo repite si falla).
+        await self.registrar_fixity_premis(transferencia_id, origen="close")
         return _resp(row)
+
+    async def _registrar_fixity_fallo_premis(
+        self,
+        transferencia_id: uuid.UUID,
+        *,
+        expediente_id: uuid.UUID,
+        detalle: dict,
+        agente: str | None,
+    ) -> None:
+        """Evento PREMIS `FIJACION` con `resultado="fallo"` de una recepción cuya fixity
+        discrepó. Se llama FUERA de la tx ya revertida; best-effort (NUNCA lanza): el 409 y el
+        asiento `*_failed` ya quedaron. Cada intento fallido es un evento propio (el
+        `dedup_key` lleva un sello temporal), porque la recepción puede reintentarse."""
+        from app.clients import storage_client
+
+        intento = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S%f")
+        try:
+            await storage_client.registrar_evento_internal(
+                tenant_slug=self._tenant,
+                object_ref=str(expediente_id),
+                tipo="FIJACION",
+                resultado="fallo",
+                detalle={**detalle, "evento": "fixity check", "disparo": "recibir"},
+                agente=agente,
+                dedup_key=f"fixity-recepcion-fallo:{transferencia_id}:{intento}",
+            )
+        except Exception:  # noqa: BLE001 — best-effort: jamás degrada el 409.
+            logger.warning(
+                "No se pudo registrar el evento PREMIS de fixity fallida (transferencia_id=%s)",
+                transferencia_id,
+                exc_info=True,
+            )
+
+    async def registrar_fixity_premis(
+        self, transferencia_id: uuid.UUID, *, origen: str
+    ) -> Literal["registrado", "pendiente", "agotado", "omitido"]:
+        """Registra en storage-service el evento PREMIS `FIJACION` de la fixity de la recepción
+        (AREA-07-05), para que aparezca en `GET /expedientes/{id}/preservacion/eventos`.
+
+        NUNCA lanza ni toca el resultado de la recepción: el acta ya es íntegra y su asiento
+        anclado. Idempotente: el `dedup_key` es la transferencia, así un reintento de la
+        reconciliación no duplica el evento. `omitido` = no hay detalle guardado (recepción
+        anterior a la migración 056) o ya estaba registrado. Un fallo reprograma con backoff
+        (mismo patrón que el WORM del acta) y, agotado, deja asiento."""
+        from app.clients import storage_client
+
+        try:
+            fila = await self._repo.get_fixity_premis(transferencia_id)
+            if fila is None or fila["fixity_premis_detalle"] is None or fila["fixity_premis_at"]:
+                return "omitido"
+            detalle = fila["fixity_premis_detalle"]
+            if isinstance(detalle, str):
+                import json
+
+                detalle = json.loads(detalle)
+            ok = await storage_client.registrar_evento_internal(
+                tenant_slug=self._tenant,
+                object_ref=str(fila["expediente_id"]),
+                tipo="FIJACION",
+                resultado="ok",
+                detalle={**detalle, "evento": "fixity check", "disparo": origen},
+                agente=fila["decidida_por"],
+                dedup_key=f"fixity-recepcion:{transferencia_id}",
+            )
+            if ok:
+                await self._repo.mark_fixity_premis_registrado(transferencia_id)
+                return "registrado"
+            intentos = int(fila["fixity_premis_intentos"]) + 1
+            agotado = intentos >= settings.indice_reconciliation_max_intentos
+            proximo_at = (
+                None
+                if agotado
+                else datetime.now(tz=UTC)
+                + timedelta(
+                    seconds=next_backoff_seconds(
+                        intentos,
+                        base=settings.indice_reconciliation_backoff_base_seconds,
+                        cap=settings.indice_reconciliation_backoff_cap_seconds,
+                    )
+                )
+            )
+            if agotado:
+                async with self._conn.transaction():
+                    await self._repo.bump_fixity_premis_intento(
+                        transferencia_id,
+                        proximo_at=None,
+                        ultimo_error="storage_evento_no_registrado",
+                        agotado=True,
+                    )
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant,
+                        service=_SERVICE,
+                        action="archive.fixity_premis_agotado",
+                        object_type="transferencia",
+                        object_ref=str(transferencia_id),
+                        actor=str(SYSTEM_RECONCILER_ID),
+                        canal="system",
+                        payload={"intentos": intentos, "motivo": "storage_evento_no_registrado"},
+                    )
+                return "agotado"
+            await self._repo.bump_fixity_premis_intento(
+                transferencia_id,
+                proximo_at=proximo_at,
+                ultimo_error="storage_evento_no_registrado",
+                agotado=False,
+            )
+            return "pendiente"
+        except Exception:  # noqa: BLE001 — best-effort: jamás degrada la recepción.
+            logger.warning(
+                "No se pudo registrar el evento PREMIS de la fixity (transferencia_id=%s)",
+                transferencia_id,
+                exc_info=True,
+            )
+            return "pendiente"
 
     async def _sellar_acta_post_commit(
         self,
@@ -975,6 +1252,7 @@ class TransferenciaService:
                                 "firma_id": str(outcome.signed.firma_id),
                                 "origen": "manual",
                             },
+                            canal=audit.CANAL_PETICION,
                         )
                 if affected:
                     # E10 Inc.2 wiring: cableado WORM del acta recién firmada,
@@ -1023,6 +1301,7 @@ class TransferenciaService:
                 object_ref=str(transferencia_id),
                 actor=actor_id,
                 payload={"transferencia_id": str(transferencia_id), "motivo": motivo},
+                canal=audit.CANAL_PETICION,
             )
 
     async def rechazar(
@@ -1106,6 +1385,7 @@ class TransferenciaService:
                         "estado_nuevo": "rechazada",
                         "motivo": payload.motivo,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         except HTTPException as exc:
             try:
@@ -1121,6 +1401,7 @@ class TransferenciaService:
                         "estado_actual": existing["estado"] if existing is not None else None,
                         "motivo": motivo_de(exc),
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning(
@@ -1254,7 +1535,10 @@ class TransferenciaService:
         firma_row = await self._repo.get_acta_firma(transferencia_id)
         firma_info = await self._build_firma_info(firma_row, verify=verify)
         return TransferenciaActaResponse(
-            **dict(acta), expediente_id=row["expediente_id"], firma=firma_info
+            **dict(acta),
+            expediente_id=row["expediente_id"],
+            firma=firma_info,
+            cabecera_completa=_cabecera_completa(acta["acta_fuid_xml"]),
         )
 
     async def _build_firma_info(
@@ -1629,6 +1913,8 @@ class TransferenciaService:
                 }
             )
             if inserted is not None:
+                # AREA-07-10: la fila de bookkeeping WORM, en la MISMA tx que la firma.
+                await self._repo.insert_firma_personal_worm_pendiente(inserted["id"])
                 # H5 (atomicidad efecto<->asiento): solo la escritura GANADORA
                 # de la carrera (ver docstring de `insert_acta_firma_personal`)
                 # deja asiento — nunca un `archive.acta_firmada_personal`
@@ -1647,7 +1933,15 @@ class TransferenciaService:
                         "firma_id": str(signed.firma_id),
                         "xades_level": signed.xades_level,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
+
+        if inserted is not None:
+            # AREA-07-10: Object-Lock del XML de la firma, post-commit y best-effort (nunca
+            # lanza); la reconciliación lo repite si falla.
+            await self.proteger_worm_firma_personal(
+                inserted["id"], actor_id=actor.audit_actor, origen="close"
+            )
 
         if inserted is None:
             # Carrera perdida (mismo rol firmado concurrentemente por OTRA
@@ -1839,13 +2133,10 @@ class TransferenciaService:
         lado de storage-service -- misma defensa en profundidad que su gemela
         del índice.
 
-        ADR-026 (Increment 2, D4): fail-closed también para
-        `exp.origen == 'fondo_acumulado'` -- mismo criterio y misma razón que
-        `IndexService._resolve_worm_retention` (ver esa docstring): esta
-        función seguiría anclando la retención a `firmado_at` (hoy, en la
-        práctica) en vez de `fecha_extrema_final`, que es exactamente el
-        daño que D4 describe. El cableado correcto del acta para fondo
-        acumulado es Increment 3.
+        ADR-026 (Increment 3, D4, AREA-06-04): para `exp.origen == 'fondo_acumulado'`
+        la base es su `fecha_extrema_final` con el clamp de
+        `retention_math.base_worm`, no `firmado_at`. Antes devolvía `None` y el acta
+        de un fondo acumulado no tenía WORM nunca.
         """
         if firmado_at is None:
             return None
@@ -1854,15 +2145,24 @@ class TransferenciaService:
         )
         if exp is None or exp.trd_serie_id is None:
             return None
-        if exp.origen == "fondo_acumulado":
-            return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
             return None
         total = total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
         if total is None:
             return None
-        return total, firmado_at.date()
+        # Corriente: la fecha de FIRMA del acta (ver arriba). Fondo acumulado: su
+        # `fecha_extrema_final` con el clamp de D4.4 (AREA-06-04), nunca `firmado_at`.
+        inicio = base_worm(
+            origen=exp.origen,
+            closed_at=firmado_at,
+            fecha_extrema_final=exp.fecha_extrema_final,
+            total_years=total,
+            margen_dias=settings.worm_fondo_acumulado_margen_dias,
+        )
+        if inicio is None:
+            return None
+        return total, inicio
 
     async def _resolve_ct_retencion_anios_acta(self, expediente_id: uuid.UUID) -> int | None:
         """Total TRD (ambas fases) del EXPEDIENTE de una transferencia --
@@ -1870,15 +2170,12 @@ class TransferenciaService:
         la ventana rodante de renovación SIEMPRE usa `fecha_inicio=hoy` (no
         `firmado_at`), así que este helper no exige ese parámetro.
 
-        ADR-026 (Increment 2, D4): guard defensivo -- inalcanzable en la
-        práctica hoy, mismo razonamiento que
-        `IndexService._resolve_ct_retencion_anios`."""
+        ADR-026 (Increment 3, D4): sin guard para fondo acumulado (la ventana
+        rodante parte de hoy)."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.trd_serie_id is None:
-            return None
-        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
@@ -2069,6 +2366,155 @@ class TransferenciaService:
             logger.warning(
                 "Cableado WORM del acta falló (best-effort), transferencia_id=%s origen=%s",
                 transferencia_id,
+                origen,
+                exc_info=True,
+            )
+            return "pendiente"
+
+    # -- AREA-07-10: WORM de las firmas PERSONALES del acta ----------------
+
+    async def _bump_worm_backoff_firma_personal(
+        self, firma_personal_id: uuid.UUID, *, intentos_previos: int, motivo: str
+    ) -> Literal["pendiente", "agotado"]:
+        """Gemelo de `_bump_worm_backoff_acta` para el eje de la firma personal."""
+        intentos_tras_este = intentos_previos + 1
+        agotado = intentos_tras_este >= settings.indice_reconciliation_max_intentos
+        proximo_at = (
+            None
+            if agotado
+            else datetime.now(tz=UTC)
+            + timedelta(
+                seconds=next_backoff_seconds(
+                    intentos_tras_este,
+                    base=settings.indice_reconciliation_backoff_base_seconds,
+                    cap=settings.indice_reconciliation_backoff_cap_seconds,
+                )
+            )
+        )
+        await self._repo.bump_firma_personal_worm_intento(
+            firma_personal_id, proximo_at=proximo_at, ultimo_error=motivo, agotado=agotado
+        )
+        if agotado:
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant,
+                    service=_SERVICE,
+                    action="archive.acta_firma_personal_worm_reconcile_agotado",
+                    object_type="transferencia_acta_firma_personal",
+                    object_ref=str(firma_personal_id),
+                    actor=str(SYSTEM_RECONCILER_ID),
+                    canal="system",
+                    payload={"reconcile_intentos": intentos_tras_este, "motivo": motivo},
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca degrada el resultado.
+                logger.warning(
+                    "audit.append(acta_firma_personal_worm_reconcile_agotado) failed",
+                    exc_info=True,
+                )
+            return "agotado"
+        return "pendiente"
+
+    async def proteger_worm_firma_personal(
+        self,
+        firma_personal_id: uuid.UUID,
+        *,
+        actor_id: str | None,
+        origen: Literal["close", "reconciliation"],
+    ) -> Literal["protegido", "pendiente", "agotado", "omitido"]:
+        """Object-Lock del XML de UNA firma personal del acta (AREA-07-10) — gemelo de
+        `proteger_worm_acta`: best-effort, NUNCA lanza, fuera de toda `conn.transaction()`
+        (HTTP), `file_id` derivado SIEMPRE de `minio_key_firmado` (nunca de una entrada
+        externa) y `tipo` = `acta_firma_<rol>` (storage, migración 018: un tipo por rol, porque
+        la protección es singleton por (expediente, tipo)).
+
+        La retención se resuelve como la del acta (misma serie TRD, mismo clamp para un fondo
+        acumulado) con la fecha de la propia firma (`creada_en`) como base.
+
+        NO sustituye la decisión pendiente de dominio «firma_inobtenible» (un acto
+        administrativo cuando una parte no puede firmar): esto solo protege lo que SÍ se firmó."""
+        try:
+            fila = await self._repo.get_firma_personal_worm(firma_personal_id)
+            if fila is None or fila["worm_protegido_at"] is not None:
+                return "omitido"
+            if not fila["minio_key_firmado"]:
+                logger.warning(
+                    "WORM de firma personal %s sin minio_key_firmado, se omite", firma_personal_id
+                )
+                return "omitido"
+            file_id = fila["minio_key_firmado"].split("/", 1)[0]
+            retention = await self._resolve_worm_retention_acta(
+                fila["transferencia_id"], fila["expediente_id"], firmado_at=fila["creada_en"]
+            )
+            intentos = int(fila["worm_reconcile_intentos"] or 0)
+            if retention is None:
+                return await self._bump_worm_backoff_firma_personal(
+                    firma_personal_id, intentos_previos=intentos, motivo="trd_sin_retencion"
+                )
+            retencion_anios, fecha_inicio = retention
+
+            from app.clients import storage_client
+
+            expediente_id_str = str(fila["expediente_id"])
+            tipo = f"acta_firma_{fila['rol']}"
+            if origen == "close" and actor_id:
+                outcome = await storage_client.proteger_artefacto_worm(
+                    tenant_slug=self._tenant,
+                    actor_id=actor_id,
+                    file_id=file_id,
+                    expediente_id=expediente_id_str,
+                    tipo=tipo,
+                    retencion_anios=retencion_anios,
+                    fecha_inicio=fecha_inicio,
+                )
+            else:
+                outcome = await storage_client.proteger_artefacto_worm_internal(
+                    tenant_slug=self._tenant,
+                    file_id=file_id,
+                    expediente_id=expediente_id_str,
+                    tipo=tipo,
+                    retencion_anios=retencion_anios,
+                    fecha_inicio=fecha_inicio,
+                )
+
+            if outcome.ok:
+                async with self._conn.transaction():
+                    affected = await self._repo.mark_firma_personal_worm_protegido(
+                        firma_personal_id,
+                        outcome.protected_object_id,
+                        worm_retain_until=outcome.retain_until,
+                    )
+                    if affected:
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant,
+                            service=_SERVICE,
+                            action="archive.acta_firma_personal_worm_protegido",
+                            object_type="transferencia_acta_firma_personal",
+                            object_ref=str(firma_personal_id),
+                            actor=actor_id,
+                            canal="system" if origen == "reconciliation" else "api",
+                            payload={
+                                "transferencia_id": str(fila["transferencia_id"]),
+                                "expediente_id": expediente_id_str,
+                                "rol": fila["rol"],
+                                "worm_object_id": (
+                                    str(outcome.worm_object_id) if outcome.worm_object_id else None
+                                ),
+                                "retencion_anios": retencion_anios,
+                                "origen": origen,
+                            },
+                        )
+                return "protegido" if affected else "omitido"
+
+            motivo = "worm_disabled" if outcome.disabled else "worm_no_confirmado"
+            return await self._bump_worm_backoff_firma_personal(
+                firma_personal_id, intentos_previos=intentos, motivo=motivo
+            )
+        except Exception:
+            logger.warning(
+                "WORM de la firma personal falló (best-effort), firma_personal_id=%s origen=%s",
+                firma_personal_id,
                 origen,
                 exc_info=True,
             )

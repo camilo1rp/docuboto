@@ -104,6 +104,7 @@ class VistoBuenoService:
                 object_ref=str(radicado_id),
                 actor=str(actor) if actor else None,
                 payload={"revisores": [str(r) for r in payload.revisores]},
+                canal=audit.CANAL_PETICION,
             )
         return await self.get(radicado_id, actor)
 
@@ -179,6 +180,7 @@ class VistoBuenoService:
                     "estado": estado,
                     "comentario": payload.comentario,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return await self.get(radicado_id, actor)
 

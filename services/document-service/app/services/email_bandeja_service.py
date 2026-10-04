@@ -39,6 +39,7 @@ from orpycamcp_common import audit
 from app.clients import storage_client
 from app.clients.email_parser import CorreoLeido, leer
 from app.clients.imap_adaptador import ErrorDeCorreo, ImapAdaptador
+from app.core.datos_minimos import faltantes, mensaje_faltantes
 from app.repositories.email_mensaje_repository import EmailMensajeRepository
 from app.schemas.document import AnexoInput, DocumentCreate
 from app.services import acuse_correo
@@ -299,6 +300,21 @@ class EmailBandejaService:
                 "Su reserva sobre este correo caducó o la tiene otro funcionario. "
                 "Vuelva a abrirlo antes de radicar.",
                 status=409,
+            )
+
+        # Ac. AGN 060/2001 §5.2 (AREA-09-02): el correo es una Entrada y exige
+        # tipo documental y dependencia destino. Se comprueba ANTES de traer el
+        # correo y de subir ningún binario: faltar aquí no cuesta ni un fichero.
+        codigo_dest = datos.get("dest_dept_code")
+        falta = faltantes(
+            "E",
+            doc_class=datos.get("doc_class") or None,
+            origin_dept_code=None,
+            dest_dept_code=int(str(codigo_dest)) if codigo_dest not in (None, "") else None,
+        )
+        if falta:
+            raise ErrorDeCuenta(
+                "datos_minimos_incompletos", mensaje_faltantes("E", falta), status=422
             )
 
         cuenta = await self._cuentas._repo.obtener_para_conectar(
@@ -587,5 +603,6 @@ class EmailBandejaService:
                 object_ref=str(mensaje_id),
                 actor=str(actor),
                 payload={"cuenta_id": str(cuenta_id), "motivo": motivo},
+                canal=audit.CANAL_PETICION,
             )
         return fuera

@@ -804,26 +804,86 @@ async def get_aip(*, tenant_slug: str, expediente_id: str) -> dict | None:
     return resp.json()
 
 
-async def list_eventos(*, tenant_slug: str, object_ref: str) -> list[dict]:
-    """Obtiene los eventos PREMIS de preservación de ``object_ref`` desde
-    storage-service (continuación de E10 Increment C, único llamador
-    legítimo de ``GET /preservacion/eventos`` tras el cierre D-02 de ese
-    endpoint).
+#: Refs por petición: cada `object_ref=<uuid>` pesa ~48 bytes y h11 corta la línea de
+#: petición en ~16 KB. Un expediente con miles de anexos se pide en tandas.
+_EVENTOS_REFS_POR_PETICION = 100
 
-    ``object_ref`` es ``str(Expediente.id)`` (mismo criterio que ``get_aip``)
-    — el filtro es exacto: eventos keyed por ``file_id``/``aip`` id del
-    expediente NO se incluyen en este MVP (refinamiento semántico diferido,
-    ver ``ArchiveService.get_eventos_preservacion``).
 
-    Devuelve ``[]`` si no hay eventos para ese ``object_ref`` (storage-service
-    responde 200 con lista vacía, nunca 404 para esta variante) — a
-    diferencia de ``get_aip``, no hay aquí un caso "ausente" que fundir con
-    el 404 de no-read-up.
+async def list_eventos(*, tenant_slug: str, object_refs: list[str]) -> list[dict]:
+    """Obtiene los eventos PREMIS de preservación de UNO O VARIOS ``object_ref`` desde
+    storage-service (único llamador legítimo de ``GET /preservacion/eventos`` tras el
+    cierre D-02 de ese endpoint).
 
-    Lanza ``StorageEventosError`` ante cualquier fallo (red, timeout, HTTP
-    distinto de 200) — el llamador (``ArchiveService.get_eventos_preservacion``)
-    lo traduce a 503, ortogonal a la autorización.
+    ``object_refs`` lo arma ``ArchiveService._object_refs_preservacion``: el UUID del
+    expediente, el id de su AIP y los ``file_id`` de sus anexos vigentes (AREA-07-15).
+    Se pide en tandas de ``_EVENTOS_REFS_POR_PETICION`` y se funde ordenado por ``ts``
+    sin duplicados.
+
+    Devuelve ``[]`` si no hay eventos (storage-service responde 200 con lista vacía,
+    nunca 404 para esta variante) — a diferencia de ``get_aip``, no hay aquí un caso
+    "ausente" que fundir con el 404 de no-read-up.
+
+    Lanza ``StorageEventosError`` ante cualquier fallo (red, timeout, HTTP distinto de
+    200) — el llamador (``ArchiveService.get_eventos_preservacion``) lo traduce a 503,
+    ortogonal a la autorización.
     """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    vistos: dict[str, dict] = {}
+    for i in range(0, len(object_refs), _EVENTOS_REFS_POR_PETICION):
+        tanda = object_refs[i : i + _EVENTOS_REFS_POR_PETICION]
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.storage_service_url, timeout=10.0
+            ) as client:
+                resp = await client.get(
+                    "/api/v1/preservacion/eventos",
+                    params=[("object_ref", r) for r in tanda],
+                    headers=headers,
+                )
+        except httpx.RequestError as exc:
+            raise StorageEventosError(
+                f"storage-service inalcanzable al pedir los eventos de preservación: {exc}"
+            ) from exc
+
+        if resp.status_code != 200:
+            raise StorageEventosError(
+                f"storage-service → HTTP {resp.status_code} al pedir los eventos de "
+                f"{len(tanda)} objeto(s): {resp.text[:300]!r}"
+            )
+        for evento in resp.json():
+            vistos[str(evento.get("id"))] = evento
+    return sorted(vistos.values(), key=lambda e: str(e.get("ts")))
+
+
+async def registrar_evento_internal(
+    *,
+    tenant_slug: str,
+    object_ref: str,
+    tipo: str,
+    resultado: str,
+    detalle: dict,
+    agente: str | None,
+    dedup_key: str,
+    hash_after: str | None = None,
+) -> bool:
+    """Registra un evento PREMIS en storage-service (`POST /preservacion/eventos-internal`,
+    AREA-07-05). Idempotente por `dedup_key` (200 = ya existía, 201 = creado: ambos son
+    éxito). Devuelve ``True`` si quedó registrado y ``False`` ante cualquier fallo (red,
+    timeout, HTTP inesperado): el llamador lo trata como best-effort y lo reconcilia; NUNCA
+    lanza."""
+    body = {
+        "object_ref": object_ref,
+        "tipo": tipo,
+        "resultado": resultado,
+        "detalle": detalle,
+        "agente": agente,
+        "dedup_key": dedup_key,
+    }
+    if hash_after is not None:
+        body["hash_after"] = hash_after
     headers = {
         "X-Tenant-Slug": tenant_slug,
         "X-Internal-Token": settings.storage_internal_token,
@@ -832,22 +892,20 @@ async def list_eventos(*, tenant_slug: str, object_ref: str) -> list[dict]:
         async with httpx.AsyncClient(
             base_url=settings.storage_service_url, timeout=10.0
         ) as client:
-            resp = await client.get(
-                "/api/v1/preservacion/eventos",
-                params={"object_ref": object_ref},
-                headers=headers,
+            resp = await client.post(
+                "/api/v1/preservacion/eventos-internal", json=body, headers=headers
             )
     except httpx.RequestError as exc:
-        raise StorageEventosError(
-            f"storage-service inalcanzable al pedir los eventos de preservación: {exc}"
-        ) from exc
-
-    if resp.status_code != 200:
-        raise StorageEventosError(
-            f"storage-service → HTTP {resp.status_code} al pedir los eventos de "
-            f"{object_ref}: {resp.text[:300]!r}"
+        logger.warning("storage-service inalcanzable al registrar el evento PREMIS: %s", exc)
+        return False
+    if resp.status_code not in (200, 201):
+        logger.warning(
+            "storage-service → HTTP %s al registrar el evento PREMIS: %s",
+            resp.status_code,
+            resp.text[:200],
         )
-    return resp.json()
+        return False
+    return True
 
 
 async def fetch_file_hashes_internal(

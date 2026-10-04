@@ -46,3 +46,62 @@ def test_retention_mode_rejects_unknown_value() -> None:
 def test_retention_mode_is_case_insensitive() -> None:
     settings = Settings(preservation_retention_mode="compliance")
     assert settings.preservation_retention_mode == "COMPLIANCE"
+
+
+# AREA-08-02: el validador PDF/A pedido «real» sin binario es un control apagado.
+
+
+def test_startup_guard_avisa_si_verapdf_no_tiene_binario() -> None:
+    settings = Settings(
+        app_env="production",
+        pdfa_validator="verapdf",
+        verapdf_binary="/no/existe/verapdf",
+        preservation_pdfa_validation_enabled=True,
+    )
+    warnings = settings.preservation_startup_guard()
+    assert len(warnings) == 1
+    assert "VERAPDF_BINARY" in warnings[0]
+
+
+def test_startup_guard_calla_si_verapdf_tiene_binario(tmp_path) -> None:
+    binario = tmp_path / "verapdf"
+    binario.write_text("#!/bin/sh\n")
+    binario.chmod(0o755)
+    settings = Settings(
+        pdfa_validator="verapdf",
+        verapdf_binary=str(binario),
+        preservation_pdfa_validation_enabled=True,
+    )
+    assert settings.preservation_startup_guard() == []
+
+
+def test_startup_guard_no_exige_binario_con_la_validacion_apagada() -> None:
+    settings = Settings(
+        pdfa_validator="verapdf",
+        verapdf_binary="/no/existe/verapdf",
+        preservation_pdfa_validation_enabled=False,
+    )
+    assert settings.preservation_startup_guard() == []
+
+
+# AREA-08-04: un secundario que es el mismo host no es una réplica geográfica.
+
+
+def test_startup_guard_avisa_si_el_secundario_es_el_primario() -> None:
+    settings = Settings(
+        minio_endpoint="minio:9000",
+        minio_secondary_endpoint="https://MINIO:9000/",
+        preservation_replica_enabled=True,
+    )
+    warnings = settings.preservation_startup_guard()
+    assert len(warnings) == 1
+    assert "MINIO_SECONDARY_ENDPOINT" in warnings[0]
+
+
+def test_startup_guard_calla_con_un_secundario_distinto() -> None:
+    settings = Settings(
+        minio_endpoint="minio:9000",
+        minio_secondary_endpoint="otro-sitio:9000",
+        preservation_replica_enabled=True,
+    )
+    assert settings.preservation_startup_guard() == []

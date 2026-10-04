@@ -22,6 +22,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from orpycamcp_common import health as health_common
 
+from app.core.audit_partitions import estado_particion_siguiente
 from app.core.database import get_pool
 from app.routers.auth import get_auth_service
 
@@ -47,6 +48,16 @@ async def _ping_keycloak() -> None:
         raise RuntimeError("keycloak no responde")
 
 
+async def _audit_particiones() -> str:
+    """`ok`/`degraded`/`unknown` de la partición del mes siguiente de `audit_log`
+    (AREA-03-06). Solo informa: nunca decide el 503."""
+    try:
+        async with get_pool().acquire() as conn:
+            return await estado_particion_siguiente(conn)
+    except Exception:  # noqa: BLE001 — una sonda informativa no tumba /health/ready
+        return "unknown"
+
+
 @router.get("/health/ready", summary="Disponibilidad — ¿puede atender tráfico ahora?")
 async def ready() -> JSONResponse:
     checks = {
@@ -55,7 +66,12 @@ async def ready() -> JSONResponse:
     }
 
     listo = checks["database"] == "ok" and checks["keycloak"] == "ok"
-    return JSONResponse(
-        status_code=200 if listo else 503,
-        content={"status": "ready" if listo else "not_ready", "checks": checks},
-    )
+    content: dict[str, object] = {"status": "ready" if listo else "not_ready", "checks": checks}
+    # Informativa: el cron de particiones es EXTERNO y su fallo no se veía en ninguna
+    # supervisión. Se consulta solo si la base responde, y no cambia el código HTTP.
+    if checks["database"] == "ok":
+        particiones = await _audit_particiones()
+        content["audit_particiones"] = particiones
+        if particiones == "degraded":
+            content["degraded"] = ["audit_particiones"]
+    return JSONResponse(status_code=200 if listo else 503, content=content)

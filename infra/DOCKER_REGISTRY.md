@@ -1,120 +1,57 @@
-# Docker Registry Setup
+# Registro de imágenes (GitLab Container Registry)
 
-OrpycaMCP uses **GitHub Container Registry (GHCR)** for publishing Docker images.
+OrpycaMCP publica sus imágenes en el **GitLab Container Registry** del proyecto, desde el
+pipeline de `.gitlab-ci.yml` (job `build-images`). No hay pipeline de GitHub Actions ni GHCR:
+este repositorio no tiene `.github/`.
 
-## Automated Builds
+## Cuándo se construye y se publica
 
-Images are built and pushed automatically by GitHub Actions:
+- **En cada tag** (`$CI_COMMIT_TAG`): se construyen las imágenes de los servicios y el frontend,
+  se escanean con Trivy (una CRÍTICA con corrección disponible falla el job **antes** del push) y se
+  publican con el SHA del commit y con `latest`.
+- **En cualquier otro commit**: el job es manual (botón), para cuando haga falta una imagen de un
+  commit concreto. Construir once imágenes en cada push producía decenas de etiquetas que nadie iba
+  a desplegar.
 
-- **On every push to `main`**: Images tagged with `main` + `latest`
-- **On version tags** (e.g., `v1.0.0`): Images tagged with version + major.minor
-- **On pull requests**: Images are built but NOT pushed (validation only)
+## Nombre y etiqueta
 
-## Available Images
+```
+$CI_REGISTRY_IMAGE/<servicio>:$CI_COMMIT_SHA     # inmutable: es la que se despliega
+$CI_REGISTRY_IMAGE/<servicio>:latest             # solo informativa
+```
 
-After merge to `main`, images are available at:
+Producción (`infra/docker-compose.prod.yml`) exige `ORPYCA_REGISTRY` (= `$CI_REGISTRY_IMAGE`) y
+`ORPYCA_TAG` (= el SHA del commit; **nunca `latest`**, para que "la versión anterior" exista y se
+pueda volver a ella). Un guardián (`shared/tests/test_prod_inmutable.py`) impide reintroducir
+`build:` o un tag `latest`.
 
 ```bash
-ghcr.io/orpyca/orpyca-mcp/api-gateway:latest
-ghcr.io/orpyca/orpyca-mcp/auth-service:latest
-ghcr.io/orpyca/orpyca-mcp/tenant-service:latest
-ghcr.io/orpyca/orpyca-mcp/document-service:latest
-ghcr.io/orpyca/orpyca-mcp/storage-service:latest
-ghcr.io/orpyca/orpyca-mcp/workflow-service:latest
-ghcr.io/orpyca/orpyca-mcp/archive-service:latest
-ghcr.io/orpyca/orpyca-mcp/notification-service:latest
+export ORPYCA_REGISTRY=registry.gitlab.com/<grupo>/<proyecto> ORPYCA_TAG=<sha-del-commit>
+docker compose -f infra/docker-compose.prod.yml pull
+docker compose -f infra/docker-compose.prod.yml up -d
 ```
 
-## Using Images in docker-compose
-
-For **development** (pull from local Dockerfile):
-```bash
-docker compose up
-```
-
-For **production** (pull from GHCR):
-```bash
-# Update docker-compose.prod.yml to use images
-docker compose -f docker-compose.prod.yml up -d
-```
-
-Example in docker-compose.prod.yml:
-
-```yaml
-api-gateway:
-  image: ghcr.io/orpyca/orpyca-mcp/api-gateway:latest
-  # ... rest of config
-```
-
-## Pulling Images Manually
+## Sin registro: construir en el propio servidor
 
 ```bash
-# Login to GitHub Container Registry
-docker login ghcr.io
-
-# Pull an image
-docker pull ghcr.io/orpyca/orpyca-mcp/document-service:v1.0.0
-
-# Run it
-docker run -it ghcr.io/orpyca/orpyca-mcp/document-service:latest
+export ORPYCA_REGISTRY=local ORPYCA_TAG=$(git rev-parse HEAD)
+docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml build
 ```
 
-## Authentication
+## Autenticación
 
-### In GitHub Actions (automatic)
-Images are pushed using `GITHUB_TOKEN` (automatically available in workflows).
+- **En el pipeline**: `CI_REGISTRY_USER` / `CI_REGISTRY_PASSWORD` (variables que GitLab inyecta).
+- **En un servidor de producción**: un *deploy token* de solo lectura (`read_registry`) y
+  `docker login registry.gitlab.com`.
 
-### On your local machine
-1. Generate a GitHub Personal Access Token (PAT) with `read:packages` scope
-2. Login: `docker login ghcr.io -u {username} -p {token}`
+## Arquitectura de las imágenes
 
-### On production servers
-1. Create a service account or use repository deployment tokens
-2. Create a pull-only token with `read:packages` scope
-3. Store in `.docker/config.json` or use `docker login`
+Se construyen para `linux/amd64`. ARM64 no está soportado hoy (habría que añadir `buildx` + QEMU al
+job `build-images`).
 
-## Image Architecture
+## Pendiente
 
-Images are built for **`linux/amd64`** (Intel/AMD 64-bit).
-
-To add ARM64 support (e.g., Apple Silicon or ARM servers):
-
-1. Enable Docker buildx on your runner or use official runners
-2. Update `.github/workflows/docker-build.yml`:
-
-```yaml
-- name: Set up QEMU
-  uses: docker/setup-qemu-action@v3
-
-- name: Build and push
-  uses: docker/build-push-action@v5
-  with:
-    platforms: linux/amd64,linux/arm64
-```
-
-## Tagging Strategy
-
-| Event | Tag | Example |
-|---|---|---|
-| Push to main | `latest`, `main` | `api-gateway:latest`, `api-gateway:main` |
-| Version tag | `v{version}`, `v{major}.{minor}` | `api-gateway:v1.0.0`, `api-gateway:v1.0` |
-| Commit SHA | `{branch}-{sha}` | `api-gateway:main-abc1234` |
-
-## Troubleshooting
-
-### "Error: no such image" when running docker-compose
-→ Images are published only after merging to `main`. For local development, use `docker compose up` (builds from Dockerfile).
-
-### "Permission denied" on pull
-→ Check authentication: `docker login ghcr.io` with valid PAT.
-
-### Image size too large
-→ Check Dockerfile: ensure `pip cache --purge`, minimal base images (python:3.11-slim), and .dockerignore files.
-
-## Future Enhancements
-
-- [ ] Image scanning for vulnerabilities (Trivy)
-- [ ] Image signing with Cosign
-- [ ] Multi-arch builds (ARM64)
-- [ ] Helm charts for Kubernetes deployment
-- [ ] Private registry mirror (for air-gapped environments)
+- [ ] Firma de imágenes (Cosign)
+- [ ] Multi-arquitectura (ARM64)
+- [ ] Manifiestos de Kubernetes / Helm: **no existen** (ver `docs/es/deployment.md`)
+- [ ] Espejo de registro privado (entornos aislados)

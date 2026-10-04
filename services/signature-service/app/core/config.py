@@ -167,7 +167,7 @@ class Settings(BaseSettings):
     totp_enabled: bool = True
     # Timeout agresivo para POST /internal/totp/verify (auth-service) —
     # fail-closed: cualquier excepción (timeout incluido) se traduce en 503
-    # canal_2fa_no_disponible + rollback, mismo patrón que get_signer_email.
+    # canal_2fa_no_disponible + rollback, mismo patrón que get_signer_identity.
     totp_verify_timeout_seconds: float = 3.0
 
     # --- XAdES-T: sello de tiempo RFC 3161 del índice (E06 Inc.4, RT-16) ---
@@ -178,12 +178,25 @@ class Settings(BaseSettings):
     # /sign-xml produce XAdES-B sin sello de tiempo, como antes del Inc.4
     # (entornos sin TSA montada).
     signer_timestamp_enabled: bool = True
-    # URL de una TSA remota RFC 3161 (cliente HTTP, FUERA DE ALCANCE del
-    # Inc.4 — ver app/core/tsa.py). Vacío (default) = TSA LOCAL in-process
+    # URL de una TSA remota RFC 3161. Vacío (default) = TSA LOCAL in-process
     # (app/core/tsa.py::_build_local_timestamp_token). Con este valor puesto,
-    # sign-xml intenta el cliente remoto, que hoy es un stub que falla
-    # explícitamente (TsaUnavailableError, seguimiento) — NUNCA cae en
-    # silencio a la TSA local si el operador fijó una URL.
+    # sign-xml usa el cliente remoto REAL (app/core/tsa.py::
+    # _request_remote_timestamp: POST HTTP, comprueba nonce, EKU y token) y,
+    # si la TSA no responde o el token no es conforme, falla explícitamente
+    # (TsaUnavailableError → 503) — NUNCA cae en silencio a la TSA local si el
+    # operador fijó una URL. Acreditado = `tsa_url` Y `tsa_acreditada`
+    # (app/core/tsa.py::sello_acreditado).
+    # El token RFC 3161 debe llevar el atributo firmado `signing-certificate-v2`
+    # (ESSCertID, RFC 5035) que nombra el certificado de la TSA. Si lo lleva, su
+    # hash se comprueba SIEMPRE. Este flag decide qué pasa cuando FALTA:
+    #   True  -> el sello se rechaza (`tsa_sin_esscertid`), como exige la RFC 3161.
+    #   False -> se acepta (default): los tokens que emitió la TSA local de
+    #            desarrollo ANTES de AREA-04-08 no lo llevan y están embebidos,
+    #            inmutables, en firmas ya emitidas; rechazarlos las daría por
+    #            inválidas. Todo token nuevo (local o de una TSA remota
+    #            conforme) lo lleva. Un despliegue sin corpus anterior, o que ya
+    #            lo re-selló, debe ponerlo en True.
+    tsa_esscertid_obligatorio: bool = False
     tsa_url: str = ""
     # Segundos de espera de la TSA remota (conexión + lectura). Acotado a
     # propósito: `build_timestamp_token` es SÍNCRONO y se invoca desde el mismo

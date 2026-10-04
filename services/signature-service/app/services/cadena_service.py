@@ -42,6 +42,7 @@ from app.core.config import settings
 from app.core.constants import (
     CADENA_NIVEL_AUTORITATIVO,
     CADENA_PAYLOAD_AUTORITATIVO,
+    CADENA_SIN_HUELLA_DECLARADA,
     RADICADO_ESTADO_ANULADO,
 )
 from app.core.events import publish_challenge_emitido
@@ -51,16 +52,19 @@ from app.core.http_clients import (
     OtpEmailDeliveryError,
     SignerEmailError,
     SigningKeyStatusUnavailableError,
+    TotpStatusUnavailableError,
     TotpVerifyUnavailableError,
     aprobar_borrador_remote,
     get_huella_borrador,
-    get_signer_email,
+    get_signer_identity,
     get_signing_key_status_remote,
+    get_totp_status_remote,
     send_otp_email,
     verify_totp,
 )
 from app.core.otp import generate_otp, hmac_otp, mask_email, verify_otp
 from app.core.redis_client import get_redis
+from app.core.secret_derivation import KEY_VERSION_ACTUAL
 from app.providers.base import SignedDoc
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.challenge_repository import ChallengeRepository
@@ -232,6 +236,20 @@ def huella_para_desafio(sol: asyncpg.Record) -> str:
     return hashlib.sha256(identificador).hexdigest()
 
 
+class _IdentidadIncoherente(Exception):
+    """El dueño del bearer reenviado no es el actor al que se atribuye el acto.
+
+    Centinela interno: no sale de este módulo. Ver
+    :meth:`CadenaFirmaService.emitir_challenge` (AREA-04-05).
+    """
+
+    def __init__(self, *, objeto_tipo: str, objeto_id: str, via: str) -> None:
+        super().__init__(via)
+        self.objeto_tipo = objeto_tipo
+        self.objeto_id = objeto_id
+        self.via = via
+
+
 class CadenaFirmaService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
@@ -368,9 +386,18 @@ class CadenaFirmaService:
         # el cliente. Fail-closed — si no se puede resolver, no se abre el
         # circuito: una cadena con la huella equivocada es peor que ninguna,
         # porque parece que protege.
-        huella = payload.payload_sha256
+        #
+        # El `payload_sha256` del body solo cuenta donde NO hay otra verdad: ni
+        # el productor la resuelve (`CADENA_PAYLOAD_AUTORITATIVO`) ni el tipo se
+        # firma como conjunto (`CADENA_SIN_HUELLA_DECLARADA`). Para `radicado` y
+        # `expediente` (AREA-04-09) la huella queda en NULL y se firma el
+        # identificador: antes quien abría la cadena podía declarar un hash
+        # arbitrario y la firma valía sobre ese hash, no sobre el documento.
+        huella: str | None = None
         if payload.objeto_tipo in CADENA_PAYLOAD_AUTORITATIVO:
             huella = await self._resolver_huella(payload.objeto_id)
+        elif payload.objeto_tipo not in CADENA_SIN_HUELLA_DECLARADA:
+            huella = payload.payload_sha256
 
         # La comprobación previa se conserva porque da un mensaje útil, pero NO es
         # la garantía: entre ella y el INSERT cabe otra petición. Quien de verdad
@@ -437,6 +464,7 @@ class CadenaFirmaService:
                         "firmantes": [str(f) for f in payload.firmantes],
                         "nivel_seguridad": nivel,
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
 
         turnos = await self._repo.list_turnos(sol["id"])
@@ -495,7 +523,139 @@ class CadenaFirmaService:
         ]
         return items, total
 
+    # ------------------------------------------------------------------
+    # Coherencia de identidad y segundo factor (AREA-04-05 / AREA-04-02)
+    # ------------------------------------------------------------------
+
+    async def _denegar_identidad_incoherente(
+        self,
+        *,
+        objeto_tipo: str,
+        objeto_id: str,
+        solicitud_id: uuid.UUID | None,
+        actor: uuid.UUID,
+        via: str,
+    ) -> HTTPException:
+        """Asienta la denegación y devuelve el 403 (NO lo levanta).
+
+        El asiento va en la transacción del llamante y sobrevive solo si el
+        llamante la cierra sin levantar — mismo convenio de «devolver, no
+        levantar» que `_gate_2fa`. ``via`` dice por qué canal se detectó
+        (``otp_email``, ``totp_verify``, ``totp_status``, ``signing_key_status``).
+        """
+        if _AUDIT_AVAILABLE:
+            await _audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="firma.identidad_incoherente",
+                object_type=objeto_tipo,
+                object_ref=objeto_id,
+                actor=str(actor),
+                payload={
+                    "solicitud_id": str(solicitud_id) if solicitud_id else None,
+                    "via": via,
+                    # No se nombra de quién era el bearer: sería dar el dato que
+                    # esta denegación existe para no dar.
+                },
+                canal=_audit.CANAL_PETICION,
+            )
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "identidad_incoherente",
+                "detail": (
+                    "La credencial presentada no corresponde al usuario al que se "
+                    "atribuye la firma"
+                ),
+                "status": 403,
+            },
+        )
+
+    async def _veto_factor_correo(
+        self,
+        sol: asyncpg.Record,
+        actor: uuid.UUID,
+        authorization: str | None,
+    ) -> HTTPException | None:
+        """¿Está vetado el OTP-correo para este acto? (AREA-04-02.)
+
+        En un acto de nivel >= 2 el segundo factor es el MÁS FUERTE que tenga el
+        actor: si ya tiene un TOTP activo, el correo no sirve. Antes se aceptaba
+        cualquiera de los dos a elección de quien firma, así que bastaba con
+        controlar el buzón para saltarse el autenticador. Aplica a la firma
+        NATIVA (con credencial personal activa el TOTP ya es obligatorio por
+        otro camino).
+
+        Devuelve el ``HTTPException`` a responder, o ``None`` si el correo vale.
+        Fail-closed: no poder consultar auth-service es 503, nunca «sin TOTP».
+        Levanta ``_IdentidadIncoherente`` si el estado que responde auth-service
+        es de OTRA persona que el actor (el estado de TOTP del bearer ajeno no
+        dice nada sobre el del actor).
+
+        No aplica por debajo de nivel 2, ni con ``settings.totp_enabled`` apagado
+        (un TOTP que no se puede usar no puede vetar nada).
+        """
+        if sol["nivel_seguridad"] < 2 or not settings.totp_enabled:
+            return None
+        try:
+            estado = await get_totp_status_remote(authorization)
+        except TotpStatusUnavailableError:
+            return HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "canal_2fa_no_disponible",
+                    "detail": "No se pudo consultar el segundo factor del firmante (auth-service)",
+                    "status": 503,
+                },
+            )
+        if str(estado.get("user_id") or "") != str(actor):
+            raise _IdentidadIncoherente(
+                objeto_tipo=sol["objeto_tipo"], objeto_id=sol["objeto_id"], via="totp_status"
+            )
+        if estado.get("activo"):
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "totp_requerido",
+                    "detail": (
+                        "Este acto exige el código de su app autenticadora (TOTP): "
+                        "usted ya tiene uno activo y no puede usar el correo."
+                    ),
+                    "status": 409,
+                },
+            )
+        return None
+
     async def emitir_challenge(
+        self,
+        solicitud_id: uuid.UUID,
+        actor: uuid.UUID,
+        authorization: str | None,
+    ) -> ChallengeResponse:
+        """Emite el desafío OTP-correo (ver :meth:`_emitir_challenge`).
+
+        Envoltorio por una sola razón: la incoherencia de identidad (AREA-04-05)
+        se detecta DENTRO de la transacción de emisión —que se revierte, así que
+        no queda desafío ni correo—, pero el asiento de esa denegación tiene que
+        sobrevivir. Un `raise` dentro del `async with` lo habría deshecho junto
+        con todo lo demás; por eso la detección levanta un centinela, la
+        transacción se cierra, y el asiento se escribe aquí en la suya.
+        """
+        try:
+            return await self._emitir_challenge(solicitud_id, actor, authorization)
+        except _IdentidadIncoherente as exc:
+            async with self._conn.transaction():
+                exc_http = await self._denegar_identidad_incoherente(
+                    objeto_tipo=exc.objeto_tipo,
+                    objeto_id=exc.objeto_id,
+                    solicitud_id=solicitud_id,
+                    actor=actor,
+                    via=exc.via,
+                )
+            raise exc_http from None
+
+    async def _emitir_challenge(
         self,
         solicitud_id: uuid.UUID,
         actor: uuid.UUID,
@@ -626,7 +786,7 @@ class CadenaFirmaService:
                 await challenge_repo.expirar(activo["challenge_id"])
 
             try:
-                email = await get_signer_email(authorization)
+                identidad = await get_signer_identity(authorization, self._tenant_slug)
             except SignerEmailError:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -637,12 +797,40 @@ class CadenaFirmaService:
                     },
                 ) from None
 
+            # El OTP sale al correo del dueño del BEARER mientras el acto se
+            # atribuye a `X-User-Id` (el actor). Si no son la misma persona, quien
+            # tiene el bearer recibiría el código y completaría él mismo una firma
+            # atribuida a otro (AREA-04-05). Se compara ANTES de crear el desafío
+            # y de enviar nada.
+            if identidad.user_id != str(actor):
+                raise _IdentidadIncoherente(
+                    objeto_tipo=sol["objeto_tipo"], objeto_id=sol["objeto_id"], via="otp_email"
+                )
+            email = identidad.email
+
+            # AREA-04-02: quien ya tiene TOTP activo no baja al correo en un acto
+            # de nivel >= 2. Fail-closed: no poder consultarlo tampoco lo permite.
+            veto = await self._veto_factor_correo(sol, actor, authorization)
+            if veto is not None:
+                raise veto
+
             canal_masked = mask_email(email)
             otp = generate_otp(settings.otp_longitud)
-            otp_hash = hmac_otp(otp, settings.signature_secret)
+            challenge_id = uuid.uuid4()
+            # El HMAC ata el `challenge_id` y la entidad (migración 020), así que
+            # el identificador se genera ANTES que el hash.
+            otp_hash = hmac_otp(
+                otp,
+                settings.signature_secret,
+                tenant_slug=self._tenant_slug,
+                challenge_id=challenge_id,
+                key_version=KEY_VERSION_ACTUAL,
+            )
             expira_at = now + timedelta(seconds=settings.otp_ttl_seconds)
 
             challenge = await challenge_repo.crear(
+                challenge_id=challenge_id,
+                key_version=KEY_VERSION_ACTUAL,
                 solicitud_id=solicitud_id,
                 firmante_id=actor,
                 hash_documento=hash_documento,
@@ -690,6 +878,7 @@ class CadenaFirmaService:
                         "expira_at": expira_at.isoformat(),
                         "canal_masked": canal_masked,
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
 
         # Best-effort event — the challenge is already persisted and the email
@@ -1028,6 +1217,27 @@ class CadenaFirmaService:
 
         self._gate_no_anulado(sol)
 
+        # Sin huella fijada por la cadena, el firmante NO elige qué bytes se
+        # sellan (AREA-04-09). Antes, `payload_xml` del body se firmaba tal cual
+        # mientras el desafío 2FA se había atado al digest del IDENTIFICADOR
+        # (`huella_para_desafio`): factor y firma cubrían bytes distintos. Donde
+        # la cadena no fija huella se firma el identificador y solo ese.
+        # Después de las guardas de pertenencia y turno para no confirmar a quien
+        # no es parte qué admite esta cadena.
+        if not sol["payload_sha256"] and payload_opcional and payload_opcional.payload_xml:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "payload_xml_no_admitido",
+                    "detail": (
+                        "Esta cadena no fija la huella del contenido: se firma el "
+                        "identificador del objeto y no se admite un payload_xml "
+                        "aportado por el firmante."
+                    ),
+                    "status": 422,
+                },
+            )
+
         # Después de las guardas de pertenencia y turno, y no antes. Corriendo
         # primero, este gate le contestaba `409 documento_modificado` —con el
         # número de versión vigente— a quien NO es parte de la cadena: le
@@ -1042,6 +1252,14 @@ class CadenaFirmaService:
         # a rechazar de todos modos, igual que `turno_es_de_visto_bueno` se
         # rechaza antes de consultar la credencial para no quemar un factor.
         await self._gate_documento_vigente(sol)
+
+        # El estado de la credencial personal depende solo del `Authorization`:
+        # se resuelve ANTES de abrir la transacción (AREA-04-06). Dentro del
+        # `async with`, la llamada HTTP a auth-service corría con el row-lock del
+        # turno y una conexión del pool tomados, así que un auth-service lento
+        # los retenía hasta el timeout. Es de solo lectura: resolverla de más en
+        # un acto que luego se rechaza no cuesta ningún factor.
+        personal_res = await self._resolve_personal_signing_status(authorization)
 
         otp_fail: HTTPException | None = None
         consumed_challenge: dict | None = None
@@ -1088,16 +1306,13 @@ class CadenaFirmaService:
                     },
                 )
 
-            # Payload priority: solicitud.payload_sha256 > request.payload_xml > identifier fallback.
+            # Payload: solicitud.payload_sha256 > identificador (payload_xml del firmante ya no se admite).
             # huella_de_contenido=False marca el caso de "sellado de identificador": se firma
             # "objeto_tipo:objeto_id", NO el contenido → no detecta alteración del documento
             # (DUR 1074/2015 art. 2.2.2.47.4.2). Se audita el flag para trazar el grado de prueba.
             # Resuelto ANTES del gate porque AMBOS caminos (personal/nativa) lo necesitan.
             if sol["payload_sha256"]:
                 payload_bytes = sol["payload_sha256"].encode()
-                huella_de_contenido = True
-            elif payload_opcional and payload_opcional.payload_xml:
-                payload_bytes = payload_opcional.payload_xml.encode()
                 huella_de_contenido = True
             else:
                 payload_bytes = f"{sol['objeto_tipo']}:{sol['objeto_id']}".encode()
@@ -1116,18 +1331,22 @@ class CadenaFirmaService:
             # invocar _firmar_personal/_gate_2fa, así que ningún factor 2FA
             # se consume en un acto que el gate va a rechazar.
             gate_activo = _xades_gate_activo(sol["nivel_seguridad"])
-            # NOTA (auditoría E17/F4 Inc.3): esta llamada HTTP a auth-service
-            # (GET /internal/signing-key/status, timeout signing_key_sign_timeout_seconds)
-            # se ejecuta con el row-lock de turno_activo_for_update ya tomado. Patrón
-            # heredado de Inc.1/2 (_gate_2fa ya hacía IO en-tx) — Inc.3 no añade IO
-            # nueva en la rama de denegación, solo reutiliza este resultado. No afecta
-            # aislamiento de tenant ni autorización; seguimiento fuera de alcance:
-            # resolver el estado personal ANTES de abrir la transacción para no
-            # extender el hold del lock hasta el timeout bajo lentitud de auth-service.
-            personal_res = await self._resolve_personal_signing_status(authorization)
             personal_signed: SignedDoc | None = None
 
-            if personal_res.body is not None:
+            if personal_res.body is not None and (
+                str(personal_res.body.get("user_id") or "") != str(actor)
+            ):
+                # La credencial personal es la del dueño del BEARER; el acto se
+                # atribuye a `X-User-Id`. Si difieren, no se firma con la clave de
+                # otro ni se pide su TOTP en nombre del actor (AREA-04-05).
+                otp_fail = await self._denegar_identidad_incoherente(
+                    objeto_tipo=sol["objeto_tipo"],
+                    objeto_id=sol["objeto_id"],
+                    solicitud_id=solicitud_id,
+                    actor=actor,
+                    via="signing_key_status",
+                )
+            elif personal_res.body is not None:
                 totp_code = payload_opcional.totp_code if payload_opcional else None
                 if not totp_code:
                     # Código de error PROPIO, distinto del `2fa_requerido` que
@@ -1199,6 +1418,7 @@ class CadenaFirmaService:
                             "motivo": motivo,
                             "factor_consumido": False,
                         },
+                        canal=_audit.CANAL_PETICION,
                     )
                 if personal_res.disponible:
                     otp_fail = HTTPException(
@@ -1303,7 +1523,13 @@ class CadenaFirmaService:
                     )
                 else:
                     sign_result = signer.firmar(
-                        payload_bytes, str(actor), sello_iso, settings.signature_secret
+                        payload_bytes,
+                        str(actor),
+                        sello_iso,
+                        settings.signature_secret,
+                        tenant_slug=self._tenant_slug,
+                        objeto_tipo=sol["objeto_tipo"],
+                        objeto_id=sol["objeto_id"],
                     )
 
                     firma_row = await FirmaRepository(self._conn).insert(
@@ -1316,8 +1542,34 @@ class CadenaFirmaService:
                             "firma_blob": sign_result["firma_blob"],
                             "provider": sign_result["provider"],
                             "sello_tiempo": sello_dt,
+                            "key_version": sign_result["key_version"],
                         }
                     )
+                    if authorization and not personal_res.disponible and _AUDIT_AVAILABLE:
+                        # AREA-04-12: con el gate en `off`, un canal de
+                        # signing-key caído degrada a nativa sin que el actor
+                        # sepa si tenía certificado. La degradación se permite
+                        # (el gate es decisión de la entidad), pero NO en
+                        # silencio: queda asiento, en la misma transacción que
+                        # la firma. `disponible=False` solo ocurre ante un fallo
+                        # de infraestructura real, nunca por «sin certificado».
+                        await _audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant_slug,
+                            service=_SERVICE,
+                            action="firma.fallback_nativa_canal_caido",
+                            object_type=sol["objeto_tipo"],
+                            object_ref=sol["objeto_id"],
+                            actor=str(actor),
+                            payload={
+                                "solicitud_id": str(solicitud_id),
+                                "firma_id": str(firma_row["id"]),
+                                "nivel_seguridad": sol["nivel_seguridad"],
+                                "gate_modo": settings.firma_personal_require_xades,
+                                "motivo": "canal_status_no_disponible",
+                            },
+                            canal=_audit.CANAL_PETICION,
+                        )
                 firma_id: uuid.UUID = firma_row["id"]
 
                 ok = await self._repo.marcar_turno(turno["id"], "firmado", firma_id=firma_id)
@@ -1397,6 +1649,7 @@ class CadenaFirmaService:
                                 else None
                             ),
                         },
+                        canal=_audit.CANAL_PETICION,
                     )
         # The `async with` block above commits unless one of the two genuine
         # concurrency-conflict branches raised (harmless rollback — nothing had
@@ -1561,6 +1814,27 @@ class CadenaFirmaService:
         if totp_code is not None and settings.totp_enabled:
             return await self._gate_2fa_totp(solicitud_id, actor, sol, totp_code, authorization)
 
+        # A partir de aquí, el factor es el correo. Si el actor ya tiene TOTP
+        # activo en un acto de nivel >= 2, no vale (AREA-04-02) — y se responde
+        # `totp_requerido` también cuando falta `challenge_id`/`otp`, para que el
+        # cliente pida el código de la app y no arranque otro reto por correo.
+        # Corre ANTES de tocar el desafío: nada se consume ni cuenta como intento.
+        try:
+            veto = await self._veto_factor_correo(sol, actor, authorization)
+        except _IdentidadIncoherente as exc:
+            return (
+                await self._denegar_identidad_incoherente(
+                    objeto_tipo=exc.objeto_tipo,
+                    objeto_id=exc.objeto_id,
+                    solicitud_id=solicitud_id,
+                    actor=actor,
+                    via=exc.via,
+                ),
+                None,
+            )
+        if veto is not None:
+            return veto, None
+
         if challenge_id is None or otp is None:
             return HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1664,7 +1938,14 @@ class CadenaFirmaService:
                 },
             ), None
 
-        if not verify_otp(otp, challenge["otp_hash"], settings.signature_secret):
+        if not verify_otp(
+            otp,
+            challenge["otp_hash"],
+            settings.signature_secret,
+            key_version=challenge["key_version"],
+            tenant_slug=self._tenant_slug,
+            challenge_id=challenge["challenge_id"],
+        ):
             nuevos_intentos = challenge["intentos"] + 1
             bloqueado = nuevos_intentos >= challenge["max_intentos"]
             nuevo_estado = "bloqueado" if bloqueado else "pendiente"
@@ -1688,6 +1969,7 @@ class CadenaFirmaService:
                         "intentos_restantes": intentos_restantes,
                         "motivo": "otp_incorrecto",
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
             return HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1749,6 +2031,21 @@ class CadenaFirmaService:
 
         now = datetime.now(UTC)
 
+        if result.get("valido") and str(result.get("user_id") or "") != str(actor):
+            # El TOTP es válido, pero del dueño del bearer, no del actor al que se
+            # atribuye la firma (AREA-04-05). No se marca el turno ni se firma.
+            # (El código ya quedó consumido en auth-service: sobreconsumo seguro.)
+            return (
+                await self._denegar_identidad_incoherente(
+                    objeto_tipo=sol["objeto_tipo"],
+                    objeto_id=sol["objeto_id"],
+                    solicitud_id=solicitud_id,
+                    actor=actor,
+                    via="totp_verify",
+                ),
+                None,
+            )
+
         if result.get("valido"):
             consumed = {
                 "challenge_id": None,
@@ -1808,6 +2105,7 @@ class CadenaFirmaService:
                     "motivo": motivo,
                     "intentos_restantes": intentos_restantes,
                 },
+                canal=_audit.CANAL_PETICION,
             )
         return exc, None
 
@@ -1907,6 +2205,7 @@ class CadenaFirmaService:
                         "orden": turno["orden"],
                         "motivo": motivo,
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
 
         return await self.get(solicitud_id, actor)
@@ -2039,6 +2338,7 @@ class CadenaFirmaService:
                         "payload_sha256": sol["payload_sha256"],
                         "comentario": comentario,
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
 
         return await self.get(solicitud_id, actor)

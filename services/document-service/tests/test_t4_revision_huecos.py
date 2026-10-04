@@ -39,6 +39,7 @@ from tests.test_import import _pkg, _run, _svc
 from tests.test_postal_callback import (  # noqa: F401
     SECRET,
     _body,
+    _cred,
     _hdr,
     _ship_row,
     _url,
@@ -131,8 +132,12 @@ async def test_el_callback_pasa_su_estado_previo_y_es_acto_de_sistema(callback_c
     El mock no evalúa el SQL: se verifican los PARÁMETROS del UPDATE ($4 y $5)."""
     client, conn, _ = callback_ctx
     body = _body(estado_operador="EN_TRANSITO", event_id="evt-par")
-    conn.fetchval.side_effect = [SECRET, uuid.uuid4(), None]
-    conn.fetchrow.side_effect = [_ship_row(estado="registrado"), _ship_row(estado="en_transito")]
+    conn.fetchval.side_effect = [uuid.uuid4(), None]
+    conn.fetchrow.side_effect = [
+        _cred(),
+        _ship_row(estado="registrado"),
+        _ship_row(estado="en_transito"),
+    ]
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     assert resp.status_code == 200 and resp.json()["status"] == "applied"
     upd = next(c.args for c in conn.fetchrow.await_args_list if "UPDATE postal_shipment" in str(c.args[0]))
@@ -147,8 +152,9 @@ async def test_el_callback_que_pierde_la_carrera_no_pisa_ni_marca_aplicada(callb
     sin `aplicada = TRUE`, sin evento a Redis y sin asiento de transición aplicada."""
     client, conn, redis = callback_ctx
     body = _body(estado_operador="DEVUELTO", event_id="evt-carrera", motivo="x")
-    conn.fetchval.side_effect = [SECRET, uuid.uuid4(), None]
+    conn.fetchval.side_effect = [uuid.uuid4(), None]
     conn.fetchrow.side_effect = [
+        _cred(),
         _ship_row(estado="en_transito"),  # lectura previa
         None,                             # UPDATE ... WHERE estado='en_transito' → 0 filas
         _ship_row(estado="entregado"),    # relectura

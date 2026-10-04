@@ -81,11 +81,15 @@ WORKER_AGENT = "system/pdfa-ingest-worker"
 # Firma de archivo PDF (magic bytes) — se detecta por CONTENIDO, nunca por el
 # `mime_type` que declara el cliente en el multipart (no es fiable). Mismo
 # criterio que `app.services.aip_service._looks_like_pdf`.
-_PDF_MAGIC = b"%PDF"
+_PDF_MAGIC = b"%PDF-"
+# ISO 32000 (Anexo H) y los lectores reales toleran basura delante de la cabecera
+# dentro del primer KiB. Con `startswith`, un PDF con prefijo saltaba la validación
+# PDF/A en modo estricto (AREA-08-02) aunque Acrobat lo abra sin queja.
+_PDF_MAGIC_WINDOW = 1024
 
 
 def looks_like_pdf(content: bytes) -> bool:
-    return content.startswith(_PDF_MAGIC)
+    return _PDF_MAGIC in content[:_PDF_MAGIC_WINDOW]
 
 
 class PdfaNonConformantError(Exception):

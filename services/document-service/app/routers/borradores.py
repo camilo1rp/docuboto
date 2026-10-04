@@ -17,6 +17,7 @@ from typing import Any
 import asyncpg
 from fastapi import (
     APIRouter,
+    Body,
     Depends,
     File,
     HTTPException,
@@ -32,6 +33,7 @@ from app.core.combinacion import desconocidos, vocabulario
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.borrador import (
     BorradorCreate,
+    BorradorRadicar,
     BorradorResponse,
     BorradorUpdate,
     CombinarRequest,
@@ -42,7 +44,11 @@ from app.schemas.borrador import (
 )
 from app.schemas.document import DocumentResponse
 from app.services.borrador_service import BorradorService
-from app.services.document_service import DocumentService, InvalidTenantError
+from app.services.document_service import (
+    DocumentService,
+    InvalidDependenciaError,
+    InvalidTenantError,
+)
 from app.services.importar_ofimatico import ImportacionError
 from app.services.importar_ofimatico import importar as importar_ofimatico
 
@@ -316,11 +322,12 @@ async def editar_borrador(
     payload: BorradorUpdate,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    redis: Any = Depends(get_redis),
 ) -> BorradorResponse:
     user_id = _user(request)
     clearance = await resolve_caller_clearance(conn, user_id)
     # El slug NO es decorativo: el asiento `borrador.editado` se imputa a él.
-    return await BorradorService(conn, _slug(request)).editar(
+    return await BorradorService(conn, _slug(request), redis=redis).editar(
         borrador_id, payload, max_clearance=clearance, actor=user_id
     )
 
@@ -424,6 +431,7 @@ async def devolver_borrador(
 async def radicar_borrador(
     borrador_id: uuid.UUID,
     request: Request,
+    datos: BorradorRadicar | None = Body(default=None),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
@@ -440,7 +448,7 @@ async def radicar_borrador(
     servicio = BorradorService(conn, _slug(request), tenant_client)
     try:
         return await servicio.radicar(
-            borrador_id, doc_service, user_id, max_clearance=clearance
+            borrador_id, doc_service, user_id, max_clearance=clearance, datos=datos
         )
     except RenderNoDisponibleError as exc:
         # 503 y NO se radica. Degradar a «radicar sin documento» dejaría a la
@@ -465,4 +473,9 @@ async def radicar_borrador(
                 "detail": f"No se pudo generar el documento de salida: {exc}",
                 "status": 422,
             },
+        ) from exc
+    except InvalidDependenciaError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "invalid_dependencia", "detail": str(exc), "status": 400},
         ) from exc

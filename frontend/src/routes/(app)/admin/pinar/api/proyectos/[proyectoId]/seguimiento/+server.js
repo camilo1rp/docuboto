@@ -15,7 +15,12 @@
  * otro caso): un plan en borrador todavía no compromete a nada, y uno cerrado ya
  * no admite movimiento.
  */
-import { mutacion, UUID_RE } from "$lib/server/pinarProxy.server.js";
+import { lectura, mutacion, UUID_RE } from "$lib/server/pinarProxy.server.js";
+
+/** Historial del proyecto (`GET /pinar/proyectos/{id}/seguimiento`), de solo lectura. */
+export const GET = lectura({
+  path: (p) => (UUID_RE.test(p.proyectoId ?? "") ? `/proyectos/${p.proyectoId}/seguimiento` : null),
+});
 
 export const POST = mutacion({
   method: "POST",

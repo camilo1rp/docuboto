@@ -29,8 +29,9 @@ pytestmark = pytest.mark.integration
 async def _envio(conn: asyncpg.Connection, nivel: int = 1) -> asyncpg.Record:
     rid = await conn.fetchval(
         "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, "
-        "tenant_code, registered_by, nivel_seguridad) "
-        "VALUES ('2026-T-S-000001', 'S', 2026, 1, 'x', 'T', gen_random_uuid(), $1) "
+        "tenant_code, registered_by, nivel_seguridad, clasificacion_fundamento) "
+        "VALUES ('2026-T-S-000001', 'S', 2026, 1, 'x', 'T', gen_random_uuid(), $1, "
+        "CASE WHEN $1::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) "
         "RETURNING id",
         nivel,
     )

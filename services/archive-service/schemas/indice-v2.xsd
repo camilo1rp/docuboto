@@ -14,10 +14,10 @@
   Índice electrónico del expediente — perfil AMPLIADO v2 (E15 Inc.3,
   Acuerdo AGN 001/2024 art. 4.3.2.3, RT-15 PARCIAL).
 
-  Este XSD es un artefacto de CONTRATO/documentación normativa del XML
-  producido por `app/services/index_builder.py::build_xml`. NO es un gate de
-  runtime: la validación estricta contra XSD (lxml) sigue siendo evolutiva —
-  ver el docstring del módulo `index_builder`.
+  Este XSD es el CONTRATO del XML producido por
+  `app/services/index_builder.py::build_xml` y, desde AREA-07-01, también un gate de
+  runtime: `app/services/index_xsd.py` (lxml) valida contra él el índice de este
+  perfil ANTES de sellarlo (si no valida: `pendiente_firma`, motivo `xsd_invalido`).
 
   Respecto a v1 (namespace urn:orpycamcp:indice:v1):
     - `<documento>` añade tres elementos OPCIONALES (minOccurs="0"):

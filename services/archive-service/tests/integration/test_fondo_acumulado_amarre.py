@@ -255,17 +255,21 @@ async def test_expedientes_fondo_acumulado_forma_check(
 
 
 @pytest.mark.integration
-async def test_worm_resolvers_fail_closed_para_fondo_acumulado(
+async def test_worm_resolvers_cablean_el_fondo_acumulado_con_la_fecha_extrema_y_el_clamp(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """ADR-026 D4, guard de seguridad añadido en este incremento: hasta que
-    el Increment 3 cablee la fecha correcta + el clamp de calendario vencido,
-    NINGUNA ruta WORM debe activarse para un expediente de fondo acumulado
-    -- ni siquiera por accidente, ahora que la Capa 4 relajada permite
-    CERRARLO. `IndexService._resolve_worm_retention` debe devolver `None`
-    (fail-closed) para un expediente `fondo_acumulado` ya cerrado, aun
-    cuando todos los datos para calcular una retención (incorrecta) estén
-    presentes."""
+    """ADR-026 D4 + AREA-06-04 (Increment 3), contra Postgres REAL con fechas históricas
+    (lo que el ADR exige antes de habilitar cualquier ruta WORM para un fondo).
+
+    Antes los resolutores devolvían `None` (fail-closed) y el índice, el acta y el AIP de
+    un fondo acumulado quedaban SIN Object-Lock para siempre. Ahora la base es
+    `fecha_extrema_final` con clamp: un fondo de 1985 con 5 años de retención (venció en
+    1990) acaba con `retain_until == hoy + margen`; si la base fuera `closed_at` (hoy)
+    saldría hoy + 5 años, y si no hubiera clamp saldría 1990 (storage lo rechaza)."""
+    from datetime import timedelta
+
+    from app.core.config import settings
+    from app.services.aip_wiring_service import AipWiringService
     from app.services.index_service import IndexService
 
     slug, conn = tenant_ctx
@@ -281,7 +285,7 @@ async def test_worm_resolvers_fail_closed_para_fondo_acumulado(
     )
     expediente = await archive.create_expediente(
         payload=ExpedienteCreate(
-            name="itest WORM fail-closed",
+            name="itest WORM fondo acumulado",
             trd_serie_id=tvd.id,
             origen="fondo_acumulado",
             fecha_extrema_inicial=date(1980, 1, 1),
@@ -290,7 +294,33 @@ async def test_worm_resolvers_fail_closed_para_fondo_acumulado(
         opened_by=None,
     )
     await archive.close_expediente(expediente.id)
+    from app.core.clearance import CLEARANCE_SIN_RESTRICCION
+    from app.repositories.archive_repository import ArchiveRepository
+
+    cerrado = await ArchiveRepository(conn, slug).get_expediente_by_id(
+        expediente.id, max_clearance=CLEARANCE_SIN_RESTRICCION
+    )
+    assert cerrado is not None and cerrado.closed_at is not None
+
+    hoy = date.today()
+    minimo = hoy + timedelta(days=settings.worm_fondo_acumulado_margen_dias)
+
+    def _retain_until(total: int, inicio: date) -> date:
+        try:
+            return inicio.replace(year=inicio.year + total)
+        except ValueError:
+            return inicio.replace(month=2, day=28, year=inicio.year + total)
 
     index = IndexService(conn, slug)
     retention = await index._resolve_worm_retention(expediente.id)
-    assert retention is None
+    assert retention is not None, "el índice de un fondo acumulado quedó sin WORM"
+    total, inicio = retention
+    assert total == 5
+    assert abs((_retain_until(total, inicio) - minimo).days) <= 1
+    # y no es la base equivocada: closed_at + 5 años estaría ~5 años más lejos
+    assert _retain_until(total, inicio) < _retain_until(5, cerrado.closed_at.date())
+
+    aip = AipWiringService(conn, slug)
+    retention_aip = await aip._resolve_aip_retention(cerrado)
+    assert retention_aip == retention
+    assert await index._resolve_ct_retencion_anios(expediente.id) == 5

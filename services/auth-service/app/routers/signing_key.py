@@ -330,7 +330,10 @@ async def internal_signing_key_status(
     ``sign-digest``; nunca devuelve la clave privada."""
     try:
         user_id, _tenant_slug = await _resolve_bearer_user(credentials, conn)
-        return await SigningKeyService(conn).get_status(user_id)
+        estado = await SigningKeyService(conn).get_status(user_id)
+        # El llamante atribuye el acto a `X-User-Id` y esta credencial es la del
+        # BEARER: sin decir de quién es, no puede comprobar que coinciden.
+        return estado.model_copy(update={"user_id": user_id})
     finally:
         try:
             await conn.execute("SET search_path = public")
@@ -386,7 +389,7 @@ async def internal_signing_key_revocation_status(
     firmante interactivo detrás de una consulta de verificación pública) MÁS
     ``X-Tenant-Slug`` (fija el ``search_path`` — una huella de OTRO tenant
     nunca aparece en esta búsqueda, fail-closed -> ``desconocido``, NUNCA
-    ``vigente``). Devuelve SOLO ``{status, revocado_at}`` — jamás
+    ``vigente``). Devuelve SOLO ``{status, revocado_at, motivo_revocacion}`` — jamás
     cert/clave. Fuera de ``/api/v1`` — inalcanzable vía api-gateway, igual
     que el resto de ``internal_router``.
     """

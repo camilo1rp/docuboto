@@ -31,7 +31,7 @@ import asyncpg
 _COLS = (
     "challenge_id, solicitud_id, firmante_id, hash_documento, factor_tipo, otp_hash, "
     "estado, intentos, max_intentos, expira_at, verificado_at, consumido_at, creado_at, "
-    "canal_masked, tenant_slug"
+    "canal_masked, tenant_slug, key_version"
 )
 
 
@@ -72,6 +72,8 @@ class ChallengeRepository:
     async def crear(
         self,
         *,
+        challenge_id: uuid.UUID,
+        key_version: int,
         solicitud_id: uuid.UUID,
         firmante_id: uuid.UUID,
         hash_documento: str,
@@ -81,12 +83,22 @@ class ChallengeRepository:
         canal_masked: str,
         tenant_slug: str,
     ) -> asyncpg.Record:
+        """Inserta el desafío.
+
+        ``challenge_id`` lo genera el llamante ANTES de calcular ``otp_hash``:
+        el HMAC del OTP ata el ``challenge_id`` (migración 020, AREA-04-11) y por
+        tanto el identificador tiene que existir antes que el hash, no salir del
+        DEFAULT de la columna. ``key_version`` es el esquema con que se calculó.
+        """
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma_challenge
-                    (solicitud_id, firmante_id, hash_documento, otp_hash,
-                     max_intentos, expira_at, canal_masked, tenant_slug)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    (challenge_id, key_version, solicitud_id, firmante_id,
+                     hash_documento, otp_hash, max_intentos, expira_at,
+                     canal_masked, tenant_slug)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 RETURNING {_COLS}""",
+            challenge_id,
+            key_version,
             solicitud_id,
             firmante_id,
             hash_documento,

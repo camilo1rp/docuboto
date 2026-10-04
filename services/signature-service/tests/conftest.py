@@ -14,6 +14,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -76,3 +77,18 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac, conn
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Doble por defecto de ``GET /internal/totp/status`` (auth-service).
+
+    El OTP-correo en un acto de nivel >= 2 consulta si el actor ya tiene TOTP
+    activo (AREA-04-02). La respuesta tiene la FORMA REAL del contrato
+    (``{"activo": bool, "user_id": str}``, ver ``InternalTotpStatusResponse`` en
+    auth-service y su prueba), con el dueño del bearer == el actor de prueba. Los
+    tests que ejercen el veto o la incoherencia de identidad lo sustituyen.
+    """
+    mock = AsyncMock(return_value={"activo": False, "user_id": str(USER)})
+    monkeypatch.setattr("app.services.cadena_service.get_totp_status_remote", mock)
+    return mock

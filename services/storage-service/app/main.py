@@ -87,6 +87,7 @@ async def _format_migration_loop() -> None:
     **No decide qué está obsoleto.** Eso lo declara la entidad en
     `FORMAT_MIGRATION_MIME_TYPES`, y vacío significa no migrar nada.
     """
+    request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     while True:
         try:
             await _format_migration_once(

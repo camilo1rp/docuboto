@@ -18,6 +18,7 @@ from __future__ import annotations
 # Se cualifica en vez de renombrar el método porque `list` es su nombre correcto
 # y renombrarlo obligaría a tocar routers y servicios de otros módulos.
 import builtins
+import json
 import uuid
 from datetime import datetime
 
@@ -46,7 +47,7 @@ _COLS = (
 _ACTA_COLS = (
     "a.transferencia_id, a.acta_fuid_xml, a.acta_fuid_sha256, a.elaborado_por, "
     "a.entregado_por, a.recibido_por, a.elaborado_at, a.entregado_at, a.recibido_at, "
-    "a.indice_version, a.congelada_at"
+    "a.indice_version, a.indice_firma_id, a.indice_sha256, a.congelada_at"
 )
 
 #: **Los tres responsables del FUID se resuelven a un nombre aquí, no en la
@@ -94,7 +95,8 @@ _ACTA_FIRMA_WORM_COLS = (
 # Migración 027 (E17/F4 Incremento 1 -- firma PERSONAL PKI por-usuario del
 # acta): tabla ADITIVA sobre `transferencia_acta_firma` (sello institucional,
 # migración 026) -- 1:N por transferencia (una fila por `rol` firmante,
-# hoy solo 'recibe'), estrictamente append-only (sin columnas reconcile_*:
+# 'recibe', 'entrega' y 'elabora' -- los tres con escritor, Inc.1 a Inc.3),
+# estrictamente append-only (sin columnas reconcile_*:
 # la firma personal exige un TOTP interactivo, nunca se reconcilia en
 # background).
 _ACTA_FIRMA_PERSONAL_COLS = (
@@ -326,7 +328,9 @@ class TransferenciaRepository:
     # transferencia_acta_firma (H-H, E06/F4) -- estado MUTABLE del sellado
     # -----------------------------------------------------------------
 
-    async def insert_acta_firma_pendiente(self, transferencia_id: uuid.UUID) -> None:
+    async def insert_acta_firma_pendiente(
+        self, transferencia_id: uuid.UUID, *, fixity_premis_detalle: dict | None = None
+    ) -> None:
         """Crea la fila de bookkeeping `'pendiente_firma'` -- escritura LOCAL
         de BD (sin HTTP), llamada DENTRO de la MISMA `conn.transaction()` que
         `insert_acta` en `TransferenciaService.recibir` (preserva la
@@ -335,9 +339,91 @@ class TransferenciaRepository:
         muera entre el commit y el intento de sellado post-commit -- el job
         de reconciliación la recoge igual."""
         await self._sp()
+        if fixity_premis_detalle is None:
+            await self._conn.execute(
+                "INSERT INTO transferencia_acta_firma (transferencia_id) VALUES ($1)",
+                transferencia_id,
+            )
+            return
+        # AREA-07-05 (migración 056): el detalle de la fixity de la recepción queda aquí,
+        # en la MISMA tx, para poder registrar/reintentar su evento PREMIS después.
         await self._conn.execute(
-            "INSERT INTO transferencia_acta_firma (transferencia_id) VALUES ($1)",
+            "INSERT INTO transferencia_acta_firma (transferencia_id, fixity_premis_detalle) "
+            "VALUES ($1, $2::jsonb)",
             transferencia_id,
+            json.dumps(fixity_premis_detalle),
+        )
+
+    async def get_fixity_premis(self, transferencia_id: uuid.UUID) -> asyncpg.Record | None:
+        """Detalle de la fixity de la recepción y su estado de registro PREMIS, junto con el
+        expediente y el receptor (AREA-07-05)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            "SELECT taf.transferencia_id, taf.fixity_premis_detalle, taf.fixity_premis_at, "
+            "taf.fixity_premis_intentos, t.expediente_id, t.decidida_por "
+            "FROM transferencia_acta_firma taf "
+            "JOIN transferencias t ON t.id = taf.transferencia_id "
+            "WHERE taf.transferencia_id = $1",
+            transferencia_id,
+        )
+
+    async def mark_fixity_premis_registrado(self, transferencia_id: uuid.UUID) -> int:
+        """Marca el evento PREMIS del fixity-check como confirmado por storage-service. El
+        `WHERE ... IS NULL` lo fija UNA sola vez (idempotente ante una carrera del disparo
+        post-commit con la barrida de reconciliación)."""
+        await self._sp()
+        tag = await self._conn.execute(
+            "UPDATE transferencia_acta_firma SET fixity_premis_at = now(), "
+            "fixity_premis_proximo_at = NULL, fixity_premis_ultimo_error = NULL "
+            "WHERE transferencia_id = $1 AND fixity_premis_at IS NULL",
+            transferencia_id,
+        )
+        try:
+            return int(tag.split()[-1])
+        except (AttributeError, ValueError, IndexError):
+            return 0
+
+    async def bump_fixity_premis_intento(
+        self,
+        transferencia_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        """Registra un intento FALLIDO de registrar el evento PREMIS (backoff)."""
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE transferencia_acta_firma SET "
+            "fixity_premis_intentos = fixity_premis_intentos + 1, "
+            "fixity_premis_proximo_at = $2, fixity_premis_ultimo_error = $3, "
+            "fixity_premis_agotado = $4 WHERE transferencia_id = $1",
+            transferencia_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
+
+    async def list_fixity_premis_pending(self, limit: int) -> builtins.list[asyncpg.Record]:
+        """Recepciones con el evento PREMIS del fixity-check sin confirmar, no agotadas y con
+        el backoff cumplido. Solo las que guardaron `fixity_premis_detalle` (las anteriores a
+        la migración 056 no tienen con qué reconstruirlo)."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT taf.transferencia_id, taf.fixity_premis_intentos
+                  FROM transferencia_acta_firma taf
+                 WHERE taf.fixity_premis_detalle IS NOT NULL
+                   AND taf.fixity_premis_at IS NULL
+                   AND taf.fixity_premis_agotado = FALSE
+                   AND (taf.fixity_premis_proximo_at IS NULL
+                        OR taf.fixity_premis_proximo_at <= now())
+                 ORDER BY taf.fixity_premis_proximo_at ASC NULLS FIRST
+                 LIMIT $1
+                """,
+                limit,
+            )
         )
 
     async def get_acta_firma(self, transferencia_id: uuid.UUID) -> asyncpg.Record | None:
@@ -457,8 +543,10 @@ class TransferenciaRepository:
         )
 
     async def list_acta_firma_personal(self, transferencia_id: uuid.UUID) -> builtins.list[asyncpg.Record]:
-        """Todas las firmas personales de una transferencia (hoy, a lo sumo
-        una: 'recibe'; 'entrega' queda representable para el Inc.2 -- deuda)."""
+        """Todas las firmas personales de una transferencia: a lo sumo una por
+        rol —'recibe' (archivista receptor), 'entrega' (co-firma del remitente) y
+        'elabora' (elaborador del FUID)—, los tres con escritor en
+        `TransferenciaService` (Inc.1 a Inc.3)."""
         await self._sp()
         return list(
             await self._conn.fetch(
@@ -485,6 +573,105 @@ class TransferenciaRepository:
             f"VALUES ({ph}) ON CONFLICT (transferencia_id, rol) DO NOTHING "
             f"RETURNING {_ACTA_FIRMA_PERSONAL_COLS}",
             *data.values(),
+        )
+
+    # -----------------------------------------------------------------
+    # AREA-07-10 (migración 057): cableado WORM de cada firma personal
+    # -----------------------------------------------------------------
+
+    async def insert_firma_personal_worm_pendiente(self, firma_personal_id: uuid.UUID) -> None:
+        """Fila de bookkeeping WORM de una firma personal recién insertada: va en la MISMA
+        tx que la firma, así toda firma personal tiene su fila aunque el proceso muera
+        antes del disparo post-commit y la reconciliación la recoge igual."""
+        await self._sp()
+        await self._conn.execute(
+            "INSERT INTO transferencia_acta_firma_personal_worm (firma_personal_id) "
+            "VALUES ($1) ON CONFLICT (firma_personal_id) DO NOTHING",
+            firma_personal_id,
+        )
+
+    async def get_firma_personal_worm(
+        self, firma_personal_id: uuid.UUID
+    ) -> asyncpg.Record | None:
+        """La firma personal + su estado WORM + la transferencia (expediente) a la que
+        pertenece, para `proteger_worm_firma_personal`."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            """
+            SELECT fp.id, fp.transferencia_id, fp.rol, fp.minio_key_firmado, fp.creada_en,
+                   t.expediente_id,
+                   w.worm_protegido_at, w.worm_reconcile_intentos
+              FROM transferencia_acta_firma_personal fp
+              JOIN transferencias t ON t.id = fp.transferencia_id
+              LEFT JOIN transferencia_acta_firma_personal_worm w ON w.firma_personal_id = fp.id
+             WHERE fp.id = $1
+            """,
+            firma_personal_id,
+        )
+
+    async def mark_firma_personal_worm_protegido(
+        self,
+        firma_personal_id: uuid.UUID,
+        worm_object_id: uuid.UUID | None,
+        *,
+        worm_retain_until: datetime | None,
+    ) -> int:
+        """Marca la copia WORM de la firma personal como confirmada. `WHERE ... IS NULL`:
+        se fija UNA vez; devuelve las filas afectadas para no asentar un acto que esta
+        llamada no produjo (carrera del disparo post-commit con la barrida)."""
+        await self._sp()
+        tag = await self._conn.execute(
+            "UPDATE transferencia_acta_firma_personal_worm SET worm_protegido_at = now(), "
+            "worm_object_id = $2, worm_retain_until = $3, worm_reconcile_proximo_at = NULL, "
+            "worm_reconcile_ultimo_error = NULL "
+            "WHERE firma_personal_id = $1 AND worm_protegido_at IS NULL",
+            firma_personal_id,
+            worm_object_id,
+            worm_retain_until,
+        )
+        try:
+            return int(tag.split()[-1])
+        except (AttributeError, ValueError, IndexError):
+            return 0
+
+    async def bump_firma_personal_worm_intento(
+        self,
+        firma_personal_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE transferencia_acta_firma_personal_worm SET "
+            "worm_reconcile_intentos = worm_reconcile_intentos + 1, "
+            "worm_reconcile_proximo_at = $2, worm_reconcile_ultimo_error = $3, "
+            "worm_reconcile_agotado = $4 WHERE firma_personal_id = $1",
+            firma_personal_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
+
+    async def list_firma_personal_worm_pending(
+        self, limit: int
+    ) -> builtins.list[asyncpg.Record]:
+        """Firmas personales sin proteger, no agotadas y con el backoff cumplido."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT w.firma_personal_id, w.worm_reconcile_intentos
+                  FROM transferencia_acta_firma_personal_worm w
+                 WHERE w.worm_protegido_at IS NULL
+                   AND w.worm_reconcile_agotado = FALSE
+                   AND (w.worm_reconcile_proximo_at IS NULL OR w.worm_reconcile_proximo_at <= now())
+                 ORDER BY w.worm_reconcile_proximo_at ASC NULLS FIRST
+                 LIMIT $1
+                """,
+                limit,
+            )
         )
 
     async def list_acta_firmas_pendientes(self, limit: int) -> builtins.list[asyncpg.Record]:

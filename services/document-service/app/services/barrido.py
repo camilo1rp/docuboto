@@ -27,11 +27,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import asyncpg
+from orpycamcp_common.request_log import canal_de_fondo
 
 from app.core.config import settings
 from app.core.database import acquire_tenant, get_pool
+from app.services import outbox
 from app.services.batch_service import BatchService
 from app.services.import_huerfanos_service import ImportHuerfanosService
 
@@ -50,9 +53,9 @@ async def tenants_activos(pool: asyncpg.Pool) -> list[str]:
     return [r["slug"] for r in rows]
 
 
-async def barrer_tenant(slug: str) -> dict[str, int]:
-    """Las tres fases sobre un tenant. Cada una aislada de las otras."""
-    resumen = {"huerfanos": 0, "lotes_reanudados": 0, "lotes_retirados": 0}
+async def barrer_tenant(slug: str, redis: Any | None = None) -> dict[str, int]:
+    """Las cuatro fases sobre un tenant. Cada una aislada de las otras."""
+    resumen = {"huerfanos": 0, "lotes_reanudados": 0, "lotes_retirados": 0, "eventos_reenviados": 0}
     async with acquire_tenant(slug) as conn:
         # 1. purga de huérfanos, exclusiva por tenant entre réplicas
         if await conn.fetchval("SELECT pg_try_advisory_lock($1::int, hashtext(current_schema()))", _ESPACIO_LOCK_PURGA):
@@ -84,15 +87,24 @@ async def barrer_tenant(slug: str) -> dict[str, int]:
             raise
         except Exception:
             logger.exception("barrido: retención de lotes falló en tenant=%s", slug)
+        # 4. relé del outbox (AREA-09-05): reenvía los eventos de dominio que el camino
+        #    rápido no pudo publicar (Redis caído justo tras el commit).
+        if redis is not None:
+            try:
+                resumen["eventos_reenviados"] = await outbox.retransmitir(conn, redis)
+            except asyncpg.UndefinedTableError:
+                raise
+            except Exception:
+                logger.exception("barrido: relé del outbox falló en tenant=%s", slug)
     return resumen
 
 
-async def barrer_una_vez() -> dict[str, dict[str, int]]:
+async def barrer_una_vez(redis: Any | None = None) -> dict[str, dict[str, int]]:
     """Una pasada por todos los tenants activos. Devuelve el resumen por slug."""
     resumen: dict[str, dict[str, int]] = {}
     for slug in await tenants_activos(get_pool()):
         try:
-            resumen[slug] = await barrer_tenant(slug)
+            resumen[slug] = await barrer_tenant(slug, redis)
         except asyncpg.UndefinedTableError:
             # Tenant sin las migraciones de este servicio: nada que barrer.
             logger.debug("barrido: tenant=%s sin tablas de document-service", slug)
@@ -101,12 +113,13 @@ async def barrer_una_vez() -> dict[str, dict[str, int]]:
     return resumen
 
 
-async def bucle_de_barrido() -> None:
+async def bucle_de_barrido(redis: Any | None = None) -> None:
     """Tarea de fondo del `lifespan`: espera un poco y barre cada intervalo."""
+    canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     await asyncio.sleep(settings.barrido_retraso_inicial_segundos)
     while True:
         try:
-            await barrer_una_vez()
+            await barrer_una_vez(redis)
         except asyncio.CancelledError:
             raise
         except Exception:

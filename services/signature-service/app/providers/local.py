@@ -100,8 +100,8 @@ LT" persistida) — la distinción entre ambos niveles solo emerge en
 resto del material LT sí. Sin material CA montado, la firma se queda en
 XAdES-T: degradación OBSERVABLE (``firma.lt_downgrade_no_ca`` en
 ``app.routers.signature``), nunca silenciosa. Perfil "LTA SIMPLIFICADO, NO
-ACREDITADO" (RF-FIR-15): ``acreditado`` sigue SIEMPRE ``False`` — la CA es de
-desarrollo, sin acreditación ONAC, y la propia TSA que sella el
+ACREDITADO" (RF-FIR-15): con la CA de desarrollo ``acreditado`` queda en ``False``
+(el nivel persistido es ``*_no_acreditado``; sin acreditación ONAC), y la propia TSA que sella el
 ``ArchiveTimeStamp`` es autofirmada (no emitida por esa CA).
 
 --- OCSP stapled en XAdES-LT (E06, RF-FIR-15) ---
@@ -219,7 +219,10 @@ class VerifyOutcome:
     """Resultado de :func:`verify_xades` — nunca lanza para fallos de negocio."""
 
     valida: bool
-    acreditado: bool
+    # (Sin `acreditado`: la acreditación es un hecho de la FIRMA —lo decidió el
+    # sello/CA al firmar y quedó en `firma.nivel_conformidad`—, no algo que la
+    # criptografía de verificación pueda afirmar. El router lo deriva de lo
+    # PERSISTIDO y solo si la cripto valida; AREA-05-02.)
     motivo: str | None = None
     # --- XAdES-T (Inc.4) — None cuando la firma no lleva SignatureTimeStamp
     # (XAdES-B "puro", p. ej. kill-switch signer_timestamp_enabled=False en
@@ -833,10 +836,13 @@ def verify_xades(
          debe depender de secretos montados ni de si el sello rotó desde
          entonces; el registro histórico es la fuente de verdad).
 
-    ``acreditado`` es SIEMPRE ``False`` en el resultado, incluso cuando la
-    firma es criptográficamente válida y sube hasta XAdES-LTA (RF-FIR-15: la
-    CA local de desarrollo no tiene acreditación ONAC — ver la nota de módulo
-    "XAdES-LT/LTA").
+    ``VerifyOutcome`` ya NO lleva ``acreditado`` (AREA-05-02): verificar la
+    criptografía no puede afirmar acreditación. Es un hecho del momento de
+    FIRMAR (el sello/CA que se usó, ``app.core.keys._leer_acreditacion``) y
+    quedó persistido en ``firma.nivel_conformidad``; el router lo deriva de ahí
+    y solo si esta función da ``valida=True``. Con la CA local de desarrollo
+    (sin acreditación ONAC) ese nivel es ``*_no_acreditado`` y la respuesta es
+    ``acreditado=False`` (RF-FIR-15 — ver la nota de módulo "XAdES-LT/LTA").
 
     (XAdES-T) SI las comprobaciones 1-4 anteriores pasan Y la firma lleva
     ``xades:SignatureTimeStamp``, además verifica el sello de tiempo
@@ -917,42 +923,42 @@ def verify_xades(
     try:
         root = _parse_no_doctype(signed_xml)
     except etree.XMLSyntaxError as exc:
-        return VerifyOutcome(False, False, f"xml_invalido: {exc}")
+        return VerifyOutcome(False, f"xml_invalido: {exc}")
     except ValueError:
-        return VerifyOutcome(False, False, "dtd_no_permitido")
+        return VerifyOutcome(False, "dtd_no_permitido")
 
     cert_el = root.find(
         ".//ds:Signature/ds:KeyInfo/ds:X509Data/ds:X509Certificate", namespaces=_DS_NS
     )
     if cert_el is None or not cert_el.text:
-        return VerifyOutcome(False, False, "sin_certificado_embebido")
+        return VerifyOutcome(False, "sin_certificado_embebido")
 
     try:
         embedded_cert = x509.load_der_x509_certificate(b64decode(cert_el.text.strip()))
     except Exception as exc:  # noqa: BLE001 — certificado corrupto, fail-closed
-        return VerifyOutcome(False, False, f"certificado_ilegible: {exc}")
+        return VerifyOutcome(False, f"certificado_ilegible: {exc}")
 
     now = datetime.now(UTC)
     if not (embedded_cert.not_valid_before_utc <= now <= embedded_cert.not_valid_after_utc):
-        return VerifyOutcome(False, False, "certificado_fuera_de_vigencia")
+        return VerifyOutcome(False, "certificado_fuera_de_vigencia")
 
     embedded_fingerprint = embedded_cert.fingerprint(hashes.SHA256()).hex()
     if embedded_fingerprint != expected_fingerprint:
-        return VerifyOutcome(False, False, "fingerprint_no_coincide_sello_tenant")
+        return VerifyOutcome(False, "fingerprint_no_coincide_sello_tenant")
 
     try:
         results = XAdESVerifier().verify(
             root, x509_cert=embedded_cert, expect_config=_VERIFY_CONFIG
         )
     except Exception as exc:  # noqa: BLE001 — cualquier fallo == firma inválida (fail-closed)
-        return VerifyOutcome(False, False, f"firma_invalida: {exc}")
+        return VerifyOutcome(False, f"firma_invalida: {exc}")
 
     # (2) La referencia principal debe cubrir la raíz completa del documento.
     covers_root = any(
         r.signed_xml is not None and r.signed_xml.tag == root.tag for r in results
     )
     if not covers_root:
-        return VerifyOutcome(False, False, "referencia_no_cubre_raiz")
+        return VerifyOutcome(False, "referencia_no_cubre_raiz")
 
     # (XAdES-T) Sello de tiempo, si lo hay — ver docstring "XAdES-T" arriba.
     # Se recalcula sobre el ds:SignatureValue TAL COMO llega en este
@@ -964,22 +970,27 @@ def verify_xades(
         namespaces=_XADES_NS,
     )
     if encapsulated_ts is None or not (encapsulated_ts.text or "").strip():
-        return VerifyOutcome(True, False, None, xades_level=SignatureFormat.XADES_B.value)
+        return VerifyOutcome(True, None, xades_level=SignatureFormat.XADES_B.value)
 
     sig_value_el = root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
     if sig_value_el is None:  # pragma: no cover — imposible si la firma XAdES-B ya validó
-        return VerifyOutcome(True, False, None, sello_tiempo_valido=False)
+        return VerifyOutcome(True, None, sello_tiempo_valido=False)
 
     try:
         token_der = b64decode(encapsulated_ts.text.strip())
     except Exception:  # noqa: BLE001 — base64 corrupto, fail-closed
-        return VerifyOutcome(True, False, None, sello_tiempo_valido=False)
+        return VerifyOutcome(True, None, sello_tiempo_valido=False)
 
     ts_outcome = tsa.verify_timestamp_token(
-        token_der, _c14n_element(sig_value_el), expected_tsa_fingerprint=expected_tsa_fingerprint
+        token_der,
+        _c14n_element(sig_value_el),
+        expected_tsa_fingerprint=expected_tsa_fingerprint,
+        # El genTime del SignatureTimeStamp tiene que caer en la vigencia del
+        # certificado firmante (AREA-04-08). El ArchiveTimeStamp de más abajo NO.
+        signer_cert=embedded_cert,
     )
     if not ts_outcome.valido:
-        return VerifyOutcome(True, False, None, sello_tiempo_valido=False)
+        return VerifyOutcome(True, None, sello_tiempo_valido=False)
 
     xades_level = SignatureFormat.XADES_T.value
     tsa_timestamp = ts_outcome.gen_time
@@ -994,14 +1005,14 @@ def verify_xades(
     )
     if cert_values_el is None or not (cert_values_el.text or "").strip():
         return VerifyOutcome(
-            True, False, None,
+            True, None,
             sello_tiempo_valido=True, tsa_timestamp=tsa_timestamp, xades_level=xades_level,
         )
 
     try:
         embedded_ca_cert = x509.load_der_x509_certificate(b64decode(cert_values_el.text.strip()))
     except Exception as exc:  # noqa: BLE001 — fail-closed
-        return VerifyOutcome(False, False, f"ca_certificado_ilegible: {exc}")
+        return VerifyOutcome(False, f"ca_certificado_ilegible: {exc}")
 
     if expected_user_ca_fingerprint is not None:
         # --- RAMA PERSONAL (E17/F4, Incremento 2, Baja #4) — SEPARADA del
@@ -1020,31 +1031,31 @@ def verify_xades(
         # "XAdES-LT" para una firma personal.
         sub_ca_fingerprint = embedded_ca_cert.fingerprint(hashes.SHA256()).hex()
         if sub_ca_fingerprint != expected_user_ca_fingerprint:
-            return VerifyOutcome(False, False, "user_ca_fingerprint_no_coincide")
+            return VerifyOutcome(False, "user_ca_fingerprint_no_coincide")
         try:
             sub_ca_bc = embedded_ca_cert.extensions.get_extension_for_class(
                 x509.BasicConstraints
             )
         except x509.ExtensionNotFound:
-            return VerifyOutcome(False, False, "user_ca_sin_basic_constraints")
+            return VerifyOutcome(False, "user_ca_sin_basic_constraints")
         if not sub_ca_bc.value.ca:
-            return VerifyOutcome(False, False, "user_ca_basic_constraints_no_es_ca")
+            return VerifyOutcome(False, "user_ca_basic_constraints_no_es_ca")
         try:
             sub_ca_ku = embedded_ca_cert.extensions.get_extension_for_class(x509.KeyUsage)
         except x509.ExtensionNotFound:
-            return VerifyOutcome(False, False, "user_ca_sin_key_usage")
+            return VerifyOutcome(False, "user_ca_sin_key_usage")
         if not sub_ca_ku.value.key_cert_sign:
-            return VerifyOutcome(False, False, "user_ca_sin_key_usage_cert_sign")
+            return VerifyOutcome(False, "user_ca_sin_key_usage_cert_sign")
         if not (
             embedded_ca_cert.not_valid_before_utc <= now <= embedded_ca_cert.not_valid_after_utc
         ):
-            return VerifyOutcome(False, False, "user_ca_certificado_fuera_de_vigencia")
+            return VerifyOutcome(False, "user_ca_certificado_fuera_de_vigencia")
         try:
             embedded_cert.verify_directly_issued_by(embedded_ca_cert)
         except Exception as exc:  # noqa: BLE001 — fail-closed
-            return VerifyOutcome(False, False, f"cadena_personal_ca_invalida: {exc}")
+            return VerifyOutcome(False, f"cadena_personal_ca_invalida: {exc}")
         return VerifyOutcome(
-            True, False, None,
+            True, None,
             sello_tiempo_valido=True, tsa_timestamp=tsa_timestamp, xades_level=xades_level,
         )
 
@@ -1052,33 +1063,33 @@ def verify_xades(
     ca_cert = embedded_ca_cert
     ca_fingerprint = ca_cert.fingerprint(hashes.SHA256()).hex()
     if not expected_ca_fingerprint:
-        return VerifyOutcome(False, False, "ca_fingerprint_no_registrado")
+        return VerifyOutcome(False, "ca_fingerprint_no_registrado")
     if ca_fingerprint != expected_ca_fingerprint:
-        return VerifyOutcome(False, False, "ca_cert_fingerprint_no_coincide")
+        return VerifyOutcome(False, "ca_cert_fingerprint_no_coincide")
 
     try:
         ca_bc = ca_cert.extensions.get_extension_for_class(x509.BasicConstraints)
     except x509.ExtensionNotFound:
-        return VerifyOutcome(False, False, "ca_sin_basic_constraints")
+        return VerifyOutcome(False, "ca_sin_basic_constraints")
     if not ca_bc.value.ca:
-        return VerifyOutcome(False, False, "ca_basic_constraints_no_es_ca")
+        return VerifyOutcome(False, "ca_basic_constraints_no_es_ca")
 
     try:
         ca_ku = ca_cert.extensions.get_extension_for_class(x509.KeyUsage)
     except x509.ExtensionNotFound:
-        return VerifyOutcome(False, False, "ca_sin_key_usage")
+        return VerifyOutcome(False, "ca_sin_key_usage")
     if not ca_ku.value.key_cert_sign:
-        return VerifyOutcome(False, False, "ca_sin_key_usage_cert_sign")
+        return VerifyOutcome(False, "ca_sin_key_usage_cert_sign")
 
     if not (ca_cert.not_valid_before_utc <= now <= ca_cert.not_valid_after_utc):
-        return VerifyOutcome(False, False, "ca_certificado_fuera_de_vigencia")
+        return VerifyOutcome(False, "ca_certificado_fuera_de_vigencia")
 
     # (c) Cadena seal -> CA: el certificado del sello debe haber sido
     # REALMENTE emitido por esta CA (firma + issuer/subject).
     try:
         embedded_cert.verify_directly_issued_by(ca_cert)
     except Exception as exc:  # noqa: BLE001 — fail-closed
-        return VerifyOutcome(False, False, f"cadena_seal_ca_invalida: {exc}")
+        return VerifyOutcome(False, f"cadena_seal_ca_invalida: {exc}")
 
     # (d) Revocación real: CRL firmada por la MISMA CA + serial no revocado.
     rev_values_el = root.find(
@@ -1087,12 +1098,12 @@ def verify_xades(
         namespaces=_XADES_NS,
     )
     if rev_values_el is None or not (rev_values_el.text or "").strip():
-        return VerifyOutcome(False, False, "revocation_values_ausente")
+        return VerifyOutcome(False, "revocation_values_ausente")
 
     try:
         crl = x509.load_der_x509_crl(b64decode(rev_values_el.text.strip()))
     except Exception as exc:  # noqa: BLE001 — fail-closed
-        return VerifyOutcome(False, False, f"crl_ilegible: {exc}")
+        return VerifyOutcome(False, f"crl_ilegible: {exc}")
 
     # `public_key()` incluye tipos de ACUERDO de claves (X25519, X448, DH,
     # ML-KEM) que no firman nada y que `is_signature_valid` no acepta. Se
@@ -1110,13 +1121,13 @@ def verify_xades(
             dsa.DSAPublicKey,
         ),
     ):
-        return VerifyOutcome(False, False, "ca_clave_no_apta_para_firmar")
+        return VerifyOutcome(False, "ca_clave_no_apta_para_firmar")
     if not crl.is_signature_valid(ca_public_key):
-        return VerifyOutcome(False, False, "crl_firma_invalida")
+        return VerifyOutcome(False, "crl_firma_invalida")
     if crl.issuer != ca_cert.subject:
-        return VerifyOutcome(False, False, "crl_issuer_no_coincide_ca")
+        return VerifyOutcome(False, "crl_issuer_no_coincide_ca")
     if crl.get_revoked_certificate_by_serial_number(embedded_cert.serial_number) is not None:
-        return VerifyOutcome(False, False, "certificado_sello_revocado")
+        return VerifyOutcome(False, "certificado_sello_revocado")
 
     # nextUpdate vencido se EXPONE, no invalida (perfil no_acreditado, CRL de
     # desarrollo — ver docstring de la función).
@@ -1138,7 +1149,7 @@ def verify_xades(
         try:
             ocsp_response_der = b64decode(ocsp_values_el.text.strip())
         except Exception as exc:  # noqa: BLE001 — fail-closed
-            return VerifyOutcome(False, False, f"ocsp_ilegible: {exc}")
+            return VerifyOutcome(False, f"ocsp_ilegible: {exc}")
 
         ocsp_outcome = ocsp.verify_ocsp_response(
             ocsp_response_der,
@@ -1147,7 +1158,7 @@ def verify_xades(
             expected_responder_fingerprint=expected_ocsp_responder_fingerprint,
         )
         if not ocsp_outcome.valido:
-            return VerifyOutcome(False, False, f"ocsp_invalido: {ocsp_outcome.motivo}")
+            return VerifyOutcome(False, f"ocsp_invalido: {ocsp_outcome.motivo}")
         ocsp_present = True
         ocsp_cert_status = ocsp_outcome.cert_status
 
@@ -1167,19 +1178,19 @@ def verify_xades(
             archive_token_der = b64decode(archive_ts_el.text.strip())
             covered = _archive_ts_covered_bytes(root)
         except Exception as exc:  # noqa: BLE001 — fail-closed
-            return VerifyOutcome(False, False, f"archive_timestamp_ilegible: {exc}")
+            return VerifyOutcome(False, f"archive_timestamp_ilegible: {exc}")
 
         archive_outcome = tsa.verify_timestamp_token(
             archive_token_der, covered, expected_tsa_fingerprint=expected_tsa_fingerprint
         )
         if not archive_outcome.valido:
             return VerifyOutcome(
-                False, False, f"archive_timestamp_invalido: {archive_outcome.motivo}"
+                False, f"archive_timestamp_invalido: {archive_outcome.motivo}"
             )
         xades_level = SignatureFormat.XADES_LTA.value
 
     return VerifyOutcome(
-        True, False, None,
+        True, None,
         sello_tiempo_valido=True,
         tsa_timestamp=tsa_timestamp,
         xades_level=xades_level,

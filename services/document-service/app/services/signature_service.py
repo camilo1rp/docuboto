@@ -121,5 +121,6 @@ class SignatureService:
                     "anexo_id": str(payload.anexo_id),
                     "content_hash": row["content_hash"],
                 },
+                canal=audit.CANAL_PETICION,
             )
         return SignatureResponse(**dict(row))

@@ -44,6 +44,8 @@ HTTP — el mismo criterio que `resolve_caller_clearance` con las tablas RBAC.
 
 from __future__ import annotations
 
+import hashlib
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -56,7 +58,13 @@ from app.core.anexos_publicos import (
     validar_conjunto,
 )
 from app.schemas.document import AnexoInput, DocumentCreate
-from app.schemas.public import TipoVentanilla, VentanillaRadicacion, VentanillaRespuesta
+from app.schemas.public import (
+    TipoVentanilla,
+    VentanillaEstado,
+    VentanillaRadicacion,
+    VentanillaRespuesta,
+)
+from app.services.document_service import DuplicateSubmissionError
 from app.services.tercero_service import TerceroService
 
 #: Canal con el que queda marcado lo que entra por aquí. Distingue en los
@@ -84,6 +92,29 @@ class VentanillaService:
             "WHERE activo AND admite_ventanilla_publica ORDER BY nombre"
         )
         return [TipoVentanilla(code=f["code"], nombre=f["nombre"]) for f in filas]
+
+    async def estado(self) -> VentanillaEstado:
+        """¿Puede esta entidad recibir radicación pública YA? (AREA-09-07).
+
+        Misma condición que `radicar` aplica por dentro —una dependencia activa con
+        `depe_rad_tp2` y al menos un tipo admitido—, calculada sin radicar nada.
+        """
+        receptora = bool(
+            await self._conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM dependencias WHERE activo AND depe_rad_tp2)"
+            )
+        )
+        tipos = int(
+            await self._conn.fetchval(
+                "SELECT COUNT(*) FROM tipos_documentales WHERE activo AND admite_ventanilla_publica"
+            )
+            or 0
+        )
+        return VentanillaEstado(
+            habilitada=receptora and tipos > 0,
+            dependencia_receptora=receptora,
+            tipos_admitidos=tipos,
+        )
 
     async def _validar_tipo(self, code: str) -> str:
         """El tipo tiene que estar declarado admisible. Nunca se reclasifica solo.
@@ -193,14 +224,62 @@ class VentanillaService:
             )
         return anexos
 
+    async def _respuesta_existente(self, clave: str, huella: str) -> VentanillaRespuesta | None:
+        """Lo que ya radicó esta `Idempotency-Key`, si lo hay.
+
+        Con el MISMO contenido es un reintento y se devuelve el mismo radicado. Con
+        contenido distinto es un mal uso de la clave: 409, no un radicado ajeno.
+        """
+        fila = await self._conn.fetchrow(
+            "SELECT k.huella, r.id, r.tracking_number, r.verification_code, r.dest_dept "
+            "FROM public_submission_keys k JOIN radicados r ON r.id = k.radicado_id "
+            "WHERE k.key = $1",
+            clave,
+        )
+        if fila is None:
+            return None
+        if fila["huella"] != huella:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "idempotency_key_reutilizada",
+                    "detail": "Esa clave ya se usó con un contenido distinto.",
+                    "status": 409,
+                },
+            )
+        return VentanillaRespuesta(
+            radicado_id=fila["id"],
+            tracking_number=fila["tracking_number"],
+            verification_code=fila["verification_code"],
+            dependencia_destino=fila["dest_dept"],
+        )
+
     async def radicar(
         self,
         payload: VentanillaRadicacion,
         document_service: Any,
         ficheros: list[tuple[str, bytes]] | None = None,
+        *,
+        idempotency_key: str | None = None,
+        ip: str | None = None,
     ) -> VentanillaRespuesta:
         await self._validar_tipo(payload.tipo_documental)
         codigo_dep, nombre_dep = await self._dependencia_de_ventanilla()
+
+        # Idempotencia (AREA-02-07). La huella es del contenido VALIDADO, no del
+        # texto crudo: dos serializaciones del mismo formulario son el mismo envío.
+        submission_key: tuple[str, str] | None = None
+        if idempotency_key:
+            huella = hashlib.sha256(
+                payload.model_dump_json(exclude={"sitio_web"}).encode()
+            ).hexdigest()
+            # Camino barato ANTES de subir anexos: un reintento no vuelve a pasar
+            # por storage. La garantía real (carrera) la da la reclamación dentro
+            # de la transacción del radicado.
+            previo = await self._respuesta_existente(idempotency_key, huella)
+            if previo is not None:
+                return previo
+            submission_key = (idempotency_key, huella)
 
         # Los anexos se resuelven ANTES de crear el radicado: si algo falla, no
         # queda un número asignado —inmutable por Ley 594— sin sus soportes.
@@ -260,6 +339,15 @@ class VentanillaService:
             actores=actores,
             metadata={
                 "canal": CANAL,
+                # Ley 1581/2012 (AREA-09-08): constancia de la autorización de
+                # tratamiento. La IP es la que declaró el borde (`X-Forwarded-For`
+                # del SSR/gateway), NO una verificada por saltos de confianza.
+                "consentimiento": {
+                    "norma": "Ley 1581/2012",
+                    "politica_version": payload.politica_version,
+                    "instante": datetime.now(UTC).isoformat(),
+                    "ip_declarada": ip,
+                },
                 "remitente": {
                     "nombre": payload.nombre,
                     "entidad": payload.entidad,
@@ -271,7 +359,25 @@ class VentanillaService:
                 },
             },
         )
-        result = await document_service.create(doc, registered_by=None)
+        try:
+            result = await document_service.create(
+                doc, registered_by=None, submission_key=submission_key
+            )
+        except DuplicateSubmissionError:
+            # Carrera: otra petición con la misma clave ganó mientras esta preparaba
+            # el envío. Ya hay un radicado confirmado; se devuelve ese.
+            assert submission_key is not None
+            previo = await self._respuesta_existente(*submission_key)
+            if previo is None:  # imposible tras el commit del ganador; fail-closed
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "idempotency_key_en_curso",
+                        "detail": "Esa clave está siendo procesada. Reintente en un momento.",
+                        "status": 409,
+                    },
+                ) from None
+            return previo
         code = await self._conn.fetchval(
             "SELECT verification_code FROM radicados WHERE id = $1", result.id
         )

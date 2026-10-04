@@ -64,7 +64,7 @@ from app.repositories.aip_repository import AipRepository
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.services.backoff import next_backoff_seconds
-from app.services.retention_math import total_trd_years
+from app.services.retention_math import base_worm, total_trd_years
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +108,10 @@ class AipWiringService:
         de `IndexService`) para no acoplar este servicio a los internos de
         otro. Fail-closed (``None``) en cualquier caso dudoso.
 
-        ADR-026 (Increment 2, D4): fail-closed también para
-        `exp.origen == 'fondo_acumulado'` -- mismo criterio que su gemela de
-        `IndexService` (ver esa docstring): el AIP de un fondo acumulado NO
-        se cablea con WORM hasta Increment 3 (fecha base correcta +
-        clamp de calendario ya vencido, D4.4)."""
+        ADR-026 (Increment 3, D4, AREA-06-04): para `exp.origen == 'fondo_acumulado'`
+        la base es `fecha_extrema_final` con clamp (`retention_math.base_worm`), no
+        `closed_at`. Antes devolvía `None` y el AIP del fondo no tenía WORM nunca."""
         if exp.closed_at is None or exp.trd_serie_id is None:
-            return None
-        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:
@@ -123,7 +119,16 @@ class AipWiringService:
         total = total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
         if total is None:
             return None
-        return total, exp.closed_at.date()
+        inicio = base_worm(
+            origen=exp.origen,
+            closed_at=exp.closed_at,
+            fecha_extrema_final=exp.fecha_extrema_final,
+            total_years=total,
+            margen_dias=settings.worm_fondo_acumulado_margen_dias,
+        )
+        if inicio is None:
+            return None
+        return total, inicio
 
     async def _resolve_aip_pdfa_profile(self, exp) -> str | None:
         """Perfil PDF/A (E10 debt "perfil por serie", RF-FIR-15) de la serie
@@ -391,15 +396,12 @@ class AipWiringService:
         `exp.closed_at` (aunque en la práctica siempre está poblado -- un AIP
         solo llega a `estado='empaquetado'` tras el cierre).
 
-        ADR-026 (Increment 2, D4): guard defensivo -- inalcanzable en la
-        práctica hoy, mismo razonamiento que
-        `IndexService._resolve_ct_retencion_anios`."""
+        ADR-026 (Increment 3, D4): sin guard para fondo acumulado (la ventana
+        rodante parte de hoy, no de la fecha extrema)."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
         if exp is None or exp.trd_serie_id is None:
-            return None
-        if exp.origen == "fondo_acumulado":
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
         if serie is None:

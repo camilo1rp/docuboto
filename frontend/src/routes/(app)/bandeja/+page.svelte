@@ -23,12 +23,12 @@
     - date_from, date_to, dest_dept_code, q (texto libre)
     → Implementar en T-11; aquí solo los que el backend soporta directamente.
 
-  Acciones inline implementadas (T-08, sin T-08b):
+  Acciones inline implementadas (T-08; anular, devolver, responder y VoBo
+  también, por sus proxies bajo bandeja/api/[id]/):
     - Ver detalle en drawer (sin navegar)
     - El estado del radicado NO se edita aquí (ADR-028): lo mueve el flujo en
       el backend. Desde el detalle, el POSEEDOR del paso activo puede «Marcar en
       trámite» (marcar_leido) y «Finalizar trámite» (cierra, irreversible).
-    - TODO T-08b: anular, devolver, responder, VoBo.
 -->
 <script>
   import {
@@ -2511,11 +2511,13 @@
   }
 
   .filters-note__link {
-    color: var(--op-primary);
+    // `--op-primary` sobre blanco da 4.27:1 en texto de 12px (axe, AA exige 4.5):
+    // para TEXTO la marca es `--op-primary-dark`.
+    color: var(--op-primary-dark);
     text-decoration: underline;
 
     &:hover {
-      color: var(--op-primary-dark);
+      color: var(--op-brand-700);
     }
     &:focus-visible {
       outline: 2px solid var(--op-primary);

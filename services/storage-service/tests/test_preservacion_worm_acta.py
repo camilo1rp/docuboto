@@ -487,3 +487,51 @@ def test_migration_010_ddl_is_idempotent_by_construction() -> None:
     # sobre la tabla ya provista por la migración 006.
     assert "CREATE TABLE" not in sql
     assert "DROP TABLE" not in sql
+
+
+# ---------------------------------------------------------------------------
+# AREA-07-10 -- las firmas PERSONALES del acta entran al almacén WORM (un tipo por rol)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tipo", ["acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"])
+async def test_proteger_artefacto_firma_personal_por_rol(client_with_conn, tipo: str) -> None:
+    client, mock_conn, mock_minio = client_with_conn
+    file_id = uuid.uuid4()
+    record = _file_record(file_id)
+    worm_row = make_worm_row(expediente_id="EXP-1", tipo=tipo, object_key=record["object_key"])
+
+    _grant_permission(mock_conn)
+    mock_conn.fetchrow.side_effect = [
+        None,  # get_by_expediente_and_tipo(EXP-1, tipo) -- nada previo
+        record,
+        worm_row,
+        {"id": uuid.uuid4()},
+        {"id": uuid.uuid4()},
+    ]
+    mock_minio.get_object = _minio_get_object(_ACTA_XML)
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-artefacto",
+        json=_base_payload(file_id, tipo=tipo),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["tipo"] == tipo
+    insert_call = next(
+        c for c in mock_conn.fetchrow.call_args_list
+        if c.args and "INSERT INTO preservacion_worm_objeto" in c.args[0]
+    )
+    assert insert_call.args[2] == tipo
+    mock_minio.put_object.assert_awaited_once()
+
+
+def test_las_firmas_personales_son_instrumentos_de_control_y_estan_en_la_migracion() -> None:
+    """No postergan la disposición del contenido (como el acta que firman) y el CHECK de la
+    migración 018 los admite: el guard `test_preservacion_tipos_guard` ata las dos listas."""
+    from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
+
+    for t in ("acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"):
+        assert t in CONTROL_INSTRUMENT_TIPOS

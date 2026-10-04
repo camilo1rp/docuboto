@@ -89,3 +89,69 @@ def test_premis_malformado_sin_objectcharacteristics_falla_la_validacion() -> No
     )
     with pytest.raises(PremisValidationError):
         validate_premis_xml(malformed)
+
+
+# AREA-08-05 — formatRegistry/PRONOM declarado.
+
+
+def _formato(xml_text: str) -> etree._Element:
+    root = etree.fromstring(xml_text.encode("utf-8"))
+    return root.find(
+        f"{{{_PREMIS_NS}}}object/{{{_PREMIS_NS}}}objectCharacteristics/{{{_PREMIS_NS}}}format"
+    )
+
+
+def test_pdf_lleva_formatregistry_pronom_y_valida_contra_el_xsd() -> None:
+    xml_text = build_premis_v3(
+        expediente_id="EXP-1",
+        docs=[_doc()],
+        indice=None,
+        generado=datetime.now(UTC),
+        actor=None,
+    )
+    validate_premis_xml(xml_text)
+    fmt = _formato(xml_text)
+    ns = f"{{{_PREMIS_NS}}}"
+    assert fmt.findtext(f"{ns}formatRegistry/{ns}formatRegistryName") == "PRONOM"
+    assert fmt.findtext(f"{ns}formatRegistry/{ns}formatRegistryKey") == "fmt/276"
+    # el PUID es DECLARADO por MIME y el AIP lo dice, no lo presenta como identificado
+    assert "declarado" in fmt.findtext(f"{ns}formatNote")
+    # orden del XSD: designation, registry, note
+    assert [c.tag for c in fmt] == [
+        f"{ns}formatDesignation",
+        f"{ns}formatRegistry",
+        f"{ns}formatNote",
+    ]
+
+
+def test_mime_desconocido_no_recibe_puid_inventado() -> None:
+    doc = AipDocMaterial(
+        document_id="22222222-2222-2222-2222-222222222222",
+        nombre="raro.bin",
+        content=b"x",
+        sha256="b" * 64,
+        mime_type="application/x-formato-que-no-existe",
+    )
+    xml_text = build_premis_v3(
+        expediente_id="EXP-1", docs=[doc], indice=None, generado=datetime.now(UTC), actor=None
+    )
+    validate_premis_xml(xml_text)
+    fmt = _formato(xml_text)
+    assert fmt.find(f"{{{_PREMIS_NS}}}formatRegistry") is None
+
+
+def test_formatregistry_fuera_de_orden_lo_rechaza_el_xsd() -> None:
+    """Control del control: si el registro se emitiera ANTES de la designación, el XSD
+    oficial lo rechaza (la prueba de arriba no pasa por casualidad)."""
+    xml_text = build_premis_v3(
+        expediente_id="EXP-1", docs=[_doc()], indice=None, generado=datetime.now(UTC), actor=None
+    )
+    root = etree.fromstring(xml_text.encode("utf-8"))
+    fmt = root.find(
+        f"{{{_PREMIS_NS}}}object/{{{_PREMIS_NS}}}objectCharacteristics/{{{_PREMIS_NS}}}format"
+    )
+    registry = fmt.find(f"{{{_PREMIS_NS}}}formatRegistry")
+    fmt.remove(registry)
+    fmt.insert(0, registry)
+    with pytest.raises(PremisValidationError):
+        validate_premis_xml(etree.tostring(root).decode())

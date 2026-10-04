@@ -7,25 +7,19 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import HTTPException, Request, status
+from orpycamcp_common.tenant import slug_valido
+from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
 
 _pool: asyncpg.Pool | None = None
 
-# Validación del slug antes de interpolarlo en `SET search_path` (defensa en
-# profundidad, gemelo de document-service `_SLUG_RE`). El slug llega del JWT
-# re-derivado por el gateway, pero validarlo cierra el sink de inyección de schema
-# si el claim se contaminara en aprovisionamiento/Keycloak.
-# Largo acotado a 55 (+ "tenant_" = 62) para no exceder el límite de 63 bytes de
-# identificador de PostgreSQL: dos slugs largos de prefijo común se truncarían al
-# mismo schema → fuga cross-tenant. (auditoría hardening, hallazgo 1.1)
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,54}$")
+# El slug se valida con `orpycamcp_common.tenant` (única definición, AREA-02-05).
 
 
 def tenant_schema(slug: str) -> str:
@@ -34,7 +28,7 @@ def tenant_schema(slug: str) -> str:
     Normaliza guiones a guiones bajos. El resultado se usa SIEMPRE entrecomillado:
     ``f'SET search_path TO "{tenant_schema(slug)}", public'``.
     """
-    if not slug or not _SLUG_RE.match(slug):
+    if not slug_valido(slug):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
@@ -43,7 +37,7 @@ def tenant_schema(slug: str) -> str:
                 "status": 400,
             },
         )
-    return f"tenant_{slug.replace('-', '_')}"
+    return _schema_de(slug)
 
 
 async def create_pool(

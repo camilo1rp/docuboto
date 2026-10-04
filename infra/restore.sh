@@ -54,6 +54,17 @@ if [ ! -f "$ORIGEN/OK" ]; then
     echo "El sello lo escribe backup.sh SOLO tras verificar el volcado." >&2
     exit 1
 fi
+# Un respaldo cuya retención (Object-Lock) no se capturó por completo restauraría
+# objetos borrables con un mensaje verde: el defecto que `reponer_retencion` existe
+# para impedir, desplazado al lado del respaldo. Se rechaza salvo aceptación explícita.
+if grep -qx 'retencion_capturada_completa=NO' "$ORIGEN/OK" \
+        && [ "${RESTORE_ACEPTAR_RETENCION_INCOMPLETA:-}" != "1" ]; then
+    echo "ERROR: el respaldo '$ORIGEN' se selló con retencion_capturada_completa=NO:" >&2
+    echo "  su retención (Object-Lock) quedó incompleta y restaurarlo dejaría objetos" >&2
+    echo "  borrables. Si el responsable lo acepta: RESTORE_ACEPTAR_RETENCION_INCOMPLETA=1." >&2
+    exit 1
+fi
+
 # ── Un respaldo cifrado se descifra a un área temporal ─────────────────────
 #
 # El respaldo puede venir cifrado (ver `backup.sh`). Sin este paso, cifrar habría
@@ -188,6 +199,9 @@ trap 'rm -f "$CREDENCIALES"; limpiar_descifrado' EXIT
 S3_IMAGEN="${S3_CLI_IMAGEN:-amazon/aws-cli:latest}"
 S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}"
 
+# shellcheck source=lib-retencion-s3.sh
+. "$SCRIPT_DIR/lib-retencion-s3.sh"
+
 s3api() {
     docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
         "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" s3api "$@" 2>/dev/null
@@ -257,32 +271,34 @@ done
 # un plazo nuevo.
 if [ -f "$ORIGEN/minio-retencion.tsv" ]; then
     echo "── Reponiendo la retención de cada objeto..."
-    REPUESTOS=0
-    while IFS="$(printf '\t')" read -r TIPO OBJETO MODO HASTA; do
-        [ "$TIPO" = "OBJETO" ] || continue
-        [ -n "$MODO" ] && [ -n "$HASTA" ] || continue
-        # Solo se repone si la fecha guardada sigue en el futuro; la comprobación
-        # va aquí y no en el cliente para que un respaldo antiguo no intente
-        # revivir plazos ya vencidos.
-        VIGENTE="$(python3 - "$HASTA" <<'PYFECHA'
-import datetime, sys
-try:
-    hasta = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
-except ValueError:
-    raise SystemExit(0)
-if hasta > datetime.datetime.now(datetime.UTC):
-    print(hasta.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
-PYFECHA
-)"
-        [ -n "$VIGENTE" ] || continue
-        BK="${OBJETO%%/*}"
-        LLAVE="${OBJETO#*/}"
-        s3api put-object-retention --bucket "$BK" --key "$LLAVE" \
-            --retention "{\"Mode\":\"$MODO\",\"RetainUntilDate\":\"$VIGENTE\"}" \
-            >/dev/null && REPUESTOS=$((REPUESTOS + 1)) || true
-    done < "$ORIGEN/minio-retencion.tsv"
-    echo "   $REPUESTOS objetos con su retención repuesta"
-    [ "$RETENCION_REPUESTA" = "no aplica" ] && RETENCION_REPUESTA="sí ($REPUESTOS objetos)"
+    # FAIL-CLOSED (AREA-08-10): antes `put-object-retention ... || true` y un contador
+    # solo informativo; ahora, si queda sin reponer una sola retención vigente o
+    # retención legal activa de la versión actual, la restauración TERMINA EN ERROR
+    # (igual que la cadena de auditoría): objetos borrables con un mensaje verde es
+    # exactamente el defecto que este bloque existe para impedir.
+    MAPA_VERSIONES="$(dirname "$ORIGEN_REAL")/mapa-version-id-$(date +%Y%m%d_%H%M%S).tsv"
+    RETENCION_REPUESTOS=0
+    if ! reponer_retencion "$ORIGEN/minio-retencion.tsv" "$MAPA_VERSIONES"; then
+        echo "" >&2
+        echo "   ✗ Quedaron objetos SIN su retención. La restauración NO está completa:" >&2
+        echo "     esos objetos son borrables. Corrija y reintente; no dé el sistema por bueno." >&2
+        exit 1
+    fi
+    echo "   mapa version_id viejo → nuevo (acta ADR-027): $MAPA_VERSIONES"
+    # El acto de restaurar deja traza INMUTABLE y la BD vuelve a apuntar a los
+    # version_id nuevos: un solo módulo, una sola transacción (asiento
+    # `storage.restauracion` en public.audit_log + preservacion_worm_objeto.version_id).
+    # El mapa viaja por stdin: el contenedor no monta nada en escritura (regla 3).
+    if ! "${COMPOSE[@]}" run --rm --no-deps -T \
+            -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
+            auth-service python -m app.ops.registrar_restauracion \
+            --respaldo "$(basename "$ORIGEN_REAL")" \
+            --previas-no-restauradas "${RETENCION_PREVIAS_COMPLIANCE:-0}" < "$MAPA_VERSIONES"; then
+        echo "   ✗ no se pudo registrar la restauración en audit_log / actualizar version_id." >&2
+        echo "     Registre el acta a mano (mapa: $MAPA_VERSIONES) antes de dar el sistema por bueno." >&2
+        exit 1
+    fi
+    [ "$RETENCION_REPUESTA" = "no aplica" ] && RETENCION_REPUESTA="sí ($RETENCION_REPUESTOS objetos)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -297,105 +313,52 @@ fi
 # `public.tenants` en vez de una lista fija: un tenant nuevo entra en la
 # verificación el día que existe, sin que nadie tenga que acordarse.
 
-echo "── Verificando la cadena de hash del audit_log..."
+echo "── Verificando la cadena de hash del audit_log y comparándola con el ancla..."
 "${COMPOSE[@]}" start postgres >/dev/null 2>&1 || true
-"${COMPOSE[@]}" run --rm --no-deps -T \
-    -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-    auth-service python - <<'PY'
-import asyncio
-import sys
 
-import asyncpg
-from orpycamcp_common import audit
-
-from app.core.config import settings
-
-
-async def main() -> int:
-    conn = await asyncpg.connect(settings.database_url_asyncpg)
-    try:
-        slugs = [r["slug"] for r in await conn.fetch("SELECT slug FROM public.tenants ORDER BY slug")]
-        # `public.audit_log` guarda también asientos del tenant del SISTEMA, que no
-        # tiene fila en `public.tenants`: sin incluirlo, la parte de la cadena que
-        # cubre las operaciones internas quedaría sin verificar.
-        for extra in await conn.fetch(
-            "SELECT DISTINCT tenant_slug FROM public.audit_log WHERE tenant_slug <> ALL($1::text[])",
-            slugs,
-        ):
-            slugs.append(extra["tenant_slug"])
-
-        if not slugs:
-            print("   (sin tenants: nada que verificar)")
-            return 0
-
-        roto = False
-        for slug in slugs:
-            ok, fila = await audit.verify_chain(conn, slug)
-            total = await conn.fetchval(
-                "SELECT count(*) FROM public.audit_log WHERE tenant_slug = $1", slug
-            )
-            if ok:
-                print(f"   ✓ {slug}: cadena íntegra ({total} asientos)")
-            else:
-                print(f"   ✗ {slug}: CADENA ROTA en el asiento id={fila}")
-                roto = True
-        return 1 if roto else 0
-    finally:
-        await conn.close()
-
-
-sys.exit(asyncio.run(main()))
-PY
-
-# ---------------------------------------------------------------------------
 # 4b. ¿La traza restaurada está al día, o retrocedida?
-# ---------------------------------------------------------------------------
 #
-# La verificación de arriba comprueba que la cadena es COHERENTE consigo misma,
-# y un volcado de hace tres meses lo es perfectamente: sus hashes enlazan. Por
-# eso, restaurar un respaldo antiguo suprimía un periodo entero de la traza legal
-# y el propio script lo declaraba íntegro. Los tres controles de solo-anexar no
-# intervienen, porque protegen contra modificar y borrar, no contra reemplazar
-# la tabla.
+# La verificación comprueba que la cadena es COHERENTE consigo misma, y un volcado
+# de hace tres meses lo es perfectamente: sus hashes enlazan. Por eso restaurar un
+# respaldo antiguo suprimía un periodo entero de la traza legal y el script lo
+# declaraba íntegro. El ancla acumulativa que escribe backup.sh es lo que permite
+# notar la diferencia: si la cadena restaurada tiene MENOS asientos que el último
+# extremo anclado, o el asiento anclado cambió, ha retrocedido.
 #
-# El ancla acumulativa que escribe el respaldo es lo que permite notar la
-# diferencia: si la cadena restaurada tiene MENOS asientos que el último extremo
-# anclado, ha retrocedido. Se dice, y el script termina en error.
+# Es el MISMO módulo que usa backup.sh antes de anclar (AREA-03-02): una sola
+# implementación de «verificar + comparar con el ancla». Sustituye al heredoc
+# anterior, que desempaquetaba `verify_chain` como una tupla `(ok, fila)` cuando
+# devuelve un `ResultadoCadena` y reventaba con TypeError.
 #
 # No es una garantía criptográfica frente a quien controla el host —puede
-# reescribir también el ancla—. Es lo que convierte un retroceso silencioso en
-# un segundo acto deliberado y detectable.
-
+# reescribir también el ancla—. Es lo que convierte un retroceso silencioso en un
+# segundo acto deliberado y detectable.
 ANCLAS="$(dirname "$ORIGEN_REAL")/anclas-auditoria.tsv"
-echo "── Comparando con el último extremo anclado..."
 if [ ! -f "$ANCLAS" ]; then
-    echo "   (sin fichero de anclas: no se puede saber si la traza retrocedió)"
-else
-    RETROCESO=0
-    # Una entidad por línea del ancla, sin la cabecera. Se toma el ÚLTIMO ancla
-    # de cada una, que es el extremo más reciente que llegó a registrarse.
-    for SLUG in $(tail -n +2 "$ANCLAS" | cut -f2 | sort -u); do
-        ULTIMO="$(grep -F "	$SLUG	" "$ANCLAS" | tail -1 | cut -f3)"
-        [ -n "$ULTIMO" ] || continue
-        AHORA="$("${COMPOSE[@]}" exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -At -c \
-            "SELECT count(*) FROM public.audit_log WHERE tenant_slug = '$SLUG';" 2>/dev/null | tr -d '[:space:]')"
-        if [ -z "$AHORA" ]; then
-            echo "   ? $SLUG: no se pudo contar los asientos" >&2
-        elif [ "$AHORA" -lt "$ULTIMO" ]; then
-            echo "   ✗ $SLUG: la traza RETROCEDIÓ — $AHORA asientos; el último ancla decía $ULTIMO" >&2
-            RETROCESO=1
-        else
-            echo "   ✓ $SLUG: $AHORA asientos (último ancla: $ULTIMO)"
-        fi
-    done
-    if [ "$RETROCESO" = "1" ]; then
-        echo "" >&2
-        echo "   La cadena es coherente pero le FALTAN asientos respecto al último" >&2
-        echo "   respaldo registrado. Eso no es una restauración: es una supresión" >&2
-        echo "   de traza. Revise antes de dar el sistema por bueno." >&2
-        exit 1
-    fi
+    echo "   (sin fichero de anclas: no se puede saber si la traza retrocedió; se verifica solo la coherencia)"
+    ANCLAS="/dev/null"
 fi
+EXCLUIR=()
+for P in ${BACKUP_AUDIT_EXCLUIR_PREFIJOS:-}; do EXCLUIR+=(--excluir-prefijo "$P"); done
+# Mismo criterio que backup.sh: las roturas HISTÓRICAS que el responsable declaró
+# (BACKUP_AUDIT_ROTURAS_DECLARADAS, o `roturas-declaradas.tsv` junto a los
+# respaldos) no impiden restaurar —no se pueden reparar jamás—; una rotura NUEVA,
+# un retroceso o un cambio del hash anclado SÍ. Viajan por stdin con el ancla.
+ROTURAS_BASE="${BACKUP_AUDIT_ROTURAS_DECLARADAS:-$(dirname "$ORIGEN_REAL")/roturas-declaradas.tsv}"
+ENTRADA_VERIF="$(mktemp)"
+{ cat "$ANCLAS"; if [ -f "$ROTURAS_BASE" ]; then cat "$ROTURAS_BASE"; fi; } > "$ENTRADA_VERIF"
+if ! "${COMPOSE[@]}" run --rm --no-deps -T \
+        -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
+        auth-service python -m app.ops.verify_audit_chains \
+        --anclas - ${EXCLUIR[@]+"${EXCLUIR[@]}"} < "$ENTRADA_VERIF"; then
+    rm -f "$ENTRADA_VERIF"
+    echo "" >&2
+    echo "   La cadena está ROTA o le FALTAN asientos respecto al último respaldo" >&2
+    echo "   registrado. Eso no es una restauración: es una supresión de traza." >&2
+    echo "   Revise antes de dar el sistema por bueno." >&2
+    exit 1
+fi
+rm -f "$ENTRADA_VERIF"
 
 echo "── Levantando servicios..."
 "${COMPOSE[@]}" up -d

@@ -44,6 +44,7 @@ from app.core.events import publish_indice_firmado
 from app.core.keys import SealNotFoundError, load_seal
 from app.core.ocsp import OcspMaterialRequiredError
 from app.core.redis_client import get_redis
+from app.core.secret_derivation import KEY_VERSION_LEGACY
 from app.core.tsa import TsaUnavailableError
 from app.providers import get_provider
 from app.providers.base import SignerRef
@@ -97,7 +98,7 @@ def _select_provider_name(objeto_tipo: str) -> str:
     return "nativa"
 
 
-def _native_signer_ref(firmante_id: uuid.UUID) -> SignerRef:
+def _native_signer_ref(firmante_id: uuid.UUID, tenant_slug: str) -> SignerRef:
     """Ver la nota de reutilización de campos en app.providers.native."""
     return SignerRef(
         cert_pem=b"",
@@ -106,6 +107,7 @@ def _native_signer_ref(firmante_id: uuid.UUID) -> SignerRef:
         tipo_firma="nativa",
         nivel_conformidad="firma_electronica_nativa",
         acreditado=False,
+        tenant_slug=tenant_slug,
     )
 
 
@@ -161,7 +163,7 @@ async def sign_payload(
                 },
             ) from exc
     else:
-        signer_ref = _native_signer_ref(firmante_id)
+        signer_ref = _native_signer_ref(firmante_id, tenant_slug)
 
     try:
         signed = await provider.sign(prepared, signer_ref)
@@ -252,7 +254,15 @@ async def sign_payload(
                 },
             ) from exc
 
-    sello_tiempo_dt = datetime.now(UTC)
+    # El instante que persiste la fila TIENE que ser el que quedó dentro del HMAC
+    # de la firma nativa (`extra["sello_tiempo"]`, lo fija `NativeSigner.sign`):
+    # `/verify` recomputa el HMAC con `firma.sello_tiempo`, y un `now()` tomado
+    # aquí era OTRO instante, así que ninguna firma nativa de `/sign-xml` llegó
+    # nunca a verificar. Los demás proveedores no lo declaran y usan el reloj.
+    sello_tiempo_iso = signed.extra.get("sello_tiempo")
+    sello_tiempo_dt = (
+        datetime.fromisoformat(sello_tiempo_iso) if sello_tiempo_iso else datetime.now(UTC)
+    )
 
     # Ata /verify a ESTA firma_id (migración 010): la huella del XML YA
     # FIRMADO (no la de payload_sha256, que es pre-firma — ver la nota de
@@ -345,6 +355,7 @@ async def sign_payload(
                 "ocsp_this_update": ocsp_this_update_dt,
                 "ocsp_next_update": ocsp_next_update_dt,
                 "ocsp_response_der": signed.extra.get("ocsp_response_der"),
+                "key_version": signed.extra.get("key_version", KEY_VERSION_LEGACY),
             }
         )
 
@@ -409,6 +420,7 @@ async def sign_payload(
                     "ocsp_cert_status": signed.extra.get("ocsp_cert_status"),
                     "ocsp_responder_fingerprint": signed.extra.get("ocsp_responder_fingerprint"),
                 },
+                canal=_audit.CANAL_PETICION,
             )
 
             # Evento de auditoría DEDICADO para la degradación observable
@@ -433,6 +445,7 @@ async def sign_payload(
                         "signer_lt_enabled": settings.signer_lt_enabled,
                         "motivo": "sin_material_ca_local",
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
 
             # Evento de auditoría DEDICADO para la degradación observable de
@@ -458,6 +471,7 @@ async def sign_payload(
                         "signer_ocsp_enabled": settings.signer_ocsp_enabled,
                         "motivo": "sin_material_responder_ocsp",
                     },
+                    canal=_audit.CANAL_PETICION,
                 )
 
     # Bookkeeping best-effort del sello vigente (migración 009 — no crítico).

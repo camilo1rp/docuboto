@@ -191,6 +191,15 @@ async def register_tenant(
     )
     if existing:
         print(f"  [tenant] ya existe — slug={slug}, id={existing['id']}")
+        # Una entidad dada de alta por `POST /api/v1/tenants` nace `pending`
+        # (solo registro, sin esquema): esta provisión es la que la completa.
+        activated = await conn.execute(
+            "UPDATE public.tenants SET provisioning_status = 'active', updated_at = now() "
+            "WHERE slug = $1 AND provisioning_status <> 'active'",
+            slug,
+        )
+        if activated != "UPDATE 0":
+            print(f"  [tenant] provisioning_status pending -> active — slug={slug}")
         return
     row = await conn.fetchrow(
         """

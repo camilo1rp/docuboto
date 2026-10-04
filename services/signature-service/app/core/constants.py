@@ -166,3 +166,11 @@ CADENA_NIVEL_AUTORITATIVO: dict[str, tuple[str, tuple[str, ...]]] = {
     "radicado": ("radicados", ("tracking_number", "id::text")),
     "expediente": ("expedientes", ("code", "id::text")),
 }
+
+# `firma.nivel_conformidad` que declaran una firma ACREDITADA (ONAC). Lista
+# cerrada por admisión: `/verify` y `GET /firmas/{id}` reportan `acreditado=True`
+# solo para estos valores (y, en `/verify`, solo si la criptografía valida). Un
+# nivel nuevo no hereda la acreditación por parecerse a uno que la tiene.
+NIVELES_CONFORMIDAD_ACREDITADOS = frozenset(
+    {"xades_b_acreditado", "xades_lt_acreditado", "xades_lta_acreditado"}
+)

@@ -31,11 +31,36 @@ _SERVICE = "archive-service"
 
 
 class MetadataValidationError(Exception):
-    """Los valores de metadato no cumplen el JSON Schema de la plantilla."""
+    """Los valores de metadato no cumplen el JSON Schema de la plantilla.
+
+    `field` es la ruta con puntos de la propiedad que falla (`a.b`), cuando el
+    fallo es atribuible a una; el sobre del 422 la expone para que la pantalla
+    marque el control en vez de adivinarlo del texto del mensaje.
+    """
+
+    def __init__(self, message: str, field: str | None = None) -> None:
+        super().__init__(message)
+        self.field = field
 
 
 def _as_schema(raw: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else json.loads(raw)
+
+
+def _campo_del_error(exc: jsonschema.ValidationError) -> str | None:
+    """Ruta con puntos de la propiedad que incumple el schema (`a.b`, `lista.0`).
+
+    `absolute_path` apunta al PADRE cuando falta una propiedad `required`, así
+    que en ese caso se le añade el nombre de la propiedad ausente: es lo que la
+    pantalla necesita para marcar el control, y el único dato que el mensaje en
+    prosa trae mezclado con el texto. `None` si el fallo es de la raíz.
+    """
+    ruta = [str(p) for p in exc.absolute_path]
+    if exc.validator == "required" and isinstance(exc.instance, dict):
+        faltan = [p for p in exc.validator_value if p not in exc.instance]
+        if faltan:
+            ruta.append(str(faltan[0]))
+    return ".".join(ruta) or None
 
 
 def validate_metadata(metadata: dict[str, Any], json_schema: Any) -> None:
@@ -43,7 +68,7 @@ def validate_metadata(metadata: dict[str, Any], json_schema: Any) -> None:
     try:
         jsonschema.validate(instance=metadata, schema=schema)
     except jsonschema.ValidationError as exc:
-        raise MetadataValidationError(exc.message) from exc
+        raise MetadataValidationError(exc.message, field=_campo_del_error(exc)) from exc
     except jsonschema.SchemaError as exc:
         raise MetadataValidationError(f"Plantilla inválida: {exc.message}") from exc
 
@@ -91,6 +116,7 @@ class ExpedienteTemplateService:
             object_ref=f"{row['trd_serie_id']}:v{row['version']}",
             actor=str(actor) if actor else None,
             payload={"id": str(row["id"])},
+            canal=audit.CANAL_PETICION,
         )
         return _to_response(row)
 

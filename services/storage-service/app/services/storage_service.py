@@ -125,8 +125,9 @@ class StorageService:
         Upload a file, deduplicating by SHA-256 within the tenant.
 
         Returns (FileResponse, created, schedule_pdfa_validation):
-        - `created=False` means the file already existed and was
-          deduplicated — caller should respond with 200. Deduplicated files
+        - `created=False` means the SAME AUTHOR had already uploaded that content and
+          it was deduplicated — caller should respond with 200. Never across
+          authors (AREA-08-09: it would leak existence and the original filename). Deduplicated files
           keep whatever PDF/A verdict (if any) the ORIGINAL upload produced;
           this call never re-validates them.
         - `schedule_pdfa_validation=True` tells the caller (router) to
@@ -156,8 +157,17 @@ class StorageService:
         _check_format(mime_type, formatos_admitidos)
         sha256 = hashlib.sha256(content).hexdigest()
 
-        existing = await self._repo.find_by_sha256(sha256)
-        if existing is not None:
+        # Dedup SOLO del mismo autor (AREA-08-09): contra otro autor la subida crea
+        # su propia fila (201, filename y autor propios) y no revela si el
+        # contenido ya existía. Sin autor identificado (ventanilla pública,
+        # sistema) no se deduplica nunca. La comparación en Python repite la del
+        # SQL a propósito: si alguien afloja la consulta, esto sigue cerrando.
+        existing = (
+            await self._repo.find_by_sha256(sha256, uploaded_by)
+            if uploaded_by is not None
+            else None
+        )
+        if existing is not None and existing.uploaded_by == uploaded_by:
             # La marca de dedup toma el bloqueo de fila: serializa con la purga de
             # huérfanos (ver `FileRepository.mark_dedup_hit`). `None` = la purga lo
             # borró entre la búsqueda y la marca: el contenido se sube de nuevo.
@@ -190,6 +200,7 @@ class StorageService:
                         "validator_agent": strict_result.validator_agent,
                         "detalle": strict_result.detail,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
                 raise PdfaNonConformantError(
                     f"El archivo {filename!r} no es PDF/A conforme "
@@ -410,6 +421,7 @@ class StorageService:
             object_ref=str(file_id),
             actor=str(deleted_by) if deleted_by else None,
             payload={"filename": record.filename, "sha256": record.sha256},
+            canal=audit.CANAL_PETICION,
         )
         return True
 
@@ -471,6 +483,7 @@ class StorageService:
                     "retain_until": active_lock["retain_until"].isoformat(),
                     "legal_hold": active_lock["legal_hold"],
                 },
+                canal="system",
             )
             raise WormLockActiveError(
                 f"El expediente {expediente_id} tiene un objeto bajo protección "
@@ -496,6 +509,7 @@ class StorageService:
                 "sha256": record.sha256,
                 "disposition_reason": reason,
             },
+            canal="system",
         )
         return True
 
@@ -563,6 +577,7 @@ class StorageService:
                     "referencia": referencia,
                     "motivo": motivo,
                 },
+                canal="system",
             )
         return PurgaHuerfano(file_id, "purgado")
 

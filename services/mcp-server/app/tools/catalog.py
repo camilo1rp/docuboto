@@ -1085,8 +1085,9 @@ CATALOG: tuple[Tool, ...] = (
                 min_length=1,
                 max_length=50,
                 description=(
-                    "Número del radicado. Lo exige el backend y viaja al índice "
-                    "electrónico; sácalo del propio radicado, no lo compongas."
+                    "Número del radicado. Viaja al índice electrónico y el backend lo "
+                    "coteja con el que guarda el radicado: uno distinto se rechaza "
+                    "(422). Sácalo del propio radicado, no lo compongas."
                 ),
                 label="Número de radicado",
             ),
@@ -3448,13 +3449,15 @@ CATALOG: tuple[Tool, ...] = (
             "el acto que habilita la destrucción**: a partir de aquí solo faltan el acta "
             "y la ejecución. No decide la eliminación —eso lo hizo el Comité, fuera del "
             "sistema— sino que deja constancia de su acto administrativo, y por eso pide "
-            "el número de acta, la fecha y la referencia del acto."
+            "el número de acta, la fecha y la referencia del acto. Exige nivel 4 de "
+            "administración de TRD, y NO lo registra quien propuso el lote: propone y "
+            "avala personas distintas (separación de funciones)."
         ),
         method="POST",
         path="/api/v1/eliminacion/lotes/{lote_id}/avalar",
         path_params=("lote_id",),
         permission="USUA_PERM_TRD",
-        min_crud=3,
+        min_crud=4,
         write=True,
         destructive=True,
         # El acto más caro del catálogo, y a propósito: para confirmarlo hay que

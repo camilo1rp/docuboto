@@ -52,6 +52,7 @@ import json
 import logging
 import time
 
+import asyncpg
 import redis.exceptions as redis_exc
 from orpycamcp_common import events
 
@@ -74,10 +75,10 @@ logger = logging.getLogger(__name__)
 DOCUMENT_STREAM = "orpycamcp.document.events"
 DEADLETTER_STREAM = "orpycamcp.knowledge.deadletter"
 GROUP = settings.knowledge_ingest_group
-CONSUMER = "knowledge-service-1"
+CONSUMER = events.consumer_name("knowledge-service")
 _SERVICE = "knowledge-service"
 
-_HANDLED_EVENT_TYPES = (
+HANDLED_EVENT_TYPES = (
     "document.radicado.created",
     "document.radicado.reclassified",
     "document.radicado.annulled",
@@ -94,7 +95,7 @@ RECLAIM_INTERVAL = 30.0
 async def _handle(data: dict) -> None:
     envelope = events.parse_fields(data)
     event_type = envelope.get("event_type")
-    if event_type not in _HANDLED_EVENT_TYPES:
+    if event_type not in HANDLED_EVENT_TYPES:
         return
 
     tenant_slug = envelope.get("tenant_slug")
@@ -107,22 +108,34 @@ async def _handle(data: dict) -> None:
         return
 
     async with acquire_tenant(tenant_slug) as conn:
-        if event_type == "document.radicado.created":
-            await ingestion.ingest_radicado_created(
-                conn, tenant_slug=tenant_slug, payload=payload
-            )
-        elif event_type == "document.radicado.reclassified":
-            await ingestion.apply_reclassification(
-                conn, tenant_slug=tenant_slug, payload=payload
-            )
-        else:  # "document.radicado.annulled" | "document.radicado.purged"
-            # Los DOS llegan al mismo tratamiento, y es deliberado: una
-            # anulación y una eliminación por TRD son actos jurídicamente
-            # distintos, pero para una copia derivada significan exactamente lo
-            # mismo -- ese fragmento no puede volver a ser resultado de
-            # búsqueda, nunca. Se distinguen por nombre para que la traza diga
-            # cuál ocurrió; el efecto es uno solo.
-            await ingestion.void_radicado(conn, tenant_slug=tenant_slug, payload=payload)
+        await apply_event(conn, event_type, tenant_slug, payload)
+
+
+async def apply_event(
+    conn: asyncpg.Connection, event_type: str, tenant_slug: str, payload: dict
+) -> None:
+    """Handler-core: aplica un evento sobre la conexión dada.
+
+    Único despacho por tipo de evento. Lo usan el consumidor (que abre su propia
+    conexión) y el replay administrativo del dead-letter (que lo corre en la MISMA
+    transacción que la transición de estado y el asiento de auditoría).
+    """
+    if event_type == "document.radicado.created":
+        await ingestion.ingest_radicado_created(
+            conn, tenant_slug=tenant_slug, payload=payload
+        )
+    elif event_type == "document.radicado.reclassified":
+        await ingestion.apply_reclassification(
+            conn, tenant_slug=tenant_slug, payload=payload
+        )
+    else:  # "document.radicado.annulled" | "document.radicado.purged"
+        # Los DOS llegan al mismo tratamiento, y es deliberado: una
+        # anulación y una eliminación por TRD son actos jurídicamente
+        # distintos, pero para una copia derivada significan exactamente lo
+        # mismo -- ese fragmento no puede volver a ser resultado de
+        # búsqueda, nunca. Se distinguen por nombre para que la traza diga
+        # cuál ocurrió; el efecto es uno solo.
+        await ingestion.void_radicado(conn, tenant_slug=tenant_slug, payload=payload)
 
 
 async def _trace_malformed_event(
@@ -204,7 +217,7 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
         skips the XACK and the message remains in the PEL for the next sweep.
 
     Idempotency:
-        ``INSERT … ON CONFLICT (event_id) DO NOTHING RETURNING event_id`` — a
+        ``INSERT … ON CONFLICT (origin_group, event_id) DO NOTHING RETURNING event_id`` — a
         second call with the same ``event_id`` returns None (no row), and the
         ``audit_log`` write is skipped.
 
@@ -350,7 +363,10 @@ async def run() -> None:
                     await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
+                    # R-5b: recuerda el error para que, si el mensaje queda huérfano, el
+                    # dead-letter lleve la causa y no un texto vacío.
+                    await events.record_failure(redis, GROUP, msg_id, exc)
                     # ack-only-on-success: the message stays in the PEL and
                     # reclaim_stale will retry it; after max_deliveries it
                     # escalates to the dead-letter stream with a durable record.
@@ -372,6 +388,7 @@ async def run() -> None:
                     max_deliveries=5,
                     deadletter_stream=DEADLETTER_STREAM,
                     on_dead_letter=_persist_dead_letter,
+                    status_name="knowledge",
                 )
             except asyncio.CancelledError:
                 raise

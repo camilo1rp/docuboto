@@ -225,6 +225,35 @@ async def test_set_param(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_param_asienta_antes_y_despues(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """AREA-10-14: el asiento lleva el valor vigente ANTES del cambio."""
+    client, conn = client_conn
+    # RBAC, lectura previa FOR UPDATE (jsonb llega como texto)
+    conn.fetchval.side_effect = [True, "6"]
+    resp = await client.put("/api/v1/config/params/consec_digits", json={"value": 8}, headers=_HDRS)
+    assert resp.status_code == 200
+    payload = client.audit_append.await_args.kwargs["payload"]
+    assert payload["antes"] == 6
+    assert payload["despues"] == 8
+    assert payload["existia"] is True
+    assert "FOR UPDATE" in conn.fetchval.await_args_list[1].args[0]
+
+
+@pytest.mark.asyncio
+async def test_set_param_nuevo_asienta_antes_nulo(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    conn.fetchval.side_effect = [True, None]
+    resp = await client.put("/api/v1/config/params/otro", json={"value": 1}, headers=_HDRS)
+    assert resp.status_code == 200
+    payload = client.audit_append.await_args.kwargs["payload"]
+    assert payload["antes"] is None and payload["existia"] is False
+
+
+@pytest.mark.asyncio
 async def test_set_param_forbidden_without_permission(
     client_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:

@@ -140,12 +140,32 @@ async def create_dependencia(
                 object_ref=str(row["id"]),
                 actor=audit_core.actor_from(request),
                 payload={"codigo": row["codigo"], "sigla": row["sigla"], "nombre": row["nombre"]},
+                canal=audit_core.CANAL_PETICION,
             )
     except asyncpg.UniqueViolationError:
         raise _conflict(f"Ya existe una dependencia con el código «{payload.codigo}»")
     except asyncpg.ForeignKeyViolationError:
         raise _bad_parent()
     return DependenciaResponse(**dict(row))
+
+
+async def _exigir_sin_tramite_vivo(repo: DependenciaRepository, nombre: str, accion: str) -> None:
+    """409 si pasos vivos o reglas de flujo referencian la dependencia por nombre."""
+    vivos = await repo.tramites_vivos(nombre)
+    if vivos["pasos_vivos"] > 0 or vivos["reglas"] > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "dependencia_con_tramite_en_curso",
+                "detail": (
+                    "La dependencia tiene trámite en curso o reglas de flujo que la "
+                    f"referencian por nombre: reasigne o cierre el trámite antes de {accion}"
+                ),
+                "pasos_vivos": vivos["pasos_vivos"],
+                "reglas": vivos["reglas"],
+                "status": 409,
+            },
+        )
 
 
 @router.patch(
@@ -172,6 +192,13 @@ async def update_dependencia(
     fields = payload.model_dump(exclude_unset=True)
     try:
         async with conn.transaction():
+            actual = await repo.get_for_update(dependencia_id)
+            if actual is None:
+                raise _not_found()
+            cambia_nombre = "nombre" in fields and fields["nombre"] != actual["nombre"]
+            desactiva = fields.get("activo") is False and actual["activo"] is not False
+            if cambia_nombre or desactiva:
+                await _exigir_sin_tramite_vivo(repo, actual["nombre"], "renombrarla o desactivarla")
             row = await repo.update(dependencia_id, fields=fields)
             if row is None:
                 raise _not_found()
@@ -182,7 +209,12 @@ async def update_dependencia(
                 object_type="dependencia",
                 object_ref=str(dependencia_id),
                 actor=audit_core.actor_from(request),
-                payload={"fields": fields},
+                payload={
+                    "fields": fields,
+                    "antes": {"nombre": actual["nombre"], "activo": actual["activo"]},
+                    "despues": {"nombre": row["nombre"], "activo": row["activo"]},
+                },
+                canal=audit_core.CANAL_PETICION,
             )
     except asyncpg.UniqueViolationError:
         raise _conflict("Ya existe un registro con ese código")
@@ -206,6 +238,10 @@ async def delete_dependencia(
         raise _conflict("La dependencia tiene dependencias hijas: reasígnelas o elimínelas primero")
     try:
         async with conn.transaction():
+            actual = await repo.get_for_update(dependencia_id)
+            if actual is None:
+                raise _not_found()
+            await _exigir_sin_tramite_vivo(repo, actual["nombre"], "eliminarla")
             deleted = await repo.delete(dependencia_id)
             if not deleted:
                 raise _not_found()
@@ -216,6 +252,8 @@ async def delete_dependencia(
                 object_type="dependencia",
                 object_ref=str(dependencia_id),
                 actor=audit_core.actor_from(request),
+                payload={"antes": {"nombre": actual["nombre"], "activo": actual["activo"]}},
+                canal=audit_core.CANAL_PETICION,
             )
     except asyncpg.ForeignKeyViolationError:
         raise _conflict("Otros registros hacen referencia a la dependencia")

@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 import asyncpg
 
 _COLS = (
     "id, radicado_id, operador, guia, estado, destinatario, direccion, "
-    "motivo_devolucion, created_at, updated_at"
+    "motivo_devolucion, acuse_file_id, acuse_sha256, created_at, updated_at"
 )
 # Prefixed for JOIN queries to avoid column-name ambiguity with the radicados table.
 # `r.tracking_number` viaja con el resto: las CUATRO consultas ya hacen el JOIN
@@ -27,7 +28,8 @@ _COLS = (
 # la correspondencia no puede cotejar con el papel que tiene en la mano.
 _COLS_S = (
     "s.id, s.radicado_id, r.tracking_number, s.operador, s.guia, s.estado, "
-    "s.destinatario, s.direccion, s.motivo_devolucion, s.created_at, s.updated_at"
+    "s.destinatario, s.direccion, s.motivo_devolucion, s.acuse_file_id, s.acuse_sha256, "
+    "s.created_at, s.updated_at"
 )
 
 
@@ -174,6 +176,8 @@ class PostalRepository:
         *,
         estado_previo: str,
         max_clearance: int | None,
+        acuse_file_id: uuid.UUID | None = None,
+        acuse_sha256: str | None = None,
     ) -> asyncpg.Record | None:
         """Aplica la transición SOLO si el envío sigue en `estado_previo`.
 
@@ -195,7 +199,9 @@ class PostalRepository:
             # motivo previo si esta transición no lo trae.
             row = await self._conn.fetchrow(
                 f"UPDATE postal_shipment SET estado = $2, updated_at = now(), "
-                f"motivo_devolucion = COALESCE($3, motivo_devolucion) "
+                f"motivo_devolucion = COALESCE($3, motivo_devolucion), "
+                f"acuse_file_id = COALESCE($6, acuse_file_id), "
+                f"acuse_sha256 = COALESCE($7, acuse_sha256) "
                 f"WHERE id = $1 AND estado = $4 "
                 f"AND ($5::int IS NULL OR EXISTS ("
                 f"SELECT 1 FROM radicados r WHERE r.id = postal_shipment.radicado_id "
@@ -206,6 +212,8 @@ class PostalRepository:
                 motivo_devolucion,
                 estado_previo,
                 max_clearance,
+                acuse_file_id,
+                acuse_sha256.lower() if acuse_sha256 else None,
             )
             if row is None:
                 return None
@@ -221,11 +229,59 @@ class PostalRepository:
     # ------------------------------------------------------------------
     # E20 F5 — callback entrante del operador
     # ------------------------------------------------------------------
-    async def get_operator_credential(self, operador: str) -> str | None:
-        """Secreto HMAC del operador en ESTE tenant; None si no hay credencial."""
-        return await self._conn.fetchval(
-            "SELECT webhook_secret FROM postal_operator_credential WHERE operador = $1",
+    async def get_operator_credential(self, operador: str) -> asyncpg.Record | None:
+        """Las dos ranuras del secreto del operador en ESTE tenant; None si no hay fila.
+
+        Devuelve la FILA entera (secreto en claro heredado, ciphertexts y caducidad de
+        la ranura anterior): descifrar y decidir si la anterior sigue vigente es del
+        servicio, que es quien tiene la clave y el reloj.
+        """
+        return await self._conn.fetchrow(
+            "SELECT webhook_secret, secreto_cifrado, secreto_nonce, anterior_cifrado, "
+            "anterior_nonce, anterior_caduca_at FROM postal_operator_credential "
+            "WHERE operador = $1",
             operador,
+        )
+
+    async def lock_operator_credential(self, operador: str) -> asyncpg.Record | None:
+        """La fila del operador con `FOR UPDATE`: serializa dos rotaciones simultáneas."""
+        return await self._conn.fetchrow(
+            "SELECT webhook_secret, secreto_cifrado, secreto_nonce FROM "
+            "postal_operator_credential WHERE operador = $1 FOR UPDATE",
+            operador,
+        )
+
+    async def upsert_operator_credential(
+        self,
+        operador: str,
+        *,
+        cifrado: bytes,
+        nonce: bytes,
+        anterior_cifrado: bytes | None,
+        anterior_nonce: bytes | None,
+        anterior_caduca_at: datetime | None,
+        rotado_por: uuid.UUID | None,
+    ) -> datetime:
+        """Fija la ranura vigente y (si hay) la anterior. Vacía el secreto en claro."""
+        return await self._conn.fetchval(
+            "INSERT INTO postal_operator_credential "
+            "(operador, webhook_secret, secreto_cifrado, secreto_nonce, anterior_cifrado, "
+            " anterior_nonce, anterior_caduca_at, rotado_por) "
+            "VALUES ($1, NULL, $2, $3, $4, $5, $6, $7) "
+            "ON CONFLICT (operador) DO UPDATE SET webhook_secret = NULL, "
+            " secreto_cifrado = EXCLUDED.secreto_cifrado, secreto_nonce = EXCLUDED.secreto_nonce, "
+            " anterior_cifrado = EXCLUDED.anterior_cifrado, "
+            " anterior_nonce = EXCLUDED.anterior_nonce, "
+            " anterior_caduca_at = EXCLUDED.anterior_caduca_at, "
+            " rotado_por = EXCLUDED.rotado_por, updated_at = now() "
+            "RETURNING updated_at",
+            operador,
+            cifrado,
+            nonce,
+            anterior_cifrado,
+            anterior_nonce,
+            anterior_caduca_at,
+            rotado_por,
         )
 
     async def find_by_guia(self, operador: str, guia: str) -> asyncpg.Record | None:

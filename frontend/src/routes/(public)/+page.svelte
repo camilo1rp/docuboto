@@ -408,8 +408,8 @@
       display: inline-flex;
       align-items: center;
       gap: var(--op-space-2);
-      background: rgba(255, 255, 255, 0.14);
-      border: 1px solid rgba(255, 255, 255, 0.28);
+      background: var(--op-on-brand-overlay);
+      border: 1px solid var(--op-on-brand-overlay-border);
       border-radius: var(--op-radius-full);
       padding: var(--op-space-1) var(--op-space-4);
       font-size: var(--op-font-xs);
@@ -699,7 +699,7 @@
   // --------------------------------------------------------------- Footer ---
   .landing-footer {
     background: var(--op-text);
-    color: rgba(255, 255, 255, 0.85);
+    color: var(--op-on-brand-text-muted);
     padding: var(--op-space-6) var(--op-space-5);
 
     &__inner {

@@ -181,6 +181,7 @@ class WorkflowRulesService:
                 object_ref=str(row["id"]),
                 actor=str(created_by),
                 payload={"regla": _retrato(row)},
+                canal=audit.CANAL_PETICION,
             )
         return _to_response(row)
 
@@ -281,6 +282,7 @@ class WorkflowRulesService:
                 # leer sin ir a buscar de qué regla habla — aunque el propio
                 # nombre sea lo que cambió.
                 payload={"nombre": despues.get("name"), "cambios": cambios},
+                canal=audit.CANAL_PETICION,
             )
         return _to_response(row)
 
@@ -309,6 +311,7 @@ class WorkflowRulesService:
                 object_ref=str(rule_id),
                 actor=str(actor),
                 payload={"regla": _retrato(previo)},
+                canal=audit.CANAL_PETICION,
             )
         return True
 

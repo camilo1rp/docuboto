@@ -31,11 +31,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import asyncpg
-from orpycamcp_common import audit, events
+from orpycamcp_common import audit
 
 from app.clients.tenant_client import TenantServiceClient
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
+from app.core.datos_minimos import exigir_o_422
 from app.models.document import Anexo, Radicado
 from app.repositories.audit_read import AuditReadRepository
 from app.repositories.document_repository import (
@@ -54,6 +55,7 @@ from app.schemas.document import (
     IndiceClasificadosResponse,
 )
 from app.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
+from app.services import outbox
 from app.services.metadata_service import validate_metadata
 from app.services.tercero_service import TerceroService
 
@@ -168,6 +170,10 @@ class AnexoNoDisponibleError(Exception):
     """Se intenta adjuntar un fichero que ya cuelga de un radicado fuera de alcance."""
 
 
+class DuplicateSubmissionError(Exception):
+    """La `Idempotency-Key` pública ya radicó (AREA-02-07): se devuelve lo existente."""
+
+
 class DestDeptImmutableError(Exception):
     """PATCH de dest_dept sobre un radicado cerrado."""
 
@@ -235,7 +241,13 @@ class DocumentService:
         self,
         payload: DocumentCreate,
         registered_by: uuid.UUID | None,
+        *,
+        submission_key: tuple[str, str] | None = None,
     ) -> DocumentResponse:
+        """Radica. `submission_key = (clave, huella)` activa la idempotencia pública
+        (AREA-02-07): la clave se reclama DENTRO de la transacción, antes de pedir el
+        consecutivo, y si ya estaba reclamada se levanta `DuplicateSubmissionError`
+        sin haber gastado ningún número."""
         # El AÑO se decide en la zona horaria de radicación, no en UTC: ver
         # `Settings.tz_radicacion`. `now` sigue siendo consciente de zona, así
         # que lo que se guarda como instante no cambia; lo que cambia es qué día
@@ -329,6 +341,19 @@ class DocumentService:
         # asiento en la numeración oficial (Ac. AGN 060/2001). Mismo orden que
         # `batch_service`.
         async with self._conn.transaction():
+            if submission_key is not None:
+                # Dos peticiones simultáneas con la misma clave se serializan en el
+                # índice único: la segunda ESPERA el commit (o rollback) de la
+                # primera. Si la primera confirma, aquí no hay fila que devolver y
+                # se levanta el duplicado; si revierte, esta toma la clave.
+                reclamada = await self._conn.fetchval(
+                    "INSERT INTO public_submission_keys (key, huella) VALUES ($1, $2) "
+                    "ON CONFLICT (key) DO NOTHING RETURNING TRUE",
+                    submission_key[0],
+                    submission_key[1],
+                )
+                if not reclamada:
+                    raise DuplicateSubmissionError(submission_key[0])
             tenant_code = await self._repo.get_tenant_code()
             sequence = await self._repo.next_sequence(year, payload.doc_type)
             tracking_number = f"{year}-{tenant_code}-{payload.doc_type}-{sequence:06d}"
@@ -361,6 +386,19 @@ class DocumentService:
                 audit_payload["clasificacion_fundamento"] = payload.clasificacion_fundamento
                 audit_payload["clasificacion_causal"] = payload.clasificacion_causal
 
+            # Ley 1581/2012 (AREA-09-08): la constancia de la autorización de
+            # tratamiento viaja también en el asiento de creación, que es el que
+            # tiene valor probatorio; `metadata.consentimiento` es solo su copia
+            # consultable junto al radicado.
+            if isinstance(payload.metadata.get("consentimiento"), dict):
+                audit_payload["consentimiento"] = payload.metadata["consentimiento"]
+            if submission_key is not None:
+                await self._conn.execute(
+                    "UPDATE public_submission_keys SET radicado_id = $2 WHERE key = $1",
+                    submission_key[0],
+                    radicado.id,
+                )
+
             await audit.append(
                 self._conn,
                 tenant_slug=self._slug,
@@ -370,6 +408,7 @@ class DocumentService:
                 object_ref=tracking_number,
                 actor=actor,
                 payload=audit_payload,
+                canal=audit.CANAL_PETICION,
             )
 
             # Actores (RF-RAD-05) DENTRO de la misma transacción: el radicado,
@@ -396,48 +435,42 @@ class DocumentService:
                     actor=registered_by,
                 )
 
-        # El evento de dominio se publica tras confirmar la transacción. Es
-        # best-effort: un fallo de Redis no revierte la radicación (la BD es la
-        # fuente de verdad; el stream se puede reconstruir).
-        await self._emit_created(radicado, actor)
+            # OUTBOX (AREA-09-05): el evento nace en la MISMA transacción que el
+            # radicado y su asiento. Antes se publicaba después del commit y un
+            # fallo de Redis lo perdía en silencio.
+            pendiente = await self._encolar_created(radicado, actor)
+
+        # Camino rápido tras el commit; si falla, el relé del barrido lo reenvía.
+        await outbox.enviar(self._conn, self._redis, pendiente)
 
         return _to_response(radicado)
 
-    async def _emit_created(self, radicado: Radicado, actor: str | None) -> None:
-        if self._redis is None:
-            return
-        try:
-            await events.emit(
-                self._redis,
-                _STREAM,
-                "document.radicado.created",
-                tenant_slug=self._slug,
-                actor=actor,
-                dedup_key=radicado.tracking_number,
-                payload={
-                    "id": str(radicado.id),
-                    "tracking_number": radicado.tracking_number,
-                    "doc_type": radicado.doc_type,
-                    "doc_class": radicado.doc_class,
-                    "subject": radicado.subject,
-                    "dest_dept": radicado.dest_dept,
-                    "dest_dept_code": radicado.dest_dept_code,
-                    "origin_dept": radicado.origin_dept,
-                    "sender_name": radicado.sender_name,
-                    "sender_entity": radicado.sender_entity,
-                    "pages": radicado.pages,
-                    "due_date": radicado.due_date.isoformat() if radicado.due_date else None,
-                    # E21: propagación de ACL vía evento (fail-closed) — knowledge-service
-                    # deriva el nivel del chunk de aquí; nunca hace fetch-back al radicado.
-                    "nivel_seguridad": radicado.nivel_seguridad,
-                },
-            )
-        except Exception:
-            logger.warning(
-                "No se pudo publicar el evento de radicado %s",
-                radicado.tracking_number,
-                exc_info=True,
-            )
+    async def _encolar_created(self, radicado: Radicado, actor: str | None) -> dict[str, Any]:
+        return await outbox.encolar(
+            self._conn,
+            stream=_STREAM,
+            event_type="document.radicado.created",
+            tenant_slug=self._slug,
+            actor=actor,
+            dedup_key=radicado.tracking_number,
+            payload={
+                "id": str(radicado.id),
+                "tracking_number": radicado.tracking_number,
+                "doc_type": radicado.doc_type,
+                "doc_class": radicado.doc_class,
+                "subject": radicado.subject,
+                "dest_dept": radicado.dest_dept,
+                "dest_dept_code": radicado.dest_dept_code,
+                "origin_dept": radicado.origin_dept,
+                "sender_name": radicado.sender_name,
+                "sender_entity": radicado.sender_entity,
+                "pages": radicado.pages,
+                "due_date": radicado.due_date.isoformat() if radicado.due_date else None,
+                # E21: propagación de ACL vía evento (fail-closed) — knowledge-service
+                # deriva el nivel del chunk de aquí; nunca hace fetch-back al radicado.
+                "nivel_seguridad": radicado.nivel_seguridad,
+            },
+        )
 
     async def get_disposition(self, document_id: uuid.UUID, max_clearance: int) -> dict:
         """Lee los metadatos de disposición (RF-MET-08) respetando no-read-up.
@@ -508,6 +541,7 @@ class DocumentService:
         *,
         actor: str | None = None,
         canal: str = "system",
+        anexos_publicables: builtins.list[uuid.UUID] | None = None,
     ) -> dict:
         """Acto de publicación de oficio (11.1, Ley 1712/2014 art. 12).
 
@@ -534,6 +568,15 @@ class DocumentService:
             )
             if fila is None:
                 raise DocumentNotFoundError(str(document_id))
+            # Qué soportes se difunden (AREA-07-12): al retirar, ninguno; al
+            # publicar, solo los indicados, que han de ser anexos DE ESTE radicado
+            # (si alguno es ajeno, el acto entero revierte: no se publica a medias).
+            ids = list(dict.fromkeys(anexos_publicables or [])) if publicar else []
+            pertenecen = await self._repo.set_anexos_publicables(document_id, ids)
+            if pertenecen != len(ids):
+                raise AnexoNoDisponibleError(
+                    "Alguno de los anexos indicados no pertenece a este radicado"
+                )
             await audit.append(
                 self._conn,
                 tenant_slug=self._slug,
@@ -543,12 +586,17 @@ class DocumentService:
                 object_ref=fila["tracking_number"],
                 actor=actor,
                 canal=canal,
-                payload={"publicable": publicar, "fundamento": fundamento},
+                payload={
+                    "publicable": publicar,
+                    "fundamento": fundamento,
+                    "anexos_publicables": [str(i) for i in ids],
+                },
             )
         return {
             "tracking_number": fila["tracking_number"],
             "publicable": fila["publicable"],
             "publicado_at": fila["publicado_at"],
+            "anexos_publicados": len(ids),
         }
 
     async def _resolve_dependencia(self, codigo: int) -> str:
@@ -850,11 +898,24 @@ class DocumentService:
         entrada = await self._repo.get_by_id(antecedente_id, max_clearance)
         if entrada is None:
             raise DocumentNotFoundError(str(antecedente_id))
+        origen = payload.origin_dept_code or entrada.dest_dept_code
+        tipo = payload.doc_class or entrada.doc_class
+        exigir_o_422(
+            "S",
+            doc_class=tipo,
+            origin_dept_code=origen,
+            dest_dept_code=payload.dest_dept_code,
+        )
         salida = DocumentCreate(
             doc_type="S",
             subject=(payload.subject or f"RE: {entrada.subject}")[:2000],
             dest_dept=payload.dest_dept or entrada.origin_dept,
             dest_dept_code=payload.dest_dept_code,
+            # Ac. 060 §5.2 (AREA-09-02): la Salida exige origen y tipo. Se heredan
+            # del antecedente si el cuerpo no los trae; si ni así hay dato, el
+            # validador de `DocumentCreate` rechaza (422), no se radica a medias.
+            origin_dept_code=origen,
+            doc_class=tipo,
             observations=payload.observations,
             response_days=payload.response_days,
             metadata={
@@ -978,37 +1039,37 @@ class DocumentService:
                     "fundamento_juridico": fundamento_juridico,
                     "plazo_reserva_meses": plazo_reserva_meses,
                 },
+                canal=audit.CANAL_PETICION,
             )
             result_id = ctx["id"]
             result_tracking = ctx["tracking_number"]
             nivel_anterior = ctx["nivel_seguridad"]
 
-        # Best-effort: a Redis failure does not roll back the already-committed UPDATE.
-        if self._redis is not None:
-            try:
-                await events.emit(
-                    self._redis,
-                    _STREAM,
-                    "document.radicado.reclassified",
-                    tenant_slug=self._slug,
-                    actor=actor_str,
-                    dedup_key=f"{result_tracking}:{nuevo_nivel}",
-                    payload={
-                        "id": str(result_id),
-                        "tracking_number": result_tracking,
-                        "nivel_anterior": nivel_anterior,
-                        "nivel_nuevo": nuevo_nivel,
-                        "causal_reserva": causal_reserva,
-                        "fundamento_juridico": fundamento_juridico,
-                        "plazo_reserva_meses": plazo_reserva_meses,
-                    },
-                )
-            except Exception:
-                logger.warning(
-                    "No se pudo publicar el evento de reclasificación %s",
-                    result_tracking,
-                    exc_info=True,
-                )
+            # OUTBOX (AREA-09-05): el evento se inserta en la MISMA transacción que el
+            # UPDATE del nivel y el asiento. knowledge-service deriva el nivel de sus
+            # fragmentos SOLO de este evento: perderlo dejaba un 1→3 sirviéndose como
+            # nivel 1. Si la tx revierte, el evento tampoco existe.
+            pendiente = await outbox.encolar(
+                self._conn,
+                stream=_STREAM,
+                event_type=outbox.RECLASIFICADO,
+                tenant_slug=self._slug,
+                actor=actor_str,
+                dedup_key=f"{result_tracking}:{nuevo_nivel}",
+                payload={
+                    "id": str(result_id),
+                    "tracking_number": result_tracking,
+                    "nivel_anterior": nivel_anterior,
+                    "nivel_nuevo": nuevo_nivel,
+                    "causal_reserva": causal_reserva,
+                    "fundamento_juridico": fundamento_juridico,
+                    "plazo_reserva_meses": plazo_reserva_meses,
+                },
+            )
+
+        # Camino rápido tras el commit. Si falla, la fila del outbox sigue pendiente y
+        # el relé del barrido la reenvía: el 1→3 ya no se pierde con Redis caído.
+        await outbox.enviar(self._conn, self._redis, pendiente)
 
         return {
             "id": result_id,
@@ -1051,6 +1112,11 @@ class DocumentService:
                     plazo_reserva_meses=r["clasificacion_plazo_meses"],
                     fecha_clasificacion=r["clasificado_at"],
                     fecha_radicacion=r["registered_at"],
+                    # E e I los tramita quien los recibe; la Salida, quien la produce.
+                    dependencia=(
+                        r["origin_dept"] if r["doc_type"] == "S" else r["dest_dept"]
+                    ),
+                    registrado_por=r["registered_by"],
                 )
             )
         try:
@@ -1063,6 +1129,7 @@ class DocumentService:
                 object_ref="registro",
                 actor=str(actor) if actor else None,
                 payload={"total": len(items)},
+                canal=audit.CANAL_PETICION,
             )
         except Exception:
             logger.warning("audit.append (indice_clasificados) failed", exc_info=True)
@@ -1180,6 +1247,7 @@ class DocumentService:
                 object_ref=radicado.tracking_number,
                 actor=str(actor) if actor else None,
                 payload={"cambios": cambios},
+                canal=audit.CANAL_PETICION,
             )
         return _to_response(radicado)
 

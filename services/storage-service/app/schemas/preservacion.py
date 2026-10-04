@@ -70,8 +70,9 @@ def canonicalize_expediente_id(value: str) -> str:
     `PreservacionWormRepository.active_lock_for_expediente`) llavea por
     IGUALDAD EXACTA de este string contra el valor grabado al proteger el
     índice (`proteger_indice`). Protección y disposición son dos llamadas
-    HTTP independientes (hoy: la primera vía este schema; la disposición
-    final es un roadmap item — ver `StorageService.purge_for_disposition`);
+    HTTP independientes (la primera vía este schema; la disposición final la
+    ejecuta archive-service con `POST /lotes/{id}/ejecutar`, que llega a
+    `StorageService.purge_for_disposition`);
     si el string difiere por espacios incidentales entre ambas, el gate no
     encuentra el candado y la purga procedería sin bloquear (hallazgo de
     auditoría Increment A). Esta función es la ÚNICA fuente de canonicalización
@@ -101,6 +102,12 @@ class PlanCreate(BaseModel):
         return normalizar_mimes(v)
 
 
+class EstadoResponse(BaseModel):
+    """Estado de INSTANCIA de la preservación (no por expediente)."""
+
+    enabled: bool
+
+
 class PlanResponse(BaseModel):
     id: uuid.UUID
     version: int
@@ -124,6 +131,20 @@ class EventoCreate(BaseModel):
     hash_before: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     hash_after: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     detalle: dict[str, Any] = Field(default_factory=dict)
+
+
+class EventoInternalCreate(EventoCreate):
+    """Cuerpo de `POST /eventos-internal` (AREA-07-05): un evento PREMIS que registra OTRO
+    servicio (archive: el fixity-check de la recepción de una transferencia).
+
+    A diferencia de `POST /eventos` (permiso de usuario), aquí no hay persona detrás de la
+    petición HTTP: el llamador declara el `agente` —el humano que ejecutó el acto— y el
+    token interno prueba que llama un servicio de la red. `dedup_key` hace el POST
+    idempotente: la reconciliación de archive reintenta (at-least-once) y no debe duplicar
+    el evento en un registro append-only."""
+
+    agente: str | None = Field(default=None, max_length=255)
+    dedup_key: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class RetentionMixin(BaseModel):
@@ -460,7 +481,15 @@ class ProtegerIndiceRequest(RetentionMixin):
     # servicio). 'aip' NO es un valor válido aquí a propósito: el AIP real usa
     # su propio schema `AipCreate` (Increment B), con su propia semántica de
     # NO-singleton (re-empaquetable), ver la migración 009.
-    tipo: Literal["indice", "acta_transferencia", "acta_eliminacion"] = "indice"
+    tipo: Literal[
+        "indice",
+        "acta_transferencia",
+        "acta_eliminacion",
+        # Firmas PERSONALES del acta de transferencia, una por rol (AREA-07-10, mig. 018).
+        "acta_firma_elabora",
+        "acta_firma_entrega",
+        "acta_firma_recibe",
+    ] = "indice"
     # De QUÉ es `expediente_id` (migración 014). El acta de eliminación
     # pertenece a un LOTE —cubre N expedientes que además van a dejar de
     # existir—, y el CHECK de la base impone la pareja: un `acta_eliminacion`

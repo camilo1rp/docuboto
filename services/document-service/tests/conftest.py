@@ -62,7 +62,11 @@ class FakeTenantClient:
         self.due_date: date = date(2024, 1, 22)
         self.raise_error: bool = False
         # Organigrama simulado: codigo -> dependencia.
-        self.dependencias: dict[int, dict] = {}
+        # La 1 existe por defecto: Ac. AGN 060/2001 §5.2 (AREA-09-02) hace obligatoria
+        # la dependencia al radicar, y casi todo payload de prueba lleva `dest_dept_code=1`.
+        self.dependencias: dict[int, dict] = {
+            1: {"codigo": 1, "sigla": "DG", "nombre": "Dirección General", "activo": True}
+        }
         self.dep_calls: list[tuple[str, int]] = []
         self.dep_raise_error: bool = False
         # Parámetros de la entidad (`sgd_param_admin`), que alimentan el

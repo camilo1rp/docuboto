@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 _OPERADOR = Literal["4-72", "servientrega", "otro"]
 _ESTADO = Literal["registrado", "en_transito", "entregado", "devuelto", "fallido"]
@@ -38,6 +38,37 @@ class ShipmentStatusUpdate(BaseModel):
     # dato — y el manual, que es el habitual, era el peor: sin causal
     # consultable no hay forma de reportar por qué se devuelven los envíos.
     motivo: str | None = Field(default=None, max_length=200)
+    #: Acuse de recibo (AREA-09-10): el `file_id` del soporte subido a storage y su
+    #: SHA-256. Obligatorios para pasar A MANO a `entregado`: sin la constancia de
+    #: entrega, «entregado» es la palabra de quien lo marca. El callback firmado del
+    #: operador no los necesita: su firma es su prueba.
+    acuse_file_id: uuid.UUID | None = None
+    acuse_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+
+    @model_validator(mode="after")
+    def _entregado_exige_acuse(self) -> ShipmentStatusUpdate:
+        if self.estado == "entregado" and (self.acuse_file_id is None or not self.acuse_sha256):
+            raise ValueError(
+                "Pasar un envío a 'entregado' exige el acuse de recibo "
+                "(acuse_file_id y acuse_sha256)"
+            )
+        return self
+
+
+class CredencialRotacion(BaseModel):
+    """Nuevo secreto HMAC del operador (AREA-09-10). Nunca se devuelve."""
+
+    secreto: str = Field(..., min_length=32, max_length=200)
+    #: Horas durante las que el secreto ANTERIOR sigue valiendo, para que el operador
+    #: tenga tiempo de cambiar el suyo sin que sus callbacks caigan en 401. 0 = corte.
+    gracia_horas: int = Field(default=24, ge=0, le=168)
+
+
+class CredencialRotada(BaseModel):
+    operador: str
+    rotada_at: datetime
+    #: Hasta cuándo vale el secreto anterior; `None` si no hay ranura anterior vigente.
+    anterior_vigente_hasta: datetime | None = None
 
 
 class ShipmentEvent(BaseModel):
@@ -59,6 +90,8 @@ class ShipmentResponse(BaseModel):
     destinatario: str | None
     direccion: str | None
     motivo_devolucion: str | None = None
+    acuse_file_id: uuid.UUID | None = None
+    acuse_sha256: str | None = None
     created_at: datetime
     updated_at: datetime
     eventos: list[ShipmentEvent] = []

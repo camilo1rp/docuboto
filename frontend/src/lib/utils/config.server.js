@@ -100,3 +100,10 @@ export const KEYCLOAK_USERINFO_URL = `${KC_OIDC}/userinfo`;
 // con la configuración puesta — un fallo mudo. El slug no se necesita en el
 // cliente: el proxy lo usa server-side, y así no se expone nada de más.
 export const PUBLIC_TENANT = env.PORTAL_TENANT_SLUG ?? "";
+
+// Autorización de tratamiento de datos personales (Ley 1581/2012) en la ventanilla
+// pública. El TEXTO y la versión de la política los aporta la entidad: aquí solo se
+// leen. Sin versión configurada se registra la constante «sin-politica-publicada», que
+// es la verdad (la entidad no ha publicado una) y no una versión inventada.
+export const POLITICA_VERSION = env.POLITICA_TRATAMIENTO_VERSION || "sin-politica-publicada";
+export const POLITICA_URL = env.POLITICA_TRATAMIENTO_URL ?? "";

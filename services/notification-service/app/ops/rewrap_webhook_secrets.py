@@ -111,6 +111,7 @@ async def rewrap_tenant(
                     object_ref=str(row["id"]),
                     actor=_ACTOR,
                     payload={"from_version": row["secret_kek_version"], "to_version": active_v},
+                    canal="system",
                 )
             hechas += 1
         except Exception as exc:  # noqa: BLE001 — aísla el fallo por fila

@@ -269,6 +269,7 @@ class BatchArchiveService:
                             "id": str(exp_id),
                             "nivel_seguridad": exp_row["nivel_seguridad"],
                         },
+                        canal=audit.CANAL_PETICION,
                     )
             except Exception as exc:
                 await self.conn.execute(

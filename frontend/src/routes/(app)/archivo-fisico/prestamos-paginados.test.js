@@ -24,6 +24,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import { GET as PRESTAMOS } from "./api/prestamos/+server.js";
+import { GET as PRESTAMOS_DE_UNIDAD } from "./api/unidades/[id]/prestamos/+server.js";
 
 const LOCALS = { accessToken: "t", user: { tenant_slug: "demo" } };
 
@@ -110,5 +111,52 @@ describe("/archivo-fisico/api/prestamos", () => {
 
     const url = new URL(global.fetch.mock.calls[0][0]);
     expect(url.searchParams.get("estado")).toBeNull();
+  });
+});
+
+// AREA-07-19: el listado por UNIDAD paginaba mal por omisión —no paginaba—, con el
+// argumento de que una unidad no acumula miles de préstamos. Ahora el backend pagina
+// (`size` <= 100) y el proxy lo pide y conserva el total.
+describe("/archivo-fisico/api/unidades/[id]/prestamos", () => {
+  const unidad = (qs = "") => ({
+    locals: LOCALS,
+    params: { id: "u-1" },
+    url: new URL(`http://app/archivo-fisico/api/unidades/u-1/prestamos${qs}`),
+  });
+
+  beforeEach(() => {
+    global.fetch = vi.fn();
+  });
+
+  it("pide una página acotada aunque el cliente no la pida", async () => {
+    global.fetch.mockResolvedValueOnce(respuesta([], 0));
+
+    await PRESTAMOS_DE_UNIDAD(unidad());
+
+    const url = new URL(global.fetch.mock.calls[0][0]);
+    expect(url.pathname).toBe("/api/v1/unidades/u-1/prestamos");
+    expect(url.searchParams.get("page")).toBe("1");
+    expect(url.searchParams.get("size")).toBe("100");
+  });
+
+  it("reenvía la página pedida y conserva el X-Total-Count", async () => {
+    global.fetch.mockResolvedValueOnce(respuesta([{ id: "p" }], 25));
+
+    const res = await PRESTAMOS_DE_UNIDAD(unidad("?page=2&size=20"));
+
+    const url = new URL(global.fetch.mock.calls[0][0]);
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("size")).toBe("20");
+    expect(res.headers.get("X-Total-Count")).toBe("25");
+  });
+
+  it("un valor que no es número se ignora en vez de viajar", async () => {
+    global.fetch.mockResolvedValueOnce(respuesta([], 0));
+
+    await PRESTAMOS_DE_UNIDAD(unidad("?page=x&size=; DROP"));
+
+    const url = new URL(global.fetch.mock.calls[0][0]);
+    expect(url.searchParams.get("page")).toBe("1");
+    expect(url.searchParams.get("size")).toBe("100");
   });
 });

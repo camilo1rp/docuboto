@@ -154,6 +154,7 @@ async def cifrar_tenant(
                     object_ref=str(wid),
                     actor=_ACTOR,
                     payload={"kek_version": active_v, "origen": "secreto_en_claro_heredado"},
+                    canal="system",
                 )
             hechas += 1
         except Exception as exc:  # noqa: BLE001 — aísla el fallo por fila

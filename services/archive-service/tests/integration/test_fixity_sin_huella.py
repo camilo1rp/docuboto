@@ -33,6 +33,7 @@ no se verificaron se leería como «se comprobaron todos», y eso sí sería fal
 from __future__ import annotations
 
 import uuid
+from contextlib import nullcontext
 
 import asyncpg
 import pytest
@@ -41,6 +42,9 @@ from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.schemas.archive import ExpedienteCreate, RadicadoLink
 from app.services.archive_service import ArchiveService
 from app.services.index_service import IndexService
+from tests.conftest import registrar_radicado
+
+from .conftest import huella_en_almacen
 
 pytestmark = pytest.mark.asyncio
 
@@ -55,15 +59,25 @@ async def _expediente_con_radicado(
         opened_by=None,
     )
     radicado_id = uuid.uuid4()
-    await service.link_radicado(
-        expediente_id=exp.id,
-        payload=RadicadoLink(
-            radicado_id=radicado_id,
-            tracking_number=f"2026-ITEST-E-{str(radicado_id.int)[:6]}",
-            content_hash=content_hash,
-        ),
-        user_id=None,
+    tracking = f"2026-ITEST-E-{str(radicado_id.int)[:6]}"
+    registrar_radicado(tracking, radicado_id=radicado_id)
+    # Con huella declarada, el almacén tiene que decir lo mismo: vincular la
+    # coteja (AREA-07-02) en vez de aceptarla.
+    huella = (
+        huella_en_almacen(radicado_id, content_hash)
+        if content_hash is not None
+        else nullcontext()
     )
+    with huella:
+        await service.link_radicado(
+            expediente_id=exp.id,
+            payload=RadicadoLink(
+                radicado_id=radicado_id,
+                tracking_number=tracking,
+                content_hash=content_hash,
+            ),
+            user_id=None,
+        )
     return exp, radicado_id
 
 

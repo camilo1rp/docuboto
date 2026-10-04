@@ -46,7 +46,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS, USER_ID, make_expediente_record
+from tests.conftest import (
+    TENANT_HEADERS,
+    USER_ID,
+    indice_firmado_row,
+    make_expediente_record,
+)
 
 NOW = datetime.now(tz=UTC)
 
@@ -173,6 +178,7 @@ async def test_create_rama_a_sin_origen_ni_destino_422(client_with_conn) -> None
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
     ]
     mock_conn.fetch.side_effect = [[], [_unidad_de_expediente_row()]]
 
@@ -193,6 +199,7 @@ async def test_create_rama_a_solo_origen_sin_destino_422(client_with_conn) -> No
     origen_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
     ]
     mock_conn.fetch.side_effect = [[], [_unidad_de_expediente_row()]]
 
@@ -215,6 +222,7 @@ async def test_create_rama_a_origen_no_cotea_422(client_with_conn) -> None:
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_ajeno_id, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
     ]
@@ -238,6 +246,7 @@ async def test_create_rama_a_origen_cotea_y_coherente_201(client_with_conn) -> N
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_id, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
@@ -277,6 +286,7 @@ async def test_create_rama_a_multiplicidad_origen_cotea_con_cualquiera_201(
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=ubicacion_b, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
@@ -312,6 +322,7 @@ async def test_create_rama_a_multiplicidad_origen_no_es_ninguna_422(client_with_
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=origen_ajeno, tipo_archivo="gestion"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
     ]
@@ -342,6 +353,7 @@ async def test_create_rama_a_cotejo_pasa_pero_coherencia_falla_422(client_with_c
     destino_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         _ubicacion_row(id=ubicacion_central_id, tipo_archivo="central"),
         _ubicacion_row(id=destino_id, tipo_archivo="central"),
     ]
@@ -377,6 +389,7 @@ async def test_create_rama_b_electronico_sin_unidades_201(client_with_conn) -> N
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
         # quien prepara, resuelta antes del INSERT.
         _depe_row(),
@@ -401,6 +414,7 @@ async def test_create_rama_b_unidad_sin_ubicacion_resuelta_no_cuenta_como_tenenc
     exp_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
         # `dependencia_de_usuario` (migración 052): la oficina productora de
         # quien prepara, resuelta antes del INSERT.
         _depe_row(),
@@ -422,6 +436,7 @@ async def test_create_rama_b_par_incompleto_sigue_422(client_with_conn) -> None:
     origen_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         make_expediente_record(exp_id=exp_id, exp_status="closed"),
+        indice_firmado_row(),
     ]
     mock_conn.fetch.return_value = []
 

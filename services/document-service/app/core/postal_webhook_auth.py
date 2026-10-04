@@ -39,3 +39,63 @@ def verify_signature(secret: str, body: bytes, signature_header: str | None) -> 
     provided = signature_header[len(_PREFIX) :]
     expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(provided, expected)
+
+
+def verify_any(secrets: list[str], body: bytes, signature_header: str | None) -> bool:
+    """True si la firma corresponde a CUALQUIERA de los secretos vigentes (rotación).
+
+    Se evalúan SIEMPRE todos (sin cortocircuito) para que el tiempo de respuesta no
+    delate cuál de las ranuras —la vigente o la anterior— coincidió. La lista vacía no
+    verifica nada: fail-closed.
+    """
+    resultado = False
+    for secreto in secrets:
+        if verify_signature(secreto, body, signature_header):
+            resultado = True
+    return resultado
+
+
+def aad_credencial(tenant_slug: str, operador: str) -> bytes:
+    """Datos autenticados de la custodia: entidad + operador.
+
+    Un secreto copiado a otro operador o al esquema de otra entidad NO descifra.
+    El separador no puede aparecer en un slug ni en un operador, así que
+    `("a", "b-c")` y `("a-b", "c")` no colisionan.
+    """
+    return f"postal_operador|{tenant_slug}|{operador}".encode()
+
+
+# -- Custodia cifrada del secreto (AESGCM, misma clave maestra que las credenciales
+#    de correo: `EMAIL_ENCRYPTION_KEY`). El AAD ata el ciphertext a entidad+operador.
+
+
+def cifrar_secreto(secreto: str, *, clave_b64: str, tenant_slug: str, operador: str) -> tuple[bytes, bytes]:
+    """`(ciphertext, nonce)`. Falla (`RuntimeError`) si la clave maestra no está: nunca
+    se guarda un secreto en claro ni bajo una clave adivinada."""
+    import secrets as _secrets
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from app.core.email_credenciales import NONCE_LENGTH, _clave
+
+    nonce = _secrets.token_bytes(NONCE_LENGTH)
+    return (
+        AESGCM(_clave(clave_b64)).encrypt(
+            nonce, secreto.encode("utf-8"), aad_credencial(tenant_slug, operador)
+        ),
+        nonce,
+    )
+
+
+def descifrar_secreto(
+    ciphertext: bytes, *, nonce: bytes, clave_b64: str, tenant_slug: str, operador: str
+) -> str:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from app.core.email_credenciales import _clave
+
+    return (
+        AESGCM(_clave(clave_b64))
+        .decrypt(bytes(nonce), bytes(ciphertext), aad_credencial(tenant_slug, operador))
+        .decode("utf-8")
+    )

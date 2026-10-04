@@ -44,6 +44,15 @@ def validar_forma_fondo_acumulado(
                 "fecha_extrema_final es obligatoria cuando origen='fondo_acumulado' "
                 "(ADR-026 D4: es la fecha base del calendario de retención)."
             )
+        if fecha_extrema_final > date.today():
+            # Un fondo acumulado es documentación PASADA. Esta fecha es la base de un
+            # Object-Lock COMPLIANCE irreversible que fija el cliente (en un corriente la
+            # base es `closed_at`, del servidor): una fecha futura bloquearía la disposición
+            # final del acervo por décadas (`retain_until` = base + total TRD).
+            raise ValueError(
+                "fecha_extrema_final no puede ser futura: un fondo acumulado documenta "
+                "lo que ya existe (es la base de una retención WORM irreversible)."
+            )
         if fecha_extrema_inicial is not None and fecha_extrema_inicial > fecha_extrema_final:
             raise ValueError("fecha_extrema_inicial no puede ser posterior a fecha_extrema_final.")
         if trd_serie_id is None:
@@ -115,30 +124,39 @@ class ExpedienteUpdate(BaseModel):
 
 
 class RadicadoLink(BaseModel):
+    """Vínculo radicado → expediente.
+
+    **Solo `radicado_id` y `tracking_number` son necesarios**, y el segundo se
+    COTEJA con el que guarda document-service (422 `metadato_no_coincide` si no
+    es el del radicado). El resto de campos son **declaraciones que se
+    verifican, no datos que se aceptan** (AREA-07-02 / AREA-06-08): el servidor
+    resuelve número, tipología, dependencia productora, formato, tamaño y huella
+    del propio radicado, persiste SIEMPRE lo resuelto, y un valor declarado que
+    no coincida se rechaza. Regla del sistema: *un dato probatorio lo resuelve el
+    servidor* — el índice electrónico que se firma con XAdES no puede afirmar lo
+    que escribió quien vinculó. Solo `folios` es del declarante: es un conteo
+    físico que ningún otro servicio conoce."""
+
     radicado_id: uuid.UUID
     tracking_number: str = Field(..., min_length=1, max_length=50)
-    # SHA-256 del documento (E15 T-08): se materializa como valor_huella del índice.
+    # SHA-256 del documento (E15 T-08): se materializa como valor_huella del
+    # índice. Si se declara, debe ser la huella que storage-service guarda.
     content_hash: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     # Metadatos RT-15 del índice electrónico (E15 Inc.3, Acuerdo AGN 001/2024
-    # art. 4.3.2.3): aportados por quien vincula (Opción A), todos opcionales —
-    # NULL/ausente = no declarado, se omite del <documento> del índice v2.
+    # art. 4.3.2.3). Se resuelven en el servidor; declararlos solo sirve para
+    # que un cliente que los conozca compruebe que coinciden.
     formato: str | None = Field(default=None, max_length=150)
     tamano_bytes: int | None = Field(default=None, ge=0)
     folios: int | None = Field(default=None, ge=0)
-    # E15 perfil v4 (R1, Acuerdo AGN 001/2024 art. 4.3.2.3): dependencia
-    # productora del documento, aportada al vincular (Opción A) — grano
-    # por-radicado, sin llamada a document-service. Ambos campos son
-    # OPCIONALES pero deben aportarse JUNTOS o NINGUNO (ver validador abajo +
-    # CHECK de pareja en BD, migración 019) — el índice solo emite
-    # <dependenciaProductora> cuando los dos existen.
+    # E15 perfil v4 (R1): dependencia productora. Código y nombre se declaran
+    # JUNTOS o NINGUNO (ver validador abajo + CHECK de pareja en BD, migración
+    # 019) — el índice solo emite <dependenciaProductora> cuando los dos existen.
     dependencia_productora_codigo: int | None = Field(default=None, ge=0)
     dependencia_productora_nombre: str | None = Field(default=None, max_length=255)
-    # Tipología documental (`doc_class` del radicado), aportada al vincular por
-    # la misma razón que las anteriores: archive-service no lee `radicados`.
-    # El elemento <tipologia> del índice es OBLIGATORIO en el XSD y de tipo
-    # `xs:string`, que admite cadena vacía — así que un índice sin este dato
-    # valida igual y no dice de qué clase es ningún documento. El esquema no
-    # puede cazarlo; solo puede cazarlo quien aporte el dato.
+    # Tipología documental (`doc_class` del radicado). El elemento <tipologia>
+    # del índice es OBLIGATORIO en el XSD y de tipo `xs:string`, que admite
+    # cadena vacía: el esquema no puede cazar un valor falso, solo puede
+    # cazarlo quien lo resuelva — por eso lo resuelve el servidor.
     tipologia: str | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
@@ -354,8 +372,16 @@ class TrdSerieUpdate(BaseModel):
 
     name: str | None = None
     description: str | None = None
+    # AREA-06-07: `retention_years`/`total_retention` son el juego LEGADO. El cálculo real
+    # del calendario usa `archivo_gestion_years`/`archivo_central_years`; el servicio
+    # mantiene los dos juegos de acuerdo (y la respuesta los DERIVA de las dos fases:
+    # `retention_years` = gestión, `total_retention` = gestión + central). Si se envía el
+    # juego legado SIN las dos fases, se traduce a ellas igual que en el alta; si se
+    # envían las fases, mandan ellas.
     retention_years: int | None = None
     total_retention: int | None = None
+    archivo_gestion_years: int | None = Field(default=None, ge=0)
+    archivo_central_years: int | None = Field(default=None, ge=0)
     disposition: str | None = None
     pdfa_profile: str | None = None
 
@@ -619,14 +645,20 @@ class LoteEliminacionResponse(BaseModel):
     total_items: int
     items: list[LoteEliminacionItem] = []
     rechazados: list[LoteEliminacionRechazo] = []
-    # `ejecutado` es siempre False hoy: el borrado seguro (RF-TRD-07 §5.4) no
-    # está construido. Va explícito por el mismo motivo que en la decisión --
-    # un 201 sobre «lote de eliminación» invita a creer que algo se eliminó.
+    # `ejecutado` es False en la respuesta de PROPONER: ahí no se ha eliminado
+    # nada. La destrucción es la quinta fase (`POST .../ejecutar`) y su resultado
+    # lo dice `EjecucionLoteResponse`. Va explícito por el mismo motivo que en la
+    # decisión -- un 201 sobre «lote de eliminación» invita a creer que algo se
+    # eliminó.
     ejecutado: bool = False
+    # Quién avaló, para que la interfaz sepa a quién NO ofrecerle ejecutar: la
+    # separación de funciones (quien avala no ejecuta) la impone el backend, y
+    # esto solo evita ofrecer un botón que siempre respondería 409.
+    avalado_por: uuid.UUID | None = None
     nota: str = (
         "Lote propuesto. NADA se ha eliminado: falta publicar el inventario, "
-        "obtener el aval del Comité, firmar el acta y ejecutar el borrado seguro, "
-        "que todavía no está construido."
+        "obtener el aval del Comité (de otra persona que quien propone), firmar el "
+        "acta y ejecutar el borrado seguro (por otra persona que quien avaló)."
     )
 
 
@@ -1351,6 +1383,14 @@ class AipResponse(BaseModel):
     retain_until: datetime | None = None
     retention_mode: str | None = None
     legal_hold: bool
+
+
+class AipReintentoResponse(BaseModel):
+    """Respuesta de `POST /expedientes/{id}/aip/reintentar` (AREA-07-14): el AIP vuelve a
+    `pendiente` y la siguiente barrida de reconciliación lo empaqueta."""
+
+    expediente_id: uuid.UUID
+    estado: str
 
 
 class EventoPreservacionResponse(BaseModel):

@@ -62,8 +62,10 @@ async def _seed(
     """
     return await conn.fetchval(
         "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, "
-        "tenant_code, nivel_seguridad, status, due_date, registered_at) "
-        "VALUES ($1, 'E', 2026, 1, $2, 'DEMO', $3, $4, $5, $6) RETURNING id",
+        "tenant_code, nivel_seguridad, status, due_date, registered_at, "
+        "clasificacion_fundamento) "
+        "VALUES ($1, 'E', 2026, 1, $2, 'DEMO', $3, $4, $5, $6, "
+        "CASE WHEN $3::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) RETURNING id",
         f"2026-DEMO-E-{uuid.uuid4().hex[:6]}",
         asunto,
         nivel,

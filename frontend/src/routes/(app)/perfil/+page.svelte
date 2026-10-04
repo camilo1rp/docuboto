@@ -57,6 +57,7 @@
   import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { can, sessionUser } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
+  import { MOTIVOS_REVOCACION } from "$lib/utils/motivoRevocacion.js";
   import { isReenrollConfirmed, REENROLL_CONFIRM_PHRASE } from "$lib/utils/signingKeyConfirm.js";
 
   import Stepper from "$lib/components/ui/Stepper.svelte";
@@ -377,7 +378,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           step_up_totp_code: signingRevokeStepUp,
-          ...(signingRevokeMotivo.trim() ? { motivo: signingRevokeMotivo.trim() } : {}),
+          ...(signingRevokeMotivo ? { motivo: signingRevokeMotivo } : {}),
         }),
       });
       const resData = await res.json().catch(() => ({}));
@@ -878,9 +879,11 @@
             <FormField
               id="signing-revoke-motivo"
               label="Motivo (opcional)"
-              type="textarea"
+              type="select"
+              options={MOTIVOS_REVOCACION}
+              placeholder="Sin especificar"
               bind:value={signingRevokeMotivo}
-              hint="Queda registrado en el asiento de auditoría."
+              hint="Queda registrado en el asiento de auditoría. «Clave comprometida» invalida también lo firmado antes."
             />
             <Button type="submit" variant="danger" loading={signingRevoking}
               >Revocar credencial</Button

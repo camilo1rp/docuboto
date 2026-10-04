@@ -143,7 +143,18 @@ class TransferenciaActaResponse(BaseModel):
     # de recepción (`fx.version`) -- el pin completo (`indice_firma_id` +
     # validación) queda diferido en roadmap.
     indice_version: int | None = None
+    # AREA-07-04 (migración 053): el sello que ampara el índice entregado y la huella
+    # del XML que cubre, leídos de la MISMA fila que la fixity. `None` en las actas
+    # anteriores a esa migración (no se inventa un vínculo en un acta ya sellada).
+    indice_firma_id: uuid.UUID | None = None
+    indice_sha256: str | None = None
     congelada_at: datetime
+    # AREA-07-11: derivado al LEER, nunca guardado. `False` cuando el XML congelado trae
+    # vacía alguna de las tres entradas de la cabecera del Anexo FUID (unidad
+    # administrativa, oficina productora, objeto) -- las actas anteriores a la
+    # migración 052 se sellaron así y no se rehacen (son probatorias); se DECLARA el
+    # hueco en vez de esconderlo.
+    cabecera_completa: bool = True
     # H-H (E06/F4): estado del sellado XAdES del acta -- aditivo, SIEMPRE
     # presente en la respuesta (calculado por el servicio, nunca un campo
     # crudo de `transferencia_acta`).

@@ -38,6 +38,7 @@
 <script>
   export let id = "";
   /** Atributo `name` del control HTML (default: `id`) — necesario para FormData nativo. */
+  /** @type {string|null} */
   export let name = "";
   export let label = "";
 
@@ -60,7 +61,9 @@
   /** @type {string|undefined} */
   export let autocomplete = undefined;
 
-  $: fieldName = name || id;
+  // `name={null}` = control SIN name (no viaja en el submit nativo): lo usan los
+  // campos interiores de un compuesto, que se transporta en un único campo oculto.
+  $: fieldName = name === null ? undefined : name || id;
   $: hintId = hint ? `${id}-hint` : undefined;
   // El contenedor de error existe siempre en el DOM; siempre incluimos su ID
   // en aria-describedby para que el campo quede asociado desde el inicio.

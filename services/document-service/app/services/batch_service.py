@@ -279,6 +279,18 @@ class BatchService:
                             validate_metadata({}, template["json_schema"])
                             metadata_template_id = template["id"]
 
+                    # Dependencias por código (Ac. 060 §5.2): el nombre se
+                    # denormaliza como en `DocumentService.create`. El lote corre
+                    # sin request, así que se lee del MISMO schema del tenant en
+                    # vez de saltar a tenant-service. Una inexistente o inactiva
+                    # hace fallar el ítem ANTES de gastar el consecutivo.
+                    dest_dept = doc_data.dest_dept
+                    origin_dept: str | None = None
+                    if doc_data.dest_dept_code is not None:
+                        dest_dept = await self._nombre_dependencia(doc_data.dest_dept_code)
+                    if doc_data.origin_dept_code is not None:
+                        origin_dept = await self._nombre_dependencia(doc_data.origin_dept_code)
+
                     # Get tenant code and next sequence
                     tenant_code = await self.conn.fetchval(
                         "SELECT code FROM tenants WHERE slug = $1",
@@ -299,16 +311,18 @@ class BatchService:
                         INSERT INTO radicados
                         (tracking_number, doc_type, subject, doc_class, dest_dept,
                          sender_name, sender_entity, pages, observations, status,
-                         year, sequence, tenant_code, registered_by, metadata_template_id)
+                         year, sequence, tenant_code, registered_by,
+                         origin_dept, origin_dept_code, dest_dept_code,
+                         metadata_template_id)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'registered',
-                                $10, $11, $12, $13, $14)
+                                $10, $11, $12, $13, $14, $15, $16, $17)
                         RETURNING id, nivel_seguridad
                         """,
                         tracking_number,
                         doc_data.doc_type,
                         doc_data.subject,
                         doc_data.doc_class,
-                        doc_data.dest_dept,
+                        dest_dept,
                         doc_data.sender_name,
                         doc_data.sender_entity,
                         # `radicados.pages` es NOT NULL DEFAULT 0, y el camino
@@ -333,6 +347,9 @@ class BatchService:
                         # estaba leído arriba para componer el número.
                         tenant_code,
                         created_by,
+                        origin_dept,
+                        doc_data.origin_dept_code,
+                        doc_data.dest_dept_code,
                         metadata_template_id,
                     )
                     radicado_id = radicado["id"]
@@ -512,6 +529,7 @@ class BatchService:
                         ],
                         "items_faltantes": faltantes,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         finally:
             await self._soltar_lock(job_id)
@@ -653,6 +671,15 @@ class BatchService:
             "items": detalle,
             "errores": [i for i in detalle if i["status"] == "failed"],
         }
+
+    async def _nombre_dependencia(self, codigo: int) -> str:
+        """Nombre de una dependencia ACTIVA del tenant, o `ValueError` (el ítem falla)."""
+        nombre = await self.conn.fetchval(
+            "SELECT nombre FROM dependencias WHERE codigo = $1 AND activo", codigo
+        )
+        if nombre is None:
+            raise ValueError(f"La dependencia {codigo} no existe o está inactiva")
+        return str(nombre)
 
     async def _get_next_sequence(self, year: int, doc_type: str) -> int:
         """Get next sequence number for tracking number."""

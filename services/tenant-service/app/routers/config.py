@@ -75,6 +75,7 @@ async def create_holiday(
                 object_ref=str(payload.fecha),
                 actor=audit_core.actor_from(request),
                 payload={"descripcion": payload.descripcion, "tipo": payload.tipo},
+                canal=audit_core.CANAL_PETICION,
             )
     except asyncpg.UniqueViolationError:
         raise HTTPException(
@@ -112,6 +113,7 @@ async def delete_holiday(
             object_type="festivo",
             object_ref=str(holiday_id),
             actor=audit_core.actor_from(request),
+            canal=audit_core.CANAL_PETICION,
         )
 
 
@@ -145,6 +147,7 @@ async def seed_holidays(
             object_ref=f"{payload.year_from}-{payload.year_to}",
             actor=audit_core.actor_from(request),
             payload={"created": created},
+            canal=audit_core.CANAL_PETICION,
         )
     return {"created": created}
 
@@ -200,7 +203,7 @@ async def set_param(
         # `upsert_param` ya escribe `admin_audit` (columna `updated_by`, por-tenant,
         # no inmutable); este `append` añade la traza Canal A (`public.audit_log`,
         # cadena de hash) en la MISMA transacción.
-        await repo.upsert_param(key, payload.value, actor)
+        existia, antes = await repo.upsert_param(key, payload.value, actor)
         await audit_core.append(
             conn,
             tenant_slug=request.headers.get("X-Tenant-Slug"),
@@ -208,6 +211,14 @@ async def set_param(
             object_type="parametro",
             object_ref=key,
             actor=actor,
-            payload={"value": payload.value},
+            # `antes` + `despues`: sin el valor previo, el asiento solo dice cómo
+            # quedó el parámetro, no qué estaba vigente hasta ese momento.
+            payload={
+                "value": payload.value,
+                "antes": antes,
+                "despues": payload.value,
+                "existia": existia,
+            },
+            canal=audit_core.CANAL_PETICION,
         )
     return ParamResponse(key=key, value=payload.value)

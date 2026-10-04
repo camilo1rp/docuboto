@@ -7,17 +7,18 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-import re
 from collections.abc import AsyncGenerator
 
 import asyncpg
 from fastapi import HTTPException, Request, status
+from orpycamcp_common.tenant import slug_valido
+from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
 
 _pool: asyncpg.Pool | None = None
 
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,98}$")
+# El slug se valida con `orpycamcp_common.tenant` (única definición, AREA-02-05).
 
 
 async def create_pool(
@@ -62,7 +63,7 @@ async def get_db_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, No
 
 
 def tenant_schema(slug: str) -> str:
-    if not slug or not _SLUG_RE.match(slug):
+    if not slug_valido(slug):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
@@ -71,7 +72,7 @@ def tenant_schema(slug: str) -> str:
                 "status": 400,
             },
         )
-    return f"tenant_{slug.replace('-', '_')}"
+    return _schema_de(slug)
 
 
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:

@@ -201,8 +201,15 @@ class FisicoRepository:
             folio_fin,
         )
 
-    async def units_of_expediente(self, expediente_id: uuid.UUID) -> list[asyncpg.Record]:
+    async def units_of_expediente(
+        self, expediente_id: uuid.UUID, *, lock_share: bool = False
+    ) -> list[asyncpg.Record]:
+        """Unidades que contienen al expediente. `lock_share=True` (solo válido dentro
+        de una transacción) toma `FOR SHARE` sobre los vínculos `expediente_unidad`:
+        quien COTEJA contra la tenencia (`TransferenciaService._validar_ubicaciones`)
+        necesita que no cambie hasta el commit."""
         await self._sp()
+        bloqueo = " FOR SHARE OF eu" if lock_share else ""
         return list(
             await self._conn.fetch(
                 """
@@ -212,7 +219,8 @@ class FisicoRepository:
                   JOIN unidad_conservacion u ON u.id = eu.unidad_id
                  WHERE eu.expediente_id = $1
                  ORDER BY u.signatura
-                """,
+                """
+                + bloqueo,
                 expediente_id,
             )
         )
@@ -268,14 +276,30 @@ class FisicoRepository:
         prestado_a: str,
         prestado_por: str | None,
         fecha_devolucion_esperada,
-    ) -> asyncpg.Record:
+        max_clearance: int,
+    ) -> asyncpg.Record | None:
+        """Inserta el préstamo SOLO si la unidad no contiene ningún expediente
+        por encima de `max_clearance` (RF-SEG-08, AREA-01-13).
+
+        El gate va en el `WHERE` del INSERT ... SELECT y no en una consulta
+        previa: leer-y-luego-escribir deja una ventana en la que un expediente
+        reservado entra a la unidad entre la comprobación y el préstamo.
+        `max_clearance` es obligatorio y por keyword (fail-closed, como
+        `expedientes_in_unit`). Devuelve `None` si el gate bloqueó (0 filas)."""
         await self._sp()
-        row = await self._conn.fetchrow(
+        return await self._conn.fetchrow(
             """
             WITH nuevo AS (
                 INSERT INTO prestamo
                     (unidad_id, prestado_a, prestado_por, fecha_devolucion_esperada)
-                VALUES ($1, $2, $3, $4) RETURNING *
+                SELECT $1::uuid, $2::text, $3::text, $4::date
+                 WHERE NOT EXISTS (
+                        SELECT 1
+                          FROM expediente_unidad eu
+                          JOIN expedientes e ON e.id = eu.expediente_id
+                         WHERE eu.unidad_id = $1::uuid AND e.nivel_seguridad > $5::int
+                 )
+                RETURNING *
             )
             SELECT n.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura
               FROM nuevo n JOIN unidad_conservacion u ON u.id = n.unidad_id
@@ -284,9 +308,8 @@ class FisicoRepository:
             prestado_a,
             prestado_por,
             fecha_devolucion_esperada,
+            max_clearance,
         )
-        assert row is not None
-        return row
 
     async def get_prestamo(self, prestamo_id: uuid.UUID) -> asyncpg.Record | None:
         await self._sp()

@@ -40,6 +40,7 @@
     "yjs": "^13.6.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.61.1",
     "@sveltejs/adapter-node": "^2.0.0",
     "@sveltejs/vite-plugin-svelte": "^3.0.0",

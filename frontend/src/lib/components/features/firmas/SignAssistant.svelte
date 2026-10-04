@@ -384,6 +384,12 @@
         otpError =
           "Ya se envió un código recientemente. Espera un momento antes de solicitar otro.";
         step = 1;
+      } else if (res.status === 409 && codigoError(result) === "totp_requerido") {
+        // El backend vetó el correo: en un acto de nivel >= 2 quien ya tiene
+        // app autenticadora no puede bajar al OTP-correo (AREA-04-02). Pasa
+        // cuando la lectura de «¿tiene TOTP?» falló y se degradó al correo:
+        // en vez de un error sin salida, se pide el código de la app.
+        entrarModoTotp(true);
       } else {
         confirmError = mensajeError(
           result,

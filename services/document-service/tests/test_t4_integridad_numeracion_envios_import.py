@@ -55,8 +55,12 @@ async def test_el_consecutivo_se_toma_dentro_de_la_transaccion() -> None:
 
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=_Tx())
-    svc = DocumentService(conn, "demo")
+    tenant_client = AsyncMock()
+    tenant_client.get_dependencia.return_value = {"nombre": "Dirección General", "activo": True}
+    svc = DocumentService(conn, "demo", tenant_client)
     svc._repo = AsyncMock()
+    svc._metadata_repo = AsyncMock()
+    svc._metadata_repo.get_active_template.return_value = None
 
     async def _next(*a: object, **k: object) -> int:
         eventos.append("next_sequence")
@@ -76,7 +80,9 @@ async def test_el_consecutivo_se_toma_dentro_de_la_transaccion() -> None:
     svc._repo.create.side_effect = _create
 
     with pytest.raises(RuntimeError):
-        await svc.create(DocumentCreate(doc_type="E", subject="Solicitud de prueba"), None)
+        await svc.create(DocumentCreate(
+                doc_type="E", subject="Solicitud de prueba", doc_class="Petición", dest_dept_code=1
+            ), None)
 
     assert eventos == ["tx_enter", "tenant_code", "next_sequence", "create", "tx_exit"]
 
@@ -95,6 +101,7 @@ def _item(doc_class: str | None) -> dict:
                 "doc_type": "E",
                 "subject": "Lote",
                 "doc_class": doc_class,
+                "dest_dept_code": 1,
                 "dest_dept": None,
                 "sender_name": None,
                 "sender_entity": None,
@@ -118,6 +125,8 @@ def _conn_lote(item: dict, plantilla: dict | None) -> tuple[AsyncMock, list[str]
             return "pending"
         if "RETURNING COALESCE(reprocesado_por, created_by)" in query:
             return uuid.uuid4()
+        if "FROM dependencias WHERE codigo" in query:
+            return "Dirección General"
         if "SELECT code FROM tenants" in query:
             return "DEMO"
         if "INSERT INTO tracking_sequences" in query:
@@ -194,7 +203,7 @@ async def test_el_lote_numera_con_el_ano_de_la_zona_de_radicacion(monkeypatch) -
 
     monkeypatch.setattr(batch_mod, "datetime", _Reloj)
     monkeypatch.setattr(batch_mod, "_zona_de_radicacion", lambda: bogota)
-    conn, estados = _conn_lote(_item(None), None)
+    conn, estados = _conn_lote(_item("Tutela"), None)
     await batch_mod.BatchService(conn, "demo").process_batch_documents(uuid.uuid4())
     assert "seq_year=2026" in estados
 
@@ -249,8 +258,16 @@ def _audits(conn, action: str) -> list:
 
 
 @pytest.mark.asyncio
-async def test_la_transicion_manual_deja_asiento_con_el_actor(client_with_conn) -> None:
+async def test_la_transicion_manual_deja_asiento_con_el_actor(
+    client_with_conn, monkeypatch
+) -> None:
     """Mutación: quitar `audit.append` de `update_estado` → cae."""
+    from app.clients import storage_client
+
+    async def _storage(*, tenant_slug, file_id):
+        return "a" * 64
+
+    monkeypatch.setattr(storage_client, "fetch_file_sha256", _storage)
     client, mock_conn = client_with_conn
     sid = uuid.uuid4()
     mock_conn.fetchval.return_value = True  # permiso concedido (y sin hash previo)
@@ -262,7 +279,7 @@ async def test_la_transicion_manual_deja_asiento_con_el_actor(client_with_conn) 
     mock_conn.fetch.return_value = []
     resp = await client.post(
         f"/api/v1/envios/{sid}/estado",
-        json={"estado": "entregado"},
+        json={"estado": "entregado", "acuse_file_id": str(uuid.uuid4()), "acuse_sha256": "a" * 64},
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert resp.status_code == 200
@@ -299,10 +316,16 @@ async def test_el_update_compara_estado_previo_y_clearance(client_with_conn) -> 
 
 @pytest.mark.asyncio
 async def test_un_callback_que_gana_la_carrera_hace_que_el_manual_reciba_409(
-    client_with_conn,
+    client_with_conn, monkeypatch
 ) -> None:
     """El UPDATE no devuelve fila (el callback dejó `devuelto` entre la lectura y
     el UPDATE) → 409 y NINGÚN asiento de transición manual."""
+    from app.clients import storage_client
+
+    async def _storage(*, tenant_slug, file_id):
+        return "a" * 64
+
+    monkeypatch.setattr(storage_client, "fetch_file_sha256", _storage)
     client, mock_conn = client_with_conn
     sid = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
@@ -313,7 +336,7 @@ async def test_un_callback_que_gana_la_carrera_hace_que_el_manual_reciba_409(
     mock_conn.fetch.return_value = []
     resp = await client.post(
         f"/api/v1/envios/{sid}/estado",
-        json={"estado": "entregado"},
+        json={"estado": "entregado", "acuse_file_id": str(uuid.uuid4()), "acuse_sha256": "a" * 64},
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert resp.status_code == 409

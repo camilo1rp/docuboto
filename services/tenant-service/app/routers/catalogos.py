@@ -116,6 +116,7 @@ async def create_item(
                 object_ref=f"{catalogo}:{row['codigo']}",
                 actor=audit_core.actor_from(request),
                 payload={"catalogo": catalogo, "codigo": row["codigo"], "nombre": row["nombre"]},
+                canal=audit_core.CANAL_PETICION,
             )
     except asyncpg.UniqueViolationError:
         raise HTTPException(
@@ -160,6 +161,7 @@ async def update_item(
             object_ref=f"{catalogo}:{item_id}",
             actor=audit_core.actor_from(request),
             payload={"catalogo": catalogo, "fields": campos},
+            canal=audit_core.CANAL_PETICION,
         )
     return CatalogoItemResponse(**dict(row))
 
@@ -190,4 +192,5 @@ async def delete_item(
             object_ref=f"{catalogo}:{item_id}",
             actor=audit_core.actor_from(request),
             payload={"catalogo": catalogo},
+            canal=audit_core.CANAL_PETICION,
         )

@@ -9,21 +9,19 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import HTTPException, Request, status
+from orpycamcp_common.tenant import slug_valido
+from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
 
 _pool: asyncpg.Pool | None = None
 
-# Slug length bound: "tenant_" (7) + slug (≤ 55) = 62 ≤ 63 bytes (PG identifier limit).
-# Longer slugs with a common prefix would truncate to the same schema → cross-tenant leak.
-# Mirrors workflow-service/app/core/database.py (security hardening, hallazgo 1.1).
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,54}$")
+# El slug se valida con `orpycamcp_common.tenant` (única definición, AREA-02-05).
 
 
 async def create_pool(
@@ -69,9 +67,9 @@ def _schema(slug: str) -> str:
     - Worker loops (acquire_tenant): let ValueError propagate so the loop can
       log it without acking the message (non-retryable invalid-slug event).
     """
-    if not slug or not _SLUG_RE.match(slug):
+    if not slug_valido(slug):
         raise ValueError(f"Invalid tenant slug: {slug!r}")
-    return f"tenant_{slug.replace('-', '_')}"
+    return _schema_de(slug)
 
 
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:

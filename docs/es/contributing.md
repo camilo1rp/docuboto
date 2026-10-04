@@ -58,6 +58,6 @@ git commit -m "feat(document): implement entrada document registration"
 - [ ] `docs/es/api.md` actualizado si cambié endpoints
 - [ ] `CHANGELOG.md` tiene entrada para este cambio
 - [ ] No hay credenciales hardcodeadas
-- [ ] Los modelos SQLAlchemy tienen migraciones Alembic
+- [ ] Si cambié el esquema, añadí una migración `.sql` numerada (sin ORM ni Alembic, ADR-003)
 
 <!-- TODO: translate to English -->

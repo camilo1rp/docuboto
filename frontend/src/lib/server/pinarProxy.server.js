@@ -108,3 +108,34 @@ export function mutacion({ method, path, campos, validar }) {
     }
   };
 }
+
+/**
+ * Proxy de una LECTURA del PINAR (GET sin cuerpo ni query reenviada).
+ *
+ * Misma disciplina que `mutacion`: sin `locals.accessToken` → 401 antes de
+ * nada, y un identificador que no es UUID (`path` devuelve `null`) → 400 sin
+ * llamar al backend. El backend sigue decidiendo qué puede leer quien llama.
+ *
+ * @param {object} opts
+ * @param {(params: Record<string,string>) => string|null} opts.path
+ */
+export function lectura({ path }) {
+  /** @type {import('@sveltejs/kit').RequestHandler} */
+  return async function handler({ params, locals, fetch }) {
+    if (!locals.accessToken) return unauthenticated();
+
+    const destino = path(params);
+    if (destino === null) return invalido("Identificador inválido.");
+
+    try {
+      const res = await fetch(`${API_V1}/pinar${destino}`, { headers: headersFor(locals) });
+      const data = await res.json().catch(() => ({}));
+      return json(data, { status: res.status });
+    } catch {
+      return json(
+        { error: "connection_error", detail: "No se pudo conectar al servidor del PINAR." },
+        { status: 503 },
+      );
+    }
+  };
+}

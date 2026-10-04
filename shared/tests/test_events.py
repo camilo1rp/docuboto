@@ -541,8 +541,8 @@ async def test_reclaim_stale_failed_reprocess_below_threshold_stays_in_pel() -> 
 
 
 @pytest.mark.asyncio
-async def test_reclaim_stale_direct_dl_has_empty_last_error() -> None:
-    """Direct-DL branch (orphan, no fresh attempt) → dead_letter_last_error is "" in failure_meta."""
+async def test_reclaim_stale_direct_dl_has_unknown_marker_last_error() -> None:
+    """Direct-DL branch (orphan, no fresh attempt, nothing recorded) → explicit marker, never ""."""
     msg_id = "1680000000008-0"
     claimed_entry = _claimed_entry(msg_id)
     fake = _make_redis(
@@ -563,11 +563,11 @@ async def test_reclaim_stale_direct_dl_has_empty_last_error() -> None:
 
     assert stats.dead_lettered == 1
     dl_payload = fake.xadd.await_args.args[1]
-    # Direct-DL path: no fresh attempt → last_error is explicitly empty string.
-    assert dl_payload["dead_letter_last_error"] == ""
-    # Callback also receives the failure_meta with the empty last_error.
+    # Direct-DL path: no fresh attempt and no recorded failure → explicit marker (10-09).
+    assert dl_payload["dead_letter_last_error"] == events.LASTERR_DESCONOCIDO
+    # Callback also receives the failure_meta with the same marker.
     cb_failure = callback.await_args.args[1]
-    assert cb_failure["dead_letter_last_error"] == ""
+    assert cb_failure["dead_letter_last_error"] == events.LASTERR_DESCONOCIDO
 
 
 @pytest.mark.asyncio

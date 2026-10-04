@@ -274,5 +274,6 @@ class FormatMigrationService:
                     "sha256_destino": datos["sha256_destino"],
                     "herramienta": datos["herramienta"],
                 },
+                canal="system",
             )
         return dict(fila)

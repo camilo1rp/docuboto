@@ -65,6 +65,7 @@ class TipoDocumentalService:
                     "metadata_template": row["metadata_template"],
                     "activo": row["activo"],
                 },
+                canal=audit.CANAL_PETICION,
             )
         return TipoDocumentalResponse(**dict(row))
 
@@ -99,6 +100,7 @@ class TipoDocumentalService:
                 object_ref=row["code"],
                 actor=str(actor) if actor else None,
                 payload={"id": str(tipo_id), "changes": changes},
+                canal=audit.CANAL_PETICION,
             )
         return TipoDocumentalResponse(**dict(row))
 
@@ -116,5 +118,6 @@ class TipoDocumentalService:
                     object_ref=str(tipo_id),
                     actor=str(actor) if actor else None,
                     payload={},
+                    canal=audit.CANAL_PETICION,
                 )
         return deleted

@@ -38,6 +38,33 @@
 -- bug latente necesitaría un saneo previo de datos antes de aplicar esta
 -- migración.
 
+-- AREA-07-08: el caveat de arriba, comprobado en lugar de comentado. Si el schema ya
+-- trae dos transferencias activas del mismo expediente, el CREATE UNIQUE INDEX fallaba
+-- con un error opaco de duplicados; este bloque aborta ANTES, diciendo qué hay que
+-- resolver y cómo encontrarlo. No hace nada si el índice ya existe o no hay duplicados.
+DO $$
+DECLARE
+    duplicados INTEGER;
+BEGIN
+    SELECT count(*) INTO duplicados
+      FROM (
+          SELECT expediente_id
+            FROM transferencias
+           WHERE estado IN ('preparada', 'enviada')
+           GROUP BY expediente_id
+          HAVING count(*) > 1
+      ) d;
+    IF duplicados > 0 THEN
+        RAISE EXCEPTION
+            'Migración 024: % expediente(s) con más de una transferencia activa '
+            '(preparada/enviada). Rechace o reciba las sobrantes antes de aplicarla. '
+            'Para listarlos: SELECT expediente_id, count(*) FROM transferencias '
+            'WHERE estado IN (''preparada'', ''enviada'') GROUP BY 1 HAVING count(*) > 1;',
+            duplicados;
+    END IF;
+END;
+$$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS ux_transferencias_activa_por_expediente
     ON transferencias (expediente_id)
     WHERE estado IN ('preparada', 'enviada');

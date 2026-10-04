@@ -53,6 +53,24 @@ describe("/radicacion/api", () => {
     expect(ev.fetch.mock.calls[0][1].body).toBe(cuerpo);
   });
 
+  it("reenvía la Idempotency-Key del navegador y no inventa una si no viene", async () => {
+    // AREA-02-07: la clave la genera el cliente; el proxy solo la deja pasar. Sin ella
+    // no se añade cabecera alguna (el comportamiento previo se conserva).
+    const conClave = {
+      request: {
+        formData: async () => new FormData(),
+        headers: new Headers({ "Idempotency-Key": "k".repeat(24) }),
+      },
+      fetch: vi.fn().mockResolvedValue({ ok: true, status: 201, json: async () => ({}) }),
+    };
+    await POST(conClave);
+    expect(conClave.fetch.mock.calls[0][1].headers).toEqual({ "Idempotency-Key": "k".repeat(24) });
+
+    const sinClave = eventoPost({ ok: true, status: 201, json: async () => ({}) });
+    await POST(sinClave);
+    expect(sinClave.fetch.mock.calls[0][1].headers).toBeUndefined();
+  });
+
   it("propaga el rechazo del backend en vez de disimularlo", async () => {
     const ev = eventoPost({
       ok: false,

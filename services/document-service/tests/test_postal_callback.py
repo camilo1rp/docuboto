@@ -108,6 +108,20 @@ async def callback_ctx():
         delattr(app.state, "db_pool")
 
 
+def _cred(secret: str | None = SECRET, **kw) -> dict:
+    """Fila de `postal_operator_credential` como la lee `get_operator_credential`."""
+    fila = {
+        "webhook_secret": secret,
+        "secreto_cifrado": None,
+        "secreto_nonce": None,
+        "anterior_cifrado": None,
+        "anterior_nonce": None,
+        "anterior_caduca_at": None,
+    }
+    fila.update(kw)
+    return fila
+
+
 def _url(slug: str = SLUG) -> str:
     return f"/api/v1/public/postal/callback/{slug}"
 
@@ -155,8 +169,9 @@ def test_verify_signature_empty_secret() -> None:
 async def test_callback_applies_valid_transition(callback_ctx) -> None:
     client, conn, redis = callback_ctx
     body = _body(estado_operador="EN_TRANSITO", event_id="evt-1")
-    conn.fetchval.side_effect = [SECRET, uuid.uuid4(), None]  # cred, delivery_id, prev_hash
+    conn.fetchval.side_effect = [uuid.uuid4(), None]  # delivery_id, prev_hash
     conn.fetchrow.side_effect = [
+        _cred(),
         _ship_row(estado="registrado"),
         _ship_row(estado="en_transito"),
     ]
@@ -173,8 +188,8 @@ async def test_callback_duplicate_event_is_noop(callback_ctx) -> None:
     client, conn, redis = callback_ctx
     body = _body(event_id="evt-dup")
     # try_insert_delivery devuelve None → ya procesado
-    conn.fetchval.side_effect = [SECRET, None]
-    conn.fetchrow.side_effect = [_ship_row(estado="registrado")]
+    conn.fetchval.side_effect = [None]
+    conn.fetchrow.side_effect = [_cred(), _ship_row(estado="registrado")]
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     assert resp.status_code == 200
     assert resp.json()["status"] == "duplicate"
@@ -185,7 +200,7 @@ async def test_callback_duplicate_event_is_noop(callback_ctx) -> None:
 async def test_callback_invalid_signature_401(callback_ctx) -> None:
     client, conn, _ = callback_ctx
     body = _body()
-    conn.fetchval.side_effect = [SECRET]
+    conn.fetchrow.side_effect = [_cred()]
     # firma con secreto equivocado
     bad = {"Content-Type": "application/json", "X-OrpycaMCP-Signature": _sign("otro", body)}
     resp = await client.post(_url(), content=body, headers=bad)
@@ -197,7 +212,7 @@ async def test_callback_invalid_signature_401(callback_ctx) -> None:
 async def test_callback_no_credential_401(callback_ctx) -> None:
     client, conn, _ = callback_ctx
     body = _body()
-    conn.fetchval.side_effect = [None]  # sin credencial para el operador
+    conn.fetchrow.side_effect = [None]  # sin credencial para el operador
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     assert resp.status_code == 401
     assert resp.json()["detail"]["error"] == "firma_invalida"
@@ -207,7 +222,7 @@ async def test_callback_no_credential_401(callback_ctx) -> None:
 async def test_callback_unmapped_operator_status_422(callback_ctx) -> None:
     client, conn, _ = callback_ctx
     body = _body(estado_operador="ESTADO_MARCIANO")
-    conn.fetchval.side_effect = [SECRET]
+    conn.fetchrow.side_effect = [_cred()]
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"] == "estado_operador_no_mapeable"
@@ -217,8 +232,7 @@ async def test_callback_unmapped_operator_status_422(callback_ctx) -> None:
 async def test_callback_unknown_guia_404(callback_ctx) -> None:
     client, conn, _ = callback_ctx
     body = _body(guia="C472-NOEXISTE")
-    conn.fetchval.side_effect = [SECRET]
-    conn.fetchrow.side_effect = [None]  # find_by_guia → None
+    conn.fetchrow.side_effect = [_cred(), None]  # find_by_guia → None
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "envio_no_encontrado"
@@ -229,8 +243,8 @@ async def test_callback_invalid_transition_recorded_no_change(callback_ctx) -> N
     client, conn, redis = callback_ctx
     # operador reporta EN_TRANSITO sobre un envío ya ENTREGADO (terminal)
     body = _body(estado_operador="EN_TRANSITO", event_id="evt-late")
-    conn.fetchval.side_effect = [SECRET, uuid.uuid4(), None]
-    conn.fetchrow.side_effect = [_ship_row(estado="entregado")]
+    conn.fetchval.side_effect = [uuid.uuid4(), None]
+    conn.fetchrow.side_effect = [_cred(), _ship_row(estado="entregado")]
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     assert resp.status_code == 200
     data = resp.json()
@@ -243,8 +257,9 @@ async def test_callback_invalid_transition_recorded_no_change(callback_ctx) -> N
 async def test_callback_devuelto_applies(callback_ctx) -> None:
     client, conn, redis = callback_ctx
     body = _body(estado_operador="DEVUELTO", event_id="evt-dev", motivo="Dirección errada")
-    conn.fetchval.side_effect = [SECRET, uuid.uuid4(), None]
+    conn.fetchval.side_effect = [uuid.uuid4(), None]
     conn.fetchrow.side_effect = [
+        _cred(),
         _ship_row(estado="en_transito"),
         _ship_row(estado="devuelto", motivo_devolucion="Dirección errada"),
     ]
@@ -266,7 +281,6 @@ async def test_callback_invalid_slug_400(callback_ctx) -> None:
 async def test_callback_bad_json_400(callback_ctx) -> None:
     client, conn, _ = callback_ctx
     body = b"{not json"
-    conn.fetchval.side_effect = [SECRET]
     # firma correcta sobre bytes no-JSON: pasa HMAC pero falla el parseo estructural
     resp = await client.post(_url(), content=body, headers=_hdr(body))
     # el parseo ocurre ANTES de leer la credencial → 400 sin tocar la BD

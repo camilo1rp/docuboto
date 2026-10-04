@@ -10,6 +10,21 @@
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
+def _same_endpoint(a: str, b: str) -> bool:
+    """¿Dos endpoints de almacén son el mismo host? Normaliza esquema, mayúsculas y
+    barra final: `http://MinIO:9000/` y `minio:9000` son el mismo destino."""
+
+    def _norm(e: str) -> str:
+        e = e.strip().lower()
+        for pref in ("https://", "http://"):
+            if e.startswith(pref):
+                e = e[len(pref) :]
+        return e.rstrip("/")
+
+    return _norm(a) == _norm(b)
+
+
 # Modos de retención WORM válidos (espejo de miniopy_async.commonconfig.{GOVERNANCE,COMPLIANCE}).
 _VALID_RETENTION_MODES = frozenset({"GOVERNANCE", "COMPLIANCE"})
 
@@ -250,6 +265,31 @@ class Settings(BaseSettings):
                 f"PRESERVATION_RETENTION_MODE={self.preservation_retention_mode} "
                 "(no COMPLIANCE): la retención WORM del índice electrónico es evadible "
                 "por un usuario con permiso bypass-governance de MinIO."
+            )
+        # AREA-08-02: el validador PDF/A se pidió real y no hay binario utilizable.
+        # La factory degrada a stub («no evaluado») solo con un warning de log; en un
+        # entorno que no es de desarrollo eso es un control apagado en silencio, así
+        # que `main.py::lifespan` lo trata como FATAL igual que el modo no COMPLIANCE.
+        if self.preservation_pdfa_validation_enabled and self.pdfa_validator == "verapdf":
+            from app.services.pdfa.factory import _resolve_verapdf_binary
+
+            if _resolve_verapdf_binary(self) is None:
+                warnings.append(
+                    "PDFA_VALIDATOR=verapdf con PRESERVATION_PDFA_VALIDATION_ENABLED=true, "
+                    f"pero VERAPDF_BINARY={self.verapdf_binary!r} no es un ejecutable real: "
+                    "la validación PDF/A degradaría a «no evaluado» sin que nadie lo note."
+                )
+        # AREA-08-04: un «segundo endpoint» que es el mismo del primario no es una
+        # réplica geográfica; se declara aquí en vez de etiquetarla cross-site.
+        if (
+            self.preservation_replica_enabled
+            and self.minio_secondary_endpoint
+            and _same_endpoint(self.minio_secondary_endpoint, self.minio_endpoint)
+        ):
+            warnings.append(
+                "MINIO_SECONDARY_ENDPOINT apunta al mismo endpoint que MINIO_ENDPOINT: "
+                "la réplica se etiqueta «local» (no cross-site); configure un host distinto "
+                "o deje el secundario vacío."
             )
         return warnings
 

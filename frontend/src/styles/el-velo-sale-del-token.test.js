@@ -21,6 +21,9 @@
  * foco— y `--op-scrim-soft` para el asistente, que se abre sobre la pantalla sin
  * pretender que el resto desaparece.
  *
+ * El censo recorre también las hojas `.scss` (salvo `_tokens.scss`): `layout.scss`
+ * repetía el velo a mano y escapaba porque solo se leían los `.svelte`.
+ *
  * Este guardián no prohíbe `rgba()` en general —un degradado de marca o una
  * sombra son otra cosa—: prohíbe ESE color, que es el del velo.
  */
@@ -36,19 +39,21 @@ const TOKENS = join(SRC, "styles", "_tokens.scss");
 /** El color del velo, escrito a mano. Tolera los espacios que ponga cada quien. */
 const VELO_CRUDO = /rgba\(\s*33\s*,\s*36\s*,\s*33\s*,/;
 
-function svelte(dir) {
+function fuentes(dir) {
   /** @type {string[]} */
   const salida = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const ruta = join(dir, e.name);
-    if (e.isDirectory()) salida.push(...svelte(ruta));
+    if (e.isDirectory()) salida.push(...fuentes(ruta));
+    // `_tokens.scss` es donde el color se declara: es el único sitio permitido.
+    else if (e.isFile() && ruta.endsWith(".scss") && ruta !== TOKENS) salida.push(ruta);
     else if (e.isFile() && ruta.endsWith(".svelte")) salida.push(ruta);
   }
   return salida;
 }
 
 describe("el velo de los diálogos sale del token", () => {
-  const archivos = svelte(SRC);
+  const archivos = fuentes(SRC);
 
   it("el censo lee algo: un guardián vacío aprobaría por vacuidad", () => {
     expect(archivos.length).toBeGreaterThan(50);
@@ -59,6 +64,20 @@ describe("el velo de los diálogos sale del token", () => {
     expect(tokens).toMatch(/\$op-scrim-rgb:\s*33,\s*36,\s*33;/);
     expect(tokens).toMatch(/--op-scrim:\s*rgba\(#\{\$op-scrim-rgb\}/);
     expect(tokens).toMatch(/--op-scrim-soft:\s*rgba\(#\{\$op-scrim-rgb\}/);
+  });
+
+  it("el censo incluye las hojas .scss (layout.scss escapaba al guardián)", () => {
+    expect(archivos.some((f) => f.endsWith("layout.scss"))).toBe(true);
+  });
+
+  it("landing y login no escriben a mano el blanco translúcido sobre la marca", () => {
+    const tokens = readFileSync(TOKENS, "utf8");
+    for (const t of ["overlay", "overlay-border", "text-muted"]) {
+      expect(tokens).toContain(`--op-on-brand-${t}:`);
+    }
+    for (const f of ["routes/(public)/+page.svelte", "routes/(public)/login/+page.svelte"]) {
+      expect(readFileSync(join(SRC, f), "utf8"), f).not.toMatch(/rgba\(\s*255\s*,\s*255\s*,\s*255/);
+    }
   });
 
   it("ningún componente escribe el color del velo a mano", () => {

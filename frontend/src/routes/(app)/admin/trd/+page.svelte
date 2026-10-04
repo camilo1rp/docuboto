@@ -1320,7 +1320,7 @@
     <p class="trd-vencidos__aviso">
       <strong>Esto no elimina nada</strong>, y no es el último paso sino el primero de cinco:
       proponer → publicar el inventario → aval del Comité → acta firmada → borrado seguro. El
-      borrado seguro <strong>todavía no está construido</strong>.
+      borrado seguro lo ejecuta una persona distinta de quien avaló.
     </p>
     <FormField
       id="lote-codigo"

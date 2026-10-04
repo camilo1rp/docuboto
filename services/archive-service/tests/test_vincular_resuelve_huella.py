@@ -202,12 +202,13 @@ async def test_al_vincular_desde_la_pantalla_el_indice_SI_recibe_la_huella(
 
 
 @pytest.mark.asyncio
-async def test_la_huella_que_el_llamante_declara_MANDA_sobre_la_resuelta(
+async def test_la_huella_que_el_llamante_declara_se_COTEJA_y_no_manda(
     client_with_conn,
 ) -> None:
-    """El campo del contrato sigue sirviendo a quien la conoce de primera mano
-    (importación con fixity, E11 INT-05): ahí la huella viene del paquete que
-    se está recibiendo y es la que hay que conservar."""
+    """AREA-07-02: antes «lo explícito manda» y la huella que escribiera quien
+    vincula se sellaba en el índice firmado. Ahora la huella la dice el
+    almacén: una declarada que no sea esa se rechaza (422) SIN escribir el
+    vínculo, y una que coincide se persiste —la resuelta, no la escrita—."""
     from tests.conftest import make_expediente_record, make_radicado_link_record
     from tests.test_archive import EXPEDIENTE_ID, RADICADO_ID, TENANT_HEADERS, TRACKING_NUMBER
 
@@ -217,26 +218,68 @@ async def test_la_huella_que_el_llamante_declara_MANDA_sobre_la_resuelta(
     mock_conn.fetchrow.side_effect = [exp, None, link, exp, None, exp]
     mock_conn.fetch.return_value = []
     mock_conn.fetchval.side_effect = [True, 0, 1, None, None]
+    anexos = {str(RADICADO_ID): [{"file_id": str(_FILE), "filename": "of.pdf"}]}
 
-    declarada = "d" * 64
-    anexos = AsyncMock(return_value={})
-    with patch("app.clients.document_client.fetch_anexos_internal", anexos), _huellas(
-        return_value={}
-    ):
+    ruta = f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados"
+    with _anexos(return_value=anexos), _huellas(return_value={str(_FILE): _HASH}):
+        falsa = await client.post(
+            ruta,
+            json={
+                "radicado_id": str(RADICADO_ID),
+                "tracking_number": TRACKING_NUMBER,
+                "content_hash": "d" * 64,
+            },
+            headers=TENANT_HEADERS,
+        )
+    assert falsa.status_code == 422
+    assert falsa.json()["detail"]["error"] == "metadato_no_coincide"
+    assert falsa.json()["detail"]["desacuerdos"] == {str(RADICADO_ID): ["content_hash"]}
+    with pytest.raises(AssertionError):
+        _content_hash_del_insert(mock_conn)  # no se escribió nada
+    # Segunda petición: las lecturas encadenadas se rearman desde cero.
+    mock_conn.fetchrow.side_effect = [exp, None, link, exp, None, exp]
+    mock_conn.fetchval.side_effect = [True, 0, 1, None, None]
+
+    with _anexos(return_value=anexos), _huellas(return_value={str(_FILE): _HASH}):
+        buena = await client.post(
+            ruta,
+            json={
+                "radicado_id": str(RADICADO_ID),
+                "tracking_number": TRACKING_NUMBER,
+                "content_hash": _HASH.upper(),
+            },
+            headers=TENANT_HEADERS,
+        )
+    assert buena.status_code == 201
+    assert _content_hash_del_insert(mock_conn) == _HASH
+
+
+@pytest.mark.asyncio
+async def test_una_huella_declarada_que_el_almacen_no_puede_confirmar_se_rechaza(
+    client_with_conn,
+) -> None:
+    """Sin huella resuelta (storage caído o radicado sin anexos), una declarada
+    es una afirmación sin contraste: se rechaza en vez de sellarla."""
+    from tests.conftest import make_expediente_record
+    from tests.test_archive import EXPEDIENTE_ID, RADICADO_ID, TENANT_HEADERS, TRACKING_NUMBER
+
+    client, mock_conn = client_with_conn
+    mock_conn.fetchrow.side_effect = [make_expediente_record(exp_id=EXPEDIENTE_ID), None]
+    mock_conn.fetchval.side_effect = [True, 0, None, None]
+
+    with _anexos(return_value={}), _huellas(return_value={}):
         resp = await client.post(
             f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados",
             json={
                 "radicado_id": str(RADICADO_ID),
                 "tracking_number": TRACKING_NUMBER,
-                "content_hash": declarada.upper(),
+                "content_hash": "d" * 64,
             },
             headers=TENANT_HEADERS,
         )
 
-    assert resp.status_code == 201
-    assert _content_hash_del_insert(mock_conn) == declarada
-    # Y no se molesta a document-service para algo que ya venía resuelto.
-    anexos.assert_not_awaited()
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["desacuerdos"] == {str(RADICADO_ID): ["content_hash"]}
 
 
 def _content_hashes_de_los_inserts(mock_conn) -> list[str | None]:
@@ -250,21 +293,21 @@ def _content_hashes_de_los_inserts(mock_conn) -> list[str | None]:
 
 
 @pytest.mark.asyncio
-async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_lo_declarado_manda(
+async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_un_desacuerdo_aborta_todo(
     client_with_conn,
 ) -> None:
     """El lote es el camino de la inclusión masiva —el que de verdad forma un
-    expediente— y tiene las dos reglas del individual: se resuelve lo que falta
-    y se respeta lo que el llamante declara. Sin este test, un lote que
-    ignorara la huella declarada pasaba en verde."""
-    import uuid as _uuid
-
-    from tests.conftest import make_expediente_record, make_radicado_link_record
+    expediente— y tiene las reglas del individual: cada vínculo recibe SU
+    huella resuelta, una declarada se coteja, y un solo ítem que no case aborta
+    el lote ENTERO antes de escribir nada."""
+    from tests.conftest import make_expediente_record, make_radicado_link_record, registrar_radicado
     from tests.test_archive import EXPEDIENTE_ID, TENANT_HEADERS
 
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
-    r1, r2 = _uuid.uuid4(), _uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
+    file2 = uuid.uuid4()
+    hash2 = "e" * 64
     mock_conn.fetchrow.side_effect = [
         exp,
         None,
@@ -277,21 +320,26 @@ async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_lo_declarado_manda(
     mock_conn.fetch.return_value = []
     mock_conn.fetchval.side_effect = [True, 0, 1, 0, 2, None, None]
 
-    declarada = "d" * 64
-    anexos = AsyncMock(return_value={str(r1): [{"file_id": str(_FILE), "filename": "a.pdf"}]})
-    with (
-        patch("app.clients.document_client.fetch_anexos_internal", anexos),
-        _huellas(return_value={str(_FILE): _HASH}),
+    anexos = AsyncMock(
+        return_value={
+            str(r1): [{"file_id": str(_FILE), "filename": "a.pdf"}],
+            str(r2): [{"file_id": str(file2), "filename": "b.pdf"}],
+        }
+    )
+    ruta = f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch"
+    huellas = {str(_FILE): _HASH, str(file2): hash2}
+    with patch("app.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+        return_value=huellas
     ):
         resp = await client.post(
-            f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch",
+            ruta,
             json={
                 "radicados": [
                     {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
                     {
                         "radicado_id": str(r2),
                         "tracking_number": "2024-A-002",
-                        "content_hash": declarada,
+                        "content_hash": hash2,
                     },
                 ]
             },
@@ -299,7 +347,32 @@ async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_lo_declarado_manda(
         )
 
     assert resp.status_code == 200
-    assert _content_hashes_de_los_inserts(mock_conn) == [_HASH, declarada]
-    # Un solo viaje, y solo por el que no traía huella.
+    assert _content_hashes_de_los_inserts(mock_conn) == [_HASH, hash2]
+    # Un solo viaje para todo el lote.
     assert anexos.await_count == 1
-    assert anexos.await_args.kwargs["radicado_ids"] == [r1]
+    assert sorted(anexos.await_args.kwargs["radicado_ids"]) == sorted([r1, r2])
+
+    # Un ítem con huella ajena aborta el lote entero: ningún INSERT nuevo.
+    antes = len(_content_hashes_de_los_inserts(mock_conn))
+    mock_conn.fetchrow.side_effect = [exp, None]
+    mock_conn.fetchval.side_effect = [True, None, None]
+    with patch("app.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+        return_value=huellas
+    ):
+        mala = await client.post(
+            ruta,
+            json={
+                "radicados": [
+                    {"radicado_id": str(r1), "tracking_number": "2024-A-001"},
+                    {
+                        "radicado_id": str(r2),
+                        "tracking_number": "2024-A-002",
+                        "content_hash": "f" * 64,
+                    },
+                ]
+            },
+            headers=TENANT_HEADERS,
+        )
+    assert mala.status_code == 422
+    assert mala.json()["detail"]["desacuerdos"] == {str(r2): ["content_hash"]}
+    assert len(_content_hashes_de_los_inserts(mock_conn)) == antes

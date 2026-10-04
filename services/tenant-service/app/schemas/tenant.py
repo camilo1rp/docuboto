@@ -11,9 +11,9 @@ import re
 import uuid
 from datetime import datetime
 
+from orpycamcp_common.tenant import slug_valido
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-_SLUG_RE = re.compile(r"^[a-z0-9-]+$")
 _CODE_RE = re.compile(r"^[A-Z0-9_]+$")
 
 VALID_STATUSES = {"active", "inactive", "suspended"}
@@ -37,8 +37,11 @@ class TenantCreate(BaseModel):
     @field_validator("slug")
     @classmethod
     def slug_must_be_lowercase_alphanumeric(cls, v: str) -> str:
-        if not _SLUG_RE.match(v):
-            raise ValueError("slug must contain only lowercase letters, digits, and hyphens")
+        if not slug_valido(v):
+            raise ValueError(
+                "slug must be 2-54 lowercase letters, digits or hyphens, "
+                "and cannot start with a hyphen"
+            )
         return v
 
     @field_validator("code")

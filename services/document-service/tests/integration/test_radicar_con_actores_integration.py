@@ -79,6 +79,8 @@ async def test_radicar_una_entrada_congela_su_remitente(
     creado = await servicio.create(
         DocumentCreate(
             doc_type="E",
+            doc_class="Petición",
+            dest_dept_code=1,
             subject="Solicitud de certificación",
             sender_name="José Pérez",
             actores=[{"tercero_id": tercero_id, "rol": "remitente", "principal": True}],
@@ -129,6 +131,8 @@ async def test_una_salida_con_tres_destinatarios_conserva_los_tres(
     creado = await DocumentService(conn, slug).create(
         DocumentCreate(
             doc_type="S",
+            doc_class="Petición",
+            origin_dept_code=1,
             subject="Respuesta a varios",
             sender_name="Ana Gómez",
             actores=[
@@ -177,6 +181,8 @@ async def test_un_tercero_inexistente_no_deja_radicado_a_medias(
         await DocumentService(conn, slug).create(
             DocumentCreate(
                 doc_type="E",
+                doc_class="Petición",
+                dest_dept_code=1,
                 subject="Con un tercero que no existe",
                 sender_name="Fantasma",
                 actores=[{"tercero_id": uuid.uuid4(), "rol": "remitente"}],

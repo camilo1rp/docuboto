@@ -197,6 +197,40 @@ async def test_hard_barrier_external_provider_never_receives_classified_chunks(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("url", ["https://ollama.example.com", "http://8.8.8.8:11434"])
+async def test_hard_barrier_ollama_local_con_url_publica_no_recibe_reservados(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    """AREA-11-12, por la RUTA HTTP: `ollama_local` apuntado a un host público es
+    externo de hecho. El test del predicado no prueba que /rag lo consulte con la URL
+    de la configuración; este sí (sin `ollama_url` explícito, como en producción)."""
+    monkeypatch.setattr(cfg_module.settings, "ai_provider", "ollama_local")
+    monkeypatch.setattr(cfg_module.settings, "ollama_url", url)
+    provider = _RecordingProvider(
+        citations=[Citation(cited_text="frag", source_type="radicado", source_ref="PUB-3", score=0.9)]
+    )
+    monkeypatch.setattr(knowledge_router, "get_llm_provider", lambda name=None: provider)
+
+    client, conn = client_with_conn
+    conn.fetch.return_value = [
+        _row("PUB-3", texto="público", nivel=PUBLICA),
+        _row("RES-3", texto="reservado", nivel=RESERVADA),
+        _row("CLA-3", texto="clasificado", nivel=CLASIFICADA),
+    ]
+    conn.fetchrow.return_value = _suggestion_row()
+
+    ctx, _mock_audit = _patched_audit()
+    try:
+        resp = await client.post(URL, json={"query": "trámite", "top_k": 10}, headers=TENANT_HEADERS)
+    finally:
+        ctx.stop()
+
+    assert resp.status_code == 200
+    assert provider.received_chunks is not None
+    assert {c.source_ref for c in provider.received_chunks} == {"PUB-3"}
+
+
+@pytest.mark.asyncio
 async def test_hard_barrier_local_provider_includes_classified_chunks(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -321,6 +355,7 @@ async def test_successful_generation_persists_suggestion_with_separate_columns(
     provider = _RecordingProvider(answer="la respuesta generada", citations=[citation])
     monkeypatch.setattr(knowledge_router, "get_llm_provider", lambda name=None: provider)
 
+    quien = uuid.uuid4()
     client, conn = client_with_conn
     conn.fetch.return_value = [_row("PUB-6", texto="público", nivel=PUBLICA)]
     suggestion_id = uuid.uuid4()
@@ -331,7 +366,7 @@ async def test_successful_generation_persists_suggestion_with_separate_columns(
         resp = await client.post(
             URL,
             json={"query": "trámite público", "top_k": 5},
-            headers={**TENANT_HEADERS, "X-Canal": "mcp", "X-User-Id": str(uuid.uuid4())},
+            headers={**TENANT_HEADERS, "X-Canal": "mcp", "X-User-Id": str(quien)},
         )
         mock_audit.append.assert_awaited_once()
         audit_kwargs = mock_audit.append.call_args.kwargs
@@ -356,6 +391,9 @@ async def test_successful_generation_persists_suggestion_with_separate_columns(
     assert insert_args[5] == provider.model_id  # modelo
     assert insert_args[6] == 1.0  # confianza
     assert insert_args[7] == "mcp"  # canal (propagado desde X-Canal)
+    # CC-02: quien pide la generación queda como `creada_por`; sin él, la sugerencia
+    # no es aceptable por nadie (404 neutro) y el endpoint de aceptación es letra muerta.
+    assert insert_args[8] == quien
 
     # audit_log: proveedor + modelo + confianza, SIN el contenido (query/answer/citations).
     assert audit_kwargs["action"] == "rag.generado"

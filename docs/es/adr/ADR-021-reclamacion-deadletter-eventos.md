@@ -94,7 +94,7 @@ una pre-emción por el barrido de reclamación.
 - `RECLAIM_INTERVAL = 30.0 s`, `min_idle_ms = 60 000`, `max_deliveries = 5`.
 - Callback `_persist_dead_letter(envelope, failure_meta)` — **durable persistence (R-4)**:
   1. Obtiene conexión al schema del tenant (`acquire_tenant(tenant_slug)`).
-  2. Abre transacción: `INSERT INTO evento_dead_letter (...) ON CONFLICT (event_id) DO NOTHING
+  2. Abre transacción: `INSERT INTO evento_dead_letter (...) ON CONFLICT (origin_group, event_id) DO NOTHING
      RETURNING event_id`.
   3. Si devuelve fila (INSERT real): `audit.append(...)` en la **misma transacción** →
      ambas escrituras commitean o ambas fallan (atomicidad).
@@ -171,8 +171,8 @@ Un proceso de limpieza periódica (`DELETE WHERE processed_at < now() - interval
 | 1 | signature-service | **Implementado** | Ack-solo-en-éxito (A-1); handler idempotente por guard SQL |
 | 2 | workflow-service | **Implementado** | Ack-solo-en-éxito (A-1, cierra R-WF1); handler idempotente por guard SQL (`get_next_step_number > 1`); R1: evento sin `tenant_slug` auditado bajo `SYSTEM_TENANT` en `public.audit_log`; cobertura durable ampliada a fallos de handler en vivo (no solo crash-recovery) |
 | 3 | notification-service | **Implementado** | Dedup por `notification_processed_events` (insert-then-send); ack-solo-en-éxito (A-1); dead-letter durable `evento_dead_letter` + `audit_log`; R1 bajo SYSTEM_TENANT; reclaim por los dos streams (workflow y document) |
-| 4 | notification-service + shared | **MVP-1 implementado** (dedup TTL); **MVP-2 implementado** (XTRIM DLQ); **MVP-3 implementado** para signature+workflow (ver abajo); notification queda acoplado al Inc. 2 | MVP-1: Purga periódica de `notification_processed_events` por TTL configurable (default 7 d). MVP-2: XTRIM MINID por edad (30 d) en los tres DLQ streams; helper en `orpycamcp_common.events.trim_deadletter`; cableado en los tres workers con cadencia diaria. MVP-3: Purga de dead-letters terminales (resolved/discarded) con gracia de 90 d; `pending` NUNCA se purga |
-| 5 | signature-service + workflow-service | **Implementado** | Replay/discard API con `PERM_DLQ_ADMIN`; clearance fail-closed sobre nivel vivo (404 neutro); atomicidad replay+estado+audit en una transacción; assert tenant match; concurrencia por `UPDATE … WHERE status='pending'`; columna `status` (pending/resolved/discarded) en `evento_dead_letter` |
+| 4 | notification-service + shared | **MVP-1 implementado** (dedup TTL); **MVP-2 implementado** (XTRIM DLQ); **MVP-3 implementado** para signature+workflow (ver abajo) **y para notification-service** (cerrado después, ver «Cierre … notification-service, 2026-07-01»: `app/jobs/deadletter_retention.py`, cableado en `app/workers/stream_worker.py`) | MVP-1: Purga periódica de `notification_processed_events` por TTL configurable (default 7 d). MVP-2: XTRIM MINID por edad (30 d) en los tres DLQ streams; helper en `orpycamcp_common.events.trim_deadletter`; cableado en los tres workers con cadencia diaria. MVP-3: Purga de dead-letters terminales (resolved/discarded) con gracia de 90 d; `pending` NUNCA se purga |
+| 5 | signature-service + workflow-service (+ notification-service, Inc. 2, cerrado 2026-07-01: `app/routers/admin_deadletter.py`) | **Implementado** | Replay/discard API con `PERM_DLQ_ADMIN`; clearance fail-closed sobre nivel vivo (404 neutro); atomicidad replay+estado+audit en una transacción; assert tenant match; concurrencia por `UPDATE … WHERE status='pending'`; columna `status` (pending/resolved/discarded) en `evento_dead_letter` |
 
 ---
 
@@ -260,8 +260,9 @@ buffers de infraestructura).  El log estructurado de `trim_deadletter` (INFO con
 ### MVP-3 — Retención de `evento_dead_letter` (implementado para signature+workflow)
 
 **Estado:** Implementado en signature-service y workflow-service.  notification-service
-queda acoplado al Incremento 2 (su `status`+purga son interdependientes con la API de
-inspección/discard que aún no existe para ese servicio).
+quedaba acoplado al Incremento 2 (su `status`+purga eran interdependientes con la API de
+inspección/discard); **cerrado después, ver «Cierre … notification-service, 2026-07-01»**
+(`app/jobs/deadletter_retention.py`).
 
 **Clasificación archivística (ratificación del archival-compliance-auditor):**
 `evento_dead_letter` es infraestructura operacional de cola de mensajes, no una
@@ -374,8 +375,9 @@ Ambos servicios quedan simétricos.
 ## Fase 5 — API de inspección, replay y discard (implementado)
 
 **Servicios:** signature-service y workflow-service.  notification-service
-(Incremento 2) queda pendiente.  El job de purga (MVP-3) ya está implementado —
-ver sección anterior.
+(Incremento 2) quedó pendiente en esta fase y **se cerró después** (ver «Cierre …
+notification-service, 2026-07-01»: `admin_deadletter.py`, replay con `PERM_DLQ_ADMIN`).
+El job de purga (MVP-3) ya está implementado — ver sección anterior.
 
 **Modelo de estado.**  Migración de tenant (`signature 006`, `workflow 010`) añade
 a `evento_dead_letter` las columnas `status TEXT NOT NULL DEFAULT 'pending'

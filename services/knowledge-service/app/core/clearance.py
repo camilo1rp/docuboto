@@ -20,13 +20,37 @@ La conexión debe tener el ``search_path`` ya fijado al schema del tenant (lo ha
 ``get_tenant_conn``). Política **fail-closed**: ante duda, PUBLICA (1).
 """
 
+import json
+import logging
 import uuid
+from collections.abc import Sequence
 
 import asyncpg
+from fastapi import Depends, Header, HTTPException, Request, status
+from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás módulos del servicio importan de aquí
+    CLASIFICADA,
+    PUBLICA,
+    check_permission,
+    mensaje_denegacion,
+    nivel_efectivo,
+    resolve_caller_clearance,
+)
 
-PUBLICA = 1
+from app.core.config import settings
+from app.core.database import get_tenant_conn
+
+try:
+    from orpycamcp_common import audit
+
+    _AUDIT_AVAILABLE = True
+except ImportError:  # pragma: no cover — common not installed in some test envs
+    audit = None  # type: ignore[assignment]
+    _AUDIT_AVAILABLE = False
+
+_SERVICE = "knowledge-service"
+logger = logging.getLogger(__name__)
+
 RESERVADA = 2
-CLASIFICADA = 3  # nivel máximo (security_levels.code)
 
 # Proveedores de embeddings que NUNCA envían el texto a un tercero (E21 Inc.1):
 # corren en el propio proceso/contenedor del servicio. `local_st` (sentence-
@@ -77,22 +101,53 @@ def is_embeddable(nivel_seguridad: int, provider: str) -> bool:
 LOCAL_LLM_PROVIDERS = frozenset({"ollama_local"})
 
 
-def is_local_llm_provider(provider: str) -> bool:
+def url_es_local(url: str) -> bool:
+    """¿El host de ``url`` es loopback, red privada, hostname de contenedor o ``.local``?
+
+    Es la prueba de RESIDENCIA del destino de ``ollama_local``: el nombre del
+    proveedor solo dice lo que el operador *quiso*, el host dice a dónde sale de
+    verdad el contexto. Fail-closed: una URL sin host, o con un FQDN público
+    (``https://ollama.example.com``), NO es local. Un FQDN que resuelve a la red
+    interna de la entidad tampoco se reconoce por nombre: se declara por IP
+    privada o con sufijo ``.local``.
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        host = (urlparse(url or "").hostname or "").strip().lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    # Hostname de contenedor (sin punto, p. ej. "ollama"), loopback por nombre, *.local.
+    if host == "localhost" or "." not in host or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # FQDN público: no es un host local reconocible.
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def is_local_llm_provider(provider: str, ollama_url: str | None = None) -> bool:
     """¿Este proveedor de GENERACIÓN es soberano (corre local, no exfiltra)?
 
-    `ollama_local` apunta a una instancia Ollama servida por este despliegue
-    (`OLLAMA_URL`) — se trata como local por la misma razón que
-    `EMBEDDING_PROVIDER=ollama` NO lo es en `is_local_embedding_provider`: aquí el
-    operador la corre en su propia infraestructura por diseño (`ollama_local` es el
-    DEFAULT soberano del RAG, ver `app/core/config.py`). `ollama_cloud`,
-    `openai_compatible` y `anthropic` son SIEMPRE externos. `disabled` no aplica —
-    el router nunca invoca un proveedor cuando `AI_PROVIDER=disabled` (cae al
-    Patrón A antes de llegar aquí).
+    `ollama_local` es soberano **si y solo si su destino real lo es**: antes se
+    decidía por NOMBRE, y con ``AI_PROVIDER=ollama_local`` más una ``OLLAMA_URL``
+    pública, `/knowledge/rag` enviaba chunks Reservados/Clasificados a ese host
+    dejando solo un warning en el log (AREA-11-12). Ahora además se exige que el
+    host de ``ollama_url`` (por defecto ``settings.ollama_url``) sea local
+    (:func:`url_es_local`). `ollama_cloud`, `openai_compatible` y `anthropic` son
+    SIEMPRE externos. `disabled` no aplica — el router nunca invoca un proveedor
+    cuando `AI_PROVIDER=disabled` (cae al Patrón A antes de llegar aquí).
     """
-    return provider in LOCAL_LLM_PROVIDERS
+    if provider not in LOCAL_LLM_PROVIDERS:
+        return False
+    return url_es_local(settings.ollama_url if ollama_url is None else ollama_url)
 
 
-def is_generatable(nivel_seguridad: int, provider: str) -> bool:
+def is_generatable(nivel_seguridad: int, provider: str, ollama_url: str | None = None) -> bool:
     """Predicado PURO — barrera dura de residencia para el contexto que se envía a
     un LLM de GENERACIÓN (E21 Inc.3, Patrón B).
 
@@ -100,38 +155,286 @@ def is_generatable(nivel_seguridad: int, provider: str) -> bool:
     configurable que aquella documenta: material Reservado/Clasificado
     (``nivel_seguridad >= RESERVADA``) jamás puede incluirse en el contexto
     enviado a un proveedor de generación EXTERNO (``not
-    is_local_llm_provider(provider)``) — decisión de soberanía TOMADA, sin
-    excepción auditada posible. El router usa este predicado para EXCLUIR chunks
-    del contexto (no para bloquear la petición completa): el resto del contexto
+    is_local_llm_provider(provider, ollama_url)``, que incluye un ``ollama_local``
+    apuntado a un host público) — decisión de soberanía TOMADA, sin excepción
+    auditada posible. El router usa este predicado para EXCLUIR chunks del
+    contexto (no para bloquear la petición completa): el resto del contexto
     (nivel < RESERVADA, o cualquier nivel con proveedor local) sigue enviándose.
     """
-    return not (nivel_seguridad >= RESERVADA and not is_local_llm_provider(provider))
+    return not (
+        nivel_seguridad >= RESERVADA and not is_local_llm_provider(provider, ollama_url)
+    )
 
 
-async def resolve_caller_clearance(
-    conn: asyncpg.Connection, user_id: uuid.UUID | None
-) -> int:
-    """Devuelve el nivel de seguridad máximo (1..3) accesible por ``user_id``."""
-    if user_id is None:
-        return PUBLICA
-    try:
-        row = await conn.fetchrow(
-            """
-            SELECT u.is_root,
-                   (SELECT MAX(rc.max_level)
-                      FROM auth_memberships m
-                      JOIN role_clearance rc ON rc.group_id = m.group_id
-                     WHERE m.user_id = u.id) AS max_level
-            FROM auth_users u
-            WHERE u.id = $1
-            """,
-            user_id,
+# ---------------------------------------------------------------------------
+# Gate de autorización del admin de la DLQ (AREA-10-10, ADR-021 Fase 5)
+# ---------------------------------------------------------------------------
+#
+# Gemelo de signature-service/app/core/clearance.py: RBAC fail-closed resuelto en
+# la BD del tenant (ADR-013) y no-read-up sobre el radicado referenciado por el
+# dead-letter, con 404 neutro.
+
+
+def require_permission(perm_name: str, min_crud: int = 1):
+    """FastAPI dependency factory: raises 401/403 when caller lacks ``perm_name``.
+
+    Reads actor UUID from X-User-Id header (injected by api-gateway after auth-service
+    /validate resolved the internal id).  Raises 401 when the header is absent or not
+    a valid UUID; 403 when permission is denied or user not found (fail-closed).
+
+    ``min_crud`` (default ``1``, backward-compatible) requires a minimum level on the
+    0..5 crud scale (RF-SEG-03); see :func:`check_permission`.
+
+    Usage at endpoint level::
+
+        @router.post("/...", dependencies=[Depends(require_permission("PERM_DLQ_ADMIN"))])
+
+    Or at router level to protect all routes::
+
+        router = APIRouter(dependencies=[Depends(require_permission("PERM_DLQ_ADMIN"))])
+    """
+
+    async def _dep(
+        actor: uuid.UUID = Depends(get_actor),
+        x_tenant_slug: str | None = Header(default=None),
+        conn: asyncpg.Connection = Depends(get_tenant_conn),
+    ) -> None:
+        if not await check_permission(conn, actor, perm_name, min_crud):
+            # Traza best-effort del acceso denegado (RF-SEG / MoReq). ``actor``
+            # aquí SIEMPRE está identificado — ``get_actor`` ya devolvió 401 si
+            # faltaba/era inválido X-User-Id — así que no hay caso anónimo que
+            # excluir (a diferencia de document/archive/workflow).
+            if _AUDIT_AVAILABLE:
+                try:
+                    await audit.append_denial(
+                        conn,
+                        tenant_slug=x_tenant_slug,
+                        service=_SERVICE,
+                        actor=str(actor),
+                        perm_name=perm_name,
+                        min_crud=min_crud,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                    logger.warning("audit.append_denial failed", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "forbidden",
+                    "detail": mensaje_denegacion(
+                        perm_name, min_crud, await nivel_efectivo(conn, actor, perm_name)
+                    ),
+                    "status": 403,
+                },
+            )
+
+    return _dep
+
+
+async def get_actor(request: Request) -> uuid.UUID:
+    """Extracts the caller's internal UUID from X-User-Id header.
+
+    Raises 401 when the header is missing or not a valid UUID.  Never touches the
+    database — identity was already validated by auth-service /validate.
+    """
+    raw = request.headers.get("X-User-Id")
+    if not raw:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "unauthorized",
+                "detail": "Falta la cabecera X-User-Id",
+                "status": 401,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
         )
-    except asyncpg.UndefinedTableError:
-        return PUBLICA
-    if row is None:
-        return PUBLICA
-    if row.get("is_root"):
+    try:
+        return uuid.UUID(raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "error": "unauthorized",
+                "detail": "La cabecera X-User-Id debe ser un UUID válido (auth_users.id interno)",
+                "status": 401,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def _extract_ref(row: asyncpg.Record) -> tuple[list[str], int | None]:
+    """Parsea el sobre de un dead-letter y extrae los identificadores del
+    radicado referenciado (``tracking_number`` primero, luego ``id``) y el
+    nivel embebido en el evento (``nivel_nuevo`` o, en su defecto,
+    ``nivel_seguridad``).
+
+    Factorizado fuera de :func:`resolve_deadletter_level` para que también lo
+    reutilice :func:`resolve_deadletter_levels` (resolución en lote del
+    listado, ADR-021 seguimiento Baja [2]) — una sola implementación evita que
+    las dos rutas de resolución (per-row y en lote) diverjan con el tiempo.
+
+    Puede lanzar (``json.loads`` sobre un payload corrupto): el llamante
+    decide si eso implica fail-closed o debe propagarse.
+    """
+    raw_payload = row["payload"]
+    payload_data = raw_payload if isinstance(raw_payload, dict) else json.loads(raw_payload)
+    inner_payload = payload_data.get("payload", {}) if isinstance(payload_data, dict) else {}
+
+    tracking_number = inner_payload.get("tracking_number")
+    doc_id = inner_payload.get("id")
+    nivel_embebido = inner_payload.get("nivel_nuevo")
+    if nivel_embebido is None:
+        nivel_embebido = inner_payload.get("nivel_seguridad")
+
+    identifiers = [str(x) for x in (tracking_number, doc_id) if x is not None]
+    return identifiers, nivel_embebido
+
+
+async def resolve_deadletter_level(conn: asyncpg.Connection, row: asyncpg.Record) -> int:
+    """Resuelve el nivel de seguridad del objeto referenciado por un dead-letter.
+
+    Single source of truth de la resolución de nivel para el GATE DEL DETALLE
+    (:func:`assert_can_read_deadletter`, y por tanto replay/discard). El
+    listado usa en cambio :func:`resolve_deadletter_levels` (resolución en
+    lote, una sola consulta) para evitar el N+1 de invocar esta función fila a
+    fila; ambas comparten el parseo (:func:`_extract_ref`) y el mismo criterio
+    fail-closed, de modo que una fila visible en el listado siempre es abrible
+    en el detalle y viceversa.
+
+    **Fail-closed a CLASIFICADA=3** ante cualquier duda (no se lanza; el llamante
+    decide qué hacer con el nivel devuelto):
+      - Sin identificadores de radicado en el sobre → CLASIFICADA.
+      - Radicado no encontrado (o tabla ``radicados`` ausente) → CLASIFICADA.
+      - En otro caso → ``max(nivel_vivo, nivel_embebido)`` (o ``nivel_vivo`` si no
+        hay nivel embebido). El nivel VIVO del radicado siempre se consulta (no
+        basta el nivel embebido en el sobre, que pudo quedar obsoleto: un
+        radicado reclasificado hacia arriba tras el dead-letter debe ocultarse
+        de inmediato).
+    """
+    identifiers, nivel_embebido = _extract_ref(row)
+
+    if not identifiers:
+        # No hay manera de resolver el radicado → fail-closed.
         return CLASIFICADA
-    max_level = row.get("max_level")
-    return int(max_level) if max_level is not None else PUBLICA
+
+    nivel_vivo: int | None = None
+    try:
+        for ident in identifiers:
+            nivel_vivo = await conn.fetchval(
+                "SELECT nivel_seguridad FROM radicados "
+                "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
+                ident,
+            )
+            if nivel_vivo is not None:
+                break
+    except asyncpg.UndefinedTableError:
+        nivel_vivo = None
+
+    if nivel_vivo is None:
+        # Radicado no hallado → nunca degradar a público.
+        return CLASIFICADA
+    if nivel_embebido is not None:
+        return max(int(nivel_vivo), int(nivel_embebido))
+    return int(nivel_vivo)
+
+
+async def resolve_deadletter_levels(
+    conn: asyncpg.Connection,
+    rows: Sequence[asyncpg.Record],
+) -> dict[str, int]:
+    """Resuelve el nivel de seguridad de VARIAS filas de dead-letter EN LOTE
+    (ADR-021 seguimiento Baja [2]) — una sola consulta a ``radicados`` en vez
+    de N, usada exclusivamente por el listado (:func:`resolve_deadletter_level`
+    per-row sigue siendo la fuente única de verdad del gate del detalle).
+
+    Devuelve ``{event_id: nivel}``. NUNCA lanza: cualquier fila cuyo nivel no
+    se pueda determinar con certeza queda fail-closed a CLASIFICADA, exactamente
+    como haría el bucle ``try/except`` por-fila que este helper reemplaza en el
+    router. Contrato de equivalencia: para toda fila ``r``, el resultado aquí
+    para ``r["event_id"]`` es idéntico al que produciría llamar
+    ``resolve_deadletter_level(conn, r)`` y, ante cualquier excepción, tratarlo
+    como CLASIFICADA.
+    """
+    # Fase 1 — parseo por fila: identificadores + nivel embebido. Un payload
+    # corrupto (json.loads lanza) o sin identificador queda CLASIFICADA de una
+    # vez, sin llegar a la consulta en lote.
+    parsed: dict[str, tuple[list[str], int | None]] = {}
+    levels: dict[str, int] = {}
+    all_idents: set[str] = set()
+    for row in rows:
+        event_id = row["event_id"]
+        try:
+            identifiers, nivel_embebido = _extract_ref(row)
+        except Exception:  # noqa: BLE001 — payload corrupto → fail-closed
+            levels[event_id] = CLASIFICADA
+            continue
+        if not identifiers:
+            levels[event_id] = CLASIFICADA
+            continue
+        parsed[event_id] = (identifiers, nivel_embebido)
+        all_idents.update(identifiers)
+
+    # Fase 2 — UNA sola consulta con el nivel VIVO de todos los identificadores
+    # recolectados (el N+1 que este helper elimina). ``UndefinedTableError``
+    # (tabla ``radicados`` ausente, p.ej. notification-service) deja el mapa
+    # vacío: toda fila parseable cae entonces a no-hallado → CLASIFICADA en la
+    # fase 3, igual que el per-row.
+    level_by_ident: dict[str, int] = {}
+    if all_idents:
+        try:
+            recs = await conn.fetch(
+                "SELECT nivel_seguridad, tracking_number, id FROM radicados "
+                "WHERE tracking_number = ANY($1::text[]) OR id::text = ANY($1::text[])",
+                list(all_idents),
+            )
+        except asyncpg.UndefinedTableError:
+            recs = []
+        for rec in recs:
+            nivel = rec["nivel_seguridad"]
+            if rec["tracking_number"] is not None:
+                level_by_ident[str(rec["tracking_number"])] = nivel
+            level_by_ident[str(rec["id"])] = nivel
+
+    # Fase 3 — resolver cada fila parseable con el mismo criterio fail-closed
+    # que resolve_deadletter_level: el nivel embebido NUNCA rescata un
+    # no-hallado, solo eleva un nivel ya hallado.
+    for event_id, (identifiers, nivel_embebido) in parsed.items():
+        try:
+            nivel_vivo: int | None = None
+            for ident in identifiers:
+                if ident in level_by_ident:
+                    nivel_vivo = level_by_ident[ident]
+                    break
+            if nivel_vivo is None:
+                levels[event_id] = CLASIFICADA
+            elif nivel_embebido is not None:
+                levels[event_id] = max(int(nivel_vivo), int(nivel_embebido))
+            else:
+                levels[event_id] = int(nivel_vivo)
+        except Exception:  # noqa: BLE001 — fail-closed por fila
+            levels[event_id] = CLASIFICADA
+
+    return levels
+
+
+async def assert_can_read_deadletter(
+    conn: asyncpg.Connection,
+    caller_clearance: int,
+    row: asyncpg.Record,
+) -> None:
+    """No-read-up gate sobre un dead-letter (ADR-021 Fase 5, RF-SEG-08).
+
+    Delega la determinación de nivel en :func:`resolve_deadletter_level` (misma
+    resolución que usa el filtrado del listado). Si el llamante no alcanza ese
+    nivel, responde **404 neutro** (no 403): no se revela ni la existencia ni el
+    nivel del objeto.
+    """
+    nivel_objeto = await resolve_deadletter_level(conn, row)
+    if caller_clearance < nivel_objeto:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "not_found",
+                "detail": "El evento en cola de fallos no existe o no es accesible",
+                "status": 404,
+            },
+        )

@@ -19,17 +19,15 @@ from public.tenants for tracking-number formatting.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
 import asyncpg
+from orpycamcp_common.tenant import slug_valido
 
 from app.models.document import Anexo, Radicado
 from app.schemas.document import AnexoInput, DocumentCreate, DocumentUpdate
-
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,98}$")
 
 
 class InvalidTenantSlugError(Exception):
@@ -38,7 +36,7 @@ class InvalidTenantSlugError(Exception):
 
 class DocumentRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
-        if not _SLUG_RE.match(tenant_slug):
+        if not slug_valido(tenant_slug):
             raise InvalidTenantSlugError(f"Invalid tenant slug: {tenant_slug!r}")
         # El search_path al schema del tenant lo fija get_tenant_conn (ADR-012);
         # el repositorio sólo usa el slug para resolver el código en public.tenants.
@@ -98,7 +96,7 @@ class DocumentRepository:
                 pages, observations,
                 registered_by, tenant_code, due_date,
                 metadata, metadata_template_id,
-                nivel_seguridad
+                nivel_seguridad, clasificacion_fundamento
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6,
@@ -108,7 +106,7 @@ class DocumentRepository:
                 $13, $14,
                 $15, $16, $17,
                 $18::jsonb, $19,
-                $20
+                $20, $21
             )
             RETURNING
                 id, tracking_number, doc_type, year, sequence,
@@ -140,6 +138,9 @@ class DocumentRepository:
             json.dumps(payload.metadata),
             metadata_template_id,
             payload.nivel_seguridad,
+            # El CHECK `radicados_clasificado_con_fundamento` (041) no es diferible:
+            # el radicado nace YA motivado; `set_classification` completa el resto.
+            payload.clasificacion_fundamento if payload.nivel_seguridad >= 2 else None,
         )
         radicado = _row_to_radicado(row)
 
@@ -599,6 +600,21 @@ class DocumentRepository:
         dejar de difundir.
         """
         gate_nivel = " AND nivel_seguridad = 1" if publicable else ""
+        if publicable:
+            # AREA-07-12: defensa en profundidad frente a la Ley 1581. Lo que
+            # llegó por la ventanilla pública es información de TERCEROS (datos
+            # personales de quien radica) y nace en nivel 1 por el DEFAULT de la
+            # columna, así que «nivel 1» no dice «difundible». Se excluye por
+            # dos vías que no dependen una de otra: el canal con el que entró
+            # (queda en `metadata.canal`, sin importar cómo se tipificó después)
+            # y el tipo documental que la entidad declara admitido en ventanilla
+            # (lo leído EN VIVO, así que sigue la configuración de la entidad).
+            # Va en el WHERE: 404 neutro, sin asiento, como el resto de motivos.
+            gate_nivel += (
+                " AND COALESCE(metadata->>'canal', '') <> 'ventanilla_publica'"
+                " AND NOT EXISTS (SELECT 1 FROM tipos_documentales t"
+                " WHERE t.code = radicados.doc_class AND t.admite_ventanilla_publica)"
+            )
         return await self._conn.fetchrow(
             "UPDATE radicados SET publicable = $2, "
             "    publicado_at  = CASE WHEN $2 THEN now() ELSE NULL END, "
@@ -610,6 +626,33 @@ class DocumentRepository:
             publicable,
             max_clearance,
             actor,
+        )
+
+    async def set_anexos_publicables(
+        self, document_id: uuid.UUID, anexo_ids: list[uuid.UUID]
+    ) -> int:
+        """Fija QUÉ anexos de un radicado se difunden (AREA-07-12).
+
+        Marca TRUE exactamente los indicados y FALSE el resto, así que el acto de
+        publicar deja el conjunto en un estado conocido y no acumula marcas de
+        actos anteriores. Con lista vacía —y al retirar— ninguno se difunde.
+        Devuelve cuántos de los indicados pertenecen al radicado: si es menos que
+        los pedidos, alguno era ajeno y el llamante revierte.
+        """
+        await self._conn.execute(
+            "UPDATE anexos SET publicable = (id = ANY($2::uuid[])) "
+            "WHERE radicado_id = $1 AND publicable IS DISTINCT FROM (id = ANY($2::uuid[]))",
+            document_id,
+            anexo_ids,
+        )
+        if not anexo_ids:
+            return 0
+        return int(
+            await self._conn.fetchval(
+                "SELECT COUNT(*) FROM anexos WHERE radicado_id = $1 AND id = ANY($2::uuid[])",
+                document_id,
+                anexo_ids,
+            )
         )
 
     async def get_security_context(self, document_id: uuid.UUID) -> asyncpg.Record | None:
@@ -672,6 +715,11 @@ class DocumentRepository:
                 causal,
                 plazo_meses,
             )
+            # La reserva prevalece también sobre los anexos marcados.
+            await self._conn.execute(
+                "UPDATE anexos SET publicable = FALSE WHERE radicado_id = $1 AND publicable",
+                document_id,
+            )
 
     async def indice_clasificados(self) -> list[asyncpg.Record]:
         """Registro de información clasificada y reservada (Ley 1712/2014 art. 20).
@@ -686,7 +734,8 @@ class DocumentRepository:
             await self._conn.fetch(
                 "SELECT tracking_number, doc_type, nivel_seguridad, "
                 "clasificacion_fundamento, clasificacion_causal, "
-                "clasificacion_plazo_meses, clasificado_at, registered_at "
+                "clasificacion_plazo_meses, clasificado_at, registered_at, "
+                "origin_dept, dest_dept, registered_by "
                 "FROM radicados WHERE nivel_seguridad >= 2 "
                 "ORDER BY nivel_seguridad DESC, registered_at DESC"
             )
@@ -765,7 +814,8 @@ class DocumentRepository:
         # determinista cuando dos anexos comparten instante).
         rows = await self._conn.fetch(
             """
-            SELECT r.id, r.subject, r.doc_type, r.origin_dept, r.origin_dept_code,
+            SELECT r.id, r.tracking_number, r.subject, r.doc_type, r.doc_class,
+                   r.origin_dept, r.origin_dept_code,
                    a.mime_type AS formato, a.file_size AS tamano_bytes
               FROM radicados r
               LEFT JOIN LATERAL (
@@ -784,6 +834,8 @@ class DocumentRepository:
             r["id"]: {
                 "subject": r["subject"],
                 "doc_type": r["doc_type"],
+                "tracking_number": r["tracking_number"],
+                "doc_class": r["doc_class"],
                 "origin_dept": r["origin_dept"],
                 "origin_dept_code": r["origin_dept_code"],
                 "formato": r["formato"],

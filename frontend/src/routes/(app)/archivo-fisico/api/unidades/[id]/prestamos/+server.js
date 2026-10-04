@@ -32,7 +32,7 @@ function isValidDate(s) {
   return !Number.isNaN(ts);
 }
 
-export async function GET({ locals, params }) {
+export async function GET({ locals, params, url }) {
   const token = locals.accessToken ?? "";
   if (!token) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
@@ -41,14 +41,26 @@ export async function GET({ locals, params }) {
   const { id } = params;
 
   try {
-    const res = await fetch(`${API_V1}/unidades/${id}/prestamos`, {
+    // Paginación (AREA-07-19): el backend pagina (`size` ≤ 100) y emite
+    // `X-Total-Count`; se reenvían ambos para que la pantalla pueda decir «20 de
+    // 25» y no presentar una ventana como si fuera el histórico entero.
+    const q = new URLSearchParams();
+    const page = url.searchParams.get("page");
+    q.set("page", page && /^\d+$/.test(page) ? page : "1");
+    const size = url.searchParams.get("size");
+    q.set("size", size && /^\d+$/.test(size) ? size : "100");
+    const res = await fetch(`${API_V1}/unidades/${id}/prestamos?${q.toString()}`, {
       headers: {
         Authorization: `Bearer ${token}`,
         "X-Tenant-Slug": tenant,
       },
     });
     const data = await res.json().catch(() => ({}));
-    return json(data, { status: res.status });
+    const total = res.headers.get("X-Total-Count");
+    return json(data, {
+      status: res.status,
+      headers: total ? { "X-Total-Count": total } : {},
+    });
   } catch {
     return json(
       { error: "connection_error", detail: "No se pudo obtener los préstamos de la unidad." },

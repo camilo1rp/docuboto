@@ -28,6 +28,7 @@ from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_db_conn
 from app.schemas.archive import (
+    AipReintentoResponse,
     AipResponse,
     BatchLinkRequest,
     BatchLinkResult,
@@ -120,6 +121,8 @@ async def create_expediente(
                 "error": "metadata_validation_failed",
                 "detail": str(exc),
                 "status": 422,
+                # Propiedad que incumple (`a.b`), para marcar el control.
+                **({"field": exc.field} if exc.field else {}),
             },
         )
 
@@ -416,6 +419,31 @@ async def get_aip(
     service = ArchiveService(conn, tenant_slug)
     aip = await service.get_aip(expediente_id, user_id, canal)
     return AipResponse(**aip)
+
+
+@router.post(
+    "/{expediente_id}/aip/reintentar",
+    response_model=AipReintentoResponse,
+    summary="Reintento manual del empaquetado de un AIP agotado (E10, AREA-07-14)",
+    # Escritura: `min_crud=3` como el resto de las que mutan el expediente (el nivel
+    # por defecto, 1, deja una escritura abierta a quien solo lee).
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
+)
+async def reintentar_aip(
+    expediente_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> AipReintentoResponse:
+    """Devuelve a `pendiente` un AIP que el job dejó `agotado` (intentos consumidos), para
+    que la siguiente barrida lo empaquete. Solo aplica a un AIP `agotado`; sobre uno
+    `empaquetado`/`omitido`/`pendiente`, o un expediente que el llamante no alcanza
+    (clearance, en el WHERE), responde un 404 neutro. Asiento `archive.aip_reintento_manual`
+    en la misma transacción."""
+    resultado = await ArchiveService(conn, tenant_slug).reintentar_aip(
+        expediente_id, actor=actor.audit_actor, user_id=actor.id
+    )
+    return AipReintentoResponse(**resultado)
 
 
 @router.get(

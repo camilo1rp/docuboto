@@ -15,20 +15,20 @@ REFACTOR, no reescritura: delega bit a bit en ``app.services.signer.firmar``
 único propósito de esta clase es que ``/sign-xml`` pueda resolver el proveedor
 por nombre con :func:`app.providers.get_provider` de forma UNIFORME junto con
 ``xades_local``, sin bifurcar el router en dos implementaciones distintas.
-Ningún dato ni algoritmo cambia: mismo secreto (``settings.signature_secret``),
-mismo esquema de mensaje (``payload_sha256|firmante_id|sello_tiempo``), mismo
-``hmac.compare_digest`` en verificación — la cadena de firma
-(``/requests``, ``/pending``, ``/batch``, que llama a ``app.services.signer``
-directamente, no a este proveedor) y las firmas HMAC ya persistidas en BD
-siguen verificando exactamente igual que antes del Incremento 1.
+Desde la migración 020 (AREA-04-11) la firma se produce con ``key_version=1``
+(clave derivada por entidad, mensaje que ata entidad+tipo+objeto); las firmas
+HMAC ya persistidas (``key_version=0``) siguen verificando con el esquema
+original — ver ``app.services.signer``.
 
 Reutilización no ortodoxa de ``SignerRef`` (documentada también en
 ``app.providers.base.SignerRef``): al no haber material X.509 en la firma
 nativa, los campos pensados para un certificado se reinterpretan así:
 
     - ``cert_pem``     → vacío (``b""``); nunca hay certificado.
-    - ``key_pem``      → el SECRETO HMAC del servicio (``settings.signature_secret``
-                         codificado a bytes), en vez de una clave privada PEM.
+    - ``key_pem``      → el SECRETO RAÍZ del servicio (``settings.signature_secret``
+                         codificado a bytes), en vez de una clave privada PEM; la
+                         clave real del HMAC se DERIVA de él por entidad
+                         (``SignerRef.tenant_slug``, AREA-04-11).
     - ``key_password`` → el ``firmante_id`` (UUID de ``X-User-Id``) codificado a
                          bytes, en vez de una contraseña de clave.
 
@@ -72,7 +72,20 @@ class NativeSigner:
         secret = signer.key_pem.decode() if signer.key_pem else settings.signature_secret
         sello_tiempo = datetime.now(UTC).isoformat()
 
-        result = _hmac_signer.firmar(prepared.xml_bytes, firmante_id, sello_tiempo, secret)
+        if not signer.tenant_slug:
+            # Sin entidad no hay clave derivada que valga: fallar aquí, no firmar
+            # con una clave «de nadie».
+            raise ValueError("SignerRef.tenant_slug es obligatorio para la firma nativa")
+
+        result = _hmac_signer.firmar(
+            prepared.xml_bytes,
+            firmante_id,
+            sello_tiempo,
+            secret,
+            tenant_slug=signer.tenant_slug,
+            objeto_tipo=prepared.objeto_tipo,
+            objeto_id=prepared.objeto_id,
+        )
 
         return SignedDoc(
             # No hay "documento firmado" distinto del payload original en HMAC
@@ -90,7 +103,10 @@ class NativeSigner:
             nivel_conformidad="firma_electronica_nativa",
             provider=result["provider"],  # "nativa" — de app.services.signer, fuente única
             certificado_fingerprint=None,
-            extra={"sello_tiempo": sello_tiempo},
+            # `sello_tiempo` es el instante que QUEDÓ dentro del HMAC: el llamante
+            # tiene que persistir ESE valor en `firma.sello_tiempo`, o `/verify`
+            # recomputaría con otro instante y la firma no verificaría nunca.
+            extra={"sello_tiempo": sello_tiempo, "key_version": result["key_version"]},
         )
 
     async def check_status(self, ref: str) -> str:

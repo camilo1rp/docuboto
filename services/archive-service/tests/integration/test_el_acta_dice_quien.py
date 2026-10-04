@@ -71,8 +71,8 @@ async def _acta_de_prueba(conn: asyncpg.Connection, slug: str, responsable: str)
     transferencia_id = uuid.uuid4()
     await conn.execute(
         """
-        INSERT INTO transferencias (id, tipo, estado, expediente_id)
-             VALUES ($1, 'primaria', 'recibida', $2)
+        INSERT INTO transferencias (id, tipo, estado, expediente_id, objeto)
+             VALUES ($1, 'primaria', 'recibida', $2, 'Transferencia de prueba')
         """,
         transferencia_id,
         uuid.uuid4(),

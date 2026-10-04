@@ -524,18 +524,30 @@
       aip: { status: "loading", data: null, errorMsg: null },
       eventos: { status: "loading", items: [], errorMsg: null },
     };
+    // AREA-12-04: primero el estado de INSTANCIA. Con la preservación apagada
+    // el 404 neutro del AIP («sin AIP, o sin visibilidad») hacía pasar por
+    // normal que nada se empaqueta jamás. Solo `enabled === false` lo apaga: si
+    // la consulta falla o no responde con ese campo, se sigue como antes (el
+    // AIP decide) — un fallo del estado no inventa «desactivada».
+    const estado = await fetch("/expedientes/api/preservacion-estado")
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    const desactivada = estado?.enabled === false;
+
     const [aipRes, eventosRes] = await Promise.allSettled([
-      fetch(`/expedientes/${expediente.id}/api/aip`).then(async (r) => {
-        const d = await r.json().catch(() => ({}));
-        // C1 (revisión UX): el proxy retransmite el status real del backend
-        // (`res.status`) — se conserva aquí para distinguir el 404 NEUTRO
-        // (sin AIP / sin visibilidad, ver archive_service.py get_aip) de un
-        // fallo real (5xx, red). Antes CUALQUIER !ok pasaba por `error`, así
-        // que el caso normal (todavía no hay AIP) se presentaba como fallo
-        // del sistema y la rama honesta "empty" quedaba inalcanzable.
-        if (!r.ok) throw { ...d, status: r.status };
-        return d;
-      }),
+      desactivada
+        ? Promise.reject({ desactivada: true })
+        : fetch(`/expedientes/${expediente.id}/api/aip`).then(async (r) => {
+            const d = await r.json().catch(() => ({}));
+            // C1 (revisión UX): el proxy retransmite el status real del backend
+            // (`res.status`) — se conserva aquí para distinguir el 404 NEUTRO
+            // (sin AIP / sin visibilidad, ver archive_service.py get_aip) de un
+            // fallo real (5xx, red). Antes CUALQUIER !ok pasaba por `error`, así
+            // que el caso normal (todavía no hay AIP) se presentaba como fallo
+            // del sistema y la rama honesta "empty" quedaba inalcanzable.
+            if (!r.ok) throw { ...d, status: r.status };
+            return d;
+          }),
       fetch(`/expedientes/${expediente.id}/api/preservacion-eventos`).then(async (r) => {
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw d;
@@ -547,16 +559,18 @@
       aip:
         aipRes.status === "fulfilled"
           ? { status: "loaded", data: aipRes.value, errorMsg: null }
-          : aipRes.reason?.status === 404
-            ? { status: "empty", data: null, errorMsg: null }
-            : {
-                status: "error",
-                data: null,
-                errorMsg: mensajeError(
-                  aipRes.reason,
-                  "No se pudo cargar el paquete de preservación (AIP).",
-                ),
-              },
+          : aipRes.reason?.desactivada
+            ? { status: "desactivada", data: null, errorMsg: null }
+            : aipRes.reason?.status === 404
+              ? { status: "empty", data: null, errorMsg: null }
+              : {
+                  status: "error",
+                  data: null,
+                  errorMsg: mensajeError(
+                    aipRes.reason,
+                    "No se pudo cargar el paquete de preservación (AIP).",
+                  ),
+                },
       eventos:
         eventosRes.status === "fulfilled"
           ? {
@@ -1840,7 +1854,15 @@
         <div class="exp-panel__grid">
           <Card>
             <h2 slot="header" class="op-card-title">Paquete de preservación (AIP)</h2>
-            {#if preservacionState.aip.status === "error"}
+            {#if preservacionState.aip.status === "desactivada"}
+              <!-- AREA-12-04: estado de INSTANCIA (`PRESERVATION_ENABLED`), no del
+                   expediente — decirlo no abre oráculo no-read-up. -->
+              <EmptyState
+                icon="fas fa-power-off"
+                title="Preservación desactivada"
+                description="La preservación está desactivada en esta instalación (PRESERVATION_ENABLED): no se empaquetan AIP ni se sellan artefactos. Pida a quien administra la instalación que la active."
+              />
+            {:else if preservacionState.aip.status === "error"}
               <EmptyState
                 icon="fas fa-exclamation-circle"
                 title="No se pudo cargar el AIP"

@@ -57,4 +57,5 @@ class AuditRepository:
             object_ref=username,
             actor=username,
             payload=payload,
+            canal=audit.CANAL_PETICION,
         )

@@ -130,8 +130,10 @@ async def _seed_radicado_nivel(
 ) -> uuid.UUID:
     rid = await conn.fetchval(
         f'INSERT INTO "{schema}".radicados '
-        "(tracking_number, doc_type, year, sequence, subject, tenant_code, nivel_seguridad) "
-        "VALUES ($1, 'E', 2026, 1, 'itest export clearance', 'ITEST', $2) RETURNING id",
+        "(tracking_number, doc_type, year, sequence, subject, tenant_code, nivel_seguridad, "
+        "clasificacion_fundamento) "
+        "VALUES ($1, 'E', 2026, 1, 'itest export clearance', 'ITEST', $2, "
+        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) RETURNING id",
         tracking,
         nivel,
     )

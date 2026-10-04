@@ -407,6 +407,7 @@ async def test_create_prestamo(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),
         None,
+        None,  # resolve_caller_clearance -> PUBLICA
         _prestamo_row(unidad_id=unidad_id),
     ]
     resp = await client.post(
@@ -418,6 +419,29 @@ async def test_create_prestamo(client_with_conn) -> None:
     body = resp.json()
     assert body["estado"] == "prestado"
     assert body["vencido"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_prestamo_con_contenido_sobre_el_clearance_es_403(client_with_conn) -> None:
+    """AREA-01-13: si el gate del INSERT ... WHERE NOT EXISTS no inserta (0
+    filas) la respuesta es 403 y no se escribe movimiento ni asiento."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    unidad_id = uuid.uuid4()
+    mock_conn.fetchrow.side_effect = [
+        _unidad_row(id=unidad_id),
+        None,  # active_loan
+        None,  # resolve_caller_clearance -> PUBLICA
+        None,  # insert_prestamo: el gate no insertó
+    ]
+    resp = await client.post(
+        f"/api/v1/unidades/{unidad_id}/prestamos",
+        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "clearance_insuficiente"
+    assert _audit_log_calls(mock_conn) == []
 
 
 @pytest.mark.asyncio
@@ -856,6 +880,7 @@ async def test_create_prestamo_writes_audit_entry(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),  # get_unidad
         None,  # active_loan -> ninguno
+        None,  # resolve_caller_clearance -> PUBLICA
         _prestamo_row(id=prestamo_id, unidad_id=unidad_id),  # insert_prestamo
     ]
     resp = await client.post(
@@ -947,6 +972,7 @@ async def test_create_prestamo_audit_failure_not_swallowed(monkeypatch: pytest.M
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),  # get_unidad
         None,  # active_loan
+        None,  # resolve_caller_clearance -> PUBLICA
         _prestamo_row(id=prestamo_id, unidad_id=unidad_id),  # insert_prestamo (nunca debe "ganar")
     ]
 
@@ -962,7 +988,7 @@ async def test_create_prestamo_audit_failure_not_swallowed(monkeypatch: pytest.M
     # dentro de la MISMA transacción cuando `audit.append` reventó -- el
     # fallo es TARDÍO, no evita que se intente la escritura, pero SÍ evita
     # que el llamante reciba una `PrestamoResponse` de éxito sin asiento.
-    assert mock_conn.fetchrow.call_count == 3
+    assert mock_conn.fetchrow.call_count == 4
 
 
 @pytest.mark.asyncio
@@ -1219,3 +1245,49 @@ async def test_el_prestamo_dice_que_unidad_falta_del_estante(client_with_conn) -
     # El JOIN introduce dos columnas `estado`/`unidad_id` homónimas: sin
     # prefijar, Postgres aborta con «column reference is ambiguous».
     assert "p.estado" in sql
+
+
+@pytest.mark.asyncio
+async def test_los_prestamos_de_una_unidad_se_paginan(client_with_conn) -> None:
+    """AREA-07-19: `GET /unidades/{id}/prestamos` devolvía TODO el histórico.
+
+    Se afirma sobre lo que sale del router: el total del `COUNT` en
+    `X-Total-Count` (no el tamaño de la ventana) y `LIMIT`/`OFFSET` calculados
+    de `page`/`size` en la consulta de filas.
+    """
+    client, mock_conn = client_with_conn
+    unidad_id = uuid.uuid4()
+    llamadas: list[tuple[str, tuple]] = []
+
+    async def fake_fetchval(query, *params):
+        if "COUNT(*)" in query:
+            return 25
+        return True
+
+    async def fake_fetch(query, *params):
+        llamadas.append((query, params))
+        return [_prestamo_row()]
+
+    mock_conn.fetchval.side_effect = fake_fetchval
+    mock_conn.fetch.side_effect = fake_fetch
+
+    resp = await client.get(
+        f"/api/v1/unidades/{unidad_id}/prestamos?page=2&size=20", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 200
+    assert resp.headers["X-Total-Count"] == "25"
+
+    query, params = next((q, p) for q, p in llamadas if "FROM prestamo" in q)
+    assert "LIMIT" in query and "OFFSET" in query
+    assert params[-2:] == (20, 20)  # size, (page-1)*size
+    assert unidad_id in params  # el filtro por unidad sigue en el WHERE
+
+
+@pytest.mark.asyncio
+async def test_los_prestamos_de_una_unidad_no_admiten_un_size_sin_tope(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # el gate de permiso
+    resp = await client.get(
+        f"/api/v1/unidades/{uuid.uuid4()}/prestamos?size=101", headers=TENANT_HEADERS
+    )
+    assert resp.status_code == 422

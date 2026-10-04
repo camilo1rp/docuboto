@@ -20,10 +20,11 @@
       Índice electrónico del expediente — perfil "CONFORME COMPLETO" v4 (E15
       cierre de RT-15, Acuerdo AGN 001/2024 art. 4.3.2.3).
 
-      Este XSD es un artefacto de CONTRATO/documentación normativa del XML
-      producido por `app/services/index_builder.py::build_xml`. NO es un gate
-      de runtime: la validación estricta contra XSD (lxml) sigue siendo
-      evolutiva — ver el docstring del módulo `index_builder`. El orden de los
+      Este XSD es el CONTRATO del XML producido por
+      `app/services/index_builder.py::build_xml` y, desde AREA-07-01, también un
+      gate de runtime: `app/services/index_xsd.py` (lxml) valida contra él el
+      índice ANTES de sellarlo (si no valida: `pendiente_firma`, motivo
+      `xsd_invalido`, sin firmar). El orden de los
       elementos hijos aquí declarado reproduce EXACTAMENTE el orden de
       serialización de `build_xml`, que es el que entra a la canonicalización
       C14N (`ET.canonicalize`) — cualquier cambio de orden en el builder debe

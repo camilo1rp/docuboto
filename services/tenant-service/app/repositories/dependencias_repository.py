@@ -100,6 +100,43 @@ class DependenciaRepository:
             *params,
         )
 
+    async def get_for_update(self, dependencia_id: uuid.UUID) -> asyncpg.Record | None:
+        """Nombre y estado vigentes, con la fila bloqueada hasta el fin de la tx."""
+        return await self._conn.fetchrow(
+            "SELECT nombre, activo FROM dependencias WHERE id = $1 FOR UPDATE",
+            dependencia_id,
+        )
+
+    async def tramites_vivos(self, nombre: str) -> dict[str, int]:
+        """Pasos de flujo vivos y reglas que apuntan a la dependencia POR NOMBRE.
+
+        workflow-service correlaciona `flow_steps.to_dept` y
+        `workflow_rules.assign_to_dept` con `dependencias.nombre` (no hay FK ni
+        código): renombrar o desactivar con trámite vivo deja los pasos
+        huérfanos de bandeja. Las tablas son de otro servicio; `to_regclass`
+        evita fallar en un tenant donde esa migración aún no corrió.
+        """
+        pasos = 0
+        reglas = 0
+        if await self._conn.fetchval("SELECT to_regclass('flow_steps')"):
+            pasos = int(
+                await self._conn.fetchval(
+                    "SELECT count(*) FROM flow_steps "
+                    "WHERE to_dept = $1 AND status IN ('pending', 'in_progress')",
+                    nombre,
+                )
+                or 0
+            )
+        if await self._conn.fetchval("SELECT to_regclass('workflow_rules')"):
+            reglas = int(
+                await self._conn.fetchval(
+                    "SELECT count(*) FROM workflow_rules WHERE assign_to_dept = $1",
+                    nombre,
+                )
+                or 0
+            )
+        return {"pasos_vivos": pasos, "reglas": reglas}
+
     async def has_children(self, dependencia_id: uuid.UUID) -> bool:
         return bool(
             await self._conn.fetchval(

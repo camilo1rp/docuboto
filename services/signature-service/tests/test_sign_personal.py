@@ -100,7 +100,7 @@ async def test_sign_personal_ok_produces_xades_personal_and_uploads(
 
     user_key, user_cert = _issue_user_cert()
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
 
     client, conn = client_with_conn
@@ -180,7 +180,7 @@ async def test_sign_personal_invalid_totp_rejected_without_persisting(
 
     _, user_cert = _issue_user_cert()
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(
         monkeypatch,
         error=SignDigestRemoteError(
@@ -213,7 +213,7 @@ async def test_sign_personal_firmante_mismatch_returns_403(
 ) -> None:
     # No se mockea get_signing_key_status_remote/sign_digest_remote: el
     # mismatch se detecta ANTES de tocar el canal remoto.
-    status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": "x"})
+    status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": "x"})
 
     client, conn = client_with_conn
     conn.fetchval.return_value = True
@@ -295,7 +295,7 @@ async def test_sign_personal_clearance_gate_no_read_up(
     """``objeto_tipo="radicado"`` con nivel CLASIFICADA (3) y el llamante sin
     clearance (PUBLICA, fetchrow None -> resolve_caller_clearance default)
     -> 404 neutro, sin llegar a tocar el canal de firma personal."""
-    status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": "x"})
+    status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": "x"})
 
     client, conn = client_with_conn
     conn.fetchval.side_effect = [True, 3]  # PERM_FIRMA ok, resolver_nivel_por_objeto -> 3
@@ -327,7 +327,7 @@ async def test_sign_personal_gate_no_depende_del_objeto_tipo_declarado(
     identificador de un radicado CLASIFICADA evaluaba el gate contra nivel 1 y lo
     saltaba. Ahora la resolución no mira el tipo: manda el nivel real del objeto.
     """
-    status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": "x"})
+    status_mock = _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": "x"})
 
     client, conn = client_with_conn
     conn.fetchval.side_effect = [True, 3]  # PERM_FIRMA ok, nivel real del objeto = 3

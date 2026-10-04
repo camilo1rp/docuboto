@@ -170,6 +170,7 @@ async def ejecutar(
             propuesta.args,  # del TOKEN, nunca del cuerpo de esta petición
             authorization=authorization,
             tenant_slug=tenant_slug,
+            idempotency_key=propuesta.jti,
             permissions=identidad.permissions,
             is_root=identidad.is_root,
             levels=identidad.levels,
@@ -194,6 +195,9 @@ async def ejecutar(
         propuesta.args,  # del TOKEN, nunca del cuerpo de esta petición
         authorization=authorization,
         tenant_slug=tenant_slug,
+        # El `jti` de la propuesta: correlaciona el asiento con lo que la persona
+        # aprobó (AREA-11-04).
+        idempotency_key=propuesta.jti,
     )
     try:
         data = resp.json()

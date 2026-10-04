@@ -41,6 +41,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     common_secrets.require_secrets(
         {"SIGNATURE_SECRET": settings.signature_secret}, servicio="signature-service"
     )
+    if settings.firma_personal_require_xades == "off":
+        # AREA-04-12: el gate que obliga a firmar lo clasificado con certificado
+        # personal viene apagado. Es decisión de la ENTIDAD (exige enrolar antes
+        # los certificados), así que no se activa solo — pero que lo clasificado
+        # se firme con HMAC nativo no puede ser algo que nadie vea al arrancar.
+        logger.warning(
+            "FIRMA_PERSONAL_REQUIRE_XADES=off: los actos de nivel >= 2 pueden "
+            "firmarse con HMAC nativo (sin certificado personal). Si la entidad "
+            "ya enroló certificados, active 'clasificados' o 'todos'."
+        )
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     await init_redis(settings.redis_url)
     # Re-sync firma_solicitud.nivel_seguridad on reclassification events (RF-SEG-08).

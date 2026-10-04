@@ -16,10 +16,12 @@ from collections.abc import AsyncGenerator
 import httpx
 from fastapi import FastAPI
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from orpycamcp_common import request_log
 from orpycamcp_common import secrets as common_secrets
 
 from app import mcp_app
 from app.core.config import settings
+from app.core.contexto import ContextoEntranteMiddleware
 from app.routers.assistant import router as assistant_router
 from app.routers.health import router as health_router
 from app.routers.mcp import router as mcp_router
@@ -145,6 +147,12 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Contexto entrante que las llamadas salientes reenvían (AREA-11-04/-08): el
+# `X-Request-Id` del gateway queda en un ContextVar (traza por petición) y la IP
+# del cliente real, solo si el gateway la firmó con la identidad.
+app.add_middleware(ContextoEntranteMiddleware)
+app.add_middleware(request_log.RequestLogMiddleware, servicio="mcp-server")
 
 app.include_router(mcp_router)  # API HTTP simple del catálogo (/api/v1/mcp/...)
 app.include_router(assistant_router)  # asistente conversacional (E18, /api/v1/assistant/...)

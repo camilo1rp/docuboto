@@ -93,7 +93,7 @@ The MCP layer is thus **complete** (tools + resources + prompts + both transport
 
 | | |
 |---|---|
-| Current state | Deterministic **stub** embedding (hash→vector dim 64). pgvector + retrieval with ACL pre-filtering already work. |
+| Current state | **Real, local** embedding by default (`EMBEDDING_PROVIDER=local_st`, multilingual sentence-transformers, dim 384); deterministic `stub` for tests only. pgvector + retrieval with ACL pre-filtering already work. |
 | Swap point | `services/knowledge-service/app/services/embeddings.py` (`embed`). |
 | Selector | `EMBEDDING_PROVIDER` / `EMBEDDING_DIM` (config). |
 | Decision | ADR-006 (configurable AI provider, local by default). |
@@ -101,7 +101,8 @@ The MCP layer is thus **complete** (tools + resources + prompts + both transport
 **To enable real embeddings/RAG:**
 1. Connect an embeddings model (e.g. local `sentence-transformers` or an API) by implementing `embed(text) -> list[float]`; adjust `EMBEDDING_DIM` and the `vector(N)` column (migration) to the model's dimension.
 2. For grounded RAG with citations and TRD/dependencia suggestions (advisory), connect a **pluggable** LLM (ADR-006); keep the **ACL pre-filtering** (`acl @>`) before retrieval.
-3. It is an **advisory/derived and per-tenant opt-in** layer: it is not a source of truth.
+3. It is an **advisory/derived** layer: it is not a source of truth. **There is no per-entity opt-in (OMI-04)**: ingestion and the AI provider are installation-wide; if an entity must not feed the index, the service has to be turned off for the whole installation. A per-entity switch (`knowledge.habilitado`) awaits a product decision (it would change today's behaviour: a `false` default would stop ingestion for existing entities).
+4. **Generation residency**: `AI_PROVIDER=ollama_local` is only treated as sovereign when the `OLLAMA_URL` host is loopback, private-network, a container hostname or `*.local`; with a public host, RAG excludes every chunk of level >= Reserved from the context (AREA-11-12).
 
 ---
 

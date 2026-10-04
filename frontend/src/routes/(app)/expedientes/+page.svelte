@@ -56,7 +56,7 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import SchemaField from "$lib/components/ui/SchemaField.svelte";
-  import { resolveSchemaControl } from "$lib/utils/schemaField.js";
+  import { resolveSchemaControl, ubicarErrorDeCampo } from "$lib/utils/schemaField.js";
   import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
@@ -328,19 +328,29 @@
     }
   }
 
-  // Mapeo heurístico (best-effort) del 422 metadata_validation_failed a un
-  // campo concreto: el backend solo da el `message` de jsonschema (p. ej.
-  // "'monto_contrato' is a required property"), sin ruta estructurada — ver
-  // contrato §5. Si el mensaje empieza por 'clave' y esa clave está en el
-  // schema renderizado, se resalta ESE campo; si no hay match, el error
-  // queda solo en el aviso general del Modal (role="alert").
-  $: metaFieldError = (() => {
-    if (form?.error !== "metadata_validation_failed" || typeof form?.detail !== "string") return {};
-    const match = /^'([^']+)'/.exec(form.detail);
-    const key = match?.[1];
-    if (!key || !templateProperties.some(([k]) => k === key)) return {};
-    return { [key]: form.detail };
+  // Mapeo del 422 metadata_validation_failed al control concreto. El backend
+  // nombra la propiedad en `field` (ruta con puntos, `a.b`; AREA-12-05): se
+  // marca ESE control —o la propiedad interior de un object—. Respaldo para
+  // un backend que aún no la envíe: la clave que abre el mensaje de jsonschema
+  // ("'monto_contrato' is a required property"). Sin match, el error queda solo
+  // en el aviso general del Modal (role="alert").
+  $: metaUbicado = (() => {
+    if (form?.error !== "metadata_validation_failed" || typeof form?.detail !== "string")
+      return null;
+    const claves = templateProperties.map(([k]) => k);
+    const porCampo = ubicarErrorDeCampo(
+      /** @type {{ field?: string | null }} */ (form).field,
+      form.detail,
+      claves,
+    );
+    if (porCampo) return porCampo;
+    const clave = /^'([^']+)'/.exec(form.detail)?.[1];
+    return clave && claves.includes(clave)
+      ? { key: clave, error: form.detail, subErrors: {} }
+      : null;
   })();
+  $: metaFieldError = metaUbicado ? { [metaUbicado.key]: metaUbicado.error } : {};
+  $: metaSubErrors = metaUbicado ? { [metaUbicado.key]: metaUbicado.subErrors } : {};
 
   // El error de validación de `name` ("obligatorio" / "máximo 500 caracteres")
   // se anexa también al campo (aria-invalid + aria-describedby vía FormField,
@@ -620,6 +630,7 @@
                   required={templateRequired.includes(key)}
                   bind:value={metadataValues[key]}
                   error={metaFieldError[key] ?? ""}
+                  subErrors={metaSubErrors[key] ?? {}}
                 />
               {/each}
             {/if}

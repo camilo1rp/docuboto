@@ -280,6 +280,17 @@ async def _audit_log_ready() -> None:
                 )
             return
 
+        if os.environ.get("CI"):
+            # AREA-03-05: en CI la base nace virgen y el job aplica ANTES las
+            # migraciones globales REALES de auth-service (002-008). Crear aquí una
+            # copia propia del DDL haría que estos tests probaran el trigger de ESTE
+            # fichero y no el de producción: el trigger de sentencia de 004 quedaría
+            # sin ejercer. Si llegamos aquí en CI, el job olvidó migrar auth-service.
+            raise RuntimeError(
+                "public.audit_log no existe en CI: aplica antes las migraciones "
+                "globales de auth-service (`python ../auth-service/migrations/runner.py`)."
+            )
+
         async with conn.transaction():
             await conn.execute("SET LOCAL lock_timeout = '5s'")
             await conn.execute(_AUDIT_LOG_CREATE_DDL)

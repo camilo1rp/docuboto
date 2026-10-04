@@ -200,8 +200,11 @@ plan que no declara sus puntos ciegos los convierte en aprobados.
   cerrado) y deja asiento de cada acto en `audit_log`. Al ejecutarlo aparecieron cinco
   advertencias de actos irreversibles troceadas en columnas por un `display: flex`. **Lección que
   vale más que el caso**: un punto ciego declarado y no comprobado es, en la práctica, una
-  pantalla que nadie mira. Lo que sí sigue siendo cierto es el desnivel de cobertura — el backend
-  tiene 36 endpoints y la interfaz consume 6.
+  pantalla que nadie mira. **La cifra del desnivel también era falsa y envejeció**: el backend tiene
+  30 endpoints (no 36) y el desfase se cerró en agosto; hoy los 30 tienen puerta en el BFF (27 los
+  consume la interfaz y 3 —editar el plan en borrador, historial de seguimiento y mapa de
+  ruta— tienen proxy sin pantalla todavía). La cifra ya no se escribe a mano:
+  `pinar-paridad.test.js` la deriva de `pinar.py`.
 - **503 honestos que parecen averías**: asistente sin `ANTHROPIC_API_KEY`, RAG generativo con
   `LLMProvider=disabled`, transcripción sin `whisper-service`. Son la respuesta correcta —
   comprobar la configuración antes de tocar nada.

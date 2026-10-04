@@ -228,6 +228,13 @@ class OaiService:
         expediente y anida: `archdesc[fonds]` → `dsc` → `c[series]` →
         (`c[subseries]` …) → `c[file]` (el expediente, con sus 6 obligatorios).
 
+        Los niveles salen de la POSICIÓN en la cadena, porque ese es el modelo
+        (ADR-015): la raíz es la serie y toda descendiente, subserie —un CCD de
+        tres niveles emite `series > subseries > subseries`, anidamiento válido en
+        EAD 2002—. `trd_series` no tiene columna de nivel (sección, subsección…):
+        añadirla es una decisión de dominio. `tests/test_ead_xsd.py` valida el
+        resultado contra el XSD oficial.
+
         Si el expediente no tiene `trd_serie_id`, fallback honesto: solo
         `archdesc[level=file]` sin jerarquía superior — no se inventa un CCD
         que no existe.

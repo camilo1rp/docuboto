@@ -12,7 +12,9 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.core.datos_minimos import faltantes, mensaje_faltantes
 
 
 class BatchDocumentCreate(BaseModel):
@@ -22,10 +24,27 @@ class BatchDocumentCreate(BaseModel):
     subject: str
     doc_class: str | None = None
     dest_dept: str | None = None
+    #: Códigos del organigrama (Ac. AGN 060/2001 §5.2, AREA-09-02): E e I exigen
+    #: el destino, S exige el origen. Sin ellos el lote era una segunda puerta
+    #: por la que entraba lo que `POST /documents` rechaza.
+    origin_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
     sender_name: str | None = None
     sender_entity: str | None = None
     pages: int | None = None
     observations: str | None = None
+
+    @model_validator(mode="after")
+    def _require_datos_minimos(self) -> "BatchDocumentCreate":
+        falta = faltantes(
+            self.doc_type,
+            doc_class=self.doc_class,
+            origin_dept_code=self.origin_dept_code,
+            dest_dept_code=self.dest_dept_code,
+        )
+        if falta:
+            raise ValueError(mensaje_faltantes(self.doc_type, falta))
+        return self
 
 
 class BatchDocumentsRequest(BaseModel):

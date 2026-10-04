@@ -610,6 +610,93 @@ class ArchiveRepository:
         updated = int(result.split()[-1])
         return updated > 0
 
+    async def list_vinculos_origen_pendiente(self, limit: int) -> list[asyncpg.Record]:
+        """Vínculos VIGENTES de expedientes ABIERTOS cuyo origen (productora/formato/tamaño)
+        aún no se intentó completar (AREA-07-01, migración 058). Los expedientes cerrados NO
+        entran: su índice es probatorio y un dato nuevo cambiaría lo ya firmado."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT er.expediente_id, er.radicado_id, e.code AS expediente_code
+                  FROM expediente_radicados er
+                  JOIN expedientes e ON e.id = er.expediente_id
+                 WHERE er.origen_completado_at IS NULL
+                   AND er.estado = 'vinculado'
+                   AND e.status = 'open'
+                 ORDER BY er.added_at
+                 LIMIT $1
+                """,
+                limit,
+            )
+        )
+
+    async def completar_origen_vinculo(
+        self,
+        expediente_id: uuid.UUID,
+        radicado_id: uuid.UUID,
+        *,
+        dep_codigo: int | None,
+        dep_nombre: str | None,
+        formato: str | None,
+        tamano_bytes: int | None,
+    ) -> asyncpg.Record | None:
+        """Rellena SOLO las columnas que están en NULL y marca el vínculo como intentado.
+
+        Un UPDATE con las condiciones en el WHERE (vínculo vigente, expediente abierto, sin
+        marca): una carrera con un cierre, una exclusión o una segunda barrida no pisa nada.
+        Además de la fila del vínculo (`FOR UPDATE OF er0`) se toma `FOR SHARE OF e` sobre la
+        del expediente: el cierre la actualiza, así que ambos se serializan y el backfill no
+        confirma un cambio que el índice ya firmado del cierre no refleja.
+        La pareja productora (código + nombre) se escribe entera o no se escribe (CHECK de la
+        migración 019). Devuelve qué columnas se completaron de verdad (para el asiento), o
+        `None` si el vínculo ya no era elegible."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            """
+            WITH prev AS (
+                SELECT er0.expediente_id, er0.radicado_id,
+                       er0.dependencia_productora_codigo AS dep0,
+                       er0.formato AS formato0,
+                       er0.tamano_bytes AS tamano0
+                  FROM expediente_radicados er0
+                  JOIN expedientes e ON e.id = er0.expediente_id
+                 WHERE er0.expediente_id = $1 AND er0.radicado_id = $2
+                   AND er0.estado = 'vinculado'
+                   AND er0.origen_completado_at IS NULL
+                   AND e.status = 'open'
+                   FOR UPDATE OF er0 FOR SHARE OF e
+            )
+            UPDATE expediente_radicados er
+               SET dependencia_productora_codigo = CASE
+                       WHEN er.dependencia_productora_codigo IS NULL
+                        AND er.dependencia_productora_nombre IS NULL
+                        AND $3::int IS NOT NULL AND $4::text IS NOT NULL
+                       THEN $3::int ELSE er.dependencia_productora_codigo END,
+                   dependencia_productora_nombre = CASE
+                       WHEN er.dependencia_productora_codigo IS NULL
+                        AND er.dependencia_productora_nombre IS NULL
+                        AND $3::int IS NOT NULL AND $4::text IS NOT NULL
+                       THEN $4::text ELSE er.dependencia_productora_nombre END,
+                   formato = COALESCE(er.formato, $5::text),
+                   tamano_bytes = COALESCE(er.tamano_bytes, $6::bigint),
+                   origen_completado_at = now()
+              FROM prev
+             WHERE er.expediente_id = prev.expediente_id AND er.radicado_id = prev.radicado_id
+            RETURNING
+                (prev.dep0 IS NULL AND er.dependencia_productora_codigo IS NOT NULL)
+                    AS productora_completada,
+                (prev.formato0 IS NULL AND er.formato IS NOT NULL) AS formato_completado,
+                (prev.tamano0 IS NULL AND er.tamano_bytes IS NOT NULL) AS tamano_completado
+            """,
+            expediente_id,
+            radicado_id,
+            dep_codigo,
+            dep_nombre,
+            formato,
+            tamano_bytes,
+        )
+
     # ------------------------------------------------------------------
     # TRD series CRUD
     # ------------------------------------------------------------------
@@ -1091,6 +1178,8 @@ class ArchiveRepository:
         total_retention: int | None,
         disposition: str | None,
         pdfa_profile: str | None = None,
+        archivo_gestion_years: int | None = None,
+        archivo_central_years: int | None = None,
     ) -> TrdSerie | None:
         """Edición EN SITIO. Solo llamable por el servicio sobre una fila en
         `borrador` (o, para `pdfa_profile`, en cualquier estado -- ADR-025 D1).
@@ -1121,6 +1210,14 @@ class ArchiveRepository:
         if total_retention is not None:
             assignments.append(f"total_retention = ${idx}")
             params.append(total_retention)
+            idx += 1
+        if archivo_gestion_years is not None:
+            assignments.append(f"archivo_gestion_years = ${idx}")
+            params.append(archivo_gestion_years)
+            idx += 1
+        if archivo_central_years is not None:
+            assignments.append(f"archivo_central_years = ${idx}")
+            params.append(archivo_central_years)
             idx += 1
         if disposition is not None:
             assignments.append(f"disposition = ${idx}")
@@ -1769,9 +1866,18 @@ class ArchiveRepository:
         `CURRENT_DATE` y no una fecha del cliente: el plazo lo mide el
         servidor.
 
+        **Separación de funciones (AREA-06-01)**: `creado_por <> $5` -- quien
+        propuso el lote no lo avala. Va en la MISMA sentencia por la misma
+        razón que el plazo: una comprobación previa en Python deja una ventana
+        entre leer y escribir, y es el único punto donde el hecho de que el
+        proponente y el avalador sean la misma persona se puede impedir sin
+        depender de ninguna otra capa (ni el gateway ni el RBAC comparan
+        actores).
+
         Un `None` no distingue «no existe» de «no está publicado» de «el plazo
-        sigue abierto»; el diagnóstico lo compone el servicio con una lectura
-        aparte, que solo EXPLICA -- la guarda sigue siendo esta."""
+        sigue abierto» de «el avalador es el proponente»; el diagnóstico lo
+        compone el servicio con una lectura aparte, que solo EXPLICA -- la
+        guarda sigue siendo esta."""
         await self._set_search_path()
         return await self._conn.fetchrow(
             """
@@ -1785,6 +1891,7 @@ class ArchiveRepository:
              WHERE id = $1
                AND estado = 'publicado'
                AND publicado_hasta < CURRENT_DATE
+               AND creado_por <> $5
             RETURNING *
             """,
             lote_id,
@@ -1830,7 +1937,7 @@ class ArchiveRepository:
         await self._set_search_path()
         return await self._conn.fetchrow(
             """
-            SELECT estado, publicado_hasta,
+            SELECT estado, publicado_hasta, creado_por, avalado_por,
                    (publicado_hasta IS NOT NULL AND publicado_hasta >= CURRENT_DATE)
                        AS publicidad_abierta
               FROM eliminacion_lotes WHERE id = $1
@@ -2016,21 +2123,63 @@ class ArchiveRepository:
         return int(resultado.rsplit(" ", 1)[-1])
 
     async def mark_acta_eliminacion_worm_fallido(
-        self, lote_id: uuid.UUID, *, motivo: str
+        self,
+        lote_id: uuid.UUID,
+        *,
+        motivo: str,
+        proximo_at: datetime | None,
+        agotado: bool,
     ) -> None:
         """Anota el fallo del cableado sin tocar la firma: el acta ya está
         firmada y su sellado es un hecho consumado — lo que falló es la
-        protección, y decirlo es lo que permite reintentarla."""
+        protección, y decirlo es lo que permite reintentarla.
+
+        **Programa el reintento** (AREA-06-02): `worm_reconcile_proximo_at` y
+        `worm_reconcile_agotado` los decide el servicio (backoff exponencial,
+        mismo umbral que el índice y el acta de transferencia). Antes este
+        método solo contaba el intento: la fila quedaba con
+        `worm_reconcile_proximo_at` NULL y ningún consumidor, así que un único
+        fallo del almacén dejaba el acta sin candado para siempre."""
         await self._set_search_path()
         await self._conn.execute(
             """
             UPDATE eliminacion_acta_firma
                SET worm_last_error = $2,
-                   worm_reconcile_intentos = worm_reconcile_intentos + 1
+                   worm_reconcile_intentos = worm_reconcile_intentos + 1,
+                   worm_reconcile_proximo_at = $3,
+                   worm_reconcile_agotado = $4
              WHERE lote_id = $1 AND worm_protegido_at IS NULL
             """,
             lote_id,
             motivo,
+            proximo_at,
+            agotado,
+        )
+
+    async def list_worm_pending_actas_eliminacion(
+        self, limit: int
+    ) -> list[asyncpg.Record]:
+        """Actas de eliminación 'firmado' elegibles para la reconciliación del
+        WORM (AREA-06-02): sin proteger todavía, no agotadas y con el backoff
+        cumplido. Gemela de `TransferenciaRepository.list_worm_pending_actas`;
+        el índice parcial `ix_eliminacion_acta_firma_worm_pendiente`
+        (migración 050) existía desde la fase 4 sin ningún consumidor."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT lote_id, minio_key_firmado, worm_reconcile_intentos
+                  FROM eliminacion_acta_firma
+                 WHERE estado = 'firmado'
+                   AND worm_protegido_at IS NULL
+                   AND worm_reconcile_agotado = FALSE
+                   AND (worm_reconcile_proximo_at IS NULL
+                        OR worm_reconcile_proximo_at <= now())
+                 ORDER BY worm_reconcile_proximo_at ASC NULLS FIRST
+                 LIMIT $1
+                """,
+                limit,
+            )
         )
 
     async def get_lote_row(self, lote_id: uuid.UUID) -> asyncpg.Record:
@@ -2110,7 +2259,8 @@ class ArchiveRepository:
             SELECT a.*, f.estado AS firma_estado, f.firma_id, f.minio_key_firmado,
                    f.xades_level, f.acreditado, f.last_error, f.firmado_at,
                    f.worm_protegido_at, f.worm_object_id, f.worm_retain_until,
-                   f.worm_last_error
+                   f.worm_last_error, f.worm_reconcile_intentos,
+                   f.worm_reconcile_agotado
               FROM eliminacion_acta a
               LEFT JOIN eliminacion_acta_firma f ON f.lote_id = a.lote_id
              WHERE a.lote_id = $1
@@ -2306,6 +2456,64 @@ class ArchiveRepository:
                         )
                    )
                 """
+            )
+        )
+
+    async def list_destinatarios_indice_agotado(
+        self, expediente_id: uuid.UUID
+    ) -> list[asyncpg.Record]:
+        """Quién debe enterarse de que el sellado de un índice se AGOTÓ (AREA-07-03).
+
+        El criterio es el del endpoint que lo repara, `POST /{id}/indice/firmar`:
+        `USUA_PERM_EXPEDIENTE` Y `PERM_FIRMA` (no se avisa de un acto que el
+        backend le va a negar), más el clearance del EXPEDIENTE en cuestión:
+        decirle a quien no alcanza un expediente reservado que su índice no se pudo
+        sellar le confirma que existe (la misma regla que el aviso de disposición).
+        Un ROOT entra por `is_root`, con clearance máximo."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT u.id, u.email
+                  FROM auth_users u
+                  JOIN expedientes e ON e.id = $1
+                 WHERE u.email IS NOT NULL
+                   AND btrim(u.email) <> ''
+                   AND (
+                        CASE WHEN u.is_root THEN 3
+                             ELSE COALESCE((
+                                 SELECT MAX(rc.max_level)
+                                   FROM auth_memberships m2
+                                   JOIN role_clearance rc ON rc.group_id = m2.group_id
+                                  WHERE m2.user_id = u.id
+                             ), 1)
+                        END
+                   ) >= e.nivel_seguridad
+                   AND (
+                        u.is_root
+                        OR (
+                            EXISTS (
+                                SELECT 1
+                                  FROM auth_memberships m
+                                  JOIN auth_group_permissions gp ON gp.group_id = m.group_id
+                                  JOIN auth_permissions p ON p.id = gp.permission_id
+                                 WHERE m.user_id = u.id
+                                   AND p.nombre = 'USUA_PERM_EXPEDIENTE'
+                                   AND gp.crud >= 1
+                            )
+                            AND EXISTS (
+                                SELECT 1
+                                  FROM auth_memberships m
+                                  JOIN auth_group_permissions gp ON gp.group_id = m.group_id
+                                  JOIN auth_permissions p ON p.id = gp.permission_id
+                                 WHERE m.user_id = u.id
+                                   AND p.nombre = 'PERM_FIRMA'
+                                   AND gp.crud >= 1
+                            )
+                        )
+                   )
+                """,
+                expediente_id,
             )
         )
 
@@ -2718,14 +2926,28 @@ def _row_to_radicado(row: asyncpg.Record) -> ExpedienteRadicado:
     )
 
 
+def _legacy_retention(row: asyncpg.Record) -> tuple[int, int]:
+    """`(retention_years, total_retention)` que ve cualquier consumidor del juego legado
+    (AREA-06-07). Con las dos fases pobladas se DERIVAN de ellas, que son las que usa el
+    cálculo del calendario: `retention_years` = gestión, `total_retention` = gestión +
+    central. La columna legada solo se devuelve tal cual cuando falta alguna fase (filas
+    sin migrar): un PATCH de `archivo_*` ya no deja dos números en desacuerdo."""
+    gestion = row["archivo_gestion_years"]
+    central = row["archivo_central_years"]
+    if gestion is not None and central is not None:
+        return gestion, gestion + central
+    return row["retention_years"], row["total_retention"]
+
+
 def _row_to_trd_serie(row: asyncpg.Record) -> TrdSerie:
+    retention_years, total_retention = _legacy_retention(row)
     return TrdSerie(
         id=row["id"],
         code=row["code"],
         name=row["name"],
         description=row["description"],
-        retention_years=row["retention_years"],
-        total_retention=row["total_retention"],
+        retention_years=retention_years,
+        total_retention=total_retention,
         disposition=row["disposition"],
         is_active=row["is_active"],
         created_at=row["created_at"],

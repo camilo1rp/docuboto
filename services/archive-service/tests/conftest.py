@@ -17,15 +17,18 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
 from datetime import UTC, date, datetime
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.core.database import get_db_conn
 from app.main import app
+from app.services.transferencia_service import TransferenciaService as _TransferenciaService
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -50,6 +53,20 @@ RADICADO_ID = uuid.uuid4()
 SERIE_ID = uuid.uuid4()
 TRACKING_NUMBER = "2024-DEMO-E-000001"
 NOW = datetime.now(tz=UTC)
+
+
+def indice_firmado_row(*, version: int = 1, firma_id: uuid.UUID | None = None) -> dict:
+    """Fila de `expediente_indice` ya FIRMADA: lo que `get_current` devuelve al gate de
+    `TransferenciaService.create`/`recibir` (AREA-07-03/04). Sin ella el expediente
+    cerrado «no tiene índice firmado» y la transferencia no se prepara."""
+    return {
+        "id": uuid.uuid4(),
+        "version": version,
+        "estado": "firmado",
+        "firma_id": firma_id or uuid.uuid4(),
+        "xml_sha256": "a" * 64,
+        "xml": "<indice/>",
+    }
 
 
 def make_expediente_record(
@@ -357,3 +374,102 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
     app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# document-service como COLABORADOR de `link_radicado` (AREA-07-02/06-08).
+#
+# Vincular coteja el radicado con document-service y falla cerrado si no puede
+# (404 si no existe, 503 si no responde). Un test que vincula sin declarar qué
+# dice document-service del radicado afirma sobre un mundo que no existe, así
+# que la respuesta de ese colaborador es un dato EXPLÍCITO de cada test:
+# `registrar_radicado(...)` lo declara y el fixture autouse lo sirve. El
+# radicado de los fixtures (`RADICADO_ID` / `TRACKING_NUMBER`) ya viene dado.
+# ---------------------------------------------------------------------------
+
+_EN_DOCUMENT_SERVICE: dict[str, dict[str, Any]] = {}
+
+
+def registrar_radicado(
+    tracking_number: str,
+    *,
+    radicado_id: uuid.UUID | None = None,
+    **meta: Any,
+) -> uuid.UUID:
+    """Declara qué guarda document-service de un radicado y devuelve su id.
+    `meta` admite `doc_class`, `origin_dept(_code)`, `formato`, `tamano_bytes`."""
+    rid = radicado_id or uuid.uuid4()
+    _EN_DOCUMENT_SERVICE[str(rid)] = {
+        "subject": "Asunto de prueba",
+        "doc_type": "E",
+        "tracking_number": tracking_number,
+        "doc_class": "COR-PET",
+        "origin_dept": None,
+        "origin_dept_code": None,
+        "formato": None,
+        "tamano_bytes": None,
+        **meta,
+    }
+    return rid
+
+
+def datos_radicado(radicado_id: uuid.UUID | None = None, tracking_number: str | None = None) -> dict[str, Any]:
+    """`radicado_id` + `tracking_number` de un radicado que document-service
+    SÍ conoce, listos para `RadicadoLink(**datos_radicado())`."""
+    rid = radicado_id or uuid.uuid4()
+    tracking = tracking_number or f"2026-ITEST-E-{uuid.uuid4().hex[:6]}"
+    registrar_radicado(tracking, radicado_id=rid)
+    return {"radicado_id": rid, "tracking_number": tracking}
+
+
+@pytest.fixture(autouse=True)
+def _document_service_responde() -> Iterator[None]:
+    _EN_DOCUMENT_SERVICE.clear()
+    registrar_radicado(TRACKING_NUMBER, radicado_id=RADICADO_ID)
+
+    async def _fake(
+        *, tenant_slug: str, radicado_ids: list[uuid.UUID], max_clearance: int
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            str(r): _EN_DOCUMENT_SERVICE[str(r)]
+            for r in radicado_ids
+            if str(r) in _EN_DOCUMENT_SERVICE
+        }
+
+    with patch(
+        "app.clients.document_client.fetch_radicado_metadata_internal",
+        AsyncMock(side_effect=_fake),
+    ):
+        yield
+
+
+# ---------------------------------------------------------------------------
+# AREA-07-05: el evento PREMIS del fixity-check de la recepción lo registra
+# `TransferenciaService.registrar_fixity_premis` POST-commit (HTTP a storage-service).
+# Los tests unitarios de `recibir()` no versan sobre eso: se sustituye por un doble para
+# no depender de un storage real ni consumir las secuencias de `fetchrow` que arman. El
+# método REAL se prueba aparte (`tests/test_fixity_premis_recepcion.py`) y en integración.
+# `REGISTRAR_FIXITY_PREMIS_REAL` conserva el original para esos tests.
+# ---------------------------------------------------------------------------
+
+REGISTRAR_FIXITY_PREMIS_REAL = _TransferenciaService.registrar_fixity_premis
+
+
+@pytest.fixture(autouse=True)
+def _fixity_premis_doble() -> Iterator[AsyncMock]:
+    doble = AsyncMock(return_value="registrado")
+    with patch.object(_TransferenciaService, "registrar_fixity_premis", doble):
+        yield doble
+
+
+# AREA-07-10: igual con el Object-Lock de la firma personal (`proteger_worm_firma_personal`,
+# post-commit, HTTP a storage-service). El método real se prueba en
+# `tests/test_firma_personal_worm.py`.
+PROTEGER_WORM_FIRMA_PERSONAL_REAL = _TransferenciaService.proteger_worm_firma_personal
+
+
+@pytest.fixture(autouse=True)
+def _firma_personal_worm_doble() -> Iterator[AsyncMock]:
+    doble = AsyncMock(return_value="protegido")
+    with patch.object(_TransferenciaService, "proteger_worm_firma_personal", doble):
+        yield doble

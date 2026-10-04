@@ -19,12 +19,11 @@ Se consulta el `/health` del gateway —su sonda de VIVACIDAD, no la de
 disponibilidad—: aquí solo se quiere saber si hay alguien al otro lado, no
 arrastrar el veredicto de disponibilidad de los diez servicios que hay detrás.
 
-A diferencia de los otros nueve servicios, este NO instala `orpycamcp_common`
-(construye con su propio directorio como contexto y no tiene BD ni auditoría
-propia), así que las tres líneas del helper compartido se escriben aquí. Traer
-la librería entera para no repetirlas sería un acoplamiento peor que la
-repetición; el criterio —estado en una palabra, detalle solo al log— sí se
-respeta, y es lo que importa.
+Este servicio SÍ instala `orpycamcp_common` (secretos de arranque, marca de origen
+del canal, traza por petición), pero no tiene BD ni auditoría propia: su única
+dependencia es el gateway, y esa sonda se escribe aquí. El criterio —estado en una
+palabra, detalle solo al log— es el mismo del helper compartido, y es lo que
+importa.
 """
 
 from __future__ import annotations

@@ -18,9 +18,11 @@
  *    botón que el backend va a rechazar hace descubrir el límite fallando; y
  *    aquí el límite no es técnico, es que un tercero todavía puede oponerse.
  *  - **El botón no es el gate**: el nivel CRUD gobierna los tres actos, y si
- *    el backend ya dijo 403 al cargar, manda el backend.
+ *    el backend ya dijo 403 al cargar, manda el backend. Publicar, anular y el
+ *    acta piden nivel 3; **avalar y ejecutar piden 4**, y quien propuso no
+ *    avala ni quien avaló ejecuta (separación de funciones, AREA-06-01).
  *  - **La pantalla no promete lo que no hace**: las cinco fases están a la
- *    vista y la quinta se declara no construida.
+ *    vista, y la quinta dice quién la ejecuta.
  *  - **El inventario recortado por clearance se explica**, en vez de dejar una
  *    resta muda entre lo que el lote declara y lo que se ve.
  */
@@ -40,8 +42,9 @@ const { initSession, clearSession } = await import("$lib/stores/auth.js");
 const HOY = new Date();
 const iso = (dias) => new Date(HOY.getTime() + dias * 86400000).toISOString().slice(0, 10);
 
-const sesion = (nivel = 3) => ({
+const sesion = (nivel = 4, user_id = undefined) => ({
   sub: "u-1",
+  user_id,
   email: "a@b.co",
   name: "Archivista",
   preferred_username: "archivista",
@@ -135,11 +138,11 @@ describe("/admin/eliminacion", () => {
   });
   afterEach(() => clearSession());
 
-  it("las cinco fases están a la vista y la quinta se declara no construida", () => {
+  it("las cinco fases están a la vista y la quinta dice que la ejecuta otra persona", () => {
     render(Pagina, { props: { data: datos() } });
     expect(texto()).toMatch(/Aval del Comité/i);
     expect(texto()).toMatch(/Borrado seguro/i);
-    expect(texto()).toMatch(/todavía no está construido/i);
+    expect(texto()).toMatch(/lo ejecuta otra persona/i);
   });
 
   it("sin lotes remite a donde se proponen, no a un vacío mudo", () => {
@@ -415,5 +418,50 @@ describe("/admin/eliminacion — la ejecución (fase 5)", () => {
     const l = avalado();
     render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
     expect(screen.queryByRole("button", { name: /Ejecutar la eliminación/i })).toBeNull();
+  });
+
+  // ── Los actos irreversibles: nivel 4 y separación de funciones ────────────
+
+  it("con nivel 3 se ofrece publicar y retirar, pero NO avalar ni ejecutar", () => {
+    clearSession();
+    initSession(sesion(3));
+    render(Pagina, { props: { data: conDetalle(lote({ publicado_hasta: iso(-1) })) } });
+    expect(screen.getByRole("button", { name: /Retirar el lote/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Registrar el aval/i })).toBeNull();
+  });
+
+  it("con nivel 3 no se ofrece ejecutar un lote ya avalado", () => {
+    clearSession();
+    initSession(sesion(3));
+    render(Pagina, { props: { data: { ...conDetalle(avalado()), acta: acta() } } });
+    expect(screen.queryByRole("button", { name: /Ejecutar la eliminación/i })).toBeNull();
+  });
+
+  it("quien propuso el lote NO ve el botón de avalar; otra persona SÍ", () => {
+    clearSession();
+    initSession(sesion(4, "u-proponente"));
+    const l = lote({ publicado_hasta: iso(-1), creado_por: "u-proponente" });
+    const { unmount } = render(Pagina, { props: { data: conDetalle(l) } });
+    expect(screen.queryByRole("button", { name: /Registrar el aval/i })).toBeNull();
+    unmount();
+
+    clearSession();
+    initSession(sesion(4, "u-otra"));
+    render(Pagina, { props: { data: conDetalle(l) } });
+    expect(screen.getByRole("button", { name: /Registrar el aval/i })).toBeInTheDocument();
+  });
+
+  it("quien avaló el lote NO ve el botón de ejecutar; otra persona SÍ", () => {
+    clearSession();
+    initSession(sesion(4, "u-avalador"));
+    const l = avalado({ avalado_por: "u-avalador" });
+    const { unmount } = render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    expect(screen.queryByRole("button", { name: /Ejecutar la eliminación/i })).toBeNull();
+    unmount();
+
+    clearSession();
+    initSession(sesion(4, "u-otra"));
+    render(Pagina, { props: { data: { ...conDetalle(l), acta: acta() } } });
+    expect(screen.getByRole("button", { name: /Ejecutar la eliminación/i })).toBeInTheDocument();
   });
 });

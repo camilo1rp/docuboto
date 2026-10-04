@@ -10,7 +10,7 @@
 /**
  * /envios/api/[id]/estado — Proxy SSR para cambiar el estado de un envío (D-05, T-12e).
  *
- * POST { estado, descripcion?, motivo? }
+ * POST { estado, descripcion?, motivo?, acuse_file_id?, acuse_sha256? }
  *   → POST /api/v1/envios/{id}/estado
  *   → ShipmentResponse
  *
@@ -48,7 +48,7 @@ export async function POST({ locals, params, request }) {
   }
 
   // Allowlist explícita (ShipmentStatusUpdate).
-  const { estado, descripcion, motivo } = body ?? {};
+  const { estado, descripcion, motivo, acuse_file_id, acuse_sha256 } = body ?? {};
 
   if (!estado || !ESTADOS_VALIDOS.has(estado)) {
     return json(
@@ -64,6 +64,10 @@ export async function POST({ locals, params, request }) {
     estado,
     descripcion: typeof descripcion === "string" && descripcion.trim() ? descripcion.trim() : null,
     motivo: typeof motivo === "string" && motivo.trim() ? motivo.trim() : null,
+    // Acuse de recibo (AREA-09-10): pasar A MANO a «entregado» exige la constancia
+    // de entrega. El backend es quien lo exige (422); aquí solo se deja pasar.
+    acuse_file_id: typeof acuse_file_id === "string" && acuse_file_id ? acuse_file_id : null,
+    acuse_sha256: typeof acuse_sha256 === "string" && acuse_sha256 ? acuse_sha256 : null,
   };
 
   /** @type {Record<string, string>} */

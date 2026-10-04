@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import time
 
 #: Cabeceras que se firman, en orden fijo. Son las que deciden QUIÉN hace algo y
 #: SOBRE QUÉ entidad: si alguna quedara fuera, se podría cambiar sin romper la
@@ -85,6 +86,134 @@ def verificar(cabeceras: dict[str, str]) -> None:
         raise IdentidadNoAutentica(
             "Las cabeceras de identidad no vienen firmadas por el gateway."
         )
+
+
+# ---------------------------------------------------------------------------
+# Marca de ORIGEN del canal (AREA-11-04)
+# ---------------------------------------------------------------------------
+#
+# El campo `canal` del asiento dice por dónde entró un acto. El gateway lo deriva
+# del lado del servidor, y hasta ahora solo conocía 'mcp' por la RUTA
+# (`/api/v1/mcp/…`): todo lo que el mcp-server hace en nombre de una persona —el
+# asistente confirmando un radicado, un traslado— llega al gateway por
+# `/api/v1/<dominio>` y quedaba como 'api', indistinguible de una llamada directa.
+#
+# La marca la emite SOLO quien posee `MCP_ORIGIN_SECRET` (el mcp-server) y la
+# verifica el gateway. Es un secreto DEDICADO, distinto de `IDENTITY_SIGNING_SECRET`:
+# el mcp-server es el servicio más expuesto (corre el loop LLM, habla con un
+# proveedor externo y atiende clientes MCP), y con el secreto maestro de identidad
+# un compromiso suyo bastaría para firmar cualquier `X-User-Id` de cualquier entidad
+# y hablarle directo a un servicio. Con este solo puede marcar el canal y verificar
+# la IP; no puede suplantar a nadie. Va ligada al tenant y al token del que habla (sha256 del
+# `Authorization`) y caduca a los 120 s: una marca capturada no sirve con otro
+# token ni con otra entidad, y un cliente sin el secreto no la puede fabricar.
+# Sin secreto configurado NO se emite ni se verifica (el canal cae a 'api', que es
+# el lado seguro: nunca se atribuye 'mcp' sin prueba).
+
+#: Cabecera donde viaja la marca de origen. El gateway NO la reenvía aguas abajo.
+CABECERA_ORIGEN = "X-Origen-Canal"
+
+#: Vida máxima de una marca, en segundos.
+VENTANA_ORIGEN_S = 120
+
+
+def _secreto_origen() -> str | None:
+    """Secreto compartido SOLO por el gateway y el mcp-server (no es el maestro)."""
+    return os.environ.get("MCP_ORIGIN_SECRET") or None
+
+
+def _firma_origen(canal: str, ts: str, tenant: str, authorization: str, secreto: str) -> str:
+    huella = hashlib.sha256(authorization.encode()).hexdigest()
+    base = "\x1e".join(("origen", canal, ts, tenant, huella))
+    return hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()
+
+
+def firmar_origen(
+    canal: str, *, tenant: str, authorization: str, ahora: float | None = None
+) -> dict[str, str]:
+    """Cabecera con la marca de origen de ``canal``, o ``{}`` sin secreto."""
+    secreto = _secreto_origen()
+    if secreto is None or not authorization or "." in canal:
+        return {}
+    ts = str(int(time.time() if ahora is None else ahora))
+    firma = _firma_origen(canal, ts, tenant, authorization, secreto)
+    return {CABECERA_ORIGEN: f"{canal}.{ts}.{firma}"}
+
+
+def verificar_origen(
+    valor: str | None, *, tenant: str, authorization: str, ahora: float | None = None
+) -> str | None:
+    """Canal que la marca prueba, o ``None`` si falta, es mala o está vencida."""
+    secreto = _secreto_origen()
+    if secreto is None or not valor or not authorization:
+        return None
+    partes = valor.split(".")
+    if len(partes) != 3:
+        return None
+    canal, ts, firma = partes
+    try:
+        emitida = int(ts)
+    except ValueError:
+        return None
+    actual = time.time() if ahora is None else ahora
+    if abs(actual - emitida) > VENTANA_ORIGEN_S:
+        return None
+    esperada = _firma_origen(canal, ts, tenant, authorization, secreto)
+    if not hmac.compare_digest(firma, esperada):
+        return None
+    return canal
+
+
+#: Cabecera con la firma de `X-Real-Ip` hecha con el secreto de origen.
+CABECERA_IP_FIRMA = "X-Real-Ip-Signature"
+
+
+def _firma_ip(ip: str, usuario: str, tenant: str, secreto: str) -> str:
+    base = "\x1e".join(("ip", ip, usuario, tenant))
+    return hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()
+
+
+def firmar_ip_real(cabeceras: dict[str, str]) -> dict[str, str]:
+    """Cabeceras con la firma de la IP real (``X-Real-Ip``), si hay secreto de origen.
+
+    La emite el gateway, ligada a la IP, a la persona y a la entidad. Va aparte de
+    `firmar` a propósito: la verifica el mcp-server, que NO debe poseer el secreto
+    maestro de identidad (ver arriba).
+    """
+    secreto = _secreto_origen()
+    ip = (cabeceras.get("X-Real-Ip") or "").strip()
+    if secreto is None or not ip:
+        return cabeceras
+    firma = _firma_ip(
+        ip, cabeceras.get("X-User-Id") or "", cabeceras.get("X-Tenant-Slug") or "", secreto
+    )
+    return {**cabeceras, CABECERA_IP_FIRMA: firma}
+
+
+def ip_real_firmada(cabeceras: dict[str, str]) -> str | None:
+    """`X-Real-Ip` del gateway, SOLO si trae su firma de origen.
+
+    El gateway la deriva por saltos de confianza y la firma con el secreto de
+    origen. Un servicio que quiera reenviar la IP del cliente (el mcp-server, para
+    que las llamadas del asistente no caigan todas en el cubo por IP de su propio
+    contenedor) no puede fiarse de una cabecera suelta: un cliente que llegara
+    directo a su puerto elegiría su propia identidad de red. Sin secreto configurado
+    no se confía en nada (a diferencia de `verificar`, que en ese modo deja pasar):
+    aquí el fallo seguro es NO reenviar.
+    """
+    secreto = _secreto_origen()
+    if secreto is None:
+        return None
+    normalizadas = {k.lower(): v for k, v in cabeceras.items()}
+    ip = (normalizadas.get("x-real-ip") or "").strip()
+    if not ip:
+        return None
+    esperada = _firma_ip(
+        ip, normalizadas.get("x-user-id", ""), normalizadas.get("x-tenant-slug", ""), secreto
+    )
+    if not hmac.compare_digest(normalizadas.get(CABECERA_IP_FIRMA.lower(), ""), esperada):
+        return None
+    return ip
 
 
 class IdentidadFirmadaMiddleware:

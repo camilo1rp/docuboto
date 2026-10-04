@@ -80,6 +80,11 @@ def audit_tenant(tenant_slug: str | None) -> str:
     return tenant_slug
 
 
+#: Declaración «el acto es de una petición» (ver `orpycamcp_common.audit.CANAL_PETICION`);
+#: el canal es obligatorio en cada asiento, sin valor por omisión (AREA-03-07).
+CANAL_PETICION = "peticion"
+
+
 async def append(
     conn: asyncpg.Connection,
     *,
@@ -87,7 +92,8 @@ async def append(
     action: str,
     object_type: str,
     object_ref: str | None,
-    actor: uuid.UUID | None,
+    actor: uuid.UUID | str | None,
+    canal: str,
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Escribe el asiento Canal A. Llamar DENTRO de ``async with conn.transaction()``
@@ -102,5 +108,6 @@ async def append(
         object_type=object_type,
         object_ref=object_ref,
         actor=str(actor) if actor else None,
+        canal=canal,
         payload=payload or {},
     )

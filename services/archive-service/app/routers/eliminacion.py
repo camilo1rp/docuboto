@@ -14,11 +14,17 @@ de anulaciones: un lote de eliminación no es una lectura del instrumento, es un
 procedimiento con su propio ciclo de vida —`borrador → publicado → avalado →
 ejecutado`— y con actos que se auditan uno a uno.
 
-**Nada de lo que hay aquí elimina nada.** Esta fase propone y congela el
-inventario; publicar, avalar, firmar el acta y ejecutar el borrado seguro son
-las cuatro fases siguientes, y la última todavía no está construida. El gate es
-`USUA_PERM_TRD` con `crud>=3` —el mismo que decidir— porque proponer un lote es
-el primer acto de un procedimiento que termina en destrucción.
+**Las cuatro primeras fases no eliminan nada; la quinta destruye.** Proponer y
+congelar el inventario, publicar, avalar y firmar el acta son reversibles
+(`anular` retira el lote hasta el último momento); `ejecutar` borra documentos
+de archivo y no se deshace.
+
+**Dos niveles de gate y una separación de funciones.** `USUA_PERM_TRD` con
+`crud>=3` gobierna proponer, publicar, anular y el acta; **`avalar` y `ejecutar`
+piden `crud>=4`**. Subir el nivel solo acota quién puede: una sola persona con
+nivel 4 lo haría todo, así que la garantía real es que **quien propone no avala
+y quien avala no ejecuta** (409 `separacion_de_funciones`), comprobado donde no
+hay carrera —el `WHERE` de la transición y una guarda previa a destruir—.
 """
 
 from __future__ import annotations
@@ -150,7 +156,7 @@ async def publicar_lote(
     "/lotes/{lote_id}/avalar",
     response_model=LoteEliminacionResponse,
     summary="Registrar el aval del Comité (RF-TRD-07, fase 3 de 5)",
-    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=4))],
 )
 async def avalar_lote(
     lote_id: uuid.UUID,
@@ -161,7 +167,13 @@ async def avalar_lote(
 ) -> LoteEliminacionResponse:
     """El aval del Comité Institucional de Gestión y Desempeño. **No se
     registra con el plazo de publicidad todavía abierto** (409
-    `publicidad_en_curso`). Autoriza la destrucción; no la ejecuta."""
+    `publicidad_en_curso`), **ni lo registra quien propuso el lote** (409
+    `separacion_de_funciones`). Autoriza la destrucción; no la ejecuta.
+
+    Exige `USUA_PERM_TRD` con **`crud>=4`**, no el 3 de las fases reversibles:
+    es el acto que habilita lo irreversible. El nivel solo acota QUIÉN puede;
+    la garantía real es la separación de funciones (propone ≠ avala ≠ ejecuta),
+    que se comprueba en la propia sentencia."""
     service = ArchiveService(conn, tenant_slug)
     return await service.avalar_lote_eliminacion(
         lote_id,
@@ -265,7 +277,7 @@ async def firmar_acta(
     "/lotes/{lote_id}/ejecutar",
     response_model=EjecucionLoteResponse,
     summary="Ejecutar el borrado seguro del lote (RF-TRD-07, fase 5 de 5)",
-    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=4))],
 )
 async def ejecutar_lote(
     lote_id: uuid.UUID,
@@ -276,6 +288,11 @@ async def ejecutar_lote(
     """**Este endpoint destruye.** Es el único del sistema que borra documentos
     de archivo, y llega al final de cinco actos: propuesta admitida, publicidad
     previa cumplida, aval del Comité y acta firmada.
+
+    Exige `USUA_PERM_TRD` con **`crud>=4`**, y que quien ejecuta **no sea
+    quien avaló** (409 `separacion_de_funciones`) y el acta esté **protegida
+    bajo WORM** (409 `acta_sin_worm`); las tres se comprueban ANTES de destruir
+    el primer expediente.
 
     **No lleva cuerpo, y es deliberado**: no hay nada que el cliente pueda
     parametrizar en una destrucción. Qué se destruye lo dice el inventario

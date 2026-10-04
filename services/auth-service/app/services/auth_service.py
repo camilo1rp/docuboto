@@ -22,12 +22,12 @@ use its credentials to perform the password grant on behalf of the caller.
 """
 
 import logging
-import re
 import time
 
 import asyncpg
 import httpx
 from jwt import PyJWTError
+from orpycamcp_common.tenant import slug_valido, tenant_schema
 
 from app.core.config import settings
 from app.core.security import validate_token
@@ -35,7 +35,6 @@ from app.repositories.rbac_repository import RBACRepository
 from app.schemas.auth import TokenResponse, UserInfoResponse, ValidateResponse
 
 # Tenant slug regex (same rules enforced by tenant-service).
-_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,98}$")
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +167,8 @@ class AuthService:
 
             # Resolve internal auth_users.id (tenant-aware, lazy provisioning).
             user_id: str = keycloak_sub                    # default: fall back to sub
-            if tenant_slug and conn is not None and _SLUG_RE.match(tenant_slug):
-                schema = f"tenant_{tenant_slug.replace('-', '_')}"
+            if tenant_slug and conn is not None and slug_valido(tenant_slug):
+                schema = tenant_schema(tenant_slug)
                 try:
                     await conn.execute(f'SET search_path = "{schema}", public')
                     repo = RBACRepository(conn)

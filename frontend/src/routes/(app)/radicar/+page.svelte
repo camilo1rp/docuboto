@@ -35,7 +35,7 @@
   import { permissions } from "$lib/stores/auth.js";
   import { notify } from "$lib/stores/notifications.js";
   import { RADICADO_TIPO_LABEL, etiquetaEstadoRadicado } from "$lib/utils/radicado.js";
-  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+  import { campoError, codigoError, mensajeError } from "$lib/utils/apiError.js";
   import Stepper from "$lib/components/ui/Stepper.svelte";
   import ActorPicker from "$lib/components/features/terceros/ActorPicker.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -47,7 +47,11 @@
   import SchemaField from "$lib/components/ui/SchemaField.svelte";
   import RagSuggestButton from "$lib/components/features/rag/RagSuggestButton.svelte";
   import TrdSuggestChips from "$lib/components/features/rag/TrdSuggestChips.svelte";
-  import { resolveSchemaControl, coerceSchemaValue } from "$lib/utils/schemaField.js";
+  import {
+    resolveSchemaControl,
+    coerceSchemaValue,
+    ubicarErrorDeCampo,
+  } from "$lib/utils/schemaField.js";
   import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
   // Las llamadas al gateway (subida de archivos, creación de radicado, plantillas)
   // se realizan a través de los endpoints locales /radicar/api/* que leen la
@@ -377,9 +381,10 @@
   // ---------------------------------------------------------------------------
   // El workflow-service crea el flujo después de radicar; aquí solo registramos
   // la dependencia destino (dest_dept_code) que ya está en el paso de metadatos.
-  // No existe un endpoint de "asignar flujo en la misma llamada de radicar".
-  // El destino se captura en el paso 1 y se confirma aquí.
-  // TODO: cuando exista un endpoint de asignación automática de flujo, integrarlo aquí.
+  // El flujo NO se asigna en la llamada de radicar: lo crea workflow-service al
+  // consumir `document.radicado.created` y aplicar `workflow_rules`
+  // (`distribution.auto_distribute`). El destino del paso 1 es solo la
+  // sugerencia; se captura en el paso 1 y se confirma aquí.
 
   let destDeptCodeFlujo = "";
 
@@ -477,7 +482,24 @@
       notify({ type: "error", message: detail });
       const codigo = codigoError(err);
       if (codigo === "metadata_validation_failed") {
-        errors = { ...errors, extraMetadata: detail };
+        // AREA-12-05: el backend nombra la propiedad (`field`, `a.b`): se marca
+        // ese control. Sin ruta, o con una propiedad que no está en pantalla,
+        // el mensaje queda en el aviso general.
+        const ubicado = ubicarErrorDeCampo(
+          campoError(err),
+          detail,
+          supportedTemplateProperties.map(([k]) => k),
+        );
+        errors = ubicado
+          ? {
+              ...errors,
+              [`meta_${ubicado.key}`]: ubicado.error,
+              metaSub: {
+                .../** @type {Record<string, any>} */ (errors).metaSub,
+                [ubicado.key]: ubicado.subErrors,
+              },
+            }
+          : { ...errors, extraMetadata: detail };
       } else if (codigo === "invalid_dependencia") {
         errors = { ...errors, destDeptCode: detail };
       }
@@ -906,6 +928,7 @@
                         required={activeTemplate.schema.required?.includes(key)}
                         bind:value={extraMetadata[key]}
                         error={errors[`meta_${key}`] ?? ""}
+                        subErrors={errors.metaSub?.[key] ?? {}}
                       />
                     </div>
                   {/each}

@@ -426,6 +426,7 @@ class WorkflowService:
                     "requires_permission": required_perm,
                     **({"estado_radicado": estado} if estado else {}),
                 },
+                canal=audit.CANAL_PETICION,
             )
         await self._emitir_cambios(actor)
         return _to_event_response(event)
@@ -587,6 +588,7 @@ class WorkflowService:
                     "motivo": motivo,
                     **({"estado_radicado": estado} if estado else {}),
                 },
+                canal=audit.CANAL_PETICION,
             )
         await self._emitir_cambios(actor)
         return _to_response(reactivated)
@@ -663,6 +665,7 @@ class WorkflowService:
                     "comentario": comentario,
                     **({"estado_radicado": estado} if estado else {}),
                 },
+                canal=audit.CANAL_PETICION,
             )
         await self._emitir_cambios(actor)
         return _to_response(new_step)
@@ -728,6 +731,7 @@ class WorkflowService:
                         "despues": c.despues,
                         "origen": "reasignacion_cascada",
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             await audit.append(
                 self._conn,
@@ -744,6 +748,7 @@ class WorkflowService:
                     "reassigned": result.reassigned,
                     "skipped_terminal": result.skipped_terminal,
                 },
+                canal=audit.CANAL_PETICION,
             )
         self._cambios = list(result.cambios)
         await self._emitir_cambios(actor)
@@ -862,6 +867,7 @@ class WorkflowService:
                     "to_dept": step.to_dept,
                     **({"estado_radicado": estado} if estado else {}),
                 },
+                canal=audit.CANAL_PETICION,
             )
         await self._publish(_EVT_COMPLETED, step)
         await self._emitir_cambios(actor)
@@ -940,6 +946,7 @@ class WorkflowService:
                     ),
                     **({"estado_radicado": estado} if estado else {}),
                 },
+                canal=audit.CANAL_PETICION,
             )
         await self._publish(_EVT_COMPLETED, step)
         await self._emitir_cambios(actor)
@@ -1253,6 +1260,7 @@ class WorkflowService:
                     "from_dept": payload.from_dept,
                     **({"estado_radicado": estado} if estado else {}),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return step
 

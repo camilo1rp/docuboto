@@ -43,6 +43,7 @@ from miniopy_async.retention import Retention
 from orpycamcp_common import audit
 
 from app.core.config import settings
+from app.core.constants import canal_del_acto
 from app.core.minio_client import (
     ObjectLockNotEnabledError,
     ensure_object_lock_bucket,
@@ -274,6 +275,7 @@ class PreservationWormService:
                     "hash_esperado": record.sha256,
                     "hash_obtenido": actual_sha256,
                 },
+                canal=canal_del_acto(actor),
             )
             raise FixityMismatchError(
                 f"SHA-256 no coincide: esperado {record.sha256}, obtenido {actual_sha256}"
@@ -383,6 +385,7 @@ class PreservationWormService:
                 "retention_mode": mode,
                 "legal_hold": payload.legal_hold,
             },
+            canal=canal_del_acto(actor),
         )
 
         return ProtegerIndiceResponse(
@@ -562,6 +565,7 @@ class PreservationWormService:
                     "retain_until_anterior": existing["retain_until"].isoformat(),
                     "retain_until_nuevo": nueva.isoformat(),
                 },
+                canal=canal_del_acto(actor),
             )
         return _worm_row_to_renovacion_response(row, renovado=True)
 
@@ -635,6 +639,7 @@ class PreservationWormService:
                         object_ref=str(f["file_id"]) if f["file_id"] else payload.expediente_id,
                         actor=actor,
                         payload=_base(f),
+                        canal=canal_del_acto(actor),
                     )
 
         minio = get_minio()
@@ -660,6 +665,7 @@ class PreservationWormService:
                     object_ref=str(f["file_id"]) if f["file_id"] else payload.expediente_id,
                     actor=actor,
                     payload={**_base(f), "copias_alcanzadas": copias[f["id"]]},
+                    canal=canal_del_acto(actor),
                 )
         return LegalHoldResponse(
             expediente_id=payload.expediente_id,
@@ -717,6 +723,7 @@ class PreservationWormService:
                         "acta_ref": payload.acta_ref,
                         "error": type(exc).__name__,
                     },
+                    canal=canal_del_acto(actor),
                 )
         except Exception:  # noqa: BLE001 — la excepción original es la que importa.
             logger.exception("No se pudo asentar el fallo del levantamiento de legal hold")

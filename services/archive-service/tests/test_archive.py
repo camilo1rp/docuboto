@@ -102,6 +102,7 @@ from tests.conftest import (
     make_expediente_update_row,
     make_radicado_link_record,
     make_trd_serie_record,
+    registrar_radicado,
 )
 
 _CREATE_EXP_PAYLOAD = {
@@ -1015,7 +1016,7 @@ async def test_link_radicados_batch(
     """Inclusión masiva: vincula los nuevos, omite los ya vinculados, regenera índice 1 vez."""
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
-    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
     # get_expediente_by_id (fetchrow exp) ; caller_clearance (M2, RF-SEG-08 — None →
     # PUBLICA(1), suficiente porque el expediente es nivel_seguridad=1 por defecto);
     # luego por cada radicado: link INSERT (fetchrow); al final regenerate:
@@ -1074,7 +1075,7 @@ async def test_link_radicados_batch_redacted_when_caller_cannot_read_classified(
     dos INSERTs y el asiento `archive.radicado_batch_linked` desaparecerían."""
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open", nivel_seguridad=3)
-    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
     mock_conn.fetchrow.side_effect = [
         exp,  # _expediente_or_404-like: get_expediente_by_id (existing)
         None,  # caller_clearance → PUBLICA(1): resolve_caller_clearance sin fila
@@ -1127,7 +1128,7 @@ async def test_link_radicados_batch_full_response_when_caller_can_read_classifie
     el mismo expediente — la respuesta trae los conteos REALES, no None."""
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open", nivel_seguridad=3)
-    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
     mock_conn.fetchrow.side_effect = [
         exp,
         {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
@@ -1400,7 +1401,7 @@ async def test_link_radicados_batch_closed_redacted_no_mutation_when_caller_cann
     ejecuta (ningún INSERT, ninguna regeneración de índice)."""
     client, mock_conn = client_with_conn
     exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
-    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
     # fetchrow: get_expediente_by_id (existing), caller_clearance → PUBLICA(1)
     # (insuficiente) -> retorno anticipado, sin entrar al bucle por-item.
     mock_conn.fetchrow.side_effect = [exp_closed, None]
@@ -1440,7 +1441,7 @@ async def test_link_radicados_batch_closed_conflict_when_caller_can_read_classif
     `expediente_not_open` SÍ se propaga para la inclusión masiva."""
     client, mock_conn = client_with_conn
     exp_closed = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="closed", nivel_seguridad=3)
-    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
     mock_conn.fetchrow.side_effect = [
         exp_closed,
         {"is_root": True, "max_level": None},  # caller_clearance → CLASIFICADA(3)
@@ -1682,7 +1683,7 @@ async def test_link_radicados_batch_wraps_the_whole_loop_in_one_transaction(
     1:1 con N (ver docstring de la clase para el desglose)."""
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
-    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
     mock_conn.fetchrow.side_effect = [
         exp,
         None,
@@ -1719,7 +1720,7 @@ async def test_link_radicados_batch_all_omitted_no_audit_no_regen(
     dentro — 0 asientos `archive.radicado_batch_linked`."""
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, exp_status="open")
-    r1, r2 = uuid.uuid4(), uuid.uuid4()
+    r1, r2 = registrar_radicado("2024-A-001"), registrar_radicado("2024-A-002")
     mock_conn.fetchrow.side_effect = [exp, None]  # get_expediente_by_id; caller_clearance
     mock_conn.fetch.return_value = []
     # fetchval: [0]=D-08 gate, [1]=radicado_link_exists r1 → True (ya vinculado),

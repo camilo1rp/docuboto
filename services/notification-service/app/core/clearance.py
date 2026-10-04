@@ -39,6 +39,14 @@ from collections.abc import Sequence
 
 import asyncpg
 from fastapi import Depends, Header, HTTPException, Request, status
+from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás módulos del servicio importan de aquí
+    CLASIFICADA,
+    PUBLICA,
+    check_permission,
+    mensaje_denegacion,
+    nivel_efectivo,
+    resolve_caller_clearance,
+)
 
 from app.core.database import get_tenant_conn
 
@@ -53,140 +61,6 @@ _SERVICE = "notification-service"
 logger = logging.getLogger(__name__)
 
 # Security level constants (mirrors document-service, security_levels table).
-PUBLICA = 1
-CLASIFICADA = 3  # maximum nivel (security_levels.code)
-
-
-async def resolve_caller_clearance(
-    conn: asyncpg.Connection, user_id: uuid.UUID | None
-) -> int:
-    """Returns the maximum security level (1..3) accessible by ``user_id``.
-
-    The connection must have ``search_path`` set to the tenant schema (guaranteed by
-    ``get_tenant_conn``).  Fail-closed to :data:`PUBLICA` on any doubt: unknown user,
-    RBAC tables absent (UndefinedTableError), or ``user_id`` is None.
-    """
-    if user_id is None:
-        return PUBLICA
-    try:
-        row = await conn.fetchrow(
-            """
-            SELECT u.is_root,
-                   (SELECT MAX(rc.max_level)
-                      FROM auth_memberships m
-                      JOIN role_clearance rc ON rc.group_id = m.group_id
-                     WHERE m.user_id = u.id) AS max_level
-            FROM auth_users u
-            WHERE u.id = $1
-            """,
-            user_id,
-        )
-    except asyncpg.UndefinedTableError:
-        # RBAC tables absent — tenant not provisioned yet.
-        return PUBLICA
-    if row is None:
-        return PUBLICA
-    if row.get("is_root"):
-        return CLASIFICADA
-    max_level = row.get("max_level")
-    return int(max_level) if max_level is not None else PUBLICA
-
-
-async def check_permission(
-    conn: asyncpg.Connection,
-    user_id: uuid.UUID | None,
-    perm_name: str,
-    min_crud: int = 1,
-) -> bool:
-    """Returns True if user_id has perm_name in the tenant (fail-closed).
-
-    Uses a single fetchval query that checks is_root (full bypass) or membership
-    in a group that holds the permission with crud >= min_crud.  Returns False on
-    any doubt: None user_id, user not found, RBAC tables absent (UndefinedTableError).
-
-    ``min_crud`` is the minimum level required on ``auth_group_permissions.crud``
-    (0..5 scale, RF-SEG-03). The default ``1`` (Leer) is backward-compatible with
-    the previous ``crud > 0`` behavior, since ``crud`` is never negative.
-    """
-    if user_id is None:
-        return False
-    try:
-        allowed = await conn.fetchval(
-            """
-            SELECT (
-                u.is_root
-                OR EXISTS (
-                    SELECT 1
-                    FROM auth_memberships m
-                    JOIN auth_group_permissions gp ON gp.group_id = m.group_id
-                    JOIN auth_permissions p ON p.id = gp.permission_id
-                    WHERE m.user_id = u.id
-                      AND p.nombre = $2
-                      AND gp.crud >= $3
-                )
-            )
-            FROM auth_users u
-            WHERE u.id = $1
-            """,
-            user_id,
-            perm_name,
-            min_crud,
-        )
-    except asyncpg.UndefinedTableError:
-        # RBAC tables absent — tenant not provisioned yet.
-        return False
-    # user not found → fetchval returns None → fail-closed
-    return bool(allowed) if allowed is not None else False
-
-
-async def nivel_efectivo(
-    conn: asyncpg.Connection, user_id: uuid.UUID | None, perm_name: str
-) -> int | None:
-    """Nivel CRUD que el llamante tiene HOY sobre ``perm_name``, o ``None`` si no lo tiene.
-
-    Se usa SOLO en la rama de denegación, para poder decir la verdad. El mensaje
-    anterior era ``"Se requiere el permiso X"`` tanto si al usuario le faltaba el
-    permiso como si lo tenía con nivel insuficiente — y son dos problemas con dos
-    soluciones distintas: en el primer caso hay que concederlo, en el segundo hay
-    que **subir el nivel** de uno que ya está concedido. Un funcionario al que se
-    le dice que le falta un permiso que sí tiene manda a su administrador a buscar
-    una concesión que ya existe.
-
-    Un ROOT no llega aquí (pasa el gate), así que no hay que contemplarlo.
-    Fail-closed a ``None`` ante cualquier duda: es el mensaje más conservador.
-    """
-    if user_id is None:
-        return None
-    try:
-        nivel = await conn.fetchval(
-            """
-            SELECT max(gp.crud)
-            FROM auth_memberships m
-            JOIN auth_group_permissions gp ON gp.group_id = m.group_id
-            JOIN auth_permissions p ON p.id = gp.permission_id
-            WHERE m.user_id = $1 AND p.nombre = $2
-            """,
-            user_id,
-            perm_name,
-        )
-    except Exception:  # noqa: BLE001 — el mensaje nunca puede tumbar la respuesta.
-        return None
-    # Se exige un entero de verdad: `bool` es subclase de `int` en Python, y sin
-    # este filtro un `False` se cuela y la frase acaba diciendo «con nivel False»
-    # a un funcionario. Cualquier otra cosa cae al mensaje conservador.
-    if isinstance(nivel, bool) or not isinstance(nivel, int):
-        return None
-    return nivel
-
-
-def mensaje_denegacion(perm_name: str, min_crud: int, nivel: int | None) -> str:
-    """Texto del 403 que distingue «no lo tiene» de «lo tiene corto de nivel»."""
-    if nivel is None:
-        return f"Se requiere el permiso {perm_name} (nivel {min_crud} o superior)"
-    return (
-        f"Tiene el permiso {perm_name} con nivel {nivel}, y esta acción requiere "
-        f"nivel {min_crud} o superior"
-    )
 
 
 def require_permission(perm_name: str, min_crud: int = 1):

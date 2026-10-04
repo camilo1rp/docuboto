@@ -34,6 +34,7 @@
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { isAdminRevokeConfirmed } from "$lib/utils/signingKeyConfirm.js";
+import { motivoRevocacionValido } from "$lib/utils/motivoRevocacion.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, request }) {
@@ -73,8 +74,10 @@ export async function POST({ locals, request }) {
 
   /** @type {Record<string, unknown>} */
   const payload = {};
-  if (typeof motivo === "string" && motivo.trim()) {
-    payload.motivo = motivo.trim().slice(0, 500);
+  // Vocabulario cerrado: un valor fuera de él se descarta (el backend re-valida).
+  const motivoCodigo = motivoRevocacionValido(motivo);
+  if (motivoCodigo) {
+    payload.motivo = motivoCodigo;
   }
 
   try {

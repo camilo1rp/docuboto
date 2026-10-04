@@ -149,3 +149,124 @@ async def test_fijar_legal_hold_lleva_token_identidad_y_va_a_la_ruta_interna(cap
     assert req.headers["x-internal-token"] == _STO
     assert "x-user-id" in req.headers and "x-tenant-slug" in req.headers
     assert json.loads(req.content)["acta_ref"] == "A-1"
+
+
+# ── Cableado de la tanda T12 (AREA-07-05 / 07-15 / 07-03): peticiones salientes ──
+
+
+@pytest.mark.asyncio
+async def test_registrar_evento_internal_lleva_token_ruta_y_cuerpo(capturadas) -> None:
+    ok = await storage_client.registrar_evento_internal(
+        tenant_slug="demo", object_ref="R-1", tipo="fixity check",
+        resultado="ok", detalle={"k": 1}, agente="sistema", dedup_key="dk-1",
+    )
+    assert ok is False  # el doble responde 500: best-effort, nunca lanza
+    req = capturadas[-1]
+    assert req.method == "POST"
+    assert req.url.path.endswith("/preservacion/eventos-internal")
+    assert req.headers["X-Internal-Token"] == _STO
+    assert req.headers["X-Tenant-Slug"] == "demo"
+    cuerpo = json.loads(req.content)
+    assert cuerpo["dedup_key"] == "dk-1"
+    assert cuerpo["tipo"] == "fixity check"
+
+
+@pytest.mark.asyncio
+async def test_registrar_evento_internal_200_y_201_son_exito_y_la_red_no_lanza(monkeypatch) -> None:
+    real = httpx.AsyncClient
+    estado = {"codigo": 201}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if estado["codigo"] == 0:
+            raise httpx.ConnectError("caido", request=request)
+        return httpx.Response(estado["codigo"], json={})
+
+    class _Cliente(real):  # type: ignore[misc, valid-type]
+        def __init__(self, *a, **kw):
+            kw["transport"] = httpx.MockTransport(_handler)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
+    kw = dict(tenant_slug="demo", object_ref="R", tipo="t", resultado="ok",
+              detalle={}, agente=None, dedup_key="d")
+    for codigo, esperado in ((201, True), (200, True), (422, False), (0, False)):
+        estado["codigo"] = codigo
+        assert await storage_client.registrar_evento_internal(**kw) is esperado, codigo
+
+
+@pytest.mark.asyncio
+async def test_list_eventos_lleva_token_y_todos_los_object_ref(capturadas) -> None:
+    with pytest.raises(storage_client.StorageEventosError):
+        await storage_client.list_eventos(
+            tenant_slug="demo", object_refs=["exp", "aip", "f1"]
+        )
+    req = capturadas[-1]
+    assert req.headers["X-Internal-Token"] == _STO
+    assert req.url.params.get_list("object_ref") == ["exp", "aip", "f1"]
+
+
+@pytest.mark.asyncio
+async def test_list_eventos_pide_por_tandas_funde_sin_duplicados_y_ordena(monkeypatch) -> None:
+    peticiones: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        peticiones.append(request)
+        n = len(peticiones)
+        # el evento "dup" aparece en las dos tandas; "ts" desordenado a propósito
+        return httpx.Response(200, json=[
+            {"id": "dup", "ts": "2026-01-02"},
+            {"id": f"e{n}", "ts": f"2026-01-0{5 - n}"},
+        ])
+
+    real = httpx.AsyncClient
+
+    class _Cliente(real):  # type: ignore[misc, valid-type]
+        def __init__(self, *a, **kw):
+            kw["transport"] = httpx.MockTransport(_handler)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
+    monkeypatch.setattr(settings, "storage_internal_token", _STO)
+    refs = [f"r{i}" for i in range(250)]
+    eventos = await storage_client.list_eventos(tenant_slug="demo", object_refs=refs)
+    assert [len(p.url.params.get_list("object_ref")) for p in peticiones] == [100, 100, 50]
+    assert all(p.headers["X-Internal-Token"] == _STO for p in peticiones)
+    assert len(eventos) == len({e["id"] for e in eventos}) == 4
+    assert [e["ts"] for e in eventos] == sorted(e["ts"] for e in eventos)
+
+
+@pytest.mark.asyncio
+async def test_enviar_aviso_lleva_token_y_no_declara_el_cuerpo_como_sensible(monkeypatch) -> None:
+    from app.clients import notification_client
+
+    peticiones: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        peticiones.append(request)
+        return httpx.Response(202, json={})
+
+    real = httpx.AsyncClient
+
+    class _Cliente(real):  # type: ignore[misc, valid-type]
+        def __init__(self, *a, **kw):
+            kw["transport"] = httpx.MockTransport(_handler)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
+    monkeypatch.setattr(settings, "notification_internal_token", "tok-notif")
+    await notification_client.enviar_aviso(
+        recipient_email="a@b.co", subject="s", body="b", tenant_slug="demo"
+    )
+    req = peticiones[-1]
+    assert req.url.path.endswith("/notifications/send")
+    assert req.headers["X-Internal-Token"] == "tok-notif"
+    assert json.loads(req.content)["tenant_slug"] == "demo"
+
+    # sin token configurado no sale ninguna petición
+    peticiones.clear()
+    monkeypatch.setattr(settings, "notification_internal_token", "")
+    with pytest.raises(notification_client.NotificationDeliveryError):
+        await notification_client.enviar_aviso(
+            recipient_email="a@b.co", subject="s", body="b", tenant_slug="demo"
+        )
+    assert peticiones == []

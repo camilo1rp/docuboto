@@ -83,6 +83,6 @@ async def test_secuencia_desbordada_es_422_y_la_radicacion_nativa_sigue_viva(
         await _importar(conn, slug, f"{_ANIO}-{slug.upper()}-E-2147483647")
     assert await _last_seq(conn) is None
     nativo = await DocumentService(conn, slug).create(
-        DocumentCreate(doc_type="E", subject="Radicado nativo posterior"), None
+        DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Radicado nativo posterior"), None
     )
     assert nativo.tracking_number.endswith("-E-000001")

@@ -59,6 +59,7 @@ from miniopy_async.retention import Retention
 from orpycamcp_common import audit
 
 from app.core.config import settings
+from app.core.constants import canal_del_acto
 from app.core.minio_client import (
     ensure_object_lock_bucket,
     get_minio,
@@ -78,6 +79,7 @@ from app.services.pdfa import (
     run_pdfa_validation,
 )
 from app.services.pdfa.subprocess_verapdf import _VALID_FLAVOURS
+from app.services.pdfa_ingest_service import looks_like_pdf
 from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
@@ -92,11 +94,6 @@ logger = logging.getLogger(__name__)
 _SERVICE = "storage-service"
 _AIP_TIPO = "aip"
 
-# Firma de archivo PDF (magic bytes) — se detecta por CONTENIDO, nunca por
-# `files.mime_type` (lo declara el cliente en el multipart original, no es
-# fiable como base para decidir qué se valida — E10 Increment C2a, PIEZA 4).
-_PDF_MAGIC = b"%PDF"
-
 # E10 C2b follow-up: estados TERMINALES de `files.pdfa_status` (migración
 # 013) -- distinto de "pendiente" (encolado, worker asíncrono de ingesta
 # todavía no corrió) o NULL (nunca evaluado). Solo un veredicto TERMINAL para
@@ -105,8 +102,10 @@ _TERMINAL_PDFA_STATUS = frozenset({"conformant", "non_conformant", "not_evaluate
 _REUSED_INGEST_AGENT = "reused/ingest-verdict"
 
 
-def _looks_like_pdf(content: bytes) -> bool:
-    return content.startswith(_PDF_MAGIC)
+# Firma de archivo PDF: por CONTENIDO, nunca por `files.mime_type` (lo declara el
+# cliente). Misma función que la ingesta, con la tolerancia de 1 KiB de los lectores
+# (AREA-08-02): dos copias de la regla divergen.
+_looks_like_pdf = looks_like_pdf
 
 
 def _resolve_pdfa_profile(payload_profile: str | None) -> str:
@@ -235,6 +234,7 @@ class AipService:
                     "hash_obtenido": actual_sha256,
                     "contexto": "aip",
                 },
+                canal=canal_del_acto(actor),
             )
             raise FixityMismatchError(
                 f"SHA-256 no coincide para {nombre!r} (file_id={file_id}): "
@@ -625,6 +625,7 @@ class AipService:
                     "legal_hold": payload.legal_hold,
                     "replica": replica_result.detalle if replica_result is not None else None,
                 },
+                canal=canal_del_acto(actor),
             )
 
         return AipResponse(

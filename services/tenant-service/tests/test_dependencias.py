@@ -213,13 +213,100 @@ async def test_tree_builds_hierarchy(client_conn: tuple[AsyncClient, AsyncMock])
 async def test_update_partial(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
     dep_id = uuid.uuid4()
-    conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Nuevo Nombre")
+    # 1ª fetchrow: get_for_update (valor previo); 2ª: UPDATE ... RETURNING
+    conn.fetchrow.side_effect = [
+        _dep(dep_id=dep_id),
+        _dep(dep_id=dep_id, nombre="Nuevo Nombre"),
+    ]
+    conn.fetchval.side_effect = [True, None, None]  # RBAC + to_regclass x2
     resp = await client.patch(
         f"/api/v1/dependencias/{dep_id}", json={"nombre": "Nuevo Nombre"}, headers=_HDRS
     )
     assert resp.status_code == 200
     assert resp.json()["nombre"] == "Nuevo Nombre"
-    assert client.audit_append.await_args.kwargs["action"] == "dependencia.actualizada"
+    kw = client.audit_append.await_args.kwargs
+    assert kw["action"] == "dependencia.actualizada"
+    assert kw["payload"]["antes"]["nombre"] == "Dirección General"
+    assert kw["payload"]["despues"]["nombre"] == "Nuevo Nombre"
+
+
+@pytest.mark.asyncio
+async def test_update_rename_con_tramite_vivo_409(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """AREA-10-02: renombrar con pasos vivos por nombre deja la bandeja huérfana."""
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Vieja")
+    # RBAC, to_regclass(flow_steps), count pasos, to_regclass(workflow_rules), count reglas
+    conn.fetchval.side_effect = [True, "flow_steps", 3, "workflow_rules", 0]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"nombre": "Nueva"}, headers=_HDRS
+    )
+    assert resp.status_code == 409
+    body = resp.json()["detail"]
+    assert body["error"] == "dependencia_con_tramite_en_curso"
+    assert body["pasos_vivos"] == 3
+    assert not any("UPDATE dependencias" in str(c.args[0]) for c in conn.fetchrow.await_args_list)
+    client.audit_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_desactivar_con_regla_viva_409(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Vieja")
+    conn.fetchval.side_effect = [True, "flow_steps", 0, "workflow_rules", 2]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"activo": False}, headers=_HDRS
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["reglas"] == 2
+
+
+@pytest.mark.asyncio
+async def test_update_rename_sin_tramite_200(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [_dep(dep_id=dep_id, nombre="Vieja"), _dep(dep_id=dep_id, nombre="Nueva")]
+    conn.fetchval.side_effect = [True, "flow_steps", 0, "workflow_rules", 0]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"nombre": "Nueva"}, headers=_HDRS
+    )
+    assert resp.status_code == 200
+    assert resp.json()["nombre"] == "Nueva"
+
+
+@pytest.mark.asyncio
+async def test_update_rename_en_tenant_sin_workflow_200(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Sin las tablas de workflow (to_regclass NULL) no hay nada que proteger."""
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [_dep(dep_id=dep_id, nombre="Vieja"), _dep(dep_id=dep_id, nombre="Nueva")]
+    conn.fetchval.side_effect = [True, None, None]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"nombre": "Nueva"}, headers=_HDRS
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_update_sin_cambio_de_nombre_no_cuenta_tramite(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Cambiar solo la sigla no toca la correlación por nombre: no hay consulta."""
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Igual", sigla="XX")
+    conn.fetchval.side_effect = [True]  # solo el gate RBAC
+    resp = await client.patch(f"/api/v1/dependencias/{dep_id}", json={"sigla": "XX"}, headers=_HDRS)
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -260,18 +347,35 @@ async def test_delete_with_children_conflict(client_conn: tuple[AsyncClient, Asy
 async def test_delete_ok(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
     # 1ª: gate RBAC (concedido); 2ª: has_children → False (sin hijos)
-    conn.fetchval.side_effect = [True, None]
+    conn.fetchval.side_effect = [True, None, None, None]  # + to_regclass x2 (sin tablas)
+    conn.fetchrow.return_value = _dep(nombre="Vieja")
     conn.execute.return_value = "DELETE 1"
     resp = await client.delete(f"/api/v1/dependencias/{uuid.uuid4()}", headers=_HDRS)
     assert resp.status_code == 204
-    assert client.audit_append.await_args.kwargs["action"] == "dependencia.eliminada"
+    kw = client.audit_append.await_args.kwargs
+    assert kw["action"] == "dependencia.eliminada"
+    assert kw["payload"]["antes"]["nombre"] == "Vieja"
+
+
+@pytest.mark.asyncio
+async def test_delete_con_tramite_vivo_409(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    """AREA-10-02 por la otra ruta: borrar con pasos vivos deja la bandeja huérfana."""
+    client, conn = client_conn
+    conn.fetchrow.return_value = _dep(nombre="Vieja")
+    # RBAC, has_children, to_regclass(flow_steps), pasos, to_regclass(workflow_rules), reglas
+    conn.fetchval.side_effect = [True, None, "flow_steps", 17, "workflow_rules", 0]
+    resp = await client.delete(f"/api/v1/dependencias/{uuid.uuid4()}", headers=_HDRS)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "dependencia_con_tramite_en_curso"
+    conn.execute.assert_not_awaited()
+    client.audit_append.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_delete_not_found(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
     conn.fetchval.side_effect = [True, None]
-    conn.execute.return_value = "DELETE 0"
+    conn.fetchrow.return_value = None
     resp = await client.delete(f"/api/v1/dependencias/{uuid.uuid4()}", headers=_HDRS)
     assert resp.status_code == 404
     client.audit_append.assert_not_awaited()

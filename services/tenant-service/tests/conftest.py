@@ -17,8 +17,9 @@ so tests run without a real PostgreSQL instance.
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
@@ -39,8 +40,14 @@ os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
 
 
+@asynccontextmanager
+async def _noop_tx() -> AsyncGenerator[None, None]:
+    yield
+
+
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
+    conn.transaction = MagicMock(side_effect=lambda *a, **k: _noop_tx())
     conn.fetchval.return_value = 1  # SELECT 1 → health check passes
     conn.execute.return_value = None
     conn.fetch.return_value = []
@@ -114,7 +121,11 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        yield ac, mock_conn
+    # El alta y el cambio de estado de una entidad asientan en `public.audit_log`
+    # (Canal A); el asiento se intercepta aquí y se expone en `mock_conn.audit_append`.
+    with patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")) as audit_append:
+        mock_conn.audit_append = audit_append
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            yield ac, mock_conn
 
     app.dependency_overrides.clear()

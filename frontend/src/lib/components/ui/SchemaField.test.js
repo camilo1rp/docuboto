@@ -12,7 +12,7 @@
  * Schema (T-12 Form Builder de creación de expediente).
  */
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, fireEvent } from "@testing-library/svelte";
 import SchemaField from "./SchemaField.svelte";
 
 describe("SchemaField — render por tipo de schema", () => {
@@ -112,16 +112,19 @@ describe("SchemaField — render por tipo de schema", () => {
 });
 
 describe("SchemaField — constructos no soportados: fail-safe, no renderiza control", () => {
-  it("type=object: no renderiza ningún input/select/textarea", () => {
+  it("type=object sin propiedades: no renderiza ningún input/select/textarea", () => {
     const { container } = render(SchemaField, {
       props: { propKey: "detalle", schema: { type: "object", properties: {} } },
     });
     expect(container.querySelector("input, select, textarea")).toBeNull();
   });
 
-  it("type=array: no renderiza ningún control", () => {
+  it("array de objetos: no renderiza ningún control", () => {
     const { container } = render(SchemaField, {
-      props: { propKey: "items", schema: { type: "array", items: { type: "string" } } },
+      props: {
+        propKey: "items",
+        schema: { type: "array", items: { type: "object", properties: { a: { type: "string" } } } },
+      },
     });
     expect(container.querySelector("input, select, textarea")).toBeNull();
   });
@@ -131,5 +134,88 @@ describe("SchemaField — constructos no soportados: fail-safe, no renderiza con
       props: { propKey: "ref_field", schema: { $ref: "#/definitions/Foo" } },
     });
     expect(container.querySelector("input, select, textarea")).toBeNull();
+  });
+});
+
+describe("SchemaField — array de escalares (AREA-12-05)", () => {
+  const schema = { type: "array", title: "Etiquetas", items: { type: "string" } };
+
+  it("renderiza una lista repetible: agregar y quitar elementos", async () => {
+    const { container } = render(SchemaField, { props: { propKey: "tags", schema } });
+    expect(screen.getByLabelText("Etiquetas 1")).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: /agregar etiquetas/i }));
+    expect(screen.getByLabelText("Etiquetas 2")).toBeInTheDocument();
+
+    await fireEvent.input(screen.getByLabelText("Etiquetas 1"), { target: { value: "a" } });
+    await fireEvent.input(screen.getByLabelText("Etiquetas 2"), { target: { value: "b" } });
+    expect(container.querySelector('input[type="hidden"][name="meta_tags"]').value).toBe(
+      '["a","b"]',
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Quitar Etiquetas 1" }));
+    expect(container.querySelector('input[type="hidden"][name="meta_tags"]').value).toBe('["b"]');
+  });
+
+  it("los controles interiores no llevan name: solo viaja el JSON", () => {
+    const { container } = render(SchemaField, { props: { propKey: "tags", schema } });
+    const nombres = [...container.querySelectorAll("input")].map((i) => i.getAttribute("name"));
+    expect(nombres.filter((n) => n === "meta_tags")).toHaveLength(1);
+  });
+
+  it("repuebla desde `value` y se vacía cuando el padre lo limpia (reabrir el formulario)", async () => {
+    const { component } = render(SchemaField, {
+      props: { propKey: "tags", schema, value: '["x","y"]' },
+    });
+    expect(screen.getByLabelText("Etiquetas 2")).toHaveValue("y");
+    component.$set({ value: "" });
+    await Promise.resolve();
+    expect(screen.queryByLabelText("Etiquetas 2")).toBeNull();
+    expect(screen.getByLabelText("Etiquetas 1")).toHaveValue("");
+  });
+
+  it("muestra el error del campo", () => {
+    render(SchemaField, { props: { propKey: "tags", schema, error: "Falta una etiqueta" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Falta una etiqueta");
+  });
+});
+
+describe("SchemaField — object de un nivel (AREA-12-05)", () => {
+  const schema = {
+    type: "object",
+    title: "Ubicación",
+    required: ["ciudad"],
+    properties: {
+      ciudad: { type: "string", title: "Ciudad" },
+      piso: { type: "integer", title: "Piso" },
+    },
+  };
+
+  it("delega en SchemaField por propiedad y arma el JSON", async () => {
+    const { container } = render(SchemaField, { props: { propKey: "ubic", schema } });
+    expect(screen.getByRole("group", { name: /ubicación/i })).toBeInTheDocument();
+
+    await fireEvent.input(screen.getByLabelText(/Ciudad/), { target: { value: "Bogota" } });
+    await fireEvent.input(screen.getByLabelText(/Piso/), { target: { value: "3" } });
+
+    const oculto = container.querySelector('input[type="hidden"][name="meta_ubic"]');
+    expect(JSON.parse(oculto.value)).toEqual({ ciudad: "Bogota", piso: 3 });
+  });
+
+  it("marca obligatoria la propiedad required y pinta su error por propiedad", () => {
+    render(SchemaField, {
+      props: { propKey: "ubic", schema, subErrors: { ciudad: "La ciudad es obligatoria" } },
+    });
+    expect(screen.getByLabelText(/Ciudad/)).toBeRequired();
+    expect(screen.getByLabelText(/Piso/)).not.toBeRequired();
+    expect(screen.getByText("La ciudad es obligatoria")).toBeInTheDocument();
+  });
+
+  it("un solo input con name meta_<clave>: los interiores no se envían sueltos", () => {
+    const { container } = render(SchemaField, { props: { propKey: "ubic", schema } });
+    const nombres = [...container.querySelectorAll("input, select")]
+      .map((i) => i.getAttribute("name"))
+      .filter(Boolean);
+    expect(nombres).toEqual(["meta_ubic"]);
   });
 });

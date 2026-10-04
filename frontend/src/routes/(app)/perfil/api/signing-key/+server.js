@@ -24,6 +24,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { motivoRevocacionValido } from "$lib/utils/motivoRevocacion.js";
 
 const CODE_RE = /^\d{6}$/;
 
@@ -86,8 +87,10 @@ export async function DELETE({ locals, request }) {
 
   /** @type {Record<string, unknown>} */
   const payload = { step_up_totp_code };
-  if (typeof motivo === "string" && motivo.trim()) {
-    payload.motivo = motivo.trim().slice(0, 500);
+  // Vocabulario cerrado: un valor fuera de él se descarta (el backend re-valida).
+  const motivoCodigo = motivoRevocacionValido(motivo);
+  if (motivoCodigo) {
+    payload.motivo = motivoCodigo;
   }
 
   try {

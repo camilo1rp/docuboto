@@ -572,6 +572,8 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/mcp/stream": "http://mcp:8009",
         # E21: solo /search del knowledge-service se expone vía gateway.
         "/api/v1/knowledge/search": "http://knowledge:8011",
+        # AREA-10-10: admin de la DLQ de knowledge (PERM_DLQ_ADMIN en el servicio).
+        "/api/v1/knowledge/admin/deadletter/": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
         # del storage-service se expone (el frontend sube directo);
         # /preservacion/ se admite SUBRUTA A SUBRUTA (AREA-08-16): plan,
@@ -579,6 +581,7 @@ async def test_route_to_upstream_domain_prefixes():
         # (/proteger-*, /aip*, /*-internal) NO se enrutan: ver
         # `test_preservacion_actos_de_sistema_no_se_enrutan`.
         "/api/v1/storage/upload": "http://storage:8005",
+        "/api/v1/preservacion/estado": "http://storage:8005",
         "/api/v1/preservacion/plan": "http://storage:8005",
         "/api/v1/preservacion/plan/versions": "http://storage:8005",
         "/api/v1/preservacion/migrar-formato": "http://storage:8005",

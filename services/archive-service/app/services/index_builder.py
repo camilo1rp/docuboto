@@ -68,8 +68,9 @@ Historial de perfiles:
   declararon productora (expedientes creados antes de este incremento pueden
   no tenerla) y desde cuándo existe pista de acceso verificable para él.
 
-La validación estricta contra XSD (lxml) queda como evolutivo; aquí el XML se
-construye con todos los campos normativos disponibles en archive-service.
+Aquí el XML se construye con todos los campos normativos disponibles en
+archive-service; la validación contra el XSD (lxml) no vive en este módulo sino en
+`app/services/index_xsd.py`, y se aplica ANTES de sellar (AREA-07-01).
 """
 
 from __future__ import annotations

@@ -20,8 +20,8 @@ import json
 import uuid
 
 import asyncpg
+from orpycamcp_common.tenant import slug_valido, tenant_schema
 
-from app.core.database import TENANT_SLUG_RE
 from app.repositories.file_repository import InvalidTenantSlugError
 
 _PLAN_COLS = (
@@ -47,10 +47,10 @@ class PreservacionRepository:
         # MISMA regex canónica que `app.core.database.tenant_schema()` y
         # `FileRepository` — nunca se confía en el slug crudo para construir
         # SQL, sin importar de dónde venga.
-        if not tenant_slug or not TENANT_SLUG_RE.match(tenant_slug):
+        if not slug_valido(tenant_slug):
             raise InvalidTenantSlugError(f"Invalid tenant slug: {tenant_slug!r}")
         self._conn = conn
-        self._schema = f"tenant_{tenant_slug.replace('-', '_')}"
+        self._schema = tenant_schema(tenant_slug)
 
     async def _sp(self) -> None:
         await self._conn.execute(f'SET search_path = "{self._schema}", public')
@@ -250,6 +250,21 @@ class PreservacionRepository:
         assert row is not None
         return row
 
+    async def find_evento_por_dedup(
+        self, *, object_ref: str, tipo: str, dedup_key: str
+    ) -> asyncpg.Record | None:
+        """Evento ya registrado con esa clave de idempotencia (`detalle.dedup_key`), para que
+        un reintento at-least-once de otro servicio no duplique un evento append-only."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_EVT_COLS} FROM preservacion_evento "
+            "WHERE object_ref = $1 AND tipo = $2 AND detalle->>'dedup_key' = $3 "
+            "ORDER BY ts ASC LIMIT 1",
+            object_ref,
+            tipo,
+            dedup_key,
+        )
+
     async def insert_aip(self, data: dict) -> asyncpg.Record:
         """Inserta el AIP real (E10 Increment B).
 
@@ -326,14 +341,17 @@ class PreservacionRepository:
             aip_sha256,
         )
 
-    async def list_eventos(self, object_ref: str | None) -> list[asyncpg.Record]:
+    async def list_eventos(self, object_ref: str | list[str] | None) -> list[asyncpg.Record]:
+        """Eventos de UNO o VARIOS `object_ref` (AREA-07-15), orden cronológico. Sin
+        `object_ref`: los 200 más recientes del tenant (variante interna)."""
         await self._sp()
         if object_ref is not None:
+            refs = [object_ref] if isinstance(object_ref, str) else list(object_ref)
             return list(
                 await self._conn.fetch(
                     f"SELECT {_EVT_COLS} FROM preservacion_evento "
-                    "WHERE object_ref = $1 ORDER BY ts ASC",
-                    object_ref,
+                    "WHERE object_ref = ANY($1::text[]) ORDER BY ts ASC",
+                    refs,
                 )
             )
         return list(

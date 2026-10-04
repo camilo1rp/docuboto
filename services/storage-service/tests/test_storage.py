@@ -53,6 +53,7 @@ from tests.conftest import (
 )
 
 _FILE_CONTENT = b"PDF content here"
+_MISMO_AUTOR = uuid.UUID(TENANT_HEADERS["X-User-Id"])
 _FILENAME = "carta.pdf"
 _MIME_TYPE = "application/pdf"
 
@@ -102,7 +103,7 @@ async def test_upload_file_deduplication(
     """Uploading the same content twice returns the existing record with 200."""
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
-    existing = make_file_record(file_id=FILE_ID)
+    existing = make_file_record(file_id=FILE_ID, uploaded_by=_MISMO_AUTOR)
 
     # find_by_sha256 returns the existing record → short-circuit, no MinIO call
     mock_conn.fetchrow.return_value = existing
@@ -127,7 +128,9 @@ async def test_upload_deduplicado_deja_la_marca_de_reutilizacion(
     que serializa con la purga de huérfanos y protege el objeto compartido."""
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)
-    mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID)
+    mock_conn.fetchrow.return_value = make_file_record(
+        file_id=FILE_ID, uploaded_by=_MISMO_AUTOR
+    )
 
     response = await client.post(
         "/api/v1/storage/upload",
@@ -148,7 +151,7 @@ async def test_upload_deduplicado_cuya_fila_se_purgo_entre_medias_sube_de_nuevo(
     contenido se sube como NUEVO en vez de devolver un `file_id` inexistente."""
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)
-    existing = make_file_record(file_id=FILE_ID)
+    existing = make_file_record(file_id=FILE_ID, uploaded_by=_MISMO_AUTOR)
     nuevo = make_file_record(file_id=uuid.uuid4())
     mock_minio.bucket_exists.return_value = True
     # búsqueda -> existe; marca -> ya no está; INSERT -> fila nueva
@@ -162,6 +165,81 @@ async def test_upload_deduplicado_cuya_fila_se_purgo_entre_medias_sube_de_nuevo(
 
     assert response.status_code == 201
     assert response.json()["id"] == str(nuevo["id"])
+    mock_minio.put_object.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_upload_mismo_contenido_de_otro_autor_no_se_deduplica(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """AREA-08-09 (SEC2-E03): la dedup NO cruza autores. Quien sube un contenido que
+    ya existe como anexo de OTRO recibe 201, su propia fila y su propio filename; ni el
+    `id` ni el nombre original del ajeno salen en la respuesta (oráculo de existencia
+    sobre anexos reservados)."""
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)
+    ajeno = make_file_record(file_id=FILE_ID)  # uploaded_by aleatorio != el del header
+    ajeno["filename"] = "ASUNTO-RESERVADO-denuncia.pdf"
+    propio = make_file_record(file_id=uuid.uuid4())
+    mock_minio.bucket_exists.return_value = True
+    # Aunque la búsqueda devolviera la fila ajena (consulta aflojada), el servicio la descarta.
+    mock_conn.fetchrow.side_effect = [ajeno, propio]
+
+    response = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["id"] != str(ajeno["id"])
+    assert "RESERVADO" not in response.text
+    mock_minio.put_object.assert_awaited_once()
+    sqls = [c.args[0] for c in mock_conn.fetchrow.await_args_list]
+    assert not any("SET dedup_hit_at" in q for q in sqls)  # no marcó la fila ajena
+
+
+@pytest.mark.asyncio
+async def test_upload_la_busqueda_de_dedup_filtra_por_autor(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """La consulta de dedup lleva `uploaded_by = $2` con el autor de la petición."""
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)
+    mock_minio.bucket_exists.return_value = True
+    mock_conn.fetchrow.side_effect = [None, make_file_record(file_id=uuid.uuid4())]
+
+    await client.post(
+        "/api/v1/storage/upload",
+        files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
+        headers=TENANT_HEADERS,
+    )
+
+    busqueda = mock_conn.fetchrow.await_args_list[0]
+    assert "uploaded_by = $2" in busqueda.args[0]
+    assert busqueda.args[2] == _MISMO_AUTOR
+
+
+@pytest.mark.asyncio
+async def test_anexo_anonimo_nunca_se_deduplica(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Ventanilla pública (sin autor): no se busca dedup -- ni lee ni marca la fila de
+    otro, aunque el contenido coincida con uno existente."""
+    client, mock_conn, mock_minio = client_with_conn
+    mock_minio.bucket_exists.return_value = True
+    mock_conn.fetchrow.side_effect = [make_file_record(file_id=uuid.uuid4())]
+
+    response = await client.post(
+        "/api/v1/storage/internal/anexo-externo",
+        files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert response.status_code == 201, response.text
+    sqls = [c.args[0] for c in mock_conn.fetchrow.await_args_list]
+    assert not any("FROM files WHERE sha256" in q for q in sqls)
     mock_minio.put_object.assert_awaited_once()
 
 

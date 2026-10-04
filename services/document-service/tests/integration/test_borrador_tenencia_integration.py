@@ -31,6 +31,11 @@ from app.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
+#: Ac. AGN 060/2001 §5.2: el borrador no guarda tipo ni dependencias; se aportan al radicar.
+from app.schemas.borrador import BorradorRadicar  # noqa: E402
+
+_DATOS = BorradorRadicar(tipo_documental="Oficio", origin_dept_code=1, dest_dept_code=1)
+
 AUTOR = uuid.uuid4()  # radicó el padre y creó el borrador sin padre
 
 
@@ -54,7 +59,7 @@ async def _padre_y_borrador(tenant_ctx, *, con_padre: bool = True):
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
     padre = await DocumentService(conn, slug).create(
-        DocumentCreate(doc_type="E", subject="Solicitud", sender_name="x"),
+        DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Solicitud", sender_name="x"),
         registered_by=AUTOR,
     )
     servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
@@ -193,7 +198,9 @@ async def _intenta_radicar(slug, conn, servicio, b, actor) -> bool:
 
     radicados = await conn.fetchval("SELECT count(*) FROM radicados")
     try:
-        await servicio.radicar(b.id, DocumentService(conn, slug), actor, max_clearance=3)
+        await servicio.radicar(
+            b.id, DocumentService(conn, slug), actor, max_clearance=3, datos=_DATOS
+        )
     except HTTPException as exc:
         assert exc.status_code == 404, "el no poseedor recibe el 404 neutro, no un 403"
         assert await conn.fetchval("SELECT count(*) FROM radicados") == radicados, (

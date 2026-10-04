@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     # Backoff exponencial: `min(cap, base * 2**intentos)`.
     indice_reconciliation_backoff_base_seconds: int = 60
     indice_reconciliation_backoff_cap_seconds: int = 86400
+    # Margen mínimo (días desde hoy) del `retain_until` COMPLIANCE de un FONDO
+    # ACUMULADO (ADR-026 D4.4, AREA-06-04): su calendario suele estar vencido y
+    # storage-service rechaza un `retain_until` por debajo de su piso
+    # (`PRESERVATION_MIN_RETENTION_DAYS`, 365). Debe SUPERARLO: con exactamente el
+    # piso, un día de bisiesto en la aritmética de años lo dejaría por debajo.
+    worm_fondo_acumulado_margen_dias: int = 400
     # Intento síncrono ACOTADO en el cierre (`IndexService.firmar_indice_close`)
     # antes de degradar a 'pendiente_firma' por fallo transitorio — un `seal_absent`
     # degrada de inmediato SIN consumir estos reintentos (ver el docstring del

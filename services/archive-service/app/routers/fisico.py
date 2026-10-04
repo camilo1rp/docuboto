@@ -22,7 +22,6 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
-    Request,
     Response,
     status,
 )
@@ -288,8 +287,14 @@ async def units_of_expediente(
 # -- préstamos y movimientos (RF-ARF-07/08) ---------------------------
 
 
-def _performed_by(request: Request) -> str | None:
-    return request.headers.get("X-Username") or request.headers.get("X-User-Id")
+def _performed_by(actor: uuid.UUID | None) -> str | None:
+    """Quién ejecutó el movimiento: el UUID de `auth_users.id` (`X-User-Id`),
+    NUNCA el login. Un username es mutable (Keycloak permite renombrar aun con
+    `editUsernameAllowed=false`) y reasignable; una fila de custodia física
+    atribuida a un nombre deja de ser reconstruible el día que el nombre cambia
+    (AREA-02-08). Misma regla que `app/core/actor.py::Actor.audit_actor`, sin
+    fallback a `X-Username`."""
+    return str(actor) if actor is not None else None
 
 
 @router.post(
@@ -301,13 +306,12 @@ def _performed_by(request: Request) -> str | None:
 async def create_prestamo(
     unidad_id: uuid.UUID,
     payload: PrestamoCreate,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
     actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> PrestamoResponse:
     return await FisicoService(conn, tenant_slug).create_prestamo(
-        unidad_id, payload, _performed_by(request), actor=actor
+        unidad_id, payload, _performed_by(actor), actor=actor
     )
 
 
@@ -317,16 +321,24 @@ async def create_prestamo(
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
 )
 async def list_prestamos_of_unit(
+    response: Response,
     unidad_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[PrestamoResponse]:
-    """Préstamos de UNA unidad. No pagina, y está declarado: la cota la pone el
-    objeto — una unidad de conservación no acumula miles de préstamos, a
-    diferencia del listado global, donde `devuelto` es el histórico entero."""
-    items, _ = await FisicoService(conn, tenant_slug).list_prestamos(
-        estado=None, unidad_id=unidad_id
+    """Préstamos de UNA unidad, paginados (`page`/`size` + `X-Total-Count`).
+
+    Antes no paginaba, con el argumento de que «una unidad no acumula miles de
+    préstamos»: era una cota supuesta, no impuesta —el histórico `devuelto` de
+    una unidad que circula mucho solo crece—, y es la misma forma que el listado
+    global ya cerró. Mismo repositorio, mismo `WHERE` para filas y total, y
+    `id` como desempate (ver `FisicoRepository.list_prestamos`)."""
+    items, total = await FisicoService(conn, tenant_slug).list_prestamos(
+        estado=None, unidad_id=unidad_id, page=page, size=size
     )
+    response.headers["X-Total-Count"] = str(total)
     return items
 
 
@@ -369,13 +381,12 @@ async def list_prestamos(
 )
 async def devolver_prestamo(
     prestamo_id: uuid.UUID,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
     actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> PrestamoResponse:
     return await FisicoService(conn, tenant_slug).devolver_prestamo(
-        prestamo_id, _performed_by(request), actor=actor
+        prestamo_id, _performed_by(actor), actor=actor
     )
 
 

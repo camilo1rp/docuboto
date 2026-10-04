@@ -30,6 +30,9 @@ def _indice_row(tracking, doc_type, nivel, *, fundamento=None, causal=None, plaz
         "clasificacion_plazo_meses": plazo,
         "clasificado_at": NOW,
         "registered_at": NOW,
+        "origin_dept": "Jurídica",
+        "dest_dept": "Dirección General",
+        "registered_by": None,
     }
 
 

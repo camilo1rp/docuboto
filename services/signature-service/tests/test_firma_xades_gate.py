@@ -239,7 +239,7 @@ async def test_gate_clasificados_nivel1_con_cert_xades_unchanged(
     monkeypatch.setattr(settings, "signer_timestamp_enabled", False)
     user_key, user_cert = _issue_user_cert()
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
 
     conn = _make_conn()
@@ -340,7 +340,7 @@ async def test_gate_clasificados_nivel2_con_cert_xades(
     monkeypatch.setattr(settings, "signer_timestamp_enabled", False)
     user_key, user_cert = _issue_user_cert()
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
 
     conn = _make_conn()
@@ -468,7 +468,7 @@ async def test_gate_todos_nivel1_con_cert_xades(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(settings, "signer_timestamp_enabled", False)
     user_key, user_cert = _issue_user_cert()
     cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
-    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "cert_pem": cert_pem})
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
 
     conn = _make_conn()
@@ -562,7 +562,7 @@ async def test_firmar_lote_gate_denials_per_item(monkeypatch: pytest.MonkeyPatch
     async def _status_side_effect(authorization):
         call_count["n"] += 1
         if call_count["n"] == 1:
-            return {"estado": "activo", "cert_pem": cert_pem}
+            return {"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem}
         if call_count["n"] == 2:
             return {"estado": "no_configurado", "cert_pem": None}
         raise SigningKeyStatusUnavailableError("auth-service inalcanzable")

@@ -185,9 +185,12 @@ trap 'borrar_credenciales; marcar_parcial' EXIT
 S3_IMAGEN="${S3_CLI_IMAGEN:-amazon/aws-cli:latest}"
 S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}"
 
+# shellcheck source=lib-retencion-s3.sh
+. "$SCRIPT_DIR/lib-retencion-s3.sh"
+
 s3api() {
     docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
-        "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" s3api "$@" 2>/dev/null
+        "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" s3api "$@"
 }
 
 # `--user` no es cosmético.
@@ -242,12 +245,27 @@ echo "── Retención del almacén (lo que el espejo no copia)..."
 : > "$DESTINO/minio-retencion.tsv"
 chmod 600 "$DESTINO/minio-retencion.tsv"
 
-BUCKETS="$(s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' || true)"
+# La lectura de la retención ya NO convierte un error en «no hay»: ante un fallo
+# distinto de «sin configuración» el respaldo se COMPLETA igual (abortar dejaría un
+# .PARCIAL en claro), pero queda sellado con `retencion_capturada_completa=NO` y el
+# script sale con código 4. La restauración se niega a usar ese respaldo sin una
+# aceptación explícita.
+RETENCION_COMPLETA="SI"
+BUCKETS="$(s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n')" || {
+    echo "   ✗ no se pudieron listar los buckets: la retención NO se capturó" >&2
+    RETENCION_COMPLETA="NO"
+    BUCKETS=""
+}
 
 for B in $BUCKETS; do
-    # `get-object-lock-configuration` falla en un bucket sin bloqueo, y eso es
-    # justo lo que queremos: la ausencia se distingue del error.
-    MODO="$(s3api get-object-lock-configuration --bucket "$B" --output json | tr -d '\r' | tr '\n' ' ' || true)"
+    # `get-object-lock-configuration` falla en un bucket sin bloqueo
+    # (ObjectLockConfigurationNotFoundError): la AUSENCIA se distingue del ERROR.
+    if ! MODO="$(_leer_json_s3 "configuración de bloqueo de $B" \
+            s3api get-object-lock-configuration --bucket "$B" --output json | tr -d '\r' | tr '\n' ' ')"; then
+        RETENCION_COMPLETA="NO"
+        printf 'BUCKET\t%s\tILEGIBLE\n' "$B" >> "$DESTINO/minio-retencion.tsv"
+        continue
+    fi
     case "$MODO" in
         *COMPLIANCE*) M=COMPLIANCE ;;
         *GOVERNANCE*) M=GOVERNANCE ;;
@@ -257,25 +275,14 @@ for B in $BUCKETS; do
     [ "$M" = "NINGUNO" ] && continue
 
     # Solo se recorren objeto a objeto los buckets que SÍ tienen bloqueo: en los
-    # demás no hay nada que reponer y el recorrido sería gratuito y lento.
-    s3api list-objects-v2 --bucket "$B" --query 'Contents[].Key' --output text \
-        | tr '\t' '\n' | grep -v '^None$' \
-        | while read -r K; do
-            [ -z "$K" ] && continue
-            # Se guarda el INSTANTE exacto (`RetainUntilDate`, ISO 8601), no una
-            # duración. Una duración relativa —«vence en 29 días»— correría la
-            # fecha hacia adelante en cada restauración, alargando en silencio una
-            # retención archivística que la entidad fijó una sola vez.
-            INFO="$(s3api get-object-retention --bucket "$B" --key "$K" --output json \
-                | python3 -c 'import json,sys
-try: d=json.load(sys.stdin)
-except Exception: raise SystemExit(0)
-r=d.get("Retention") or {}
-m,u=r.get("Mode"),r.get("RetainUntilDate")
-if m and u: print(f"{m}\t{u}")' || true)"
-            [ -n "$INFO" ] && printf 'OBJETO\t%s\t%s\n' "$B/$K" "$INFO" \
-                >> "$DESTINO/minio-retencion.tsv"
-        done
+    # demás no hay nada que reponer y el recorrido sería gratuito y lento. Se
+    # recorren TODAS las versiones y se guarda también la retención legal
+    # (AREA-08-10); la lógica vive en lib-retencion-s3.sh, que se prueba con un
+    # `s3api` falso.
+    if ! respaldar_retencion_bucket "$B" "$DESTINO/minio-retencion.tsv"; then
+        echo "   ✗ $B: la retención NO quedó capturada por completo" >&2
+        RETENCION_COMPLETA="NO"
+    fi
 done
 
 echo "   $(grep -c . "$DESTINO/minio-retencion.tsv" 2>/dev/null || echo 0) entradas de retención"
@@ -302,20 +309,63 @@ echo "   $(grep -c . "$DESTINO/minio-retencion.tsv" 2>/dev/null || echo 0) entra
 # silencioso, y pase a exigir un segundo acto detectable.
 
 ANCLAS="$BACKUP_DIR/anclas-auditoria.tsv"
-echo "── Anclando el extremo de la cadena de auditoría..."
+echo "── Verificando la cadena de auditoría y anclando su extremo..."
 if [ ! -f "$ANCLAS" ]; then
     printf 'fecha\ttenant_slug\tasientos\tultimo_id\tultimo_hash\n' > "$ANCLAS"
     chmod 600 "$ANCLAS"
 fi
-"${COMPOSE[@]}" exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -At -F$'\t' -c "
-    SELECT '$FECHA', tenant_slug, count(*),
-           max(id),
-           (SELECT a2.hash FROM public.audit_log a2
-             WHERE a2.tenant_slug = a1.tenant_slug
-             ORDER BY a2.id DESC LIMIT 1)
-      FROM public.audit_log a1
-     GROUP BY tenant_slug
-     ORDER BY tenant_slug;" >> "$ANCLAS"
+
+# FAIL-CLOSED (AREA-03-02). Antes este bloque ancló el extremo con un `psql` sin
+# verificar nada: podía sellar como «extremo de confianza» una cadena YA rota, o
+# una que había retrocedido. Ahora el ancla solo se escribe si
+# `app.ops.verify_audit_chains` (el mismo módulo que usa restore.sh) comprueba que
+# TODAS las cadenas son íntegras, que ningún conteo bajó respecto al ancla
+# anterior y que el hash del asiento anclado no cambió. El ancla viaja por stdout
+# y se anexa AQUÍ, en el host: el contenedor no monta nada en escritura (regla 3).
+# En desarrollo, `BACKUP_AUDIT_EXCLUIR_PREFIJOS="itest"` deja fuera los tenants
+# desechables que dejaron los tests de integración (audit_log es append-only y no
+# se pueden borrar); NO se define en producción.
+EXCLUIR=()
+for P in ${BACKUP_AUDIT_EXCLUIR_PREFIJOS:-}; do EXCLUIR+=(--excluir-prefijo "$P"); done
+
+# «NO ANCLAR» no es «ABORTAR EL RESPALDO». `audit_log` solo admite anexar (Ley
+# 594/2000 arts. 4 y 11): una rotura histórica no se repara nunca, y si una sola
+# fila rota abortara el script, la entidad perdería para siempre la capacidad de
+# producir un respaldo completo y sellado (cada noche un `.PARCIAL` en claro y
+# sin rotación). Por eso, si la verificación falla:
+#   - NO se emite ancla (sellar una cadena rota como extremo de confianza sigue
+#     siendo peor que no anclar);
+#   - el respaldo SE COMPLETA (cifrado, sello, purga), con
+#     `verificacion_auditoria=FALLIDA` en el sello;
+#   - el script sale con código 3 AL FINAL, para que la supervisión lo vea.
+# Las roturas HISTÓRICAS aprobadas por el responsable se declaran en una línea
+# base (BACKUP_AUDIT_ROTURAS_DECLARADAS = fichero `ROTURA<TAB>slug<TAB>id<TAB>nota`);
+# solo una rotura NUEVA, un retroceso o un cambio del hash anclado cuentan.
+# La línea base viaja por stdin junto al ancla: el contenedor no monta nada (regla 3).
+VERIFICACION_AUDITORIA="OK"
+ENTRADA_VERIF="$(mktemp)"
+{ cat "$ANCLAS"; if [ -n "${BACKUP_AUDIT_ROTURAS_DECLARADAS:-}" ]; then cat "$BACKUP_AUDIT_ROTURAS_DECLARADAS"; fi; } > "$ENTRADA_VERIF" \
+    || VERIFICACION_AUDITORIA="FALLIDA"
+NUEVAS=""
+if [ "$VERIFICACION_AUDITORIA" = "OK" ]; then
+    if ! NUEVAS="$("${COMPOSE[@]}" run --rm --no-deps -T \
+            -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
+            auth-service python -m app.ops.verify_audit_chains \
+            --anclas - --emitir-ancla "$FECHA" ${EXCLUIR[@]+"${EXCLUIR[@]}"} < "$ENTRADA_VERIF")"; then
+        VERIFICACION_AUDITORIA="FALLIDA"
+    fi
+fi
+rm -f "$ENTRADA_VERIF"
+if [ "$VERIFICACION_AUDITORIA" != "OK" ]; then
+    NUEVAS=""
+    echo "" >&2
+    echo "✗ La cadena de auditoría NO está íntegra, retrocedió respecto al último ancla" >&2
+    echo "  o la verificación no pudo correr. NO se ancla; el respaldo SE COMPLETA y se" >&2
+    echo "  sella con verificacion_auditoria=FALLIDA. El script saldrá con código 3." >&2
+    echo "  Si es una rotura histórica ya conocida, decláralo en" >&2
+    echo "  BACKUP_AUDIT_ROTURAS_DECLARADAS (acta del responsable)." >&2
+fi
+if [ -n "$NUEVAS" ]; then printf '%s\n' "$NUEVAS" >> "$ANCLAS"; fi
 ANCLADAS="$(awk -F'\t' -v f="$FECHA" '$1==f' "$ANCLAS" 2>/dev/null | wc -l)"
 echo "   ancladas $ANCLADAS entidades en $ANCLAS"
 
@@ -401,6 +451,8 @@ fi
     echo "minio_objetos=$OBJETOS_MINIO"
     echo "cifrado=$CIFRADO"
     echo "retencion_capturada=$(grep -c . "$DESTINO/minio-retencion.tsv" 2>/dev/null || echo 0)"
+    echo "verificacion_auditoria=$VERIFICACION_AUDITORIA"
+    echo "retencion_capturada_completa=$RETENCION_COMPLETA"
 } > "$DESTINO/OK"
 chmod 600 "$DESTINO/OK"
 
@@ -414,3 +466,13 @@ find "$BACKUP_DIR" -maxdepth 1 -type d -name '20*' -mtime "+$RETENTION_DAYS" \
     -exec rm -rf {} + 2>/dev/null || true
 
 echo "══ Respaldo COMPLETO: $DESTINO ══"
+if [ "$VERIFICACION_AUDITORIA" != "OK" ]; then
+    echo "✗ ATENCIÓN: respaldo completo y sellado, pero SIN ancla: la verificación de la" >&2
+    echo "  cadena de auditoría falló (verificacion_auditoria=FALLIDA). Salida 3." >&2
+    exit 3
+fi
+if [ "$RETENCION_COMPLETA" != "SI" ]; then
+    echo "✗ ATENCIÓN: respaldo completo y sellado, pero la RETENCIÓN (Object-Lock) no se" >&2
+    echo "  capturó por completo (retencion_capturada_completa=NO). Salida 4." >&2
+    exit 4
+fi

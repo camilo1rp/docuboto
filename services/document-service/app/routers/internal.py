@@ -253,5 +253,6 @@ async def aprobar_borrador_internal(
                 "cuerpo_sha256": nuevo["cuerpo_sha256"],
                 "origen": "circuito_completado",
             },
+            canal="system",
         )
     return {"borrador_id": str(borrador_id), "estado": "aprobado", "cambiado": True}

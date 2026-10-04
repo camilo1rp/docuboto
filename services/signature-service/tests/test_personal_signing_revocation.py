@@ -380,7 +380,13 @@ async def test_verify_xades_personal_grandfather_inc1_signature_unaffected() -> 
 # ---------------------------------------------------------------------------
 
 
-def _firma_row(*, firma_id: uuid.UUID, signed, ca_fingerprint: str | None) -> dict:
+def _firma_row(
+    *,
+    firma_id: uuid.UUID,
+    signed,
+    ca_fingerprint: str | None,
+    sello_tiempo: datetime | None = None,
+) -> dict:
     return {
         "id": firma_id,
         "objeto_tipo": "radicado",
@@ -390,7 +396,7 @@ def _firma_row(*, firma_id: uuid.UUID, signed, ca_fingerprint: str | None) -> di
         "payload_sha256": signed.payload_sha256,
         "firma_blob": signed.signature_value_b64,
         "provider": "xades_personal",
-        "sello_tiempo": datetime.now(UTC),
+        "sello_tiempo": sello_tiempo or datetime.now(UTC),
         "created_at": datetime.now(UTC),
         "certificado_pem": signed.certificado_pem,
         "minio_key_firmado": None,
@@ -421,7 +427,10 @@ async def test_verify_reports_revocado_after_revocation(
     conn.fetchrow.return_value = _firma_row(
         firma_id=firma_id, signed=signed, ca_fingerprint=signed.extra.get("ca_fingerprint")
     )
-    revoked_at = datetime.now(UTC).isoformat()
+    # Revocada ANTES de firmar (la clave ya estaba revocada cuando se sello):
+    # AREA-04-13 — solo una revocación POSTERIOR al instante de la firma la deja
+    # intacta; esta no.
+    revoked_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     mock_revocation = AsyncMock(return_value={"status": "revocado", "revocado_at": revoked_at})
     monkeypatch.setattr(
         "app.routers.signature.get_signing_key_revocation_status_remote", mock_revocation
@@ -440,8 +449,170 @@ async def test_verify_reports_revocado_after_revocation(
     assert body["revocacion_status"] == "revocado"
     assert body["valida"] is False
     assert body["motivo"] == "certificado_revocado"
+    assert body["revocacion_posterior"] is None
     mock_revocation.assert_awaited_once()
     assert mock_revocation.await_args.args[0] == signed.certificado_fingerprint
+
+
+@pytest.mark.asyncio
+async def test_revocacion_posterior_no_invalida_firma_previa(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AREA-04-13: la clave se revocó DESPUÉS de firmar -> la firma sigue siendo
+    válida y se informa ``revocacion_posterior``. El sello de la TSA (verificado)
+    es el instante de la firma."""
+    ca_key, ca_cert = _generate_sub_ca()
+    user_key, user_cert = _issue_user_cert(ca_key, ca_cert)
+    signed_xml, signed = await _sign_personal(ca_key, ca_cert, user_key, user_cert)
+
+    client, conn = client_with_conn
+    firma_id = uuid.uuid4()
+    conn.fetchrow.return_value = _firma_row(
+        firma_id=firma_id, signed=signed, ca_fingerprint=signed.extra.get("ca_fingerprint")
+    )
+    revoked_at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    monkeypatch.setattr(
+        "app.routers.signature.get_signing_key_revocation_status_remote",
+        AsyncMock(return_value={"status": "revocado", "revocado_at": revoked_at}),
+    )
+
+    resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": str(firma_id), "payload_xml": signed_xml.decode()},
+        headers={"X-Tenant-Slug": "demo"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["valida"] is True
+    assert body["motivo"] is None
+    assert body["revocacion_status"] == "revocado"
+    assert body["revocacion_posterior"] is True
+    assert body["firma_criptograficamente_valida"] is True
+
+
+async def _verify_revocada(client_with_conn, monkeypatch, *, revocado: dict, sello_tiempo=None):
+    """Firma personal (con la TSA local activa por defecto) y la verifica contra
+    un `revocation-status` simulado. Devuelve el cuerpo JSON de /verify."""
+    ca_key, ca_cert = _generate_sub_ca()
+    user_key, user_cert = _issue_user_cert(ca_key, ca_cert)
+    signed_xml, signed = await _sign_personal(ca_key, ca_cert, user_key, user_cert)
+    client, conn = client_with_conn
+    firma_id = uuid.uuid4()
+    conn.fetchrow.return_value = _firma_row(
+        firma_id=firma_id,
+        signed=signed,
+        ca_fingerprint=signed.extra.get("ca_fingerprint"),
+        sello_tiempo=sello_tiempo,
+    )
+    monkeypatch.setattr(
+        "app.routers.signature.get_signing_key_revocation_status_remote",
+        AsyncMock(return_value={"status": "revocado", **revocado}),
+    )
+    resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": str(firma_id), "payload_xml": signed_xml.decode()},
+        headers={"X-Tenant-Slug": "demo"},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_revocacion_se_compara_con_el_genTime_de_la_tsa_no_con_now(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Con TSA verificada el instante es su genTime (~ahora). Revocada mañana:
+    posterior. Revocada hace 15 días: anterior -> invalida. Comparar contra
+    `now()` en vez del genTime tumba el primer caso."""
+    body = await _verify_revocada(
+        client_with_conn,
+        monkeypatch,
+        revocado={"revocado_at": (datetime.now(UTC) + timedelta(days=1)).isoformat()},
+    )
+    assert body["valida"] is True
+    assert body["revocacion_posterior"] is True
+
+    body = await _verify_revocada(
+        client_with_conn,
+        monkeypatch,
+        revocado={"revocado_at": (datetime.now(UTC) - timedelta(days=15)).isoformat()},
+    )
+    assert body["valida"] is False
+    assert body["motivo"] == "certificado_revocado"
+
+
+@pytest.mark.asyncio
+async def test_sin_tsa_verificada_el_instante_no_es_cierto_y_no_valida(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """El `sello_tiempo` de la fila lo pone el servidor: NO es fecha cierta.
+    Sin TSA verificada, una revocación 'posterior' según ese sello deja la firma
+    sin validar y con `revocacion_posterior=None` (AREA-04-13, hallazgo Medio)."""
+    from app.core.config import settings as signature_settings
+
+    monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
+    body = await _verify_revocada(
+        client_with_conn,
+        monkeypatch,
+        revocado={"revocado_at": (datetime.now(UTC) - timedelta(days=5)).isoformat()},
+        sello_tiempo=datetime.now(UTC) - timedelta(days=10),
+    )
+    assert body["valida"] is False
+    assert body["motivo"] == "instante_firma_no_cierto"
+    assert body["revocacion_posterior"] is None
+    assert body["firma_criptograficamente_valida"] is True
+
+
+@pytest.mark.asyncio
+async def test_revocacion_por_compromiso_invalida_hacia_atras(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`key_compromise` invalida aun siendo posterior a una TSA verificada
+    (ETSI EN 319 102-1); cualquier otro motivo cerrado (`superseded`) no."""
+    futuro = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    body = await _verify_revocada(
+        client_with_conn,
+        monkeypatch,
+        revocado={"revocado_at": futuro, "motivo_revocacion": "key_compromise"},
+    )
+    assert body["valida"] is False
+    assert body["motivo"] == "clave_comprometida"
+    assert body["revocacion_posterior"] is None
+
+    body = await _verify_revocada(
+        client_with_conn,
+        monkeypatch,
+        revocado={"revocado_at": futuro, "motivo_revocacion": "superseded"},
+    )
+    assert body["valida"] is True
+    assert body["revocacion_posterior"] is True
+
+
+@pytest.mark.asyncio
+async def test_revocada_sin_fecha_legible_invalida_fail_closed(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sin ``revocado_at`` no hay forma de probar que fue posterior: invalida."""
+    ca_key, ca_cert = _generate_sub_ca()
+    user_key, user_cert = _issue_user_cert(ca_key, ca_cert)
+    signed_xml, signed = await _sign_personal(ca_key, ca_cert, user_key, user_cert)
+    client, conn = client_with_conn
+    firma_id = uuid.uuid4()
+    conn.fetchrow.return_value = _firma_row(
+        firma_id=firma_id, signed=signed, ca_fingerprint=signed.extra.get("ca_fingerprint")
+    )
+    monkeypatch.setattr(
+        "app.routers.signature.get_signing_key_revocation_status_remote",
+        AsyncMock(return_value={"status": "revocado", "revocado_at": None}),
+    )
+    resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": str(firma_id), "payload_xml": signed_xml.decode()},
+        headers={"X-Tenant-Slug": "demo"},
+    )
+    assert resp.json()["valida"] is False
+    assert resp.json()["motivo"] == "certificado_revocado"
 
 
 @pytest.mark.asyncio
@@ -616,6 +787,7 @@ async def test_verify_native_hmac_never_calls_revocation_status(
     r = native_signer.firmar(
         b"<indice/>", "11111111-1111-1111-1111-111111111111", sello_dt.isoformat(),
         signature_settings.signature_secret,
+        tenant_slug="demo", objeto_tipo="indice", objeto_id="exp-1",
     )
     client, conn = client_with_conn
     conn.fetchrow.return_value = {
@@ -629,6 +801,7 @@ async def test_verify_native_hmac_never_calls_revocation_status(
         "provider": r["provider"],
         "sello_tiempo": sello_dt,
         "created_at": sello_dt,
+        "key_version": r["key_version"],
     }
     mock_revocation = AsyncMock(return_value={"status": "vigente"})
     monkeypatch.setattr(

@@ -31,14 +31,18 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from datetime import UTC
+from datetime import UTC, datetime
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.core.clearance import get_actor, require_permission, resolve_caller_clearance
 from app.core.config import settings
-from app.core.constants import SYSTEM_RECONCILER_ID, XADES_ELIGIBLE_OBJETO_TIPOS
+from app.core.constants import (
+    NIVELES_CONFORMIDAD_ACREDITADOS,
+    SYSTEM_RECONCILER_ID,
+    XADES_ELIGIBLE_OBJETO_TIPOS,
+)
 from app.core.database import get_tenant_conn
 from app.core.http_clients import (
     SigningKeyRevocationStatusUnavailableError,
@@ -63,6 +67,62 @@ _SERVICE = "signature-service"
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/signature", tags=["signature"])
+
+
+def _acreditado(row: dict | asyncpg.Record, *, valida: bool) -> bool:
+    """``acreditado`` derivado de lo PERSISTIDO al firmar, y solo si la cripto valida.
+
+    La acreditación es un hecho del momento de firmar (qué sello/CA se usó,
+    ``app.core.keys._leer_acreditacion``) y quedó en ``firma.nivel_conformidad``.
+    Antes se devolvía un literal ``False`` en verificación: una firma hecha con
+    un sello ACREDITADO se reportaba como no acreditada, justo donde el
+    comprobante tiene que poder decirlo (AREA-05-02). Lista cerrada por
+    admisión (``NIVELES_CONFORMIDAD_ACREDITADOS``), no ``endswith``: un nivel
+    nuevo no hereda la acreditación por parecerse a uno que la tiene.
+    """
+    return bool(valida) and row.get("nivel_conformidad") in NIVELES_CONFORMIDAD_ACREDITADOS
+
+
+async def _clearance_del_llamante(request: Request, conn: asyncpg.Connection) -> int | None:
+    """Clearance del usuario que consulta, o ``None`` si no hay usuario detrás.
+
+    ``/verify`` también lo llaman servicios internos sin usuario (archive-service
+    verificando el sellado de un índice, solo con ``X-Tenant-Slug``): para ellos
+    no hay clearance que aplicar. Por el gateway SIEMPRE llega ``X-User-Id``
+    (exige JWT), y entonces el gate aplica (AREA-04-10). Un ``X-User-Id`` mal
+    formado es 401, no «sin usuario».
+    """
+    if not request.headers.get("X-User-Id"):
+        return None
+    actor = await get_actor(request)
+    return await resolve_caller_clearance(conn, actor)
+
+
+def _revocada_despues_de_firmar(
+    revocado_at: object, referencia: datetime | None
+) -> bool:
+    """¿La revocación ocurrió DESPUÉS del instante de la firma? (AREA-04-13.)
+
+    Una revocación dice que la clave ya no es vigente DESDE ``revocado_at``; no
+    dice que lo firmado antes sea falso. Se compara contra el instante de la
+    firma, no contra ``now()``. Fail-closed ante la duda: sin ``revocado_at`` o
+    sin instante de referencia legibles, o con ``revocado_at`` igual o anterior,
+    NO se considera posterior.
+    """
+    if referencia is None or not revocado_at:
+        return False
+    try:
+        rev = (
+            revocado_at
+            if isinstance(revocado_at, datetime)
+            else datetime.fromisoformat(str(revocado_at).replace("Z", "+00:00"))
+        )
+    except ValueError:
+        return False
+    if rev.tzinfo is None:
+        rev = rev.replace(tzinfo=UTC)
+    ref = referencia if referencia.tzinfo else referencia.replace(tzinfo=UTC)
+    return rev > ref
 
 
 @router.post(
@@ -222,7 +282,14 @@ async def verify(
     """
     Verifica la integridad de una firma existente.
 
-    No requiere autenticación — es una operación de consulta pública.
+    NO es pública: por el api-gateway exige JWT (``/api/v1/signature/verify`` no
+    está en ``PUBLIC_PATHS``) y el tenant sale del token. Dentro de la entidad
+    la consulta aplica el no-read-up (RF-SEG-08): la firma de un objeto por
+    encima del clearance del llamante da el mismo 404 que un ``firma_id``
+    inexistente. Los servicios internos sin usuario (``X-User-Id`` ausente,
+    p. ej. archive-service verificando un índice) no tienen clearance que
+    aplicar. La verificación verdaderamente pública va por
+    ``/api/v1/public/`` con código de verificación (E13).
 
     - Firmas ``provider='xades_local'``: primero ata la verificación a ESTA
       firma_id (``signed_xml_sha256``, migración 010 — evita que el
@@ -252,7 +319,13 @@ async def verify(
       sello_tiempo almacenados en BD y lo compara con la firma_blob
       registrada (comportamiento sin cambios desde antes del Incremento 1).
     """
-    row = await FirmaRepository(conn).get(payload.firma_id)
+    # No-read-up (AREA-04-10): la firma de un objeto por encima del clearance del
+    # llamante da el MISMO 404 que un UUID inexistente — el nivel va dentro del
+    # WHERE de la consulta, no en una comprobación posterior que dejaría
+    # distinguir «existe» de «no existe».
+    row = await FirmaRepository(conn).get(
+        payload.firma_id, max_clearance=await _clearance_del_llamante(request, conn)
+    )
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -270,7 +343,7 @@ async def verify(
                 provider=provider_name,
                 xades_level=row.get("xades_level"),
                 nivel_conformidad=row.get("nivel_conformidad"),
-                acreditado=False,
+                acreditado=False,  # no valida -> no acredita (AREA-05-02)
                 motivo="firma_sin_huella_de_certificado_registrada",
             )
         # Ata la verificación a ESTA firma_id (migración 010): sin esto, el
@@ -289,7 +362,7 @@ async def verify(
                 provider=provider_name,
                 xades_level=row.get("xades_level"),
                 nivel_conformidad=row.get("nivel_conformidad"),
-                acreditado=False,
+                acreditado=False,  # no valida -> no acredita (AREA-05-02)
                 motivo="documento_no_corresponde_a_firma_id",
             )
         outcome = verify_xades(
@@ -313,6 +386,7 @@ async def verify(
         valida = outcome.valida
         motivo = outcome.motivo
         revocacion_status: str | None = None
+        revocacion_posterior: bool | None = None
 
         # Revocación en línea (A2, Incremento 2) — SOLO firmas personales
         # cuya cripto+cadena YA validó (revocar no tiene sentido evaluarlo
@@ -341,7 +415,42 @@ async def verify(
                 # que `valida` se queda en True — solo se informa el canal
                 # caído vía `revocacion_status`, sin invalidar.
             else:
-                if revocacion_status != "vigente":
+                # Instante de la firma: SOLO el genTime de una TSA verificada
+                # es fecha cierta oponible (RFC 3161; DUR 1074 cap. 47-48). El
+                # `sello_tiempo` de la fila lo pone el propio servidor: no
+                # sirve para conservar la validez ante una revocación.
+                instante_cierto = (
+                    outcome.tsa_timestamp
+                    if outcome.sello_tiempo_valido and outcome.tsa_timestamp
+                    else None
+                )
+                if (
+                    revocacion_status == "revocado"
+                    and status_body.get("motivo_revocacion") == "key_compromise"
+                ):
+                    # Compromiso de la clave: lo firmado ANTES también queda en
+                    # duda (ETSI EN 319 102-1) — invalida hacia atrás.
+                    valida = False
+                    motivo = "clave_comprometida"
+                elif (
+                    revocacion_status == "revocado"
+                    and instante_cierto is None
+                    and status_body.get("revocado_at")
+                ):
+                    # Sin TSA verificada no hay forma de probar que la
+                    # revocación fue posterior: estado indeterminado, NO válida
+                    # (`revocacion_posterior` queda None).
+                    valida = False
+                    motivo = "instante_firma_no_cierto"
+                elif revocacion_status == "revocado" and _revocada_despues_de_firmar(
+                    status_body.get("revocado_at"), instante_cierto
+                ):
+                    # La clave se revocó DESPUÉS de una firma con fecha cierta
+                    # (AREA-04-13) y el motivo no es compromiso: la firma fue
+                    # válida cuando se hizo; `valida` se queda como la dejó la
+                    # cripto y se informa aparte.
+                    revocacion_posterior = True
+                elif revocacion_status != "vigente":
                     valida = False
                     motivo = (
                         "certificado_revocado"
@@ -362,7 +471,7 @@ async def verify(
             # evaluar ningún nivel (p. ej. certificado fuera de vigencia).
             xades_level=outcome.xades_level or row.get("xades_level"),
             nivel_conformidad=row.get("nivel_conformidad"),
-            acreditado=outcome.acreditado,
+            acreditado=_acreditado(row, valida=valida),
             motivo=motivo,
             # (Inc.4) None cuando la firma no lleva SignatureTimeStamp (no
             # aplica, no es un fallo) — ver app.providers.local.VerifyOutcome.
@@ -376,6 +485,7 @@ async def verify(
             ocsp_cert_status=outcome.ocsp_cert_status,
             firma_criptograficamente_valida=firma_criptograficamente_valida,
             revocacion_status=revocacion_status,
+            revocacion_posterior=revocacion_posterior,
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""
@@ -391,13 +501,21 @@ async def verify(
         row["firma_blob"],
         sello_tiempo_str,
         settings.signature_secret,
+        # Esquema con que se firmó ESTA fila (migración 020): 0 = anterior (clave
+        # raíz, mensaje sin entidad ni objeto), 1 = HKDF por entidad. La entidad
+        # es la de la petición —el schema donde vive la fila—, así una fila
+        # copiada a otro tenant deja de verificar.
+        key_version=row["key_version"],
+        tenant_slug=request.headers.get("X-Tenant-Slug", ""),
+        objeto_tipo=row["objeto_tipo"],
+        objeto_id=row.get("objeto_id"),
     )
     return VerifyResponse(
         firma_id=row["id"],
         valida=valida,
         provider=row["provider"],
         nivel_conformidad=row.get("nivel_conformidad"),
-        acreditado=False,
+        acreditado=_acreditado(row, valida=valida),
         motivo=None if valida else "hmac_no_coincide",
         # 'nativa' no tiene dimensión de revocación (Incremento 2 es
         # exclusivo de xades_personal) — firma_criptograficamente_valida
@@ -409,6 +527,7 @@ async def verify(
 @router.get("/firmas/{firma_id}", response_model=FirmaResponse)
 async def get_firma(
     firma_id: uuid.UUID,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> FirmaResponse:
     """Metadatos de una firma (certificado público, nivel de conformidad, ...).
@@ -425,7 +544,11 @@ async def get_firma(
     solo su huella; el consumidor que necesite el certificado completo lo
     obtiene del propio XML firmado descargado de ``minio_key_firmado``).
     """
-    row = await FirmaRepository(conn).get(firma_id)
+    # Mismo no-read-up que `/verify` (AREA-04-10): esta ruta devuelve MÁS datos
+    # de la firma (firmante, nivel, huella) y no puede ser el atajo.
+    row = await FirmaRepository(conn).get(
+        firma_id, max_clearance=await _clearance_del_llamante(request, conn)
+    )
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -448,7 +571,9 @@ async def get_firma(
         nivel_conformidad=d.get("nivel_conformidad"),
         tipo_firma=d.get("tipo_firma"),
         certificado_fingerprint=d.get("certificado_fingerprint"),
-        acreditado=False,
+        # Lo PERSISTIDO al firmar; esta ruta no re-verifica la criptografía, así
+        # que es la declaración de la fila, igual que `nivel_conformidad`.
+        acreditado=d.get("nivel_conformidad") in NIVELES_CONFORMIDAD_ACREDITADOS,
         tsa_timestamp=d.get("tsa_timestamp"),
         tsa_acreditado=d.get("tsa_acreditado", False),
         lt_material_present=d.get("lt_material_present", False),

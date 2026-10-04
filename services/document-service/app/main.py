@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.barrido_enabled:
         from app.services.barrido import bucle_de_barrido
 
-        app.state.tarea_barrido = asyncio.create_task(bucle_de_barrido())
+        app.state.tarea_barrido = asyncio.create_task(bucle_de_barrido(app.state.redis))
 
     yield
     logger.info("document-service shutting down")

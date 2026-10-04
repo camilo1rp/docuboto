@@ -17,7 +17,9 @@ material Reservado/Clasificado no puede ir a proveedores externos de embeddings.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
+import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -27,7 +29,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from orpycamcp_common import audit
 from pydantic import BaseModel, Field, model_validator
 
-from app.core.clearance import is_embeddable, is_generatable, resolve_caller_clearance
+from app.core.clearance import (
+    get_actor,
+    is_embeddable,
+    is_generatable,
+    resolve_caller_clearance,
+)
 from app.core.config import settings
 from app.core.database import get_tenant_conn
 from app.repositories.kb_suggestion_repository import KbSuggestionRepository
@@ -516,6 +523,7 @@ async def rag(
             modelo=generated.model_id,
             confianza=confianza,
             canal=canal,
+            creada_por=caller_id,
         )
 
         # Asiento en audit_log (CC-03): proveedor + modelo del acto de generación,
@@ -547,4 +555,105 @@ async def rag(
         modelo=generated.model_id,
         confianza=confianza,
         suggestion_id=suggestion_row["id"],
+    )
+
+
+class SuggestionAcceptResponse(BaseModel):
+    id: uuid.UUID
+    aceptada_por: uuid.UUID
+    aceptada_en: datetime
+
+
+def _que_se_acepto(fila: asyncpg.Record | dict) -> dict:
+    """Qué contenido se aceptó, para el asiento inmutable (sin el contenido mismo).
+
+    `kb_suggestions` es una tabla mutable y fuera de la cadena hash: sin la huella,
+    el asiento no podría probar después que el texto aceptado es el que hoy está en
+    la fila. Se calcula de la fila BLOQUEADA, dentro de la misma transacción, así
+    que no puede cambiar entre leerla y asentarla. Solo huella, proveedor/modelo y
+    las referencias citadas (nunca su texto: Ley 1712).
+    """
+    sugerencia = fila["sugerencia"]
+    if isinstance(sugerencia, str | bytes):
+        sugerencia = json.loads(sugerencia)
+    texto = sugerencia.get("answer") if isinstance(sugerencia, dict) else None
+    if not isinstance(texto, str):
+        texto = json.dumps(sugerencia, sort_keys=True, ensure_ascii=False, default=str)
+    citas = sugerencia.get("citations") if isinstance(sugerencia, dict) else None
+    fuentes = sorted(
+        {c["source_ref"] for c in (citas or []) if isinstance(c, dict) and c.get("source_ref")}
+    )
+    return {
+        "sha256_texto": hashlib.sha256(texto.encode("utf-8")).hexdigest(),
+        "proveedor": fila["proveedor"],
+        "modelo": fila["modelo"],
+        "fuentes": fuentes,
+    }
+
+
+@router.post("/suggestions/{suggestion_id}/aceptar", response_model=SuggestionAcceptResponse)
+async def aceptar_sugerencia(
+    suggestion_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    actor: uuid.UUID = Depends(get_actor),
+    canal: str = Depends(_optional_canal),
+) -> SuggestionAcceptResponse:
+    """Aceptación HUMANA de una sugerencia del RAG (CC-02: la capa sugiere, la
+    persona decide).
+
+    Solo la acepta quien la generó (`kb_suggestions.creada_por`): sin eso, cualquiera
+    con el UUID aceptaría la sugerencia de otro y `aceptada_por` no diría quién
+    decidió. **404 neutro** si no existe, es de otra persona o es anterior a la
+    migración 012 (sin creador): no distingue los tres casos. **409** si ya estaba
+    aceptada (solo la propia persona llega a verlo). La respuesta NO incluye el
+    contenido de la sugerencia. Aceptación y asiento van en UNA transacción.
+    """
+    repo = KbSuggestionRepository(conn)
+    async with conn.transaction():
+        existente = await repo.get_for_update(suggestion_id, creada_por=actor)
+        if existente is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "suggestion_not_found",
+                    "detail": "La sugerencia no existe o no es accesible",
+                    "status": 404,
+                },
+            )
+        if existente["aceptada_en"] is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "suggestion_already_accepted",
+                    "detail": "La sugerencia ya fue aceptada",
+                    "status": 409,
+                },
+            )
+        fila = await repo.mark_accepted(suggestion_id, aceptada_por=actor)
+        if fila is None:  # pragma: no cover — la fila está bloqueada arriba
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "suggestion_already_accepted",
+                    "detail": "La sugerencia ya fue aceptada",
+                    "status": 409,
+                },
+            )
+        await audit.append(
+            conn,
+            tenant_slug=_tenant_slug(request),
+            service="knowledge-service",
+            action="rag.aceptada",
+            object_type="kb_suggestion",
+            object_ref=str(suggestion_id),
+            actor=str(actor),
+            canal=canal,
+            payload={
+                "aceptada_en": fila["aceptada_en"].isoformat(),
+                **_que_se_acepto(existente),
+            },
+        )
+    return SuggestionAcceptResponse(
+        id=fila["id"], aceptada_por=fila["aceptada_por"], aceptada_en=fila["aceptada_en"]
     )

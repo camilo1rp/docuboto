@@ -47,6 +47,8 @@ la tarea para el detalle.
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -56,11 +58,13 @@ import httpx
 
 from app.core.config import settings
 from app.schemas.assistant import AssistantMessageResponse, AssistantTurn
-from app.services import dispatcher, proposals, write_gate
+from app.services import dispatcher, origen, proposals, write_gate
 from app.services.identity import resolve_identity
 from app.services.scope import build_scope, marco_a_texto
 from app.tools import catalog
 from app.tools.catalog import Tool
+
+logger = logging.getLogger(__name__)
 
 # System prompt consolidado (arquitecto + analista de dominio) -- textual, NO
 # modificar sin repetir el cierre de diseño. Frontera de seguridad + regla de
@@ -395,6 +399,43 @@ def _tool_result(tool_use_id: str, payload: dict[str, Any], *, is_error: bool) -
     }
 
 
+# ── Validación posterior: un número de radicado no se inventa ───────────────
+#
+# «No inventes números» era solo una línea del prompt: nada comprobaba, después,
+# que el texto final cumpliera. Un radicado es un identificador oficial e
+# inmutable; uno fabricado por el modelo, aunque parezca bien formado, manda a la
+# persona a buscar —o a citar en un oficio— un documento que no existe. La
+# comprobación es mecánica y no depende de que el modelo obedezca: todo número con
+# la forma `{YYYY}-{TENANT}-{E|S|I}-{NNNNNN}` del texto final debe figurar en algún
+# `tool_result` de la conversación (lo que el sistema devolvió), y el que no figure
+# se anota como NO VERIFICADO. No se elimina del texto —la persona debe ver qué se
+# le dijo—, se avisa.
+
+_RE_RADICADO = re.compile(r"(?<![\w-])(\d{4}-[A-Za-z0-9_]+-[ESI]-\d{6})(?![\w-])")
+
+
+def _texto_de_resultados(mensajes: list[dict[str, Any]]) -> str:
+    """Concatena el contenido de todos los `tool_result` de la conversación."""
+    partes: list[str] = []
+    for m in mensajes:
+        contenido = m.get("content")
+        if m.get("role") != "user" or not isinstance(contenido, list):
+            continue
+        for bloque in contenido:
+            if isinstance(bloque, dict) and bloque.get("type") == "tool_result":
+                partes.append(str(bloque.get("content", "")))
+    return "\n".join(partes)
+
+
+def radicados_no_verificados(texto: str, mensajes: list[dict[str, Any]]) -> list[str]:
+    """Números con forma de radicado en ``texto`` ausentes de los `tool_result`."""
+    citados = list(dict.fromkeys(_RE_RADICADO.findall(texto)))
+    if not citados:
+        return []
+    visto = _texto_de_resultados(mensajes)
+    return [n for n in citados if n not in visto]
+
+
 def _text_blocks(blocks: Any) -> list[str]:
     return [b.text for b in blocks if getattr(b, "type", None) == "text"]
 
@@ -410,6 +451,11 @@ async def run_turn(
     conversations: dict[tuple[str, str, str], ConversationState],
 ) -> AssistantMessageResponse:
     """Orquesta un turno completo: identidad -> loop manual tool_use -> respuesta."""
+    # Costo del turno (AREA-11-08): cada turno gasta del cubo de la persona —el
+    # mensaje, `/auth/me`, las lecturas del marco y N tools— y hasta hoy no se
+    # medía. El contador cuenta cada llamada saliente al gateway y se vuelca al log.
+    llamadas = origen.iniciar_conteo()
+    inicio_turno = time.monotonic()
     identidad = await resolve_identity(
         gateway_client, authorization=authorization, tenant_slug=tenant_slug
     )
@@ -446,8 +492,10 @@ async def run_turn(
     propuestas: list[dict[str, Any]] = []
     last_response: Any = None
     reached_iteration_cap = True
+    iteraciones = 0
 
     for _ in range(settings.assistant_max_iterations):
+        iteraciones += 1
         response = await anthropic_client.messages.create(
             model=settings.assistant_model,
             max_tokens=settings.assistant_max_tokens,
@@ -510,8 +558,28 @@ async def run_turn(
     state.last_active = time.monotonic()
     texto = "".join(final_text_parts).strip() or "No obtuve una respuesta del asistente."
 
+    no_verificados = radicados_no_verificados(texto, state.messages)
+    if no_verificados:
+        texto += (
+            "\n\n_(No verificado: "
+            + ", ".join(no_verificados)
+            + " no aparece en ningún resultado de consulta de esta conversación. "
+            "Confírmelo en el sistema antes de usarlo.)_"
+        )
+
+    logger.info(
+        "asistente turno: iteraciones=%d llamadas_gateway=%d propuestas=%d "
+        "no_verificados=%d duracion_ms=%d",
+        iteraciones,
+        llamadas[0],
+        len(propuestas),
+        len(no_verificados),
+        int((time.monotonic() - inicio_turno) * 1000),
+    )
+
     return AssistantMessageResponse(
         conversation_id=conv_id,
         message=AssistantTurn(texto=texto),
         propuestas=propuestas,
+        no_verificados=no_verificados,
     )

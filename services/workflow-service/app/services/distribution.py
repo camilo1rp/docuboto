@@ -74,10 +74,11 @@ async def auto_distribute(
     # `dependencias` (cierre del agujero de disponibilidad: un `to_dept` que no
     # corresponde a ninguna dependencia activa deja el radicado invisible en
     # toda bandeja). `workflow_rules.assign_to_dept` es el MISMO texto libre sin
-    # FK que `flow_steps.to_dept` (`app/schemas/rules.py`) — no se valida al
-    # crear/editar la regla (fuera de este cierre), así que una regla vieja, con
-    # una errata, o que apunta a una dependencia luego renombrada/dada de baja
-    # (deuda documentada en CLAUDE.md) haría que `assign` lance 422 aquí.
+    # FK que `flow_steps.to_dept` (`app/schemas/rules.py`). La regla SÍ se valida
+    # al crearla/editarla (`RulesService._validate_assign_to_dept`, 422
+    # fail-closed): aquí solo queda el caso de una dependencia que se renombra o
+    # se da de baja DESPUÉS, que haría que `assign` lance 422 en este punto y
+    # que deja el asiento `workflow.regla_dependencia_invalida` (abajo).
     #
     # Se comprueba ANTES de llamar a `assign` y se resuelve en NO-OP (mismo
     # resultado que "sin regla aplicable": el radicado queda en la bandeja del

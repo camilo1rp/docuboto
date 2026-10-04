@@ -203,6 +203,7 @@ class RBACService:
                 object_ref=str(row["id"]),
                 actor=actor,
                 payload={"username": row["username"], "is_root": bool(row["is_root"])},
+                canal=_audit.CANAL_PETICION,
             )
         return row
 
@@ -227,6 +228,7 @@ class RBACService:
                 object_ref=str(row["id"]),
                 actor=actor,
                 payload={"name": row["name"]},
+                canal=_audit.CANAL_PETICION,
             )
         return row
 
@@ -262,6 +264,7 @@ class RBACService:
                     "antes": {k: previo[k] for k in sorted(fields)},
                     "despues": {k: row[k] for k in sorted(fields)},
                 },
+                canal=_audit.CANAL_PETICION,
             )
         return row
 
@@ -287,6 +290,7 @@ class RBACService:
                     object_ref=str(group_id),
                     actor=actor,
                     payload={"name": previo["name"], "description": previo["description"]},
+                    canal=_audit.CANAL_PETICION,
                 )
         return outcome
 
@@ -325,6 +329,7 @@ class RBACService:
                 object_ref=f"{group_id}:{user_id}",
                 actor=actor,
                 payload={"group_id": str(group_id), "user_id": str(user_id)},
+                canal=_audit.CANAL_PETICION,
             )
 
     async def remove_member(
@@ -348,6 +353,7 @@ class RBACService:
                 object_ref=f"{group_id}:{user_id}",
                 actor=actor,
                 payload={"group_id": str(group_id), "user_id": str(user_id)},
+                canal=_audit.CANAL_PETICION,
             )
 
     async def set_group_permission(
@@ -388,4 +394,5 @@ class RBACService:
                     "permission_id": str(permission_id),
                     "crud": crud,
                 },
+                canal=_audit.CANAL_PETICION,
             )

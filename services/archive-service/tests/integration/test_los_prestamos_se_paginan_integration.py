@@ -178,3 +178,27 @@ async def test_vencido_deja_fuera_al_que_vence_hoy(tenant_ctx) -> None:
 
     assert total == 1
     assert items[0]["fecha_devolucion_esperada"] == date.today() - timedelta(days=1)
+
+
+@pytest.mark.asyncio
+async def test_los_prestamos_de_una_unidad_paginan_y_cuentan_solo_los_suyos(tenant_ctx) -> None:
+    """AREA-07-19: el listado por unidad usa la misma paginación que el global.
+
+    25 préstamos en la unidad A y 4 en la B: con `size=20` la A devuelve 20 y su
+    total es 25 —no 29 ni 20—, y la segunda página trae los 5 restantes.
+    """
+    slug, conn = await _en_tenant(tenant_ctx)
+    a = await _unidad(conn)
+    b = await _unidad(conn)
+    for _ in range(25):
+        await _prestamo(conn, a)
+    for _ in range(4):
+        await _prestamo(conn, b)
+
+    repo = FisicoRepository(conn, slug)
+    p1, total = await repo.list_prestamos(estado=None, unidad_id=a, page=1, size=20)
+    p2, total2 = await repo.list_prestamos(estado=None, unidad_id=a, page=2, size=20)
+
+    assert (len(p1), total) == (20, 25)
+    assert (len(p2), total2) == (5, 25)
+    assert not {r["id"] for r in p1} & {r["id"] for r in p2}

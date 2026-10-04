@@ -66,3 +66,41 @@ async def check(nombre: str, sonda: Callable[[], Awaitable[Any]]) -> str:
 def liveness(service: str) -> dict[str, str]:
     """Cuerpo de la sonda de vivacidad. Sin dependencias, por definición."""
     return {"status": "ok", "service": service}
+
+
+async def consumer_report(
+    redis: Any, estado: dict[str, Any] | None, deadletter_stream: str
+) -> dict[str, Any]:
+    """Qué ve ``/health/ready`` del consumidor de eventos y de su dead-letter.
+
+    ``estado`` es ``events.consumer_status()[nombre]`` (o ``None`` si el
+    consumidor no corre en este proceso). Devuelve el detalle numérico del último
+    barrido de reclamación, el tamaño de la DLQ de Redis (``XLEN``) y un veredicto
+    ``dead_letter``: ``degraded`` si hay entradas en la DLQ o el último barrido
+    aparcó mensajes, ``ok`` si no.
+
+    Solo informa: el consumidor nunca decide el 503 (el servicio atiende peticiones
+    mientras reintenta); lo que se corrige es que el tamaño de la PEL y de la DLQ
+    no se veía en ningún sitio. Un ``XLEN`` que falla no tumba la sonda: el campo
+    queda en ``None`` y el veredicto no se degrada por algo que no se pudo medir.
+    """
+    dlq_len: int | None
+    try:
+        dlq_len = int(await redis.xlen(deadletter_stream))
+    except Exception:
+        logger.warning("XLEN de la dead-letter '%s' falló", deadletter_stream, exc_info=True)
+        dlq_len = None
+    estado = estado or {}
+    ultimo = int(estado.get("dead_lettered", 0) or 0)
+    degradado = bool(dlq_len) or ultimo > 0
+    return {
+        "dead_letter": "degraded" if degradado else "ok",
+        "detalle": {
+            "dead_letter_stream_len": dlq_len,
+            "ultimo_barrido": estado.get("ultimo_barrido"),
+            "reclamados": estado.get("reclamados", 0),
+            "dead_lettered_ultimo_barrido": ultimo,
+            "dead_lettered_total": estado.get("dead_lettered_total", 0),
+            "reinicios": estado.get("reinicios", 0),
+        },
+    }

@@ -235,12 +235,32 @@
   let fEstadoDescripcion = "";
   let fEstadoError = "";
   let actionLoading = false;
+  // Acuse de recibo (AREA-09-10): pasar a mano a «entregado» exige la constancia de entrega.
+  /** @type {FileList|null} */
+  let fAcuseArchivos = null;
+
+  /**
+   * Sube el acuse al almacén (mismo proxy que los anexos de radicación) y devuelve su
+   * identificador y huella. Lanza con un mensaje legible si falla.
+   * @param {File} archivo
+   */
+  async function subirAcuse(archivo) {
+    const form = new FormData();
+    form.append("file", archivo);
+    const res = await fetch("/radicar/api/storage", { method: "POST", body: form });
+    const datos = await res.json().catch(() => null);
+    if (!res.ok || !datos?.id || !datos?.sha256) {
+      throw new Error(mensajeError(datos, "No se pudo subir el acuse de recibo."));
+    }
+    return { id: datos.id, sha256: datos.sha256 };
+  }
 
   function abrirModalEstado() {
     if (!selectedShipment) return;
     fEstado = selectedShipment.estado;
     fEstadoDescripcion = "";
     fEstadoError = "";
+    fAcuseArchivos = null;
     // IMPORTANTE #3: cerrar el drawer antes de abrir el modal para evitar dos
     // trampas de foco y que Escape cierre ambos diálogos a la vez.
     // selectedShipment se mantiene en memoria para usarlo en cambiarEstado().
@@ -256,12 +276,32 @@
       return;
     }
 
+    const archivoAcuse = fAcuseArchivos?.[0] ?? null;
+    if (fEstado === "entregado" && !archivoAcuse) {
+      fEstadoError = "Adjunte el acuse de recibo: sin la constancia de entrega no se registra «entregado».";
+      return;
+    }
+
     actionLoading = true;
     try {
+      /** @type {{id: string, sha256: string}|null} */
+      let acuseSubido = null;
+      if (fEstado === "entregado" && archivoAcuse) {
+        try {
+          acuseSubido = await subirAcuse(archivoAcuse);
+        } catch (e) {
+          fEstadoError = e instanceof Error ? e.message : "No se pudo subir el acuse de recibo.";
+          return;
+        }
+      }
       const res = await fetch(`/envios/api/${selectedShipment.id}/estado`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ estado: fEstado, descripcion: fEstadoDescripcion.trim() || null }),
+        body: JSON.stringify({
+          estado: fEstado,
+          descripcion: fEstadoDescripcion.trim() || null,
+          ...(acuseSubido ? { acuse_file_id: acuseSubido.id, acuse_sha256: acuseSubido.sha256 } : {}),
+        }),
       });
       const responseData = await res.json();
       if (!res.ok) {
@@ -945,6 +985,23 @@
       error={fEstadoError}
       options={ESTADOS_OPTIONS}
     />
+    {#if fEstado === "entregado"}
+      <div class="field">
+        <label class="label" for="envio-acuse">Acuse de recibo</label>
+        <input
+          id="envio-acuse"
+          class="input"
+          type="file"
+          accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff"
+          bind:files={fAcuseArchivos}
+          aria-describedby="envio-acuse-ayuda"
+        />
+        <p class="help" id="envio-acuse-ayuda">
+          Obligatorio: la constancia de entrega firmada por el destinatario o certificada por el
+          operador. Queda ligada al envío por su huella SHA-256.
+        </p>
+      </div>
+    {/if}
     <FormField
       id="envio-estado-desc"
       label="Nota descriptiva (opcional)"

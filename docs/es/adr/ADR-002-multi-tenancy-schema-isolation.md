@@ -29,15 +29,18 @@ CREATE SCHEMA tenant_icetex;
 
 ### Session Middleware Pattern
 
+> **Nota (2026-10-03) — parcialmente superado por [ADR-003](ADR-003-asyncpg-sin-orm.md) (sin ORM ni Alembic) y [ADR-027](ADR-027-sustitucion-almacen-objetos-rustfs.md) (RustFS).**
+> La decisión (un schema por tenant) sigue vigente; la receta original interpolaba el slug sin
+> validar ni entrecomillar, que es una inyección en `search_path`. La forma real es la de abajo.
+
 ```python
-# On each request, extract tenant from JWT and switch search_path
-async def set_tenant_schema(session: AsyncSession, tenant_slug: str):
-    await session.execute(
-        text(f"SET search_path TO tenant_{tenant_slug}, public")
-    )
+# On each request: validate the slug (fail-closed), derive the schema, quote it
+schema = tenant_schema(request.headers.get("X-Tenant-Slug", ""))  # ^[a-z0-9-]+$ -> tenant_{slug}
+async with pool.acquire() as conn:                                  # asyncpg, no ORM
+    await conn.execute(f'SET search_path = "{schema}", public')
 ```
 
-### MinIO Bucket Pattern
+### Object-store Bucket Pattern (originally "MinIO"; now RustFS, ADR-027)
 
 ```
 orpycamcp-{slug}-documents     # Annexes and files
@@ -54,7 +57,7 @@ orpycamcp-{slug}-templates     # Document templates
 
 **Negative:**
 - Schema provisioning required on tenant creation (automated via tenant-service)
-- Alembic migrations must run per tenant schema
+- Numbered `.sql` migrations (applied by `migrations/runner.py`; originally written as "Alembic", superseded by ADR-003) must run per tenant schema
 - `search_path` must be set at session start — handled by middleware
 
 ## Alternatives Considered

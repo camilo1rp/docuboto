@@ -689,6 +689,9 @@ async def test_internal_verify_success_advances_timestep(
         assert body["valido"] is True
         assert body["timestep"] == t
         assert body["factor_tipo"] == "totp"
+        # AREA-04-05: dice DE QUIÉN era el factor, para que el llamante lo cruce
+        # con el actor al que atribuye el acto.
+        assert body["user_id"] == str(USER_ID)
         advance_calls = [
             c for c in conn.execute.call_args_list if "last_timestep = $2" in str(c.args[0])
         ]
@@ -1131,3 +1134,178 @@ async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
     body2 = resp2.json()
     assert body2["valido"] is True
     assert body2["factor_tipo"] == "totp"
+
+
+# ---------------------------------------------------------------------------
+# GET /internal/totp/status — AREA-04-02 / AREA-04-05 (signature-service)
+# ---------------------------------------------------------------------------
+
+_STATUS_TOKEN = "test-internal-token"
+
+
+@pytest.fixture
+def _internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "signing_key_internal_token", _STATUS_TOKEN)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("estado", "activo"),
+    [("activo", True), ("pendiente_activacion", False)],
+)
+async def test_internal_totp_status_reports_active_and_owner(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _internal_token: None,
+    estado: str,
+    activo: bool,
+) -> None:
+    _mock_validate_token(
+        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
+    )
+    conn = _make_conn()
+    secret = generate_secret()
+    conn.fetchrow.side_effect = [_user_row(), _totp_row(secret=secret, estado=estado)]
+    conn.fetchval.return_value = 0  # recovery codes restantes
+    _override_internal(conn)
+    try:
+        resp = await client.get(
+            "/internal/totp/status",
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
+        )
+    finally:
+        _clear()
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"activo": activo, "user_id": str(USER_ID)}
+
+
+@pytest.mark.asyncio
+async def test_internal_totp_status_no_configurado(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
+) -> None:
+    _mock_validate_token(
+        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
+    )
+    conn = _make_conn()
+    conn.fetchrow.side_effect = [_user_row(), None]
+    _override_internal(conn)
+    try:
+        resp = await client.get(
+            "/internal/totp/status",
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
+        )
+    finally:
+        _clear()
+    assert resp.status_code == 200
+    assert resp.json() == {"activo": False, "user_id": str(USER_ID)}
+
+
+@pytest.mark.asyncio
+async def test_internal_totp_status_unprovisioned_user_is_inactive_without_owner(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
+) -> None:
+    _mock_validate_token(
+        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
+    )
+    conn = _make_conn()
+    conn.fetchrow.side_effect = [None]
+    _override_internal(conn)
+    try:
+        resp = await client.get(
+            "/internal/totp/status",
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
+        )
+    finally:
+        _clear()
+    assert resp.status_code == 200
+    assert resp.json() == {"activo": False, "user_id": None}
+
+
+@pytest.mark.asyncio
+async def test_internal_totp_status_requires_internal_token(
+    client: AsyncClient, _internal_token: None
+) -> None:
+    conn = _make_conn()
+    _override_internal(conn)
+    try:
+        resp = await client.get(
+            "/internal/totp/status", headers={"Authorization": "Bearer faketoken"}
+        )
+        bad = await client.get(
+            "/internal/totp/status",
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": "otro"},
+        )
+    finally:
+        _clear()
+    assert resp.status_code == 401
+    assert bad.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_internal_totp_status_missing_bearer_returns_401_even_with_internal_token(
+    client: AsyncClient, _internal_token: None
+) -> None:
+    """El token de servicio NO sustituye a la identidad: sin bearer no hay dueño."""
+    conn = _make_conn()
+    _override_internal(conn)
+    try:
+        resp = await client.get(
+            "/internal/totp/status", headers={"X-Internal-Token": _STATUS_TOKEN}
+        )
+    finally:
+        _clear()
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "missing_token"
+    conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_internal_totp_status_without_tenant_claim_is_inactive_and_never_touches_db(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
+) -> None:
+    """Fail-closed: sin tenant en el JWT no se adivina schema ni se consulta nada."""
+    _mock_validate_token(monkeypatch, {"user_id": "kc-sub", "username": "operador"})
+    conn = _make_conn()
+    _override_internal(conn)
+    try:
+        resp = await client.get(
+            "/internal/totp/status",
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
+        )
+    finally:
+        _clear()
+    assert resp.status_code == 200
+    assert resp.json() == {"activo": False, "user_id": None}
+    conn.fetchrow.assert_not_awaited()
+    conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_internal_verify_invalid_code_does_not_attribute_an_owner(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``user_id`` solo acompaña a un factor VÁLIDO (AREA-04-05): un código
+    incorrecto no debe revelar a quién pertenece el bearer."""
+    _mock_validate_token(
+        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
+    )
+    conn = _make_conn()
+    secret = generate_secret()
+    conn.fetchrow.side_effect = [
+        _user_row(),
+        _totp_row(secret=secret, estado="activo", last_timestep=0, failed_attempts=0),
+        {"failed_attempts": 1, "locked_until": None},
+    ]
+    _override_internal(conn)
+    try:
+        resp = await client.post(
+            "/internal/totp/verify",
+            json={"code": "000000"},
+            headers={"Authorization": "Bearer faketoken"},
+        )
+    finally:
+        _clear()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["valido"] is False
+    assert body.get("user_id") is None

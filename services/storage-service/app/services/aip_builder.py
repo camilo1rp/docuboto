@@ -47,6 +47,7 @@ from typing import Literal
 from lxml import etree
 
 from app.services.pdfa.types import PdfaResult
+from app.services.pronom import FORMAT_NOTE, REGISTRY_NAME, puid_for_mime
 
 _PREMIS_NS = "http://www.loc.gov/premis/v3"
 _XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
@@ -197,6 +198,14 @@ def _build_object_element(
     fmt = _sub(chars, "format")
     designation = _sub(fmt, "formatDesignation")
     _sub(designation, "formatName", mime_type or "application/octet-stream")
+    # AREA-08-05: formatRegistry va DESPUÉS de formatDesignation y ANTES de
+    # formatNote (secuencia del XSD oficial). PUID declarado, no identificado.
+    puid = puid_for_mime(mime_type)
+    if puid is not None:
+        registry = _sub(fmt, "formatRegistry")
+        _sub(registry, "formatRegistryName", REGISTRY_NAME)
+        _sub(registry, "formatRegistryKey", puid)
+        _sub(fmt, "formatNote", FORMAT_NOTE)
     _sub(obj, "originalName", original_name)
     storage = _sub(obj, "storage")
     loc = _sub(storage, "contentLocation")

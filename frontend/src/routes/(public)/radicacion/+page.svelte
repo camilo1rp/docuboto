@@ -46,6 +46,28 @@
   let descripcion = "";
   /** @type {FileList|null} */
   let archivos = null;
+  // Ley 1581/2012: sin autorización expresa no se radica por esta puerta.
+  let aceptaTratamiento = false;
+  // Honeypot (AREA-02-07): un campo que ninguna persona ve ni rellena. Un script que
+  // rellena todo lo que encuentra en el HTML lo delata y el backend lo rechaza antes
+  // de consumir un número.
+  let sitioWeb = "";
+  // Clave de idempotencia: UNA por contenido distinto. Un reintento idéntico reutiliza
+  // la misma (el backend devuelve el radicado ya creado); si el usuario edita el
+  // formulario tras un fallo, el contenido cambia y se genera otra, porque la misma
+  // clave con otro contenido sería un 409.
+  let ultimoEnvio = { firma: "", clave: "" };
+
+  function nuevaClave() {
+    const c = globalThis.crypto;
+    return c?.randomUUID ? c.randomUUID() : `k${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  /** @param {string} firma */
+  function claveParaEnvio(firma) {
+    if (ultimoEnvio.firma !== firma) ultimoEnvio = { firma, clave: nuevaClave() };
+    return ultimoEnvio.clave;
+  }
 
   let enviando = false;
   let error = "";
@@ -75,7 +97,17 @@
       return;
     }
 
+    if (!aceptaTratamiento) {
+      error =
+        "Debe autorizar el tratamiento de sus datos personales para poder radicar " +
+        "(Ley 1581 de 2012).";
+      return;
+    }
+
     const datos = {
+      acepta_tratamiento: true,
+      politica_version: data.politica?.version ?? "sin-politica-publicada",
+      sitio_web: sitioWeb,
       tipo_documental: tipoDocumental,
       nombre: nombre.trim(),
       entidad: entidad.trim() || null,
@@ -94,7 +126,14 @@
 
     enviando = true;
     try {
-      const res = await fetch("/radicacion/api", { method: "POST", body: cuerpo });
+      const firma =
+        JSON.stringify(datos) +
+        Array.from(archivos ?? [], (a) => `${a.name}:${a.size}:${a.lastModified}`).join("|");
+      const res = await fetch("/radicacion/api", {
+        method: "POST",
+        body: cuerpo,
+        headers: { "Idempotency-Key": claveParaEnvio(firma) },
+      });
       const resultado = await res.json().catch(() => null);
       if (!res.ok) {
         error = mensajeError(resultado, "No se pudo radicar en este momento.");
@@ -291,6 +330,42 @@
           </p>
         </fieldset>
 
+        <!-- Honeypot: fuera de pantalla y del orden de tabulación; no es un campo para personas. -->
+        <div class="vent__trampa" aria-hidden="true">
+          <label for="sitio_web">No rellenar</label>
+          <input
+            id="sitio_web"
+            name="sitio_web"
+            type="text"
+            tabindex="-1"
+            autocomplete="off"
+            bind:value={sitioWeb}
+          />
+        </div>
+
+        <fieldset class="vent__grupo">
+          <legend>Tratamiento de datos personales</legend>
+          <label class="vent__check" for="acepta-tratamiento">
+            <input
+              id="acepta-tratamiento"
+              type="checkbox"
+              bind:checked={aceptaTratamiento}
+              aria-describedby="politica-ayuda"
+            />
+            <span>
+              Autorizo a la entidad el tratamiento de mis datos personales para gestionar esta
+              solicitud, conforme a la Ley 1581 de 2012{#if data.politica?.url}
+                y a su
+                <a href={data.politica.url} target="_blank" rel="noopener noreferrer"
+                  >política de tratamiento de datos</a
+                >{/if}.
+            </span>
+          </label>
+          <p class="vent__hint" id="politica-ayuda">
+            Se conserva constancia de su autorización (versión de la política, fecha y hora).
+          </p>
+        </fieldset>
+
         {#if error}
           <p class="vent__aviso vent__aviso--error" role="alert">{error}</p>
         {/if}
@@ -304,6 +379,31 @@
 </div>
 
 <style lang="scss">
+  // `position: absolute` solo se recorta con un bloque contenedor posicionado en la
+  // cadena: el formulario lo es (ver `.vent__form`), así que la trampa NO puede
+  // desplazar el documento a lo ancho (el defecto de los `sr-only` de 1 px).
+  .vent__trampa {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .vent__check {
+    display: flex;
+    gap: var(--op-space-2);
+    align-items: flex-start;
+    cursor: pointer;
+
+    input {
+      margin-top: 0.25rem;
+    }
+  }
+
   .vent {
     min-height: 100vh;
     display: flex;
@@ -340,6 +440,7 @@
     }
 
     &__form {
+      position: relative; // bloque contenedor de la trampa (ver `.vent__trampa`)
       display: grid;
       gap: var(--op-space-5);
     }

@@ -90,10 +90,19 @@ class ConfigRepository:
         val = await self._conn.fetchval("SELECT value FROM sgd_param_admin WHERE key = $1", key)
         return json.loads(val) if val is not None else None
 
-    async def upsert_param(self, key: str, value: Any, actor_id: uuid.UUID | None) -> None:
-        """Inserta/actualiza el parámetro y audita el cambio en la misma transacción."""
+    async def upsert_param(
+        self, key: str, value: Any, actor_id: uuid.UUID | None
+    ) -> tuple[bool, Any]:
+        """Inserta/actualiza el parámetro y audita el cambio en la misma transacción.
+
+        Devuelve ``(existía, valor_anterior)`` para que el llamante asiente el
+        «antes» en el Canal A. La lectura previa va ``FOR UPDATE``: dos cambios
+        concurrentes no pueden asentar el mismo «antes».
+        """
         async with self._conn.transaction():
-            old = await self._conn.fetchval("SELECT value FROM sgd_param_admin WHERE key = $1", key)
+            old = await self._conn.fetchval(
+                "SELECT value FROM sgd_param_admin WHERE key = $1 FOR UPDATE", key
+            )
             await self._conn.execute(
                 """
                 INSERT INTO sgd_param_admin (key, value, updated_by)
@@ -118,3 +127,4 @@ class ConfigRepository:
                 json.dumps(value),
                 actor_id,
             )
+            return old is not None, (json.loads(old) if isinstance(old, str) else old)

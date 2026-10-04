@@ -173,9 +173,11 @@ class FirmaResponse(BaseModel):
     # `xades_level` — regla para consumidores (UI/reportes/eventos): "XAdES-T"
     # nunca se renderiza sin `tsa_acreditado`, y jamás se rotula como "sello
     # de tiempo acreditado"/"fecha cierta cualificada" mientras sea False (la
-    # TSA local no está acreditada ante ONAC — camino a TSA acreditada real
-    # vía `settings.tsa_url` queda como roadmap explícito, no implementado en
-    # este incremento).
+    # TSA local no está acreditada ante ONAC). Con una TSA remota RFC 3161
+    # configurada (`settings.tsa_url`, cliente implementado en app/core/tsa.py)
+    # `tsa_acreditado` es True solo si además `settings.tsa_acreditada`
+    # declara que ese prestador es acreditado: lo que falta es contratarlo, no
+    # código.
     tsa_timestamp: datetime | None = None
     tsa_acreditado: bool = False
 
@@ -255,7 +257,9 @@ class VerifyResponse(BaseModel):
     # revocación no dice que la firma fue falsificada, dice que la clave del
     # firmante ya no está vigente. `valida` (arriba) SÍ incorpora la
     # revocación cuando aplica: para `provider='xades_personal'`,
-    # `valida = firma_criptograficamente_valida AND revocacion_status == 'vigente'`.
+    # `valida = firma_criptograficamente_valida AND (revocacion_status == 'vigente'
+    # OR revocacion_posterior)` (AREA-04-13: una revocación POSTERIOR al genTime
+    # de una TSA verificada, y no por compromiso de clave, no la invalida).
     # Para `provider != 'xades_personal'` (sello institucional/HMAC nativo),
     # la revocación no aplica — `revocacion_status` queda `None` y
     # `firma_criptograficamente_valida == valida` siempre.
@@ -265,3 +269,9 @@ class VerifyResponse(BaseModel):
     # usuario titular fue borrado por CASCADE; fail-closed, NUNCA `vigente`
     # en ese caso) — `None` cuando no aplica (firma no personal).
     revocacion_status: str | None = None
+    # `True` cuando el certificado SE REVOCÓ DESPUÉS del genTime de una TSA
+    # verificada (única fecha cierta) y el motivo no es `key_compromise`: la
+    # firma fue válida cuando se hizo y `valida` no la retroactúa. `None` cuando
+    # no aplica (no personal, no revocado, sin TSA verificada —motivo
+    # `instante_firma_no_cierto`, valida=False— o `clave_comprometida`).
+    revocacion_posterior: bool | None = None

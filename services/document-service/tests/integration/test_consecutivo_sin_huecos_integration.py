@@ -49,7 +49,7 @@ async def test_un_fallo_tras_tomar_el_numero_no_lo_consume(
     svc = DocumentService(conn, slug)
     year = await conn.fetchval("SELECT EXTRACT(YEAR FROM now() AT TIME ZONE 'America/Bogota')::int")
 
-    ok = await svc.create(DocumentCreate(doc_type="E", subject="Primer radicado"), None)
+    ok = await svc.create(DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Primer radicado"), None)
     assert ok.tracking_number.endswith("-E-000001")
     assert await _last_seq(conn, year) == 1
 
@@ -57,6 +57,8 @@ async def test_un_fallo_tras_tomar_el_numero_no_lo_consume(
         await svc.create(
             DocumentCreate(
                 doc_type="E",
+                doc_class="Petición",
+                dest_dept_code=1,
                 subject="Con un tercero que no existe",
                 actores=[{"tercero_id": uuid.uuid4(), "rol": "remitente", "principal": True}],
             ),
@@ -65,7 +67,7 @@ async def test_un_fallo_tras_tomar_el_numero_no_lo_consume(
     assert exc.value.status_code == 404
     assert await _last_seq(conn, year) == 1, "el 404 quemó un número sin asiento"
 
-    siguiente = await svc.create(DocumentCreate(doc_type="E", subject="Tercer intento"), None)
+    siguiente = await svc.create(DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Tercer intento"), None)
     assert siguiente.tracking_number.endswith("-E-000002")
     assert await _last_seq(conn, year) == 2
 
@@ -100,6 +102,8 @@ async def test_radicacion_concurrente_con_fallos_no_repite_ni_deja_huecos(
             malo = i % 3 == 2  # 5 de 15 fallan DESPUÉS de tomar el número
             payload = DocumentCreate(
                 doc_type="E",
+                doc_class="Petición",
+                dest_dept_code=1,
                 subject=f"Concurrente {i}",
                 actores=[{"tercero_id": uuid.uuid4(), "rol": "remitente", "principal": True}]
                 if malo

@@ -105,6 +105,7 @@ class ImportHuerfanosService:
                             for r in agotados
                         ],
                     },
+                    canal=audit.CANAL_PETICION,
                 )
 
     async def purgar(self, *, import_uuid: uuid.UUID | None = None) -> dict[str, int]:
@@ -166,6 +167,7 @@ class ImportHuerfanosService:
                         object_ref=str(imp),
                         actor=str(actor) if actor else None,
                         payload={"import_uuid": str(imp), "binarios": transitados},
+                        canal=audit.CANAL_PETICION,
                     )
             for r in fallidos:
                 await self._fallar(imp, [r.file_id], r.detalle or r.resultado, actor)

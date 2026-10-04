@@ -46,7 +46,7 @@ async def test_un_tenant_que_falla_no_frena_a_los_demas(monkeypatch) -> None:
     monkeypatch.setattr(barrido, "tenants_activos", AsyncMock(return_value=["a", "b", "c"]))
     vistos: list[str] = []
 
-    async def _barrer(slug):
+    async def _barrer(slug, redis=None):
         vistos.append(slug)
         if slug == "a":
             raise RuntimeError("boom")
@@ -70,7 +70,12 @@ async def test_una_fase_que_falla_no_impide_las_siguientes(monkeypatch) -> None:
     monkeypatch.setattr(barrido.BatchService, "reanudar_interrumpidos", reanuda)
     monkeypatch.setattr(barrido.BatchService, "purgar_lotes_antiguos", retira)
     r = await barrido.barrer_tenant("demo")
-    assert r == {"huerfanos": 0, "lotes_reanudados": 2, "lotes_retirados": 5}
+    assert r == {
+        "huerfanos": 0,
+        "lotes_reanudados": 2,
+        "lotes_retirados": 5,
+        "eventos_reenviados": 0,
+    }
     purga.assert_awaited_once()
     reanuda.assert_awaited_once()
 

@@ -71,6 +71,7 @@ async def test_append_inserts_and_returns_hash() -> None:
     conn = _mock_conn(prev_hash=None)
     row_hash = await audit.append(
         conn,
+        canal="api",
         tenant_slug="icetex",
         service="document-service",
         action="radicado.creado",
@@ -102,6 +103,7 @@ async def test_append_uses_system_tenant_when_none() -> None:
     conn = _mock_conn()
     await audit.append(
         conn,
+        canal="api",
         tenant_slug=None,
         service="auth-service",
         action="auth.logout",

@@ -48,7 +48,16 @@ JOB_ID = uuid.uuid4()
 
 
 def _payload() -> dict:
-    return {"documents": [{"doc_type": "E", "subject": "Solicitud de información"}]}
+    return {
+        "documents": [
+            {
+                "doc_type": "E",
+                "subject": "Solicitud de información",
+                "doc_class": "Petición",
+                "dest_dept_code": 1,
+            }
+        ]
+    }
 
 
 def _job_row(**kw) -> dict:
@@ -149,7 +158,10 @@ async def test_create_batch_documents_too_many_422(client_with_conn) -> None:
     """max_length=1000 — 1001 documentos es 422."""
     client, mock_conn = client_with_conn
     payload = {
-        "documents": [{"doc_type": "E", "subject": f"Documento {i}"} for i in range(1001)]
+        "documents": [
+            {"doc_type": "E", "subject": f"Documento {i}", "doc_class": "P", "dest_dept_code": 1}
+            for i in range(1001)
+        ]
     }
     resp = await client.post("/api/v1/batch/documents", json=payload, headers=TENANT_HEADERS)
     assert resp.status_code == 422
@@ -229,7 +241,8 @@ def _item_payload(subject: str, doc_type: str = "E") -> str:
         {
             "doc_type": doc_type,
             "subject": subject,
-            "doc_class": None,
+            "doc_class": "Petición",
+            "dest_dept_code": 1,
             "dest_dept": None,
             "sender_name": None,
             "sender_entity": None,
@@ -289,6 +302,8 @@ async def test_process_batch_documents_emits_one_audit_entry_per_radicado() -> N
             return "pending"
         if "RETURNING COALESCE(reprocesado_por, created_by)" in query:
             return created_by
+        if "FROM dependencias WHERE codigo" in query:
+            return "Dirección General"
         if "SELECT code FROM tenants" in query:
             return "DEMO"
         if "INSERT INTO tracking_sequences" in query:
@@ -309,6 +324,8 @@ async def test_process_batch_documents_emits_one_audit_entry_per_radicado() -> N
     final_row = {"total_items": 2, "processed_items": 2, "failed_items": 0}
 
     async def _fetchrow(query, *args, **kwargs):
+        if "FROM metadata_templates" in query:
+            return None
         if "INSERT INTO radicados" in query:
             return next(radicado_rows)
         if "SELECT total_items" in query:
@@ -384,6 +401,8 @@ async def test_process_batch_documents_item_failure_marks_failed_outside_tx() ->
             return "pending"
         if "RETURNING COALESCE(reprocesado_por, created_by)" in query:
             return created_by
+        if "FROM dependencias WHERE codigo" in query:
+            return "Dirección General"
         if "SELECT code FROM tenants" in query:
             return "DEMO"
         if "INSERT INTO tracking_sequences" in query:
@@ -400,6 +419,8 @@ async def test_process_batch_documents_item_failure_marks_failed_outside_tx() ->
     insert_count = {"n": 0}
 
     async def _fetchrow(query, *args, **kwargs):
+        if "FROM metadata_templates" in query:
+            return None
         if "INSERT INTO radicados" in query:
             insert_count["n"] += 1
             if insert_count["n"] == 2:

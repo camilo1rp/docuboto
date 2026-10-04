@@ -117,6 +117,9 @@ def _cuerpo(**kw) -> dict:
         "email": "ana@example.org",
         "asunto": "Solicitud de certificación",
         "descripcion": "Requiero certificación laboral de los últimos dos años.",
+        # Ley 1581/2012 (AREA-09-08): sin autorización no se radica por esta puerta.
+        "acepta_tratamiento": True,
+        "politica_version": "2026-01",
     }
     base.update(kw)
     return base

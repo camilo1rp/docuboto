@@ -25,3 +25,17 @@ Usado por `POST /preservacion/proteger-indice-internal` (D-02, gate
 import uuid
 
 SYSTEM_RECONCILER_ID = uuid.UUID("00000000-0000-0000-0000-000000005ec1")
+
+
+def canal_del_acto(actor: str | None) -> str:
+    """Canal del asiento de un acto de preservación (AREA-03-07).
+
+    Las rutas `*-internal` las dispara el job de reconciliación de archive-service con
+    `SYSTEM_RECONCILER_ID` como actor, y no llevan `X-Canal` (no hay persona detrás):
+    sin esto se asentaban 'api'. Un actor humano hereda el canal de su petición.
+    """
+    from orpycamcp_common.audit import CANAL_PETICION
+
+    if actor is not None and str(actor) == str(SYSTEM_RECONCILER_ID):
+        return "system"
+    return CANAL_PETICION

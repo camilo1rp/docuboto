@@ -182,6 +182,8 @@ async def create_document(
                 "error": "metadata_validation_failed",
                 "detail": str(exc),
                 "status": 422,
+                # Propiedad que incumple (`a.b`), para marcar el control.
+                **({"field": exc.field} if exc.field else {}),
             },
         )
     except InvalidDependenciaError as exc:
@@ -555,12 +557,18 @@ async def set_publicacion(
             clearance,
             actor=_actor_str(request),
             canal=request.headers.get("X-Canal") or "system",
+            anexos_publicables=payload.anexos_publicables,
         )
     except DocumentNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "document_not_found", "detail": str(document_id), "status": 404},
         )
+    except AnexoNoDisponibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "anexo_no_pertenece", "detail": str(exc), "status": 422},
+        ) from exc
     return PublicacionResponse(**resultado)
 
 
@@ -755,6 +763,8 @@ async def update_document(
                 "error": "metadata_validation_failed",
                 "detail": str(exc),
                 "status": 422,
+                # Propiedad que incumple (`a.b`), para marcar el control.
+                **({"field": exc.field} if exc.field else {}),
             },
         )
     except DestDeptImmutableError as exc:

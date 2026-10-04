@@ -15,23 +15,16 @@
  * POST /api/v1/expedientes/{id}/radicados — `RadicadoLink`
  * (archive-service, `app/schemas/archive.py`): `radicado_id` (uuid) y
  * `tracking_number` (1..50) son obligatorios; el resto de campos del schema
- * (formato, tamano_bytes, folios, dependencia_productora_*) son metadatos
- * RT-15 del índice electrónico que este proxy NO pide — `radicado_id` /
- * `tracking_number` / `doc_class` es lo que el buscador de radicados
- * (GET /search, reutilizado por el Drawer de vinculación) expone en el hit;
- * pedir el resto obligaría a una segunda consulta a document-service que el
- * backend no exige. En el perfil v4 esos tres son `minOccurs="0"`, así que el
- * índice los declara ausentes y sigue siendo conforme.
- *
- * `content_hash` es la EXCEPCIÓN y conviene no repetir el error de creerlo
- * omitido: archive-service lo resuelve **en el servidor**
- * (`ArchiveService._huellas_por_radicado`, E15 T-08) a partir del SHA-256 que
- * storage-service calculó al subir cada anexo. No se le pide al cliente a
- * propósito — una huella que aporta quien vincula no prueba nada sobre lo que
- * el archivo custodia. Comprobado vinculando desde esta misma pantalla: el
- * `content_hash` queda escrito sin que este proxy lo mande. Este comentario
- * afirmaba lo contrario («el índice los omite si no se declaran»), que es
- * justo la clase de frase que hace dar por perdida una garantía que sí está.
+ * (formato, tamano_bytes, folios, dependencia_productora_*, tipologia,
+ * content_hash) este proxy NO los pide, y no hay que pedirlos: archive-service
+ * resuelve **en el servidor** número, tipología, dependencia productora,
+ * formato, tamaño y huella (`ArchiveService._resolver_metadatos_vinculo`,
+ * AREA-07-02/06-08) a partir de document-service y storage-service, y coteja
+ * `tracking_number` con el que guarda el radicado (422 `metadato_no_coincide`
+ * si no es el suyo). Un dato probatorio que aporta quien vincula no prueba nada
+ * sobre lo que el archivo custodia, y el índice se firma. Si document-service no
+ * responde, el vínculo falla cerrado (503): no se vincula lo que no se pudo
+ * verificar.
  *
  * POST → vincula el radicado.
  *   Body: { radicado_id: string (uuid), tracking_number: string }

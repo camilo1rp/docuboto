@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from app.services import origen
+
 
 class IdentityError(Exception):
     """Fallo al resolver identidad/permisos contra el auth-service (vía gateway)."""
@@ -87,7 +89,7 @@ async def resolve_identity(
     try:
         resp = await gateway_client.get(
             "/api/v1/auth/me",
-            headers={"Authorization": authorization, "X-Tenant-Slug": tenant_slug},
+            headers=origen.cabeceras_de_origen(authorization, tenant_slug),
         )
     except httpx.RequestError as exc:
         raise IdentityError(502, "gateway_unreachable") from exc

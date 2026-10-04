@@ -263,6 +263,12 @@ $op-reading-max: 880px;
   // Velo de ACOMPAÑAMIENTO: el asistente se abre sobre la pantalla sin
   // pretender que el resto desaparece, y su velo es deliberadamente más suave.
   --op-scrim-soft: rgba(#{$op-scrim-rgb}, 0.25);
+  // Blanco translúcido sobre superficie de MARCA (landing, login): chips,
+  // su borde y texto atenuado. Neutros: no dependen del rebranding, pero viven
+  // aquí y no repartidos como literales por las pantallas públicas.
+  --op-on-brand-overlay: rgba(255, 255, 255, 0.14);
+  --op-on-brand-overlay-border: rgba(255, 255, 255, 0.28);
+  --op-on-brand-text-muted: rgba(255, 255, 255, 0.85);
   --op-bg: #{$op-bg};
   --op-surface: #{$op-surface};
 

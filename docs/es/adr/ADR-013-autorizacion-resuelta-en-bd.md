@@ -69,10 +69,18 @@ Keycloak sigue siendo el único emisor de tokens (solo autentica).**
   por (tenant, user) con TTL corto e invalidación en cambios de RBAC si el perfil de carga lo
   exige. No se cachea en v1 (correctitud primero).
 - **Lazy-provisioning**: un usuario válido en Keycloak puede no existir aún en `auth_users`
-  del tenant. v1: si no existe, no tiene permisos → 403. La autocreación se decide aparte.
+  del tenant. **Decidido y vigente**: `/validate` lo autocrea en el primer acceso
+  (`RBACRepository.upsert_user_by_keycloak_sub`); un usuario recién aprovisionado no tiene
+  grupos, así que sigue sin permisos → 403 hasta que se le asigne uno. En los demás servicios,
+  si la fila no existe, el gate falla cerrado.
 - Cada servicio que autorice necesita acceso al schema del tenant (`get_tenant_conn`) y a la
-  resolución de permisos (hoy en auth-service; se generalizará a `orpycamcp_common` si más de
-  un servicio la necesita, [ADR-010](ADR-010-libreria-compartida.md)).
+  resolución de permisos. **Generalizado (AREA-01-17)**: `check_permission`,
+  `resolve_caller_clearance`, `nivel_efectivo` y `mensaje_denegacion` viven UNA vez en
+  `orpycamcp_common.rbac` ([ADR-010](ADR-010-libreria-compartida.md)); cada servicio las importa
+  en su `core/clearance.py` (o `authz.py`) y conserva solo `require_permission`, que depende
+  de su `get_tenant_conn`. `shared/tests/test_el_gate_se_define_una_vez.py` falla si reaparece
+  una definición fuera de la librería. Una caché por (tenant, usuario) sigue fuera mientras no
+  haya un perfil de carga que la exija.
 
 ## Alternativas descartadas
 

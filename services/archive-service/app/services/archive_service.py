@@ -14,7 +14,7 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 import asyncpg
@@ -25,6 +25,7 @@ from app.clients import document_client
 from app.clients.document_client import DocumentClientError, DocumentPurgaError
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
+from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.core.http_errors import motivo_de
 from app.core.huella_documento import huella_de_documento
@@ -77,6 +78,7 @@ from app.schemas.archive import (
     TvdAgrupacionUpdate,
     TvdAgrupacionVersionCreate,
 )
+from app.services.backoff import next_backoff_seconds
 from app.services.eliminacion_acta import construir_acta_xml
 from app.services.metadata_service import validate_metadata
 
@@ -315,6 +317,7 @@ class ArchiveService:
                 # la apertura (barato de incluir, valioso cuando >=2/RESERVADA-
                 # CLASIFICADA): ver el gate no-write-up más arriba.
                 payload={"id": str(expediente.id), "nivel_seguridad": expediente.nivel_seguridad},
+                canal=audit.CANAL_PETICION,
             )
         return _to_expediente_response(expediente)
 
@@ -933,6 +936,46 @@ class ArchiveService:
         await self._audit_aip_access(expediente.code, user_id=user_id, canal=canal)
         return aip
 
+    async def reintentar_aip(
+        self, expediente_id: uuid.UUID, *, actor: str, user_id: uuid.UUID | None
+    ) -> dict:
+        """Reintento MANUAL del empaquetado de un AIP `agotado` (AREA-07-14).
+
+        El job solo lo pasa a `agotado` tras `indice_reconciliation_max_intentos`; sin
+        esta ruta el AIP de un expediente quedaba sin empaquetar para siempre salvo
+        tocar la base. UPDATE gateado en el WHERE por estado y por clearance
+        (`AipRepository.reintentar_manual`) y asiento `archive.aip_reintento_manual` en
+        la MISMA transacción. 404 neutro si no aplica por cualquier causa: expediente
+        inexistente o por encima del clearance, AIP que no está `agotado`."""
+        from app.repositories.aip_repository import AipRepository
+
+        max_clearance = await self._repo.caller_clearance(user_id)
+        async with self._conn.transaction():
+            fila = await AipRepository(self._conn).reintentar_manual(
+                expediente_id, max_clearance=max_clearance
+            )
+            if fila is None:
+                raise _expediente_not_found(expediente_id)
+            code = await self._conn.fetchval(
+                "SELECT code FROM expedientes WHERE id = $1", expediente_id
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.aip_reintento_manual",
+                object_type="expediente_aip",
+                object_ref=code or str(expediente_id),
+                actor=actor,
+                payload={
+                    "expediente_id": str(expediente_id),
+                    "intentos_previos": fila["intentos_previos"],
+                    "error_previo": fila["error_previo"],
+                },
+                canal=audit.CANAL_PETICION,
+            )
+        return {"expediente_id": fila["expediente_id"], "estado": fila["estado"]}
+
     async def _audit_aip_access(
         self, code: str, *, user_id: uuid.UUID | None, canal: str
     ) -> None:
@@ -998,9 +1041,17 @@ class ArchiveService:
 
         from app.clients import storage_client  # perezoso, mismo patrón que get_aip
 
+        # AREA-07-15: los eventos de preservación NO cuelgan todos del expediente —
+        # la validación PDF/A y las migraciones de formato van por `file_id`. Antes solo
+        # se pedía `object_ref=expediente_id` y la pestaña Preservación los omitía.
+        # El conjunto se resuelve AQUÍ, desde el inventario del sistema (nunca del
+        # cliente) y con el clearance del llamante: los anexos de un radicado por encima
+        # de él no se incluyen (sin fuga de existencia).
+        refs = await self._object_refs_preservacion(expediente, max_clearance)
+
         try:
             eventos = await storage_client.list_eventos(
-                tenant_slug=self._tenant_slug, object_ref=str(expediente.id)
+                tenant_slug=self._tenant_slug, object_refs=refs
             )
         except storage_client.StorageEventosError as exc:
             raise HTTPException(
@@ -1017,6 +1068,42 @@ class ArchiveService:
         # pero con acción propia.
         await self._audit_eventos_access(expediente.code, user_id=user_id, canal=canal)
         return eventos
+
+    async def _object_refs_preservacion(
+        self, expediente: Expediente, max_clearance: int
+    ) -> list[str]:
+        """`object_ref` de los eventos PREMIS que pertenecen al expediente: él mismo, su
+        AIP (`aip_worm_object_id`) y los `file_id` de los anexos de sus radicados VIGENTES
+        visibles para el llamante. Fail-closed ante document-service caído: una lista
+        parcial presentada como completa sería peor que un 503."""
+        from app.repositories.aip_repository import AipRepository
+
+        refs: list[str] = [str(expediente.id)]
+        aip_id = await AipRepository(self._conn).get_aip_object_id(expediente.id)
+        if aip_id is not None:
+            refs.append(str(aip_id))
+        vigentes = [r.radicado_id for r in expediente.radicados if r.estado == "vinculado"]
+        try:
+            anexos = await document_client.fetch_anexos_internal(
+                tenant_slug=self._tenant_slug,
+                radicado_ids=vigentes,
+                max_clearance=max_clearance,
+            )
+        except DocumentClientError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "document_service_unavailable",
+                    "detail": str(exc),
+                    "status": 503,
+                },
+            ) from exc
+        for radicado_id in vigentes:
+            for anexo in anexos.get(str(radicado_id), []):
+                ref = str(anexo["file_id"])
+                if ref not in refs:
+                    refs.append(ref)
+        return refs
 
     async def _audit_eventos_access(
         self, code: str, *, user_id: uuid.UUID | None, canal: str
@@ -1264,6 +1351,7 @@ class ArchiveService:
                         object_ref=updated.code,
                         actor=actor,
                         payload=audit_payload,
+                        canal=audit.CANAL_PETICION,
                     )
         except HTTPException as exc:
             # Best-effort (mismo patrón que `audit.append_denial` /
@@ -1282,6 +1370,7 @@ class ArchiveService:
                         "status_actual": existing.status,
                         "motivo": motivo_de(exc),
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning(
@@ -1655,6 +1744,7 @@ class ArchiveService:
                         "trd_revision_requerida": trd_revision_requerida,
                         "disposition": disposition,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         except HTTPException as exc:
             # Best-effort (mismo patrón que `audit.append_denial`): nunca deja
@@ -1676,6 +1766,7 @@ class ArchiveService:
                         "status_actual": exp.status,
                         "motivo": motivo_de(exc),
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning(
@@ -1824,6 +1915,7 @@ class ArchiveService:
                     object_type="expediente",
                     object_ref=exp.code,
                     actor=actor,
+                    canal=audit.CANAL_PETICION,
                 )
         except HTTPException as exc:
             # Gemelo de `expediente_close_failed`: la transferencia es un cambio
@@ -1843,6 +1935,7 @@ class ArchiveService:
                         "status_actual": exp.status,
                         "motivo": motivo_de(exc),
                     },
+                    canal=audit.CANAL_PETICION,
                 )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
                 logger.warning(
@@ -2085,55 +2178,6 @@ class ArchiveService:
                 resultado[str(rad_id)] = huella
         return resultado
 
-    async def _origen_por_radicado(
-        self, radicado_ids: list[uuid.UUID]
-    ) -> dict[str, dict]:
-        """Dependencia PRODUCTORA y formato de cada radicado, resueltos EN EL
-        SERVIDOR (E15 perfil v4 R1; Ac. AGN 001/2024 art. 4.3.2.3).
-
-        Mismo razonamiento que `_huellas_por_radicado`, y el mismo motivo por
-        el que la huella no se le pide al cliente: la dependencia productora y
-        el formato viajan al manifiesto de exportación y al índice electrónico
-        que se FIRMA. Un dato probatorio que escribe quien vincula no prueba
-        nada sobre quién produjo el documento — y quien vincula suele ser un
-        archivista central, no la oficina que lo produjo, así que ni siquiera
-        es un error de mala fe: es el dato equivocado por construcción.
-
-        `dependencia_productora_*` estaba en el contrato desde el perfil v4 y
-        ninguna pantalla lo mandaba: las dos columnas viajaban vacías al
-        manifiesto y el índice no emitía `<dependenciaProductora>` para nada.
-
-        **Lo explícito manda**: lo que el llamante aporte en el payload gana
-        sobre lo resuelto aquí (importación con metadatos propios, E11 INT-05).
-
-        **Sin recorte de clearance** (`max_clearance=3`, sin restricción): es
-        un acto de sistema componiendo el índice, no una lectura de contenido
-        — si se recortara, dos archivistas producirían índices distintos del
-        mismo expediente.
-
-        **Best-effort**: cualquier fallo devuelve ``{}`` y el vínculo se hace
-        igual, con esos campos vacíos. Vincular no puede quedar preso de que
-        document-service esté en pie, y tanto el índice como el manifiesto
-        saben declarar el hueco.
-        """
-        if not radicado_ids:
-            return {}
-        try:
-            meta = await document_client.fetch_radicado_metadata_internal(
-                tenant_slug=self._tenant_slug,
-                radicado_ids=radicado_ids,
-                max_clearance=CLEARANCE_SIN_RESTRICCION,
-            )
-        except DocumentClientError:
-            logger.warning(
-                "No se pudo resolver la dependencia productora de %d radicados al "
-                "vincular; quedan sin declarar en el índice y en el manifiesto",
-                len(radicado_ids),
-                exc_info=True,
-            )
-            return {}
-        return meta
-
     @staticmethod
     def _productora(meta: dict | None) -> tuple[int | None, str | None]:
         """Código y nombre de la dependencia productora, o `(None, None)`.
@@ -2149,6 +2193,291 @@ class ArchiveService:
         if codigo is None or not nombre:
             return None, None
         return int(codigo), str(nombre)
+
+    async def _resolver_metadatos_vinculo(
+        self,
+        items: list[RadicadoLink],
+        *,
+        expediente_code: str,
+        actor: uuid.UUID | None,
+        clearance: int,
+    ) -> dict[str, dict[str, Any]]:
+        """Resuelve EN EL SERVIDOR lo que el índice electrónico afirma de cada
+        radicado vinculado, y lo coteja con lo que trae el cuerpo (AREA-07-02 y
+        AREA-06-08).
+
+        Hasta aquí «lo explícito manda»: el número de radicado, la tipología, la
+        dependencia productora, el formato, el tamaño y la huella que escribiera
+        quien vincula se sellaban en un índice que luego se FIRMA con XAdES —y
+        ni siquiera se comprobaba que el radicado existiera—. El cliente
+        Keycloak del frontend es público (PKCE), así que el allowlist del BFF no
+        protege el backend, y el asiento de auditoría registra quién lo hizo
+        pero no impide el dato falso. Regla del sistema: *un dato probatorio lo
+        resuelve el servidor*.
+
+        Contrato:
+
+        - **Fail-closed para existencia y número**: sin respuesta de
+          document-service (o con una respuesta sin `tracking_number`, que es el
+          document-service anterior a este cambio) → 503. No se puede sellar un
+          número oficial que nadie pudo cotejar.
+        - Radicado ausente en la respuesta (inexistente O por encima del
+          clearance del llamante) → 404 `radicado_no_encontrado`.
+        - Radicado sin `doc_class` → 422 `radicado_sin_tipificar`: la tipología
+          es obligatoria en el índice firmado y no se admite declararla aquí.
+        - Un valor del cuerpo que difiera del resuelto → 422
+          `metadato_no_coincide` con asiento de denegación; el cuerpo del error
+          nombra los CAMPOS, nunca el valor resuelto (no es un oráculo de
+          números de radicado). Un valor declarado que el servidor no puede
+          verificar (resuelto vacío) también es un desacuerdo: no hay ruta de
+          «lo explícito manda» —la importación (E11 INT-05) no vincula por aquí—.
+        - Lo que se persiste es SIEMPRE lo resuelto. `folios` es la excepción:
+          es un conteo físico declarado que ningún servicio conoce.
+        - La huella (`content_hash`) es best-effort como siempre (storage puede
+          estar caído): sin huella resuelta se persiste vacía, pero una huella
+          DECLARADA se rechaza si no se pudo verificar.
+
+        **No-read-up (RF-SEG-08, hallazgo medio de T6)**: la resolución se pide
+        con el clearance del LLAMANTE. Antes iba sin recorte y el 422
+        `metadato_no_coincide` listaba los campos erróneos de un radicado
+        reservado: con un UUID, un usuario de clearance 1 enumeraba la
+        tipología, el MIME, la dependencia productora y confirmaba el número y
+        la huella —el canal que T6 abrió al cotejar—. Un radicado por encima
+        del clearance responde igual que uno inexistente (404 neutro, el mismo
+        criterio de document-service): ni existencia ni cotejo. El contenido del
+        índice no cambia por quién vincula: lo que se vincula se resuelve igual
+        y solo se acota QUIÉN puede vincularlo.
+        """
+        ids = list(dict.fromkeys(it.radicado_id for it in items))
+        try:
+            meta = await document_client.fetch_radicado_metadata_internal(
+                tenant_slug=self._tenant_slug,
+                radicado_ids=ids,
+                max_clearance=clearance,
+            )
+        except DocumentClientError:
+            logger.warning(
+                "No se pudo cotejar %d radicados con document-service al vincular",
+                len(ids),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "document_service_no_disponible",
+                    "detail": (
+                        "No se pudo cotejar el radicado con el servicio de "
+                        "documentos: no se vincula lo que no se pudo verificar. "
+                        "Reintente en unos instantes."
+                    ),
+                    "status": 503,
+                },
+            )
+        huellas = await self._huellas_por_radicado(ids)
+
+        resueltos: dict[str, dict[str, Any]] = {}
+        desacuerdos: dict[str, list[str]] = {}
+        for it in items:
+            clave = str(it.radicado_id)
+            m = meta.get(clave)
+            if m is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail={
+                        "error": "radicado_no_encontrado",
+                        "detail": "No existe un radicado visible con ese identificador",
+                        "status": 404,
+                        "radicado_id": clave,
+                    },
+                )
+            tracking = m.get("tracking_number")
+            if not tracking:
+                # Respuesta sin número: un document-service que aún no lo
+                # devuelve. Se trata como no disponible, no como «sin número».
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": "document_service_no_disponible",
+                        "detail": (
+                            "El servicio de documentos no devolvió el número del "
+                            "radicado: no se puede cotejar."
+                        ),
+                        "status": 503,
+                    },
+                )
+            if not m.get("doc_class"):
+                # `<tipologia>` es obligatorio en el XSD del índice (Ac. AGN
+                # 001/2024 4.3.2.3): sellar el índice con la tipología vacía
+                # —y sin forma de corregirla luego— deja un hueco permanente.
+                # Se tipifica primero en document-service. El radicado ya es
+                # visible para el llamante, así que nombrarlo no filtra nada.
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail={
+                        "error": "radicado_sin_tipificar",
+                        "detail": (
+                            "El radicado no tiene tipología documental: "
+                            "tipifíquelo antes de vincularlo a un expediente."
+                        ),
+                        "status": 422,
+                        "radicado_id": clave,
+                    },
+                )
+            dep_codigo, dep_nombre = self._productora(m)
+            huella = huellas.get(clave)
+            r = {
+                "tracking_number": str(tracking),
+                "tipologia": str(m["doc_class"]),
+                "dep_codigo": dep_codigo,
+                "dep_nombre": dep_nombre,
+                "formato": m.get("formato"),
+                "tamano_bytes": m.get("tamano_bytes"),
+                "content_hash": huella,
+            }
+            campos: list[str] = []
+            if it.tracking_number != r["tracking_number"]:
+                campos.append("tracking_number")
+            if it.tipologia is not None and it.tipologia != r["tipologia"]:
+                campos.append("tipologia")
+            if it.dependencia_productora_codigo is not None and (
+                it.dependencia_productora_codigo != dep_codigo
+                or it.dependencia_productora_nombre != dep_nombre
+            ):
+                campos.append("dependencia_productora")
+            if it.formato is not None and it.formato != r["formato"]:
+                campos.append("formato")
+            if it.tamano_bytes is not None and it.tamano_bytes != r["tamano_bytes"]:
+                campos.append("tamano_bytes")
+            if it.content_hash is not None and it.content_hash.lower() != huella:
+                campos.append("content_hash")
+            if campos:
+                desacuerdos[clave] = campos
+            resueltos[clave] = r
+
+        if desacuerdos:
+            try:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.radicado_vinculo_denegado",
+                    object_type="expediente",
+                    object_ref=expediente_code,
+                    actor=str(actor) if actor else None,
+                    payload={"motivo": "metadato_no_coincide", "desacuerdos": desacuerdos},
+                    canal=audit.CANAL_PETICION,
+                )
+            except Exception:  # noqa: BLE001 — la denegación no depende del asiento.
+                logger.warning("audit.append(radicado_vinculo_denegado) failed", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "metadato_no_coincide",
+                    "detail": (
+                        "Lo declarado no coincide con lo que el sistema tiene del "
+                        "radicado. Esos datos los resuelve el servidor: omítalos."
+                    ),
+                    "status": 422,
+                    "desacuerdos": desacuerdos,
+                },
+            )
+        return resueltos
+
+    async def completar_origen_legado(self, limit: int) -> dict[str, int]:
+        """Completa la productora/formato/tamaño de vínculos LEGADOS de expedientes ABIERTOS
+        con lo que document-service sabe HOY (AREA-07-01).
+
+        Antes del perfil v4 esos tres datos los aportaba (o no) quien vinculaba; los vínculos
+        viejos quedaron en NULL y el índice los declara con `productoraPresente="false"`. Se
+        completan SOLO las columnas NULL —nunca se pisa un valor ya declarado— y SOLO en
+        expedientes abiertos: los cerrados son probatorios (su índice está firmado y WORM) y
+        no se tocan. Cada vínculo se intenta UNA vez (`origen_completado_at`): un NULL puede
+        ser legítimo (sin anexos no hay formato) y sin la marca se reelegiría para siempre.
+
+        Es un acto de sistema: la resolución va con `CLEARANCE_SIN_RESTRICCION` (completa un
+        dato del propio expediente, no lo expone a nadie) y cada vínculo que cambia deja su
+        asiento `archive.vinculo_origen_completado` en la misma transacción. Si
+        document-service no responde NO se marca nada (la siguiente barrida reintenta):
+        marcar «intentado» sin haber podido preguntar sería perder el vínculo.
+
+        El índice no se regenera aquí: lo recoge la próxima regeneración (vincular,
+        desvincular o cerrar), con el XSD ya validado antes de sellar."""
+        pendientes = await self._repo.list_vinculos_origen_pendiente(limit)
+        resumen = {"vistos": 0, "completados": 0, "sin_cambios": 0}
+        if not pendientes:
+            return resumen
+        ids = list(dict.fromkeys(r["radicado_id"] for r in pendientes))
+        try:
+            meta = await document_client.fetch_radicado_metadata_internal(
+                tenant_slug=self._tenant_slug,
+                radicado_ids=ids,
+                max_clearance=CLEARANCE_SIN_RESTRICCION,
+            )
+        except DocumentClientError:
+            logger.warning(
+                "Backfill de origen: document-service no respondió (%d radicados); "
+                "se reintenta en la próxima barrida",
+                len(ids),
+                exc_info=True,
+            )
+            return resumen
+        for r in pendientes:
+            resumen["vistos"] += 1
+            m = meta.get(str(r["radicado_id"]))
+            dep_codigo, dep_nombre = self._productora(m)
+            tamano = (m or {}).get("tamano_bytes")
+            async with self._conn.transaction():
+                fila = await self._repo.completar_origen_vinculo(
+                    r["expediente_id"],
+                    r["radicado_id"],
+                    dep_codigo=dep_codigo,
+                    dep_nombre=dep_nombre,
+                    formato=(m or {}).get("formato"),
+                    tamano_bytes=int(tamano) if tamano is not None else None,
+                )
+                if fila is None:
+                    continue  # ya no era elegible (cerrado/excluido/otra barrida)
+                campos = [
+                    nombre
+                    for nombre, hecho in (
+                        ("dependencia_productora", fila["productora_completada"]),
+                        ("formato", fila["formato_completado"]),
+                        ("tamano_bytes", fila["tamano_completado"]),
+                    )
+                    if hecho
+                ]
+                if not campos:
+                    resumen["sin_cambios"] += 1
+                    continue
+                resumen["completados"] += 1
+                valores: dict[str, Any] = {}
+                if fila["productora_completada"]:
+                    valores["dep_codigo"] = dep_codigo
+                    valores["dep_nombre"] = dep_nombre
+                if fila["formato_completado"]:
+                    valores["formato"] = (m or {}).get("formato")
+                if fila["tamano_completado"]:
+                    valores["tamano_bytes"] = int(tamano) if tamano is not None else None
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.vinculo_origen_completado",
+                    object_type="expediente",
+                    object_ref=r["expediente_code"],
+                    actor=str(SYSTEM_RECONCILER_ID),
+                    canal="system",
+                    payload={
+                        "radicado_id": str(r["radicado_id"]),
+                        "campos": campos,
+                        # Los valores escritos y su fuente: sin ellos el asiento no permite
+                        # reconstruir el dato que luego entra al índice firmado.
+                        "valores": valores,
+                        "fuente": "document-service",
+                        "resuelto_at": datetime.now(tz=UTC).isoformat(),
+                    },
+                )
+        return resumen
 
     async def link_radicado(
         self,
@@ -2232,33 +2561,24 @@ class ArchiveService:
                 added_at=None,
             )
 
-        # La huella se resuelve ANTES de abrir la transacción: el tramo
-        # transaccional es 100% BD a propósito (ver el comentario de abajo), y
-        # una llamada HTTP a mitad mantendría abierto el `pg_advisory_xact_lock`
-        # del tenant durante el viaje de red.
-        content_hash = payload.content_hash.lower() if payload.content_hash else None
-        if content_hash is None:
-            content_hash = (await self._huellas_por_radicado([payload.radicado_id])).get(
-                str(payload.radicado_id)
-            )
-
-        # Origen y formato: mismo viaje único fuera de la transacción, y solo
-        # si el llamante no los trae ya (lo explícito manda, ver
-        # `_origen_por_radicado`).
-        dep_codigo = payload.dependencia_productora_codigo
-        dep_nombre = payload.dependencia_productora_nombre
-        formato = payload.formato
-        tamano_bytes = payload.tamano_bytes
-        if dep_codigo is None or formato is None or tamano_bytes is None:
-            meta = (await self._origen_por_radicado([payload.radicado_id])).get(
-                str(payload.radicado_id)
-            )
-            if dep_codigo is None:
-                dep_codigo, dep_nombre = self._productora(meta)
-            if formato is None:
-                formato = (meta or {}).get("formato")
-            if tamano_bytes is None:
-                tamano_bytes = (meta or {}).get("tamano_bytes")
+        # Los metadatos del vínculo (número de radicado, tipología, dependencia
+        # productora, formato, tamaño y huella) los RESUELVE EL SERVIDOR y se
+        # cotejan con lo que trae el cuerpo (AREA-07-02 / AREA-06-08): quien
+        # vincula no escribe lo que el índice —que se firma con XAdES— afirma.
+        # Se resuelve ANTES de abrir la transacción: el tramo transaccional es
+        # 100% BD a propósito (ver el comentario de abajo), y una llamada HTTP a
+        # mitad mantendría abierto el `pg_advisory_xact_lock` del tenant durante
+        # el viaje de red.
+        resueltos = await self._resolver_metadatos_vinculo(
+            [payload], expediente_code=existing.code, actor=user_id, clearance=clearance
+        )
+        r = resueltos[str(payload.radicado_id)]
+        tracking_number = r["tracking_number"]
+        content_hash = r["content_hash"]
+        dep_codigo, dep_nombre = r["dep_codigo"], r["dep_nombre"]
+        formato = r["formato"]
+        tamano_bytes = r["tamano_bytes"]
+        tipologia = r["tipologia"]
 
         # Atomicidad vínculo<->auditoría (mismo patrón que `create_expediente`):
         # la mutación, la regeneración del índice, el evento de la hoja de
@@ -2272,14 +2592,14 @@ class ArchiveService:
             link = await self._repo.link_radicado(
                 expediente_id,
                 payload.radicado_id,
-                payload.tracking_number,
+                tracking_number,
                 content_hash=content_hash,
                 formato=formato,
                 tamano_bytes=tamano_bytes,
                 folios=payload.folios,
                 dependencia_productora_codigo=dep_codigo,
                 dependencia_productora_nombre=dep_nombre,
-                tipologia=payload.tipologia,
+                tipologia=tipologia,
             )
             await self._regenerate_index(expediente_id)
             await self._repo.insert_expediente_evento(
@@ -2288,7 +2608,7 @@ class ArchiveService:
                 accion="radicado_vinculado",
                 detalles={
                     "radicado_id": str(payload.radicado_id),
-                    "tracking_number": payload.tracking_number,
+                    "tracking_number": tracking_number,
                 },
             )
             # Auditoría forense inmutable (E08 §9, Canal A): faltaba — la
@@ -2306,8 +2626,9 @@ class ArchiveService:
                 actor=str(user_id) if user_id else None,
                 payload={
                     "radicado_id": str(payload.radicado_id),
-                    "tracking_number": payload.tracking_number,
+                    "tracking_number": tracking_number,
                 },
+                canal=audit.CANAL_PETICION,
             )
         response = _to_radicado_response(link)
         if not puede_leer:
@@ -2364,19 +2685,12 @@ class ArchiveService:
             return BatchLinkResult(vinculados=None, omitidos=None, total=len(items))
 
         # Un solo viaje para todo el lote, y fuera de la transacción (mismo
-        # criterio que `link_radicado`). Solo se pregunta por los que no traen
-        # huella explícita: lo que el llamante declara manda.
-        faltan = [it.radicado_id for it in items if not it.content_hash]
-        huellas = await self._huellas_por_radicado(faltan)
-        # Origen/formato: un solo viaje para los que no lo traen declarado.
-        faltan_origen = [
-            it.radicado_id
-            for it in items
-            if it.dependencia_productora_codigo is None
-            or it.formato is None
-            or it.tamano_bytes is None
-        ]
-        origenes = await self._origen_por_radicado(faltan_origen)
+        # criterio que `link_radicado`): todo se resuelve en el servidor y se
+        # coteja con lo declarado (AREA-07-02 / AREA-06-08). Un solo ítem que no
+        # case aborta el lote entero ANTES de escribir nada.
+        resueltos = await self._resolver_metadatos_vinculo(
+            items, expediente_code=existing.code, actor=user_id, clearance=clearance
+        )
 
         # Atomicidad lote<->auditoría (mismo patrón que `link_radicado`): UN
         # expediente, N vínculos es una unidad todo-o-nada — si un vínculo del
@@ -2391,31 +2705,18 @@ class ArchiveService:
                 if await self._repo.radicado_link_exists(expediente_id, it.radicado_id):
                     omitidos += 1
                     continue
-                meta = origenes.get(str(it.radicado_id)) or {}
-                if it.dependencia_productora_codigo is None:
-                    dep_codigo, dep_nombre = self._productora(meta)
-                else:
-                    dep_codigo = it.dependencia_productora_codigo
-                    dep_nombre = it.dependencia_productora_nombre
+                r = resueltos[str(it.radicado_id)]
                 await self._repo.link_radicado(
                     expediente_id,
                     it.radicado_id,
-                    it.tracking_number,
-                    content_hash=(
-                        it.content_hash.lower()
-                        if it.content_hash
-                        else huellas.get(str(it.radicado_id))
-                    ),
-                    formato=it.formato if it.formato is not None else meta.get("formato"),
-                    tamano_bytes=(
-                        it.tamano_bytes
-                        if it.tamano_bytes is not None
-                        else meta.get("tamano_bytes")
-                    ),
+                    r["tracking_number"],
+                    content_hash=r["content_hash"],
+                    formato=r["formato"],
+                    tamano_bytes=r["tamano_bytes"],
                     folios=it.folios,
-                    dependencia_productora_codigo=dep_codigo,
-                    dependencia_productora_nombre=dep_nombre,
-                    tipologia=it.tipologia,
+                    dependencia_productora_codigo=r["dep_codigo"],
+                    dependencia_productora_nombre=r["dep_nombre"],
+                    tipologia=r["tipologia"],
                 )
                 vinculados += 1
                 linked_ids.append(str(it.radicado_id))
@@ -2438,6 +2739,7 @@ class ArchiveService:
                         "omitidos": omitidos,
                         "radicado_ids": linked_ids,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         if not puede_leer:
             return BatchLinkResult(vinculados=None, omitidos=None, total=len(items))
@@ -2543,6 +2845,7 @@ class ArchiveService:
                 object_ref=existing.code,
                 actor=str(actor) if actor else None,
                 payload={"radicado_id": str(radicado_id), "causal": causal},
+                canal=audit.CANAL_PETICION,
             )
 
     # ------------------------------------------------------------------
@@ -2596,6 +2899,7 @@ class ArchiveService:
                     "archivo_central_years": serie.archivo_central_years,
                     "pdfa_profile": serie.pdfa_profile,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(serie)
 
@@ -2735,6 +3039,8 @@ class ArchiveService:
         "description",
         "retention_years",
         "total_retention",
+        "archivo_gestion_years",
+        "archivo_central_years",
         "disposition",
     )
 
@@ -2782,13 +3088,38 @@ class ArchiveService:
         # el UPDATE y `audit.append` son un único acto dentro de una sola
         # `conn.transaction()` — si el asiento falla, el cambio de retención/
         # disposición no queda persistido (fail-closed).
+        # AREA-06-07: los dos juegos de retención no pueden quedar en desacuerdo. Lo que
+        # decide el calendario son las dos fases; un PATCH del juego legado SOLO (sin las
+        # fases) se traduce a ellas como en el alta (gestión = retention_years, central =
+        # total - gestión), y las columnas legadas se reescriben DERIVADAS de las fases
+        # finales. Antes ese PATCH cambiaba números que ningún cálculo leía.
+        gestion = payload.archivo_gestion_years
+        central = payload.archivo_central_years
+        legado = payload.retention_years is not None or payload.total_retention is not None
+        if gestion is None and central is None and legado:
+            base_gestion = (
+                payload.retention_years
+                if payload.retention_years is not None
+                else existing.retention_years
+            )
+            base_total = (
+                payload.total_retention
+                if payload.total_retention is not None
+                else existing.total_retention
+            )
+            gestion, central = base_gestion, max(base_total - base_gestion, 0)
+        fases_cambian = gestion is not None or central is not None
+        final_gestion = gestion if gestion is not None else (existing.archivo_gestion_years or 0)
+        final_central = central if central is not None else (existing.archivo_central_years or 0)
         async with self._conn.transaction():
             updated = await self._repo.update_trd_serie(
                 serie_id,
                 name=payload.name,
                 description=payload.description,
-                retention_years=payload.retention_years,
-                total_retention=payload.total_retention,
+                retention_years=final_gestion if fases_cambian else None,
+                total_retention=(final_gestion + final_central) if fases_cambian else None,
+                archivo_gestion_years=gestion,
+                archivo_central_years=central,
                 disposition=payload.disposition,
                 pdfa_profile=payload.pdfa_profile,
             )
@@ -2817,6 +3148,7 @@ class ArchiveService:
                 object_ref=existing.code,
                 actor=str(actor) if actor else None,
                 payload={"id": str(serie_id), "changes": changes},
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)  # type: ignore[arg-type]
 
@@ -2859,6 +3191,40 @@ class ArchiveService:
                 },
             )
         vigente = base
+        # AREA-06-07: las dos fases deciden el calendario; el juego legado se DERIVA de
+        # ellas (o se traduce a ellas si solo se envió el legado), nunca se copia de la
+        # versión vigente en desacuerdo con las fases nuevas.
+        base_gestion = (
+            vigente.archivo_gestion_years
+            if vigente.archivo_gestion_years is not None
+            else vigente.retention_years
+        )
+        base_central = (
+            vigente.archivo_central_years
+            if vigente.archivo_central_years is not None
+            else max(vigente.total_retention - vigente.retention_years, 0)
+        )
+        if payload.archivo_gestion_years is None and payload.archivo_central_years is None and (
+            payload.retention_years is not None or payload.total_retention is not None
+        ):
+            ret = payload.retention_years if payload.retention_years is not None else base_gestion
+            tot = (
+                payload.total_retention
+                if payload.total_retention is not None
+                else vigente.total_retention
+            )
+            nueva_gestion, nueva_central = ret, max(tot - ret, 0)
+        else:
+            nueva_gestion = (
+                payload.archivo_gestion_years
+                if payload.archivo_gestion_years is not None
+                else base_gestion
+            )
+            nueva_central = (
+                payload.archivo_central_years
+                if payload.archivo_central_years is not None
+                else base_central
+            )
         # Atomicidad mutación<->asiento (mismo patrón que `create_trd_serie`).
         async with self._conn.transaction():
             try:
@@ -2873,16 +3239,8 @@ class ArchiveService:
                         if payload.description is not None
                         else vigente.description
                     ),
-                    retention_years=(
-                        payload.retention_years
-                        if payload.retention_years is not None
-                        else vigente.retention_years
-                    ),
-                    total_retention=(
-                        payload.total_retention
-                        if payload.total_retention is not None
-                        else vigente.total_retention
-                    ),
+                    retention_years=nueva_gestion,
+                    total_retention=nueva_gestion + nueva_central,
                     disposition=(
                         payload.disposition
                         if payload.disposition is not None
@@ -2891,16 +3249,8 @@ class ArchiveService:
                     parent_id=(
                         payload.parent_id if payload.parent_id is not None else vigente.parent_id
                     ),
-                    archivo_gestion_years=(
-                        payload.archivo_gestion_years
-                        if payload.archivo_gestion_years is not None
-                        else vigente.archivo_gestion_years
-                    ),
-                    archivo_central_years=(
-                        payload.archivo_central_years
-                        if payload.archivo_central_years is not None
-                        else vigente.archivo_central_years
-                    ),
+                    archivo_gestion_years=nueva_gestion,
+                    archivo_central_years=nueva_central,
                     pdfa_profile=(
                         payload.pdfa_profile
                         if payload.pdfa_profile is not None
@@ -2939,6 +3289,7 @@ class ArchiveService:
                     "supersede_a": str(vigente.id),
                     "supersede_a_version": vigente.version,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(new_serie)
 
@@ -3056,6 +3407,7 @@ class ArchiveService:
                         else None
                     ),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -3098,6 +3450,7 @@ class ArchiveService:
                     "estado_anterior": "aprobada",
                     "motivo": payload.motivo,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -3264,6 +3617,7 @@ class ArchiveService:
                         "expediente_metadata_templates_repointed": n_templates,
                         "expediente_metadata_templates_omitidos": n_templates_omitidos,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
                 # `vigente_previa is not None` es REDUNDANTE con
                 # `derogada is not None` (solo se deroga si había una vigente),
@@ -3291,6 +3645,7 @@ class ArchiveService:
                             "supersedida_por": str(updated.id),
                             "supersedida_por_version": updated.version,
                         },
+                        canal=audit.CANAL_PETICION,
                     )
             else:  # existing.estado == "migrada" -- ratificación D6.
                 updated = await self._repo.convalidar_trd_serie_desde_migrada(
@@ -3337,6 +3692,7 @@ class ArchiveService:
                         "estado_anterior": "migrada",
                         "expedientes_ratificados": n_ratificados,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         return _to_trd_response(updated)
 
@@ -3401,6 +3757,7 @@ class ArchiveService:
                     "estado_anterior": existing.estado,
                     "motivo": "derogacion_explicita",
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -3488,6 +3845,7 @@ class ArchiveService:
                         else None
                     ),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -3589,6 +3947,7 @@ class ArchiveService:
                     else None,
                     "justificacion_valoracion": agrupacion.justificacion_valoracion,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(agrupacion)
 
@@ -3697,6 +4056,7 @@ class ArchiveService:
                 object_ref=existing.code,
                 actor=str(actor) if actor else None,
                 payload={"id": str(agrupacion_id), "changes": changes},
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)  # type: ignore[arg-type]
 
@@ -3837,6 +4197,7 @@ class ArchiveService:
                     "supersede_a": str(vigente.id),
                     "supersede_a_version": vigente.version,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(new_agrupacion)
 
@@ -3891,6 +4252,7 @@ class ArchiveService:
                         else None
                     ),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -3923,6 +4285,7 @@ class ArchiveService:
                     "estado_anterior": "aprobada",
                     "motivo": payload.motivo,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -4039,6 +4402,7 @@ class ArchiveService:
                     "expediente_metadata_templates_repointed": n_templates,
                     "expediente_metadata_templates_omitidos": n_templates_omitidos,
                 },
+                canal=audit.CANAL_PETICION,
             )
             # `vigente_previa is not None` es REDUNDANTE con
             # `derogada is not None` (solo se deroga si había una vigente),
@@ -4063,6 +4427,7 @@ class ArchiveService:
                         "supersedida_por": str(updated.id),
                         "supersedida_por_version": updated.version,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         return _to_trd_response(updated)
 
@@ -4114,6 +4479,7 @@ class ArchiveService:
                     "estado_anterior": existing.estado,
                     "motivo": "derogacion_explicita",
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -4193,6 +4559,7 @@ class ArchiveService:
                         else None
                     ),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return _to_trd_response(updated)
 
@@ -4259,9 +4626,8 @@ class ArchiveService:
         """`POST /eliminacion/lotes` (RF-TRD-07, primera de las cinco fases).
 
         Se elimina **por lotes** porque el acta y el aval del Comité son del
-        lote. Esta fase **no elimina nada** —ni siquiera al final del
-        procedimiento lo haría todavía: el borrado seguro no está construido—;
-        lo que hace es fijar QUÉ se propone eliminar y congelarlo.
+        lote. Esta fase **no elimina nada**: lo que hace es fijar QUÉ se
+        propone eliminar y congelarlo. La destrucción es la quinta fase.
 
         **Cinco condiciones de admisión, y ninguna se salta.** Un expediente
         entra solo si:
@@ -4385,6 +4751,7 @@ class ArchiveService:
                     "admitidos": len(admitidos),
                     "rechazados": len(rechazados),
                 },
+                canal=audit.CANAL_PETICION,
             )
 
         return LoteEliminacionResponse(
@@ -4418,9 +4785,31 @@ class ArchiveService:
         pública lo dice y enlaza.
 
         Sigue **sin eliminarse nada**."""
-        lote = await self._repo.publicar_lote_eliminacion(
-            lote_id, publicado_hasta=publicado_hasta
-        )
+        # Transición y asiento son UN acto (AREA-06-01-B): `get_db_conn` no abre
+        # transacción, así que sin este bloque el UPDATE se confirma solo y un
+        # fallo del asiento deja un lote publicado sin traza. Los 409 se lanzan
+        # FUERA: cuando no hubo fila no hay nada que revertir.
+        async with self._conn.transaction():
+            lote = await self._repo.publicar_lote_eliminacion(
+                lote_id, publicado_hasta=publicado_hasta
+            )
+            if lote is not None:
+                total = await self._repo.contar_items_lote(lote_id)
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service="archive-service",
+                    action="archive.eliminacion_lote_publicado",
+                    object_type="eliminacion_lote",
+                    object_ref=str(lote_id),
+                    actor=str(actor),
+                    payload={
+                        "codigo": lote["codigo"],
+                        "publicado_hasta": str(publicado_hasta),
+                        "total_items": total,
+                    },
+                    canal=audit.CANAL_PETICION,
+                )
         if lote is None:
             # No se distingue «no existe» de «ya no está en borrador»: el
             # llamante que tiene el identificador ya sabe que existe, y lo que
@@ -4436,21 +4825,6 @@ class ArchiveService:
                     "status": 409,
                 },
             )
-        total = await self._repo.contar_items_lote(lote_id)
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service="archive-service",
-            action="archive.eliminacion_lote_publicado",
-            object_type="eliminacion_lote",
-            object_ref=str(lote_id),
-            actor=str(actor),
-            payload={
-                "codigo": lote["codigo"],
-                "publicado_hasta": str(publicado_hasta),
-                "total_items": total,
-            },
-        )
         return self._lote_a_respuesta(lote, total_items=total)
 
     async def avalar_lote_eliminacion(
@@ -4477,39 +4851,47 @@ class ArchiveService:
         (`ArchiveRepository.avalar_lote_eliminacion`); aquí solo se COMPONE la
         explicación, con una lectura que no decide nada.
 
-        Sigue **sin eliminarse nada**: avalar autoriza, el borrado seguro es la
-        quinta fase y no está construida."""
-        lote = await self._repo.avalar_lote_eliminacion(
-            lote_id,
-            acta_comite=acta_comite,
-            fecha_aval=fecha_aval,
-            acto_administrativo=acto_administrativo,
-            avalado_por=actor,
-        )
+        Sigue **sin eliminarse nada**: avalar autoriza; la destrucción es la
+        quinta fase (`ejecutar_lote_eliminacion`).
+
+        **Separación de funciones**: quien propuso el lote no lo avala (409
+        `separacion_de_funciones`). La guarda vive en el `WHERE` de la
+        transición, no aquí."""
+        async with self._conn.transaction():
+            lote = await self._repo.avalar_lote_eliminacion(
+                lote_id,
+                acta_comite=acta_comite,
+                fecha_aval=fecha_aval,
+                acto_administrativo=acto_administrativo,
+                avalado_por=actor,
+            )
+            if lote is not None:
+                total = await self._repo.contar_items_lote(lote_id)
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service="archive-service",
+                    action="archive.eliminacion_lote_avalado",
+                    object_type="eliminacion_lote",
+                    object_ref=str(lote_id),
+                    actor=str(actor),
+                    payload={
+                        "codigo": lote["codigo"],
+                        "acta_comite": acta_comite,
+                        "fecha_aval": str(fecha_aval),
+                        "acto_administrativo": acto_administrativo,
+                        "total_items": total,
+                    },
+                    canal=audit.CANAL_PETICION,
+                )
         if lote is None:
             raise await self._conflicto_de_lote(
                 lote_id,
                 accion="avalar",
                 estado_exigido="publicado",
                 error="lote_no_avalable",
+                actor=actor,
             )
-        total = await self._repo.contar_items_lote(lote_id)
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service="archive-service",
-            action="archive.eliminacion_lote_avalado",
-            object_type="eliminacion_lote",
-            object_ref=str(lote_id),
-            actor=str(actor),
-            payload={
-                "codigo": lote["codigo"],
-                "acta_comite": acta_comite,
-                "fecha_aval": str(fecha_aval),
-                "acto_administrativo": acto_administrativo,
-                "total_items": total,
-            },
-        )
         return self._lote_a_respuesta(lote, total_items=total)
 
     async def anular_lote_eliminacion(
@@ -4525,9 +4907,23 @@ class ArchiveService:
         Si el lote llegó a publicarse **sigue siendo público tras anularse**,
         con su motivo: quien leyó que esos expedientes iban a eliminarse tiene
         que poder ver en qué quedó."""
-        lote = await self._repo.anular_lote_eliminacion(
-            lote_id, motivo=motivo, anulado_por=actor
-        )
+        async with self._conn.transaction():
+            lote = await self._repo.anular_lote_eliminacion(
+                lote_id, motivo=motivo, anulado_por=actor
+            )
+            if lote is not None:
+                total = await self._repo.contar_items_lote(lote_id)
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service="archive-service",
+                    action="archive.eliminacion_lote_anulado",
+                    object_type="eliminacion_lote",
+                    object_ref=str(lote_id),
+                    actor=str(actor),
+                    payload={"codigo": lote["codigo"], "motivo": motivo, "total_items": total},
+                    canal=audit.CANAL_PETICION,
+                )
         if lote is None:
             raise await self._conflicto_de_lote(
                 lote_id,
@@ -4535,18 +4931,39 @@ class ArchiveService:
                 estado_exigido=None,
                 error="lote_no_anulable",
             )
-        total = await self._repo.contar_items_lote(lote_id)
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service="archive-service",
-            action="archive.eliminacion_lote_anulado",
-            object_type="eliminacion_lote",
-            object_ref=str(lote_id),
-            actor=str(actor),
-            payload={"codigo": lote["codigo"], "motivo": motivo, "total_items": total},
-        )
         return self._lote_a_respuesta(lote, total_items=total)
+
+    @staticmethod
+    def _error_separacion(detalle: str) -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "separacion_de_funciones",
+                "detail": detalle,
+                "status": 409,
+            },
+        )
+
+    async def _denegar_separacion(
+        self, lote_id: uuid.UUID, *, actor: uuid.UUID, accion: str
+    ) -> None:
+        """Deja constancia del intento de que una misma persona encadene dos
+        actos de la destrucción. **Best-effort**: la denegación no puede
+        degradar a 500 por un fallo del asiento."""
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service="archive-service",
+                action="archive.eliminacion_separacion_denegada",
+                object_type="eliminacion_lote",
+                object_ref=str(lote_id),
+                actor=str(actor),
+                payload={"accion": accion},
+                canal=audit.CANAL_PETICION,
+            )
+        except Exception:  # noqa: BLE001 — la denegación no depende del asiento.
+            logger.warning("audit.append(eliminacion_separacion_denegada) failed", exc_info=True)
 
     async def _conflicto_de_lote(
         self,
@@ -4555,6 +4972,7 @@ class ArchiveService:
         accion: str,
         estado_exigido: str | None,
         error: str,
+        actor: uuid.UUID | None = None,
     ) -> HTTPException:
         """Compone el 409 de una transición que no se aplicó.
 
@@ -4586,6 +5004,21 @@ class ArchiveService:
                     ),
                     "status": 409,
                 },
+            )
+        if (
+            accion == "avalar"
+            and actor is not None
+            and fila["estado"] == "publicado"
+            and fila["creado_por"] == actor
+        ):
+            # Plazo vencido y estado correcto: lo único que queda en el WHERE es
+            # `creado_por <> avalador`. Se explica con su propio código (no con
+            # «lote_no_avalable») para que quien lo recibe sepa que el remedio es
+            # OTRA persona, no esperar ni cambiar el estado.
+            await self._denegar_separacion(lote_id, actor=actor, accion="avalar")
+            return self._error_separacion(
+                "Quien propuso el lote no puede avalarlo: el aval del Comité lo "
+                "registra otra persona."
             )
         exigido = (
             f" Se exige que esté en '{estado_exigido}'." if estado_exigido else ""
@@ -4720,6 +5153,7 @@ class ArchiveService:
                     "total_items": len(items),
                     "metodo_borrado": metodo_borrado,
                 },
+                canal=audit.CANAL_PETICION,
             )
 
         await self._sellar_acta_eliminacion(lote_id, acta_xml=acta_xml, actor=actor)
@@ -4803,7 +5237,12 @@ class ArchiveService:
             )
         if acta["firma_estado"] == "firmado":
             # No es un error: es el estado que se quería. Devolverla firmada
-            # evita que un doble clic parezca un fallo.
+            # evita que un doble clic parezca un fallo. **Pero si le falta el
+            # candado WORM, el reintento lo completa** (AREA-06-02): firmada y
+            # sin proteger es justo el estado que bloquea `ejecutar`, y sin
+            # esto el único desbloqueo manual era inalcanzable.
+            if acta["worm_protegido_at"] is None:
+                await self._proteger_worm_acta_eliminacion(lote_id, actor=actor)
             return await self.get_acta_eliminacion(lote_id, actor=actor)
         await self._sellar_acta_eliminacion(lote_id, acta_xml=acta["acta_xml"], actor=actor)
         return await self.get_acta_eliminacion(lote_id, actor=actor)
@@ -4876,6 +5315,7 @@ class ArchiveService:
                                 "xades_level": outcome.signed.xades_level,
                                 "acreditado": outcome.signed.acreditado,
                             },
+                            canal=audit.CANAL_PETICION,
                         )
                 # Cableado WORM del acta recién firmada, FUERA de la tx que
                 # acaba de comprometerse (mismo motivo que el sellado corre
@@ -4898,7 +5338,7 @@ class ArchiveService:
 
     async def _proteger_worm_acta_eliminacion(
         self, lote_id: uuid.UUID, *, actor: uuid.UUID
-    ) -> None:
+    ) -> Literal["protegido", "pendiente", "agotado", "omitido"]:
         """Object-Lock del acta de eliminación ya firmada (E10 + RF-TRD-07).
 
         Cierra la deuda que la fase 4 dejó declarada: el acta tenía sus tres
@@ -4917,18 +5357,25 @@ class ArchiveService:
 
         **Best-effort y NUNCA lanza**, igual que su gemelo del acta de
         transferencia: la firma ya es un hecho consumado y este cableado no
-        puede revertirla. Un fallo queda anotado con su motivo para poder
-        reintentarlo."""
+        puede revertirla. Un fallo queda anotado con su motivo y **programa su
+        reintento** (AREA-06-02): backoff exponencial y, agotado el umbral,
+        `worm_reconcile_agotado` con su asiento. Lo consume
+        `run_once_actas_eliminacion_worm` (`app/jobs/indice_reconciliation.py`),
+        y `ejecutar_lote_eliminacion` exige el candado antes de destruir.
+
+        Devuelve el desenlace para el resumen del job; el disparo síncrono lo
+        ignora."""
         from app.clients import storage_client
 
+        acta = None
         try:
             acta = await self._repo.get_acta_eliminacion(lote_id)
             if acta is None or acta["firma_estado"] != "firmado":
-                return
+                return "omitido"
             if acta["worm_protegido_at"] is not None:
-                return
+                return "omitido"
             if not acta["minio_key_firmado"]:
-                return
+                return "omitido"
             # `file_id` se DERIVA de la clave del artefacto firmado
             # (`"{file_id}/{filename}"`), nunca de una entrada externa — misma
             # frontera de confianza que el acta de transferencia.
@@ -4945,10 +5392,11 @@ class ArchiveService:
                 objeto_tipo="lote",
             )
             if not outcome.ok:
-                await self._repo.mark_acta_eliminacion_worm_fallido(
-                    lote_id, motivo="worm_no_obtenido"
+                return await self._bump_worm_backoff_acta_eliminacion(
+                    lote_id,
+                    intentos_previos=int(acta["worm_reconcile_intentos"] or 0),
+                    motivo="worm_no_obtenido",
                 )
-                return
 
             async with self._conn.transaction():
                 afectadas = await self._repo.mark_acta_eliminacion_worm(
@@ -4973,13 +5421,75 @@ class ArchiveService:
                                 else None
                             ),
                         },
+                        canal=audit.CANAL_PETICION,
                     )
+            return "protegido"
         except Exception:  # noqa: BLE001 — best-effort, ver el docstring.
             logger.warning(
                 "No se pudo cablear el WORM del acta de eliminación del lote %s",
                 lote_id,
                 exc_info=True,
             )
+            if acta is None:
+                return "pendiente"
+            try:
+                return await self._bump_worm_backoff_acta_eliminacion(
+                    lote_id,
+                    intentos_previos=int(acta["worm_reconcile_intentos"] or 0),
+                    motivo="worm_excepcion",
+                )
+            except Exception:  # noqa: BLE001 — nunca degrada el resultado.
+                logger.warning(
+                    "No se pudo programar el reintento WORM del acta del lote %s",
+                    lote_id,
+                    exc_info=True,
+                )
+                return "pendiente"
+
+    async def _bump_worm_backoff_acta_eliminacion(
+        self, lote_id: uuid.UUID, *, intentos_previos: int, motivo: str
+    ) -> Literal["pendiente", "agotado"]:
+        """Registra un intento fallido del WORM del acta de eliminación con
+        backoff exponencial -- gemelo de
+        `TransferenciaService._bump_worm_backoff_acta` (mismo umbral y misma
+        fórmula, que viven en `settings` y `app/services/backoff.py`)."""
+        intentos_tras_este = intentos_previos + 1
+        agotado = intentos_tras_este >= settings.indice_reconciliation_max_intentos
+        proximo_at = (
+            None
+            if agotado
+            else datetime.now(tz=UTC)
+            + timedelta(
+                seconds=next_backoff_seconds(
+                    intentos_tras_este,
+                    base=settings.indice_reconciliation_backoff_base_seconds,
+                    cap=settings.indice_reconciliation_backoff_cap_seconds,
+                )
+            )
+        )
+        await self._repo.mark_acta_eliminacion_worm_fallido(
+            lote_id, motivo=motivo, proximo_at=proximo_at, agotado=agotado
+        )
+        if not agotado:
+            return "pendiente"
+        try:
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="archive.eliminacion_acta_worm_reconcile_agotado",
+                object_type="eliminacion_acta",
+                object_ref=str(lote_id),
+                actor=str(SYSTEM_RECONCILER_ID),
+                canal="system",
+                payload={"reconcile_intentos": intentos_tras_este, "motivo": motivo},
+            )
+        except Exception:  # noqa: BLE001 — la visibilidad no degrada el resultado.
+            logger.warning(
+                "audit.append(archive.eliminacion_acta_worm_reconcile_agotado) failed",
+                exc_info=True,
+            )
+        return "agotado"
 
     async def _degradar_acta_eliminacion(
         self, lote_id: uuid.UUID, *, actor: uuid.UUID, motivo: str
@@ -4999,6 +5509,7 @@ class ArchiveService:
                 object_ref=str(lote_id),
                 actor=str(actor),
                 payload={"motivo": motivo},
+                canal=audit.CANAL_PETICION,
             )
 
     # ------------------------------------------------------------------
@@ -5016,9 +5527,12 @@ class ArchiveService:
         para oponerse, aval del Comité con su acto administrativo, y acta
         firmada de conservación permanente.
 
-        **Cuatro precondiciones, y ninguna es un formalismo**: lote `avalado`,
-        acta existente, acta **firmada**, y el inventario congelado como única
-        fuente de qué se destruye. Exigir la firma antes de destruir puede
+        **Seis precondiciones, y ninguna es un formalismo**: lote `avalado`,
+        **ejecutor distinto del avalador** (409 `separacion_de_funciones`:
+        quien autoriza no destruye), acta existente, acta **firmada**, acta
+        **bajo WORM** (409 `acta_sin_worm`), y el inventario congelado como
+        única fuente de qué se destruye. Todas se comprueban ANTES de destruir
+        el primer expediente: una guarda tras el bucle llegaría tarde. Exigir la firma antes de destruir puede
         bloquear la ejecución si signature-service está caído — y es
         deliberado: el último acto irreversible es exactamente el momento de no
         seguir adelante con una constancia a medias. Hay reintento manual para
@@ -5057,6 +5571,14 @@ class ArchiveService:
                     "status": 409,
                 },
             )
+        if estado["avalado_por"] is not None and estado["avalado_por"] == actor:
+            # La destrucción la ejecuta alguien distinto de quien la autorizó.
+            # Va ANTES de tocar nada: lo destruido no se des-destruye.
+            await self._denegar_separacion(lote_id, actor=actor, accion="ejecutar")
+            raise self._error_separacion(
+                "Quien avaló el lote no puede ejecutarlo: la destrucción la "
+                "ejecuta otra persona."
+            )
         acta = await self._repo.get_acta_eliminacion(lote_id)
         if acta is None:
             raise HTTPException(
@@ -5080,6 +5602,31 @@ class ArchiveService:
                         + (f" ({acta['last_error']})" if acta["last_error"] else "")
                         + ". Reintente el sellado antes de ejecutar: el último acto "
                         "irreversible no se hace con una constancia a medias."
+                    ),
+                    "status": 409,
+                },
+            )
+
+        if acta["worm_protegido_at"] is None:
+            # El acta es lo único que sobrevive a lo eliminado: sin candado, el
+            # objeto firmado podría borrarse del almacén justo después de que
+            # se destruya aquello que describe. El cableado WORM es best-effort
+            # y puede haber fallado; la reconciliación o el reintento manual
+            # (`/acta/firmar`) lo completan.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "acta_sin_worm",
+                    "detail": (
+                        "El acta está firmada pero todavía no está protegida bajo "
+                        "retención (WORM)"
+                        + (
+                            f" ({acta['worm_last_error']})"
+                            if acta["worm_last_error"]
+                            else ""
+                        )
+                        + ". Reintente el sellado antes de ejecutar: no se destruye "
+                        "lo que el acta describe mientras el acta puede borrarse."
                     ),
                     "status": 409,
                 },
@@ -5126,6 +5673,7 @@ class ArchiveService:
                         "expediente_code": item["expediente_code"],
                         "motivo": str(exc)[:500],
                     },
+                    canal=audit.CANAL_PETICION,
                 )
                 continue
             eliminados.append(expediente_id)
@@ -5137,25 +5685,28 @@ class ArchiveService:
         # que este estado significa.
         ejecutado = False
         if not fallidos:
-            fila = await self._repo.marcar_lote_ejecutado(lote_id, ejecutado_por=actor)
-            ejecutado = fila is not None
-            if ejecutado:
-                await audit.append(
-                    self._conn,
-                    tenant_slug=self._tenant_slug,
-                    service="archive-service",
-                    action="archive.eliminacion_lote_ejecutado",
-                    object_type="eliminacion_lote",
-                    object_ref=str(lote_id),
-                    actor=str(actor),
-                    payload={
-                        "codigo": lote["codigo"],
-                        "expedientes_eliminados": len(eliminados),
-                        "radicados_eliminados": total_radicados,
-                        "anexos_eliminados": total_anexos,
-                        "acta_sha256": acta["acta_sha256"],
-                    },
-                )
+            # Transición y asiento son UN acto (AREA-06-01-B).
+            async with self._conn.transaction():
+                fila = await self._repo.marcar_lote_ejecutado(lote_id, ejecutado_por=actor)
+                ejecutado = fila is not None
+                if ejecutado:
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service="archive-service",
+                        action="archive.eliminacion_lote_ejecutado",
+                        object_type="eliminacion_lote",
+                        object_ref=str(lote_id),
+                        actor=str(actor),
+                        payload={
+                            "codigo": lote["codigo"],
+                            "expedientes_eliminados": len(eliminados),
+                            "radicados_eliminados": total_radicados,
+                            "anexos_eliminados": total_anexos,
+                            "acta_sha256": acta["acta_sha256"],
+                        },
+                        canal=audit.CANAL_PETICION,
+                    )
 
         return EjecucionLoteResponse(
             lote_id=lote_id,
@@ -5234,6 +5785,7 @@ class ArchiveService:
                     "acta_sha256": acta["acta_sha256"],
                     **recuento,
                 },
+                canal=audit.CANAL_PETICION,
             )
         return recuento
 
@@ -5368,6 +5920,7 @@ class ArchiveService:
             acto_administrativo=row["acto_administrativo"],
             ejecutado_at=row["ejecutado_at"],
             anulado_motivo=row["anulado_motivo"],
+            avalado_por=row["avalado_por"] if "avalado_por" in row.keys() else None,
             total_items=total_items,
             items=items or [],
         )
@@ -5469,6 +6022,7 @@ class ArchiveService:
                         str(revisar_de_nuevo_el) if revisar_de_nuevo_el else None
                     ),
                 },
+                canal=audit.CANAL_PETICION,
             )
         return ExpedienteDisposicionDecisionResponse(
             id=row["id"],

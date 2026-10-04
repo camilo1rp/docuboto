@@ -34,13 +34,16 @@ import asyncio
 import hashlib
 import hmac
 import json
-import os
 import logging
+import os
+import socket
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+from orpycamcp_common.request_log import canal_de_fondo
 
 # redis.asyncio.Redis — tipado laxo para no acoplar la firma al cliente concreto.
 Redis = Any
@@ -235,6 +238,60 @@ async def ensure_group(redis: Redis, stream: str, group: str) -> None:
             raise
 
 
+def consumer_name(service: str) -> str:
+    """Nombre de consumidor por réplica: ``{servicio}-{HOSTNAME}``.
+
+    Un nombre fijo (``servicio-1``) hace que con varias réplicas todas aparezcan
+    como el MISMO consumidor en ``XINFO``/``XPENDING``: no se distingue quién
+    tiene qué mensaje y la reclamación entre réplicas se vuelve un no-op. En
+    Docker/Kubernetes ``HOSTNAME`` es único por contenedor/pod.
+    """
+    host = os.environ.get("HOSTNAME") or socket.gethostname()
+    return f"{service}-{host}"
+
+
+#: Vida del último error por mensaje (segundos): mucho más que el horizonte de
+#: reclamación (minutos), mucho menos que la DLQ de Redis.
+LASTERR_TTL_SECONDS = 24 * 3600
+LASTERR_DESCONOCIDO = "desconocido: sin intento en este barrido"
+
+
+def _lasterr_key(group: str) -> str:
+    return f"orpycamcp:{group}:lasterr"
+
+
+async def record_failure(redis: Redis, group: str, msg_id: str, exc: BaseException) -> None:
+    """Recuerda el último error de un mensaje (R-5b).
+
+    Sin esto, un mensaje que muere entre el XCLAIM y el handler llega a la rama
+    «huérfana» de :func:`reclaim_stale` sin intento fresco y se aparca con
+    ``last_error`` vacío. Best-effort: nunca rompe el bucle del consumidor.
+    """
+    try:
+        key = _lasterr_key(group)
+        await redis.hset(key, msg_id, f"{type(exc).__name__}: {exc}"[:500])
+        await redis.expire(key, LASTERR_TTL_SECONDS)
+    except Exception:
+        logger.debug("No se pudo registrar el último error de %s", msg_id, exc_info=True)
+
+
+async def _recall_failure(redis: Redis, group: str, msg_id: str) -> str:
+    try:
+        value = await redis.hget(_lasterr_key(group), msg_id)
+    except Exception:
+        return LASTERR_DESCONOCIDO
+    if isinstance(value, bytes | bytearray):
+        value = value.decode(errors="replace")
+    return value if isinstance(value, str) and value else LASTERR_DESCONOCIDO
+
+
+async def _forget_failure(redis: Redis, group: str, msg_id: str) -> None:
+    try:
+        await redis.hdel(_lasterr_key(group), msg_id)
+    except Exception:
+        logger.debug("No se pudo olvidar el último error de %s", msg_id, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Supervisión del consumidor
 # ---------------------------------------------------------------------------
@@ -270,6 +327,9 @@ async def _supervisar(
     backoff_maximo: float,
 ) -> None:
     """Reejecuta ``fabrica()`` indefinidamente con espera exponencial."""
+    # Un consumidor es un proceso de fondo: lo que asienta no viene de una petición
+    # (AREA-03-07). La tarea tiene su propia copia del contexto.
+    canal_de_fondo()
     espera = backoff_inicial
     estado = _estado_consumidores.setdefault(
         nombre, {"corriendo": False, "reinicios": 0, "ultimo_error": None}
@@ -363,7 +423,10 @@ async def trim_deadletter(redis: Redis, stream: str, *, max_age_ms: int) -> int:
     Safe because the authoritative copy of every dead-letter lives in Postgres
     (evento_dead_letter + audit_log); a Redis entry whose persistence failed is
     re-dead-lettered within the reclaim window (minutes), far below max_age_ms,
-    so anything older than the cutoff is guaranteed already mirrored.
+    so anything older than the cutoff is guaranteed already mirrored. That guarantee
+    holds PER GROUP only since the PK of ``evento_dead_letter`` became
+    ``(origin_group, event_id)`` (AREA-10-07): with a PK on ``event_id`` alone the second
+    group's copy was dropped silently and this trim erased its only trace.
 
     Args:
         redis:       Async Redis client.
@@ -435,6 +498,7 @@ async def reclaim_stale(
     batch: int = 50,
     on_dead_letter: Any = None,
     on_reclaim: Any = None,
+    status_name: str | None = None,
 ) -> ReclaimStats:
     """Reclaims stale PEL entries and routes poison-pills to a dead-letter stream.
 
@@ -477,12 +541,59 @@ async def reclaim_stale(
         on_reclaim:        Optional ``async (msg_id: str) -> None`` callback,
                            called after a successful XCLAIM (before handler).
                            Errors are caught and logged.
+        status_name:       Nombre bajo el que el consumidor supervisado se
+                           publica en :func:`consumer_status`. Si se da, las
+                           estadísticas de cada barrido quedan visibles en
+                           ``/health/ready`` (13-12).
 
     Returns:
         :class:`ReclaimStats` with per-outcome counters.
     """
     stats = ReclaimStats()
+    try:
+        return await _reclaim_sweep(
+            redis, stream, group, consumer, stats,
+            handler=handler, min_idle_ms=min_idle_ms, max_deliveries=max_deliveries,
+            deadletter_stream=deadletter_stream, batch=batch,
+            on_dead_letter=on_dead_letter, on_reclaim=on_reclaim,
+        )
+    finally:
+        # `finally`: un barrido que revienta a medias también deja constancia de
+        # lo que alcanzó a hacer (p. ej. aparcó 2 mensajes antes del fallo).
+        _record_sweep(status_name, stats)
 
+
+def _record_sweep(status_name: str | None, stats: ReclaimStats) -> None:
+    if not status_name:
+        return
+    estado = _estado_consumidores.setdefault(
+        status_name, {"corriendo": False, "reinicios": 0, "ultimo_error": None}
+    )
+    estado["reclamados"] = stats.reclaimed
+    estado["reprocesados_ok"] = stats.reprocessed_ok
+    estado["reprocesados_fallidos"] = stats.reprocessed_fail
+    estado["dead_lettered"] = stats.dead_lettered
+    estado["dead_lettered_total"] = (
+        int(estado.get("dead_lettered_total", 0)) + stats.dead_lettered
+    )
+    estado["ultimo_barrido"] = _now_iso()
+
+
+async def _reclaim_sweep(
+    redis: Redis,
+    stream: str,
+    group: str,
+    consumer: str,
+    stats: ReclaimStats,
+    *,
+    handler: Any,
+    min_idle_ms: int,
+    max_deliveries: int,
+    deadletter_stream: str,
+    batch: int,
+    on_dead_letter: Any,
+    on_reclaim: Any,
+) -> ReclaimStats:
     # xpending_range returns list[dict] with keys:
     #   message_id, consumer, time_since_delivered, times_delivered
     # Using idle= filters to entries idle for at least min_idle_ms — these are
@@ -509,9 +620,10 @@ async def reclaim_stale(
             envelope = parse_fields(fields)
 
             # All values are str — Redis Streams fields are byte strings.
-            # dead_letter_last_error is "" here: no fresh attempt was made in
-            # this sweep so the concrete error is unknown (R-5b limitation,
-            # documented in ADR-021).
+            # No fresh attempt was made in this sweep: the concrete error is the
+            # one recorded by the failure that left the message orphaned
+            # (`record_failure`), or an explicit marker if none was recorded —
+            # never an empty string (R-5b, ADR-021).
             failure_meta: dict[str, str] = {
                 "dead_letter_reason": "max_deliveries_exceeded",
                 "dead_letter_origin_stream": stream,
@@ -519,7 +631,7 @@ async def reclaim_stale(
                 "dead_letter_consumer": consumer,
                 "dead_letter_delivery_count": str(times_delivered),
                 "dead_lettered_at": _now_iso(),
-                "dead_letter_last_error": "",
+                "dead_letter_last_error": await _recall_failure(redis, group, msg_id),
             }
 
             # Step 1: publish to dead-letter stream (best-effort operational buffer).
@@ -555,6 +667,7 @@ async def reclaim_stale(
 
             # Step 3: XACK only after durable trace is confirmed.
             await redis.xack(stream, group, msg_id)
+            await _forget_failure(redis, group, msg_id)
             stats.dead_lettered += 1
 
         else:
@@ -589,6 +702,7 @@ async def reclaim_stale(
                 # scoped) DLQ/audit trace, so bound it to keep the record tidy and avoid
                 # transporting unbounded internals.
                 last_error = str(exc)[:500]
+                await record_failure(redis, group, msg_id, exc)
                 # R-5b: XCLAIM already incremented the delivery counter internally.
                 # If the effective count (times_delivered + 1) reaches the threshold,
                 # dead-letter in this same sweep so the concrete last error is
@@ -640,6 +754,7 @@ async def reclaim_stale(
                     # Step 3: XACK only after durable trace is confirmed.
                     if _dl_committed:
                         await redis.xack(stream, group, msg_id)
+                        await _forget_failure(redis, group, msg_id)
                         stats.dead_lettered += 1
                 else:
                     logger.warning(

@@ -44,6 +44,8 @@ async def _radicar(
     doc = await DocumentService(conn, slug).create(
         DocumentCreate(
             doc_type="E",
+            doc_class="Petición",
+            dest_dept_code=1,
             subject="Documento con historial",
             sender_name="Quien sea",
             nivel_seguridad=nivel,

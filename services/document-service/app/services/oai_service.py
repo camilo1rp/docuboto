@@ -185,9 +185,10 @@ class OaiService:
           3.4.1 Condiciones de acceso  → <accessrestrict>  (público, Ley 1712/2014)
           3.7.2 Reglas o convenciones  → <descrules>     (ISAD(G) 2ª ed. / NTC 4095)
 
-        DEUDA declarada (roadmap, no incumplimiento — ISAD(G) 2.2/2.4): la descripción
-        es monolvel (item); el contexto multinivel fondo→sección→serie→expediente vive
-        en archive-service (TRD/CCD, Ac. AGN 001/2024) y se inyectará en un fast-follow.
+        Nivel «item» DELIBERADO en este endpoint (ISAD(G) 2.2/2.4): la descripción
+        multinivel fondo→sección→serie→expediente la sirve archive-service
+        (`/api/v1/public/archive/oai/{tenant}`, `metadataPrefix=ead`, TRD/CCD,
+        Ac. AGN 001/2024), con la frontera anti-fuga en `level="file"`.
         """
         md = ET.SubElement(parent, f"{{{OAI_NS}}}metadata")
         ead = ET.SubElement(md, f"{{{EAD_NS}}}ead")

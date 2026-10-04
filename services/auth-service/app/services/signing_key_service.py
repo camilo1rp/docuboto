@@ -147,6 +147,7 @@ class SigningKeyService:
                 object_ref=str(user_id),
                 actor=str(user_id),
                 payload=payload or {},
+                canal=_audit.CANAL_PETICION,
             )
         except Exception:  # noqa: BLE001 — best-effort, never fails the request.
             logger.warning("signing_key audit append failed (action=%s)", action, exc_info=True)
@@ -621,6 +622,7 @@ class SigningKeyService:
                     object_ref=str(user_id),
                     actor=str(user_id),
                     payload={"motivo": motivo, "via": "self"},
+                    canal=_audit.CANAL_PETICION,
                 )
 
         if sign_fail is not None:
@@ -667,6 +669,7 @@ class SigningKeyService:
                 object_ref=str(target_user_id),
                 actor=str(actor_admin_id),
                 payload={"motivo": motivo, "via": "admin"},
+                canal=_audit.CANAL_PETICION,
             )
 
     async def revocation_status(
@@ -676,7 +679,7 @@ class SigningKeyService:
         D-02) — resuelve el estado de revocación de un certificado LEAF por
         su huella, EN EL TENANT que ya fijó el ``search_path`` de la
         conexión (aislamiento: una huella de otro tenant simplemente no
-        aparece en esta consulta). Devuelve SOLO ``{status, revocado_at}`` —
+        aparece en esta consulta). Devuelve SOLO ``{status, revocado_at, motivo_revocacion}`` —
         nunca cert/clave, ni siquiera cifrada.
 
         ``desconocido`` fail-closed: sin fila (otro tenant, huella forjada,
@@ -690,7 +693,9 @@ class SigningKeyService:
             return SigningKeyRevocationStatusResponse(status="desconocido")
         if row["estado"] == "revocado":
             return SigningKeyRevocationStatusResponse(
-                status="revocado", revocado_at=row.get("revocado_at")
+                status="revocado",
+                revocado_at=row.get("revocado_at"),
+                motivo_revocacion=row.get("motivo_revocacion"),
             )
         if row["estado"] == "activo":
             return SigningKeyRevocationStatusResponse(status="vigente")

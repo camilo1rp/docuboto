@@ -24,9 +24,11 @@
 --   • Rol de APLICACIÓN (`orpycamcp_app`): lee y escribe filas. Es quien OPERA.
 --     No puede crear ni alterar objetos, y sobre `audit_log` solo puede AÑADIR.
 --
---   • Excepción declarada: `tenant-service` crea esquemas al dar de alta una
---     entidad, así que sigue conectando como propietario. Es un solo servicio,
---     sellado con token interno y no enrutado por el gateway.
+--   • (Corregido) Se declaró aquí una excepción para `tenant-service`, «sellado
+--     con token interno y no enrutado por el gateway». La premisa era falsa:
+--     /dependencias, /catalogos, /config, /business-days y /pinar SÍ van a ese
+--     servicio. Hoy también conecta con este rol: `POST /tenants` ya no ejecuta
+--     DDL (la provisión del esquema es de `scripts/init_tenant.py`, propietario).
 --
 -- Se comprobó midiendo, no estimando: el carril de integración de
 -- document-service pasa 99 de 103 con este rol; los 4 restantes fallaban por

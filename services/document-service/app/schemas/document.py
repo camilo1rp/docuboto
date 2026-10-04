@@ -13,6 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.core.datos_minimos import faltantes, mensaje_faltantes
 from app.schemas.tercero import ActorVincular
 
 
@@ -76,6 +77,19 @@ class DocumentCreate(BaseModel):
     # y una Entrada radicada de urgencia puede completarse después con
     # `POST /terceros/radicado/{id}/actores`.
     actores: list[ActorVincular] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def _require_datos_minimos(self) -> "DocumentCreate":
+        """Ac. AGN 060/2001 §5.2 (AREA-09-02): tipo documental y dependencia."""
+        falta = faltantes(
+            self.doc_type,
+            doc_class=self.doc_class,
+            origin_dept_code=self.origin_dept_code,
+            dest_dept_code=self.dest_dept_code,
+        )
+        if falta:
+            raise ValueError(mensaje_faltantes(self.doc_type, falta))
+        return self
 
     @model_validator(mode="after")
     def _require_fundamento_when_classified(self) -> "DocumentCreate":
@@ -227,12 +241,17 @@ class PublicacionRequest(BaseModel):
 
     publicar: bool
     fundamento: str = Field(..., min_length=1, max_length=500)
+    #: `anexos.id` de los soportes que SE DIFUNDEN junto al radicado (AREA-07-12).
+    #: Por omisión ninguno: publicar el asunto no publica sus soportes. Se ignora
+    #: al retirar (se retiran todos).
+    anexos_publicables: list[uuid.UUID] = Field(default_factory=list, max_length=200)
 
 
 class PublicacionResponse(BaseModel):
     tracking_number: str
     publicable: bool
     publicado_at: datetime | None = None
+    anexos_publicados: int = 0
 
 
 class DispositionResponse(BaseModel):
@@ -295,6 +314,12 @@ class IndiceClasificadoItem(BaseModel):
     plazo_reserva_meses: int | None
     fecha_clasificacion: datetime | None
     fecha_radicacion: datetime
+    #: Área responsable (Dec. 1081/2015 art. 2.1.1.5.): la que RECIBE (E/I) o la que
+    #: PRODUCE (S) el documento. Es el nombre de la dependencia, no su contenido.
+    dependencia: str | None = None
+    #: Quién radicó (identificador opaco de usuario, no su nombre). `None` para lo que
+    #: entró sin usuario (ventanilla pública).
+    registrado_por: uuid.UUID | None = None
 
 
 class IndiceClasificadosResponse(BaseModel):

@@ -271,6 +271,48 @@ async def test_strict_non_conformant_rejects_before_touching_minio_or_db(
     assert audit_call.args[7] == _PDF_SHA256
 
 
+def test_looks_like_pdf_tolera_basura_antes_de_la_cabecera() -> None:
+    """AREA-08-02: los lectores aceptan hasta 1 KiB delante de `%PDF-`; con
+    `startswith`, un PDF con prefijo saltaba la validación en modo estricto."""
+    from app.services.pdfa_ingest_service import looks_like_pdf
+
+    assert looks_like_pdf(b"\x00\x00\r\n%PDF-1.7\ncuerpo")
+    assert looks_like_pdf(_PDF_CONTENT)
+    assert not looks_like_pdf(b"no es un pdf")
+    # fuera de la ventana de 1 KiB ya no cuenta
+    assert not looks_like_pdf(b"x" * 2048 + b"%PDF-1.7")
+
+
+@pytest.mark.asyncio
+async def test_strict_pdf_con_prefijo_se_valida_y_se_rechaza(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Modo strict: un PDF con bytes basura delante, `non_conformant`, da 422 y no
+    persiste (antes saltaba el validador por el sniff en offset 0)."""
+    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.settings, "preservation_pdfa_ingest_mode", "strict")
+    client, mock_conn, mock_minio = client_with_conn
+    conceder_permisos(mock_conn)
+    monkeypatch.setattr(
+        "app.services.storage_service.validate_ingest_content",
+        AsyncMock(
+            return_value=PdfaResult(
+                outcome="non_conformant", profile="2b", validator_agent="t", detail={}
+            )
+        ),
+    )
+
+    resp = await client.post(
+        "/api/v1/storage/upload",
+        files={"file": (_FILENAME, b"\x00\x00JUNK" + _PDF_CONTENT, _MIME_TYPE)},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 422, resp.text
+    mock_minio.put_object.assert_not_awaited()
+
+
 @pytest.mark.parametrize("outcome", ["conformant", "not_evaluated"])
 @pytest.mark.asyncio
 async def test_strict_conformant_or_not_evaluated_proceeds_and_persists_verdict(

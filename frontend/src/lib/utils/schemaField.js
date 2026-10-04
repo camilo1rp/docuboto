@@ -27,10 +27,18 @@
  *                                       no se pierde la hora, solo el widget)
  *   number / integer          -> number
  *   boolean                   -> select Sí/No (FormField no tiene checkbox)
+ *   array de escalares        -> lista repetible (un control por elemento)
+ *   object de UN nivel        -> grupo con un control por propiedad
+ *
+ * Los compuestos viajan como UN string JSON de valores CRUDOS (strings): así
+ * encajan en el mismo canal que los escalares (FormData `meta_<clave>` en
+ * expedientes, `extraMetadata[clave]` en /radicar) y `coerceSchemaValue` los
+ * tipa de una vez, elemento a elemento, contra el schema.
  *
  * NO soportado (resolveSchemaControl devuelve null — fail-safe, el campo no
- * se renderiza ni se envía): object, array, oneOf/anyOf/allOf, $ref, o un
- * `type` que no se reduce a uno de los escalares de arriba.
+ * se renderiza ni se envía): array de objetos/arrays, object anidado dentro de
+ * un object, un object con una propiedad `required` no soportada,
+ * oneOf/anyOf/allOf, $ref, o un `type` que no se reduce a lo anterior.
  */
 
 const NULLABLE = "null";
@@ -50,19 +58,55 @@ function normalizeType(schema) {
 }
 
 /**
+ * @typedef {{kind: 'text'|'email'|'date'|'number'|'select', options?: Array<{value: string, label: string}>}} ScalarControl
+ * @typedef {{kind: 'array', item: ScalarControl}} ArrayControl
+ * @typedef {{kind: 'object', properties: Array<[string, any]>, required: string[]}} ObjectControl
+ */
+
+/**
  * Deriva el control de UI para una propiedad del `json_schema` de la
  * plantilla de metadatos de expediente.
  * @param {any} schema - la propiedad, es decir `json_schema.properties[key]`
- * @returns {{kind: 'text'|'email'|'date'|'number'|'select', options?: Array<{value: string, label: string}>}|null}
+ * @param {number} [depth] - niveles de object ya recorridos (0 = raíz). Un
+ *   object solo se admite en depth 0: «de un nivel».
+ * @returns {ScalarControl|ArrayControl|ObjectControl|null}
  *   `null` si el constructo no es soportado por este formulario (fail-safe).
  */
-export function resolveSchemaControl(schema) {
+export function resolveSchemaControl(schema, depth = 0) {
   if (!schema || typeof schema !== "object") return null;
-  // Constructos compuestos/no escalares: no soportados en este incremento.
+  // Composición y referencias: no soportadas.
   if (schema.$ref || schema.oneOf || schema.anyOf || schema.allOf) return null;
 
   const type = normalizeType(schema);
-  if (type === "object" || type === "array") return null;
+
+  if (type === "array") {
+    const items = schema.items;
+    if (!items || typeof items !== "object" || Array.isArray(items)) return null;
+    const item = resolveSchemaControl(items, depth + 1);
+    // Solo lista de ESCALARES: una lista de objetos o de listas no cabe en un
+    // control repetible sin construir un editor de tablas.
+    if (!item || item.kind === "array" || item.kind === "object") return null;
+    return { kind: "array", item };
+  }
+
+  if (type === "object") {
+    if (depth >= 1) return null;
+    const props = schema.properties;
+    if (!props || typeof props !== "object") return null;
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    /** @type {Array<[string, any]>} */
+    const soportadas = [];
+    for (const [k, s] of Object.entries(props)) {
+      if (resolveSchemaControl(s, depth + 1)) soportadas.push([k, s]);
+      // Una propiedad obligatoria que no se puede pintar haría imposible
+      // crear el registro: mejor declarar todo el object no soportado (y que
+      // el aviso del formulario lo cuente) que ofrecer un grupo que siempre
+      // acaba en 422.
+      else if (required.includes(k)) return null;
+    }
+    if (soportadas.length === 0) return null;
+    return { kind: "object", properties: soportadas, required };
+  }
 
   // Enum (con o SIN `type` explícito): un conjunto cerrado de valores es un
   // <select>, independientemente de que el schema declare `type`. JSON Schema
@@ -120,6 +164,9 @@ export function coerceSchemaValue(schema, raw) {
   const control = resolveSchemaControl(schema);
   if (!control) return undefined;
 
+  if (control.kind === "array") return coerceList(schema, raw);
+  if (control.kind === "object") return coerceGroup(schema, control, raw);
+
   const type = normalizeType(schema);
 
   if (type === "number" || type === "integer") {
@@ -136,4 +183,80 @@ export function coerceSchemaValue(schema, raw) {
   // string / enum / date / email / date-time: tal cual (el <input date> ya
   // entrega ISO YYYY-MM-DD).
   return raw;
+}
+
+/**
+ * Un compuesto llega como string JSON (o ya estructurado, desde un llamador
+ * que lo pase así). Un JSON ilegible se OMITE en vez de enviarse: el backend
+ * exige los `required` y nombra la propiedad que falta.
+ * @param {unknown} raw
+ */
+function parseCompound(raw) {
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Lista de escalares: coerciona cada elemento contra `items`, descarta los
+ * vacíos/inválidos y omite la lista entera si no queda ninguno.
+ * @param {any} schema
+ * @param {unknown} raw
+ * @returns {unknown[]|undefined}
+ */
+function coerceList(schema, raw) {
+  const lista = parseCompound(raw);
+  if (!Array.isArray(lista)) return undefined;
+  const salida = lista
+    .map((v) => coerceSchemaValue(schema.items, v === null || v === undefined ? "" : String(v)))
+    .filter((v) => v !== undefined);
+  return salida.length ? salida : undefined;
+}
+
+/**
+ * Object de un nivel: solo las propiedades que el schema declara y el
+ * formulario soporta (allowlist), cada una coercionada a su tipo.
+ * @param {any} schema
+ * @param {ObjectControl} control
+ * @param {unknown} raw
+ * @returns {Record<string, unknown>|undefined}
+ */
+function coerceGroup(schema, control, raw) {
+  const grupo = parseCompound(raw);
+  if (!grupo || typeof grupo !== "object" || Array.isArray(grupo)) return undefined;
+  /** @type {Record<string, unknown>} */
+  const salida = {};
+  for (const [k, propSchema] of control.properties) {
+    const v = /** @type {Record<string, unknown>} */ (grupo)[k];
+    if (v === undefined || v === null) continue;
+    // Un array anidado ya viene como lista; un escalar, como string.
+    const coerced = coerceSchemaValue(
+      propSchema,
+      Array.isArray(v) || typeof v === "object" ? JSON.stringify(v) : String(v),
+    );
+    if (coerced !== undefined) salida[k] = coerced;
+  }
+  return Object.keys(salida).length ? salida : undefined;
+}
+
+/**
+ * Ubica el error de un 422 (`field` = `a.b`) en el control que lo causó.
+ *
+ * @param {string|null|undefined} field - ruta con puntos del backend
+ * @param {string} mensaje
+ * @param {string[]} claves - propiedades de primer nivel que el formulario pinta
+ * @returns {{key: string, error: string, subErrors: Record<string, string>}|null}
+ *   `null` si no hay ruta o la propiedad no está en pantalla: el llamador deja
+ *   entonces el mensaje en el aviso general, que es lo honesto.
+ */
+export function ubicarErrorDeCampo(field, mensaje, claves) {
+  if (!field) return null;
+  const [key, ...resto] = field.split(".");
+  if (!claves.includes(key)) return null;
+  // `lista.1` apunta a un elemento: el control es la lista entera.
+  const interior = resto[0] !== undefined && !/^\d+$/.test(resto[0]) ? resto[0] : null;
+  return { key, error: mensaje, subErrors: interior ? { [interior]: mensaje } : {} };
 }

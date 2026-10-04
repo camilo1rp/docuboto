@@ -38,7 +38,7 @@
  */
 import { test as setup, expect } from "@playwright/test";
 
-import { IDENTIDADES, estadoDe, iniciarSesion } from "./_sesion.js";
+import { IDENTIDADES, RESTRINGIDA, estadoDe, iniciarSesion } from "./_sesion.js";
 
 // Una sesión por cada identidad de reparto. Son logins de verdad contra
 // Keycloak, pero solo TRES para toda la suite: lo que se evita es que cada una de
@@ -50,3 +50,11 @@ for (const usuario of IDENTIDADES) {
     await page.context().storageState({ path: estadoDe(usuario) });
   });
 }
+
+// La identidad de perfil restringido (AREA-12-07): su estado lo usan las specs de
+// RBAC en la interfaz.
+setup(`iniciar sesión como ${RESTRINGIDA} (perfil restringido)`, async ({ page }) => {
+  await iniciarSesion(page, { usuario: RESTRINGIDA });
+  await expect(page).toHaveURL(/\/dashboard/);
+  await page.context().storageState({ path: estadoDe(RESTRINGIDA) });
+});

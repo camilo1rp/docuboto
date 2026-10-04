@@ -36,7 +36,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
-from orpycamcp_common import audit, events
+from orpycamcp_common import audit
 
 from app.core import reglas_tipo
 from app.repositories.anulacion_repository import AnulacionRepository
@@ -46,6 +46,7 @@ from app.schemas.anulacion import (
     AnulacionResponse,
     AnulacionSolicitud,
 )
+from app.services import outbox
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class AnulacionService:
                         "causal": payload.causal,
                         "motivo": payload.motivo,
                     },
+                    canal=audit.CANAL_PETICION,
                 )
         except asyncpg.UniqueViolationError:
             raise HTTPException(
@@ -249,39 +251,27 @@ class AnulacionService:
                     "anulacion_id": str(active["id"]),
                     "observacion": payload.observacion,
                 },
+                canal=audit.CANAL_PETICION,
             )
-        # El evento de dominio se publica tras confirmar la transacción. Es
-        # best-effort y SOLO se publica al aprobar — solicitar/rechazar no
-        # cambian el estado del radicado.
-        if aprobar:
-            await self._emit_annulled(radicado_id, tracking_number, self._slug, decidido_por)
+            # OUTBOX (AREA-09-05): SOLO al aprobar — solicitar/rechazar no cambian el
+            # estado del radicado. Misma tx que la decisión y su asiento.
+            pendiente = None
+            if aprobar and tracking_number and self._slug:
+                pendiente = await outbox.encolar(
+                    self._conn,
+                    stream=_STREAM,
+                    event_type="document.radicado.annulled",
+                    tenant_slug=self._slug,
+                    actor=str(decidido_por) if decidido_por else None,
+                    dedup_key=f"{tracking_number}:annulled",
+                    payload={"id": str(radicado_id), "tracking_number": tracking_number},
+                )
+        # Camino rápido tras el commit. El evento ya está en el outbox (encolado
+        # dentro de la tx): un fallo de Redis aquí lo deja pendiente para el relé
+        # del barrido en vez de perderlo (AREA-09-05).
+        if pendiente is not None:
+            await outbox.enviar(self._conn, self._redis, pendiente)
         return _resp(row)
-
-    async def _emit_annulled(
-        self,
-        radicado_id: uuid.UUID,
-        tracking_number: str | None,
-        tenant_slug: str | None,
-        actor_id: uuid.UUID | None,
-    ) -> None:
-        if self._redis is None or not tracking_number or not tenant_slug:
-            return
-        try:
-            await events.emit(
-                self._redis,
-                _STREAM,
-                "document.radicado.annulled",
-                tenant_slug=tenant_slug,
-                actor=str(actor_id) if actor_id else None,
-                dedup_key=f"{tracking_number}:annulled",
-                payload={"id": str(radicado_id), "tracking_number": tracking_number},
-            )
-        except Exception:  # noqa: BLE001 — evento best-effort: nunca revierte la anulación.
-            logger.warning(
-                "No se pudo publicar el evento de anulación %s",
-                tracking_number,
-                exc_info=True,
-            )
 
     async def aprobar(
         self, radicado_id, payload, decidido_por, max_clearance: int

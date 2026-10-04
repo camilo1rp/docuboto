@@ -69,6 +69,7 @@ _CREATE_PAYLOAD = {
     "subject": "Solicitud de información",
     "doc_class": "Derechos de Petición",
     "dest_dept": "Dirección General",
+    "dest_dept_code": 1,
     "sender_name": "Juan Pérez",
     "sender_entity": "Ciudadano",
     "pages": 3,

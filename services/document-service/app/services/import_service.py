@@ -171,6 +171,19 @@ class ImportService:
             errs = sorted(_VALIDATOR.iter_errors(entity), key=lambda e: e.path)
             if errs:
                 raise PackageValidationError(f"{data_file} no valida contra el esquema: {errs[0].message}")
+            # Ley 1712/2014 art. 19/28 (AREA-09-04): un radicado clasificado o
+            # reservado entra MOTIVADO. El esquema admite `fundamento: null` porque
+            # el nivel 1 no lo lleva, pero con nivel >= 2 un fundamento vacío metería
+            # una fila sin motivo en el índice del art. 20 — la promesa de «nunca
+            # NULL» que la base también defiende (CHECK 041). Todo-o-nada: 422.
+            nivel = entity.get("nivel_seguridad")
+            if isinstance(nivel, int) and nivel >= 2:
+                fundamento = (entity.get("clasificacion") or {}).get("fundamento")
+                if not (isinstance(fundamento, str) and fundamento.strip()):
+                    raise PackageValidationError(
+                        f"el radicado {entity.get('numero_radicado')} tiene nivel_seguridad "
+                        f"{nivel} sin clasificacion.fundamento (Ley 1712/2014 art. 19/28)"
+                    )
             # **Fixity de CADA binario** antes de ingerir (RF-INT-05, crítico).
             for anexo in entity.get("anexos", []):
                 if anexo.get("ausente"):
@@ -376,6 +389,7 @@ class ImportService:
                     {"file_id": str(fid), "sha256": anexo.get("sha256")} for fid, anexo in huerfanos
                 ],
             },
+            canal=audit.CANAL_PETICION,
         )
 
     async def _asentar_huerfanos_tras_reversion(
@@ -495,4 +509,5 @@ class ImportService:
                 "omitidos_clearance": len(omit_cl),
                 "antecedentes_no_resueltos": no_resueltos,
             },
+            canal=audit.CANAL_PETICION,
         )

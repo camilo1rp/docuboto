@@ -51,7 +51,7 @@ DEADLETTER_STREAM = "orpycamcp.signature.deadletter"
 # app/jobs/deadletter_retention.py and app/routers/admin_deadletter.py) — see
 # the docstring there for why this can't just be a local literal.
 GROUP = DLQ_GROUP
-CONSUMER = "signature-service-1"
+CONSUMER = events.consumer_name("signature-service")
 _SERVICE = "signature-service"
 
 # Cadence for the PEL reclaim sweep (seconds).
@@ -113,6 +113,7 @@ async def apply_reclassification(
             object_ref=tracking_number,
             actor=actor,
             payload=audit_payload,
+            canal="system",
         )
         logger.info(
             "Re-synced %d firma_solicitud row(s) for radicado %s → nivel %s",
@@ -173,7 +174,7 @@ async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:
         record of this degenerate case.
 
     Idempotency:
-        ``INSERT … ON CONFLICT (event_id) DO NOTHING RETURNING event_id`` — a
+        ``INSERT … ON CONFLICT (origin_group, event_id) DO NOTHING RETURNING event_id`` — a
         second call with the same ``event_id`` returns None (no row), and the
         ``audit_log`` write is skipped.  This prevents a double-trace if XADD
         succeeded but XACK failed (at-least-once redelivery).
@@ -309,7 +310,10 @@ async def run() -> None:
                     # A-1: ack ONLY on success — a failed _handle leaves the message
                     # in the PEL (Pending Entries List) for retry on the next consumer.
                     await redis.xack(DOCUMENT_STREAM, GROUP, msg_id)
-                except Exception:
+                except Exception as exc:
+                    # R-5b: recuerda el error para que, si el mensaje queda huérfano, el
+                    # dead-letter lleve la causa y no un texto vacío.
+                    await events.record_failure(redis, GROUP, msg_id, exc)
                     logger.warning(
                         "Fallo procesando evento de reclasificación — "
                         "mensaje permanece en PEL para reintento",
@@ -332,6 +336,7 @@ async def run() -> None:
                     max_deliveries=5,
                     deadletter_stream=DEADLETTER_STREAM,
                     on_dead_letter=_persist_dead_letter,
+                    status_name="signature",
                 )
             except asyncio.CancelledError:
                 raise

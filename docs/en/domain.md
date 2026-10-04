@@ -320,6 +320,11 @@ Per-tenant subscription to domain events: OrpycaMCP delivers the event to extern
 | 8 | The **electronic index** is append-only versioned; after closing it is immutable | Loss of the expediente's legal validity |
 | 9 | The expediente's **disposition** is derived from its TRD serie at closing | Improper destruction/preservation |
 | 10 | Once a **transfer** is received, the expediente is **frozen** | Alteration of the transferred holdings |
+| 11 | Every radicado is born with a **document type and a department** (E/I → destination; S → origin; AGN 060 §5.2) | A document with no TRD series and no inbox |
+| 12 | Every **classified or reserved** radicado carries its legal basis (never NULL: the database enforces it) | A row with no stated basis in the art. 20 index |
+| 13 | The **level-change** event is born in the same transaction as the change (outbox) | Semantic index serving a stale level |
+| 14 | Publishing a radicado **does not publish its attachments**; what came through the public window is not published ex officio | Disclosure of third-party data (Law 1581) |
+| 15 | Public intake records the **personal-data authorisation** and is **idempotent** by key | A radicado without consent; two sequence numbers for one retry |
 
 ---
 

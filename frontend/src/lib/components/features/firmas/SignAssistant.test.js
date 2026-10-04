@@ -419,6 +419,31 @@ describe("SignAssistant — 2fa_requerido con app autenticadora activa", () => {
     await screen.findByLabelText("Código de verificación");
   });
 
+  it("si el backend veta el correo (totp_requerido al emitir el reto), pide la app en vez de un error sin salida", async () => {
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      if (url === "/perfil/api/totp") throw new TypeError("red caída");
+      if (url.endsWith("/sign")) {
+        return new Response(JSON.stringify({ error: "2fa_requerido", status: 409 }), {
+          status: 409,
+        });
+      }
+      if (url.endsWith("/challenge")) {
+        return new Response(JSON.stringify({ error: "totp_requerido", status: 409 }), {
+          status: 409,
+        });
+      }
+      throw new Error(`URL inesperada: ${url}`);
+    });
+
+    render(SignAssistant, {
+      props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R-1" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+
+    await screen.findByLabelText("Código de la app autenticadora");
+  });
+
   it("con credencial personal (totp_requerido) NO ofrece el correo: ahí no lo admite el backend", async () => {
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);

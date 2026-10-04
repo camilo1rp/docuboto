@@ -41,18 +41,19 @@ vigente:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from miniopy_async import Minio  # type: ignore[attr-defined]
+from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
 from miniopy_async.commonconfig import CopySource
 from miniopy_async.retention import Retention
 
-from app.core.config import settings
-from app.core.minio_client import ensure_object_lock_bucket
+from app.core.config import _same_endpoint, settings
+from app.core.minio_client import ensure_object_lock_bucket, verificar_retencion_aplicada
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +92,72 @@ def _get_secondary_minio() -> Minio:
     return _secondary_minio
 
 
+def _is_cross_site() -> bool:
+    """¿Hay un segundo endpoint DISTINTO del primario? Un secundario que apunta al
+    mismo host no es una copia geográfica: etiquetarla «cross-site» sería afirmar una
+    separación que no existe (AREA-08-04)."""
+    secondary = settings.minio_secondary_endpoint
+    return bool(secondary) and not _same_endpoint(secondary or "", settings.minio_endpoint)
+
+
 def replica_target(primary_minio: Minio, tenant_slug: str) -> tuple[Minio, str]:
     """Cliente y bucket donde vive (o viviría) la réplica del AIP del tenant:
-    el endpoint secundario si está configurado, el primario con bucket propio
-    si no. Mismo criterio que :func:`replicate_aip`; lo usa el acto de legal
-    hold para alcanzar TAMBIÉN la copia (AREA-08-07)."""
-    client = _get_secondary_minio() if settings.minio_secondary_endpoint else primary_minio
+    el endpoint secundario si está configurado y es distinto del primario, el
+    primario con bucket propio si no. Mismo criterio que :func:`replicate_aip`; lo
+    usa el acto de legal hold para alcanzar TAMBIÉN la copia (AREA-08-07)."""
+    client = _get_secondary_minio() if _is_cross_site() else primary_minio
     return client, replica_bucket_name(tenant_slug)
+
+
+class ReplicaFixityError(Exception):
+    """La copia releída de la réplica no tiene el SHA-256 del ZIP del primario."""
+
+
+def _motivo_seguro(exc: BaseException) -> str:
+    """Motivo de fallo apto para el evento PREMIS y el `audit_log`.
+
+    `str(exc)` de una excepción de S3 lleva host, bucket y request-id, y ese texto
+    acaba en `preservacion_evento.detalle` y en la pestaña Preservación del
+    expediente (AREA-08-04). Solo el tipo y, si es un `S3Error`, su código."""
+    if isinstance(exc, ReplicaFixityError):
+        return "fixity_replica"
+    if isinstance(exc, S3Error):
+        return f"S3Error:{exc.code}"
+    return type(exc).__name__
+
+
+async def _verificar_replica(
+    client: Minio,
+    bucket: str,
+    object_key: str,
+    *,
+    version_id: str | None,
+    retention_mode: str,
+    retain_until: datetime,
+    zip_sha256: str,
+) -> None:
+    """Read-back de la copia (misma disciplina que el primario, `aip_service`).
+
+    Hasta aquí la réplica se daba por buena porque `put_object`/`copy_object` no
+    fallaron: ni la retención ni los bytes se releían, y el evento REPLICA `ok`
+    atestiguaba una copia que nadie había mirado."""
+    await verificar_retencion_aplicada(
+        client,
+        bucket,
+        object_key,
+        version_id=version_id,
+        modo_esperado=retention_mode,
+        hasta_esperado=retain_until,
+    )
+    obj = await client.get_object(bucket, object_key)
+    try:
+        leido = await obj.read()
+    finally:
+        close = getattr(obj, "close", None)
+        if close is not None:
+            close()
+    if hashlib.sha256(leido).hexdigest() != zip_sha256:
+        raise ReplicaFixityError(bucket)
 
 
 @dataclass(slots=True)
@@ -159,7 +219,7 @@ async def replicate_aip(
     if num_copias <= 1:
         return None
 
-    cross_site = bool(settings.minio_secondary_endpoint)
+    cross_site = _is_cross_site()
     target: Literal["local", "cross-site"] = "cross-site" if cross_site else "local"
     bucket = replica_bucket_name(tenant_slug)
     retention = Retention(retention_mode, retain_until)
@@ -168,7 +228,7 @@ async def replicate_aip(
         if cross_site:
             minio = _get_secondary_minio()
             await ensure_object_lock_bucket(minio, bucket)
-            await minio.put_object(
+            escrito = await minio.put_object(
                 bucket,
                 object_key,
                 io.BytesIO(zip_bytes),
@@ -178,15 +238,27 @@ async def replicate_aip(
                 legal_hold=legal_hold,
             )
         else:
+            minio = primary_minio
             await ensure_object_lock_bucket(primary_minio, bucket)
-            await primary_minio.copy_object(
+            escrito = await primary_minio.copy_object(
                 bucket,
                 object_key,
                 CopySource(primary_bucket, object_key),
                 retention=retention,
                 legal_hold=legal_hold,
             )
+        await _verificar_replica(
+            minio,
+            bucket,
+            object_key,
+            version_id=getattr(escrito, "version_id", None),
+            retention_mode=retention_mode,
+            retain_until=retain_until,
+            zip_sha256=hashlib.sha256(zip_bytes).hexdigest(),
+        )
     except Exception as exc:  # noqa: BLE001 — best-effort no-fatal, ver docstring del módulo.
+        # El detalle completo (host, request-id) queda en el log del servicio; al
+        # evento PREMIS y al audit_log solo va el motivo saneado.
         logger.error(
             "Réplica del AIP falló (tenant=%s, target=%s, bucket=%s, object_key=%s): %s",
             tenant_slug,
@@ -202,7 +274,7 @@ async def replicate_aip(
             object_key=object_key,
             copias_solicitadas=num_copias,
             copias_hechas=1,
-            motivo_fallo=str(exc),
+            motivo_fallo=_motivo_seguro(exc),
         )
 
     if num_copias > 2:

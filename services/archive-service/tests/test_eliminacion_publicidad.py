@@ -159,6 +159,7 @@ async def test_publicar_exige_nivel_3(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_el_inventario_publicado_se_ve_SIN_autenticar(client_with_conn) -> None:
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # la entidad está alojada aquí
     mock_conn.fetchrow.return_value = _lote_row()
     mock_conn.fetch.return_value = [_item_publico()]
 
@@ -180,6 +181,7 @@ async def test_la_descripcion_de_un_clasificado_NO_se_publica_pero_la_fila_SI(
     la descripción, que es donde vive el contenido — y se DICE, con
     `nombre_reservado`, en vez de dejar un hueco mudo."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # la entidad está alojada aquí
     mock_conn.fetchrow.return_value = _lote_row()
     mock_conn.fetch.return_value = [
         _item_publico(code="EXP-PUBLICO"),
@@ -203,6 +205,7 @@ async def test_el_recorte_va_en_el_SELECT_no_en_quien_pinta(client_with_conn) ->
     filtrara después, cualquier consumidor futuro del repositorio lo
     reintroduciría sin enterarse."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # la entidad está alojada aquí
     mock_conn.fetchrow.return_value = _lote_row()
     mock_conn.fetch.return_value = []
 
@@ -234,6 +237,7 @@ async def test_el_chokepoint_es_haber_llegado_a_publicarse(client_with_conn) -> 
     luego anulado desaparecía de la vista pública — justo de quien leyó el
     inventario y podía estar esperando saber en qué quedó su oposición."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # la entidad está alojada aquí
     mock_conn.fetchrow.return_value = None
     await client.get(f"{PUBLICO}/{LOTE}")
 
@@ -251,6 +255,7 @@ async def test_un_lote_publicado_y_luego_ANULADO_sigue_siendo_publico(
     """Con su motivo a la vista: la constancia de que algo NO se eliminó le
     importa a quien leyó que iba a eliminarse."""
     client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True  # la entidad está alojada aquí
     fila = _lote_row(estado="anulado")
     fila["anulado_motivo"] = "Oposición de un tercero admitida por el Comité"
     mock_conn.fetchrow.return_value = fila
@@ -260,3 +265,29 @@ async def test_un_lote_publicado_y_luego_ANULADO_sigue_siendo_publico(
 
     assert cuerpo["estado"] == "anulado"
     assert cuerpo["anulado_motivo"] == "Oposición de un tercero admitida por el Comité"
+
+
+@pytest.mark.asyncio
+async def test_un_slug_inexistente_y_un_lote_inexistente_dan_la_MISMA_respuesta(
+    client_with_conn,
+) -> None:
+    """AREA-06-01-C: antes un slug que no existe hacía fallar la consulta con
+    `UndefinedTable` (500) y un tenant real con un UUID inventado daba 404, así
+    que cualquiera sin token averiguaba qué entidades aloja la instalación. Con
+    el doble, la diferencia entre mundos la fija `public.tenants`."""
+    import asyncpg
+
+    client, mock_conn = client_with_conn
+
+    mock_conn.fetchval.return_value = None  # el slug no está en `public.tenants`
+    # Lo que haría Postgres si la consulta llegara a ejecutarse con el
+    # `search_path` apuntando a un schema que no existe.
+    mock_conn.fetchrow.side_effect = asyncpg.UndefinedTableError("el schema no existe")
+    sin_entidad = await client.get(f"/api/v1/public/archive/eliminacion/no-existe/lotes/{LOTE}")
+    mock_conn.fetchval.return_value = True  # la entidad existe; el lote no
+    mock_conn.fetchrow.side_effect = None
+    mock_conn.fetchrow.return_value = None
+    sin_lote = await client.get(f"{PUBLICO}/{uuid.uuid4()}")
+
+    assert sin_entidad.status_code == sin_lote.status_code == 404
+    assert sin_entidad.json() == sin_lote.json()

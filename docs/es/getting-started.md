@@ -70,18 +70,15 @@ La respuesta incluye el número de radicado asignado (ej: `2024-DEMO-E-000001`).
 
 ## Agregar un tenant (institución) / Add a tenant (institution)
 
+El alta de una institución es una operación de plataforma: `/api/v1/tenants` **no se expone por el gateway**
+(ver [Multi-tenancy](multi-tenancy.md)). Se hace con el script de provisión:
+
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/tenants' \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "slug": "mi_entidad",
-    "name": "Mi Entidad Pública",
-    "code": "MENT"
-  }'
+./scripts/init-tenant.sh mi-entidad "Mi Entidad Pública" MENT
 ```
 
-Esto aprovisiona automáticamente el schema `tenant_mi_entidad` en PostgreSQL.
+Esto aprovisiona el schema `tenant_mi_entidad` en PostgreSQL (el slug admite minúsculas, dígitos y guion;
+el guion pasa a guion bajo en el schema), aplica las migraciones y activa la entidad.
 
 ## Cargar la TRD inicial (seed) / Load initial TRD (seed)
 

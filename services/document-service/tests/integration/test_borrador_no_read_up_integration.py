@@ -26,6 +26,11 @@ from app.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
+#: Ac. AGN 060/2001 §5.2: el borrador no guarda tipo ni dependencias; se aportan al radicar.
+from app.schemas.borrador import BorradorRadicar  # noqa: E402
+
+_DATOS = BorradorRadicar(tipo_documental="Oficio", origin_dept_code=1, dest_dept_code=1)
+
 # Quien radicó el padre y creó los borradores: tiene el radicado (sin pasos de
 # flujo, la tenencia cae en `registered_by`) y por tanto puede editarlos.
 AUTOR = uuid.uuid4()
@@ -46,10 +51,10 @@ async def _escenario(tenant_ctx: tuple[str, asyncpg.Connection]):
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
     padre = await DocumentService(conn, slug).create(
-        DocumentCreate(doc_type="E", subject="Queja reservada", sender_name="x"),
+        DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Queja reservada", sender_name="x"),
         registered_by=AUTOR,
     )
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3 WHERE id = $1", padre.id)
+    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)' WHERE id = $1", padre.id)
     servicio = BorradorService(conn, slug)
     reservado = await servicio.crear(
         BorradorCreate(
@@ -151,7 +156,7 @@ async def test_reclasificar_el_padre_cierra_tambien_el_borrador(
         max_clearance=1,
     )
     assert b.nivel_seguridad == 1
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 2 WHERE id = $1", padre.id)
+    await conn.execute("UPDATE radicados SET nivel_seguridad = 2, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)' WHERE id = $1", padre.id)
     assert b.id not in {x.id for x in await servicio.listar(None, max_clearance=1)}
     with pytest.raises(HTTPException):
         await servicio.get(b.id, max_clearance=1)
@@ -258,7 +263,7 @@ async def test_radicar_hereda_el_nivel_del_padre_y_el_de_clearance_1_no_lo_ve(
     await conn.execute("UPDATE borrador SET estado = 'aprobado' WHERE id = $1", b.id)
 
     docs = DocumentService(conn, slug)
-    nuevo = await servicio.radicar(b.id, docs, AUTOR, max_clearance=3)
+    nuevo = await servicio.radicar(b.id, docs, AUTOR, max_clearance=3, datos=_DATOS)
 
     fila = await conn.fetchrow(
         "SELECT nivel_seguridad, clasificacion_fundamento, clasificacion_causal, "
@@ -287,6 +292,11 @@ async def test_radicar_con_padre_reservado_sin_fundamento_no_cae_a_nivel_1(
 
     _clearance_3(monkeypatch)
     slug, conn, _, padre, _, _ = await _escenario(tenant_ctx)
+    # El padre «antiguo»: la restricción 041 impide ya CREAR uno así, de modo que se
+    # simula el heredado quitándola (en producción la migración los rellenó). El código
+    # de herencia sigue siendo la defensa para lo que pudiera quedar sin motivar.
+    await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_clasificado_con_fundamento")
+    await conn.execute("UPDATE radicados SET clasificacion_fundamento = NULL WHERE id = $1", padre.id)
     servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
     b = await servicio.crear(
         BorradorCreate(doc_type="S", subject="Respuesta", radicado_padre_id=padre.id),
@@ -294,7 +304,9 @@ async def test_radicar_con_padre_reservado_sin_fundamento_no_cae_a_nivel_1(
         max_clearance=3,
     )
     await conn.execute("UPDATE borrador SET estado = 'aprobado' WHERE id = $1", b.id)
-    nuevo = await servicio.radicar(b.id, DocumentService(conn, slug), AUTOR, max_clearance=3)
+    nuevo = await servicio.radicar(
+        b.id, DocumentService(conn, slug), AUTOR, max_clearance=3, datos=_DATOS
+    )
     fila = await conn.fetchrow(
         "SELECT nivel_seguridad, clasificacion_fundamento FROM radicados WHERE id = $1",
         nuevo.id,

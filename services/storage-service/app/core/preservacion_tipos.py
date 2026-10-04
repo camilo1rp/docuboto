@@ -44,8 +44,18 @@ from __future__ import annotations
 # contenido bloquearía para siempre la disposición de cualquier expediente que
 # compartiera propietario — y, sobre todo, sería el instrumento impidiendo el
 # acto que él mismo documenta.
+#
+# Las tres firmas PERSONALES del acta de transferencia (AREA-07-10, migración 018) son
+# del mismo género que el sello institucional que acompañan: evidencia del acto, no
+# contenido.
 CONTROL_INSTRUMENT_TIPOS: frozenset[str] = frozenset(
-    {"acta_transferencia", "acta_eliminacion"}
+    {
+        "acta_transferencia",
+        "acta_eliminacion",
+        "acta_firma_elabora",
+        "acta_firma_entrega",
+        "acta_firma_recibe",
+    }
 )
 
 # CONTENIDO documental del expediente: bloquea la purga mientras esté bajo

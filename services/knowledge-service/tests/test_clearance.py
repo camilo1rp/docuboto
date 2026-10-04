@@ -122,3 +122,52 @@ class TestIsGeneratable:
     )
     def test_publica_es_siempre_generable(self, provider: str) -> None:
         assert is_generatable(PUBLICA, provider) is True
+
+
+class TestOllamaLocalDependeDelHost:
+    """AREA-11-12: `ollama_local` es soberano por su DESTINO, no por su nombre.
+
+    Con `AI_PROVIDER=ollama_local` y una `OLLAMA_URL` pública, el RAG enviaba
+    chunks nivel 2-3 a ese host y solo quedaba un warning en el log.
+    """
+
+    @pytest.mark.parametrize("nivel", [RESERVADA, CLASIFICADA])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://ollama.example.com",
+            "http://ollama.example.com:11434",
+            "http://8.8.8.8:11434",
+            "",  # sin host: fail-closed
+        ],
+    )
+    def test_host_publico_no_es_generable_en_nivel_2_o_3(self, nivel: int, url: str) -> None:
+        assert is_generatable(nivel, "ollama_local", url) is False
+        assert is_local_llm_provider("ollama_local", url) is False
+
+    @pytest.mark.parametrize("nivel", [RESERVADA, CLASIFICADA])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://ollama:11434",  # control positivo: hostname de contenedor
+            "http://localhost:11434",
+            "http://127.0.0.1:11434",
+            "http://10.1.2.3:11434",
+            "http://[::1]:11434",
+            "http://gpu.entidad.local:11434",
+        ],
+    )
+    def test_host_local_si_es_generable(self, nivel: int, url: str) -> None:
+        assert is_generatable(nivel, "ollama_local", url) is True
+
+    def test_nivel_publico_sigue_saliendo_con_host_publico(self) -> None:
+        # La barrera es solo para >= RESERVADA: lo público no es material protegido.
+        assert is_generatable(PUBLICA, "ollama_local", "https://ollama.example.com") is True
+
+    def test_sin_url_explicita_se_lee_la_de_la_configuracion(self, monkeypatch) -> None:
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "ollama_url", "https://ollama.example.com")
+        assert is_generatable(RESERVADA, "ollama_local") is False
+        monkeypatch.setattr(settings, "ollama_url", "http://ollama:11434")
+        assert is_generatable(RESERVADA, "ollama_local") is True

@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import PlainTextResponse
 
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION, require_permission
@@ -234,7 +234,6 @@ async def firmar_indice(
 )
 async def rebuild_indice(
     expediente_id: uuid.UUID,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
     user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
@@ -278,7 +277,11 @@ async def rebuild_indice(
     el mismo oráculo residual de ciclo de vida que hallazgo #1 buscaba cerrar,
     reabierto por una vía distinta. Se unifica a `None` en ambas ramas.
     """
-    generado_por = request.headers.get("X-Username") or "system"
+    # El UUID de quien regenera (`X-User-Id`), no su login: `generado_por` queda
+    # en el índice electrónico y en su asiento, y un username es mutable
+    # (AREA-02-08). `"system"` solo si no hay identidad, caso inalcanzable en la
+    # práctica: `require_permission` exige la misma cabecera.
+    generado_por = str(user_id) if user_id is not None else "system"
     archive_repo = ArchiveRepository(conn, tenant_slug)
 
     async def _puede_leer() -> bool:

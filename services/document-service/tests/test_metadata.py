@@ -32,6 +32,7 @@ _PAYLOAD = {
     "doc_type": "E",
     "subject": "Factura de servicios",
     "doc_class": "Factura",
+    "dest_dept_code": 1,
     "pages": 1,
 }
 
@@ -206,3 +207,5 @@ async def test_create_document_invalid_metadata_is_422(
 
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"] == "metadata_validation_failed"
+    # AREA-12-05: el sobre nombra la propiedad que incumple (area o valor).
+    assert resp.json()["detail"]["field"] in {"area", "valor"}

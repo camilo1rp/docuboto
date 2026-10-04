@@ -28,7 +28,9 @@ from app.repositories.preservacion_repository import PreservacionRepository
 from app.schemas.preservacion import (
     AipCreate,
     AipResponse,
+    EstadoResponse,
     EventoCreate,
+    EventoInternalCreate,
     EventoResponse,
     ExportZipCreate,
     LegalHoldRequest,
@@ -123,6 +125,24 @@ def _evento_response(row) -> EventoResponse:
     raw = d.get("detalle")
     d["detalle"] = json.loads(raw) if isinstance(raw, str) else (raw or {})
     return EventoResponse(**d)
+
+
+@router.get(
+    "/estado",
+    response_model=EstadoResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=1))],
+)
+async def get_estado() -> EstadoResponse:
+    """¿Está encendida la preservación en esta instalación?
+
+    Es un dato de INSTANCIA (`PRESERVATION_ENABLED`), no de un expediente: no
+    consulta ni filtra nada por expediente, así que no abre un oráculo
+    no-read-up. Existe para que la pestaña Preservación de la UI diga «está
+    desactivada en esta instalación» en vez de «sin AIP o sin visibilidad», que
+    es lo que un 404 neutro hace pasar por normal cuando en realidad nada se
+    empaqueta jamás. Mismo gate de lectura que `GET /plan` y que el mediador de
+    archive-service para el AIP."""
+    return EstadoResponse(enabled=settings.preservation_enabled)
 
 
 @router.get(
@@ -352,13 +372,55 @@ async def record_evento(
     return _evento_response(row)
 
 
+@router.post(
+    "/eventos-internal",
+    response_model=EventoResponse,
+    summary="Registra un evento PREMIS desde otro servicio (D-02, AREA-07-05)",
+    dependencies=[Depends(require_internal_token)],
+)
+async def record_evento_internal(
+    payload: EventoInternalCreate,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> JSONResponse:
+    """Gemelo INTERNO de `POST /eventos` para el evento que registra otro servicio sin una
+    persona detrás de la petición (archive-service: el fixity-check de la recepción de una
+    transferencia, que antes solo vivía en el payload de su asiento y no aparecía en
+    `GET /expedientes/{id}/preservacion/eventos`).
+
+    Sellado con `X-Internal-Token` y no enrutado por el gateway. Idempotente por
+    `dedup_key`: si ya existe un evento del mismo `object_ref` y `tipo` con esa clave se
+    devuelve ESE (200) en vez de duplicarlo (201 el primero): la reconciliación de archive
+    reintenta y el registro es append-only. La clave se guarda en `detalle.dedup_key`."""
+    repo = PreservacionRepository(conn, tenant_slug)
+    datos = payload.model_dump(exclude={"agente", "dedup_key"})
+    if payload.dedup_key is not None:
+        existente = await repo.find_evento_por_dedup(
+            object_ref=payload.object_ref, tipo=payload.tipo, dedup_key=payload.dedup_key
+        )
+        if existente is not None:
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=_evento_response(existente).model_dump(mode="json"),
+            )
+        datos["detalle"] = {**datos["detalle"], "dedup_key": payload.dedup_key}
+    row = await repo.insert_evento(datos, agente=payload.agente)
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content=_evento_response(row).model_dump(mode="json"),
+    )
+
+
 @router.get(
     "/eventos",
     response_model=list[EventoResponse],
     dependencies=[Depends(require_internal_token)],
 )
 async def list_eventos(
-    object_ref: str | None = Query(default=None),
+    # Repetible (`?object_ref=a&object_ref=b`): los eventos de un expediente cuelgan de
+    # varios objetos (el expediente, su AIP, los `file_id` de sus anexos: AREA-07-15).
+    # Tope por petición: el cliente (archive) pide en tandas de 100.
+    object_ref: list[str] | None = Query(default=None, max_length=200),
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[EventoResponse]:
@@ -381,7 +443,7 @@ async def list_eventos(
     esa variante tenant-wide queda puramente interna, sin mediador externo
     equivalente (no hay endpoint que agregue "todos los eventos" fuera de
     storage-service en este incremento)."""
-    rows = await PreservacionRepository(conn, tenant_slug).list_eventos(object_ref)
+    rows = await PreservacionRepository(conn, tenant_slug).list_eventos(object_ref or None)
     return [_evento_response(r) for r in rows]
 
 

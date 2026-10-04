@@ -149,6 +149,7 @@ class PurgaService:
                         "expediente_id": expediente_id,
                         "motivo": motivo,
                     },
+                    canal="system",
                 )
             eliminados.append((radicado_id, tracking))
 

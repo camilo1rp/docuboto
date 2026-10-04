@@ -33,8 +33,8 @@ La pregunta es cómo exponer esos eventos al exterior de forma segura, multi-ten
 
 **Negativas / límites:**
 - Entrega **at-least-once** best-effort: el receptor debe ser idempotente (se incluye un id de evento). No hay garantía de orden estricto entre webhooks.
-- Webhooks salientes implican una superficie SSRF (URLs arbitrarias): se mitiga restringiendo esquemas/hosts en configuración y registrando entregas; el endurecimiento fino queda como evolutivo.
-- La cola de reintentos persistente (DLQ) y el panel de entregas son incrementos posteriores; el MVP reintenta en línea y registra el resultado.
+- Webhooks salientes implican una superficie SSRF (URLs arbitrarias). **El SSRF está implementado** (`notification-service/app/core/webhook_security.py`, `validate_webhook_target`): se valida al crear la suscripción (esquema, host literal, IP literal; sin DNS) y **en cada intento de entrega** con resolución DNS real (`webhook_service._deliver_one`); se rechazan los pares de la red Docker y los rangos privados de `orpycamcp_common.red_interna`; `httpx` no sigue redirecciones; el kill-switch `webhook_allow_private_targets` existe solo para despliegues que lo necesitan a conciencia. El TOCTOU de DNS está cerrado (AREA-10-11): se conecta a la IP ya validada, con `Host` y SNI originales.
+- **Las entregas NO se registran de forma durable**: `webhook_service` solo emite `logger.warning` ante un fallo; no hay tabla de entregas, ni DLQ de webhooks, ni panel (la versión anterior de este ADR decía «registrando entregas», y era falsa). Un `USUA_PERM_ADMIN` que suscriba una URL externa sin `event_types` hace salir todo el contenido no clasificado (lo clasificado se recorta en `recortar_si_clasificado`) y hoy solo queda constancia en logs rotables. **Pendiente declarado**: tabla tenant append-only `webhook_entregas` (`webhook_id`, `event_id`, `intento`, `http_status`, `error`, `at`) escrita en `_deliver_one`, la cola de reintentos persistente (DLQ) y el panel de entregas; el MVP reintenta en línea (3 intentos).
 
 ## Alternativas consideradas
 

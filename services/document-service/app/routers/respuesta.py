@@ -24,6 +24,7 @@ from app.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate
 from app.services.document_service import (
     DocumentNotFoundError,
     DocumentService,
+    InvalidDependenciaError,
     InvalidTenantError,
 )
 
@@ -92,6 +93,13 @@ async def crear_respuesta(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "document_not_found", "detail": str(document_id), "status": 404},
         )
+    except InvalidDependenciaError as exc:
+        # El origen se hereda de la Entrada (Ac. 060 §5.2): si esa dependencia se
+        # suprimió después, es un 400 explicable, no un 500.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_dependencia", "detail": str(exc), "status": 400},
+        ) from exc
 
 
 @router.get(

@@ -43,6 +43,7 @@
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
+  import { MOTIVOS_REVOCACION } from "$lib/utils/motivoRevocacion.js";
   import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
@@ -87,7 +88,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: selectedUserId,
-          motivo: motivo.trim() || undefined,
+          motivo: motivo || undefined,
           confirm: confirmText.trim(),
         }),
       });
@@ -204,10 +205,11 @@
       <FormField
         id="claves-motivo"
         label="Motivo de la revocación"
-        type="textarea"
+        type="select"
+        options={MOTIVOS_REVOCACION}
+        placeholder="Sin especificar"
         bind:value={motivo}
-        placeholder="Ej.: salida del funcionario, sospecha de sesión comprometida…"
-        hint="Queda registrado en el asiento de auditoría (audit_log)."
+        hint="Queda registrado en el asiento de auditoría (audit_log). «Clave comprometida» invalida también lo firmado antes."
       />
     </section>
 

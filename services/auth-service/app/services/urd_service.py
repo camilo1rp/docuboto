@@ -116,6 +116,7 @@ class URDService:
                     "rol_id": str(payload.rol_id),
                     "es_principal": payload.es_principal,
                 },
+                canal=_audit.CANAL_PETICION,
             )
         return _to_urd(row)
 
@@ -141,6 +142,7 @@ class URDService:
                     object_ref=str(urd_id),
                     actor=actor,
                     payload={"user_id": str(user_id)},
+                    canal=_audit.CANAL_PETICION,
                 )
         return deleted
 
