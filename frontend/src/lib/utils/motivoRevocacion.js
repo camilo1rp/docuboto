@@ -15,7 +15,12 @@
  * /verify, por eso el motivo ya no es texto libre.
  */
 
-/** @type {ReadonlyArray<{value: string, label: string}>} */
+/**
+ * Tipado como Array (no ReadonlyArray) porque `FormField.options` declara un
+ * array mutable y svelte-check rechazaba pasarle este: es el vocabulario
+ * cerrado y nadie lo modifica, pero el tipo lo tiene que aceptar el componente.
+ * @type {Array<{value: string, label: string}>}
+ */
 export const MOTIVOS_REVOCACION = [
   { value: "key_compromise", label: "Clave comprometida o sospecha de compromiso" },
   { value: "superseded", label: "Reemplazada por otra credencial" },

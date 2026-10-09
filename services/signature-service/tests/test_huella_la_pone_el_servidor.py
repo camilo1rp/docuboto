@@ -37,13 +37,22 @@ from tests.test_cadena import (
 from tests.test_cadena_2fa import _patch_audit
 from tests.test_cadena_personal_signing import _patch_signing_key_status
 
-HUELLA_DEL_CLIENTE = "a" * 64
+HUELLA_DEL_CLIENTE = "e" * 64
+HUELLA_DEL_SERVIDOR = "f" * 64
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tipo", ["radicado", "expediente"])
-async def test_cadena_radicado_ignora_huella_del_cliente(tipo: str) -> None:
-    """La fila guardada lleva NULL (se firma el identificador), nunca 'a'*64."""
+async def test_cadena_radicado_ignora_huella_del_cliente(
+    tipo: str, _productores_de_huella_por_defecto, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """La fila guardada lleva la huella del PRODUCTOR (PDF vigente del radicado /
+    índice vigente del expediente), nunca la que declara el cliente."""
+    _productores_de_huella_por_defecto[tipo].return_value = {
+        "huella_sha256": HUELLA_DEL_SERVIDOR,
+        "version": 1,
+    }
+    audit = _patch_audit(monkeypatch)
     conn = _make_conn()
     sol = _sol_row()
     turno = _turno_row()
@@ -71,8 +80,11 @@ async def test_cadena_radicado_ignora_huella_del_cliente(tipo: str) -> None:
         c for c in conn.fetchrow.await_args_list if "INSERT INTO firma_solicitud" in c.args[0]
     )
     # (objeto_tipo, objeto_id, titulo, payload_sha256, creado_por, nivel_seguridad)
-    assert insert.args[4] is None
+    assert insert.args[4] == HUELLA_DEL_SERVIDOR
     assert HUELLA_DEL_CLIENTE not in insert.args[1:]
+    # El asiento de apertura dice SOBRE QUÉ contenido se abrió la cadena.
+    [creada] = [c for c in audit.await_args_list if c.kwargs["action"] == "firma.solicitud_creada"]
+    assert creada.kwargs["payload"]["huella_documento_sha256"] == HUELLA_DEL_SERVIDOR
 
 
 @pytest.mark.asyncio
@@ -82,7 +94,9 @@ async def test_firmar_sin_huella_rechaza_payload_xml(monkeypatch: pytest.MonkeyP
     _patch_audit(monkeypatch)
     _patch_signing_key_status(monkeypatch, body={"estado": "no_configurado", "user_id": str(USER)})
     conn = _make_conn()
-    sol = _sol_row()  # payload_sha256 None (test_cadena._sol_row)
+    # Cadena ANTERIOR a AREA-04-09 Media-2 (huella NULL): hoy ninguna cadena nueva
+    # de radicado/expediente nace sin huella, pero las abiertas antes sí.
+    sol = {**_sol_row(), "payload_sha256": None}
     turno = _turno_row(firmante_id=USER)
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [sol, {}, turno]  # solo la fase previa al lock
@@ -104,7 +118,7 @@ async def test_firmar_sin_huella_rechaza_payload_xml(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_firmar_con_huella_de_la_cadena_ignora_el_payload_xml_del_body(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, _productores_de_huella_por_defecto
 ) -> None:
     """Control: con la huella fijada por la cadena, lo firmado es esa huella y el
     ``payload_xml`` del body no cambia los bytes (no hay 422: ya no decide nada)."""
@@ -127,6 +141,7 @@ async def test_firmar_con_huella_de_la_cadena_ignora_el_payload_xml_del_body(
 
     conn = _make_conn()
     sol = {**_sol_row(), "payload_sha256": "c" * 64}
+    _productores_de_huella_por_defecto["radicado"].return_value = {"huella_sha256": "c" * 64}
     turno = _turno_row(firmante_id=USER)
     from tests.test_cadena_totp import _FIRMA_INS
 

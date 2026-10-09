@@ -204,7 +204,7 @@ llamada. **Sin escalada previa**: un proxy sin guarda reenviaba sin token y el g
   probado con el rol real `orpycamcp_app`: falla por privilegios, no por el trigger.
 - **Firmas personales del acta sin Object-Lock (AREA-07-10, media; solo la parte técnica).** El XML de las firmas
   de quien elaboró, entregó y recibió vivía en el bucket de documentos, sin retención. Entra al almacén WORM
-  (post-commit, best-effort, con reconciliación). **Pendiente (decisión de dominio)**: el acto `firma_inobtenible`.
+  (post-commit, best-effort, con reconciliación). **Cerrado el 2026-10-04**: el acto `firma_inobtenible` (`POST /acta/firma-inobtenible`, `USUA_PERM_ADMIN` ≥ 3, constancia inmutable `059` + asiento atómico, estado `firmada_con_excepcion`) y la renovación CT de estas firmas (`060`). **Remediación 2026-10-09 (ADR-030, `061`)**: la constancia no estaba firmada ni protegida y su soporte era texto libre (alto); ahora es XML canónico con sello XAdES-T y firma personal del declarante según la política de la entidad, Object-Lock con renovación CT y soporte resuelto por el servidor; el declarante no puede ser ninguna de las tres partes (servicio y motor); la excepción es revocable (fila append-only); el `fundamento` solo sale a `USUA_PERM_ADMIN` ≥ 3; y `sellada_con_excepcion` evita llamar «firmada» a un acta sin firmas personales.
 - **Fondos acumulados sin WORM (AREA-06-04, media).** Su índice, acta y AIP quedaban sin Object-Lock de forma
   indefinida (fail-closed correcto, pero permanente). Ahora se cablean con la fecha extrema final y un clamp
   (`hoy + 400 días` como mínimo). **Riesgo a confirmar**: un COMPLIANCE irreversible de ~400 días sobre documentación

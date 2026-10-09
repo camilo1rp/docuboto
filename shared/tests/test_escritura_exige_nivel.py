@@ -104,7 +104,6 @@ SIN_NIVEL_DECLARADAS = frozenset({
     "tenant-service::config.py::DELETE /config/holidays/{holiday_id}::USUA_PERM_ADMIN",
     "tenant-service::config.py::POST /config/holidays/seed::USUA_PERM_ADMIN",
     "tenant-service::config.py::POST /config/holidays::USUA_PERM_ADMIN",
-    "tenant-service::config.py::PUT /config/params/{key}::USUA_PERM_ADMIN",
     "tenant-service::dependencias.py::DELETE /{dependencia_id}::USUA_PERM_ADMIN",
     "tenant-service::dependencias.py::PATCH /{dependencia_id}::USUA_PERM_ADMIN",
     "tenant-service::dependencias.py::POST ::USUA_PERM_ADMIN",

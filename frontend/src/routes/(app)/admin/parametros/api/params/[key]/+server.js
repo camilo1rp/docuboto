@@ -15,8 +15,8 @@
  * recibido parsee como JSON antes de reenviarlo (allowlist: solo `value`
  * viaja, nunca `key` del body — el key SIEMPRE viene de la ruta).
  *
- * HALLAZGO DE DOMINIO (ver +page.server.js): sin gate de permiso en el
- * backend; USUA_PERM_ADMIN aplicado solo del lado del cliente.
+ * El backend exige `USUA_PERM_ADMIN` a nivel ≥ 3 en el PUT (un administrador en
+ * modo lectura o edición recibe 403) y re-valida siempre; la pantalla solo lo espeja.
  */
 
 import { json } from "@sveltejs/kit";
@@ -84,11 +84,20 @@ export async function PUT({ locals, params, request }) {
     );
   }
 
+  // Allowlist: `value` y, si viene, `motivo`. El motivo es obligatorio cuando el cambio
+  // RELAJA la política de firma (`firma_personal_require_xades`); quien lo decide es el
+  // backend (`422 motivo_requerido`), aquí solo se reenvía recortado.
+  /** @type {{value: unknown, motivo?: string}} */
+  const payload = { value: body.value };
+  if (typeof body.motivo === "string" && body.motivo.trim()) {
+    payload.motivo = body.motivo.trim();
+  }
+
   try {
     const res = await fetch(`${API_V1}/config/params/${encodeURIComponent(params.key)}`, {
       method: "PUT",
       headers: headersFor(locals, true),
-      body: JSON.stringify({ value: body.value }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });

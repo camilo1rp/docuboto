@@ -80,6 +80,49 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
 
 
 @pytest.fixture(autouse=True)
+def _entidad_sin_parametros_por_defecto(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> AsyncMock | None:
+    """Doble por defecto de la lectura de ``sgd_param_admin`` (política de la entidad).
+
+    ``firmar`` resuelve el modo del gate XAdES con una consulta a la tabla de
+    parámetros del tenant (``app.core.params_entidad.leer_param``). Los dobles de
+    conexión de estas suites encadenan ``fetchval``/``fetchrow`` en un orden
+    FIJO, así que esa consulta extra los desordenaría. El doble emula «la
+    entidad no define el parámetro»: manda el entorno, que es lo que ya fijaban
+    estos tests con ``monkeypatch.setattr(settings, "firma_personal_require_xades", ...)``.
+    Los tests de la política de la entidad lo sustituyen (y el tier de
+    integración la lee de una tabla real).
+    """
+    if "/integration/" in request.node.nodeid:
+        return None  # el tier real lee la tabla de verdad
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("app.core.params_entidad.leer_param", mock)
+    return mock
+
+
+#: Huella que devuelven por defecto los productores de radicado/expediente en estas
+#: suites; coincide con la `payload_sha256` de las filas de cadena de los dobles.
+HUELLA_PRODUCTOR = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def _productores_de_huella_por_defecto(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
+    """Dobles por defecto de las huellas que resuelve el SERVIDOR (AREA-04-09 Media-2).
+
+    Una cadena sobre `radicado`/`expediente` fija la huella al abrirse y la relee
+    antes de cada firma (document-service / archive-service). Sin red en estas
+    suites, el productor «no ha cambiado nada»: devuelve `HUELLA_PRODUCTOR`. Los
+    tests del gate, de la apertura y de los clientes salientes lo sustituyen.
+    """
+    radicado = AsyncMock(return_value={"huella_sha256": HUELLA_PRODUCTOR})
+    expediente = AsyncMock(return_value={"huella_sha256": HUELLA_PRODUCTOR, "version": 1})
+    monkeypatch.setattr("app.services.cadena_service.get_huella_radicado", radicado)
+    monkeypatch.setattr("app.services.cadena_service.get_huella_indice_expediente", expediente)
+    return {"radicado": radicado, "expediente": expediente}
+
+
+@pytest.fixture(autouse=True)
 def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     """Doble por defecto de ``GET /internal/totp/status`` (auth-service).
 

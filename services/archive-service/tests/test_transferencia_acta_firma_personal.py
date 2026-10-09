@@ -178,6 +178,7 @@ async def test_firmar_personal_ok_inserts_row_and_audits() -> None:
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,  # get_acta_firma_personal -> aún no firmado
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
         inserted,  # insert_acta_firma_personal RETURNING
     ]
     svc = _service(conn)
@@ -293,6 +294,7 @@ async def test_firmar_personal_rejected_totp_incorrecto_propagates_status() -> N
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc = _service(conn)
     actor = Actor(id=USER_ID)
@@ -319,6 +321,7 @@ async def test_firmar_personal_rejected_sin_certificado_activo_returns_422() -> 
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc = _service(conn)
     actor = Actor(id=USER_ID)
@@ -345,6 +348,7 @@ async def test_firmar_personal_channel_unavailable_returns_503() -> None:
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc = _service(conn)
     actor = Actor(id=USER_ID)
@@ -383,6 +387,7 @@ async def test_firmar_personal_fallo_remoto_nombra_la_causa_y_no_acusa_al_canal(
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc = _service(conn)
     actor = Actor(id=USER_ID)
@@ -484,6 +489,7 @@ async def test_firmar_personal_legitimate_receiver_still_signs_ok() -> None:
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,  # get_acta_firma_personal -> aún no firmado
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
         inserted,  # insert_acta_firma_personal RETURNING
     ]
     svc = _service(conn)
@@ -511,6 +517,7 @@ async def test_firmar_personal_lost_race_no_phantom_audit_returns_winning_row() 
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,  # get_acta_firma_personal -> aún no firmado (a nuestros ojos)
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
         None,  # insert_acta_firma_personal -> ON CONFLICT DO NOTHING (perdió la carrera)
         winning_row,  # re-lectura tras perder la carrera
     ]
@@ -556,7 +563,7 @@ async def test_acta_verificacion_firmada_receptor_when_personal_present() -> Non
     ]
     # `get_expediente_by_id` consume `conn.fetch` PRIMERO (radicados del
     # expediente, `_get_radicados`) -- ANTES de `list_acta_firma_personal`.
-    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid)]]
+    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid)], []]  # + list_acta_firma_excepciones
     svc = _service(conn)
 
     with (
@@ -678,6 +685,7 @@ async def test_firmar_personal_remitente_signs_as_entrega() -> None:
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,  # get_acta_firma_personal(rol='entrega') -> aún no firmado
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc = _service(conn)
     actor = Actor(id=USER_ID)
@@ -819,6 +827,7 @@ async def test_firmar_personal_autotraslado_con_rol_firma_el_indicado() -> None:
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,  # idempotencia rol='entrega' -> aún no
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc = _service(conn)
     actor = Actor(id=USER_ID)
@@ -861,7 +870,7 @@ async def test_acta_verificacion_firmada_remitente_only_entrega() -> None:
             minio_key_firmado="file-id/acta-firmado.xml",
         ),
     ]
-    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid, rol="entrega")]]
+    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid, rol="entrega")], []]  # + list_acta_firma_excepciones
     svc = _service(conn)
 
     with (
@@ -913,7 +922,7 @@ async def test_acta_verificacion_firmada_completa_ambos_roles() -> None:
         [
             _personal_row(transferencia_id=tid, rol="entrega"),
             _personal_row(transferencia_id=tid, rol="recibe"),
-        ],
+        ],    [],  # list_acta_firma_excepciones (AREA-07-10)
     ]
     svc = _service(conn)
 
@@ -974,7 +983,7 @@ async def test_acta_verificacion_auto_traslado_flag_cuando_mismo_firmante() -> N
         [
             _personal_row(transferencia_id=tid, rol="entrega", firmante_id=USER_ID),
             _personal_row(transferencia_id=tid, rol="recibe", firmante_id=USER_ID),
-        ],
+        ],    [],  # list_acta_firma_excepciones (AREA-07-10)
     ]
     svc = _service(conn)
 
@@ -1021,7 +1030,7 @@ async def test_acta_verificacion_auto_traslado_false_partes_distintas() -> None:
         _acta_row(transferencia_id=tid),
         _acta_firma_row(transferencia_id=tid, estado="firmado", xades_level="XAdES-T"),
     ]
-    conn.fetch.side_effect = [[], []]
+    conn.fetch.side_effect = [[], [], []]  # + list_acta_firma_excepciones
     svc = _service(conn)
 
     result = await svc.acta_verificacion(tid, USER_ID)
@@ -1055,6 +1064,7 @@ async def test_firmar_personal_elaborador_signs_as_elabora() -> None:
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,  # idempotencia rol='elabora' -> aún no
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc = _service(conn)
     actor = Actor(id=USER_ID)
@@ -1096,7 +1106,7 @@ async def test_acta_verificacion_elaborador_firmado_ortogonal_a_completitud() ->
             minio_key_firmado="file-id/acta-firmado.xml",
         ),
     ]
-    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid, rol="elabora")]]
+    conn.fetch.side_effect = [[], [_personal_row(transferencia_id=tid, rol="elabora")], []]  # + list_acta_firma_excepciones
     svc = _service(conn)
 
     with (
@@ -1175,6 +1185,7 @@ async def test_firmar_personal_tres_roles_coincidentes_requiere_rol() -> None:
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
     ]
     svc2 = _service(conn2)
     with (

@@ -126,6 +126,13 @@ export async function load({ cookies, parent, params, fetch }) {
     verificacion: settle(verificacionResult),
     expedienteCodigo: expediente?.code ?? null,
     expedienteNombre: expediente?.name ?? null,
+    // Radicados del expediente: de entre ellos se ELIGE el soporte de una firma inobtenible.
+    // Solo identificador y número (allowlist): el resto del expediente no se necesita.
+    expedienteRadicados: Array.isArray(expediente?.radicados)
+      ? expediente.radicados
+          .filter((r) => r?.radicado_id && r?.tracking_number)
+          .map((r) => ({ radicado_id: r.radicado_id, tracking_number: r.tracking_number }))
+      : [],
     ubicaciones,
   };
 }

@@ -22,7 +22,7 @@ determinista y sin infraestructura. Corren con su propio config.
   borrador con circuito de dos turnos que siembra `seed_demo.py` (texto editado tras
   abrirlo), un usuario fuera de la cadena (`e2e1`) recibe `403 no_es_firmante` sin
   `documento_modificado` ni `version`, y el firmante con turno (`jefe`), `409
-  documento_modificado` (control positivo).
+documento_modificado` (control positivo).
 - **`axe-vistas-clave.spec.js`** — `@axe-core/playwright` en 7 vistas clave, WCAG 2.1
   AA: falla con violaciones `serious`/`critical`.
 - **`adaptabilidad-app.spec.js`** — 17 pantallas × 3 anchos (móvil 390, portátil

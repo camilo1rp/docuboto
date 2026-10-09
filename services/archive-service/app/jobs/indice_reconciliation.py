@@ -843,6 +843,71 @@ async def run_once_firmas_personales_worm() -> dict[str, int]:
                         "hashtext($1))",
                         slug,
                     )
+            # Constancias de «firma inobtenible» (migración 061): sello y firma personal del
+            # declarante, mismo ciclo y mismo tipo de reintento. Lock con namespace propio.
+            async with acquire_tenant(slug) as conn:
+                got_lock_exc = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:firma_excepcion_worm'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock_exc:
+                    continue
+                try:
+                    repo = TransferenciaRepository(conn, slug)
+                    service = TransferenciaService(conn, slug)
+                    rows = await repo.list_firma_excepcion_worm_pending(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for row in rows:
+                        summary["pendientes_vistos"] += 1
+                        resultado = await service.proteger_worm_firma_excepcion(
+                            row["excepcion_id"],
+                            row["artefacto"],
+                            actor_id=None,
+                            origen="reconciliation",
+                        )
+                        if resultado == "protegido":
+                            summary["protegidos"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                    # Revocaciones de la constancia (migración 062): mismo ciclo y mismo lock.
+                    # De esta barrida depende que una constancia se pueda RE-DECLARAR: el
+                    # trigger exige la revocación sellada y protegida.
+                    rows_rev = await repo.list_firma_excepcion_worm_pending(
+                        settings.indice_reconciliation_batch_size, acto="revocacion"
+                    )
+                    for row in rows_rev:
+                        summary["pendientes_vistos"] += 1
+                        resultado = await service.proteger_worm_revocacion(
+                            row["revocacion_id"],
+                            row["artefacto"],
+                            actor_id=None,
+                            origen="reconciliation",
+                        )
+                        if resultado == "protegido":
+                            summary["protegidos"] += 1
+                        elif resultado == "agotado":
+                            summary["agotados"] += 1
+                        else:
+                            summary["fallidos"] += 1
+                    # Sobres de revelación huérfanos (064): el sobre se subió pero la fila nunca lo
+                    # referenció y la purga inmediata falló.
+                    barrido = await service.purgar_sobres_huerfanos(
+                        limite=settings.indice_reconciliation_batch_size
+                    )
+                    if barrido["purgados"]:
+                        summary["sobres_huerfanos_purgados"] = (
+                            summary.get("sobres_huerfanos_purgados", 0) + barrido["purgados"]
+                        )
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:firma_excepcion_worm'), "
+                        "hashtext($1))",
+                        slug,
+                    )
         except Exception:
             logger.warning(
                 "Fallo en la barrida WORM de las firmas personales para tenant=%s "
@@ -1081,6 +1146,21 @@ async def _reconciliar_worm_renovacion_acta(
     )
 
 
+async def _reconciliar_worm_renovacion_firma_personal(
+    conn: asyncpg.Connection, slug: str, row: asyncpg.Record
+) -> str:
+    """Renueva la retención WORM del XML de UNA firma personal del acta (E10 debt,
+    AREA-07-10) -- gemela de `_reconciliar_worm_renovacion_acta`."""
+    service = TransferenciaService(conn, slug)
+    return await service.renovar_worm_firma_personal(
+        row["firma_personal_id"],
+        row["transferencia_id"],
+        row["expediente_id"],
+        row["rol"],
+        intentos_previos=int(row["worm_renovacion_intentos"]),
+    )
+
+
 async def _reconciliar_worm_renovacion_aip(
     conn: asyncpg.Connection, slug: str, row: asyncpg.Record
 ) -> str:
@@ -1102,8 +1182,9 @@ async def run_once_worm_renovacion() -> dict[str, int]:
     resto de la barrida) — mismo patrón que `run_once_worm`/
     `run_once_actas_worm`.
 
-    TRES advisory locks POR TENANT en esta barrida (`worm_renovacion_indice`/
-    `worm_renovacion_acta`/`worm_renovacion_aip`, namespaces propios) --
+    CUATRO advisory locks POR TENANT en esta barrida (`worm_renovacion_indice`/
+    `worm_renovacion_acta`/`worm_renovacion_aip`/`worm_renovacion_firma_personal`,
+    namespaces propios) --
     índice, acta y AIP son artefactos independientes, no deben serializarse
     entre sí; cada uno SÍ se serializa contra otra instancia de ESTA MISMA
     fase vía su propio lock (mismo criterio que las fases 3/4/6)."""
@@ -1262,6 +1343,123 @@ async def run_once_worm_renovacion() -> dict[str, int]:
                         "por otra instancia, se omite esta barrida",
                         slug,
                     )
+
+                # Firmas PERSONALES del acta (E10 debt, AREA-07-10): lock con namespace propio,
+                # independiente del del sello institucional (artefactos distintos).
+                got_lock_firma_personal = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock("
+                    "hashtext('orpycamcp:archive:worm_renovacion_firma_personal'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if got_lock_firma_personal:
+                    try:
+                        rows = await TransferenciaRepository(
+                            conn, slug
+                        ).list_firma_personal_renovacion_pending(
+                            ventana_dias=settings.worm_renovacion_ventana_dias,
+                            ct_codes=ct_codes,
+                            limit=settings.indice_reconciliation_batch_size,
+                        )
+                        for row in rows:
+                            summary["pendientes_vistos"] += 1
+                            try:
+                                resultado = await _reconciliar_worm_renovacion_firma_personal(
+                                    conn, slug, row
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Fallo renovando retención WORM firma_personal_id=%s "
+                                    "(expediente_id=%s) tenant=%s — se omite en esta barrida",
+                                    row["firma_personal_id"],
+                                    row["expediente_id"],
+                                    slug,
+                                    exc_info=True,
+                                )
+                                summary["fallidos"] += 1
+                                continue
+                            if resultado == "renovado":
+                                summary["renovados"] += 1
+                            elif resultado == "agotado":
+                                summary["agotados"] += 1
+                            else:
+                                summary["fallidos"] += 1
+                    finally:
+                        await conn.execute(
+                            "SELECT pg_advisory_unlock("
+                            "hashtext('orpycamcp:archive:worm_renovacion_firma_personal'), "
+                            "hashtext($1))",
+                            slug,
+                        )
+                else:
+                    logger.debug(
+                        "Renovación WORM de firmas personales: tenant=%s ya está siendo "
+                        "procesado por otra instancia, se omite esta barrida",
+                        slug,
+                    )
+                # Constancias de «firma inobtenible» (migración 061): lock propio; sello y
+                # firma personal del declarante, un `tipo` de storage por rol y artefacto.
+                got_lock_exc = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock("
+                    "hashtext('orpycamcp:archive:worm_renovacion_firma_excepcion'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if got_lock_exc:
+                    try:
+                        repo_exc = TransferenciaRepository(conn, slug)
+                        # Constancia y revocación comparten ciclo: se barren las dos listas con
+                        # el mismo código, cambiando solo la clave de la fila y el método.
+                        for acto, clave, renovar in (
+                            ("excepcion", "excepcion_id", "renovar_worm_firma_excepcion"),
+                            ("revocacion", "revocacion_id", "renovar_worm_revocacion"),
+                        ):
+                            rows = await repo_exc.list_firma_excepcion_renovacion_pending(
+                                ventana_dias=settings.worm_renovacion_ventana_dias,
+                                ct_codes=ct_codes,
+                                limit=settings.indice_reconciliation_batch_size,
+                                acto=acto,
+                            )
+                            for row in rows:
+                                summary["pendientes_vistos"] += 1
+                                try:
+                                    resultado = await getattr(
+                                        TransferenciaService(conn, slug), renovar
+                                    )(
+                                        row[clave],
+                                        row["artefacto"],
+                                        row["transferencia_id"],
+                                        row["expediente_id"],
+                                        row["rol"],
+                                        intentos_previos=int(row["worm_renovacion_intentos"]),
+                                        minio_key_firmado=row["minio_key_firmado"],
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "Fallo renovando retención WORM %s=%s artefacto=%s "
+                                        "(expediente_id=%s) tenant=%s — se omite en esta barrida",
+                                        clave,
+                                        row[clave],
+                                        row["artefacto"],
+                                        row["expediente_id"],
+                                        slug,
+                                        exc_info=True,
+                                    )
+                                    summary["fallidos"] += 1
+                                    continue
+                                if resultado == "renovado":
+                                    summary["renovados"] += 1
+                                elif resultado == "agotado":
+                                    summary["agotados"] += 1
+                                else:
+                                    summary["fallidos"] += 1
+                    finally:
+                        await conn.execute(
+                            "SELECT pg_advisory_unlock("
+                            "hashtext('orpycamcp:archive:worm_renovacion_firma_excepcion'), "
+                            "hashtext($1))",
+                            slug,
+                        )
         except Exception:
             logger.warning(
                 "Fallo en la barrida de renovación de retención WORM para tenant=%s "

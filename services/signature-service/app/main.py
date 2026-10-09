@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from orpycamcp_common import events, identidad, request_log
 from orpycamcp_common import secrets as common_secrets
 
-from app.core.config import settings
+from app.core.config import settings, variables_retiradas_presentes
 from app.core.database import close_pool, create_pool
 from app.core.redis_client import close_redis, init_redis
 from app.routers.admin_deadletter import router as admin_dlq_router
@@ -41,15 +41,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     common_secrets.require_secrets(
         {"SIGNATURE_SECRET": settings.signature_secret}, servicio="signature-service"
     )
+    for retirada, sustituta in variables_retiradas_presentes():
+        # No se aborta (un despliegue con la variable heredada debe seguir
+        # arrancando) pero se grita: la variable NO se lee y, en el caso de
+        # TSA_ESSCERTID_OBLIGATORIO=true, el operador creía rechazar sellos sin
+        # ESSCertID y hoy manda la fecha de corte.
+        logger.error(
+            "La variable %s ya NO tiene efecto y se ignora: use %s (ver ADR-016, "
+            "addendum 2026-10-04).",
+            retirada,
+            sustituta,
+        )
     if settings.firma_personal_require_xades == "off":
         # AREA-04-12: el gate que obliga a firmar lo clasificado con certificado
         # personal viene apagado. Es decisión de la ENTIDAD (exige enrolar antes
         # los certificados), así que no se activa solo — pero que lo clasificado
         # se firme con HMAC nativo no puede ser algo que nadie vea al arrancar.
         logger.warning(
-            "FIRMA_PERSONAL_REQUIRE_XADES=off: los actos de nivel >= 2 pueden "
-            "firmarse con HMAC nativo (sin certificado personal). Si la entidad "
-            "ya enroló certificados, active 'clasificados' o 'todos'."
+            "FIRMA_PERSONAL_REQUIRE_XADES=off (respaldo): las entidades que no "
+            "definan el parámetro firma_personal_require_xades permiten firmar "
+            "actos de nivel >= 2 con HMAC nativo (sin certificado personal). La "
+            "política es de cada ENTIDAD (PUT /config/params/"
+            "firma_personal_require_xades): si ya enroló certificados, active "
+            "'clasificados' o 'todos'."
         )
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     await init_redis(settings.redis_url)

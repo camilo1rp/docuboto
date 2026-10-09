@@ -2247,3 +2247,41 @@ async def test_ocsp_verify_pins_responder_fingerprint(monkeypatch) -> None:
     )
     assert outcome_mismatch.valida is False
     assert outcome_mismatch.motivo == "ocsp_invalido: ocsp_responder_fingerprint_no_coincide"
+
+
+@pytest.mark.asyncio
+async def test_verify_declara_advertencias_de_un_sello_sin_esscertid_anterior_al_corte(
+    signature_env, monkeypatch
+) -> None:
+    """AREA-04-09: `/verify` publica `advertencias[]` sobre una firma que VALIDA.
+
+    Un sello anterior a `tsa_esscertid_corte` sin ESSCertID sigue valiendo, pero el
+    verificador lo declara. Aquí se fuerza el aviso en la salida del verificador de
+    tokens (la mecánica del token legado la prueba test_tsa_gentime_y_esscertid)
+    para comprobar el CABLEADO hasta la respuesta HTTP; y que un sello normal no
+    lleva ninguno.
+    """
+    client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    cert_pem, key_pem = _generate_cert("orpycamcp-dev")
+    install_seal(_signer_ref(cert_pem, key_pem))
+    resp = await _sign_indice(client)
+    assert resp.status_code == 201
+    firma_id = resp.json()["firma_id"]
+    signed_xml = uploads[0]["content"].decode()
+    peticion = {"firma_id": firma_id, "payload_xml": signed_xml}
+
+    normal = (await client.post("/api/v1/signature/verify", json=peticion, headers=TENANT_HEADERS)).json()
+    assert normal["valida"] is True
+    assert normal["advertencias"] == []
+
+    real = tsa_module.verify_timestamp_token
+
+    def _con_aviso(*a, **kw):  # noqa: ANN002, ANN003
+        r = real(*a, **kw)
+        r.advertencias.append(tsa_module.ADVERTENCIA_SIN_ESSCERTID)
+        return r
+
+    monkeypatch.setattr("app.providers.local.tsa.verify_timestamp_token", _con_aviso)
+    avisado = (await client.post("/api/v1/signature/verify", json=peticion, headers=TENANT_HEADERS)).json()
+    assert avisado["valida"] is True
+    assert avisado["advertencias"] == ["tsa_sin_esscertid_anterior_al_corte"]

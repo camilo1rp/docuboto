@@ -22,12 +22,14 @@ el expediente vería. Único llamador legítimo: `archive-service`
 (`X-Tenant-Slug`, `get_tenant_conn`).
 """
 
+import logging
 import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from orpycamcp_common import audit
 
+from app.clients import storage_client
 from app.clients.storage_client import StoragePurgaError
 from app.core.database import get_tenant_conn
 from app.core.internal_auth import require_internal_token
@@ -40,6 +42,8 @@ from app.schemas.internal import (
     RadicadoMetaItem,
 )
 from app.services.purga_service import PurgaService
+
+logger = logging.getLogger("document.internal")
 
 router = APIRouter(
     prefix="/api/v1/internal/documentos",
@@ -256,3 +260,91 @@ async def aprobar_borrador_internal(
             canal="system",
         )
     return {"borrador_id": str(borrador_id), "estado": "aprobado", "cambiado": True}
+
+
+@router.get(
+    "/radicados/{ref}/huella",
+    summary=(
+        "SHA-256 del documento PRINCIPAL de un radicado "
+        "(acto de sistema; lo consulta signature-service al abrir y al firmar una cadena)"
+    ),
+)
+async def huella_radicado(
+    ref: str,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, object]:
+    """Qué sella una cadena de firma sobre un radicado: el CONTENIDO, no el nombre.
+
+    AREA-04-09 Media-2. Antes la cadena firmaba el identificador
+    `"radicado:{id}"`: una firma sobre el nombre sigue siendo válida después de
+    que el documento cambie. Ahora signature-service fija esta huella al abrir
+    la cadena y la relee antes de cada firma; si cambió, `409 documento_modificado`.
+
+    `ref` es el número de radicado o su UUID. La huella es la que storage-service
+    CALCULÓ al subir el fichero (no se confía en una columna de este servicio ni
+    en el cliente). Sin gate de clearance —respuesta content-free, llamante de
+    sistema sellado con `X-Internal-Token`—; el no-read-up lo aplica signature-service.
+
+    Fail-closed: `404` si el radicado no existe, `409 radicado_sin_documento` si
+    no tiene documento principal y `409 anexo_sin_huella` si storage no conoce el fichero (no se
+    firma lo que no se puede verificar); `503 huella_no_verificable` si storage
+    no responde.
+    """
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    found = await DocumentRepository(conn, tenant_slug).get_documento_principal_para_firma(ref)
+    if found is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "radicado_not_found",
+                "detail": f"Radicado {ref} no encontrado",
+                "status": 404,
+            },
+        )
+    radicado, anexo = found
+    if anexo is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "radicado_sin_documento",
+                "detail": (
+                    "El radicado no tiene un documento principal: no hay contenido "
+                    "que firmar. Un anexo de soporte no cuenta. Adjunte el documento "
+                    "principal antes de abrir la cadena."
+                ),
+                "status": 409,
+            },
+        )
+    try:
+        huella = await storage_client.fetch_file_sha256(
+            tenant_slug=tenant_slug, file_id=anexo["file_id"]
+        )
+    except storage_client.StorageContentError as exc:
+        # El texto de la excepción puede llevar el cuerpo de storage-service y su
+        # host interno: va al log, no a quien consulta.
+        logger.warning("huella del radicado %s: storage no respondió: %s", ref, exc)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "huella_no_verificable",
+                "detail": "No se pudo resolver la huella del documento: storage-service no respondió.",
+                "status": 503,
+            },
+        ) from exc
+    if not huella:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "anexo_sin_huella",
+                "detail": "El documento no tiene huella registrada: no se firma lo que no se verifica.",
+                "status": 409,
+            },
+        )
+    return {
+        "radicado_id": str(radicado["id"]),
+        "tracking_number": radicado["tracking_number"],
+        "anexo_id": str(anexo["id"]),
+        "file_id": str(anexo["file_id"]),
+        "huella_sha256": huella.lower(),
+    }

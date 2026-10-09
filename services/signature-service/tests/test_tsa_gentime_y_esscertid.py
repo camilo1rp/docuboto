@@ -17,7 +17,8 @@ AREA-04-08 — el sello de tiempo se cruza con el certificado firmante y con el 
    a propósito).
 2. El atributo firmado ``signing-certificate-v2`` (RFC 5035) nombra el certificado
    de la TSA: si está, su hash debe coincidir; si falta, se rechaza solo con
-   ``tsa_esscertid_obligatorio`` (los tokens locales anteriores no lo llevan).
+   el ``genTime`` es posterior a ``tsa_esscertid_corte`` (antes del corte vale y se
+   advierte: los tokens locales anteriores no lo llevan).
 """
 
 from __future__ import annotations
@@ -146,26 +147,61 @@ def _sin_esscertid(token_der: bytes, key_pem: bytes) -> bytes:
     return ci.dump()
 
 
-def test_token_legado_sin_esscertid_se_acepta_por_defecto(token_y_tsa) -> None:
-    token, _, key_pem = token_y_tsa
-    legado = _sin_esscertid(token.token_der, key_pem)
-    assert settings.tsa_esscertid_obligatorio is False
-    r = tsa_module.verify_timestamp_token(
-        legado, IMPRINT_SRC, expected_tsa_fingerprint=token.tsa_cert_fingerprint
-    )
-    assert r.valido is True, r.motivo
+def test_el_corte_por_defecto_es_la_fecha_de_despliegue() -> None:
+    """La fecha de corte NO es un booleano: es la fecha de despliegue del cambio."""
+    assert settings.tsa_esscertid_corte == datetime(2026, 10, 4, tzinfo=UTC)
+    assert not hasattr(settings, "tsa_esscertid_obligatorio")
 
 
-def test_token_sin_esscertid_se_rechaza_si_la_politica_lo_exige(
+def test_token_anterior_al_corte_sin_esscertid_vale_y_se_advierte(
     token_y_tsa, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     token, _, key_pem = token_y_tsa
     legado = _sin_esscertid(token.token_der, key_pem)
-    monkeypatch.setattr(settings, "tsa_esscertid_obligatorio", True)
+    # El corte cae DESPUÉS del genTime del token: es historia, no un token defectuoso.
+    monkeypatch.setattr(settings, "tsa_esscertid_corte", token.gen_time + timedelta(days=1))
+    r = tsa_module.verify_timestamp_token(
+        legado, IMPRINT_SRC, expected_tsa_fingerprint=token.tsa_cert_fingerprint
+    )
+    assert r.valido is True, r.motivo
+    assert r.advertencias == [tsa_module.ADVERTENCIA_SIN_ESSCERTID]
+    assert tsa_module.ADVERTENCIA_SIN_ESSCERTID == "tsa_sin_esscertid_anterior_al_corte"
+
+
+def test_token_desde_el_corte_sin_esscertid_se_rechaza(
+    token_y_tsa, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _, key_pem = token_y_tsa
+    legado = _sin_esscertid(token.token_der, key_pem)
+    monkeypatch.setattr(settings, "tsa_esscertid_corte", token.gen_time - timedelta(days=1))
     r = tsa_module.verify_timestamp_token(
         legado, IMPRINT_SRC, expected_tsa_fingerprint=token.tsa_cert_fingerprint
     )
     assert r.valido is False
     assert r.motivo == "tsa_sin_esscertid"
-    # …y el token NUEVO sigue valiendo bajo la política estricta.
-    assert _verificar(token).valido is True
+    # …y el token NUEVO sigue valiendo bajo el corte, sin advertencias.
+    nuevo = _verificar(token)
+    assert nuevo.valido is True
+    assert nuevo.advertencias == []
+
+
+def test_el_instante_del_corte_ya_exige_esscertid(
+    token_y_tsa, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Frontera: `genTime >= corte` rechaza (el corte es inclusivo)."""
+    token, _, key_pem = token_y_tsa
+    legado = _sin_esscertid(token.token_der, key_pem)
+    monkeypatch.setattr(settings, "tsa_esscertid_corte", token.gen_time)
+    r = tsa_module.verify_timestamp_token(
+        legado, IMPRINT_SRC, expected_tsa_fingerprint=token.tsa_cert_fingerprint
+    )
+    assert r.valido is False and r.motivo == "tsa_sin_esscertid"
+
+
+def test_corte_de_entorno_sin_zona_se_interpreta_como_utc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import Settings
+
+    monkeypatch.setenv("TSA_ESSCERTID_CORTE", "2027-01-01T00:00:00")
+    assert Settings().tsa_esscertid_corte == datetime(2027, 1, 1, tzinfo=UTC)

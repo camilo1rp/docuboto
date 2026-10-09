@@ -2265,3 +2265,73 @@ async def test_index_service_audit_read_access_does_not_write_without_user_id() 
     await svc._audit_read_access("EXP-2024-0001", version=1, user_id=None, canal="api")
 
     mock_conn.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_verify_propaga_las_advertencias_de_signature(client_with_conn) -> None:
+    """`advertencias[]` de signature `/verify` (una firma que SIGUE siendo válida pero con
+    reservas, p. ej. `tsa_sin_esscertid_anterior_al_corte`) llega a `firma.advertencias`: un
+    verificador que las calla da por limpia una firma con reservas."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_id = uuid.uuid4()
+    rad_id = uuid.uuid4()
+    h = "d" * 64
+    mock_conn.fetchrow.side_effect = [
+        None,
+        make_expediente_record(exp_id=exp_id),
+        _indice_row_with_firma(uuid.uuid4()),
+    ]
+    mock_conn.fetch.side_effect = [
+        [make_radicado_link_record(radicado_id=rad_id, content_hash=h)],
+        [_item_row(rad_id, h)],
+    ]
+    from app.clients.signature_client import VerifyResult
+
+    with (
+        patch("app.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<x/>")),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(
+                return_value=VerifyResult(
+                    valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False,
+                    motivo=None, advertencias=["tsa_sin_esscertid_anterior_al_corte"],
+                )
+            ),
+        ),
+    ):
+        resp = await client.get(
+            f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["firma"]["advertencias"] == ["tsa_sin_esscertid_anterior_al_corte"]
+    assert resp.json()["valido"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cuerpo", "esperado"),
+    [
+        ({"valida": True, "advertencias": ["a", "b"]}, ["a", "b"]),
+        ({"valida": True}, []),  # un signature-service que aún no lo emite
+        ({"valida": True, "advertencias": None}, []),
+        ({"valida": True, "advertencias": "no-es-lista"}, []),
+        ({"valida": True, "advertencias": ["ok", 3, None]}, ["ok"]),
+    ],
+)
+async def test_el_cliente_lee_advertencias_de_forma_tolerante(monkeypatch, cuerpo, esperado) -> None:
+    import httpx
+
+    from app.clients import signature_client
+
+    real = httpx.AsyncClient
+
+    class _Cliente(real):  # type: ignore[misc, valid-type]
+        def __init__(self, *a, **kw):
+            kw["transport"] = httpx.MockTransport(lambda req: httpx.Response(200, json=cuerpo))
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
+    res = await signature_client.verify(tenant_slug="demo", firma_id="f", payload_xml="<x/>")
+    assert res is not None and res.valida is True and res.advertencias == esperado

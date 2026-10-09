@@ -203,3 +203,39 @@ describe("GET /admin/parametros/api/business-days", () => {
     });
   });
 });
+
+describe("PUT /admin/parametros/api/params/[key] — motivo", () => {
+  it("reenvía `motivo` recortado y nada más", async () => {
+    let enviado;
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviado = JSON.parse(init.body);
+      return new Response("{}", { status: 200 });
+    });
+    await putParam({
+      locals: SESSION_LOCALS,
+      params: { key: "firma_personal_require_xades" },
+      request: {
+        json: async () => ({
+          value: "clasificados",
+          motivo: "  Falta enrolar certificados.  ",
+          key: "otra",
+        }),
+      },
+    });
+    expect(enviado).toEqual({ value: "clasificados", motivo: "Falta enrolar certificados." });
+  });
+
+  it("sin motivo no lo inventa", async () => {
+    let enviado;
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviado = JSON.parse(init.body);
+      return new Response("{}", { status: 200 });
+    });
+    await putParam({
+      locals: SESSION_LOCALS,
+      params: { key: "plazo_dias" },
+      request: { json: async () => ({ value: 5, motivo: "   " }) },
+    });
+    expect(enviado).toEqual({ value: 5 });
+  });
+});

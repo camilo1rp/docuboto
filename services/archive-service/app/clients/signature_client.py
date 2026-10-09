@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 from fastapi import status
@@ -96,6 +96,19 @@ class VerifyResult:
     # HMAC nativo (no aplica, ver signature-service `VerifyResponse`).
     # ADITIVO, opcional: no rompe ningún llamante preexistente que no lo lea.
     revocacion_status: str | None = None
+    # Avisos de una verificación que SIGUE siendo válida (vocabulario cerrado de
+    # signature-service `VerifyResponse.advertencias`, p. ej.
+    # `tsa_sin_esscertid_anterior_al_corte`). ADITIVO y leído de forma TOLERANTE: un
+    # signature-service que aún no lo emite (o lo emite con otra forma) deja la lista vacía.
+    advertencias: list[str] = field(default_factory=list)
+
+
+def _advertencias_de(data: object) -> list[str]:
+    """Lista de avisos del JSON de `/verify`; cualquier forma inesperada se ignora."""
+    crudo = data.get("advertencias") if isinstance(data, dict) else None
+    if not isinstance(crudo, list):
+        return []
+    return [a for a in crudo if isinstance(a, str)]
 
 
 async def sign_xml(
@@ -370,6 +383,7 @@ async def verify(
                     acreditado=bool(data.get("acreditado", False)),
                     motivo=data.get("motivo"),
                     revocacion_status=data.get("revocacion_status"),
+                    advertencias=_advertencias_de(data),
                 )
             logger.warning("signature-service → HTTP %s al verificar índice", resp.status_code)
     except httpx.RequestError as exc:

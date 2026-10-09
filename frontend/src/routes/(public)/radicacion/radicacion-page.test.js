@@ -7,7 +7,6 @@
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-
 /**
  * radicacion-page.test.js — la ventanilla en línea (AREA-02-07 / AREA-09-08).
  *

@@ -49,6 +49,7 @@
   import EditarMetadatosModal from "$lib/components/features/expedientes/EditarMetadatosModal.svelte";
   import DisposicionExpedienteDrawer from "$lib/components/features/disposicion/DisposicionExpedienteDrawer.svelte";
   import PublicacionExpedienteDrawer from "$lib/components/features/publicacion/PublicacionExpedienteDrawer.svelte";
+  import AdvertenciasVerificacion from "$lib/components/features/firmas/AdvertenciasVerificacion.svelte";
 
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
@@ -1367,6 +1368,7 @@
                       .length ?? 0} / {v.documentos?.length ?? 0}
                   </li>
                 </ul>
+                <AdvertenciasVerificacion advertencias={v.firma?.advertencias ?? v.advertencias} />
                 <span class="exp-indice-verify__ts"
                   >Verificado: {fmtDatetime(v.fecha_verificacion)}</span
                 >

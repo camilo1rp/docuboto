@@ -580,8 +580,9 @@
     la eliminación. El sistema no decide: deja constancia de que un Comité decidió, y con qué acto.
   </p>
   <p class="elim__aviso">
-    Avalar <strong>autoriza</strong> la destrucción; no la ejecuta. Faltan el acta firmada y el borrado
-    seguro, que ejecuta <strong>otra persona</strong>: quien propone no avala y quien avala no ejecuta.
+    Avalar <strong>autoriza</strong> la destrucción; no la ejecuta. Faltan el acta firmada y el
+    borrado seguro, que ejecuta <strong>otra persona</strong>: quien propone no avala y quien avala
+    no ejecuta.
   </p>
   <FormField
     id="aval-acta"

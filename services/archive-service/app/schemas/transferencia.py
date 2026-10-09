@@ -113,6 +113,243 @@ class TransferenciaActaFirmaInfo(BaseModel):
     xades_level: str | None = None
     acreditado: bool = False
     motivo: str | None = None
+    # Avisos de una firma que SIGUE siendo válida (signature-service `/verify`); solo se
+    # pueblan con `verify=True`. Vacío = nada que avisar.
+    advertencias: list[str] = Field(default_factory=list)
+
+
+class FirmaInobtenibleRequest(BaseModel):
+    """Body de `POST /transferencias/{id}/acta/firma-inobtenible` (AREA-07-10): acto
+    administrativo que declara que UNA parte del acta no puede firmar. La parte (su
+    identidad) la deriva el servidor del `rol`; el cliente solo dice QUÉ rol y POR QUÉ.
+
+    El soporte documental NO es texto libre: `referencia_radicado_id` es el UUID de un radicado
+    y `referencia_anexo_id` el `file_id` de uno de sus anexos (OBLIGATORIO desde FIRMA-2: la
+    constancia lleva el SHA-256 del anexo, no una referencia a algo que quizá no existe). El
+    servidor los resuelve contra document-service con el clearance del declarante (422
+    `referencia_documental_invalida` si no existen o no los puede ver: misma respuesta, sin
+    oráculo) y trae el SHA-256 desde storage (503 si no puede).
+
+    `totp_code` es el segundo factor de la firma PERSONAL del declarante sobre la constancia:
+    obligatorio si el declarante tiene un certificado de firma activo (FIRMA-2: quien puede
+    firmar, firma) o si la política XAdES de la entidad lo exige para el nivel del expediente
+    (`firma_personal_require_xades` = `todos`, o `clasificados` con nivel >= 2). Sin certificado
+    ni política, no se usa."""
+
+    rol: Literal["entrega", "recibe", "elabora"]
+    motivo: Literal["fallecimiento", "retiro", "incapacidad", "otro"]
+    fundamento: str = Field(min_length=20, max_length=2000)
+    referencia_radicado_id: uuid.UUID
+    referencia_anexo_id: uuid.UUID
+    totp_code: str | None = Field(default=None, min_length=1, max_length=16)
+
+    @field_validator("fundamento")
+    @classmethod
+    def _no_solo_blancos(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("no puede estar vacío")
+        return v
+
+
+class RevocarFirmaInobtenibleRequest(BaseModel):
+    """Body de `POST /transferencias/{id}/acta/firma-inobtenible/revocar` (AREA-07-10): deja sin
+    efecto la excepción VIGENTE de UN rol (error de declaración, la parte sí puede firmar). Es
+    una fila nueva append-only, firmada y protegida WORM; la constancia original no se toca y se
+    puede volver a declarar (cadena, FIRMA-2) una vez la revocación esté protegida.
+
+    `totp_code`: segundo factor de la firma PERSONAL de quien revoca; obligatorio si tiene un
+    certificado de firma activo."""
+
+    rol: Literal["entrega", "recibe", "elabora"]
+    # Vocabulario cerrado (A6): viaja dentro del XML firmado de la revocación. El detalle libre
+    # va en `fundamento`, que NO viaja (solo su compromiso con sal).
+    causa: Literal["error_de_declaracion", "parte_puede_firmar", "otro"]
+    fundamento: str = Field(min_length=20, max_length=2000)
+    totp_code: str | None = Field(default=None, min_length=1, max_length=16)
+
+    @field_validator("fundamento")
+    @classmethod
+    def _no_solo_blancos(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("no puede estar vacío")
+        return v
+
+
+class TransferenciaActaFirmaExcepcion(BaseModel):
+    """Eslabón de la cadena de constancias de una excepción de firma (fila de
+    `transferencia_acta_firma_excepcion`, migraciones 059/061/062) con su revocación, si la tiene.
+    Inmutable; el acta congelada NO la contiene (es un hecho posterior).
+
+    DATO SENSIBLE: `fundamento` (y `revocacion_fundamento`) pueden referir salud o
+    fallecimiento. Solo se devuelven completos a `USUA_PERM_ADMIN` nivel >= 3; al resto
+    viajan `None` y quedan el compromiso (`fundamento_compromiso` = SHA-256(sal || texto): con
+    sal por registro no se ataca por diccionario y un tercero lo verifica si se le entregan texto
+    y sal), el motivo y la referencia. La SAL (`fundamento_sal`, hex) es tan sensible como el
+    texto: solo viaja a administración nivel 3.
+
+    La REFERENCIA (radicado y anexo de soporte) se recorta por el clearance del lector: si no
+    puede ver el radicado, todos los campos `referencia_*` viajan `None` —igual que si no
+    existiera o document-service no respondiera—."""
+
+    id: uuid.UUID
+    transferencia_id: uuid.UUID
+    rol: Literal["recibe", "entrega", "elabora"]
+    parte_id: uuid.UUID
+    motivo: Literal["fallecimiento", "retiro", "incapacidad", "otro"]
+    fundamento: str | None = None
+    # --- cadena (migración 062) ---
+    ordinal: int = 1
+    sustituye_a: uuid.UUID | None = None
+    # 1 = anterior a FIRMA-2 (sin identidad ni soporte autosuficientes); 2 = autosuficiente con
+    # HMAC de plataforma (LEGADA, no verificable por compromiso); 3 = autosuficiente con
+    # compromiso salado del fundamento.
+    constancia_version: int = 1
+    # Compromiso del fundamento: SHA-256(sal || texto_utf8) en hex. `None` en v1/v2: se declara,
+    # no se esconde, y NO se sustituye por un SHA-256 plano.
+    fundamento_compromiso: str | None = None
+    fundamento_compromiso_algoritmo: str | None = None
+    # Sal (hex, 32 bytes) del compromiso: SOLO administración nivel 3 (`None` para el resto).
+    fundamento_sal: str | None = None
+    # Forma canónica: `radicado:<uuid>` o `radicado:<uuid>#anexo:<uuid>`; None si el lector no
+    # puede ver el radicado.
+    referencia_documental: str | None = None
+    referencia_radicado_id: uuid.UUID | None = None
+    referencia_radicado_numero: str | None = None
+    referencia_anexo_id: uuid.UUID | None = None
+    referencia_anexo_sha256: str | None = None
+    declarada_por: uuid.UUID
+    declarada_en: datetime
+    # Instantánea de identidad resuelta por el servidor al declarar.
+    declarante_nombre: str | None = None
+    declarante_cargo: str | None = None
+    declarante_fuente: str | None = None
+    parte_nombre: str | None = None
+    parte_cargo: str | None = None
+    parte_fuente: str | None = None
+    # --- la constancia como PRUEBA (migración 061) ---
+    # `firmada=False` = constancia legada (anterior a la 061): sin sello ni WORM; se declara,
+    # no se esconde.
+    firmada: bool = False
+    constancia_sha256: str | None = None
+    xades_level: str | None = None
+    firma_personal: bool = False
+    xades_level_personal: str | None = None
+    firma_personal_requerida: bool = False
+    # Object-Lock confirmado del sello / de la firma personal (`None` = no hay ese artefacto).
+    worm_protegido: bool | None = None
+    worm_personal_protegido: bool | None = None
+    # Hasta cuándo está retenido el sello (espejo local; todos los eslabones de la cadena del rol
+    # comparten ancla de retención, A3). `None` = no protegido.
+    worm_retain_until: datetime | None = None
+    # Sobre de revelación del fundamento (064): objeto propio, sellado y bajo Object-Lock. `False`
+    # = constancia anterior a la 064 (sin sobre). El sobre NO se sirve aquí: solo
+    # `GET .../{excepcion_id}/sobre` (administración nivel 3, con asiento de lectura).
+    sobre: bool = False
+    sobre_sha256: str | None = None
+    sobre_xades_level: str | None = None
+    worm_sobre_protegido: bool | None = None
+    # Verificación cripto (solo `GET /acta/verificacion`; `None` en el resto).
+    sello_valida: bool | None = None
+    firma_personal_valida: bool | None = None
+    # Enlaces de la cadena (solo `GET /acta/verificacion`): `True` = la huella guardada, el XML
+    # y el artefacto firmado coinciden y los vínculos (sustituyeA, revocacionSha256,
+    # constanciaSha256) cuadran con las filas; `False` = enlace roto (ver `enlace_motivo`);
+    # `None` = no comprobable (constancia anterior a la v3 o sin XML).
+    enlace_valido: bool | None = None
+    enlace_motivo: str | None = None
+    advertencias: list[str] = Field(default_factory=list)
+    # --- revocación (hecho posterior, fila aparte; prueba firmada desde la 062) ---
+    revocada: bool = False
+    revocacion_id: uuid.UUID | None = None
+    revocada_por: uuid.UUID | None = None
+    revocada_en: datetime | None = None
+    revocacion_fundamento: str | None = None
+    # Causa de vocabulario cerrado de la revocación (v3); `None` en revocaciones anteriores.
+    revocacion_causa: str | None = None
+    revocacion_fundamento_compromiso: str | None = None
+    revocacion_fundamento_compromiso_algoritmo: str | None = None
+    revocacion_fundamento_sal: str | None = None  # solo administración nivel 3
+    revocante_nombre: str | None = None
+    revocante_cargo: str | None = None
+    revocante_fuente: str | None = None
+    revocacion_firmada: bool = False
+    revocacion_sha256: str | None = None
+    revocacion_xades_level: str | None = None
+    revocacion_firma_personal: bool = False
+    revocacion_worm_protegido: bool | None = None
+    revocacion_worm_personal_protegido: bool | None = None
+    revocacion_worm_retain_until: datetime | None = None
+    revocacion_sobre: bool = False
+    revocacion_sobre_sha256: str | None = None
+    revocacion_sobre_xades_level: str | None = None
+    revocacion_worm_sobre_protegido: bool | None = None
+    revocacion_sello_valida: bool | None = None
+    revocacion_firma_personal_valida: bool | None = None
+
+
+class FundamentoVerificacion(BaseModel):
+    """`GET /transferencias/{id}/acta/firma-inobtenible/{excepcion_id}/fundamento/verificacion`:
+    recalcula LOCALMENTE el compromiso SHA-256(sal || texto) del fundamento guardado y lo compara
+    contra TRES copias independientes —la columna, el XML firmado y el asiento de auditoría—.
+    `coincide` es la conjunción de todas las comparables; `None` en una copia = no existe o no
+    se pudo comprobar (nunca se da por buena). Solo administración nivel 3: no devuelve el texto
+    ni la sal."""
+
+    excepcion_id: uuid.UUID
+    verificable: bool
+    motivo: str | None = None
+    algoritmo: str | None = None
+    columna: bool | None = None
+    xml: bool | None = None
+    asiento: bool | None = None
+    revocacion_columna: bool | None = None
+    revocacion_xml: bool | None = None
+    revocacion_asiento: bool | None = None
+    # Cuarta copia (064): el sobre sellado y bajo Object-Lock. `None` = la constancia / revocación
+    # no tiene sobre (anterior a la 064) o no se pudo descargar: no cuenta como coincidencia
+    # cuando existe y no se pudo leer.
+    sobre: bool | None = None
+    revocacion_sobre: bool | None = None
+    coincide: bool = False
+
+
+class FundamentoLectura(BaseModel):
+    """`GET .../firma-inobtenible/{excepcion_id}/fundamento?acto=constancia|revocacion` — el texto
+    del fundamento (dato de salud o fallecimiento) a petición, solo administración nivel 3 y con
+    asiento de lectura. La sal del compromiso no se devuelve por ninguna vía de lectura."""
+
+    excepcion_id: uuid.UUID
+    acto: Literal["constancia", "revocacion"]
+    fundamento: str
+
+
+class SobreFundamentoResponse(BaseModel):
+    """`GET .../firma-inobtenible/{excepcion_id}/sobre?acto=constancia|revocacion` — el sobre de
+    revelación del fundamento tal como está bajo Object-Lock: el XML sellado con el texto en claro
+    y su sal. SOLO administración nivel 3, y cada lectura deja el asiento
+    `transferencia.acta_fundamento_leido` (via=`sobre`) ANTES de servirlo. Nunca por OAI-PMH, EAD,
+    CMIS ni verificación pública."""
+
+    excepcion_id: uuid.UUID
+    acto: Literal["constancia", "revocacion"]
+    sobre_sha256: str | None = None
+    xades_level: str | None = None
+    worm_protegido: bool | None = None
+    xml_firmado: str
+
+
+class WormReintentoResponse(BaseModel):
+    """`POST .../firma-inobtenible/{excepcion_id}[/revocacion]/worm/reintentar` (A4): salida de
+    `agotado`. `artefactos` dice el estado REAL de cada artefacto al terminar
+    (`protegido` | `pendiente` | `agotado` | `omitido`); `repuestos` cuántos estaban agotados y
+    se repusieron a pendiente."""
+
+    excepcion_id: uuid.UUID
+    acto: Literal["excepcion", "revocacion"]
+    repuestos: int
+    artefactos: dict[str, str]
 
 
 class TransferenciaActaResponse(BaseModel):
@@ -155,6 +392,9 @@ class TransferenciaActaResponse(BaseModel):
     # migración 052 se sellaron así y no se rehacen (son probatorias); se DECLARA el
     # hueco en vez de esconderlo.
     cabecera_completa: bool = True
+    # AREA-07-10: constancias de «firma inobtenible» declaradas sobre esta acta (hechos
+    # POSTERIORES a la congelación: el XML y su huella no cambian). Vacía = ninguna.
+    excepciones_firma: list[TransferenciaActaFirmaExcepcion] = Field(default_factory=list)
     # H-H (E06/F4): estado del sellado XAdES del acta -- aditivo, SIEMPRE
     # presente en la respuesta (calculado por el servicio, nunca un campo
     # crudo de `transferencia_acta`).
@@ -208,6 +448,8 @@ class TransferenciaActaFirmaPersonalVerif(BaseModel):
     # cripto ya falló (no tiene sentido evaluar revocación) o el canal no
     # respondió.
     revocacion_status: str | None = None
+    # Avisos de una firma que SIGUE siendo válida (signature-service `/verify`).
+    advertencias: list[str] = Field(default_factory=list)
 
 
 class TransferenciaActaVerificacionResponse(BaseModel):
@@ -227,6 +469,14 @@ class TransferenciaActaVerificacionResponse(BaseModel):
     #   NINGUNA parte ha firmado todavía.
     # 'firmada_receptor' -- solo el receptor ('recibe') firmó personalmente.
     # 'firmada_remitente' -- solo el remitente ('entrega') firmó personalmente.
+    # 'firmada_con_excepcion' -- cada parte (entrega, recibe) firmó o tiene una
+    #   excepción de firma declarada (al menos UNA de las dos firmó), y existe alguna
+    #   excepción VIGENTE (no revocada) de CUALQUIER rol
+    #   (también la del elaborador): con una excepción declarada nunca es
+    #   `firmada_completa` (AREA-07-10).
+    # 'sellada_con_excepcion' -- ninguna de las dos partes (entrega, recibe) firmó
+    #   personalmente: cada una está cubierta SOLO por una excepción declarada. El acta
+    #   conserva únicamente el sello institucional; llamarla `firmada_*` sería mentir.
     # 'firmada_completa' -- AMBAS partes firmaron personalmente (bajo el gate
     #   `clasificados`/`todos`, el veredicto de conformidad exige este estado).
     completitud: Literal[
@@ -235,6 +485,8 @@ class TransferenciaActaVerificacionResponse(BaseModel):
         "firmada_receptor",
         "firmada_remitente",
         "firmada_completa",
+        "firmada_con_excepcion",
+        "sellada_con_excepcion",
     ]
     # Cripto+revocación de TODO lo presente (sello + firmas personales
     # presentes) -- vacuously True si no hay nada que verificar más allá del
@@ -254,3 +506,20 @@ class TransferenciaActaVerificacionResponse(BaseModel):
     # firmante ADITIVO, no una parte del traspaso, así que su firma NO
     # condiciona `firmada_completa` (entrega+recibe) -- se reporta aparte.
     elaborador_firmado: bool = False
+    # AREA-07-10: excepciones de firma declaradas (constancias). `completitud ==
+    # 'firmada_con_excepcion'` solo si cada PARTE (entrega, recibe) tiene firma personal o
+    # excepción y existe alguna excepción (de cualquier rol). NUNCA `firmada_completa`.
+    excepciones: list[TransferenciaActaFirmaExcepcion] = Field(default_factory=list)
+    # Avisos agregados de TODAS las verificaciones del acta (sello, firmas personales y
+    # constancias), sin repetir. Vacío = nada que avisar.
+    advertencias: list[str] = Field(default_factory=list)
+    # AREA-07-10: constancias VIGENTES sin firma (legadas, anteriores a la migración 061). El
+    # acta no puede declararse íntegramente válida mientras una excepción no tenga sello.
+    constancias_sin_firma: int = 0
+    # A2: motivos por los que la CADENA de constancias no cuadra (enlace roto: huella distinta,
+    # sustituyeA/revocacionSha256/constanciaSha256 que no coinciden con las filas o con el artefacto
+    # firmado). Vacío = cuadra. Cualquier motivo fuerza `valida=false`.
+    cadena_motivos: list[str] = Field(default_factory=list)
+    # Modo de la política XAdES de la ENTIDAD con que se calculó `completitud`
+    # (`off`/`clasificados`/`todos`): parámetro del tenant, entorno como respaldo.
+    politica_xades: str = "off"

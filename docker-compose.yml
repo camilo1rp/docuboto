@@ -328,6 +328,12 @@ services:
       # — reutilizar aquel daba 401 en cada consulta y el circuito entero
       # respondía 503 (fail-closed pero inservible). Dev-only.
       - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
+      # AREA-04-09 Media-2: huella del índice vigente de un expediente (archive-service)
+      # y del PDF vigente de un radicado (document-service, token de arriba): se
+      # fija al abrir la cadena y se relee antes de cada firma. Mismo secreto que
+      # archive-service.INTERNAL_SERVICE_TOKEN. Dev-only.
+      - ARCHIVE_SERVICE_URL=http://archive-service:8004
+      - ARCHIVE_INTERNAL_TOKEN=${ARCHIVE_INTERNAL_TOKEN:-orpycamcp_archive_internal_dev}
     volumes:
       # Solo lectura: signature-service nunca escribe en los sellos montados.
       # NUNCA se monta ./secrets/ca-authority (clave privada de la CA local de
@@ -633,6 +639,11 @@ services:
       # signature-service.NOTIFICATION_INTERNAL_TOKEN.
       - NOTIFICATION_SERVICE_URL=http://notification-service:8007
       - NOTIFICATION_INTERNAL_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
+      # AREA-04-09 Media-2 (ENTRANTE): signature-service resuelve en el servidor
+      # la huella del índice electrónico vigente de un expediente
+      # (`GET /api/v1/internal/expedientes/{ref}/indice/huella`). Mismo secreto
+      # que signature-service.ARCHIVE_INTERNAL_TOKEN. Dev-only.
+      - INTERNAL_SERVICE_TOKEN=${ARCHIVE_INTERNAL_TOKEN:-orpycamcp_archive_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:

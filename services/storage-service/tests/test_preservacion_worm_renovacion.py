@@ -40,6 +40,7 @@ import pytest
 
 import app.core.config as config_module
 from app.core.constants import SYSTEM_RECONCILER_ID
+from app.core.preservacion_tipos import MULTI_ARTEFACTO_TIPOS
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS, TENANT_SLUG, make_worm_row
 
 
@@ -389,6 +390,110 @@ async def test_renovar_retencion_internal_happy_path_tipo_aip(client_with_conn) 
     ]
     assert len(audit_calls) == 1
     assert audit_calls[0].args[3] == str(SYSTEM_RECONCILER_ID)  # actor SIEMPRE el sistema
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rol", ["elabora", "entrega", "recibe"])
+@pytest.mark.parametrize(
+    "prefijo",
+    [
+        "acta_firma_",
+        "acta_firma_excepcion_",
+        "acta_firma_excepcion_personal_",
+        "acta_firma_revocacion_",
+        "acta_firma_revocacion_personal_",
+        "acta_firma_excepcion_sobre_",
+        "acta_firma_revocacion_sobre_",
+    ],
+)
+async def test_renovar_retencion_internal_tipo_acta_firma_personal(client_with_conn, rol, prefijo) -> None:
+    """E10 debt (AREA-07-10): el XML de cada firma PERSONAL del acta (`acta_firma_<rol>`,
+    migración 018, singleton por (expediente, tipo)) se renueva igual que el índice: la fila
+    se identifica por `(expediente_id, tipo)`, la extensión es monotónica y el objeto es el de
+    LA FILA (no un valor del payload). Sin cambio de servicio ni de repositorio."""
+    client, mock_conn, mock_minio = client_with_conn
+    tipo = f"{prefijo}{rol}"
+    existing = make_worm_row(
+        expediente_id="EXP-CT-FP-1",
+        tipo=tipo,
+        retain_until=datetime(2028, 1, 1, tzinfo=UTC),
+    )
+    renovada = dict(existing)
+    renovada["retain_until"] = datetime(2031, 1, 1, tzinfo=UTC)
+    renovada["renovaciones"] = existing["renovaciones"] + 1
+    mock_conn.fetchrow.side_effect = [existing, renovada, {"id": uuid.uuid4()}]
+    file_id = uuid.uuid4()
+    multi = tipo in MULTI_ARTEFACTO_TIPOS
+    extra = {"file_id": str(file_id)} if multi else {}
+
+    resp = await client.post(
+        "/api/v1/preservacion/renovar-retencion-internal",
+        json=_renovar_payload(expediente_id="EXP-CT-FP-1", tipo=tipo, **extra),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["renovado"] is True
+    lookup = next(c for c in mock_conn.fetchrow.call_args_list if "FROM preservacion_worm_objeto" in c.args[0])
+    # FIRMA-2: los tipos multi-artefacto se buscan POR file_id; el resto, por (expediente, tipo).
+    assert lookup.args[1:] == (("EXP-CT-FP-1", tipo, file_id) if multi else ("EXP-CT-FP-1", tipo))
+    mock_minio.set_object_retention.assert_awaited_once()
+    assert mock_minio.set_object_retention.await_args.args[1] == existing["object_key"]
+    audit_calls = [
+        c for c in mock_conn.execute.call_args_list
+        if c.args and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert len(audit_calls) == 1 and audit_calls[0].args[3] == str(SYSTEM_RECONCILER_ID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tipo", sorted(MULTI_ARTEFACTO_TIPOS))
+async def test_renovar_retencion_multi_artefacto_exige_file_id(client_with_conn, tipo) -> None:
+    """FIRMA-2: con N artefactos por (expediente, tipo), renovar sin `file_id` extendería solo
+    el más reciente. 422 y ni siquiera se consulta la base."""
+    client, mock_conn, mock_minio = client_with_conn
+    resp = await client.post(
+        "/api/v1/preservacion/renovar-retencion-internal",
+        json=_renovar_payload(expediente_id="EXP-CT-FP-3", tipo=tipo),
+        headers=INTERNAL_HEADERS,
+    )
+    assert resp.status_code == 422, resp.text
+    mock_conn.fetchrow.assert_not_called()
+    mock_minio.set_object_retention.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_renovar_retencion_internal_acta_firma_no_acorta_si_nueva_no_supera(client_with_conn) -> None:
+    """Monotonía: con la fecha resuelta (2031) por debajo de la vigente (2040) es no-op
+    idempotente y NO se llama a MinIO."""
+    client, mock_conn, mock_minio = client_with_conn
+    existing = make_worm_row(
+        expediente_id="EXP-CT-FP-2",
+        tipo="acta_firma_recibe",
+        retain_until=datetime(2040, 1, 1, tzinfo=UTC),
+    )
+    mock_conn.fetchrow.side_effect = [existing]
+
+    resp = await client.post(
+        "/api/v1/preservacion/renovar-retencion-internal",
+        json=_renovar_payload(expediente_id="EXP-CT-FP-2", tipo="acta_firma_recibe"),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["renovado"] is False
+    mock_minio.set_object_retention.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_renovar_retencion_internal_rechaza_un_tipo_de_acta_inventado(client_with_conn) -> None:
+    client, _conn, _minio = client_with_conn
+    resp = await client.post(
+        "/api/v1/preservacion/renovar-retencion-internal",
+        json=_renovar_payload(tipo="acta_firma_notario"),
+        headers=INTERNAL_HEADERS,
+    )
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio

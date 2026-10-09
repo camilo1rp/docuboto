@@ -461,8 +461,9 @@ async def test_run_once_worm_renovacion_indice_lock_busy_does_not_block_acta_or_
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
     conn_a = _mock_conn()
-    # 1er pg_try_advisory_lock (índice) -> ocupado; 2do (acta) -> libre; 3ro (AIP) -> libre.
-    conn_a.fetchval.side_effect = [False, True, True]
+    # 1er pg_try_advisory_lock (índice) -> ocupado; 2do (acta), 3ro (AIP) y 4to (firmas
+    # personales del acta, AREA-07-10) -> libres.
+    conn_a.fetchval.side_effect = [False, True, True, True]
     row_acta = _renovacion_pending_acta_row()
 
     @asynccontextmanager
@@ -509,8 +510,8 @@ async def test_run_once_worm_renovacion_aip_lock_busy_does_not_block_indice_or_a
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
     conn_a = _mock_conn()
-    # 1er (índice) -> libre; 2do (acta) -> libre; 3ro (AIP) -> ocupado.
-    conn_a.fetchval.side_effect = [True, True, False]
+    # 1er (índice) -> libre; 2do (acta) -> libre; 3ro (AIP) -> ocupado; 4to (firmas) -> libre.
+    conn_a.fetchval.side_effect = [True, True, False, True]
     row_indice = _renovacion_pending_indice_row()
 
     @asynccontextmanager

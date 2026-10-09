@@ -102,16 +102,17 @@ CADENA_OBJETO_TIPOS = frozenset({"radicado", "expediente", "borrador"})
 # edita, y la firma anterior sigue en pie.
 #
 # `borrador` es el que produce un fichero con huella propia, así que para él no
-# hay excusa. `radicado` y `expediente` se quedan fuera **a propósito y con
-# reserva**: hoy se firman como conjunto (el índice electrónico del expediente
-# tiene su propio camino sellado, `/sign-xml`), y exigirles una huella aquí
-# rompería cadenas en curso sin cerrar ninguna fuga que no cierre ya su propio
-# circuito. Cuando cada uno tenga un artefacto canónico que firmar, entra aquí.
+# hay excusa. `radicado` y `expediente` estuvieron fuera «a propósito y con
+# reserva» —se firmaba el identificador— hasta AREA-04-09 Media-2 (2026-10-04):
+# ya tienen un artefacto canónico que firmar y quién lo resuelva en el servidor
+# (PDF vigente del radicado en document-service; índice electrónico vigente del
+# expediente en archive-service), así que entran aquí. Las cadenas abiertas ANTES
+# de ese cambio (huella NULL) no se firman a ciegas: `409 cadena_sin_huella`.
 #
 # Exigir huella y no tener quién la resuelva es la contradicción que dejó a
 # `documento` sin poder firmarse: las dos mitades del trato viven ahora atadas
 # —ver `RESOLUTOR_DE_HUELLA` en `cadena_service`— y un guardián las cruza.
-CADENA_PAYLOAD_OBLIGATORIO = frozenset({"borrador"})
+CADENA_PAYLOAD_OBLIGATORIO = frozenset({"borrador", "radicado", "expediente"})
 
 # Tipos de cadena que se firman COMO CONJUNTO, sin huella de contenido, y que
 # por tanto no necesitan quién se la resuelva. Es la otra mitad de la partición:
@@ -123,7 +124,7 @@ CADENA_PAYLOAD_OBLIGATORIO = frozenset({"borrador"})
 # código ataba las dos cosas, así que la contradicción no la delataba ningún
 # test. Añadir un tipo nuevo obliga ahora a decir a cuál de los dos lados
 # pertenece, o el guardián se cae.
-CADENA_SIN_HUELLA_DECLARADA = frozenset({"radicado", "expediente"})
+CADENA_SIN_HUELLA_DECLARADA: frozenset[str] = frozenset()
 
 # Tipos cuya huella tiene FUENTE AUTORITATIVA fuera de este servicio: el
 # `payload_sha256` del body se IGNORA y se resuelve contra el productor.
@@ -137,7 +138,7 @@ CADENA_SIN_HUELLA_DECLARADA = frozenset({"radicado", "expediente"})
 # `documento` NO está aquí: es un tipo genérico sin productor conocido, así que
 # la huella que declara su autor es la única verdad disponible. Por eso el
 # schema la sigue exigiendo — para ese caso es la única defensa.
-CADENA_PAYLOAD_AUTORITATIVO = frozenset({"borrador"})
+CADENA_PAYLOAD_AUTORITATIVO = frozenset({"borrador", "radicado", "expediente"})
 
 # Tipos de cadena cuyo nivel de seguridad tiene FUENTE AUTORITATIVA en el schema
 # del tenant: `objeto_tipo -> (tabla, columnas de identidad)`. Para estos, el

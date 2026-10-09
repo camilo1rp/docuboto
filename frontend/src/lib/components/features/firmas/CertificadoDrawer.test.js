@@ -16,7 +16,7 @@
  * certificado nunca se disfraza de "sin datos".
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/svelte";
+import { render, screen, waitFor, fireEvent } from "@testing-library/svelte";
 import CertificadoDrawer from "./CertificadoDrawer.svelte";
 
 const FIRMA_ID = "22222222-2222-2222-2222-222222222222";
@@ -73,5 +73,44 @@ describe("CertificadoDrawer — honestidad del comprobante (art. 7, no art. 28)"
     await waitFor(() =>
       expect(screen.getByText("No se encontró información de esta firma.")).toBeInTheDocument(),
     );
+  });
+});
+
+describe("CertificadoDrawer — advertencias de la verificación", () => {
+  it("una firma válida con advertencias las muestra", async () => {
+    const respuestas = [
+      {
+        firma_id: FIRMA_ID,
+        objeto_tipo: "radicado",
+        objeto_id: "r1",
+        firmante_id: "u1",
+        provider: "xades_personal",
+        sello_tiempo: "2026-07-30T10:00:00Z",
+        acreditado: false,
+      },
+      {
+        firma_id: FIRMA_ID,
+        valida: true,
+        provider: "xades_personal",
+        acreditado: false,
+        advertencias: ["tsa_sin_esscertid_anterior_al_corte"],
+      },
+    ];
+    let n = 0;
+    globalThis.fetch = vi.fn(
+      async () => new Response(JSON.stringify(respuestas[Math.min(n++, 1)]), { status: 200 }),
+    );
+
+    render(CertificadoDrawer, { props: { open: true, firmaId: FIRMA_ID } });
+    await waitFor(() => expect(screen.getByText("Comprobante de firma")).toBeInTheDocument());
+
+    await fireEvent.click(screen.getByRole("button", { name: /verificar firma/i }));
+    await fireEvent.input(screen.getByLabelText(/documento firmado/i), {
+      target: { value: "<xml/>" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /^verificar$/i }));
+
+    await waitFor(() => expect(screen.getByText(/ESSCertID/)).toBeInTheDocument());
+    expect(screen.getByText(/La firma es válida para este documento/)).toBeInTheDocument();
   });
 });

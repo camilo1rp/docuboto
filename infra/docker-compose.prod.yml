@@ -670,6 +670,8 @@ services:
       STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
       SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
       DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
+      # D-02 ENTRANTE (AREA-04-09): signature-service pide la huella del índice vigente.
+      INTERNAL_SERVICE_TOKEN: ${ARCHIVE_INTERNAL_TOKEN:?Archive internal token required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -794,6 +796,12 @@ services:
       SIGNER_TIMESTAMP_ENABLED: ${SIGNER_TIMESTAMP_ENABLED:-true}
       TSA_URL: ${TSA_URL:-}
       TSA_CERT_DIR: /run/secrets/tsa
+      # Fecha de corte del ESSCertID (sustituye a TSA_ESSCERTID_OBLIGATORIO, que
+      # ya no se lee). Vacío = el default del servicio (2026-10-04T00:00:00Z).
+      TSA_ESSCERTID_CORTE: ${TSA_ESSCERTID_CORTE:-2026-10-04T00:00:00Z}
+      # Respaldo de la política XAdES para la entidad que no define el parámetro
+      # firma_personal_require_xades (off|clasificados|todos).
+      FIRMA_PERSONAL_REQUIRE_XADES: ${FIRMA_PERSONAL_REQUIRE_XADES:-off}
       SIGNER_LT_ENABLED: ${SIGNER_LT_ENABLED:-false}
       SIGNER_LT_REQUIRE: ${SIGNER_LT_REQUIRE:-false}
       SIGNER_OCSP_ENABLED: ${SIGNER_OCSP_ENABLED:-true}
@@ -803,6 +811,10 @@ services:
       SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
       SIGNING_KEY_INTERNAL_TOKEN: ${SIGNING_KEY_INTERNAL_TOKEN:?Signing key internal token required}
       NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
+      # AREA-04-09 Media-2: huella del PDF vigente del radicado (document) y del
+      # índice vigente del expediente (archive), resueltas en el servidor.
+      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
+      ARCHIVE_INTERNAL_TOKEN: ${ARCHIVE_INTERNAL_TOKEN:?Archive internal token required}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       # Solo lectura y solo material que este servicio necesita. La clave privada

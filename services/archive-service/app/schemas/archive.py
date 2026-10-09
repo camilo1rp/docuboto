@@ -1151,6 +1151,10 @@ class IndiceVerifyFirma(BaseModel):
     # Explica por qué `valida=False` (p. ej. "signed_xml_unavailable",
     # "certificado_fuera_de_vigencia", "fingerprint_no_coincide_sello_tenant").
     motivo: str | None = None
+    # Avisos de una firma que SIGUE siendo válida (signature-service `VerifyResponse.
+    # advertencias`, vocabulario cerrado; p. ej. `tsa_sin_esscertid_anterior_al_corte`).
+    # Vacío = nada que avisar. Un verificador que los calla da por limpia una firma con reservas.
+    advertencias: list[str] = Field(default_factory=list)
 
 
 class IndiceVerifyResponse(BaseModel):
@@ -1199,14 +1203,41 @@ class IndicePendienteRenovacion(BaseModel):
     RIESGO de vencer sin renovar.
 
     `tipo` distingue el artefacto (`indice` | `acta_transferencia` | `aip` --
-    este último, E10 debt, fast-follow del cableado del AIP) -- UN endpoint
+    este último, E10 debt, fast-follow del cableado del AIP -- y `acta_firma_<rol>`, el XML
+    de cada firma personal del acta, AREA-07-10) -- UN endpoint
     combinado en vez de tres gemelos, mismo criterio de no proliferación que
     `POST /proteger-artefacto` (storage-service, E10 Inc.2 wiring) generalizó
     sobre `POST /proteger-indice`."""
 
     expediente_id: uuid.UUID
     expediente_code: str
-    tipo: Literal["indice", "acta_transferencia", "aip"]
+    tipo: Literal[
+        "indice",
+        "acta_transferencia",
+        "aip",
+        "acta_firma_elabora",
+        "acta_firma_entrega",
+        "acta_firma_recibe",
+        # Constancia de «firma inobtenible» (AREA-07-10): sello y firma personal del declarante.
+        "acta_firma_excepcion_elabora",
+        "acta_firma_excepcion_entrega",
+        "acta_firma_excepcion_recibe",
+        "acta_firma_excepcion_personal_elabora",
+        "acta_firma_excepcion_personal_entrega",
+        "acta_firma_excepcion_personal_recibe",
+        "acta_firma_revocacion_elabora",
+        "acta_firma_revocacion_entrega",
+        "acta_firma_revocacion_recibe",
+        "acta_firma_revocacion_personal_elabora",
+        "acta_firma_revocacion_personal_entrega",
+        "acta_firma_revocacion_personal_recibe",
+        "acta_firma_excepcion_sobre_elabora",
+        "acta_firma_excepcion_sobre_entrega",
+        "acta_firma_excepcion_sobre_recibe",
+        "acta_firma_revocacion_sobre_elabora",
+        "acta_firma_revocacion_sobre_entrega",
+        "acta_firma_revocacion_sobre_recibe",
+    ]
     worm_retain_until: datetime | None
     worm_renovacion_intentos: int
     worm_renovacion_agotado: bool

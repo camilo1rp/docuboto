@@ -51,6 +51,16 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import {
+    COMPLETITUD_MAP,
+    POLITICA_XADES_LABELS,
+    excepcionesDe,
+    excepcionVigenteDelRol,
+    excepcionDelRol,
+    etiquetaCadenaMotivo,
+  } from "$lib/utils/firmaInobtenible.js";
+  import ExcepcionesFirma from "$lib/components/features/transferencias/ExcepcionesFirma.svelte";
+  import AdvertenciasVerificacion from "$lib/components/features/firmas/AdvertenciasVerificacion.svelte";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -155,6 +165,11 @@
     recibe: "Receptor(a) (recibe)",
   };
 
+  /** @param {any[]} excepciones @param {string} rol */
+  function excepcionDelRolEnActa(excepciones, rol) {
+    return excepcionDelRol(excepciones, rol);
+  }
+
   /** @param {string} rol */
   function firmaPersonalDe(rol) {
     if (!verificacion) return null;
@@ -179,6 +194,8 @@
   $: verificacionEfectivaFalloReal = verificacionLocal
     ? !!verificacionLocalError
     : verificacionFalloReal;
+
+  $: excepcionesActa = excepcionesDe(verificacionEfectiva, actaLocal ?? acta);
 
   async function refrescarActaYVerificacion() {
     try {
@@ -350,14 +367,6 @@
   };
 
   const TIPO_MAP = { primaria: "Primaria", secundaria: "Secundaria" };
-
-  const COMPLETITUD_MAP = {
-    sellada: { label: "Solo sello institucional", status: "info" },
-    firma_personal_pendiente: { label: "Sin firmas personales", status: "warning" },
-    firmada_receptor: { label: "Firmada por el receptor", status: "info" },
-    firmada_remitente: { label: "Firmada por el remitente", status: "info" },
-    firmada_completa: { label: "Firma personal completa", status: "success" },
-  };
 </script>
 
 <svelte:head>
@@ -615,9 +624,16 @@
                           dot
                         />
                       {:else}
-                        <StatusChip status="neutral" label="Sin firma personal" dot />
+                        {@const exc = excepcionDelRolEnActa(excepcionesActa, rol)}
+                        {#if exc && !exc.revocada}
+                          <StatusChip status="warning" label="Firma inobtenible declarada" dot />
+                        {:else if exc}
+                          <StatusChip status="neutral" label="Excepción revocada · sin firma" dot />
+                        {:else}
+                          <StatusChip status="neutral" label="Sin firma personal" dot />
+                        {/if}
                       {/if}
-                      {#if !firma && esMiRol && canManageWrite && transferencia.estado === "recibida"}
+                      {#if !firma && esMiRol && canManageWrite && transferencia.estado === "recibida" && !excepcionVigenteDelRol(excepcionesActa, rol)}
                         <Button variant="primary" size="sm" on:click={() => abrirFirmarModal(rol)}>
                           <i class="fas fa-signature" aria-hidden="true"></i>
                           Firmar como {ROL_LABELS[rol]}
@@ -636,6 +652,13 @@
               }}
               <div class="trd-certificate__completitud">
                 <StatusChip status={completitudInfo.status} label={completitudInfo.label} dot />
+                {#if verificacionEfectiva.politica_xades}
+                  <span class="trd-certificate__note" data-testid="politica-xades">
+                    Política de la entidad: {POLITICA_XADES_LABELS[
+                      verificacionEfectiva.politica_xades
+                    ] ?? verificacionEfectiva.politica_xades}
+                  </span>
+                {/if}
                 {#if verificacionEfectiva.auto_traslado}
                   <span class="trd-certificate__note">
                     <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
@@ -648,6 +671,37 @@
               <p class="trd-certificate__note">
                 Sin información de verificación de firmas todavía.
               </p>
+            {/if}
+
+            {#if verificacionEfectiva?.constancias_sin_firma > 0}
+              <p class="trd-certificate__note" role="status" data-testid="constancias-sin-firma">
+                <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+                {verificacionEfectiva.constancias_sin_firma === 1
+                  ? "Hay 1 constancia de firma inobtenible sin firma (anterior al sellado de constancias)"
+                  : `Hay ${verificacionEfectiva.constancias_sin_firma} constancias de firma inobtenible sin firma (anteriores al sellado de constancias)`}:
+                no se dan por válidas y el acta no puede declararse íntegramente válida.
+              </p>
+            {/if}
+            {#if (verificacionEfectiva?.cadena_motivos ?? []).length > 0}
+              <ul class="trd-certificate__note" data-testid="cadena-motivos">
+                {#each verificacionEfectiva.cadena_motivos as m (m)}
+                  <li>
+                    <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+                    Cadena de firma inobtenible. {etiquetaCadenaMotivo(m)}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            <AdvertenciasVerificacion advertencias={verificacionEfectiva?.advertencias} />
+
+            {#if !verificacionEfectivaFalloReal}
+              <ExcepcionesFirma
+                {transferencia}
+                acta={actaEfectiva}
+                verificacion={verificacionEfectiva}
+                radicados={data.expedienteRadicados ?? []}
+                on:changed={refrescarActaYVerificacion}
+              />
             {/if}
           </div>
         </div>

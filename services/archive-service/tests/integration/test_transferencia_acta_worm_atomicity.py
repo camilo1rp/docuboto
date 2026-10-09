@@ -301,20 +301,22 @@ async def test_concurrent_proteger_worm_acta_does_not_double_mark(
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
             await own_conn.execute(f'SET search_path = "{schema}", public')
-            with patch(
-                "app.clients.storage_client.proteger_artefacto_worm_internal",
-                new=AsyncMock(return_value=_ok_outcome()),
-            ):
-                return await TransferenciaService(own_conn, slug).proteger_worm_acta(
-                    transferencia_id, actor_id=None, origen="reconciliation"
-                )
+            return await TransferenciaService(own_conn, slug).proteger_worm_acta(
+                transferencia_id, actor_id=None, origen="reconciliation"
+            )
         finally:
             await own_conn.close()
 
     # Sin sleeps: ambas corrutinas compiten de verdad por el MISMO UPDATE
     # (WHERE transferencia_id=$1 AND worm_protegido_at IS NULL) sobre la
-    # misma fila.
-    resultados = await asyncio.gather(_attempt(), _attempt())
+    # misma fila. UN solo patch que envuelve el gather: un `with patch` dentro de cada
+    # corrutina sale en orden no-LIFO y restaura el mock de la otra, dejándolo fugado
+    # (rompía `test_clientes_llevan_token_interno` más adelante en la misma sesión).
+    with patch(
+        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        new=AsyncMock(return_value=_ok_outcome()),
+    ):
+        resultados = await asyncio.gather(_attempt(), _attempt())
 
     assert "protegido" in resultados
     assert set(resultados) <= {"protegido", "omitido"}

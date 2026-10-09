@@ -49,3 +49,7 @@ class ParamResponse(BaseModel):
 
 class ParamUpdate(BaseModel):
     value: Any
+    #: Justificación del cambio. OBLIGATORIA cuando el cambio relaja la política
+    #: de firma (`firma_personal_require_xades`): `422 motivo_requerido`. Se
+    #: asienta en `public.audit_log`. Para el resto de parámetros es opcional.
+    motivo: str | None = Field(default=None, max_length=500)

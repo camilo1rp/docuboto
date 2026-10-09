@@ -909,6 +909,47 @@ class DocumentRepository:
         )
         return {f["file_id"] for f in filas}
 
+    async def get_documento_principal_para_firma(
+        self, ref: str
+    ) -> tuple[asyncpg.Record, asyncpg.Record | None] | None:
+        """Radicado por número o UUID y su PDF vigente: lo que una cadena de firma sella.
+
+        `ref` es lo que la cadena guarda como `objeto_id`: el número de radicado
+        o su UUID (igual que `resolver_nivel_por_objeto` en signature-service).
+        Devuelve `None` si el radicado no existe en este tenant (schema por
+        tenant, ADR-002); `(radicado, None)` si existe y no tiene documento
+        principal.
+
+        «Vigente» = SOLO el anexo `es_principal` (el más reciente si hubiera
+        varios). Antes, sin principal, se tomaba «el PDF más reciente»: un
+        soporte cualquiera (un anexo PDF que acompaña a la comunicación) pasaba
+        por el documento firmado, y bastaba subir otro PDF para cambiar la huella
+        y bloquear una cadena abierta (`documento_modificado`). Sin principal no
+        hay contenido que sellar: `(radicado, None)` y el router responde
+        `409 radicado_sin_documento`. Un acto de sistema sin gate de clearance:
+        la respuesta es una huella, y el no-read-up lo aplicó signature-service
+        al abrir la cadena.
+        """
+        radicado = await self._conn.fetchrow(
+            "SELECT id, tracking_number FROM radicados "
+            "WHERE tracking_number = $1 OR id::text = $1 LIMIT 1",
+            ref,
+        )
+        if radicado is None:
+            return None
+        anexo = await self._conn.fetchrow(
+            """
+            SELECT id, file_id, filename
+            FROM anexos
+            WHERE radicado_id = $1
+              AND es_principal
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            radicado["id"],
+        )
+        return radicado, anexo
+
     async def list_anexos_for_radicados_internal(
         self, radicado_ids: list[uuid.UUID], max_clearance: int | None = None
     ) -> dict[uuid.UUID, list[Anexo]]:

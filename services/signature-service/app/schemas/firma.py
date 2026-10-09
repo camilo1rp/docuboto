@@ -275,3 +275,11 @@ class VerifyResponse(BaseModel):
     # no aplica (no personal, no revocado, sin TSA verificada —motivo
     # `instante_firma_no_cierto`, valida=False— o `clave_comprometida`).
     revocacion_posterior: bool | None = None
+
+    # --- Avisos de una verificación que SIGUE siendo válida ---
+    # Vocabulario cerrado, hoy un solo valor:
+    # `tsa_sin_esscertid_anterior_al_corte` — el sello de tiempo no lleva el
+    # atributo ESSCertID (RFC 5035) pero su `genTime` es anterior a
+    # `TSA_ESSCERTID_CORTE`: es historia (tokens de la TSA local previos a
+    # AREA-04-08) y vale, pero el verificador lo declara. Vacío = nada que avisar.
+    advertencias: list[str] = Field(default_factory=list)

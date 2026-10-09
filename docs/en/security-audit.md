@@ -205,8 +205,8 @@ without the guard forwarded without a token and the gateway answered 401. **Resi
   the real `orpycamcp_app` role: it fails on privileges, not on the trigger.
 - **Personal signatures of the record had no Object-Lock (AREA-07-10, medium; technical part only).** The XML of the
   signatures of whoever drew up, handed over and received lived in the documents bucket with no retention. It now
-  enters the WORM store (post-commit, best-effort, with reconciliation). **Pending (domain decision)**: the
-  `firma_inobtenible` act.
+  enters the WORM store (post-commit, best-effort, with reconciliation). **Closed on 2026-10-04**: the
+  `firma_inobtenible` act (`POST /acta/firma-inobtenible`, `USUA_PERM_ADMIN` ≥ 3, immutable record `059` + atomic entry, `firmada_con_excepcion` state) and the CT renewal of these signatures (`060`). **Remediation 2026-10-09 (ADR-030, `061`)**: the record was unsigned and unprotected and its support was free text (high); it is now a canonical XML with an XAdES-T seal and the declarant's personal signature per the entity policy, Object-Lock with CT renewal and a server-resolved support; the declarant cannot be any of the three parties (service and engine); the exception is revocable (append-only row); `fundamento` is only shown to `USUA_PERM_ADMIN` ≥ 3; and `sellada_con_excepcion` avoids calling a record with no personal signatures "signed".
 - **Accumulated holdings without WORM (AREA-06-04, medium).** Their index, record and AIP stayed without Object-Lock
   indefinitely (correct fail-closed, but permanent). They are now wired with the final extreme date and a clamp
   (at least `today + 400 days`). **Risk to confirm**: an irreversible COMPLIANCE of ~400 days over documentation

@@ -7,6 +7,9 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+import os
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import Field, field_validator
@@ -60,6 +63,12 @@ class Settings(BaseSettings):
     # llamada; apareció al abrir el navegador.
     # Mismo valor que document-service.INTERNAL_SERVICE_TOKEN (D-02).
     document_internal_token: str = ""
+    # AREA-04-09 Media-2: huella del índice electrónico VIGENTE de un expediente
+    # (`GET /api/v1/internal/expedientes/{ref}/indice/huella`). Mismo secreto que
+    # `archive-service.INTERNAL_SERVICE_TOKEN`; vacío = archive responde 401 y
+    # abrir/firmar una cadena sobre un expediente falla cerrado (503).
+    archive_service_url: str = "http://archive-service:8004"
+    archive_internal_token: str = ""
 
     # Redis URL for stream consumption (document.radicado.reclassified events)
     # y publicación (firma.indice.firmado — app/core/events.py, Inc.1).
@@ -188,15 +197,29 @@ class Settings(BaseSettings):
     # (app/core/tsa.py::sello_acreditado).
     # El token RFC 3161 debe llevar el atributo firmado `signing-certificate-v2`
     # (ESSCertID, RFC 5035) que nombra el certificado de la TSA. Si lo lleva, su
-    # hash se comprueba SIEMPRE. Este flag decide qué pasa cuando FALTA:
-    #   True  -> el sello se rechaza (`tsa_sin_esscertid`), como exige la RFC 3161.
-    #   False -> se acepta (default): los tokens que emitió la TSA local de
-    #            desarrollo ANTES de AREA-04-08 no lo llevan y están embebidos,
-    #            inmutables, en firmas ya emitidas; rechazarlos las daría por
-    #            inválidas. Todo token nuevo (local o de una TSA remota
-    #            conforme) lo lleva. Un despliegue sin corpus anterior, o que ya
-    #            lo re-selló, debe ponerlo en True.
-    tsa_esscertid_obligatorio: bool = False
+    # hash se comprueba SIEMPRE. Qué pasa cuando FALTA lo decide una FECHA DE
+    # CORTE (antes un booleano, `TSA_ESSCERTID_OBLIGATORIO`, que obligaba a elegir
+    # entre rechazar todo el corpus anterior o no exigir nunca nada):
+    #   genTime >= corte -> el sello se rechaza (`tsa_sin_esscertid`), como exige
+    #                       la RFC 3161: todo token nuevo (local o de una TSA
+    #                       remota conforme) lo lleva.
+    #   genTime <  corte -> sigue siendo válido y `/verify` lo declara en
+    #                       `advertencias` (`tsa_sin_esscertid_anterior_al_corte`):
+    #                       los tokens que emitió la TSA local de desarrollo ANTES
+    #                       de AREA-04-08 no lo llevan y están embebidos, inmutables,
+    #                       en firmas ya emitidas; rechazarlos las daría por inválidas.
+    # Es GLOBAL y no por entidad a propósito: la TSA es infraestructura compartida
+    # del despliegue, y el corpus de tokens anteriores pertenece al despliegue, no
+    # a una entidad. El DEFAULT es la fecha de despliegue de este cambio
+    # (2026-10-04T00:00:00Z); `TSA_ESSCERTID_CORTE` admite ISO 8601 y, sin zona
+    # horaria, se interpreta como UTC.
+    tsa_esscertid_corte: datetime = datetime(2026, 10, 4, tzinfo=UTC)
+
+    @field_validator("tsa_esscertid_corte", mode="after")
+    @classmethod
+    def _corte_con_zona(cls, v: datetime) -> datetime:
+        return v if v.tzinfo is not None else v.replace(tzinfo=UTC)
+
     tsa_url: str = ""
     # Segundos de espera de la TSA remota (conexión + lectura). Acotado a
     # propósito: `build_timestamp_token` es SÍNCRONO y se invoca desde el mismo
@@ -308,6 +331,11 @@ class Settings(BaseSettings):
     # ocurre cuando GET /status responde limpiamente "no_activo"/"revocado").
     signing_key_sign_timeout_seconds: float = 5.0
     # --- Gate XAdES de la firma personal (E17/F4, Incremento 3 — cierra Baja #3 del Inc.2) ---
+    # AHORA ES UN PARÁMETRO DE LA ENTIDAD (2026-10-04): la política la lee
+    # `app.core.params_entidad.modo_xades_de_la_entidad` de `sgd_param_admin`
+    # (clave `firma_personal_require_xades`, sembrada en "off" por la migración
+    # 010 de tenant-service). Este valor del entorno es solo el RESPALDO de la
+    # entidad que no define la clave.
     # Controla si un certificado personal ausente o inaccesible puede caer a HMAC
     # nativa (comportamiento histórico) o debe RECHAZAR el acto. Tres valores:
     #
@@ -371,6 +399,20 @@ class Settings(BaseSettings):
     # `firma_2fa_required` arriba) y debería exigir igual certeza de
     # revocación.
     verify_personal_revocation_require: bool = True
+
+
+#: Variables de entorno que ya NO tienen efecto, con la que las sustituye. Una
+#: variable retirada que sigue puesta engaña: el operador cree estar exigiendo
+#: algo que el servicio ya no lee.
+VARIABLES_RETIRADAS: dict[str, str] = {
+    "TSA_ESSCERTID_OBLIGATORIO": "TSA_ESSCERTID_CORTE",
+}
+
+
+def variables_retiradas_presentes(environ: Mapping[str, str] | None = None) -> list[tuple[str, str]]:
+    """(variable_retirada, sustituta) de cada una que aparece en el entorno."""
+    env = os.environ if environ is None else environ
+    return [(v, nueva) for v, nueva in VARIABLES_RETIRADAS.items() if v in env]
 
 
 settings = Settings()

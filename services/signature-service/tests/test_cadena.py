@@ -49,7 +49,9 @@ def _sol_row(estado: str = "pendiente", nivel_seguridad: int = 1) -> dict:
         "objeto_tipo": "radicado",
         "objeto_id": "2024-DEMO-E-000001",
         "titulo": "Oficio de prueba",
-        "payload_sha256": None,
+        # La huella del PDF del radicado la fija el servidor al abrir la cadena
+        # (AREA-04-09 Media-2); el doble del productor devuelve esta misma.
+        "payload_sha256": "a" * 64,
         "estado": estado,
         "creado_por": USER,
         "nivel_seguridad": nivel_seguridad,
@@ -347,7 +349,8 @@ async def test_reject_solicitud_already_closed_returns_409() -> None:
     sol_firmado = _sol_row(estado="firmado")
     conn.fetchrow.return_value = sol_firmado
     # fetchval.return_value = True (default) → check_permission passes.
-    # Estado guard fires before es_firmante; es_firmante fetchval must NOT be called.
+    # AREA-04-09 Media-2: es_firmante corre ANTES que el estado (un ajeno no
+    # debe aprender el estado de la cadena); aquí el actor SÍ es firmante.
 
     _override(conn)
     try:
@@ -359,9 +362,9 @@ async def test_reject_solicitud_already_closed_returns_409() -> None:
             )
         assert resp.status_code == 409
         assert resp.json()["detail"]["error"] == "solicitud_no_pendiente"
-        # check_permission called once (fetchval #1).
-        # es_firmante must NOT have been reached → total fetchval calls == 1.
-        assert conn.fetchval.call_count == 1
+        # check_permission (fetchval #1) y es_firmante (fetchval #2), que ahora
+        # precede al guard de estado.
+        assert conn.fetchval.call_count == 2
     finally:
         _clear()
 
@@ -770,7 +773,9 @@ async def test_sign_last_turn_marks_solicitud_firmado(monkeypatch: pytest.Monkey
 async def test_sign_solicitud_already_closed_returns_409() -> None:
     """
     Attempt to sign a solicitud that is already 'firmado' → 409.
-    Estado guard fires before es_firmante (es_firmante fetchval must NOT be called).
+    es_firmante precede al guard de estado (AREA-04-09 Media-2): un firmante
+    de la cadena sí ve el estado; un ajeno recibe 403 antes (ver
+    test_la_pertenencia_va_antes_que_el_estado.py).
     """
     conn = _make_conn()
     sol_firmado = _sol_row(estado="firmado")
@@ -786,8 +791,8 @@ async def test_sign_solicitud_already_closed_returns_409() -> None:
             )
         assert resp.status_code == 409
         assert resp.json()["detail"]["error"] == "solicitud_no_pendiente"
-        # check_permission called once (fetchval #1); es_firmante must NOT be called.
-        assert conn.fetchval.call_count == 1
+        # check_permission (fetchval #1) + es_firmante (fetchval #2).
+        assert conn.fetchval.call_count == 2
     finally:
         _clear()
 

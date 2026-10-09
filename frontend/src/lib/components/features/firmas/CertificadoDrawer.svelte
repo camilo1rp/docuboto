@@ -45,6 +45,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import AdvertenciasVerificacion from "./AdvertenciasVerificacion.svelte";
 
   export let open = false;
   /** @type {string|null} */
@@ -310,6 +311,7 @@
                 <span class="cert-drawer__hint"> — {verifyResult.motivo}</span>
               {/if}
             </p>
+            <AdvertenciasVerificacion advertencias={verifyResult.advertencias} />
             {#if verifyResult.revocacion_status && verifyResult.revocacion_status !== "vigente"}
               <p class="cert-drawer__error" role="alert">
                 Estado de revocación del certificado: <strong

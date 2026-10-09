@@ -452,6 +452,7 @@
  * @property {boolean|null} [sello_tiempo_valido]
  * @property {string|null}  [revocacion_status]  - 'vigente'|'revocado'|'no_verificable'|'desconocido'
  * @property {boolean}      [firma_criptograficamente_valida]
+ * @property {string[]}     [advertencias]  - avisos de una firma que sigue siendo válida (p. ej. 'tsa_sin_esscertid_anterior_al_corte')
  */
 
 /**

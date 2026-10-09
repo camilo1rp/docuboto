@@ -208,17 +208,19 @@ async def test_concurrent_reconciliar_indice_does_not_double_sign(
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
             await own_conn.execute(f'SET search_path = "{schema}", public')
-            with patch(
-                "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
-                new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
-            ):
-                return await _reconciliar_indice(own_conn, slug, row)
+            return await _reconciliar_indice(own_conn, slug, row)
         finally:
             await own_conn.close()
 
     # Sin sleeps: ambas corrutinas compiten de verdad por el MISMO UPDATE
     # (WHERE id=$1 AND estado <> 'firmado') sobre la misma fila.
-    resultados = await asyncio.gather(_attempt(), _attempt())
+    # UN solo patch que envuelve el gather (un `with patch` por corrutina sale en
+    # orden no-LIFO y deja el mock fugado).
+    with patch(
+        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
+    ):
+        resultados = await asyncio.gather(_attempt(), _attempt())
 
     assert set(resultados) == {"sellado"}  # ambas ramas creen haber "sellado"...
 
@@ -288,11 +290,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
             await own_conn.execute(f'SET search_path = "{schema}", public')
-            with patch(
-                "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
-                new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
-            ):
-                return await _reconciliar_indice(own_conn, slug, row)
+            return await _reconciliar_indice(own_conn, slug, row)
         finally:
             await own_conn.close()
 
@@ -300,9 +298,16 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
     # (WHERE id=$1 AND estado <> 'firmado') sobre la misma fila. `firmar_indice`
     # (manual) lanza HTTPException 409 si pierde -- se captura como resultado
     # en vez de abortar `gather`.
-    manual_result, job_result = await asyncio.gather(
-        _manual_attempt(), _job_attempt(), return_exceptions=True
-    )
+    # Cada colaborador se sustituye UNA vez, fuera del gather. Este test dependía
+    # sin saberlo del mock de `sign_indice_internal` que el test concurrente dejaba
+    # fugado: aislado, el job llamaba al signature-service real (503).
+    with patch(
+        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
+    ):
+        manual_result, job_result = await asyncio.gather(
+            _manual_attempt(), _job_attempt(), return_exceptions=True
+        )
 
     assert job_result == "sellado"  # el job SIEMPRE reporta 'sellado' si obtuvo un signed
     if isinstance(manual_result, HTTPException):

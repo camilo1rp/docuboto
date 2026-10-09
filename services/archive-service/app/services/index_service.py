@@ -88,6 +88,31 @@ _SERVICE = "archive-service"
 _CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
 
 
+_TIPO_FIRMA_PERSONAL: dict[str, Literal["acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"]] = {
+    "elabora": "acta_firma_elabora",
+    "entrega": "acta_firma_entrega",
+    "recibe": "acta_firma_recibe",
+}
+
+
+_PREFIJO_ARTEFACTO = {"personal": "personal_", "sobre": "sobre_"}
+
+# Constancia de «firma inobtenible» (AREA-07-10): `(artefacto, rol)` -> `tipo` en storage.
+_TIPO_FIRMA_EXCEPCION: dict[tuple[str, str], str] = {
+    (artefacto, rol): f"acta_firma_excepcion_{_PREFIJO_ARTEFACTO.get(artefacto, '')}{rol}"
+    for artefacto in ("sello", "personal", "sobre")
+    for rol in ("elabora", "entrega", "recibe")
+}
+
+
+# Revocación de la constancia (FIRMA-2): `(artefacto, rol)` -> `tipo` en storage (migración 020).
+_TIPO_FIRMA_REVOCACION: dict[tuple[str, str], str] = {
+    (artefacto, rol): f"acta_firma_revocacion_{_PREFIJO_ARTEFACTO.get(artefacto, '')}{rol}"
+    for artefacto in ("sello", "personal", "sobre")
+    for rol in ("elabora", "entrega", "recibe")
+}
+
+
 class IndexService:
     def __init__(self, conn, tenant_slug: str) -> None:
         self._conn = conn
@@ -949,6 +974,21 @@ class IndexService:
         ).list_worm_renovacion_visibilidad(
             max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
         )
+        firma_personal_rows = await TransferenciaRepository(
+            self._conn, self._tenant_slug
+        ).list_firma_personal_renovacion_visibilidad(
+            max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
+        )
+        firma_excepcion_rows = await TransferenciaRepository(
+            self._conn, self._tenant_slug
+        ).list_firma_excepcion_renovacion_visibilidad(
+            max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
+        )
+        firma_revocacion_rows = await TransferenciaRepository(
+            self._conn, self._tenant_slug
+        ).list_firma_excepcion_renovacion_visibilidad(
+            max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias, acto="revocacion"
+        )
         aip_rows = await AipRepository(self._conn).list_worm_renovacion_visibilidad(
             max_clearance=clearance, ct_codes=ct_codes, ventana_dias=ventana_dias
         )
@@ -986,6 +1026,39 @@ class IndexService:
                 worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
             )
             for r in aip_rows
+        ] + [
+            IndicePendienteRenovacion(
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                tipo=_TIPO_FIRMA_PERSONAL[r["rol"]],
+                worm_retain_until=r["worm_retain_until"],
+                worm_renovacion_intentos=r["worm_renovacion_intentos"],
+                worm_renovacion_agotado=r["worm_renovacion_agotado"],
+                worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
+            )
+            for r in firma_personal_rows
+        ] + [
+            IndicePendienteRenovacion(
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                tipo=_TIPO_FIRMA_EXCEPCION[(r["artefacto"], r["rol"])],
+                worm_retain_until=r["worm_retain_until"],
+                worm_renovacion_intentos=r["worm_renovacion_intentos"],
+                worm_renovacion_agotado=r["worm_renovacion_agotado"],
+                worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
+            )
+            for r in firma_excepcion_rows
+        ] + [
+            IndicePendienteRenovacion(
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                tipo=_TIPO_FIRMA_REVOCACION[(r["artefacto"], r["rol"])],
+                worm_retain_until=r["worm_retain_until"],
+                worm_renovacion_intentos=r["worm_renovacion_intentos"],
+                worm_renovacion_agotado=r["worm_renovacion_agotado"],
+                worm_renovacion_ultimo_error=r["worm_renovacion_ultimo_error"],
+            )
+            for r in firma_revocacion_rows
         ]
         # Más urgente primero: agotado antes que en-riesgo, y dentro de cada
         # grupo, el vencimiento más próximo primero. `datetime.max` (UTC) para
@@ -1145,6 +1218,7 @@ class IndexService:
         nivel_conformidad: str | None = None
         acreditado = False
         motivo: str | None = None
+        advertencias: list[str] = []
         if firma_presente:
             from app.clients import signature_client, storage_client
 
@@ -1169,12 +1243,14 @@ class IndexService:
                     nivel_conformidad = resultado.nivel_conformidad
                     acreditado = resultado.acreditado
                     motivo = resultado.motivo
+                    advertencias = list(resultado.advertencias)
         firma = IndiceVerifyFirma(
             presente=firma_presente,
             valida=valida_firma,
             nivel_conformidad=nivel_conformidad,
             acreditado=acreditado,
             motivo=motivo,
+            advertencias=advertencias,
         )
         # Fixity del XML del índice en sí (no solo de los documentos que
         # referencia): re-hashea la columna `xml` almacenada y la contrasta

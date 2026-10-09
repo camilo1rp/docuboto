@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import httpx
@@ -87,6 +87,11 @@ class TimestampToken:
     tsa_cert_fingerprint: str
 
 
+#: Advertencia de `/verify`: sello válido cuyo token no lleva ESSCertID porque es
+#: anterior a `settings.tsa_esscertid_corte`.
+ADVERTENCIA_SIN_ESSCERTID = "tsa_sin_esscertid_anterior_al_corte"
+
+
 @dataclass(slots=True)
 class TimestampVerifyOutcome:
     """Resultado de :func:`verify_timestamp_token` — nunca lanza (fail-closed)."""
@@ -94,6 +99,9 @@ class TimestampVerifyOutcome:
     valido: bool
     gen_time: datetime | None = None
     motivo: str | None = None
+    # Avisos sobre un sello que SÍ es válido (hoy: sin ESSCertID pero anterior a
+    # la fecha de corte). `/verify` los publica; no cambian el veredicto.
+    advertencias: list[str] = field(default_factory=list)
 
 
 def _assert_timestamping_eku(cert: x509.Certificate) -> None:
@@ -448,8 +456,10 @@ def verify_timestamp_token(
       7. (RFC 5035, AREA-04-08) El atributo firmado ``signing-certificate-v2``
          (o ``signing-certificate``, v1) nombra el certificado de la TSA con que
          se verificó. Si está, su hash TIENE que coincidir. Si falta, se rechaza
-         solo con ``settings.tsa_esscertid_obligatorio`` (ver su comentario: los
-         tokens de la TSA local anteriores a este cambio no lo llevan).
+         solo si el ``genTime`` es posterior a ``settings.tsa_esscertid_corte``; antes
+         del corte el sello vale y el resultado lleva la advertencia
+         ``tsa_sin_esscertid_anterior_al_corte`` (los tokens de la TSA local
+         anteriores a AREA-04-08 no lo llevan).
 
     NO valida cadena de confianza contra una CA raíz (misma postura que
     ``verify_xades``: sin CA acreditada ONAC, no hay cadena que validar) —
@@ -579,9 +589,15 @@ def _verify_timestamp_token_inner(
     # (7) ESSCertID — liga el token al certificado de la TSA concreto. Va dentro
     # de los `signedAttrs`, que la firma CMS de más abajo cubre: quitarlo o
     # cambiarlo rompe esa firma.
+    advertencias: list[str] = []
     if ess_cert_id is None:
-        if settings.tsa_esscertid_obligatorio:
+        # Corte por `genTime` (no por la fecha de verificar): lo que importa es
+        # cuándo selló la TSA. Desde el corte, un token sin ESSCertID no es de
+        # un corpus anterior, es un token defectuoso; antes, es historia que
+        # sigue valiendo y que el verificador declara en lugar de callar.
+        if gen_time >= settings.tsa_esscertid_corte:
             return TimestampVerifyOutcome(False, motivo="tsa_sin_esscertid")
+        advertencias.append(ADVERTENCIA_SIN_ESSCERTID)
     else:
         algo, esperado = ess_cert_id
         if algo not in ("sha256", "sha1"):
@@ -612,4 +628,4 @@ def _verify_timestamp_token_inner(
     except Exception as exc:  # noqa: BLE001 — cualquier fallo criptográfico == inválido
         return TimestampVerifyOutcome(False, motivo=f"firma_cms_invalida: {exc}")
 
-    return TimestampVerifyOutcome(True, gen_time=gen_time, motivo=None)
+    return TimestampVerifyOutcome(True, gen_time=gen_time, motivo=None, advertencias=advertencias)

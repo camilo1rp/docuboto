@@ -1089,3 +1089,88 @@ def test_la_identidad_del_gateway_gana_aunque_la_allowlist_se_ensanche(monkeypat
     headers = proxy._build_upstream_headers(peticion, {"x-tenant-slug": "icetex"})
 
     assert headers["x-tenant-slug"] == "icetex"
+
+
+@pytest.mark.asyncio
+async def test_signature_internal_no_se_enruta_al_exterior():
+    from types import SimpleNamespace
+
+    from app.routers.proxy import _route_to_upstream
+
+    state = SimpleNamespace(signature_service_url="http://sig:8006")
+    for path in (
+        "/api/v1/signature/internal/sign-indice",
+        "/api/v1/signature/internal",
+    ):
+        assert _route_to_upstream(path, state) is None, path
+
+
+def _estado_ruteo():
+    from types import SimpleNamespace
+
+    otros = {
+        f"{n}_service_url": f"http://{n}:1"
+        for n in ("auth", "tenant", "workflow", "notification", "mcp", "knowledge")
+    }
+    return SimpleNamespace(
+        signature_service_url="http://sig:8006",
+        document_service_url="http://doc:8002",
+        archive_service_url="http://arc:8003",
+        storage_service_url="http://sto:8004",
+        **otros,
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/v1/signature/x/../internal/sign-indice",
+        "/api/v1/signature/x/%2e%2e/internal/sign-indice",
+        "/api/v1/signature/x/%252e%252e/internal/sign-indice",
+        "/api/v1/signature//internal/sign-indice",
+        "/api/v1/signature/INTERNAL/sign-indice",
+        "/api/v1/signature/Internal",
+        "/api/v1/internal/documentos/anexos",
+        "/api/v1/INTERNAL/expedientes/x",
+        "/api/v1/preservacion/eventos-internal",
+        "/api/v1/preservacion/eventos-INTERNAL",
+        "/api/v1/documents/./x",
+        "/api/v1/public/../documents/x",
+        "/api/v1/documents/a%2f..%2finternal",
+        "/api/v1/documents/a\\..\\b",
+    ],
+)
+def test_ruta_interna_o_con_traversal_no_se_enruta(path):
+    from app.routers.proxy import _route_to_upstream
+
+    assert _route_to_upstream(path, _estado_ruteo()) is None, path
+
+
+@pytest.mark.parametrize(
+    ("path", "esperado"),
+    [
+        ("/api/v1/documents/", "http://doc:8002"),
+        ("/api/v1/documents/abc/anexos", "http://doc:8002"),
+        ("/api/v1/signature/sign", "http://sig:8006"),
+        ("/api/v1/preservacion/eventos", "http://sto:8004"),
+        ("/api/v1/preservacion/eventos/x", "http://sto:8004"),
+        ("/api/v1/terceros", "http://doc:8002"),
+        ("/api/v1/fuid.xml", "http://arc:8003"),
+        ("/api/v1/export", "http://doc:8002"),
+    ],
+)
+def test_rutas_legitimas_siguen_enrutando(path, esperado):
+    from app.routers.proxy import _route_to_upstream
+
+    assert _route_to_upstream(path, _estado_ruteo()) == esperado
+
+
+def test_prefijo_sin_barra_exige_limite_de_segmento():
+    from app.routers.proxy import _route_to_upstream
+
+    for path in (
+        "/api/v1/preservacion/eventosX",
+        "/api/v1/terceros-x",
+        "/api/v1/exportar",
+    ):
+        assert _route_to_upstream(path, _estado_ruteo()) is None, path

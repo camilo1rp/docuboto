@@ -16,12 +16,7 @@
  * recibe nada o si aún está cargando.
  */
 
-import {
-  API_V1,
-  POLITICA_URL,
-  POLITICA_VERSION,
-  PUBLIC_TENANT,
-} from "$lib/utils/config.server.js";
+import { API_V1, POLITICA_URL, POLITICA_VERSION, PUBLIC_TENANT } from "$lib/utils/config.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ fetch }) {

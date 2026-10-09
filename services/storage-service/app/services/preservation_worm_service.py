@@ -196,7 +196,7 @@ class PreservationWormService:
         # `ux_preservacion_worm_objeto_expediente_indice` / `_expediente_acta`
         # (migraciones 009/010).
         existing = await self._worm_repo.get_by_expediente_and_tipo(
-            payload.expediente_id, payload.tipo
+            payload.expediente_id, payload.tipo, payload.file_id
         )
         if existing is not None:
             # Defensa en profundidad (AREA-08-16): la idempotencia es por
@@ -449,7 +449,7 @@ class PreservationWormService:
         """Cuerpo de :meth:`renovar_retencion` bajo el advisory lock de
         sesión por-(expediente, tipo). `nueva` ya viene validada."""
         existing = await self._worm_repo.get_by_expediente_and_tipo(
-            payload.expediente_id, payload.tipo
+            payload.expediente_id, payload.tipo, payload.file_id
         )
         if existing is None:
             raise WormObjectNotFoundError(
@@ -531,7 +531,7 @@ class PreservationWormService:
                     payload.tipo,
                 )
                 refreshed = await self._worm_repo.get_by_expediente_and_tipo(
-                    payload.expediente_id, payload.tipo
+                    payload.expediente_id, payload.tipo, payload.file_id
                 )
                 assert refreshed is not None
                 return _worm_row_to_renovacion_response(refreshed, renovado=False)

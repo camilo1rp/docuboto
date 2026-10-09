@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # document-service rechace la llamada con 401 (fail-closed) — NUNCA
     # commitear el valor real.
     document_internal_token: str = ""
+    # D-02 ENTRANTE: secreto con el que archive-service valida `X-Internal-Token`
+    # en `/api/v1/internal/*` (signature-service resuelve la huella del índice
+    # vigente, AREA-04-09). Mismo valor que `signature-service.ARCHIVE_INTERNAL_TOKEN`.
+    # Vacío (default) = esos endpoints responden 401 (fail-closed).
+    internal_service_token: str = ""
     service_port: int = 8004
     log_level: str = "info"
 
@@ -91,6 +96,9 @@ class Settings(BaseSettings):
     indice_reconciliation_interval_seconds: int = 300
     # Índices 'pendiente_firma' procesados como máximo por tenant y barrida.
     indice_reconciliation_batch_size: int = 50
+    # Gracia antes de que el barrido trate un sobre de revelación sin referencia como huérfano
+    # (cubre la ventana entre subirlo y confirmar la fila).
+    sobre_huerfano_gracia_horas: int = 1
     # Reintentos del job antes de marcar `reconcile_agotado=TRUE` (permanece
     # 'pendiente_firma', requiere intervención manual — POST /indice/firmar).
     indice_reconciliation_max_intentos: int = 8

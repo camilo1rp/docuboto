@@ -278,7 +278,8 @@
 
     const archivoAcuse = fAcuseArchivos?.[0] ?? null;
     if (fEstado === "entregado" && !archivoAcuse) {
-      fEstadoError = "Adjunte el acuse de recibo: sin la constancia de entrega no se registra «entregado».";
+      fEstadoError =
+        "Adjunte el acuse de recibo: sin la constancia de entrega no se registra «entregado».";
       return;
     }
 
@@ -300,7 +301,9 @@
         body: JSON.stringify({
           estado: fEstado,
           descripcion: fEstadoDescripcion.trim() || null,
-          ...(acuseSubido ? { acuse_file_id: acuseSubido.id, acuse_sha256: acuseSubido.sha256 } : {}),
+          ...(acuseSubido
+            ? { acuse_file_id: acuseSubido.id, acuse_sha256: acuseSubido.sha256 }
+            : {}),
         }),
       });
       const responseData = await res.json();

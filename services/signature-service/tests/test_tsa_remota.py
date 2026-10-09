@@ -72,7 +72,8 @@ def _par_tsa(*, eku_critical: bool = True) -> tuple[bytes, bytes]:
 
 
 def _token_der(
-    *, imprint: bytes, nonce: int | None, cert_pem: bytes, key_pem: bytes, con_cert: bool = True
+    *, imprint: bytes, nonce: int | None, cert_pem: bytes, key_pem: bytes, con_cert: bool = True,
+    con_esscertid: bool = True,
 ) -> bytes:
     """Un `TimeStampToken` CMS real, firmado, como el que devuelve una TSA."""
     cert = x509.load_pem_x509_certificate(cert_pem)
@@ -97,27 +98,57 @@ def _token_der(
         campos["nonce"] = nonce
     tst_info_der = tsp.TSTInfo(campos).dump()
 
-    signed_attrs = cms.CMSAttributes(
-        [
+    asn1_cert_ess = asn1_x509.Certificate.load(cert.public_bytes(serialization.Encoding.DER))
+    atributos = [
+        cms.CMSAttribute(
+            {
+                "type": "content_type",
+                "values": cms.SetOfContentType([cms.ContentType("tst_info")]),
+            }
+        ),
+        cms.CMSAttribute(
+            {
+                "type": "message_digest",
+                "values": cms.SetOfOctetString(
+                    [core.OctetString(hashlib.sha256(tst_info_der).digest())]
+                ),
+            }
+        ),
+        cms.CMSAttribute(
+            {"type": "signing_time", "values": cms.SetOfTime([cms.Time({"utc_time": gen_time})])}
+        ),
+    ]
+    if con_esscertid:
+        # Una TSA conforme (RFC 3161 §2.4.2 / RFC 5035) lo lleva SIEMPRE: desde la
+        # fecha de corte `tsa_esscertid_corte` un token sin él se rechaza.
+        atributos.append(
             cms.CMSAttribute(
                 {
-                    "type": "content_type",
-                    "values": cms.SetOfContentType([cms.ContentType("tst_info")]),
-                }
-            ),
-            cms.CMSAttribute(
-                {
-                    "type": "message_digest",
-                    "values": cms.SetOfOctetString(
-                        [core.OctetString(hashlib.sha256(tst_info_der).digest())]
+                    "type": "signing_certificate_v2",
+                    "values": tsp.SetOfSigningCertificatesV2(
+                        [
+                            tsp.SigningCertificateV2(
+                                {
+                                    "certs": [
+                                        tsp.ESSCertIDv2(
+                                            {
+                                                "hash_algorithm": algos.DigestAlgorithm(
+                                                    {"algorithm": "sha256"}
+                                                ),
+                                                "cert_hash": hashlib.sha256(
+                                                    asn1_cert_ess.dump()
+                                                ).digest(),
+                                            }
+                                        )
+                                    ]
+                                }
+                            )
+                        ]
                     ),
                 }
-            ),
-            cms.CMSAttribute(
-                {"type": "signing_time", "values": cms.SetOfTime([cms.Time({"utc_time": gen_time})])}
-            ),
-        ]
-    )
+            )
+        )
+    signed_attrs = cms.CMSAttributes(atributos)
     firma = key.sign(signed_attrs.dump(), padding.PKCS1v15(), hashes.SHA256())
 
     asn1_cert = asn1_x509.Certificate.load(cert.public_bytes(serialization.Encoding.DER))
@@ -387,3 +418,27 @@ def test_una_tsa_remota_sin_declarar_no_se_acredita(monkeypatch) -> None:
     """Por defecto no se acredita nada: sub-declarar es la dirección segura."""
     monkeypatch.setattr(settings, "tsa_acreditada", False)
     assert sello_acreditado() is False
+
+
+def test_un_sello_remoto_sin_esscertid_se_rechaza_desde_el_corte(monkeypatch) -> None:
+    """AREA-04-09: el corte por `genTime` también protege el cliente remoto.
+
+    Una TSA que hoy emite sellos sin `signing-certificate-v2` no es conforme; el
+    token lo rechaza el propio cliente antes de embeberlo, no `/verify` años después.
+    """
+    cert_pem, key_pem = _par_tsa()
+
+    def responder(peticion_der: bytes) -> httpx.Response:
+        pedido = tsp.TimeStampReq.load(peticion_der)
+        token = _token_der(
+            imprint=pedido["message_imprint"]["hashed_message"].native,
+            nonce=pedido["nonce"].native,
+            cert_pem=cert_pem,
+            key_pem=key_pem,
+            con_esscertid=False,
+        )
+        return httpx.Response(200, content=_respuesta(token))
+
+    _doblar_post(monkeypatch, responder)
+    with pytest.raises(tsa_module.TsaUnavailableError, match="tsa_sin_esscertid"):
+        tsa_module.build_timestamp_token(SELLADO)

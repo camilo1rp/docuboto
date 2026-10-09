@@ -47,7 +47,8 @@ from __future__ import annotations
 #
 # Las tres firmas PERSONALES del acta de transferencia (AREA-07-10, migración 018) son
 # del mismo género que el sello institucional que acompañan: evidencia del acto, no
-# contenido.
+# contenido. Lo mismo las constancias de «firma inobtenible» (migración 019): prueban por qué
+# una parte no firmó, sobreviven al contenido y no postergan su disposición.
 CONTROL_INSTRUMENT_TIPOS: frozenset[str] = frozenset(
     {
         "acta_transferencia",
@@ -55,7 +56,44 @@ CONTROL_INSTRUMENT_TIPOS: frozenset[str] = frozenset(
         "acta_firma_elabora",
         "acta_firma_entrega",
         "acta_firma_recibe",
+        # Constancia de «firma inobtenible» del acta (AREA-07-10, migración 019): el sello
+        # institucional de cada una y la firma personal del declarante, un tipo por rol.
+        "acta_firma_excepcion_elabora",
+        "acta_firma_excepcion_entrega",
+        "acta_firma_excepcion_recibe",
+        "acta_firma_excepcion_personal_elabora",
+        "acta_firma_excepcion_personal_entrega",
+        "acta_firma_excepcion_personal_recibe",
+        # Revocación de la constancia (FIRMA-2, migración 020): prueba de que la excepción
+        # se dejó sin efecto, sellada por la entidad y firmada por quien revoca.
+        "acta_firma_revocacion_elabora",
+        "acta_firma_revocacion_entrega",
+        "acta_firma_revocacion_recibe",
+        "acta_firma_revocacion_personal_elabora",
+        "acta_firma_revocacion_personal_entrega",
+        "acta_firma_revocacion_personal_recibe",
+        # Sobre de revelación del fundamento (FIRMA-2 ronda 3, migración 021): el texto del
+        # fundamento y su sal, sellados por la entidad; uno por constancia y uno por revocación.
+        # Instrumento de control: prueba del acto, no contenido del expediente.
+        "acta_firma_excepcion_sobre_elabora",
+        "acta_firma_excepcion_sobre_entrega",
+        "acta_firma_excepcion_sobre_recibe",
+        "acta_firma_revocacion_sobre_elabora",
+        "acta_firma_revocacion_sobre_entrega",
+        "acta_firma_revocacion_sobre_recibe",
     }
+)
+
+# Tipos con N artefactos por (expediente, tipo) (FIRMA-2, ADR-030 addendum): la constancia de
+# «firma inobtenible» se puede re-declarar tras revocarla, así que un mismo rol acumula una
+# cadena de constancias y revocaciones. Su identidad en el almacén es (expediente, tipo, file_id):
+# buscar solo por (expediente, tipo) y quedarse con la más reciente haría «idempotente» a la
+# segunda constancia (la dejaría SIN Object-Lock) y la renovación extendería solo la última.
+MULTI_ARTEFACTO_TIPOS: frozenset[str] = frozenset(
+    f"acta_firma_{acto}_{variante}{rol}"
+    for acto in ("excepcion", "revocacion")
+    for variante in ("", "personal_", "sobre_")
+    for rol in ("elabora", "entrega", "recibe")
 )
 
 # CONTENIDO documental del expediente: bloquea la purga mientras esté bajo

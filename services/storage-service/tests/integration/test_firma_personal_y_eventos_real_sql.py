@@ -27,13 +27,15 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
+from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS, MULTI_ARTEFACTO_TIPOS
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
 
 pytestmark = pytest.mark.integration
 
 _FIRMAS = ("acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe")
+# Constancia de «firma inobtenible» (migración 019): sello y firma personal del declarante.
+_CONSTANCIAS = tuple(sorted(MULTI_ARTEFACTO_TIPOS))
 _FUTURE = datetime.now(tz=UTC) + timedelta(days=10)
 
 
@@ -69,6 +71,29 @@ async def test_las_tres_firmas_personales_caben_en_el_mismo_expediente_pero_no_s
     # y un tipo fuera de la taxonomía lo rechaza el CHECK
     with pytest.raises(asyncpg.CheckViolationError):
         await _insert(repo, exp, "acta_firma_inventada")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tipo", sorted(MULTI_ARTEFACTO_TIPOS))
+async def test_multi_artefacto_admite_cadena_y_se_busca_por_file_id(
+    tenant_ctx: tuple[str, asyncpg.Connection], tipo: str
+) -> None:
+    """FIRMA-2 (migración 020): un rol acumula N constancias/revocaciones por expediente; el
+    mismo file_id no se repite y la búsqueda distingue cada objeto (no devuelve «la última»)."""
+    slug, conn = tenant_ctx
+    repo = PreservacionWormRepository(conn, slug)
+    exp = f"EXP-{uuid.uuid4().hex[:8]}"
+    filas = [await _insert(repo, exp, tipo) for _ in range(3)]  # cadena de 3 (ordinal 3)
+    for fila in filas:
+        hallada = await repo.get_by_expediente_and_tipo(exp, tipo, fila["file_id"])
+        assert hallada is not None and hallada["id"] == fila["id"]
+    assert await repo.get_by_expediente_and_tipo(exp, tipo, uuid.uuid4()) is None
+    with pytest.raises(asyncpg.UniqueViolationError):  # el MISMO objeto no se registra dos veces
+        await repo.insert(
+            expediente_id=exp, tipo=tipo, bucket="b", object_key="k", version_id=None,
+            sha256="b" * 64, retain_until=_FUTURE, retention_mode="COMPLIANCE",
+            legal_hold=False, file_id=filas[0]["file_id"],
+        )
 
 
 @pytest.mark.asyncio
@@ -130,3 +155,32 @@ async def test_evento_por_dedup_y_lista_por_varios_object_ref(
     refs = {r["object_ref"] for r in await repo.list_eventos([exp, file_id])}
     assert refs == {exp, file_id}  # los de OTRO objeto no entran
     assert {r["object_ref"] for r in await repo.list_eventos(exp)} == {exp}  # un str sigue valiendo
+
+
+@pytest.mark.asyncio
+async def test_las_constancias_de_firma_inobtenible_caben_en_cadena_y_no_posponen_la_disposicion(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> None:
+    """Migraciones 019/020: el CHECK admite los doce tipos de constancia y revocación,
+    instrumentos de control (no bloquean la purga) y cubiertos por el legal hold. Ya no son
+    singleton por expediente: la unicidad es por (expediente, tipo, file_id)."""
+    slug, conn = tenant_ctx
+    repo = PreservacionWormRepository(conn, slug)
+    exp = f"EXP-{uuid.uuid4().hex[:8]}"
+    for tipo in _CONSTANCIAS:
+        assert tipo in CONTROL_INSTRUMENT_TIPOS
+        await _insert(repo, exp, tipo)
+    for tipo in _CONSTANCIAS:  # una 2.ª constancia (otro file_id) del mismo rol cabe
+        await _insert(repo, exp, tipo)
+    assert (
+        await repo.active_lock_for_expediente(
+            exp, exclude_retention_tipos=tuple(CONTROL_INSTRUMENT_TIPOS)
+        )
+        is None
+    )
+    exp_hold = f"EXP-{uuid.uuid4().hex[:8]}"
+    await _insert(repo, exp_hold, "acta_firma_excepcion_recibe", legal_hold=True)
+    lock = await repo.active_lock_for_expediente(
+        exp_hold, exclude_retention_tipos=tuple(CONTROL_INSTRUMENT_TIPOS)
+    )
+    assert lock is not None and lock["tipo"] == "acta_firma_excepcion_recibe"

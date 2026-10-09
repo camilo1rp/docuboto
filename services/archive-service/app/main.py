@@ -57,6 +57,7 @@ from app.routers.expedientes import router as expedientes_router
 from app.routers.fisico import router as fisico_router
 from app.routers.health import router as health_router
 from app.routers.indice import router as indice_router
+from app.routers.internal_firma import router as internal_firma_router
 from app.routers.metadata import router as metadata_router
 from app.routers.oai import router as oai_router
 from app.routers.public_eliminacion import router as public_eliminacion_router
@@ -276,6 +277,7 @@ app.include_router(eliminacion_router)
 app.include_router(public_eliminacion_router)
 app.include_router(expedientes_router)
 app.include_router(indice_router)
+app.include_router(internal_firma_router)
 app.include_router(fisico_router)
 app.include_router(transferencias_router)
 app.include_router(metadata_router)

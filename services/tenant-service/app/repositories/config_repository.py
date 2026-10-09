@@ -12,6 +12,7 @@ fijado al schema del tenant por get_tenant_conn."""
 
 import json
 import uuid
+from collections.abc import Callable
 from datetime import date
 from typing import Any
 
@@ -91,18 +92,28 @@ class ConfigRepository:
         return json.loads(val) if val is not None else None
 
     async def upsert_param(
-        self, key: str, value: Any, actor_id: uuid.UUID | None
+        self,
+        key: str,
+        value: Any,
+        actor_id: uuid.UUID | None,
+        guard: Callable[[Any], None] | None = None,
     ) -> tuple[bool, Any]:
         """Inserta/actualiza el parámetro y audita el cambio en la misma transacción.
 
         Devuelve ``(existía, valor_anterior)`` para que el llamante asiente el
         «antes» en el Canal A. La lectura previa va ``FOR UPDATE``: dos cambios
         concurrentes no pueden asentar el mismo «antes».
+
+        ``guard(antes)`` se evalúa con el valor ya BLOQUEADO y antes de escribir:
+        decidir sobre un «antes» leído fuera del bloqueo dejaría a dos cambios
+        concurrentes juzgar contra el mismo valor. Si lanza, nada se escribe.
         """
         async with self._conn.transaction():
             old = await self._conn.fetchval(
                 "SELECT value FROM sgd_param_admin WHERE key = $1 FOR UPDATE", key
             )
+            if guard is not None:
+                guard(json.loads(old) if isinstance(old, (str, bytes)) else old)
             await self._conn.execute(
                 """
                 INSERT INTO sgd_param_admin (key, value, updated_by)

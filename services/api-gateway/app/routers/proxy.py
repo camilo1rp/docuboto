@@ -7,7 +7,9 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+import posixpath
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 from fastapi import APIRouter, Request, Response
@@ -18,8 +20,48 @@ from app.core.proxy import proxy_request
 router = APIRouter()
 
 
+def _normalize_path(path: str) -> str | None:
+    """Ruta canónica para decidir Y para reenviar, o ``None`` si es sospechosa.
+
+    Starlette decodifica la ruta una vez; ``httpx`` normaliza ``..`` al armar la
+    petición. Si el gateway decidiera sobre la ruta cruda, ``x/../internal/...``
+    pasaba el filtro y el upstream lo resolvía a la ruta interna. Aquí se decodifica
+    hasta estabilizar (``%252e`` -> ``%2e`` -> ``.``), se rechaza todo segmento
+    ``.``/``..``, barra doble, ``\\`` o carácter de control, y el resultado (en
+    minúsculas solo para comparar; se reenvía la forma original) es lo que se enruta.
+    """
+    decoded = path
+    for _ in range(8):
+        nxt = unquote(decoded)
+        if nxt == decoded:
+            break
+        decoded = nxt
+    else:
+        return None  # decodificación anidada sin fin: ataque, no ruta
+    if "\\" in decoded or any(ord(c) < 32 or ord(c) == 127 for c in decoded):
+        return None
+    if not decoded.startswith("/"):
+        return None
+    segments = decoded.split("/")[1:]
+    # El último segmento puede ir vacío (barra final legítima); los demás no.
+    if any(seg == "" for seg in segments[:-1]) or any(seg in (".", "..") for seg in segments):
+        return None
+    if posixpath.normpath(decoded.rstrip("/") or "/") != (decoded.rstrip("/") or "/"):
+        return None
+    for seg in segments:
+        low = seg.lower()
+        # Actos de SISTEMA (X-Internal-Token, D-02) de cualquier servicio: document
+        # `/internal/documentos`, archive `/internal/expedientes`, signature
+        # `/internal/*`, storage `*-internal`. Nunca se enrutan desde el exterior.
+        if low == "internal" or low.endswith("-internal"):
+            return None
+    return path
+
+
 def _route_to_upstream(path: str, app_state: Any) -> str | None:
     """Map a request path to its upstream service base URL."""
+    if _normalize_path(path) is None:
+        return None
     # Cada servicio sirve bajo prefijos de DOMINIO (no solo /<service>/): se mapean
     # todos para que sus endpoints sean alcanzables vía gateway.
     routing: list[tuple[str, str]] = [
@@ -99,6 +141,7 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/unidades/", app_state.archive_service_url),
         ("/api/v1/prestamos/", app_state.archive_service_url),
         ("/api/v1/fuid", app_state.archive_service_url),
+        ("/api/v1/fuid.xml", app_state.archive_service_url),
         ("/api/v1/transferencias/", app_state.archive_service_url),
         # storage-service — SOLO /upload se expone (el frontend sube directo).
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): los endpoints
@@ -168,17 +211,24 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # sigue sin enrutarse.
         ("/api/v1/knowledge/admin/", app_state.knowledge_service_url),
     ]
-    # Also match exact prefix without trailing slash
+    # Límite de segmento: un prefijo sin barra final casa solo la ruta exacta o
+    # sus subrutas (`/preservacion/eventos` NO casa `/preservacion/eventos-x`).
     for prefix, base_url in routing:
-        if path.startswith(prefix) or path == prefix.rstrip("/"):
+        if prefix.endswith("/"):
+            if path.startswith(prefix) or path == prefix.rstrip("/"):
+                return base_url
+        elif path == prefix or path.startswith(prefix + "/"):
             return base_url
     return None
 
 
 async def _handle_proxy(request: Request, path: str) -> Response:
-    upstream_base = _route_to_upstream("/" + path, request.app.state)
+    ruta = _normalize_path("/" + path)
+    upstream_base = (
+        _route_to_upstream(ruta, request.app.state) if ruta is not None else None
+    )
 
-    if upstream_base is None:
+    if upstream_base is None or ruta is None:
         return JSONResponse(
             status_code=404,
             content={
@@ -188,7 +238,7 @@ async def _handle_proxy(request: Request, path: str) -> Response:
             },
         )
 
-    upstream_url = f"{upstream_base.rstrip('/')}/{path}"
+    upstream_url = f"{upstream_base.rstrip('/')}{ruta}"
 
     extra_headers: dict[str, str] = {}
     auth_headers = getattr(request.state, "auth_headers", None)

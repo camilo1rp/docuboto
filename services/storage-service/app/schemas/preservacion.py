@@ -18,6 +18,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.preservacion_tipos import MULTI_ARTEFACTO_TIPOS
+
 _TIPO = Literal[
     "INGESTA", "FIJACION", "MIGRACION", "VALIDACION_PDFA", "WORM", "REPLICA", "RENOVACION"
 ]
@@ -489,6 +491,25 @@ class ProtegerIndiceRequest(RetentionMixin):
         "acta_firma_elabora",
         "acta_firma_entrega",
         "acta_firma_recibe",
+        # Constancias de «firma inobtenible» (AREA-07-10, mig. 019): sello y firma personal.
+        "acta_firma_excepcion_elabora",
+        "acta_firma_excepcion_entrega",
+        "acta_firma_excepcion_recibe",
+        "acta_firma_excepcion_personal_elabora",
+        "acta_firma_excepcion_personal_entrega",
+        "acta_firma_excepcion_personal_recibe",
+        "acta_firma_revocacion_elabora",
+        "acta_firma_revocacion_entrega",
+        "acta_firma_revocacion_recibe",
+        "acta_firma_revocacion_personal_elabora",
+        "acta_firma_revocacion_personal_entrega",
+        "acta_firma_revocacion_personal_recibe",
+        "acta_firma_excepcion_sobre_elabora",
+        "acta_firma_excepcion_sobre_entrega",
+        "acta_firma_excepcion_sobre_recibe",
+        "acta_firma_revocacion_sobre_elabora",
+        "acta_firma_revocacion_sobre_entrega",
+        "acta_firma_revocacion_sobre_recibe",
     ] = "indice"
     # De QUÉ es `expediente_id` (migración 014). El acta de eliminación
     # pertenece a un LOTE —cubre N expedientes que además van a dejar de
@@ -567,10 +588,54 @@ class RenovarRetencionRequest(RetentionMixin):
     `preservacion_worm_objeto` por expediente (re-empaquetado legítimo,
     migración 012) -- `get_by_expediente_and_tipo` ya resuelve la MÁS
     RECIENTE (`ORDER BY created_at DESC LIMIT 1`), así que renovar siempre
-    extiende el AIP vigente, sin cambio de comportamiento en el repositorio."""
+    extiende el AIP vigente, sin cambio de comportamiento en el repositorio.
+
+    `tipo='acta_firma_{elabora,entrega,recibe}'` (E10 debt, AREA-07-10): el XML de cada firma
+    PERSONAL del acta (migración 018, un tipo por rol, SINGLETON por (expediente, tipo)) se
+    renueva igual que el índice; sin cambio en el servicio ni en el repositorio -- la fila se
+    identifica por `(expediente_id, tipo)` y la extensión sigue siendo monotónica."""
 
     expediente_id: str = Field(..., min_length=1, max_length=255)
-    tipo: Literal["indice", "acta_transferencia", "aip"]
+    tipo: Literal[
+        "indice",
+        "acta_transferencia",
+        "aip",
+        "acta_firma_elabora",
+        "acta_firma_entrega",
+        "acta_firma_recibe",
+        "acta_firma_excepcion_elabora",
+        "acta_firma_excepcion_entrega",
+        "acta_firma_excepcion_recibe",
+        "acta_firma_excepcion_personal_elabora",
+        "acta_firma_excepcion_personal_entrega",
+        "acta_firma_excepcion_personal_recibe",
+        "acta_firma_revocacion_elabora",
+        "acta_firma_revocacion_entrega",
+        "acta_firma_revocacion_recibe",
+        "acta_firma_revocacion_personal_elabora",
+        "acta_firma_revocacion_personal_entrega",
+        "acta_firma_revocacion_personal_recibe",
+        "acta_firma_excepcion_sobre_elabora",
+        "acta_firma_excepcion_sobre_entrega",
+        "acta_firma_excepcion_sobre_recibe",
+        "acta_firma_revocacion_sobre_elabora",
+        "acta_firma_revocacion_sobre_entrega",
+        "acta_firma_revocacion_sobre_recibe",
+    ]
+    # FIRMA-2: los tipos multi-artefacto (constancias de firma inobtenible y sus revocaciones)
+    # acumulan N objetos por (expediente, tipo): la fila se identifica por `file_id` y es
+    # OBLIGATORIO. Sin él, `ORDER BY created_at DESC LIMIT 1` extendería solo la última.
+    # Para los demás tipos se ignora (siguen identificándose por (expediente, tipo)).
+    file_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _file_id_obligatorio_si_multi_artefacto(self) -> RenovarRetencionRequest:
+        if self.tipo in MULTI_ARTEFACTO_TIPOS and self.file_id is None:
+            raise ValueError(
+                f"`file_id` es obligatorio para tipo={self.tipo}: hay N artefactos por "
+                "(expediente, tipo)."
+            )
+        return self
 
     @field_validator("expediente_id")
     @classmethod

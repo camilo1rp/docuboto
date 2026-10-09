@@ -30,6 +30,8 @@ from datetime import datetime
 import asyncpg
 from orpycamcp_common.tenant import tenant_schema
 
+from app.core.preservacion_tipos import MULTI_ARTEFACTO_TIPOS
+
 _COLS = (
     "id, expediente_id, tipo, bucket, object_key, version_id, sha256, "
     "retain_until, retention_mode, legal_hold, created_at, file_id, "
@@ -96,7 +98,7 @@ class PreservacionWormRepository:
         return row
 
     async def get_by_expediente_and_tipo(
-        self, expediente_id: str, tipo: str
+        self, expediente_id: str, tipo: str, file_id: uuid.UUID | None = None
     ) -> asyncpg.Record | None:
         """Cualquier fila (activa o ya expirada) registrada para
         ``(expediente_id, tipo)`` — respaldo en código del índice único parcial
@@ -106,8 +108,25 @@ class PreservacionWormRepository:
         expediente (reintento tras timeout, o carrera intento-síncrono vs.
         barrida de reconciliación) sea idempotente (200, sin re-subir) en vez
         de fallar con `UniqueViolationError` a mitad de un `put_object`
-        COMPLIANCE ya irreversible."""
+        COMPLIANCE ya irreversible.
+
+        Tipos multi-artefacto (FIRMA-2, `MULTI_ARTEFACTO_TIPOS`): hay N objetos por
+        ``(expediente_id, tipo)`` —una cadena de constancias y revocaciones—, así que la
+        identidad es ``(expediente_id, tipo, file_id)`` y ``file_id`` es OBLIGATORIO. Buscar
+        solo por tipo y quedarse con la más reciente haría «idempotente» a la segunda
+        constancia (sin Object-Lock) y la renovación extendería únicamente la última."""
         await self._sp()
+        if tipo in MULTI_ARTEFACTO_TIPOS:
+            if file_id is None:
+                raise ValueError(f"tipo={tipo} es multi-artefacto: `file_id` es obligatorio")
+            return await self._conn.fetchrow(
+                f"SELECT {_COLS} FROM preservacion_worm_objeto "
+                "WHERE expediente_id = $1 AND tipo = $2 AND file_id = $3 "
+                "ORDER BY created_at DESC LIMIT 1",
+                expediente_id,
+                tipo,
+                file_id,
+            )
         return await self._conn.fetchrow(
             f"SELECT {_COLS} FROM preservacion_worm_objeto "
             "WHERE expediente_id = $1 AND tipo = $2 "

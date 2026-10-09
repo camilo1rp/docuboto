@@ -104,6 +104,92 @@ _ACTA_FIRMA_PERSONAL_COLS = (
     "xades_level, ca_fingerprint, acreditado, creada_en"
 )
 
+_ACTA_FIRMA_EXCEPCION_COLS = (
+    "id, transferencia_id, rol, parte_id, motivo, fundamento, referencia_documental, "
+    "declarada_por, declarada_en, referencia_radicado_id, referencia_anexo_id, "
+    "constancia_sha256, firma_id, minio_key_firmado, xades_level, firma_personal_id, "
+    "minio_key_firmado_personal, xades_level_personal, firma_personal_requerida, "
+    # Migración 062 (FIRMA-2): cadena e instantánea de identidad/soporte. Migración 063: el
+    # fundamento se huella con un compromiso con sal por registro (las columnas `fundamento_hmac*`
+    # de la 062 quedan como dato legado: no se proyectan).
+    "ordinal, sustituye_a, constancia_version, referencia_radicado_numero, "
+    "referencia_anexo_sha256, declarante_nombre, declarante_cargo, declarante_fuente, "
+    "parte_nombre, parte_cargo, parte_fuente, fundamento_sal, fundamento_compromiso, "
+    "fundamento_compromiso_algoritmo, "
+    # Migración 064: sobre de revelación del fundamento (objeto sellado y bajo Object-Lock).
+    "sobre_firma_id, sobre_minio_key, sobre_sha256, sobre_xades_level"
+)
+
+# Constancia + revocación (hecho posterior, fila aparte) + estado WORM de los artefactos de ambas
+# (migraciones 061/062). `worm_*_protegido` es NULL cuando el artefacto no existe (constancia
+# legada o sin firma personal). `constancia_xml`/`revocacion_xml` NO se proyectan: son pesados y
+# solo los necesitan el WORM y la verificación del fundamento.
+_ACTA_FIRMA_EXCEPCION_SELECT = (
+    "SELECT "
+    + ", ".join(f"e.{c.strip()}" for c in _ACTA_FIRMA_EXCEPCION_COLS.split(","))
+    + """,
+       r.id AS revocacion_id, r.revocada_por, r.revocada_en, r.fundamento AS revocacion_fundamento,
+       r.revocacion_version, r.revocacion_sha256,
+       r.firma_id AS revocacion_firma_id,
+       r.minio_key_firmado AS revocacion_minio_key_firmado,
+       r.xades_level AS revocacion_xades_level,
+       r.firma_personal_id AS revocacion_firma_personal_id,
+       r.minio_key_firmado_personal AS revocacion_minio_key_firmado_personal,
+       r.xades_level_personal AS revocacion_xades_level_personal,
+       r.revocante_nombre, r.revocante_cargo, r.revocante_fuente,
+       r.fundamento_sal AS revocacion_fundamento_sal,
+       r.fundamento_compromiso AS revocacion_fundamento_compromiso,
+       r.fundamento_compromiso_algoritmo AS revocacion_fundamento_compromiso_algoritmo,
+       r.causa AS revocacion_causa,
+       r.sobre_firma_id AS revocacion_sobre_firma_id,
+       r.sobre_minio_key AS revocacion_sobre_minio_key,
+       r.sobre_sha256 AS revocacion_sobre_sha256,
+       r.sobre_xades_level AS revocacion_sobre_xades_level,
+       ws.worm_retain_until AS worm_retain_until,
+       rws.worm_retain_until AS revocacion_worm_retain_until,
+       CASE WHEN ws.excepcion_id IS NULL THEN NULL
+            ELSE ws.worm_protegido_at IS NOT NULL END AS worm_protegido,
+       CASE WHEN wp.excepcion_id IS NULL THEN NULL
+            ELSE wp.worm_protegido_at IS NOT NULL END AS worm_personal_protegido,
+       CASE WHEN rws.revocacion_id IS NULL THEN NULL
+            ELSE rws.worm_protegido_at IS NOT NULL END AS revocacion_worm_protegido,
+       CASE WHEN rwp.revocacion_id IS NULL THEN NULL
+            ELSE rwp.worm_protegido_at IS NOT NULL END AS revocacion_worm_personal_protegido,
+       CASE WHEN sw.excepcion_id IS NULL THEN NULL
+            ELSE sw.worm_protegido_at IS NOT NULL END AS worm_sobre_protegido,
+       CASE WHEN rsw.revocacion_id IS NULL THEN NULL
+            ELSE rsw.worm_protegido_at IS NOT NULL END AS revocacion_worm_sobre_protegido
+  FROM transferencia_acta_firma_excepcion e
+  LEFT JOIN transferencia_acta_firma_excepcion_revocacion r ON r.excepcion_id = e.id
+  LEFT JOIN transferencia_acta_firma_excepcion_worm ws
+         ON ws.excepcion_id = e.id AND ws.artefacto = 'sello'
+  LEFT JOIN transferencia_acta_firma_excepcion_worm wp
+         ON wp.excepcion_id = e.id AND wp.artefacto = 'personal'
+  LEFT JOIN transferencia_acta_firma_excepcion_revocacion_worm rws
+         ON rws.revocacion_id = r.id AND rws.artefacto = 'sello'
+  LEFT JOIN transferencia_acta_firma_excepcion_revocacion_worm rwp
+         ON rwp.revocacion_id = r.id AND rwp.artefacto = 'personal'
+  LEFT JOIN transferencia_acta_firma_excepcion_worm sw
+         ON sw.excepcion_id = e.id AND sw.artefacto = 'sobre'
+  LEFT JOIN transferencia_acta_firma_excepcion_revocacion_worm rsw
+         ON rsw.revocacion_id = r.id AND rsw.artefacto = 'sobre'
+"""
+)
+
+#: Tablas por ACTO del cableado WORM de la constancia: la constancia ('excepcion') y su
+#: revocación ('revocacion') comparten el ciclo (protección inicial + renovación CT) y difieren
+#: en tabla, clave y de dónde sale el XML firmado. Constantes de código, nunca datos del cliente.
+_WORM_ACTOS: dict[str, dict[str, str]] = {
+    "excepcion": {
+        "worm": "transferencia_acta_firma_excepcion_worm",
+        "fk": "excepcion_id",
+    },
+    "revocacion": {
+        "worm": "transferencia_acta_firma_excepcion_revocacion_worm",
+        "fk": "revocacion_id",
+    },
+}
+
 # Columnas que `update_estado` NUNCA acepta en `assignments`: `estado` tiene su
 # propio parámetro (para que la guarda `expected_estado` quede visible en la
 # firma, no enterrada en un dict libre) y `id` identifica la fila, no un valor
@@ -116,6 +202,11 @@ class TransferenciaRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
         self._tenant_slug = tenant_slug
+
+    async def set_search_path(self) -> None:
+        """Fija el `search_path` del tenant para quien lee tablas del tenant sin pasar por un
+        método del repositorio (p. ej. la política de la entidad en `sgd_param_admin`)."""
+        await self._sp()
 
     async def _sp(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
@@ -556,6 +647,324 @@ class TransferenciaRepository:
             )
         )
 
+    # -----------------------------------------------------------------
+    # AREA-07-10 (migración 059): excepción de firma («firma inobtenible»)
+    # -----------------------------------------------------------------
+
+    async def list_acta_firma_excepciones(
+        self, transferencia_id: uuid.UUID
+    ) -> builtins.list[asyncpg.Record]:
+        """Cadena COMPLETA de constancias de excepción de firma de una transferencia (por rol y
+        ordinal), las revocadas incluidas: la revocación es un hecho que se muestra, no se
+        esconde. Quien decide qué cuenta como «vigente» filtra por `revocada_en IS NULL`."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                _ACTA_FIRMA_EXCEPCION_SELECT
+                + " WHERE e.transferencia_id = $1 ORDER BY e.rol, e.ordinal",
+                transferencia_id,
+            )
+        )
+
+    async def get_excepcion_vigente(
+        self, transferencia_id: uuid.UUID, *, rol: str
+    ) -> asyncpg.Record | None:
+        """La constancia VIGENTE del rol: la que NO tiene revocación. Es la única que impide
+        firmar y la única que cubre a la parte en el cálculo de estado; una revocada es historia.
+        A lo sumo una por rol (la cadena es lineal: se re-declara solo tras revocar)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            _ACTA_FIRMA_EXCEPCION_SELECT
+            + " WHERE e.transferencia_id = $1 AND e.rol = $2 AND r.id IS NULL"
+            " ORDER BY e.ordinal DESC LIMIT 1",
+            transferencia_id,
+            rol,
+        )
+
+    async def get_ultima_excepcion(
+        self, transferencia_id: uuid.UUID, *, rol: str
+    ) -> asyncpg.Record | None:
+        """El ÚLTIMO eslabón de la cadena del rol (vigente o revocado): sobre él se decide si se
+        declara (ordinal 1), si se re-declara (revocado y protegido) o si hay conflicto."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            _ACTA_FIRMA_EXCEPCION_SELECT
+            + " WHERE e.transferencia_id = $1 AND e.rol = $2 ORDER BY e.ordinal DESC LIMIT 1",
+            transferencia_id,
+            rol,
+        )
+
+    async def get_excepcion_por_id(
+        self, transferencia_id: uuid.UUID, excepcion_id: uuid.UUID
+    ) -> asyncpg.Record | None:
+        await self._sp()
+        return await self._conn.fetchrow(
+            _ACTA_FIRMA_EXCEPCION_SELECT + " WHERE e.transferencia_id = $1 AND e.id = $2",
+            transferencia_id,
+            excepcion_id,
+        )
+
+    async def get_xml_constancia_y_revocacion(
+        self, excepcion_id: uuid.UUID
+    ) -> asyncpg.Record | None:
+        """Los XML canónicos guardados (constancia y, si existe, su revocación) para la
+        verificación del fundamento: se recalcula el HMAC y se compara con lo que dice el XML."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            "SELECT e.constancia_xml, r.revocacion_xml "
+            "FROM transferencia_acta_firma_excepcion e "
+            "LEFT JOIN transferencia_acta_firma_excepcion_revocacion r ON r.excepcion_id = e.id "
+            "WHERE e.id = $1",
+            excepcion_id,
+        )
+
+    async def list_xml_cadena(self, transferencia_id: uuid.UUID) -> dict[uuid.UUID, asyncpg.Record]:
+        """XML canónicos guardados de TODA la cadena de la transferencia (constancia y revocación),
+        por id de constancia: la verificación de los enlaces los cotejan contra las filas y contra
+        los artefactos firmados. Pesado: solo lo pide la verificación on-demand."""
+        await self._sp()
+        rows = await self._conn.fetch(
+            "SELECT e.id, e.constancia_xml, r.revocacion_xml "
+            "FROM transferencia_acta_firma_excepcion e "
+            "LEFT JOIN transferencia_acta_firma_excepcion_revocacion r ON r.excepcion_id = e.id "
+            "WHERE e.transferencia_id = $1",
+            transferencia_id,
+        )
+        return {r["id"]: r for r in rows}
+
+    async def get_ancla_cadena(
+        self, transferencia_id: uuid.UUID, rol: str
+    ) -> datetime | None:
+        """Instante del ÚLTIMO acto (declaración o revocación) de la cadena del rol: ancla común
+        de la retención WORM de todos sus eslabones (A3)."""
+        await self._sp()
+        return await self._conn.fetchval(
+            "SELECT GREATEST(MAX(e.declarada_en), MAX(r.revocada_en)) "
+            "FROM transferencia_acta_firma_excepcion e "
+            "LEFT JOIN transferencia_acta_firma_excepcion_revocacion r ON r.excepcion_id = e.id "
+            "WHERE e.transferencia_id = $1 AND e.rol = $2",
+            transferencia_id,
+            rol,
+        )
+
+    async def list_cadena_worm_protegidos(
+        self, transferencia_id: uuid.UUID, rol: str
+    ) -> builtins.list[asyncpg.Record]:
+        """Todo artefacto YA protegido de la cadena del rol (constancias y revocaciones, sello y
+        personal) con su clave en el almacén y el espejo de su retención, para alinearlos (A3)."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT 'excepcion' AS acto, e.id AS acto_id, w.artefacto, e.rol,
+                       CASE w.artefacto WHEN 'personal' THEN e.minio_key_firmado_personal
+                            WHEN 'sobre' THEN e.sobre_minio_key
+                            ELSE e.minio_key_firmado END AS minio_key_firmado,
+                       w.worm_retain_until, w.worm_renovacion_intentos
+                  FROM transferencia_acta_firma_excepcion e
+                  JOIN transferencia_acta_firma_excepcion_worm w ON w.excepcion_id = e.id
+                 WHERE e.transferencia_id = $1 AND e.rol = $2 AND w.worm_protegido_at IS NOT NULL
+                UNION ALL
+                SELECT 'revocacion' AS acto, rv.id AS acto_id, w.artefacto, e.rol,
+                       CASE w.artefacto WHEN 'personal' THEN rv.minio_key_firmado_personal
+                            WHEN 'sobre' THEN rv.sobre_minio_key
+                            ELSE rv.minio_key_firmado END AS minio_key_firmado,
+                       w.worm_retain_until, w.worm_renovacion_intentos
+                  FROM transferencia_acta_firma_excepcion e
+                  JOIN transferencia_acta_firma_excepcion_revocacion rv ON rv.excepcion_id = e.id
+                  JOIN transferencia_acta_firma_excepcion_revocacion_worm w ON w.revocacion_id = rv.id
+                 WHERE e.transferencia_id = $1 AND e.rol = $2 AND w.worm_protegido_at IS NOT NULL
+                """,
+                transferencia_id,
+                rol,
+            )
+        )
+
+    async def reset_firma_excepcion_worm_agotado(
+        self, acto_id: uuid.UUID, *, acto: str = "excepcion"
+    ) -> builtins.list[asyncpg.Record]:
+        """Salida de `agotado` (A4): repone a PENDIENTE (intentos a cero, sin backoff ni error) la
+        protección inicial agotada y la renovación agotada de los artefactos del acto. Devuelve
+        las filas repuestas (`artefacto`); vacío = nada estaba agotado. Va en la MISMA tx que su
+        asiento."""
+        await self._sp()
+        t = self._acto(acto)
+        return list(
+            await self._conn.fetch(
+                f"UPDATE {t['worm']} SET "
+                "worm_reconcile_agotado = CASE WHEN worm_protegido_at IS NULL THEN FALSE "
+                "ELSE worm_reconcile_agotado END, "
+                "worm_reconcile_intentos = CASE WHEN worm_reconcile_agotado "
+                "AND worm_protegido_at IS NULL THEN 0 ELSE worm_reconcile_intentos END, "
+                "worm_reconcile_proximo_at = CASE WHEN worm_reconcile_agotado "
+                "AND worm_protegido_at IS NULL THEN NULL ELSE worm_reconcile_proximo_at END, "
+                "worm_reconcile_ultimo_error = CASE WHEN worm_reconcile_agotado "
+                "AND worm_protegido_at IS NULL THEN NULL ELSE worm_reconcile_ultimo_error END, "
+                "worm_renovacion_agotado = FALSE, "
+                "worm_renovacion_intentos = CASE WHEN worm_renovacion_agotado THEN 0 "
+                "ELSE worm_renovacion_intentos END, "
+                "worm_renovacion_proximo_at = CASE WHEN worm_renovacion_agotado THEN NULL "
+                "ELSE worm_renovacion_proximo_at END, "
+                "worm_renovacion_ultimo_error = CASE WHEN worm_renovacion_agotado THEN NULL "
+                "ELSE worm_renovacion_ultimo_error END "
+                f"WHERE {t['fk']} = $1 AND ((worm_reconcile_agotado AND worm_protegido_at IS NULL) "
+                "OR (worm_renovacion_agotado AND worm_protegido_at IS NOT NULL)) "
+                "RETURNING artefacto, worm_protegido_at IS NOT NULL AS protegido",
+                acto_id,
+            )
+        )
+
+    async def list_firma_excepcion_worm_artefactos(
+        self, acto_id: uuid.UUID, *, acto: str = "excepcion"
+    ) -> builtins.list[asyncpg.Record]:
+        """Artefactos (sello/personal/sobre) del acto con su estado WORM, para el reintento manual."""
+        await self._sp()
+        t = self._acto(acto)
+        return list(
+            await self._conn.fetch(
+                f"SELECT artefacto, worm_protegido_at IS NOT NULL AS protegido, "
+                f"worm_reconcile_agotado AS agotado FROM {t['worm']} "
+                f"WHERE {t['fk']} = $1 ORDER BY artefacto",
+                acto_id,
+            )
+        )
+
+    async def list_sobres_huerfanos(
+        self, *, limit: int, gracia_horas: int
+    ) -> builtins.list[asyncpg.Record]:
+        """Ficheros del almacén con el nombre de un sobre de revelación (objeto_id `sobre-<uuid>`,
+        migración 064) que NINGUNA constancia ni revocación referencia en `sobre_minio_key` y que
+        llevan más de `gracia_horas` subidos. `files` es de storage-service pero vive en el mismo
+        esquema del tenant; si no existe (esquema parcial) no hay candidatos."""
+        await self._sp()
+        if await self._conn.fetchval("SELECT to_regclass('files')") is None:
+            return []
+        return list(
+            await self._conn.fetch(
+                r"""
+                SELECT f.id, f.uploaded_at FROM files f
+                 WHERE f.filename ~ '^acta-transferencia-sobre-[0-9a-f-]{36}-v[0-9]+-[0-9a-f-]{36}-firmado\.xml$'
+                   AND f.uploaded_at < now() - ($1 * INTERVAL '1 hour')
+                   AND NOT EXISTS (SELECT 1 FROM transferencia_acta_firma_excepcion e
+                                    WHERE e.sobre_minio_key LIKE f.id::text || '/%')
+                   AND NOT EXISTS (SELECT 1 FROM transferencia_acta_firma_excepcion_revocacion r
+                                    WHERE r.sobre_minio_key LIKE f.id::text || '/%')
+                 ORDER BY f.uploaded_at
+                 LIMIT $2
+                """,
+                gracia_horas,
+                limit,
+            )
+        )
+
+    async def get_asiento_payload(
+        self, *, tenant_slug: str, action: str, object_ref: str, clave: str, valor: str
+    ) -> dict | None:
+        """Payload del asiento `action` sobre `object_ref` cuyo `payload->>clave` es `valor`
+        (el más antiguo). Lectura de `public.audit_log`, filtrada por tenant: la tabla se
+        comparte entre entidades."""
+        import json as _json
+
+        row = await self._conn.fetchval(
+            "SELECT payload FROM public.audit_log "
+            "WHERE tenant_slug = $1 AND action = $2 AND object_ref = $3 "
+            "AND payload->>$4 = $5 ORDER BY ts ASC LIMIT 1",
+            tenant_slug,
+            action,
+            object_ref,
+            clave,
+            valor,
+        )
+        if row is None:
+            return None
+        return _json.loads(row) if isinstance(row, str | bytes) else dict(row)
+
+    async def get_identidades(
+        self, user_ids: builtins.list[uuid.UUID]
+    ) -> dict[uuid.UUID, asyncpg.Record]:
+        """Nombre, cargo y estado del certificado de firma de un lote de personas, tal como
+        los resuelve el servidor (el cliente NO aporta quién es nadie). Solo columnas PÚBLICAS
+        de `auth_users` / `auth_user_signing_key`: nunca el material de la clave privada.
+        La persona que no está en el catálogo simplemente no aparece."""
+        if not user_ids:
+            return {}
+        await self._sp()
+        # `auth_users` y `auth_user_signing_key` las crea AUTH-SERVICE: en el esquema de una
+        # entidad real están, pero un despliegue parcial o un esquema de pruebas provisionado
+        # solo con las migraciones de archivo no las tiene (o las tiene con otra forma). Se
+        # comprueban las COLUMNAS, igual que `get_acta`, y se degrada: sin catálogo la persona
+        # queda `no_resuelta` (se declara el hueco), sin clave de firma queda sin certificado.
+        presentes = await self._conn.fetchval(
+            """SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND (table_name, column_name) IN
+                      (('auth_users', 'username'),
+                       ('auth_user_signing_key', 'user_id'),
+                       ('auth_user_signing_key', 'subject_dn'),
+                       ('auth_user_signing_key', 'cargo'),
+                       ('auth_user_signing_key', 'estado'),
+                       ('auth_user_signing_key', 'cert_pem'),
+                       ('auth_user_signing_key', 'not_after'))"""
+        )
+        presentes = int(presentes or 0)
+        if presentes == 0:
+            return {}
+        if presentes < 7:
+            # Hay catálogo pero la forma de la clave de firma no es la esperada.
+            rows = await self._conn.fetch(
+                "SELECT u.id, u.username, NULL::text AS subject_dn, NULL::text AS cargo, "
+                "FALSE AS certificado_activo FROM auth_users u WHERE u.id = ANY($1::uuid[])",
+                user_ids,
+            )
+            return {r["id"]: r for r in rows}
+        rows = await self._conn.fetch(
+            """
+            SELECT u.id, u.username, k.subject_dn, k.cargo,
+                   (k.id IS NOT NULL AND k.estado = 'activo' AND k.cert_pem IS NOT NULL
+                    AND (k.not_after IS NULL OR k.not_after > now())) AS certificado_activo
+              FROM auth_users u
+              LEFT JOIN auth_user_signing_key k
+                     ON k.user_id = u.id AND k.estado = 'activo'
+             WHERE u.id = ANY($1::uuid[])
+            """,
+            user_ids,
+        )
+        return {r["id"]: r for r in rows}
+
+    async def insert_acta_firma_excepcion(self, data: dict) -> asyncpg.Record | None:
+        """Inserta la constancia. `ON CONFLICT DO NOTHING`: `None` para la perdedora de una
+        carrera (misma (transferencia, rol, ordinal) o misma sustituida: NO debe asentar un acto
+        que no produjo). Si el rol ya firmó personalmente, el declarante es parte de la
+        transferencia o la cadena no se puede continuar (revocación sin sellar/proteger), los
+        triggers levantan `CheckViolationError` con `constraint_name` estable."""
+        await self._sp()
+        cols = list(data.keys())
+        ph = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
+        return await self._conn.fetchrow(
+            f"INSERT INTO transferencia_acta_firma_excepcion ({', '.join(cols)}) "
+            f"VALUES ({ph}) ON CONFLICT DO NOTHING "
+            f"RETURNING {_ACTA_FIRMA_EXCEPCION_COLS}",
+            *data.values(),
+        )
+
+    async def insert_acta_firma_excepcion_revocacion(self, data: dict) -> asyncpg.Record | None:
+        """Revocación de UNA excepción: fila nueva, nunca UPDATE. `ON CONFLICT DO NOTHING` ->
+        `None` para la perdedora de una carrera (ya estaba revocada)."""
+        await self._sp()
+        cols = list(data.keys())
+        ph = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
+        return await self._conn.fetchrow(
+            f"INSERT INTO transferencia_acta_firma_excepcion_revocacion ({', '.join(cols)}) "
+            f"VALUES ({ph}) ON CONFLICT DO NOTHING "
+            "RETURNING id, excepcion_id, revocada_por, fundamento, revocada_en, "
+            "revocacion_version, revocacion_sha256, firma_id, minio_key_firmado, xades_level, "
+            "firma_personal_id, minio_key_firmado_personal, xades_level_personal, "
+            "revocante_nombre, revocante_cargo, revocante_fuente, fundamento_sal, "
+            "fundamento_compromiso, fundamento_compromiso_algoritmo, causa, "
+            "sobre_firma_id, sobre_minio_key, sobre_sha256, sobre_xades_level",
+            *data.values(),
+        )
+
     async def insert_acta_firma_personal(self, data: dict) -> asyncpg.Record | None:
         """Inserta la fila de firma personal -- `ON CONFLICT (transferencia_id,
         rol) DO NOTHING`: bajo una carrera manual-vs-manual (dos peticiones
@@ -672,6 +1081,398 @@ class TransferenciaRepository:
                 """,
                 limit,
             )
+        )
+
+    # -----------------------------------------------------------------
+    # E10 debt (migración 060): renovación de retención WORM CT de cada firma
+    # personal del acta -- espejo de `list_worm_renovacion_*` del sello.
+    # -----------------------------------------------------------------
+
+    async def list_firma_personal_renovacion_pending(
+        self, *, ventana_dias: int, ct_codes: builtins.list[str], limit: int
+    ) -> builtins.list[asyncpg.Record]:
+        """Firmas personales YA protegidas, de expediente CT, cuyo `worm_retain_until`
+        vence dentro de `ventana_dias` y con el backoff cumplido."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT w.firma_personal_id, fp.transferencia_id, fp.rol, t.expediente_id,
+                       w.worm_retain_until, w.worm_renovacion_intentos
+                FROM transferencia_acta_firma_personal_worm w
+                JOIN transferencia_acta_firma_personal fp ON fp.id = w.firma_personal_id
+                JOIN transferencias t ON t.id = fp.transferencia_id
+                JOIN expedientes e ON e.id = t.expediente_id
+                JOIN trd_series s ON s.id = e.trd_serie_id
+                WHERE w.worm_protegido_at IS NOT NULL
+                  AND w.worm_renovacion_agotado = FALSE
+                  AND w.worm_retain_until IS NOT NULL
+                  AND w.worm_retain_until < now() + ($1 * INTERVAL '1 day')
+                  AND (w.worm_renovacion_proximo_at IS NULL OR w.worm_renovacion_proximo_at <= now())
+                  AND s.disposition = ANY($2::text[])
+                ORDER BY w.worm_renovacion_proximo_at ASC NULLS FIRST
+                LIMIT $3
+                """,
+                ventana_dias,
+                ct_codes,
+                limit,
+            )
+        )
+
+    async def list_firma_personal_renovacion_visibilidad(
+        self, *, max_clearance: int, ct_codes: builtins.list[str], ventana_dias: int
+    ) -> builtins.list[asyncpg.Record]:
+        """Firmas personales protegidas, de expediente CT, con la renovación AGOTADA o en
+        riesgo de vencer; no-read-up en el `WHERE` (mismo criterio que el sello)."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT t.expediente_id, e.code AS expediente_code, fp.rol,
+                       w.worm_retain_until, w.worm_renovacion_intentos,
+                       w.worm_renovacion_agotado, w.worm_renovacion_ultimo_error
+                FROM transferencia_acta_firma_personal_worm w
+                JOIN transferencia_acta_firma_personal fp ON fp.id = w.firma_personal_id
+                JOIN transferencias t ON t.id = fp.transferencia_id
+                JOIN expedientes e ON e.id = t.expediente_id
+                JOIN trd_series s ON s.id = e.trd_serie_id
+                WHERE w.worm_protegido_at IS NOT NULL
+                  AND s.disposition = ANY($1::text[])
+                  AND e.nivel_seguridad <= $2
+                  AND (
+                        w.worm_renovacion_agotado = TRUE
+                        OR (
+                            w.worm_retain_until IS NOT NULL
+                            AND w.worm_retain_until < now() + ($3 * INTERVAL '1 day')
+                        )
+                      )
+                ORDER BY w.worm_renovacion_agotado DESC, w.worm_retain_until ASC NULLS LAST
+                """,
+                ct_codes,
+                max_clearance,
+                ventana_dias,
+            )
+        )
+
+    async def mark_firma_personal_worm_renovado(
+        self, firma_personal_id: uuid.UUID, *, worm_retain_until: datetime
+    ) -> None:
+        """Actualiza el espejo tras una renovación CONFIRMADA. Monotónico: `GREATEST`, el
+        espejo nunca retrocede aunque llegue una respuesta tardía/reordenada."""
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE transferencia_acta_firma_personal_worm SET "
+            "worm_retain_until = GREATEST(worm_retain_until, $2), "
+            "worm_renovacion_intentos = 0, worm_renovacion_proximo_at = NULL, "
+            "worm_renovacion_ultimo_error = NULL, worm_renovacion_agotado = FALSE "
+            "WHERE firma_personal_id = $1",
+            firma_personal_id,
+            worm_retain_until,
+        )
+
+    async def bump_firma_personal_worm_renovacion_intento(
+        self,
+        firma_personal_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE transferencia_acta_firma_personal_worm SET "
+            "worm_renovacion_intentos = worm_renovacion_intentos + 1, "
+            "worm_renovacion_proximo_at = $2, worm_renovacion_ultimo_error = $3, "
+            "worm_renovacion_agotado = $4 WHERE firma_personal_id = $1",
+            firma_personal_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
+
+    # -----------------------------------------------------------------
+    # AREA-07-10 (migraciones 061/062): WORM de los XML firmados de la constancia de firma
+    # inobtenible y de su REVOCACIÓN (sello institucional + firma personal de quien actúa) y su
+    # renovación CT. Espejo de los métodos de la firma personal (057/060), con `artefacto` en la
+    # clave y `acto` ('excepcion' | 'revocacion') eligiendo tabla y origen del XML.
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _acto(acto: str) -> dict[str, str]:
+        try:
+            return _WORM_ACTOS[acto]
+        except KeyError:
+            raise ValueError(f"acto WORM desconocido: {acto!r}") from None
+
+    async def insert_firma_excepcion_worm_pendiente(
+        self, acto_id: uuid.UUID, artefacto: str, *, acto: str = "excepcion"
+    ) -> None:
+        """Fila de bookkeeping WORM del artefacto; va en la MISMA tx que la constancia (o la
+        revocación)."""
+        await self._sp()
+        t = self._acto(acto)
+        await self._conn.execute(
+            f"INSERT INTO {t['worm']} ({t['fk']}, artefacto) "
+            f"VALUES ($1, $2) ON CONFLICT ({t['fk']}, artefacto) DO NOTHING",
+            acto_id,
+            artefacto,
+        )
+
+    async def get_firma_excepcion_worm(
+        self, acto_id: uuid.UUID, artefacto: str, *, acto: str = "excepcion"
+    ) -> asyncpg.Record | None:
+        """El artefacto (clave en el almacén según `artefacto`), su estado WORM y el
+        expediente de la transferencia, para `proteger_worm_*`. `actuada_en` es la base del
+        cálculo de retención: la declaración (o la revocación)."""
+        await self._sp()
+        t = self._acto(acto)
+        if acto == "excepcion":
+            sql = f"""
+                SELECT e.id, e.transferencia_id, e.rol, e.declarada_en AS actuada_en,
+                       CASE w.artefacto WHEN 'personal' THEN e.minio_key_firmado_personal
+                            WHEN 'sobre' THEN e.sobre_minio_key
+                            ELSE e.minio_key_firmado END AS minio_key_firmado,
+                       tr.expediente_id, w.artefacto,
+                       w.worm_protegido_at, w.worm_reconcile_intentos
+                  FROM {t['worm']} w
+                  JOIN transferencia_acta_firma_excepcion e ON e.id = w.excepcion_id
+                  JOIN transferencias tr ON tr.id = e.transferencia_id
+                 WHERE w.excepcion_id = $1 AND w.artefacto = $2
+                """
+        else:
+            sql = f"""
+                SELECT rv.id, e.transferencia_id, e.rol, rv.revocada_en AS actuada_en,
+                       CASE w.artefacto WHEN 'personal' THEN rv.minio_key_firmado_personal
+                            WHEN 'sobre' THEN rv.sobre_minio_key
+                            ELSE rv.minio_key_firmado END AS minio_key_firmado,
+                       tr.expediente_id, w.artefacto,
+                       w.worm_protegido_at, w.worm_reconcile_intentos
+                  FROM {t['worm']} w
+                  JOIN transferencia_acta_firma_excepcion_revocacion rv ON rv.id = w.revocacion_id
+                  JOIN transferencia_acta_firma_excepcion e ON e.id = rv.excepcion_id
+                  JOIN transferencias tr ON tr.id = e.transferencia_id
+                 WHERE w.revocacion_id = $1 AND w.artefacto = $2
+                """
+        return await self._conn.fetchrow(sql, acto_id, artefacto)
+
+    async def mark_firma_excepcion_worm_protegido(
+        self,
+        acto_id: uuid.UUID,
+        artefacto: str,
+        worm_object_id: uuid.UUID | None,
+        *,
+        worm_retain_until: datetime | None,
+        acto: str = "excepcion",
+    ) -> int:
+        """Marca el artefacto como confirmado. `WHERE ... IS NULL`: se fija UNA vez; devuelve
+        las filas afectadas para no asentar un acto que esta llamada no produjo."""
+        await self._sp()
+        t = self._acto(acto)
+        tag = await self._conn.execute(
+            f"UPDATE {t['worm']} SET worm_protegido_at = now(), "
+            "worm_object_id = $3, worm_retain_until = $4, worm_reconcile_proximo_at = NULL, "
+            f"worm_reconcile_ultimo_error = NULL WHERE {t['fk']} = $1 AND artefacto = $2 "
+            "AND worm_protegido_at IS NULL",
+            acto_id,
+            artefacto,
+            worm_object_id,
+            worm_retain_until,
+        )
+        try:
+            return int(tag.split()[-1])
+        except (AttributeError, ValueError, IndexError):
+            return 0
+
+    async def bump_firma_excepcion_worm_intento(
+        self,
+        acto_id: uuid.UUID,
+        artefacto: str,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+        acto: str = "excepcion",
+    ) -> None:
+        await self._sp()
+        t = self._acto(acto)
+        await self._conn.execute(
+            f"UPDATE {t['worm']} SET "
+            "worm_reconcile_intentos = worm_reconcile_intentos + 1, "
+            "worm_reconcile_proximo_at = $3, worm_reconcile_ultimo_error = $4, "
+            f"worm_reconcile_agotado = $5 WHERE {t['fk']} = $1 AND artefacto = $2",
+            acto_id,
+            artefacto,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
+
+    async def list_firma_excepcion_worm_pending(
+        self, limit: int, *, acto: str = "excepcion"
+    ) -> builtins.list[asyncpg.Record]:
+        """Artefactos sin proteger, no agotados y con el backoff cumplido (la clave de la fila
+        es `excepcion_id` o `revocacion_id` según el `acto`)."""
+        await self._sp()
+        t = self._acto(acto)
+        return list(
+            await self._conn.fetch(
+                f"""
+                SELECT w.{t['fk']}, w.artefacto, w.worm_reconcile_intentos
+                  FROM {t['worm']} w
+                 WHERE w.worm_protegido_at IS NULL
+                   AND w.worm_reconcile_agotado = FALSE
+                   AND (w.worm_reconcile_proximo_at IS NULL OR w.worm_reconcile_proximo_at <= now())
+                 ORDER BY w.worm_reconcile_proximo_at ASC NULLS FIRST
+                 LIMIT $1
+                """,
+                limit,
+            )
+        )
+
+    async def list_firma_excepcion_renovacion_pending(
+        self,
+        *,
+        ventana_dias: int,
+        ct_codes: builtins.list[str],
+        limit: int,
+        acto: str = "excepcion",
+    ) -> builtins.list[asyncpg.Record]:
+        """Artefactos YA protegidos, de expediente CT, cuyo `worm_retain_until` vence dentro de
+        `ventana_dias` y con el backoff cumplido. Trae `minio_key_firmado` del artefacto: storage
+        identifica estos tipos (multi-artefacto) por `file_id`, no por (expediente, tipo)."""
+        await self._sp()
+        t = self._acto(acto)
+        if acto == "excepcion":
+            origen = (
+                "JOIN transferencia_acta_firma_excepcion e ON e.id = w.excepcion_id",
+                "CASE w.artefacto WHEN 'personal' THEN e.minio_key_firmado_personal "
+                "WHEN 'sobre' THEN e.sobre_minio_key ELSE e.minio_key_firmado END",
+            )
+        else:
+            origen = (
+                "JOIN transferencia_acta_firma_excepcion_revocacion rv ON rv.id = w.revocacion_id "
+                "JOIN transferencia_acta_firma_excepcion e ON e.id = rv.excepcion_id",
+                "CASE w.artefacto WHEN 'personal' THEN rv.minio_key_firmado_personal "
+                "WHEN 'sobre' THEN rv.sobre_minio_key ELSE rv.minio_key_firmado END",
+            )
+        return list(
+            await self._conn.fetch(
+                f"""
+                SELECT w.{t['fk']}, w.artefacto, e.transferencia_id, e.rol, tr.expediente_id,
+                       {origen[1]} AS minio_key_firmado,
+                       w.worm_retain_until, w.worm_renovacion_intentos
+                FROM {t['worm']} w
+                {origen[0]}
+                JOIN transferencias tr ON tr.id = e.transferencia_id
+                JOIN expedientes x ON x.id = tr.expediente_id
+                JOIN trd_series s ON s.id = x.trd_serie_id
+                WHERE w.worm_protegido_at IS NOT NULL
+                  AND w.worm_renovacion_agotado = FALSE
+                  AND w.worm_retain_until IS NOT NULL
+                  AND w.worm_retain_until < now() + ($1 * INTERVAL '1 day')
+                  AND (w.worm_renovacion_proximo_at IS NULL OR w.worm_renovacion_proximo_at <= now())
+                  AND s.disposition = ANY($2::text[])
+                ORDER BY w.worm_renovacion_proximo_at ASC NULLS FIRST
+                LIMIT $3
+                """,
+                ventana_dias,
+                ct_codes,
+                limit,
+            )
+        )
+
+    async def list_firma_excepcion_renovacion_visibilidad(
+        self,
+        *,
+        max_clearance: int,
+        ct_codes: builtins.list[str],
+        ventana_dias: int,
+        acto: str = "excepcion",
+    ) -> builtins.list[asyncpg.Record]:
+        """Artefactos protegidos, de expediente CT, con la renovación AGOTADA o en riesgo de
+        vencer; no-read-up en el `WHERE` (mismo criterio que la firma personal)."""
+        await self._sp()
+        t = self._acto(acto)
+        if acto == "excepcion":
+            origen = "JOIN transferencia_acta_firma_excepcion e ON e.id = w.excepcion_id"
+        else:
+            origen = (
+                "JOIN transferencia_acta_firma_excepcion_revocacion rv ON rv.id = w.revocacion_id "
+                "JOIN transferencia_acta_firma_excepcion e ON e.id = rv.excepcion_id"
+            )
+        return list(
+            await self._conn.fetch(
+                f"""
+                SELECT tr.expediente_id, x.code AS expediente_code, e.rol, w.artefacto,
+                       w.worm_retain_until, w.worm_renovacion_intentos,
+                       w.worm_renovacion_agotado, w.worm_renovacion_ultimo_error
+                FROM {t['worm']} w
+                {origen}
+                JOIN transferencias tr ON tr.id = e.transferencia_id
+                JOIN expedientes x ON x.id = tr.expediente_id
+                JOIN trd_series s ON s.id = x.trd_serie_id
+                WHERE w.worm_protegido_at IS NOT NULL
+                  AND s.disposition = ANY($1::text[])
+                  AND x.nivel_seguridad <= $2
+                  AND (
+                        w.worm_renovacion_agotado = TRUE
+                        OR (
+                            w.worm_retain_until IS NOT NULL
+                            AND w.worm_retain_until < now() + ($3 * INTERVAL '1 day')
+                        )
+                      )
+                ORDER BY w.worm_renovacion_agotado DESC, w.worm_retain_until ASC NULLS LAST
+                """,
+                ct_codes,
+                max_clearance,
+                ventana_dias,
+            )
+        )
+
+    async def mark_firma_excepcion_worm_renovado(
+        self,
+        acto_id: uuid.UUID,
+        artefacto: str,
+        *,
+        worm_retain_until: datetime,
+        acto: str = "excepcion",
+    ) -> None:
+        """Espejo tras una renovación CONFIRMADA. Monotónico (`GREATEST`)."""
+        await self._sp()
+        t = self._acto(acto)
+        await self._conn.execute(
+            f"UPDATE {t['worm']} SET "
+            "worm_retain_until = GREATEST(worm_retain_until, $3), "
+            "worm_renovacion_intentos = 0, worm_renovacion_proximo_at = NULL, "
+            "worm_renovacion_ultimo_error = NULL, worm_renovacion_agotado = FALSE "
+            f"WHERE {t['fk']} = $1 AND artefacto = $2",
+            acto_id,
+            artefacto,
+            worm_retain_until,
+        )
+
+    async def bump_firma_excepcion_worm_renovacion_intento(
+        self,
+        acto_id: uuid.UUID,
+        artefacto: str,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+        acto: str = "excepcion",
+    ) -> None:
+        await self._sp()
+        t = self._acto(acto)
+        await self._conn.execute(
+            f"UPDATE {t['worm']} SET "
+            "worm_renovacion_intentos = worm_renovacion_intentos + 1, "
+            "worm_renovacion_proximo_at = $3, worm_renovacion_ultimo_error = $4, "
+            f"worm_renovacion_agotado = $5 WHERE {t['fk']} = $1 AND artefacto = $2",
+            acto_id,
+            artefacto,
+            proximo_at,
+            ultimo_error,
+            agotado,
         )
 
     async def list_acta_firmas_pendientes(self, limit: int) -> builtins.list[asyncpg.Record]:

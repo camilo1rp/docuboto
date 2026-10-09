@@ -25,13 +25,17 @@ queda un challenge huérfano cuyo OTP jamás llegó al firmante.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from base64 import b64encode
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 
 from app.core.config import settings
+
+logger = logging.getLogger("signature.http_clients")
 
 
 class SignerEmailError(RuntimeError):
@@ -479,9 +483,96 @@ class HuellaNoVerificableError(Exception):
     """
 
 
-class BorradorDesaparecidoError(HuellaNoVerificableError):
+class ObjetoDesaparecidoError(HuellaNoVerificableError):
+    """El objeto de la cadena ya no existe (404 del productor)."""
+
+
+class BorradorDesaparecidoError(ObjetoDesaparecidoError):
     """El borrador ya no existe. Subclase a propósito: el efecto es el mismo
     (denegar), pero el mensaje puede ser más útil que «no se pudo comprobar»."""
+
+
+class HuellaSinContenidoError(HuellaNoVerificableError):
+    """El productor existe y responde, pero el objeto no tiene contenido que
+    sellar (radicado sin PDF, expediente sin índice, anexo sin huella): 409.
+
+    Subclase de ``HuellaNoVerificableError`` a propósito: quien no la distinga
+    cae al 503 fail-closed, nunca a «sin cambios». Se distingue porque el
+    mensaje útil es otro («adjunte el documento»), no «reintente»."""
+
+    def __init__(self, codigo: str, mensaje: str) -> None:
+        super().__init__(mensaje)
+        self.codigo = codigo
+
+
+async def _get_huella_interna(
+    *, base_url: str, token: str, path: str, tenant_slug: str, productor: str
+) -> dict:
+    """GET sellado con ``X-Internal-Token`` del PRODUCTOR al que se pregunta.
+
+    Fail-closed en todo lo que no sea un 200 legible. Sin ``Authorization``: la
+    respuesta es content-free (una huella) y propagar la identidad ampliaría la
+    superficie sin ganar nada.
+    """
+    headers = {"X-Internal-Token": token, "X-Tenant-Slug": tenant_slug}
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=10.0) as client:
+            resp = await client.get(path, headers=headers)
+    except httpx.RequestError as exc:
+        # El texto de la excepción de httpx lleva el host y el puerto internos.
+        logger.warning("%s inalcanzable al consultar la huella: %s", productor, exc)
+        raise HuellaNoVerificableError(f"{productor} inalcanzable") from exc
+    if resp.status_code == 404:
+        raise ObjetoDesaparecidoError(f"el objeto no existe en {productor}")
+    if resp.status_code == 409:
+        try:
+            error = resp.json()["detail"]["error"]
+        except (ValueError, KeyError, TypeError):
+            error = "objeto_sin_contenido"
+        raise HuellaSinContenidoError(str(error), f"{productor}: {error}")
+    if resp.status_code != 200:
+        # El CUERPO del productor no se reenvía: acaba en el 503 que ve el
+        # firmante y puede traer rutas, trazas o datos de otro servicio. Va al
+        # log del servidor, que es donde lo necesita quien diagnostica.
+        logger.warning(
+            "%s -> HTTP %s al consultar la huella: %s",
+            productor, resp.status_code, resp.text[:200],
+        )
+        raise HuellaNoVerificableError(f"{productor} respondió HTTP {resp.status_code}")
+    try:
+        datos = resp.json()
+    except ValueError as exc:
+        raise HuellaNoVerificableError(f"{productor}: respuesta ilegible") from exc
+    if not isinstance(datos, dict):
+        raise HuellaNoVerificableError(f"{productor}: respuesta ilegible")
+    return datos
+
+
+async def get_huella_radicado(radicado_ref: str, tenant_slug: str) -> dict:
+    """SHA-256 del PDF vigente de un radicado (document-service, AREA-04-09).
+
+    ``radicado_ref``: número de radicado o UUID, tal como la cadena guarda
+    ``objeto_id``. Devuelve el JSON del productor (``huella_sha256``).
+    """
+    return await _get_huella_interna(
+        base_url=settings.document_service_url,
+        token=settings.document_internal_token,
+        path=f"/api/v1/internal/documentos/radicados/{quote(radicado_ref, safe='')}/huella",
+        tenant_slug=tenant_slug,
+        productor="document-service",
+    )
+
+
+async def get_huella_indice_expediente(expediente_ref: str, tenant_slug: str) -> dict:
+    """SHA-256 del índice electrónico vigente de un expediente (archive-service,
+    AREA-04-09). ``expediente_ref``: código o UUID."""
+    return await _get_huella_interna(
+        base_url=settings.archive_service_url,
+        token=settings.archive_internal_token,
+        path=f"/api/v1/internal/expedientes/{quote(expediente_ref, safe='')}/indice/huella",
+        tenant_slug=tenant_slug,
+        productor="archive-service",
+    )
 
 
 async def get_huella_borrador(borrador_id: str, tenant_slug: str) -> dict:
@@ -513,21 +604,23 @@ async def get_huella_borrador(borrador_id: str, tenant_slug: str) -> dict:
                 headers=headers,
             )
     except httpx.RequestError as exc:
-        raise HuellaNoVerificableError(f"document-service inalcanzable: {exc}") from exc
+        logger.warning("document-service inalcanzable al consultar la huella: %s", exc)
+        raise HuellaNoVerificableError("document-service inalcanzable") from exc
 
     if resp.status_code == 404:
         raise BorradorDesaparecidoError(f"el borrador {borrador_id} ya no existe")
     if resp.status_code != 200:
-        raise HuellaNoVerificableError(
-            f"document-service -> HTTP {resp.status_code} al consultar la huella: "
-            f"{resp.text[:200]}"
+        logger.warning(
+            "document-service -> HTTP %s al consultar la huella: %s",
+            resp.status_code, resp.text[:200],
         )
+        raise HuellaNoVerificableError(f"document-service respondió HTTP {resp.status_code}")
     try:
         datos = resp.json()
     except ValueError as exc:
-        raise HuellaNoVerificableError(f"respuesta ilegible: {exc}") from exc
+        raise HuellaNoVerificableError("document-service: respuesta ilegible") from exc
     if not isinstance(datos, dict):
-        raise HuellaNoVerificableError("respuesta ilegible: no es un objeto")
+        raise HuellaNoVerificableError("document-service: respuesta ilegible")
     return datos
 
 

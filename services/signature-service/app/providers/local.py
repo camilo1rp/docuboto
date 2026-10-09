@@ -818,8 +818,15 @@ def verify_xades(
     expected_ca_fingerprint: str | None = None,
     expected_ocsp_responder_fingerprint: str | None = None,
     expected_user_ca_fingerprint: str | None = None,
+    advertencias: list[str] | None = None,
 ) -> VerifyOutcome:
     """Verifica una firma XAdES-B/-T/-LT/-LTA enveloped (E06, RF-FIR-15).
+
+    ``advertencias``: lista del LLAMADOR a la que se añaden los avisos de una
+    verificación que sigue siendo válida (hoy: sello de tiempo sin ESSCertID
+    anterior a ``settings.tsa_esscertid_corte``). Es un parámetro de salida y
+    no un campo de ``VerifyOutcome`` porque la función tiene 40 retornos y un
+    aviso no cambia el veredicto: ninguno de ellos tiene que acordarse de él.
 
     Valida, en orden (fail-closed: cualquier fallo devuelve ``valida=False``
     con un ``motivo`` explicativo — nunca lanza para casos de negocio):
@@ -991,6 +998,8 @@ def verify_xades(
     )
     if not ts_outcome.valido:
         return VerifyOutcome(True, None, sello_tiempo_valido=False)
+    if advertencias is not None:
+        advertencias.extend(a for a in ts_outcome.advertencias if a not in advertencias)
 
     xades_level = SignatureFormat.XADES_T.value
     tsa_timestamp = ts_outcome.gen_time
@@ -1187,6 +1196,8 @@ def verify_xades(
             return VerifyOutcome(
                 False, f"archive_timestamp_invalido: {archive_outcome.motivo}"
             )
+        if advertencias is not None:
+            advertencias.extend(a for a in archive_outcome.advertencias if a not in advertencias)
         xades_level = SignatureFormat.XADES_LTA.value
 
     return VerifyOutcome(

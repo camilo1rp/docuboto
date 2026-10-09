@@ -131,15 +131,37 @@ class TestGateSincrono:
         assert exc.value.detail["error"] == "cadena_sin_huella"
 
     @pytest.mark.asyncio
-    async def test_los_tipos_sin_fichero_propio_no_pasan_por_aqui(
-        self, monkeypatch
+    @pytest.mark.parametrize("tipo", ["radicado", "expediente"])
+    async def test_radicado_y_expediente_pasan_por_el_gate(
+        self, monkeypatch, tipo: str
     ) -> None:
-        """Un radicado o un expediente se firman hoy como conjunto.
+        """AREA-04-09 Media-2: ya no se firma el identificador, se firma el contenido.
 
-        No hay huella contra la que comparar, así que el gate no dice nada — y
-        no debe inventarse una denegación: rompería las cadenas en curso sin
-        cerrar ninguna fuga.
+        Antes el gate no decía nada de estos tipos (no había huella contra la que
+        comparar). Ahora el productor (PDF vigente / índice vigente) la resuelve:
+        si coincide pasa; si el contenido cambió, `409 documento_modificado`.
         """
+        from unittest.mock import AsyncMock
+
+        from app.services import cadena_service as mod
+
+        productor = AsyncMock(return_value={"huella_sha256": HUELLA_APROBADA, "version": 3})
+        monkeypatch.setattr(
+            mod, "get_huella_radicado" if tipo == "radicado" else "get_huella_indice_expediente",
+            productor,
+        )
+        await _servicio()._gate_documento_vigente(_sol(objeto_tipo=tipo))
+        productor.assert_awaited_once()
+
+        productor.return_value = {"huella_sha256": HUELLA_OTRA, "version": 4}
+        with pytest.raises(Exception) as exc:
+            await _servicio()._gate_documento_vigente(_sol(objeto_tipo=tipo))
+        assert exc.value.detail["error"] == "documento_modificado"
+        assert exc.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_un_tipo_sin_resolutor_no_pasa_por_aqui(self, monkeypatch) -> None:
+        """Control: lo que no está en `RESOLUTOR_DE_HUELLA` no se consulta ni se niega."""
         llamadas = []
         from app.services import cadena_service as mod
 
@@ -148,11 +170,10 @@ class TestGateSincrono:
             return {}
 
         monkeypatch.setattr(mod, "get_huella_borrador", _huella)
-        for tipo in ("radicado", "expediente"):
-            await _servicio()._gate_documento_vigente(
-                _sol(objeto_tipo=tipo, payload_sha256=None)
-            )
-        assert llamadas == [], "no debe consultarse la huella de lo que no la tiene"
+        await _servicio()._gate_documento_vigente(
+            _sol(objeto_tipo="documento", payload_sha256=None)
+        )
+        assert llamadas == []
 
 
 class TestGateConectado:

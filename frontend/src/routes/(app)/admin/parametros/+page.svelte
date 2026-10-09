@@ -34,19 +34,32 @@
   import { onMount } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
-  import { mensajeError } from "$lib/utils/apiError.js";
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+  import {
+    CLAVE_POLITICA_XADES,
+    OPCIONES_POLITICA_XADES,
+    MOTIVO_PARAMETRO_MIN,
+    NIVEL_ADMIN_PARAMETROS,
+    relajaPolitica,
+    etiquetaPolitica,
+  } from "$lib/utils/firmaInobtenible.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
 
   $: canWrite = $permissions.includes("USUA_PERM_ADMIN");
+  // Escribir un PARÁMETRO exige USUA_PERM_ADMIN a nivel 3 (un administrador en modo lectura
+  // o edición recibe 403). Desde FIRMA-2 los festivos (crear, borrar, sembrar) exigen el mismo
+  // nivel 3. Fail-closed: sin nivel conocido, no se ofrece.
+  $: canWriteParams = ($permissionLevels["USUA_PERM_ADMIN"] ?? 0) >= NIVEL_ADMIN_PARAMETROS;
+  $: canWriteHolidays = canWriteParams;
 
   const TABS = [
     { id: "params", label: "Parámetros", icon: "fa-sliders" },
@@ -74,6 +87,10 @@
   // Parámetros
   // ---------------------------------------------------------------------------
   let paramEntries = Object.entries(data.params ?? {});
+  /** Valor para la persona: nunca «null». @param {unknown} v */
+  const mostrarValor = (v) =>
+    v === null || v === undefined ? "Sin valor definido" : JSON.stringify(v);
+
   let editingKey = null;
   let editValueRaw = "";
   let editValueError = "";
@@ -83,15 +100,42 @@
   let newKeyError = "";
   let newValueError = "";
 
+  // Política XAdES de la entidad: selector cerrado + motivo si se relaja.
+  let politicaNueva = "";
+  let politicaMotivo = "";
+  let politicaError = "";
+  let politicaMotivoError = "";
+
   function startEdit(key, value) {
     editingKey = key;
     editValueRaw = JSON.stringify(value, null, 2);
     editValueError = "";
+    politicaNueva = typeof value === "string" ? value : "";
+    politicaMotivo = "";
+    politicaError = "";
+    politicaMotivoError = "";
+  }
+
+  /** Mensaje de un fallo al guardar; el 403 se explica con el nivel que exige. */
+  function mensajeGuardar(res, resData) {
+    if (res.status === 403) {
+      return "Cambiar parámetros exige administración a nivel 3 (crear y borrar). Su nivel actual no alcanza.";
+    }
+    if (codigoError(resData) === "valor_nulo") {
+      return "El valor no puede quedar vacío: un parámetro no se puede dejar sin valor para que se herede. Escriba un valor concreto.";
+    }
+    return mensajeError(resData, "No se pudo guardar el parámetro.");
   }
 
   function parseValue(raw, setError) {
     try {
-      return { ok: true, value: JSON.parse(raw) };
+      const value = JSON.parse(raw);
+      // El backend responde 422 `valor_nulo`: un parámetro no se "vuelve a heredar" con null.
+      if (value === null) {
+        setError("El valor no puede quedar vacío: escriba un valor concreto.");
+        return { ok: false };
+      }
+      return { ok: true, value };
     } catch (err) {
       setError(`JSON inválido: ${err instanceof Error ? err.message : "error de sintaxis"}`);
       return { ok: false };
@@ -99,7 +143,10 @@
   }
 
   async function guardarParam(key, raw, onDone) {
-    const parsed = parseValue(raw, (msg) => (editValueError = msg));
+    const parsed = parseValue(raw, (msg) => {
+      editValueError = msg;
+      if (key === newKey.trim()) newValueError = msg;
+    });
     if (!parsed.ok) return;
     actionLoading = true;
     try {
@@ -108,9 +155,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value: parsed.value }),
       });
-      const resData = await res.json();
+      const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(mensajeError(resData, "No se pudo guardar el parámetro."));
+        notifyError(mensajeGuardar(res, resData));
         return;
       }
       paramEntries = paramEntries.some(([k]) => k === key)
@@ -125,7 +172,50 @@
     }
   }
 
+  async function guardarPolitica() {
+    politicaError = "";
+    politicaMotivoError = "";
+    if (!politicaNueva) {
+      politicaError = "Elija una política.";
+      return;
+    }
+    const vigente = paramEntries.find(([k]) => k === CLAVE_POLITICA_XADES)?.[1] ?? null;
+    const motivo = politicaMotivo.trim();
+    if (relajaPolitica(vigente, politicaNueva) && motivo.length < MOTIVO_PARAMETRO_MIN) {
+      politicaMotivoError = `Bajar la exigencia de la firma pide un motivo de al menos ${MOTIVO_PARAMETRO_MIN} caracteres.`;
+      return;
+    }
+    actionLoading = true;
+    try {
+      const res = await fetch(
+        `/admin/parametros/api/params/${encodeURIComponent(CLAVE_POLITICA_XADES)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: politicaNueva, ...(motivo ? { motivo } : {}) }),
+        },
+      );
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = mensajeGuardar(res, resData);
+        if (res.status === 422) politicaMotivoError = msg;
+        notifyError(msg);
+        return;
+      }
+      paramEntries = paramEntries.map(([k, v]) =>
+        k === CLAVE_POLITICA_XADES ? [k, resData.value ?? politicaNueva] : [k, v],
+      );
+      editingKey = null;
+      notifySuccess("Política de firma guardada.");
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      actionLoading = false;
+    }
+  }
+
   function guardarEdicion() {
+    if (editingKey === CLAVE_POLITICA_XADES) return guardarPolitica();
     guardarParam(editingKey, editValueRaw, () => {
       editingKey = null;
     });
@@ -142,7 +232,11 @@
       newKeyError = "Ya existe un parámetro con esa clave; edítalo en la tabla.";
       return;
     }
-    guardarParam(newKey.trim(), newValueRaw || "null", () => {
+    if (!newValueRaw.trim()) {
+      newValueError = "El valor es obligatorio (JSON).";
+      return;
+    }
+    guardarParam(newKey.trim(), newValueRaw, () => {
       newKey = "";
       newValueRaw = "";
     });
@@ -395,7 +489,7 @@
             <tr>
               <th scope="col">Clave</th>
               <th scope="col">Valor</th>
-              {#if canWrite}<th scope="col"><span class="sr-only">Acciones</span></th>{/if}
+              {#if canWriteParams}<th scope="col"><span class="sr-only">Acciones</span></th>{/if}
             </tr>
           </thead>
           <tbody>
@@ -403,7 +497,30 @@
               <tr>
                 <td><code>{key}</code></td>
                 <td>
-                  {#if editingKey === key}
+                  {#if editingKey === key && canWriteParams && key === CLAVE_POLITICA_XADES}
+                    <FormField
+                      id="param-edit-politica"
+                      label="Política de firma personal (XAdES)"
+                      type="select"
+                      options={[
+                        { value: "", label: "Elija una política" },
+                        ...OPCIONES_POLITICA_XADES,
+                      ]}
+                      bind:value={politicaNueva}
+                      error={politicaError}
+                    />
+                    <FormField
+                      id="param-edit-politica-motivo"
+                      label="Motivo del cambio"
+                      type="textarea"
+                      rows={2}
+                      bind:value={politicaMotivo}
+                      error={politicaMotivoError}
+                      hint={relajaPolitica(value, politicaNueva)
+                        ? `Obligatorio (mínimo ${MOTIVO_PARAMETRO_MIN} caracteres): este cambio baja la exigencia de la firma y queda en el asiento de auditoría.`
+                        : "Opcional al endurecer la política."}
+                    />
+                  {:else if editingKey === key && canWriteParams}
                     <FormField
                       id="param-edit-{key}"
                       label=""
@@ -412,11 +529,14 @@
                       bind:value={editValueRaw}
                       error={editValueError}
                     />
+                  {:else if key === CLAVE_POLITICA_XADES}
+                    <code class="param-page__value">{mostrarValor(value)}</code>
+                    <span class="param-page__hint">{etiquetaPolitica(value)}</span>
                   {:else}
-                    <code class="param-page__value">{JSON.stringify(value)}</code>
+                    <code class="param-page__value">{mostrarValor(value)}</code>
                   {/if}
                 </td>
-                {#if canWrite}
+                {#if canWriteParams}
                   <td class="param-table__actions">
                     {#if editingKey === key}
                       <Button variant="ghost" size="sm" on:click={() => (editingKey = null)}
@@ -445,7 +565,14 @@
       </div>
     {/if}
 
-    {#if canWrite}
+    {#if canWrite && !canWriteParams}
+      <p class="param-page__hint" data-testid="params-solo-lectura">
+        Su nivel de administración no permite cambiar parámetros: se necesita nivel 3 (crear y
+        borrar). Puede consultarlos.
+      </p>
+    {/if}
+
+    {#if canWriteParams}
       <form class="param-form" on:submit|preventDefault={crearParam} novalidate>
         <h2 class="param-page__section-title">Nuevo parámetro</h2>
         <FormField
@@ -502,7 +629,7 @@
               <th scope="col">Fecha</th>
               <th scope="col">Descripción</th>
               <th scope="col">Nacional</th>
-              {#if canWrite}<th scope="col"><span class="sr-only">Acciones</span></th>{/if}
+              {#if canWriteHolidays}<th scope="col"><span class="sr-only">Acciones</span></th>{/if}
             </tr>
           </thead>
           <tbody>
@@ -511,7 +638,7 @@
                 <td>{h.fecha}</td>
                 <td>{h.descripcion}</td>
                 <td>{h.is_national ? "Sí" : "No"}</td>
-                {#if canWrite}
+                {#if canWriteHolidays}
                   <td class="param-table__actions">
                     <Button
                       variant="ghost"
@@ -531,7 +658,7 @@
       </div>
     {/if}
 
-    {#if canWrite}
+    {#if canWriteHolidays}
       <form class="param-form" on:submit|preventDefault={crearFestivo} novalidate>
         <h2 class="param-page__section-title">Nuevo festivo puntual</h2>
         <div class="param-form__row">

@@ -194,7 +194,9 @@ describe("DELETE /perfil/api/signing-key (auto-revocación)", () => {
     });
     await revokeDelete({
       locals: SESSION_LOCALS,
-      request: { json: async () => ({ step_up_totp_code: "123456", motivo: "sospecha de compromiso" }) },
+      request: {
+        json: async () => ({ step_up_totp_code: "123456", motivo: "sospecha de compromiso" }),
+      },
     });
     expect(capturedBody).toEqual({ step_up_totp_code: "123456" });
   });

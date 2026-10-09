@@ -7,7 +7,6 @@
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-
 /**
  * estado-acuse.test.js — el proxy de cambio de estado deja pasar el acuse (AREA-09-10).
  * El backend es quien EXIGE el acuse para «entregado»; aquí solo se comprueba que el
@@ -31,9 +30,7 @@ describe("/envios/api/[id]/estado — acuse de recibo", () => {
   it("reenvía acuse_file_id y acuse_sha256 al backend", async () => {
     const f = vi.fn().mockResolvedValue({ status: 200, json: async () => ({}) });
     vi.stubGlobal("fetch", f);
-    await POST(
-      evento({ estado: "entregado", acuse_file_id: "f-1", acuse_sha256: "a".repeat(64) }),
-    );
+    await POST(evento({ estado: "entregado", acuse_file_id: "f-1", acuse_sha256: "a".repeat(64) }));
     const cuerpo = JSON.parse(f.mock.calls[0][1].body);
     expect(cuerpo.acuse_file_id).toBe("f-1");
     expect(cuerpo.acuse_sha256).toBe("a".repeat(64));

@@ -535,3 +535,52 @@ def test_las_firmas_personales_son_instrumentos_de_control_y_estan_en_la_migraci
 
     for t in ("acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"):
         assert t in CONTROL_INSTRUMENT_TIPOS
+
+
+# ---------------------------------------------------------------------------
+# AREA-07-10 -- la constancia de «firma inobtenible» (sello y firma personal del declarante)
+# ---------------------------------------------------------------------------
+
+_TIPOS_CONSTANCIA = [
+    f"acta_firma_excepcion_{variante}{rol}"
+    for variante in ("", "personal_", "sobre_")
+    for rol in ("elabora", "entrega", "recibe")
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tipo", _TIPOS_CONSTANCIA)
+async def test_proteger_artefacto_constancia_firma_inobtenible_por_rol(
+    client_with_conn, tipo: str
+) -> None:
+    client, mock_conn, mock_minio = client_with_conn
+    file_id = uuid.uuid4()
+    record = _file_record(file_id)
+    worm_row = make_worm_row(expediente_id="EXP-1", tipo=tipo, object_key=record["object_key"])
+
+    _grant_permission(mock_conn)
+    mock_conn.fetchrow.side_effect = [
+        None,
+        record,
+        worm_row,
+        {"id": uuid.uuid4()},
+        {"id": uuid.uuid4()},
+    ]
+    mock_minio.get_object = _minio_get_object(_ACTA_XML)
+
+    resp = await client.post(
+        "/api/v1/preservacion/proteger-artefacto",
+        json=_base_payload(file_id, tipo=tipo),
+        headers=INTERNAL_HEADERS,
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["tipo"] == tipo
+    mock_minio.put_object.assert_awaited_once()
+
+
+def test_las_constancias_son_instrumentos_de_control() -> None:
+    from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
+
+    for t in _TIPOS_CONSTANCIA:
+        assert t in CONTROL_INSTRUMENT_TIPOS

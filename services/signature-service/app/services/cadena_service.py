@@ -47,8 +47,9 @@ from app.core.constants import (
 )
 from app.core.events import publish_challenge_emitido
 from app.core.http_clients import (
-    BorradorDesaparecidoError,
     HuellaNoVerificableError,
+    HuellaSinContenidoError,
+    ObjetoDesaparecidoError,
     OtpEmailDeliveryError,
     SignerEmailError,
     SigningKeyStatusUnavailableError,
@@ -56,6 +57,8 @@ from app.core.http_clients import (
     TotpVerifyUnavailableError,
     aprobar_borrador_remote,
     get_huella_borrador,
+    get_huella_indice_expediente,
+    get_huella_radicado,
     get_signer_identity,
     get_signing_key_status_remote,
     get_totp_status_remote,
@@ -63,6 +66,7 @@ from app.core.http_clients import (
     verify_totp,
 )
 from app.core.otp import generate_otp, hmac_otp, mask_email, verify_otp
+from app.core.params_entidad import modo_xades_de_la_entidad
 from app.core.redis_client import get_redis
 from app.core.secret_derivation import KEY_VERSION_ACTUAL
 from app.providers.base import SignedDoc
@@ -107,7 +111,40 @@ async def _huella_de_borrador(objeto_id: str, tenant_slug: str) -> dict:
     return await get_huella_borrador(objeto_id, tenant_slug)
 
 
-RESOLUTOR_DE_HUELLA = {"borrador": _huella_de_borrador}
+async def _huella_de_radicado(objeto_id: str, tenant_slug: str) -> dict:
+    """SHA-256 del PDF vigente del radicado, en la FORMA común de los resolutores
+    (``cuerpo_sha256``, ``version``). Misma indirección que `_huella_de_borrador`."""
+    datos = await get_huella_radicado(objeto_id, tenant_slug)
+    return {"cuerpo_sha256": datos.get("huella_sha256"), "version": None}
+
+
+async def _huella_de_expediente(objeto_id: str, tenant_slug: str) -> dict:
+    """SHA-256 del índice electrónico vigente del expediente, en la forma común."""
+    datos = await get_huella_indice_expediente(objeto_id, tenant_slug)
+    return {"cuerpo_sha256": datos.get("huella_sha256"), "version": datos.get("version")}
+
+
+RESOLUTOR_DE_HUELLA = {
+    "borrador": _huella_de_borrador,
+    "radicado": _huella_de_radicado,
+    "expediente": _huella_de_expediente,
+}
+
+#: Qué es «lo que se sella» de cada tipo, para los mensajes: la huella la resuelve
+#: el servidor y NUNCA el cliente (AREA-04-09).
+_QUE_SE_SELLA = {
+    "borrador": "el texto",
+    "radicado": "el documento PDF del radicado",
+    "expediente": "el índice electrónico del expediente",
+}
+
+
+def _que_se_sella(objeto_tipo: str, por_defecto: str) -> str:
+    return _QUE_SE_SELLA.get(objeto_tipo, por_defecto)
+
+
+def _mayuscula_inicial(texto: str) -> str:
+    return texto[:1].upper() + texto[1:]
 
 try:
     from orpycamcp_common import audit as _audit
@@ -191,13 +228,15 @@ class _PersonalSigningStatus:
     disponible: bool
 
 
-def _xades_gate_activo(nivel_seguridad: int) -> bool:
+def _xades_gate_activo(nivel_seguridad: int, modo: str) -> bool:
     """Predicado del gate ``firma_personal_require_xades`` (E17/F4, Incremento 3).
 
     Decide SOLO si un cert personal ausente/inaccesible puede caer a nativa
     para este acto — nunca altera la ruta cuando el cert SÍ está activo.
+
+    ``modo`` es el de la ENTIDAD (``modo_xades_de_la_entidad``): parámetro del
+    tenant con el entorno como respaldo.
     """
-    modo = settings.firma_personal_require_xades
     if modo == "todos":
         return True
     if modo == "clasificados":
@@ -395,7 +434,7 @@ class CadenaFirmaService:
         # arbitrario y la firma valía sobre ese hash, no sobre el documento.
         huella: str | None = None
         if payload.objeto_tipo in CADENA_PAYLOAD_AUTORITATIVO:
-            huella = await self._resolver_huella(payload.objeto_id)
+            huella = await self._resolver_huella(payload.objeto_id, payload.objeto_tipo)
         elif payload.objeto_tipo not in CADENA_SIN_HUELLA_DECLARADA:
             huella = payload.payload_sha256
 
@@ -463,6 +502,11 @@ class CadenaFirmaService:
                         "solicitud_id": str(sol["id"]),
                         "firmantes": [str(f) for f in payload.firmantes],
                         "nivel_seguridad": nivel,
+                        # Qué contenido vincula la cadena: la huella que FIJÓ el
+                        # servidor (None donde el tipo no tiene contenido que
+                        # sellar). Sin ella el asiento dice que se abrió un
+                        # circuito, no sobre qué.
+                        "huella_documento_sha256": huella,
                     },
                     canal=_audit.CANAL_PETICION,
                 )
@@ -711,24 +755,6 @@ class CadenaFirmaService:
                     },
                 )
 
-            # A closed chain (firmado/rechazado) must not accept a new challenge:
-            # rechazar() only resolves the active turn, leaving later turns
-            # 'pendiente' — turno_activo_for_update below would still return one
-            # of them. Without this guard, a signer further down an already
-            # rejected/completed chain could trigger a real OTP email for a
-            # challenge that firmar() will unconditionally reject afterwards
-            # (409 solicitud_no_pendiente, same check there) — wasted OTP,
-            # email noise and a misleading firma.challenge.emitido audit entry.
-            if sol["estado"] != "pendiente":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "error": "solicitud_no_pendiente",
-                        "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
-                        "status": 409,
-                    },
-                )
-
             # Pertenencia ANTES que turno, igual que `firmar`. Este guard decía
             # «no es el turno de este actor» también a quien NO está en la
             # cadena, y a ese le afirmaba algo falso: no espera turno, es que
@@ -744,6 +770,24 @@ class CadenaFirmaService:
                         "error": "no_es_firmante",
                         "detail": "El actor no pertenece a esta cadena de firma",
                         "status": 403,
+                    },
+                )
+
+            # A closed chain (firmado/rechazado) must not accept a new challenge:
+            # rechazar() only resolves the active turn, leaving later turns
+            # 'pendiente' — turno_activo_for_update below would still return one
+            # of them. Without this guard, a signer further down an already
+            # rejected/completed chain could trigger a real OTP email for a
+            # challenge that firmar() will unconditionally reject afterwards
+            # (409 solicitud_no_pendiente, same check there) — wasted OTP,
+            # email noise and a misleading firma.challenge.emitido audit entry.
+            if sol["estado"] != "pendiente":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "solicitud_no_pendiente",
+                        "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
+                        "status": 409,
                     },
                 )
 
@@ -923,7 +967,7 @@ class CadenaFirmaService:
             return
         await aprobar_borrador_remote(str(sol["objeto_id"]), self._tenant_slug)
 
-    async def _resolver_huella(self, objeto_id: str) -> str:
+    async def _resolver_huella(self, objeto_id: str, objeto_tipo: str = "borrador") -> str:
         """Huella autoritativa de lo que la cadena vincula, desde su productor.
 
         Para un borrador es la del **TEXTO** (`cuerpo_sha256`), no la del PDF/A.
@@ -947,15 +991,29 @@ class CadenaFirmaService:
         `409 borrador_sin_texto` si el cuerpo está vacío: aprobar la nada no
         vincula a nadie.
         """
+        resolutor = RESOLUTOR_DE_HUELLA[objeto_tipo]
         try:
-            vigente = await get_huella_borrador(str(objeto_id), self._tenant_slug)
-        except BorradorDesaparecidoError as exc:
+            vigente = await resolutor(str(objeto_id), self._tenant_slug)
+        except ObjetoDesaparecidoError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={
                     "error": "solicitud_not_found",
                     "detail": "No existe la solicitud de firma",
                     "status": 404,
+                },
+            ) from exc
+        except HuellaSinContenidoError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": exc.codigo,
+                    "detail": (
+                        f"No hay {_que_se_sella(objeto_tipo, 'contenido')} que "
+                        "vincular a la cadena: sin él, la firma recaería sobre el "
+                        "nombre del objeto."
+                    ),
+                    "status": 409,
                 },
             ) from exc
         except HuellaNoVerificableError as exc:
@@ -972,6 +1030,15 @@ class CadenaFirmaService:
             ) from exc
 
         huella = vigente.get("cuerpo_sha256")
+        if not huella and objeto_tipo != "borrador":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "objeto_sin_contenido",
+                    "detail": f"No hay {_QUE_SE_SELLA[objeto_tipo]} que firmar.",
+                    "status": 409,
+                },
+            )
         if not huella:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1034,8 +1101,8 @@ class CadenaFirmaService:
         la huella VIGENTE y se compara; el evento se queda como limpieza de
         bandejas, no como garantía.
 
-        Solo aplica a los tipos con fichero propio (`borrador`, `documento`), que
-        son los que tienen `payload_sha256` obligatorio. Para los demás no hay
+        Aplica a todo tipo con huella de contenido (`borrador`, `radicado`,
+        `expediente`: ver `RESOLUTOR_DE_HUELLA`). Un tipo sin resolutor no tiene
         huella contra la que comparar y este gate no dice nada.
 
         No poder comprobar **deniega**: si un fallo de red se interpretara como
@@ -1069,12 +1136,27 @@ class CadenaFirmaService:
 
         try:
             vigente = await resolutor(str(sol["objeto_id"]), self._tenant_slug)
-        except BorradorDesaparecidoError as exc:
+        except ObjetoDesaparecidoError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error": "documento_desaparecido",
                     "detail": f"El objeto de esta cadena ya no existe: {exc}",
+                    "status": 409,
+                },
+            ) from exc
+        except HuellaSinContenidoError as exc:
+            # El productor responde pero lo que se firmó ya no tiene contenido
+            # (se retiró el PDF, no hay índice): no es «igual», es «ya no está».
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "documento_modificado",
+                    "detail": (
+                        f"Ya no hay {_que_se_sella(sol['objeto_tipo'], 'contenido')} "
+                        f"contra el que comparar ({exc.codigo}): las aprobaciones y "
+                        "firmas anteriores no se arrastran."
+                    ),
                     "status": 409,
                 },
             ) from exc
@@ -1097,8 +1179,14 @@ class CadenaFirmaService:
                 detail={
                     "error": "documento_modificado",
                     "detail": (
-                        "El texto cambió después de abrirse este circuito "
-                        f"(versión actual {vigente.get('version')}). Las aprobaciones "
+                        f"{_mayuscula_inicial(_que_se_sella(sol['objeto_tipo'], 'el contenido'))} "
+                        "cambió después de abrirse este circuito"
+                        + (
+                            f" (versión actual {vigente['version']})"
+                            if vigente.get("version") is not None
+                            else ""
+                        )
+                        + ". Las aprobaciones "
                         "anteriores no se arrastran: hay que abrir el circuito de "
                         "nuevo y volver a recogerlas."
                     ),
@@ -1118,8 +1206,10 @@ class CadenaFirmaService:
 
         Guards (in order):
         1. 404 — solicitud not found (also the no-read-up answer).
-        2. 409 — solicitud is not in 'pendiente' state.
-        3. 403 no_es_firmante — actor is not in the chain at all.
+        2. 403 no_es_firmante — actor is not in the chain at all (BEFORE the state
+           check: the 409 below only tells chain members what state it is in, so a
+           stranger gets the same 403 whatever the state — AREA-04-09 Media-2).
+        3. 409 — solicitud is not in 'pendiente' state.
         4. 403 no_es_su_turno — actor is in the chain but it's not their turn yet
            (invariant: turn N+1 only after turn N is resolved, RF-FIR-04).
         5. 409 documento_modificado — the text changed since the circuit opened
@@ -1155,7 +1245,7 @@ class CadenaFirmaService:
         answer this with an e-mail OTP forever.
 
         --- Gate XAdES (E17/F4, Incremento 3 — cierra Baja #3 del Inc.2) ---
-        With ``settings.firma_personal_require_xades == "off"`` (default), a
+        With the entity's ``firma_personal_require_xades`` parameter ``"off"`` (default; env fallback), a
         missing cert or an unreachable auth-service both degrade to the
         nativa path — byte-identical to Inc.1/2. With the gate ACTIVE for
         this act's ``nivel_seguridad`` (see ``_xades_gate_activo``), the two
@@ -1173,16 +1263,9 @@ class CadenaFirmaService:
         # chain existence from 409/403 response codes (RF-SEG-08, D-15).
         await self._assert_can_read(sol, actor)
 
-        if sol["estado"] != "pendiente":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "solicitud_no_pendiente",
-                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
-                    "status": 409,
-                },
-            )
-
+        # Pertenencia ANTES que el estado (AREA-04-09 Media-2): el estado de la
+        # solicitud (409) solo se le cuenta a quien es parte de la cadena; a un
+        # ajeno le llega el mismo 403 sea cual sea el estado.
         if not await self._repo.es_firmante(solicitud_id, actor):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -1190,6 +1273,16 @@ class CadenaFirmaService:
                     "error": "no_es_firmante",
                     "detail": "El actor no pertenece a esta cadena de firma",
                     "status": 403,
+                },
+            )
+
+        if sol["estado"] != "pendiente":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "solicitud_no_pendiente",
+                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
+                    "status": 409,
                 },
             )
 
@@ -1260,6 +1353,11 @@ class CadenaFirmaService:
         # los retenía hasta el timeout. Es de solo lectura: resolverla de más en
         # un acto que luego se rechaza no cuesta ningún factor.
         personal_res = await self._resolve_personal_signing_status(authorization)
+        # Política XAdES de la ENTIDAD (parámetro del tenant, entorno de respaldo).
+        # Fuera de la transacción por la misma razón: una lectura no debe correr
+        # con el row-lock del turno, y un fallo de base aquí se propaga (500), no
+        # se interpreta como «sin gate».
+        modo_xades = await modo_xades_de_la_entidad(self._conn)
 
         otp_fail: HTTPException | None = None
         consumed_challenge: dict | None = None
@@ -1330,7 +1428,7 @@ class CadenaFirmaService:
             # caído" — pero la denegación en sí (más abajo) corre ANTES de
             # invocar _firmar_personal/_gate_2fa, así que ningún factor 2FA
             # se consume en un acto que el gate va a rechazar.
-            gate_activo = _xades_gate_activo(sol["nivel_seguridad"])
+            gate_activo = _xades_gate_activo(sol["nivel_seguridad"], modo_xades)
             personal_signed: SignedDoc | None = None
 
             if personal_res.body is not None and (
@@ -1414,7 +1512,7 @@ class CadenaFirmaService:
                         payload={
                             "solicitud_id": str(solicitud_id),
                             "nivel_seguridad": sol["nivel_seguridad"],
-                            "gate_modo": settings.firma_personal_require_xades,
+                            "gate_modo": modo_xades,
                             "motivo": motivo,
                             "factor_consumido": False,
                         },
@@ -1565,7 +1663,7 @@ class CadenaFirmaService:
                                 "solicitud_id": str(solicitud_id),
                                 "firma_id": str(firma_row["id"]),
                                 "nivel_seguridad": sol["nivel_seguridad"],
-                                "gate_modo": settings.firma_personal_require_xades,
+                                "gate_modo": modo_xades,
                                 "motivo": "canal_status_no_disponible",
                             },
                             canal=_audit.CANAL_PETICION,
@@ -1604,6 +1702,16 @@ class CadenaFirmaService:
                             "orden": turno["orden"],
                             "firma_id": str(firma_id),
                             "huella_de_contenido": huella_de_contenido,
+                            # Política XAdES EFECTIVA con la que se firmó (la de la
+                            # entidad, o el respaldo del entorno): los asientos de
+                            # denegación y de degradación ya la llevaban, el de la
+                            # firma consumada no, y sin ella no se puede reconstruir
+                            # bajo qué regla pasó un acto de nivel >= 2.
+                            "gate_modo": modo_xades,
+                            # Huella del documento fijada al abrir la cadena (la
+                            # misma que se releyó contra el productor antes de
+                            # firmar). NO es `payload_firmado_sha256`.
+                            "huella_documento_sha256": sol["payload_sha256"],
                             # Effective hash bound to this act — ties the audit
                             # entry to the exact document without needing to
                             # cross-reference firma_challenge (RF-FIR-13/14).
@@ -2124,16 +2232,9 @@ class CadenaFirmaService:
         # No-read-up gate before any other guard (RF-SEG-08, D-15).
         await self._assert_can_read(sol, actor)
 
-        if sol["estado"] != "pendiente":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "solicitud_no_pendiente",
-                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
-                    "status": 409,
-                },
-            )
-
+        # Pertenencia ANTES que el estado (AREA-04-09 Media-2): el estado de la
+        # solicitud (409) solo se le cuenta a quien es parte de la cadena; a un
+        # ajeno le llega el mismo 403 sea cual sea el estado.
         if not await self._repo.es_firmante(solicitud_id, actor):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2141,6 +2242,16 @@ class CadenaFirmaService:
                     "error": "no_es_firmante",
                     "detail": "El actor no pertenece a esta cadena de firma",
                     "status": 403,
+                },
+            )
+
+        if sol["estado"] != "pendiente":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "solicitud_no_pendiente",
+                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
+                    "status": 409,
                 },
             )
 
@@ -2243,16 +2354,9 @@ class CadenaFirmaService:
         # No-read-up antes que cualquier otra guarda (RF-SEG-08, D-15).
         await self._assert_can_read(sol, actor)
 
-        if sol["estado"] != "pendiente":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "solicitud_no_pendiente",
-                    "detail": f"La solicitud ya está en estado «{sol['estado']}»",
-                    "status": 409,
-                },
-            )
-
+        # Pertenencia ANTES que el estado (AREA-04-09 Media-2): el estado de la
+        # solicitud (409) solo se le cuenta a quien es parte de la cadena; a un
+        # ajeno le llega el mismo 403 sea cual sea el estado.
         if not await self._repo.es_firmante(solicitud_id, actor):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -2260,6 +2364,16 @@ class CadenaFirmaService:
                     "error": "no_es_firmante",
                     "detail": "El actor no pertenece a esta cadena",
                     "status": 403,
+                },
+            )
+
+        if sol["estado"] != "pendiente":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "solicitud_no_pendiente",
+                    "detail": f"La solicitud ya está en estado «{sol['estado']}»",
+                    "status": 409,
                 },
             )
 

@@ -85,6 +85,7 @@ async def test_firmar_personal_deja_la_fila_pendiente_en_la_tx_y_dispara_el_worm
         make_expediente_record(exp_id=exp_id, nivel_seguridad=1),
         _acta_row(transferencia_id=tid),
         None,
+        None,  # get_acta_firma_excepcion -> sin excepción (AREA-07-10)
         inserted,
     ]
     svc = TransferenciaService(conn, TENANT)
@@ -239,7 +240,14 @@ async def test_la_barrida_recoge_las_firmas_sin_proteger() -> None:
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
     conn = _conn()
     conn.fetchval.return_value = True
-    conn.fetch.return_value = [{"firma_personal_id": uuid.uuid4(), "worm_reconcile_intentos": 0}]
+    conn.fetchval.return_value = True
+    filas_personales = [{"firma_personal_id": uuid.uuid4(), "worm_reconcile_intentos": 0}]
+
+    async def _fetch(sql, *args):
+        # la misma barrida recoge también las constancias (migración 061): otra tabla
+        return filas_personales if "transferencia_acta_firma_personal_worm" in sql else []
+
+    conn.fetch.side_effect = _fetch
 
     @asynccontextmanager
     async def _acquire(_slug: str):
@@ -255,5 +263,49 @@ async def test_la_barrida_recoge_las_firmas_sin_proteger() -> None:
 
     assert resumen == {"pendientes_vistos": 1, "protegidos": 1, "fallidos": 0, "agotados": 0}
     assert proteger.await_args.kwargs == {"actor_id": None, "origen": "reconciliation"}
-    sql = conn.fetch.await_args.args[0]
+    sql = conn.fetch.await_args_list[0].args[0]
     assert "worm_protegido_at IS NULL" in sql and "worm_reconcile_agotado = FALSE" in sql
+
+
+@pytest.mark.asyncio
+async def test_la_misma_barrida_protege_las_constancias_de_firma_inobtenible() -> None:
+    """Migración 061: el sello y la firma personal del declarante que no pudieron protegerse
+    post-commit se repiten con backoff en la barrida de las firmas del acta."""
+    from app.jobs import indice_reconciliation
+
+    pool = MagicMock()
+    glob = AsyncMock()
+    glob.fetch.return_value = [{"slug": "tenant-a"}]
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=glob)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    conn = _conn()
+    conn.fetchval.return_value = True
+    exc_id = uuid.uuid4()
+
+    async def _fetch(sql, *args):
+        if "transferencia_acta_firma_excepcion_worm" in sql:
+            return [
+                {"excepcion_id": exc_id, "artefacto": "sello", "worm_reconcile_intentos": 0},
+                {"excepcion_id": exc_id, "artefacto": "personal", "worm_reconcile_intentos": 1},
+            ]
+        return []
+
+    conn.fetch.side_effect = _fetch
+
+    @asynccontextmanager
+    async def _acquire(_slug: str):
+        yield conn
+
+    proteger = AsyncMock(side_effect=["protegido", "agotado"])
+    with (
+        patch("app.jobs.indice_reconciliation.get_pool", return_value=pool),
+        patch("app.jobs.indice_reconciliation.acquire_tenant", _acquire),
+        patch.object(TransferenciaService, "proteger_worm_firma_excepcion", proteger),
+    ):
+        resumen = await indice_reconciliation.run_once_firmas_personales_worm()
+
+    assert resumen == {"pendientes_vistos": 2, "protegidos": 1, "fallidos": 0, "agotados": 1}
+    assert [c.args[1] for c in proteger.await_args_list] == ["sello", "personal"]
+    assert all(
+        c.kwargs == {"actor_id": None, "origen": "reconciliation"} for c in proteger.await_args_list
+    )

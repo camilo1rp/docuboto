@@ -444,6 +444,7 @@ async def renovar_retencion_worm_internal(
     tipo: str,
     retencion_anios: int,
     fecha_inicio: date,
+    file_id: str | None = None,
 ) -> WormRenewalOutcome:
     """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST
     /renovar-retencion-internal` — único llamador en este incremento: la 5ª
@@ -460,6 +461,11 @@ async def renovar_retencion_worm_internal(
         "retencion_anios": retencion_anios,
         "fecha_inicio": fecha_inicio.isoformat(),
     }
+    if file_id is not None:
+        # Tipos multi-artefacto (constancias de firma inobtenible y sus revocaciones, FIRMA-2):
+        # hay N objetos por (expediente, tipo) y storage los identifica por `file_id`
+        # (obligatorio allí); sin él renovaría solo el más reciente.
+        body["file_id"] = file_id
     headers = {
         "X-Tenant-Slug": tenant_slug,
         "X-Internal-Token": settings.storage_internal_token,
@@ -714,6 +720,43 @@ async def export_zip_internal(
             f"storage-service respondió {resp.status_code} al ensamblar el ZIP"
         )
     return resp.content
+
+
+async def purgar_huerfanos_internal(
+    *,
+    tenant_slug: str,
+    file_ids: list[uuid.UUID],
+    referencia: str,
+    motivo: str,
+    subido_desde: datetime,
+) -> list[dict] | None:
+    """`POST /internal/purgar-huerfanos` de storage (AREA-09-14, sellado con `X-Internal-Token`):
+    borrado SEGURO de binarios que ninguna fila referencia. Storage decide por referencias del
+    tenant, `subido_desde` y WORM, y deja su asiento `file.purgado_huerfano`. Devuelve un
+    resultado por archivo, o `None` si storage no respondió 2xx (best-effort: nunca lanza)."""
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    body = {
+        "file_ids": [str(f) for f in file_ids],
+        "referencia": referencia,
+        "motivo": motivo,
+        "subido_desde": subido_desde.isoformat(),
+        "actor": None,
+    }
+    try:
+        async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=30.0) as client:
+            resp = await client.post(
+                "/api/v1/storage/internal/purgar-huerfanos", headers=headers, json=body
+            )
+        if resp.status_code != 200:
+            logger.warning("storage-service → HTTP %s al purgar huérfanos", resp.status_code)
+            return None
+        return list(resp.json()["resultados"])
+    except (httpx.RequestError, KeyError, ValueError, TypeError) as exc:
+        logger.warning("purgar-huerfanos no completado: %s", exc)
+        return None
 
 
 async def download_signed_xml(*, tenant_slug: str, minio_key_firmado: str) -> str | None:

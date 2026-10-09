@@ -452,7 +452,7 @@ async def test_estado_totp_de_otro_bearer_no_levanta_el_veto_ni_pasa(
 
 
 def _cola_nativa_nivel1(conn: AsyncMock) -> None:
-    sol = _sol_row(nivel_seguridad=1, payload_sha256=None)
+    sol = _sol_row(nivel_seguridad=1)  # huella del productor (AREA-04-09 Media-2)
     turno = _turno_row(firmante_id=USER)
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [

@@ -141,6 +141,88 @@ export const MENSAJES_ACTO_TRAMITE = {
 };
 
 /**
+ * Códigos de la firma (cadenas sobre radicado/expediente, ADR-016 addendum
+ * 2026-10-04) y de la constancia de firma inobtenible (ADR-030), con su mensaje
+ * en español para quien está delante. Como el de los actos de trámite, se
+ * consulta ANTES del `detail` del backend: aquel habla del sistema, este dice
+ * qué hacer.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_FIRMA = {
+  // --- cadenas de firma: el contenido firmado es el del documento, no su id ---
+  radicado_sin_documento:
+    "El radicado no tiene un documento principal que firmar. Marque un anexo como principal y vuelva a intentarlo.",
+  indice_no_disponible:
+    "El expediente no tiene un índice electrónico vigente que firmar. Genere o cierre el índice primero.",
+  anexo_sin_huella:
+    "El documento principal no tiene huella de integridad registrada, así que no se puede firmar. Avise al administrador.",
+  documento_modificado:
+    "El documento cambió después de abrir la cadena de firmas. Se debe invalidar esta cadena y abrir una nueva sobre la versión vigente.",
+  cadena_sin_huella:
+    "Esta cadena se abrió antes de que se fijara la huella del documento y ya no se puede firmar. Pida que se invalide y abra una nueva.",
+  verificacion_documento_no_disponible:
+    "No se pudo comprobar que el documento siga siendo el mismo. No se firmó nada; intente de nuevo en unos minutos.",
+  // --- firma inobtenible ---
+  declarante_es_parte_de_la_transferencia:
+    "Quien elaboró, envió o recibió esta transferencia no puede declarar ni revocar una firma inobtenible. Debe hacerlo otra persona autorizada.",
+  declarante_sin_permiso_de_firma:
+    "Necesita el permiso de firma (nivel 2 o superior): el sello de la constancia se estampa a su nombre.",
+  excepcion_ya_declarada: "Ese rol ya tiene una excepción declarada.",
+  excepcion_vigente:
+    "Ese rol ya tiene una excepción vigente. Para declarar de nuevo, primero hay que revocarla.",
+  revocacion_sin_proteger:
+    "La revocación anterior aún no está sellada ni protegida en el almacén. Espere a que termine la protección e intente de nuevo.",
+  declarante_sin_certificado:
+    "No tiene un certificado de firma activo, y la constancia exige su firma personal. Solicite su certificado antes de declarar.",
+  soporte_sin_huella:
+    "El anexo de soporte no tiene huella de integridad registrada. Elija otro anexo.",
+  soporte_documental_sin_huella:
+    "No se pudo obtener la huella del anexo de soporte. No se declaró nada; intente de nuevo.",
+  storage_no_disponible:
+    "El almacén de documentos no responde. No se declaró nada; intente de nuevo más tarde.",
+  revocante_sin_permiso_de_firma:
+    "Necesita el permiso de firma (nivel 2 o superior) para revocar: el sello se estampa a su nombre.",
+  firma_personal_revocante_requerida:
+    "Tiene certificado de firma activo, así que debe firmar también la revocación: escriba su código de verificación (TOTP).",
+  valor_nulo:
+    "El valor no puede quedar vacío: un parámetro no se puede dejar sin valor para que se herede. Escriba un valor concreto.",
+  parte_ya_firmo: "Esa parte ya firmó el acta personalmente, así que no admite una excepción.",
+  parte_sin_identidad:
+    "La transferencia no tiene registrada la persona de ese rol, así que no se puede declarar su excepción.",
+  transferencia_no_recibida:
+    "La transferencia todavía no se ha recibido: el acta aún no está congelada y no admite este acto.",
+  excepcion_ya_revocada: "Esa excepción ya fue revocada.",
+  excepcion_not_found: "Ese rol no tiene una excepción de firma declarada.",
+  referencia_documental_invalida:
+    "El radicado o el anexo de soporte no existe o usted no puede verlo. Elija otro.",
+  firma_personal_declarante_requerida:
+    "La política de la entidad exige que usted firme además la constancia: escriba su código de verificación (TOTP).",
+  sin_certificado_activo:
+    "No tiene un certificado de firma activo y la política de la entidad exige firmar la constancia con él.",
+  totp_incorrecto: "El código de verificación no es correcto.",
+  sello_institucional_no_disponible:
+    "El sello institucional no está disponible. No se declaró nada; intente de nuevo más tarde.",
+  sellado_constancia_no_obtenido:
+    "No se pudo sellar la constancia. No se declaró nada; intente de nuevo más tarde.",
+  document_service_no_disponible:
+    "No se pudo comprobar el radicado de soporte porque el servicio de documentos no responde. No se declaró nada.",
+  canal_firma_personal_no_disponible:
+    "El canal de firma personal no está disponible en este momento. No se firmó nada; intente de nuevo.",
+  firma_excepcion_declarada:
+    "Esa parte tiene una excepción de firma vigente y no puede firmar. Si sí puede, pida que se revoque la excepción.",
+  sellado_sobre_no_obtenido:
+    "No se pudo sellar el sobre de la constancia. No se declaró nada; intente de nuevo más tarde.",
+  sobre_not_found: "Ese eslabón no tiene sobre firmado.",
+  sobre_no_disponible:
+    "El sobre firmado no está disponible en este momento. Intente de nuevo más tarde.",
+  fundamento_caracteres_invalidos:
+    "El fundamento contiene caracteres no permitidos (de control o invisibles). Quítelos y vuelva a intentar.",
+  // --- parámetros ---
+  motivo_requerido:
+    "Relajar la política de firma exige un motivo de al menos 10 caracteres. Escríbalo y vuelva a guardar.",
+};
+
+/**
  * Mensaje legible de un cuerpo de respuesta. **Nunca devuelve un objeto**: ese
  * es justo el fallo que motivó este módulo — un `[object Object]` en un aviso
  * de error deja a la persona sin saber qué pasó ni cómo arreglarlo.
@@ -151,7 +233,8 @@ export const MENSAJES_ACTO_TRAMITE = {
 export function mensajeError(data, porDefecto) {
   if (typeof data === "string" && data.trim()) return data;
   if (data && typeof data === "object") {
-    const delActo = MENSAJES_ACTO_TRAMITE[codigoError(data) ?? ""];
+    const delActo =
+      MENSAJES_ACTO_TRAMITE[codigoError(data) ?? ""] ?? MENSAJES_FIRMA[codigoError(data) ?? ""];
     if (delActo) return delActo;
     if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
     const validacion = mensajeDeValidacion(data.detail);

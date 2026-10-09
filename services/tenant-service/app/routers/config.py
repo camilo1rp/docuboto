@@ -51,7 +51,9 @@ async def list_holidays(
     "/config/holidays",
     response_model=HolidayResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    # Nivel 3: un administrador en modo LECTURA (nivel 1) no escribe el calendario
+    # que fija los plazos legales de toda la entidad.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_holiday(
     payload: HolidayCreate,
@@ -92,7 +94,9 @@ async def create_holiday(
 @router.delete(
     "/config/holidays/{holiday_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    # Nivel 3: un administrador en modo LECTURA (nivel 1) no escribe el calendario
+    # que fija los plazos legales de toda la entidad.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def delete_holiday(
     holiday_id: uuid.UUID,
@@ -120,7 +124,9 @@ async def delete_holiday(
 @router.post(
     "/config/holidays/seed",
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    # Nivel 3: un administrador en modo LECTURA (nivel 1) no escribe el calendario
+    # que fija los plazos legales de toda la entidad.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def seed_holidays(
     payload: HolidaySeedRequest,
@@ -168,6 +174,39 @@ async def calculate_business_days(
 
 
 # --- parámetros -------------------------------------------------------------
+#: Parámetros cuyo valor es un vocabulario CERRADO que lee otro servicio. Un
+#: valor fuera del vocabulario se rechaza al escribir (422): quien lo lee
+#: (signature-service) aplica ante un valor desconocido la política más estricta,
+#: así que dejar pasar un «clasificado» mal tecleado bloquearía la firma de la
+#: entidad entera en vez de avisar a quien lo escribió.
+#: `firma_personal_require_xades`: política XAdES de la entidad (ADR-016, AREA-04-12).
+#: El orden de la tupla ES el orden de rigor (de menor a mayor): `relaja_politica`
+#: lo usa para saber si un cambio baja la exigencia.
+PARAMS_VOCABULARIO_CERRADO: dict[str, tuple[str, ...]] = {
+    "firma_personal_require_xades": ("off", "clasificados", "todos"),
+}
+
+#: Mínimo de caracteres (sin espacios laterales) del `motivo` de un cambio que
+#: RELAJA una política. Una sola palabra no es una justificación auditable.
+MOTIVO_MIN_CARACTERES = 10
+
+
+def relaja_politica(key: str, antes: object, despues: object) -> bool:
+    """¿El cambio baja la exigencia de un parámetro de vocabulario ordenado?
+
+    Si el «antes» no es un valor del vocabulario (sin fila, JSON null = «manda el
+    entorno», o texto corrupto) NO se sabe qué política regía de verdad: se
+    supone la más estricta, de modo que fijar cualquier valor menor exige
+    motivo. Es el lado seguro: pedir una justificación de más cuesta una frase;
+    no pedirla deja relajar sin rastro.
+    """
+    orden = PARAMS_VOCABULARIO_CERRADO.get(key)
+    if orden is None or despues not in orden:
+        return False
+    rigor_antes = orden.index(antes) if isinstance(antes, str) and antes in orden else len(orden) - 1
+    return orden.index(despues) < rigor_antes
+
+
 @router.get("/config/params")
 async def get_params(conn: asyncpg.Connection = Depends(get_tenant_conn)) -> dict[str, object]:
     repo = ConfigRepository(conn)
@@ -189,7 +228,9 @@ async def get_param(key: str, conn: asyncpg.Connection = Depends(get_tenant_conn
 @router.put(
     "/config/params/{key}",
     response_model=ParamResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    # Nivel 3: un administrador en modo LECTURA (nivel 1) no cambia parámetros;
+    # el de la política de firma relajaba la exigencia de la entidad entera.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def set_param(
     key: str,
@@ -197,13 +238,54 @@ async def set_param(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> ParamResponse:
+    if payload.value is None:
+        # JSON null solo lo escribe la siembra (010/011: «la entidad no lo define»,
+        # manda el entorno). Por la API borraría en silencio la decisión de la
+        # entidad y dejaría que el respaldo del despliegue decida por ella.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "valor_nulo",
+                "detail": f"«{key}» no admite null: indique un valor",
+                "status": 422,
+            },
+        )
+    admitidos = PARAMS_VOCABULARIO_CERRADO.get(key)
+    if admitidos is not None and payload.value not in admitidos:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "valor_invalido",
+                "detail": f"«{key}» solo admite: {', '.join(admitidos)}",
+                "status": 422,
+            },
+        )
     repo = ConfigRepository(conn)
     actor = audit_core.actor_from(request)
+    motivo = (payload.motivo or "").strip()
+    relaja: list[bool] = [False]
+
+    def _guard(antes: object) -> None:
+        # Se evalúa con el «antes» ya bloqueado (ver `upsert_param`).
+        relaja[0] = relaja_politica(key, antes, payload.value)
+        if relaja[0] and len(motivo) < MOTIVO_MIN_CARACTERES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "motivo_requerido",
+                    "detail": (
+                        f"Relajar «{key}» exige un motivo de al menos "
+                        f"{MOTIVO_MIN_CARACTERES} caracteres"
+                    ),
+                    "status": 422,
+                },
+            )
+
     async with conn.transaction():
         # `upsert_param` ya escribe `admin_audit` (columna `updated_by`, por-tenant,
         # no inmutable); este `append` añade la traza Canal A (`public.audit_log`,
         # cadena de hash) en la MISMA transacción.
-        existia, antes = await repo.upsert_param(key, payload.value, actor)
+        existia, antes = await repo.upsert_param(key, payload.value, actor, guard=_guard)
         await audit_core.append(
             conn,
             tenant_slug=request.headers.get("X-Tenant-Slug"),
@@ -218,6 +300,10 @@ async def set_param(
                 "antes": antes,
                 "despues": payload.value,
                 "existia": existia,
+                # Quién relaja una política deja dicho por qué; el asiento lo
+                # marca para que sea consultable sin comparar antes/despues.
+                "relaja_politica": relaja[0],
+                "motivo": motivo or None,
             },
             canal=audit_core.CANAL_PETICION,
         )

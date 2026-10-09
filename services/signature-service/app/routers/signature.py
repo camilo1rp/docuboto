@@ -365,6 +365,7 @@ async def verify(
                 acreditado=False,  # no valida -> no acredita (AREA-05-02)
                 motivo="documento_no_corresponde_a_firma_id",
             )
+        advertencias: list[str] = []
         outcome = verify_xades(
             payload.payload_xml.encode(),
             fingerprint,
@@ -376,6 +377,7 @@ async def verify(
             expected_ca_fingerprint=(None if is_personal else row.get("ca_fingerprint")),
             expected_ocsp_responder_fingerprint=row.get("ocsp_responder_fingerprint"),
             expected_user_ca_fingerprint=(row.get("ca_fingerprint") if is_personal else None),
+            advertencias=advertencias,
         )
 
         # `firma_criptograficamente_valida`: el veredicto de `verify_xades`
@@ -486,6 +488,9 @@ async def verify(
             firma_criptograficamente_valida=firma_criptograficamente_valida,
             revocacion_status=revocacion_status,
             revocacion_posterior=revocacion_posterior,
+            # Solo se declaran sobre una firma que VALIDA: un aviso sobre un
+            # veredicto negativo sería ruido encima del motivo real.
+            advertencias=advertencias if valida else [],
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""

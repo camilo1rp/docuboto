@@ -831,6 +831,11 @@ async def test_sign_with_valid_otp_success(monkeypatch: pytest.MonkeyPatch) -> N
         )
         assert payload["consumido_at"] is not None
         assert "otp" not in payload and "otp_hash" not in payload
+        # Auditoría 2026-10-08: el asiento de la firma consumada dice bajo qué
+        # política XAdES se firmó y sobre qué huella de documento.
+        assert payload["gate_modo"] == settings.firma_personal_require_xades
+        assert payload["huella_documento_sha256"] == DOC_HASH
+        assert payload["huella_documento_sha256"] != payload["payload_firmado_sha256"]
     finally:
         _clear()
 
@@ -1059,7 +1064,8 @@ async def test_create_challenge_solicitud_no_pendiente_returns_409(
     conn = _make_conn()
     sol = _sol_row(estado="rechazado")
 
-    conn.fetchval.side_effect = [True]
+    # check_permission, es_firmante (ahora ANTES que el estado, AREA-04-09 Media-2)
+    conn.fetchval.side_effect = [True, True]
     conn.fetchrow.side_effect = [sol, {}]  # get_solicitud_for_update, resolve_caller_clearance
 
     _override(conn)
