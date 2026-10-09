@@ -138,7 +138,7 @@ async def list_ejes(svc: PinarService = Depends(_svc)) -> list[EjeResponse]:
     "/planes",
     response_model=PlanResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_plan(
     payload: PlanCreate, request: Request, svc: PinarService = Depends(_svc)
@@ -166,7 +166,7 @@ async def get_plan(plan_id: uuid.UUID, svc: PinarService = Depends(_svc)) -> Pla
 @router.patch(
     "/planes/{plan_id}",
     response_model=PlanResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def update_plan(
     plan_id: uuid.UUID,
@@ -188,7 +188,7 @@ async def update_plan(
 @router.post(
     "/planes/{plan_id}/aprobar",
     response_model=PlanResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def aprobar_plan(
     plan_id: uuid.UUID,
@@ -208,7 +208,7 @@ async def aprobar_plan(
 @router.post(
     "/planes/{plan_id}/ejecutar",
     response_model=PlanResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def ejecutar_plan(
     plan_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
@@ -225,7 +225,7 @@ async def ejecutar_plan(
 @router.post(
     "/planes/{plan_id}/cerrar",
     response_model=PlanResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def cerrar_plan(
     plan_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
@@ -246,7 +246,7 @@ async def cerrar_plan(
     "/planes/{plan_id}/aspectos",
     response_model=AspectoResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_aspecto(
     plan_id: uuid.UUID,
@@ -276,7 +276,7 @@ async def list_aspectos(
 @router.patch(
     "/aspectos/{aspecto_id}",
     response_model=AspectoResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def update_aspecto(
     aspecto_id: uuid.UUID,
@@ -298,7 +298,7 @@ async def update_aspecto(
 @router.delete(
     "/aspectos/{aspecto_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def delete_aspecto(
     aspecto_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
@@ -317,7 +317,7 @@ async def delete_aspecto(
 @router.put(
     "/planes/{plan_id}/priorizacion",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def set_priorizacion(
     plan_id: uuid.UUID,
@@ -368,7 +368,7 @@ async def get_priorizacion(
     "/planes/{plan_id}/objetivos",
     response_model=ObjetivoResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_objetivo(
     plan_id: uuid.UUID,
@@ -398,7 +398,7 @@ async def list_objetivos(
 @router.patch(
     "/objetivos/{objetivo_id}",
     response_model=ObjetivoResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def update_objetivo(
     objetivo_id: uuid.UUID,
@@ -420,7 +420,7 @@ async def update_objetivo(
 @router.delete(
     "/objetivos/{objetivo_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def delete_objetivo(
     objetivo_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
@@ -440,7 +440,7 @@ async def delete_objetivo(
     "/planes/{plan_id}/proyectos",
     response_model=ProyectoResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_proyecto(
     plan_id: uuid.UUID,
@@ -470,7 +470,7 @@ async def list_proyectos(
 @router.patch(
     "/proyectos/{proyecto_id}",
     response_model=ProyectoResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def update_proyecto(
     proyecto_id: uuid.UUID,
@@ -492,7 +492,7 @@ async def update_proyecto(
 @router.delete(
     "/proyectos/{proyecto_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def delete_proyecto(
     proyecto_id: uuid.UUID, request: Request, svc: PinarService = Depends(_svc)
@@ -508,7 +508,7 @@ async def delete_proyecto(
 @router.put(
     "/proyectos/{proyecto_id}/aspectos",
     response_model=list[uuid.UUID],
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def set_proyecto_aspectos(
     proyecto_id: uuid.UUID,
@@ -531,7 +531,7 @@ async def set_proyecto_aspectos(
     "/proyectos/{proyecto_id}/seguimiento",
     response_model=SeguimientoResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def add_seguimiento(
     proyecto_id: uuid.UUID,
@@ -568,7 +568,7 @@ async def list_seguimiento(
     "/planes/{plan_id}/instrumentos",
     response_model=InstrumentoRefResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_instrumento(
     plan_id: uuid.UUID,
@@ -600,7 +600,7 @@ async def list_instrumentos(
 @router.delete(
     "/planes/{plan_id}/instrumentos/{instrumento_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def delete_instrumento(
     plan_id: uuid.UUID,

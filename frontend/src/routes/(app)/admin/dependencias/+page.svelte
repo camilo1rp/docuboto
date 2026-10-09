@@ -37,7 +37,8 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissionLevels } from "$lib/stores/auth.js";
+  import { puedeEscribirAdmin, mensajeEscrituraAdmin } from "$lib/utils/nivelAdmin.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import DependenciaTreeNode from "$lib/components/features/admin/DependenciaTreeNode.svelte";
@@ -46,7 +47,6 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
-  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -55,7 +55,7 @@
   let flat = data.flat ?? [];
   let treeLoading = false;
 
-  $: isAdmin = $permissions.includes("USUA_PERM_ADMIN");
+  $: isAdmin = puedeEscribirAdmin($permissionLevels);
 
   async function reload() {
     treeLoading = true;
@@ -150,7 +150,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(mensajeError(resData, "No se pudo guardar la dependencia."));
+        notifyError(mensajeEscrituraAdmin(resData, "No se pudo guardar la dependencia."));
         return false;
       }
       notifySuccess("Dependencia actualizada.");
@@ -174,7 +174,7 @@
       });
       const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(mensajeError(resData, "No se pudo crear la dependencia."));
+        notifyError(mensajeEscrituraAdmin(resData, "No se pudo crear la dependencia."));
         return;
       }
       notifySuccess("Dependencia creada.");

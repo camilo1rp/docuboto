@@ -328,8 +328,8 @@ Actualizar `name` o `status`. `slug` y `code` son inmutables. Deja asiento `tena
 > radicación y el cálculo de plazos (RF-RAD-04) necesitan para cualquier
 > usuario, no solo administradores.
 
-- **Dependencias** (organigrama): `GET /api/v1/dependencias` (autenticado) · `POST/PATCH/DELETE /api/v1/dependencias` (**`USUA_PERM_ADMIN`**) · `GET /api/v1/dependencias/by-codigo/{codigo}` (jerárquicas, autenticado).
-- **Catálogos** (lookup): `GET /api/v1/catalogos` (autenticado) — **qué catálogos hay**: devuelve la lista de nombres admitidos, para no tener que adivinarlos ni mantener una copia en el cliente. · `GET /api/v1/catalogos/{catalogo}` (autenticado) · `POST/PATCH/DELETE /api/v1/catalogos/{catalogo}` (**`USUA_PERM_ADMIN`**) — `tipos-identificacion`, `tipos-remitente`, `medios-recepcion`, `tipos-anexo`, `causales`, `formas-envio`, `soportes`, `mensajes-rapidos`.
+- **Dependencias** (organigrama): `GET /api/v1/dependencias` (autenticado) · `POST/PATCH/DELETE /api/v1/dependencias` (**`USUA_PERM_ADMIN` a nivel CRUD 3**; con nivel 1 o 2, `403`) · `GET /api/v1/dependencias/by-codigo/{codigo}` (jerárquicas, autenticado).
+- **Catálogos** (lookup): `GET /api/v1/catalogos` (autenticado) — **qué catálogos hay**: devuelve la lista de nombres admitidos, para no tener que adivinarlos ni mantener una copia en el cliente. · `GET /api/v1/catalogos/{catalogo}` (autenticado) · `POST/PATCH/DELETE /api/v1/catalogos/{catalogo}` (**`USUA_PERM_ADMIN` a nivel CRUD 3**) — `tipos-identificacion`, `tipos-remitente`, `medios-recepcion`, `tipos-anexo`, `causales`, `formas-envio`, `soportes`, `mensajes-rapidos`.
   - **`causales` distingue el acto al que sirve** (`ambito`, migración tenant 008): `devolucion`, `anulacion`, `reasignacion`, `devolucion_postal` o `general`. `GET /api/v1/catalogos/causales?ambito=devolucion` filtra en la fuente, y `ambito` viaja en el cuerpo de `POST`/`PATCH`. Es el único catálogo que lo admite: pedirlo sobre otro responde **422 `ambito_no_aplica`** en vez de ignorarlo en silencio. Una causal sin ámbito declarado queda en `general` y la ofrecen todos los actos.
 - **Parámetros**: `GET /api/v1/config/params`, `GET /api/v1/config/params/{key}` (autenticados) · `PUT /api/v1/config/params/{key}` (**`USUA_PERM_ADMIN` a nivel ≥ 3**: un administrador en modo lectura o edición recibe `403`; el asiento lleva `antes`/`despues`). Cuerpo `{value, motivo?}`; `value: null` da `422 valor_nulo` para cualquier clave (el JSON `null` solo lo escribe la siembra). **`firma_personal_require_xades`** (`off`·`clasificados`·`todos`) es la **política XAdES de la entidad** que lee signature-service en cada firma de cadena; la migración `010` la siembra en JSON `null` (= «la entidad no lo define»: manda el respaldo del entorno `FIRMA_PERSONAL_REQUIRE_XADES`) y la `011` repara las entidades donde una `010` anterior la había sembrado en `"off"` sin que nadie la cambiara por la API; cualquier otro valor da `422 valor_invalido` (un valor desconocido se aplicaría como `todos`). **Relajar la política** (bajar la exigencia, p. ej. `todos`→`clasificados`, o fijar un valor menor cuando el vigente es `null`/desconocido, que se supone el más estricto) **exige `motivo`** de al menos 10 caracteres: sin él, `422 motivo_requerido`; el asiento `config.parametro_actualizado` lleva `motivo` y `relaja_politica`. Endurecer no lo pide. La pantalla genérica `/admin/parametros` ya lo lista: no hay pantalla propia. Los parámetros de numeración (`formato_numero_radicado`, `depe_digits`, `consec_digits`, `expediente_number_format`) son **inertes**: ningún servicio los lee todavía.
 - **Dependencias — `PATCH` y `DELETE /api/v1/dependencias/{id}`**: si cambia `nombre`, pone `activo=false` o se elimina y hay pasos de flujo `pending`/`in_progress` o reglas de workflow que la referencian por nombre, responde `409 dependencia_con_tramite_en_curso` con `pasos_vivos` y `reglas`.
@@ -340,7 +340,7 @@ Actualizar `name` o `status`. `slug` y `code` son inmutables. Deja asiento `tena
 
 Instrumento de planeación archivística por tenant. Todas las escrituras (ciclo de
 vida del plan, aspectos, priorización, objetivos, proyectos, seguimiento,
-instrumentos) exigen **`USUA_PERM_ADMIN`** (`app/core/authz.py`, cierre del mismo
+instrumentos) exigen **`USUA_PERM_ADMIN` a nivel CRUD 3** (octubre de 2026; antes bastaba el nivel 1, de lectura; las lecturas siguen a nivel 1) (`app/core/authz.py`, cierre del mismo
 hallazgo Crítico que catálogos/dependencias/config — antes no había ningún gate
 de rol, pese a que la spec §10.3 restringe la gestión al administrador). **Desde
 2026-08-28 los `GET` también** (§4.bis del plan de pruebas): el gate vive en el
@@ -1601,7 +1601,7 @@ El catálogo actual: **207 tools, 75 de escritura** — de ellas **27 declaradas
 
 | Tool | Qué hace | Endpoint | Permiso (crud) | |
 | --- | --- | --- | --- | --- |
-| `registrar_avance_pinar` | Registrar el avance de un proyecto PINAR | `POST /pinar/proyectos/{proyecto_id}/seguimiento` | `USUA_PERM_ADMIN` (1) | **W** |
+| `registrar_avance_pinar` | Registrar el avance de un proyecto PINAR | `POST /pinar/proyectos/{proyecto_id}/seguimiento` | `USUA_PERM_ADMIN` (3) | **W** |
 | `arbol_dependencias` | Consultar el árbol de dependencias | `GET /dependencias/tree` | _sin permiso_ | R |
 | `calcular_dias_habiles` | Calcular el vencimiento en días hábiles | `GET /business-days/calculate` | _sin permiso_ | R |
 | `consultar_dependencia` | Consultar una dependencia | `GET /dependencias/{dependencia_id}` | _sin permiso_ | R |

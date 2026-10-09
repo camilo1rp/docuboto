@@ -89,7 +89,7 @@ async def list_items(
     "/{catalogo}",
     response_model=CatalogoItemResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_item(
     payload: CatalogoItemCreate,
@@ -133,7 +133,7 @@ async def create_item(
 @router.patch(
     "/{catalogo}/{item_id}",
     response_model=CatalogoItemResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def update_item(
     payload: CatalogoItemUpdate,
@@ -169,7 +169,7 @@ async def update_item(
 @router.delete(
     "/{catalogo}/{item_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def delete_item(
     request: Request,

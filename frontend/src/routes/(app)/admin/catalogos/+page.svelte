@@ -29,7 +29,8 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissionLevels } from "$lib/stores/auth.js";
+  import { puedeEscribirAdmin, mensajeEscrituraAdmin } from "$lib/utils/nivelAdmin.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
@@ -42,7 +43,7 @@
   /** @type {import('./$types').PageData} */
   export let data;
 
-  $: canWrite = $permissions.includes("USUA_PERM_ADMIN");
+  $: canWrite = puedeEscribirAdmin($permissionLevels);
 
   // Etiquetas legibles para los nombres kebab-case del backend. Si el
   // backend añade un catálogo nuevo que no está en este mapa, se muestra el
@@ -162,7 +163,7 @@
       });
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(mensajeError(resData, "No se pudo crear el item."));
+        notifyError(mensajeEscrituraAdmin(resData, "No se pudo crear el item."));
         return;
       }
       items = [...items, resData];
@@ -205,7 +206,7 @@
       );
       const resData = await res.json();
       if (!res.ok) {
-        notifyError(mensajeError(resData, "No se pudo actualizar el item."));
+        notifyError(mensajeEscrituraAdmin(resData, "No se pudo actualizar el item."));
         return;
       }
       items = items.map((i) => (i.id === resData.id ? resData : i));
@@ -233,7 +234,7 @@
         deleteTarget = null;
       } else {
         const err = await res.json().catch(() => ({}));
-        notifyError(mensajeError(err, "No se pudo eliminar el item."));
+        notifyError(mensajeEscrituraAdmin(err, "No se pudo eliminar el item."));
       }
     } catch {
       notifyError("No se pudo conectar al servidor.");

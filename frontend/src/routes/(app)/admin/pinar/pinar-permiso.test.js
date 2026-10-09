@@ -95,6 +95,7 @@ describe("la pantalla dice qué permiso falta, y el backend manda", () => {
     roles: [],
     tenant_slug: "icetex",
     permissions,
+    permission_levels: Object.fromEntries(permissions.map((p) => [p, 3])),
   });
 
   beforeEach(() => clearSession());

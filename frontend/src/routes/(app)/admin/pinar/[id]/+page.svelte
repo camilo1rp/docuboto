@@ -10,7 +10,7 @@
 -->
 
 <script>
-  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+  import { mensajeError } from "$lib/utils/apiError.js";
   import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { invalidateAll } from "$app/navigation";
   import { tick } from "svelte";
@@ -26,7 +26,8 @@
   import ProyectosPanel from "$lib/components/features/pinar/ProyectosPanel.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
 
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissionLevels } from "$lib/stores/auth.js";
+  import { puedeEscribirAdmin, mensajeEscrituraAdmin } from "$lib/utils/nivelAdmin.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
   /** @type {import('./$types').PageData} */
@@ -104,7 +105,7 @@
       const body = await res.json().catch(() => ({}));
       actionLoading = false;
       if (!res.ok) {
-        instrumentoError = mensajeError(body, `Error ${res.status}`);
+        instrumentoError = mensajeEscrituraAdmin(body, `Error ${res.status}`);
         return;
       }
       instrumentoModal = false;
@@ -122,7 +123,7 @@
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        notifyError(mensajeError(body, `Error ${res.status}`));
+        notifyError(mensajeEscrituraAdmin(body, `Error ${res.status}`));
         return;
       }
       await recargar();
@@ -131,7 +132,7 @@
     }
   }
 
-  $: canManage = $permissions.includes("USUA_PERM_ADMIN");
+  $: canManage = puedeEscribirAdmin($permissionLevels);
 
   // ---------------------------------------------------------------------------
   // Ciclo de vida (espejo de pinar_service.py — la UI nunca ofrece lo que el
@@ -160,10 +161,7 @@
 
   /** @param {any} err @param {string} fallback */
   function friendlyActionError(err, fallback) {
-    if (codigoError(err) === "forbidden") {
-      return "No tiene el nivel de permiso necesario para esta acción; consulte con el administrador de su entidad.";
-    }
-    return mensajeError(err, fallback);
+    return mensajeEscrituraAdmin(err, fallback);
   }
 
   /** @param {string|null|undefined} iso */

@@ -40,6 +40,7 @@ function sessionWith({ permissions = [] } = {}) {
     roles: [],
     tenant_slug: "icetex",
     permissions,
+    permission_levels: Object.fromEntries(permissions.map((p) => [p, 3])),
   };
 }
 

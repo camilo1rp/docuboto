@@ -31,9 +31,9 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
+  import { puedeEscribirAdmin, mensajeEscrituraAdmin } from "$lib/utils/nivelAdmin.js";
   import { notifyError } from "$lib/stores/notifications.js";
-  import { mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -42,11 +42,12 @@
   $: loadError = data.loadError;
   $: estadoFiltro = data.estadoFiltro ?? "";
 
-  $: canManage = $permissions.includes("USUA_PERM_ADMIN");
+  $: canManage = puedeEscribirAdmin($permissionLevels);
+  $: puedeVer = $permissions.includes("USUA_PERM_ADMIN");
   // Dos fuentes para lo mismo, y se hacen caso las dos: lo que la sesión
   // dice que puede (`canManage`) y lo que el backend contestó de verdad
   // (`data.sinPermiso`). Si discrepan manda el backend — es quien decide.
-  $: bloqueada = !canManage || data.sinPermiso === true;
+  $: bloqueada = !puedeVer || data.sinPermiso === true;
 
   const ESTADO_LABELS = {
     borrador: "Borrador",
@@ -117,7 +118,7 @@
       // (aprobar/ejecutar/cerrar) se gestiona ahí, no en este listado.
       await goto(`/admin/pinar/${result.id}`);
     } catch (err) {
-      notifyError(mensajeError(err, "No se pudo crear el plan PINAR."));
+      notifyError(mensajeEscrituraAdmin(err, "No se pudo crear el plan PINAR."));
     } finally {
       actionLoading = false;
     }

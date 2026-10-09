@@ -187,3 +187,5 @@ Presentes en **todas** las pantallas `(app)/`, provistas por `AppLayout` y `Side
 - [Arquitectura](architecture.md) — cómo cada pantalla se conecta con los
   microservicios a través del gateway.
 - [Referencia de API](api.md) — contrato completo de cada endpoint listado arriba.
+
+> **Escritura administrativa a nivel 3.** En `/admin/dependencias`, `/admin/catalogos` y `/admin/pinar` (listado y workspace) los controles de escritura se ofrecen solo con `USUA_PERM_ADMIN` a nivel CRUD >= 3, igual que el backend; con nivel 1 o 2 la pantalla es de solo lectura y un `403` se explica como falta de nivel.

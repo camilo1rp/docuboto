@@ -333,8 +333,8 @@ Update `name` or `status`. `slug` and `code` are immutable. Writes a `tenant.upd
 > registration UI and the deadline computation (RF-RAD-04) need for every user,
 > not just administrators.
 
-- **Dependencias** (organizational chart): `GET /api/v1/dependencias` (authenticated) · `POST/PATCH/DELETE /api/v1/dependencias` (**`USUA_PERM_ADMIN`**) · `GET /api/v1/dependencias/by-codigo/{codigo}` (hierarchical, authenticated).
-- **Catálogos** (lookups): `GET /api/v1/catalogos` (authenticated) — **which catalogues exist**: returns the list of accepted names, so nobody has to guess them or keep a client-side copy. · `GET /api/v1/catalogos/{catalogo}` (authenticated) · `POST/PATCH/DELETE /api/v1/catalogos/{catalogo}` (**`USUA_PERM_ADMIN`**) — `tipos-identificacion`, `tipos-remitente`, `medios-recepcion`, `tipos-anexo`, `causales`, `formas-envio`, `soportes`, `mensajes-rapidos`.
+- **Dependencias** (organizational chart): `GET /api/v1/dependencias` (authenticated) · `POST/PATCH/DELETE /api/v1/dependencias` (**`USUA_PERM_ADMIN` at CRUD level 3**; level 1 or 2 gets `403`) · `GET /api/v1/dependencias/by-codigo/{codigo}` (hierarchical, authenticated).
+- **Catálogos** (lookups): `GET /api/v1/catalogos` (authenticated) — **which catalogues exist**: returns the list of accepted names, so nobody has to guess them or keep a client-side copy. · `GET /api/v1/catalogos/{catalogo}` (authenticated) · `POST/PATCH/DELETE /api/v1/catalogos/{catalogo}` (**`USUA_PERM_ADMIN` at CRUD level 3**) — `tipos-identificacion`, `tipos-remitente`, `medios-recepcion`, `tipos-anexo`, `causales`, `formas-envio`, `soportes`, `mensajes-rapidos`.
   - **`causales` declares the act it serves** (`ambito`, tenant migration 008): `devolucion`, `anulacion`, `reasignacion`, `devolucion_postal` or `general`. `GET /api/v1/catalogos/causales?ambito=devolucion` filters at the source, and `ambito` travels in the `POST`/`PATCH` body. It is the only catalogue that supports it: asking for it on any other returns **422 `ambito_no_aplica`** instead of ignoring it silently. A causal with no declared ambit stays `general` and every act offers it.
 - **Parameters**: `GET /api/v1/config/params`, `GET /api/v1/config/params/{key}` (authenticated) · `PUT /api/v1/config/params/{key}` (**`USUA_PERM_ADMIN` at level ≥ 3**: an administrator in read or edit mode gets `403`; the audit entry carries `antes`/`despues`). Body `{value, motivo?}`; `value: null` gives `422 valor_nulo` for any key (JSON `null` is only written by the seed). **`firma_personal_require_xades`** (`off`·`clasificados`·`todos`) is the entity's **XAdES policy**, read by signature-service on every chain signature; migration `010` seeds it as JSON `null` (= "the entity does not define it": the environment fallback `FIRMA_PERSONAL_REQUIRE_XADES` rules) and `011` repairs entities where an earlier `010` had seeded `"off"` and nobody had changed it through the API; any other value gives `422 valor_invalido` (an unknown value would be applied as `todos`). **Relaxing the policy** (lowering the requirement, e.g. `todos`→`clasificados`, or setting a lower value when the current one is `null`/unknown, which is assumed to be the strictest) **requires `motivo`** of at least 10 characters: without it, `422 motivo_requerido`; the `config.parametro_actualizado` entry carries `motivo` and `relaja_politica`. Tightening does not ask for it. The generic `/admin/parametros` screen already lists it: no dedicated screen. The numbering parameters (`formato_numero_radicado`, `depe_digits`, `consec_digits`, `expediente_number_format`) are **inert**: no service reads them yet.
 - **Departments — `PATCH` and `DELETE /api/v1/dependencias/{id}`**: renaming, setting `activo=false` or deleting while live flow steps or workflow rules reference the name returns `409 dependencia_con_tramite_en_curso` with `pasos_vivos` and `reglas`.
@@ -345,7 +345,7 @@ Update `name` or `status`. `slug` and `code` are immutable. Writes a `tenant.upd
 
 A per-tenant archival planning instrument. Every write (plan lifecycle, critical
 aspects, prioritization, objectives, projects, follow-up, instruments) requires
-**`USUA_PERM_ADMIN`** (`app/core/authz.py`, closing the same Critical finding as
+**`USUA_PERM_ADMIN` at CRUD level 3** (October 2026; level 1, read-only, used to suffice; reads stay at level 1) (`app/core/authz.py`, closing the same Critical finding as
 catalogues/dependencias/config — there was previously no role gate at all, even
 though spec §10.3 restricts management to the administrator). **Since
 2026-08-28 so do the `GET`s** (§4.bis of the test plan): the gate lives on the
@@ -1424,7 +1424,7 @@ The current catalogue: **207 tools, 75 of them writes** — **27 declared irreve
 
 | Tool | Operation (verbatim, as the server shows it) | Endpoint | Permission (crud) | |
 | --- | --- | --- | --- | --- |
-| `registrar_avance_pinar` | Registrar el avance de un proyecto PINAR | `POST /pinar/proyectos/{proyecto_id}/seguimiento` | `USUA_PERM_ADMIN` (1) | **W** |
+| `registrar_avance_pinar` | Registrar el avance de un proyecto PINAR | `POST /pinar/proyectos/{proyecto_id}/seguimiento` | `USUA_PERM_ADMIN` (3) | **W** |
 | `arbol_dependencias` | Consultar el árbol de dependencias | `GET /dependencias/tree` | _no permission_ | R |
 | `calcular_dias_habiles` | Calcular el vencimiento en días hábiles | `GET /business-days/calculate` | _no permission_ | R |
 | `consultar_dependencia` | Consultar una dependencia | `GET /dependencias/{dependencia_id}` | _no permission_ | R |

@@ -114,7 +114,7 @@ async def get_dependencia(
     "",
     response_model=DependenciaResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def create_dependencia(
     payload: DependenciaCreate,
@@ -171,7 +171,7 @@ async def _exigir_sin_tramite_vivo(repo: DependenciaRepository, nombre: str, acc
 @router.patch(
     "/{dependencia_id}",
     response_model=DependenciaResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def update_dependencia(
     dependencia_id: uuid.UUID,
@@ -226,7 +226,7 @@ async def update_dependencia(
 @router.delete(
     "/{dependencia_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
 async def delete_dependencia(
     dependencia_id: uuid.UUID,

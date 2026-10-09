@@ -183,3 +183,5 @@ Present on **every** `(app)/` screen, provided by `AppLayout` and `SidebarNav`:
 - [Architecture](architecture.md) — how each screen connects to the microservices
   through the gateway.
 - [API Reference](api.md) — the full contract for each endpoint listed above.
+
+> **Administrative writes at level 3.** In `/admin/dependencias`, `/admin/catalogos` and `/admin/pinar` (list and workspace) write controls are offered only with `USUA_PERM_ADMIN` at CRUD level >= 3, like the backend; at level 1 or 2 the screen is read-only and a `403` is explained as insufficient level.

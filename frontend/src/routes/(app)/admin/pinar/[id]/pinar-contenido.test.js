@@ -52,6 +52,7 @@ const sesion = (permissions = ["USUA_PERM_ADMIN"]) => ({
   roles: [],
   tenant_slug: "icetex",
   permissions,
+  permission_levels: Object.fromEntries(permissions.map((p) => [p, 3])),
 });
 
 const texto = () => document.body.textContent.replace(/\s+/g, " ");
