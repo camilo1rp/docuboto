@@ -291,3 +291,24 @@ async def test_roturas_no_enumerables_no_las_cubre_la_linea_base(tx: asyncpg.Con
         tx, anclas={}, slugs=[slug], fecha_ancla="F1", roturas_declaradas=declaradas
     )
     assert codigo == 1 and nuevas == []
+
+
+async def test_un_filtro_que_deja_cero_tenants_sale_con_2(tx: asyncpg.Connection) -> None:
+    slug, _ = await _cadena(tx, 1)
+    codigo, mensajes, nuevas = await job.verificar(tx, anclas={}, slugs=[], fecha_ancla="F1")
+    assert codigo == 2 and nuevas == [] and any("objetivo vacío" in m for m in mensajes)
+    codigo, _, _ = await job.verificar(tx, anclas={}, excluir_prefijos=(slug[:4], "itest", ""), fecha_ancla="F1")
+    assert codigo == 2, "excluir todo (prefijo vacío) deja el objetivo en cero"
+
+
+async def test_sin_filtro_y_sin_tenants_solo_pasa_con_el_permiso_explicito(
+    tx: asyncpg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _nadie(_conn: asyncpg.Connection) -> list[str]:
+        return []
+
+    monkeypatch.setattr(job, "_slugs", _nadie)
+    codigo, _, _ = await job.verificar(tx, anclas={})
+    assert codigo == 2
+    codigo, _, _ = await job.verificar(tx, anclas={}, permitir_objetivo_vacio=True)
+    assert codigo == 0

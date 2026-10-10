@@ -14,6 +14,7 @@ y `business-days/calculate` quedan solo autenticados: el cálculo de plazos lega
 de respuesta los consume para cualquier usuario radicador, no solo administradores.
 """
 
+import re
 import uuid
 from datetime import date, timedelta
 
@@ -250,6 +251,20 @@ async def set_param(
                 "status": 422,
             },
         )
+    if key == "politica_tratamiento_url" and payload.value != "":
+        # Se enlaza en la página pública de la ventanilla: solo http(s) (un
+        # `javascript:`/`data:` sería XSS almacenado). Vacío = «sin URL».
+        if not isinstance(payload.value, str) or not re.fullmatch(
+            r"https?://[^\s<>\"']+", payload.value, re.IGNORECASE
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "url_invalida",
+                    "detail": "«politica_tratamiento_url» debe ser una URL http:// o https://",
+                    "status": 422,
+                },
+            )
     admitidos = PARAMS_VOCABULARIO_CERRADO.get(key)
     if admitidos is not None and payload.value not in admitidos:
         raise HTTPException(

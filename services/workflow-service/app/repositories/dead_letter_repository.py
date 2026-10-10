@@ -17,12 +17,13 @@ atomically together with the dead-letter row.
 from __future__ import annotations
 
 import asyncpg
+from orpycamcp_common import deadletter
 
-# Tope de seguridad del conjunto candidato de `list_scoped_for_clearance` (ver
-# docstring del método). Promovido a constante de módulo (en vez de literal
-# embebido en la firma) para que el router pueda comparar `len(candidates) >=
-# DEADLETTER_CANDIDATE_CAP` sin duplicar el valor (ADR-021, pulido Fase 5 "Baja").
-DEADLETTER_CANDIDATE_CAP = 1000
+# Columnas del resumen del listado (nunca ``payload`` ni ``failure``).
+_SUMMARY_COLS = (
+    "d.event_id, d.event_type, d.origin_stream, d.origin_group, d.status, "
+    "d.dead_lettered_at, d.resolved_at"
+)
 
 
 class DeadLetterRepository:
@@ -87,126 +88,65 @@ class DeadLetterRepository:
     # equivocado (p. ej. un replay de signature invocaría `apply_reclassification`
     # sobre un payload de distribución de workflow).
 
-    async def list_pending(
+    async def list_visible(
         self,
         caller_slug: str,
         origin_group: str,
+        caller_clearance: int,
         *,
         status: str = "pending",
         origin_stream: str | None = None,
         offset: int = 0,
         limit: int = 20,
     ) -> tuple[list[asyncpg.Record], int]:
-        """Lista resúmenes de dead-letters (sin payload ni detalle de fallo).
+        """Página + total de dead-letters que el llamante PUEDE ver (AREA-10-08).
 
-        Predicado de tenant EXPLÍCITO (``tenant_slug = $1``) además del
-        search_path, defensa en profundidad contra fuga cross-tenant; ``origin_group
-        = $3`` acota además a los dead-letters generados por ESTE servicio (tabla
-        compartida con el otro consumidor, ver nota de módulo arriba). Devuelve
-        ``(rows, total)``; el total se obtiene con la ventana ``COUNT(*) OVER()``
-        para no revelar el número de filas ocultas. Las columnas devueltas NO
-        incluyen ``payload`` ni ``failure`` (evita filtrar existencia de objetos
-        clasificados a través del resumen).
+        El no-read-up (RF-SEG-08) vive en el ``WHERE`` de la consulta
+        (``orpycamcp_common.deadletter``): el nivel se evalúa contra el radicado VIVO
+        antes de paginar y de contar, así que ``total`` es exactamente lo visible.
+        Predicados de tenant y ``origin_group`` explícitos (tabla compartida, ver nota
+        de módulo). Las columnas devueltas NO incluyen ``payload`` ni ``failure``.
         """
-        params: list[object] = [caller_slug, status, origin_group]
-        extra = ""
-        if origin_stream is not None:
-            params.append(origin_stream)
-            extra = f" AND origin_stream = ${len(params)}"
-        limit_ph = len(params) + 1
-        offset_ph = len(params) + 2
-        params.extend([limit, offset])
-        sql = (
-            "SELECT event_id, event_type, origin_stream, origin_group, status, "
-            "       dead_lettered_at, resolved_at, COUNT(*) OVER() AS total_count "
-            "FROM evento_dead_letter "
-            "WHERE tenant_slug = $1 AND status = $2 AND origin_group = $3"
-            f"{extra} "
-            "ORDER BY dead_lettered_at DESC "
-            f"LIMIT ${limit_ph} OFFSET ${offset_ph}"
+        return await deadletter.list_visible(
+            self._conn,
+            tenant_slug=caller_slug,
+            origin_group=origin_group,
+            status=status,
+            clearance=caller_clearance,
+            columns=_SUMMARY_COLS,
+            origin_stream=origin_stream,
+            offset=offset,
+            limit=limit,
         )
-        rows = await self._conn.fetch(sql, *params)
-        total = int(rows[0]["total_count"]) if rows else 0
-        return list(rows), total
-
-    async def list_scoped_for_clearance(
-        self,
-        caller_slug: str,
-        origin_group: str,
-        *,
-        status: str = "pending",
-        origin_stream: str | None = None,
-        cap: int = DEADLETTER_CANDIDATE_CAP,
-    ) -> list[asyncpg.Record]:
-        """Candidatas para el filtro por-fila de clearance del listado (ADR-021,
-        seguimiento no-bloqueante Fase 5).
-
-        A diferencia de :meth:`list_pending`, INCLUYE ``payload`` (necesario para
-        que el router resuelva ``resolve_deadletter_level`` por fila) y NO aplica
-        ``LIMIT``/``OFFSET`` de paginación en SQL: la paginación se hace en la capa
-        de aplicación DESPUÉS de descartar las filas por encima del clearance del
-        llamante (si paginara aquí, una página podría quedar vacía o incompleta
-        tras el filtro). Lleva en cambio un ``cap`` de seguridad (por defecto
-        :data:`DEADLETTER_CANDIDATE_CAP`) para acotar la memoria del conjunto
-        candidato — proporcionado porque los dead-letters son, por diseño, de bajo
-        volumen (Fase 5, no un flujo de alto tráfico). Si el conjunto real alcanza
-        el cap, las filas más antiguas quedan fuera del ``ORDER BY ... LIMIT`` sin
-        que este método lo señale — es responsabilidad del CALLER (router) detectar
-        `len(resultado) > cap` y avisar (log + header ``X-Truncated``, ADR-021
-        pulido Fase 5 "Baja").
-
-        El caller (router) es responsable de NO serializar ``payload`` al cliente:
-        este método existe solo para permitir la resolución de nivel, no para
-        exponer el sobre íntegro en el resumen.
-        """
-        params: list[object] = [caller_slug, status, origin_group]
-        extra = ""
-        if origin_stream is not None:
-            params.append(origin_stream)
-            extra = f" AND origin_stream = ${len(params)}"
-        cap_ph = len(params) + 1
-        # cap + 1: la fila sobrante distingue «hay más» de «hay justo cap» (X-Truncated
-        # no debe dispararse con exactamente cap candidatas).
-        params.append(cap + 1)
-        sql = (
-            "SELECT event_id, event_type, origin_stream, origin_group, status, "
-            "       dead_lettered_at, resolved_at, payload "
-            "FROM evento_dead_letter "
-            "WHERE tenant_slug = $1 AND status = $2 AND origin_group = $3"
-            f"{extra} "
-            "ORDER BY dead_lettered_at DESC "
-            f"LIMIT ${cap_ph}"
-        )
-        return list(await self._conn.fetch(sql, *params))
 
     async def get_by_event_id(
-        self, event_id: str, caller_slug: str, origin_group: str
+        self, event_id: str, caller_slug: str, origin_group: str, caller_clearance: int
     ) -> asyncpg.Record | None:
-        """Lectura simple (sin lock) de una fila con predicado de tenant + origin_group."""
-        return await self._conn.fetchrow(
-            "SELECT * FROM evento_dead_letter "
-            "WHERE event_id = $1 AND tenant_slug = $2 AND origin_group = $3",
-            event_id,
-            caller_slug,
-            origin_group,
+        """Lectura (sin lock) de una fila VISIBLE; ``None`` si no existe o no se alcanza."""
+        return await deadletter.get_visible(
+            self._conn,
+            event_id=event_id,
+            tenant_slug=caller_slug,
+            origin_group=origin_group,
+            clearance=caller_clearance,
         )
 
     async def get_for_update(
-        self, event_id: str, caller_slug: str, origin_group: str
+        self, event_id: str, caller_slug: str, origin_group: str, caller_clearance: int
     ) -> asyncpg.Record | None:
-        """SELECT … FOR UPDATE con predicado de tenant + origin_group (replay atómico, H7).
+        """``FOR UPDATE OF d`` de una fila VISIBLE (replay/descarte atómicos, H7).
 
-        Debe llamarse dentro de una transacción abierta: bloquea la fila para que
-        dos admins no reprocesen el mismo evento en paralelo. ``origin_group``
-        impide que el admin de un servicio bloquee/reprocese una fila que
-        pertenece al otro consumidor (tabla compartida, ver nota de módulo).
+        Debe llamarse dentro de una transacción abierta. El mismo predicado de
+        clearance que el listado: lo que no se ve no se puede bloquear, reprocesar ni
+        descartar, y el llamante recibe ``None`` igual que para un ``event_id`` ajeno.
         """
-        return await self._conn.fetchrow(
-            "SELECT * FROM evento_dead_letter "
-            "WHERE event_id = $1 AND tenant_slug = $2 AND origin_group = $3 FOR UPDATE",
-            event_id,
-            caller_slug,
-            origin_group,
+        return await deadletter.get_visible(
+            self._conn,
+            event_id=event_id,
+            tenant_slug=caller_slug,
+            origin_group=origin_group,
+            clearance=caller_clearance,
+            for_update=True,
         )
 
     async def transition_status(

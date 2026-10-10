@@ -44,15 +44,24 @@ async def tx(db_conn: asyncpg.Connection) -> AsyncGenerator[asyncpg.Connection, 
         await t.rollback()
 
 
-async def _tenant(conn: asyncpg.Connection) -> tuple[str, str]:
+async def _tenant(conn: asyncpg.Connection, *, con_eventos: bool = True) -> tuple[str, str]:
     slug = f"itest-rst-{uuid.uuid4().hex[:6]}"
     schema = f"tenant_{slug.replace('-', '_')}"
     await conn.execute(f'CREATE SCHEMA "{schema}"')
     await conn.execute(
         f'CREATE TABLE "{schema}".preservacion_worm_objeto ('
         "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), bucket TEXT NOT NULL, "
-        "object_key TEXT NOT NULL, version_id TEXT)"
+        "object_key TEXT NOT NULL, version_id TEXT, expediente_id TEXT NOT NULL DEFAULT 'exp-1', "
+        "tipo TEXT NOT NULL DEFAULT 'indice', sha256 CHAR(64) NOT NULL DEFAULT repeat('a', 64))"
     )
+    if con_eventos:
+        await conn.execute(
+            f'CREATE TABLE "{schema}".preservacion_evento ('
+            "id UUID PRIMARY KEY DEFAULT gen_random_uuid(), object_ref TEXT NOT NULL, "
+            "tipo VARCHAR(24) NOT NULL, resultado VARCHAR(16) NOT NULL DEFAULT 'ok', "
+            "hash_before CHAR(64), hash_after CHAR(64), detalle JSONB, agente TEXT, "
+            "ts TIMESTAMPTZ NOT NULL DEFAULT now())"
+        )
     return slug, schema
 
 
@@ -110,3 +119,44 @@ async def test_un_bucket_ajeno_o_sin_tabla_no_rompe_ni_se_toca(tx: asyncpg.Conne
 async def test_un_mapa_malformado_se_rechaza() -> None:
     with pytest.raises(ValueError):
         job.parsear_mapa("OBJETO\tsolo-dos-campos\tv1\n")
+
+
+async def test_cada_objeto_remapeado_deja_un_evento_premis_de_replica(tx: asyncpg.Connection) -> None:
+    import json
+
+    slug, schema = await _tenant(tx)
+    bucket = f"orpycamcp-{slug}-documents"
+    await tx.execute(
+        f'INSERT INTO "{schema}".preservacion_worm_objeto (bucket, object_key, version_id, expediente_id, tipo) VALUES '
+        "($1, 'indice/a.json', 'v-vieja', 'exp-A', 'indice'), ($1, 'indice/b.json', 'otra', 'exp-B', 'aip')",
+        bucket,
+    )
+    mapa = f"OBJETO\t{bucket}/indice/a.json\tv-vieja\tv-nueva\nOBJETO\t{bucket}/indice/b.json\tno-coincide\tv-x\n"
+    resumen = await job.registrar(tx, mapa_texto=mapa, respaldo="R1")
+    assert resumen["eventos_premis"] == 1, "un evento por fila remapeada, ninguno por la que no coincide"
+    eventos = await tx.fetch(f'SELECT * FROM "{schema}".preservacion_evento')
+    assert len(eventos) == 1
+    e = eventos[0]
+    assert (e["object_ref"], e["tipo"], e["resultado"], e["agente"]) == ("exp-A", "REPLICA", "ok", "system:ops-restauracion")
+    # No se mide el objeto restaurado: nunca se sobre-declara `hash_after`.
+    assert e["hash_before"] == "a" * 64 and e["hash_after"] is None
+    d = e["detalle"] if isinstance(e["detalle"], dict) else json.loads(e["detalle"])
+    assert d["fixity"] == "no_verificada"
+    assert d["motivo"] == "restauracion" and d["evento"] == "replication" and d["respaldo"] == "R1"
+    assert (d["version_vieja"], d["version_nueva"], d["artefacto"]) == ("v-vieja", "v-nueva", "indice")
+    assert (d["bucket"], d["object_key"]) == (bucket, "indice/a.json")
+
+
+async def test_sin_la_tabla_de_eventos_todo_se_revierte(tx: asyncpg.Connection) -> None:
+    slug, schema = await _tenant(tx, con_eventos=False)
+    bucket = f"orpycamcp-{slug}-documents"
+    await tx.execute(
+        f'INSERT INTO "{schema}".preservacion_worm_objeto (bucket, object_key, version_id) VALUES ($1, \'k\', \'v1\')',
+        bucket,
+    )
+    sp = tx.transaction()  # savepoint: el fallo no aborta la transacción de la prueba
+    await sp.start()
+    with pytest.raises(asyncpg.PostgresError):
+        await job.registrar(tx, mapa_texto=f"OBJETO\t{bucket}/k\tv1\tv2\n", respaldo="r")
+    await sp.rollback()
+    assert await tx.fetchval(f'SELECT version_id FROM "{schema}".preservacion_worm_objeto') == "v1"

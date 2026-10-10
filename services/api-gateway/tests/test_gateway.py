@@ -881,8 +881,8 @@ async def test_gateway_injects_server_derived_x_canal(test_client):
 
 
 @pytest.mark.asyncio
-async def test_pagination_and_truncation_headers_are_forwarded_back(test_client):
-    """`X-Total-Count` y `X-Truncated` deben llegar al cliente (test de contrato).
+async def test_pagination_and_faltantes_headers_are_forwarded_back(test_client):
+    """`X-Total-Count` y `X-Faltantes` deben llegar al cliente (test de contrato).
 
     No es una preferencia de estilo: son cabeceras de las que dependen contratos
     documentados del sistema, y su ausencia es SILENCIOSA en ambos casos —
@@ -892,10 +892,6 @@ async def test_pagination_and_truncation_headers_are_forwarded_back(test_client)
       emiten 31 routers y el frontend la consume en ~115 puntos. Si el gateway
       la descarta, el total colapsa al tamaño de la página y toda pantalla
       paginada cree que hay una sola.
-    - `X-Truncated` es la garantía de honestidad de las tres DLQ (ADR-021): el
-      backend avisa de que existen eventos pendientes más antiguos que no caben
-      en la respuesta. Si se descarta, el banner que lo advierte nunca aparece y
-      la pantalla afirma en silencio que se ve todo.
 
     Gemelo, del lado de respuesta, de los tests de FORWARDED_REQUEST_HEADERS.
     """
@@ -908,7 +904,6 @@ async def test_pagination_and_truncation_headers_are_forwarded_back(test_client)
             headers={
                 "content-type": "application/json",
                 "X-Total-Count": "437",
-                "X-Truncated": "true",
                 "X-Faltantes": "TEL_R,DIR_P",
             },
         )
@@ -923,10 +918,6 @@ async def test_pagination_and_truncation_headers_are_forwarded_back(test_client)
     assert response.headers.get("x-total-count") == "437", (
         "El gateway debe reenviar X-Total-Count; sin ella la paginacion colapsa "
         "a una sola pagina en TODA pantalla paginada del sistema"
-    )
-    assert response.headers.get("x-truncated") == "true", (
-        "El gateway debe reenviar X-Truncated; sin ella el aviso de truncamiento "
-        "de las DLQ (ADR-021) es codigo muerto y la pantalla miente por omision"
     )
     assert response.headers.get("x-faltantes") == "TEL_R,DIR_P", (
         "El gateway debe reenviar X-Faltantes; el cuerpo de la previsualizacion "

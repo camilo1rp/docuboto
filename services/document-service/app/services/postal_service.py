@@ -70,6 +70,31 @@ _STREAM_EVENT = {
 }
 
 
+def _acuse_invalido() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "error": "acuse_invalido",
+            "detail": "El acuse no existe en el almacén o su huella no coincide.",
+            "status": 422,
+        },
+    )
+
+
+def _acuse_ya_referenciado() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "error": "acuse_ya_referenciado",
+            "detail": (
+                "Ese archivo ya se usa como anexo, borrador o acuse de otro envío: "
+                "suba el acuse de ESTA entrega."
+            ),
+            "status": 409,
+        },
+    )
+
+
 class PostalService:
     def __init__(
         self,
@@ -205,61 +230,88 @@ class PostalService:
         # de ESTE tenant) y se asienta la huella de storage, no la del cliente.
         acuse_sha256: str | None = payload.acuse_sha256.lower() if payload.acuse_sha256 else None
         if payload.acuse_file_id is not None:
-            acuse_sha256 = await self._verificar_acuse(payload.acuse_file_id, acuse_sha256)
+            acuse_sha256 = await self._verificar_acuse(
+                payload.acuse_file_id,
+                acuse_sha256,
+                actor=actor,
+                acuse_actual=current["acuse_file_id"],
+            )
         # Transición, evento y asiento atómicos. El UPDATE compara el estado
         # previo y el clearance en su `WHERE`: si entre la lectura de arriba y
         # aquí cambió el estado (p. ej. el callback del operador dejó `devuelto`)
         # o el radicado se reclasificó, no devuelve fila y se responde 409 en
         # vez de pisar un estado terminal.
-        async with self._conn.transaction():
-            row = await self._repo.update_estado(
-                shipment_id,
-                payload.estado,
-                payload.descripcion,
-                motivo_devolucion=payload.motivo,
-                estado_previo=current["estado"],
-                max_clearance=clearance,
-                acuse_file_id=payload.acuse_file_id,
-                acuse_sha256=acuse_sha256,
-            )
-            if row is None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "error": "transicion_invalida",
-                        "detail": "El envío cambió de estado mientras se registraba la transición",
-                        "status": 409,
-                    },
+        try:
+            async with self._conn.transaction():
+                row = await self._repo.update_estado(
+                    shipment_id,
+                    payload.estado,
+                    payload.descripcion,
+                    motivo_devolucion=payload.motivo,
+                    estado_previo=current["estado"],
+                    max_clearance=clearance,
+                    acuse_file_id=payload.acuse_file_id,
+                    acuse_sha256=acuse_sha256,
                 )
-            await audit.append(
-                self._conn,
-                tenant_slug=self._slug or "",
-                service=_SERVICE,
-                action="document.envio_estado",
-                object_type="postal_shipment",
-                object_ref=current["guia"],
-                actor=str(actor) if actor else None,
-                payload={
-                    "shipment_id": str(shipment_id),
-                    "de": current["estado"],
-                    "a": payload.estado,
-                    "motivo": payload.motivo,
-                    # La constancia de entrega queda en el asiento (AREA-09-10).
-                    "acuse_file_id": str(payload.acuse_file_id) if payload.acuse_file_id else None,
-                    "acuse_sha256": acuse_sha256,
-                },
-                canal=audit.CANAL_PETICION,
-            )
+                if row is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "transicion_invalida",
+                            "detail": "El envío cambió de estado mientras se registraba la transición",
+                            "status": 409,
+                        },
+                    )
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._slug or "",
+                    service=_SERVICE,
+                    action="document.envio_estado",
+                    object_type="postal_shipment",
+                    object_ref=current["guia"],
+                    actor=str(actor) if actor else None,
+                    payload={
+                        "shipment_id": str(shipment_id),
+                        "de": current["estado"],
+                        "a": payload.estado,
+                        "motivo": payload.motivo,
+                        # La constancia de entrega queda en el asiento (AREA-09-10).
+                        "acuse_file_id": str(payload.acuse_file_id) if payload.acuse_file_id else None,
+                        "acuse_sha256": acuse_sha256,
+                    },
+                    canal=audit.CANAL_PETICION,
+                )
+        except asyncpg.UniqueViolationError as exc:
+            # Carrera: otro envío tomó el mismo acuse entre el cotejo y el UPDATE.
+            # La guarda definitiva la da el índice único parcial (migración 045).
+            raise _acuse_ya_referenciado() from exc
         return await self._response(row)
 
-    async def _verificar_acuse(self, file_id: uuid.UUID, declarada: str | None) -> str:
-        """Devuelve la huella que storage custodia para `file_id`, o corta con 422/503.
+    async def _verificar_acuse(
+        self,
+        file_id: uuid.UUID,
+        declarada: str | None,
+        *,
+        actor: uuid.UUID | None,
+        acuse_actual: uuid.UUID | None,
+    ) -> str:
+        """Devuelve la huella que storage custodia para `file_id`, o corta.
 
-        422 `acuse_invalido` si el fichero no existe en el tenant o la huella declarada
-        no coincide; 503 si storage no responde (no se asienta una prueba sin cotejar).
+        La constancia de entrega la resuelve el SERVIDOR (B2, ADR-031):
+        - 422 `acuse_invalido`: el fichero no existe en el tenant o la huella
+          declarada no coincide.
+        - 403 `acuse_ajeno`: lo subió otra persona (o nadie identificable): nadie
+          presenta como acuse propio el fichero de otro.
+        - 409 `acuse_ya_referenciado`: ya es el anexo de un radicado, un borrador,
+          el acuse de OTRO envío… Es el mismo envío con ese mismo acuse (reintento)
+          lo único que se admite: idempotente.
+        - 503: storage no responde (no se asienta una prueba sin cotejar).
+
+        Storage deduplica por autor: volver a subir el mismo PDF da el mismo
+        `file_id` y cae en 409, que es lo correcto (es la misma prueba).
         """
         try:
-            real = await storage_client.fetch_file_sha256(
+            proc = await storage_client.fetch_file_procedencia(
                 tenant_slug=self._slug or "", file_id=file_id
             )
         except storage_client.StorageContentError as exc:
@@ -271,16 +323,29 @@ class PostalService:
                     "status": 503,
                 },
             ) from exc
-        if not real or (declarada is not None and real.lower() != declarada):
+        # «No existe» y «es de otro» se responden IGUAL (403 `acuse_ajeno`): un
+        # 422 distinto confirmaría qué `file_id` existen en el tenant. Y el autor se
+        # comprueba ANTES que la huella, para que el 422 de la huella distinta no
+        # sirva de oráculo sobre el contenido de un fichero ajeno.
+        if proc is None or not proc.sha256 or actor is None or proc.uploaded_by != actor:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_403_FORBIDDEN,
                 detail={
-                    "error": "acuse_invalido",
-                    "detail": "El acuse no existe en el almacén o su huella no coincide.",
-                    "status": 422,
+                    "error": "acuse_ajeno",
+                    "detail": "El acuse no existe o no lo subió quien registra la entrega.",
+                    "status": 403,
                 },
             )
-        return real.lower()
+        if declarada is not None and proc.sha256.lower() != declarada:
+            raise _acuse_invalido()
+        if proc.referencias:
+            reintento = (
+                acuse_actual == file_id
+                and set(proc.referencias) == {"postal_shipment.acuse_file_id"}
+            )
+            if not reintento:
+                raise _acuse_ya_referenciado()
+        return proc.sha256.lower()
 
     async def tracking(self, shipment_id: uuid.UUID, clearance: int = 3) -> TrackingResponse:
         """Consulta PULL del estado por guía contra el operador (F5, solo lectura).

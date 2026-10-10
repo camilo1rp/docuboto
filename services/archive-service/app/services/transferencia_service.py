@@ -36,6 +36,7 @@ from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.http_errors import motivo_de
 from app.core.params_entidad import gate_xades_activo, modo_xades_de_la_entidad
+from app.repositories.aip_repository import AipRepository
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.fisico_repository import FisicoRepository
 from app.repositories.index_repository import IndexRepository
@@ -113,6 +114,19 @@ _TIPO_ARCHIVO_ESPERADO: dict[str, tuple[str, str]] = {
 }
 
 
+#: Códigos que el trigger de tenencia física (migración 065) escribe en `MESSAGE`: los mismos del
+#: 422 de `_validar_ubicaciones`.
+_CODIGOS_TENENCIA = frozenset(
+    {
+        "ubicaciones_requeridas_fisico",
+        "ubicaciones_par_incompleto",
+        "ubicacion_sin_tenencia",
+        "ubicaciones_origen_destino_iguales",
+        "ubicacion_origen_no_actual",
+        "ubicacion_incoherente_con_tipo",
+    }
+)
+
 _CN_RE = re.compile(r"(?:^|,)\s*CN=((?:\\.|[^,\\])+)", re.IGNORECASE)
 
 
@@ -166,6 +180,7 @@ class TransferenciaService:
         self._repo = TransferenciaRepository(conn, tenant_slug)
         self._archive = ArchiveRepository(conn, tenant_slug)
         self._index_repo = IndexRepository(conn)
+        self._aip_repo = AipRepository(conn)
         # Fixity en la recepción (E12 H-G): reusa `IndexService.fixity`, el
         # mismo tramo puro-BD que `verify()` -- se conserva `self._index_repo`
         # aparte para el gate `firmado` (pre-flight barato, una fila, FUERA de
@@ -343,6 +358,22 @@ class TransferenciaService:
                             "status": 422,
                         },
                     ) from fk
+                except asyncpg.CheckViolationError as cv:
+                    # Defensa en profundidad (migración 065): el trigger de tenencia física
+                    # repite las reglas de `_validar_ubicaciones` con el MISMO código en el
+                    # mensaje. Si una carrera lo dispara después del cotejo, es el mismo 422.
+                    if cv.constraint_name != "ck_transferencias_tenencia_fisica" or (
+                        cv.message not in _CODIGOS_TENENCIA
+                    ):
+                        raise
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": cv.message,
+                            "detail": "La tenencia física del expediente no respalda el par de ubicaciones",
+                            "status": 422,
+                        },
+                    ) from cv
                 except asyncpg.UniqueViolationError as uv:
                     # Discrimina por CONSTRAINT, no solo por tipo de excepción:
                     # hoy el único índice único de `transferencias` (aparte del
@@ -1049,39 +1080,38 @@ class TransferenciaService:
                     canal=audit.CANAL_PETICION,
                 )
         except HTTPException as exc:
+            # Número de este intento fallido (migración 066): solo en fixity. Se incrementa en
+            # tx PROPIA junto con el asiento, porque la de `recibir` ya se revirtió; si el
+            # contador mismo falla, el asiento sale igual (sin `intento`) y el PREMIS cae al
+            # sello de tiempo: perder el hecho es peor que duplicarlo.
+            intento: int | None = None
             try:
-                await audit.append(
-                    self._conn,
-                    tenant_slug=self._tenant,
-                    service=_SERVICE,
-                    action="archive.transferencia_recibida_failed",
-                    object_type="transferencia",
-                    object_ref=str(transferencia_id),
-                    actor=actor.audit_actor,
-                    payload={
-                        "estado_actual": existing["estado"] if existing is not None else None,
-                        "motivo": motivo_de(exc),
-                        # Traza forense completa de una fixity fallida (los UUIDs
-                        # que NO se exponen en el 409) — solo en el registro
-                        # indeleble, cuya lectura exige permiso de auditoría.
-                        **(
-                            {"documentos_fallidos": fixity_fallidos}
-                            if fixity_fallidos
-                            else {}
-                        ),
-                    },
-                    canal=audit.CANAL_PETICION,
-                )
+                async with self._conn.transaction():
+                    if fixity_fallo is not None and existing is not None:
+                        intento = await self._repo.bump_fixity_fallos(transferencia_id)
+                    await self._asiento_recibida_failed(
+                        transferencia_id, actor, existing, exc, fixity_fallidos, intento
+                    )
             except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                intento = None
                 logger.warning(
                     "audit.append(archive.transferencia_recibida_failed) failed", exc_info=True
                 )
+                try:
+                    await self._asiento_recibida_failed(
+                        transferencia_id, actor, existing, exc, fixity_fallidos, None
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "audit.append(archive.transferencia_recibida_failed) failed", exc_info=True
+                    )
             if fixity_fallo is not None and existing is not None:
                 await self._registrar_fixity_fallo_premis(
                     transferencia_id,
                     expediente_id=existing["expediente_id"],
                     detalle=fixity_fallo,
                     agente=actor.audit_actor,
+                    intento=intento,
                 )
             raise
         # H-H (E06/F4): sellado SÍNCRONO ACOTADO del acta, SIEMPRE post-commit
@@ -1098,6 +1128,35 @@ class TransferenciaService:
         await self.registrar_fixity_premis(transferencia_id, origen="close")
         return _resp(row)
 
+    async def _asiento_recibida_failed(
+        self,
+        transferencia_id: uuid.UUID,
+        actor: Actor,
+        existing,
+        exc: HTTPException,
+        fixity_fallidos: list[str],
+        intento: int | None,
+    ) -> None:
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant,
+            service=_SERVICE,
+            action="archive.transferencia_recibida_failed",
+            object_type="transferencia",
+            object_ref=str(transferencia_id),
+            actor=actor.audit_actor,
+            payload={
+                "estado_actual": existing["estado"] if existing is not None else None,
+                "motivo": motivo_de(exc),
+                # Traza forense completa de una fixity fallida (los UUIDs que NO se exponen en
+                # el 409) — solo en el registro indeleble, cuya lectura exige permiso de
+                # auditoría.
+                **({"documentos_fallidos": fixity_fallidos} if fixity_fallidos else {}),
+                **({"intento": intento} if intento is not None else {}),
+            },
+            canal=audit.CANAL_PETICION,
+        )
+
     async def _registrar_fixity_fallo_premis(
         self,
         transferencia_id: uuid.UUID,
@@ -1105,14 +1164,20 @@ class TransferenciaService:
         expediente_id: uuid.UUID,
         detalle: dict,
         agente: str | None,
+        intento: int | None = None,
     ) -> None:
         """Evento PREMIS `FIJACION` con `resultado="fallo"` de una recepción cuya fixity
         discrepó. Se llama FUERA de la tx ya revertida; best-effort (NUNCA lanza): el 409 y el
-        asiento `*_failed` ya quedaron. Cada intento fallido es un evento propio (el
-        `dedup_key` lleva un sello temporal), porque la recepción puede reintentarse."""
+        asiento `*_failed` ya quedaron. Cada intento fallido es un evento propio: el `dedup_key`
+        lleva el NÚMERO de intento (`fixity_fallos_intentos`, migración 066), así reenviar el
+        mismo intento es idempotente. Sin contador (falló la base), cae al sello de tiempo."""
         from app.clients import storage_client
 
-        intento = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S%f")
+        clave = (
+            str(intento)
+            if intento is not None
+            else datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S%f")
+        )
         try:
             await storage_client.registrar_evento_internal(
                 tenant_slug=self._tenant,
@@ -1121,7 +1186,7 @@ class TransferenciaService:
                 resultado="fallo",
                 detalle={**detalle, "evento": "fixity check", "disparo": "recibir"},
                 agente=agente,
-                dedup_key=f"fixity-recepcion-fallo:{transferencia_id}:{intento}",
+                dedup_key=f"fixity-recepcion-fallo:{transferencia_id}:{clave}",
             )
         except Exception:  # noqa: BLE001 — best-effort: jamás degrada el 409.
             logger.warning(
@@ -2260,6 +2325,25 @@ class TransferenciaService:
     async def _cargar_acta_recibida(self, transferencia_id: uuid.UUID, user_id: uuid.UUID):
         """Precondiciones comunes de declarar/revocar: la transferencia existe, el expediente es
         legible con el clearance del llamante (404 neutro) y el acta ya está congelada."""
+        row, exp, caller_clearance = await self._cargar_visible(transferencia_id, user_id)
+        acta = await self._repo.get_acta(transferencia_id) if row["estado"] == "recibida" else None
+        if acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "transferencia_no_recibida",
+                    "detail": (
+                        "La excepción de firma solo se gestiona sobre un acta ya congelada "
+                        "(transferencia recibida)"
+                    ),
+                    "status": 409,
+                },
+            )
+        return row, exp, acta, caller_clearance
+
+    async def _cargar_visible(self, transferencia_id: uuid.UUID, user_id: uuid.UUID):
+        """404 neutros: la transferencia existe y su expediente es legible con el clearance del
+        llamante (no-read-up en el WHERE de la consulta, RF-SEG-08)."""
         row = await self._repo.get(transferencia_id)
         if row is None:
             raise HTTPException(
@@ -2283,20 +2367,7 @@ class TransferenciaService:
                     "status": 404,
                 },
             )
-        acta = await self._repo.get_acta(transferencia_id) if row["estado"] == "recibida" else None
-        if acta is None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "transferencia_no_recibida",
-                    "detail": (
-                        "La excepción de firma solo se gestiona sobre un acta ya congelada "
-                        "(transferencia recibida)"
-                    ),
-                    "status": 409,
-                },
-            )
-        return row, exp, acta, caller_clearance
+        return row, exp, caller_clearance
 
     async def _resolver_referencia(
         self,
@@ -5040,6 +5111,363 @@ class TransferenciaService:
             xml_firmado=xml,
         )
 
+    async def _incidente_paquete(
+        self,
+        transferencia_id: uuid.UUID,
+        actor: Actor,
+        *,
+        ruta: str,
+        clasificado: bool,
+        motivo: str,
+        esperado: str | None,
+        observado: str | None,
+    ) -> None:
+        """Fail-closed ante una discrepancia de integridad al componer el paquete: deja el asiento
+        de INCIDENTE (fuera de cualquier tx de servicio: debe persistir aunque la petición
+        falle) y corta con 409. Un componente clasificado no se nombra en la respuesta."""
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant,
+            service=_SERVICE,
+            action="transferencia.paquete_entrega_incidente",
+            object_type="transferencia",
+            object_ref=str(transferencia_id),
+            actor=actor.audit_actor,
+            payload={
+                "transferencia_id": str(transferencia_id),
+                "ruta": ruta,
+                "motivo": motivo,
+                "sha256_esperado": esperado,
+                "sha256_observado": observado,
+            },
+            canal=audit.CANAL_PETICION,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "componente_integridad_discrepante",
+                "detail": (
+                    "Un componente no reproduce su huella de captura; el paquete no se genera "
+                    "y el incidente quedó asentado"
+                ),
+                "componente": "clasificado" if clasificado else ruta,
+                "status": 409,
+            },
+        )
+
+    async def _especificar_paquete(
+        self, transferencia_id: uuid.UUID, acta, expediente_id: uuid.UUID
+    ) -> builtins.list[dict]:
+        """Qué debe llevar el paquete de entrega y de dónde sale cada componente. Cada
+        especificación: `ruta`, `key` (clave en el almacén, o None si no existe), `protegido`
+        (¿Object-Lock confirmado?), y la metadata de la nota. El acta FUID en sí viaja desde la
+        base (es el XML congelado, ya anclado por su huella) y no pasa por aquí."""
+        specs: builtins.list[dict] = []
+        af = await self._repo.get_acta_firma_worm(transferencia_id)
+        sello_key: str | None = None
+        sello_lock = False
+        if af is not None and af["estado"] == "firmado":
+            sello_key = af["minio_key_firmado"]
+            sello_lock = af["worm_protegido_at"] is not None
+        specs.append(
+            {
+                "ruta": "acta/acta-fuid.xades.xml",
+                "key": sello_key,
+                "protegido": sello_lock,
+                "acto": "sello_acta",
+            }
+        )
+        # Índice electrónico FIRMADO de la versión que el acta entregó, y su copia bajo Object-Lock.
+        fi = (
+            await self._index_repo.get_version(expediente_id, acta["indice_version"])
+            if acta["indice_version"] is not None
+            else None
+        )
+        fiw = await self._index_repo.get_by_id(fi["id"]) if fi is not None else None
+        specs.append(
+            {
+                "ruta": "indice/indice-electronico.xades.xml",
+                "key": fi["minio_key_firmado"] if fi is not None and fi["estado"] == "firmado" else None,
+                "protegido": bool(fiw is not None and fiw["worm_protegido_at"] is not None),
+                "acto": "indice_electronico",
+            }
+        )
+        for fp in await self._repo.list_acta_firma_personal(transferencia_id):
+            w = await self._repo.get_firma_personal_worm(fp["id"])
+            specs.append(
+                {
+                    "ruta": f"acta/firma-personal-{fp['rol']}.xml",
+                    "key": fp["minio_key_firmado"],
+                    "protegido": bool(w is not None and w["worm_protegido_at"] is not None),
+                    "acto": "firma_personal_acta",
+                    "rol": fp["rol"],
+                }
+            )
+        for e in await self._repo.list_acta_firma_excepciones(transferencia_id):
+            base = f"{e['rol']}-{e['ordinal']}"
+            for acto, carpeta, existe in (
+                ("constancia", "constancias", True),
+                ("revocacion", "revocaciones", e["revocacion_id"] is not None),
+            ):
+                if not existe:
+                    continue
+                sello = e["revocacion_minio_key_firmado"] if acto == "revocacion" else e["minio_key_firmado"]
+                personal = (
+                    e["revocacion_minio_key_firmado_personal"]
+                    if acto == "revocacion"
+                    else e["minio_key_firmado_personal"]
+                )
+                sobre = e.get("revocacion_sobre_minio_key") if acto == "revocacion" else e.get("sobre_minio_key")
+                protegidos = (
+                    (
+                        e["revocacion_worm_protegido"],
+                        e["revocacion_worm_personal_protegido"],
+                        e.get("revocacion_worm_sobre_protegido"),
+                    )
+                    if acto == "revocacion"
+                    else (e["worm_protegido"], e["worm_personal_protegido"], e.get("worm_sobre_protegido"))
+                )
+                comunes = {"rol": e["rol"], "ordinal": e["ordinal"], "clasificado": True}
+                specs.append(
+                    {
+                        "ruta": f"clasificado/{carpeta}/{base}.xml",
+                        "key": sello,
+                        "protegido": protegidos[0] is True,
+                        "acto": acto,
+                        "sobre": "presente" if sobre else "ausente",
+                        **comunes,
+                    }
+                )
+                if personal:
+                    specs.append(
+                        {
+                            "ruta": f"clasificado/{carpeta}/{base}-personal.xml",
+                            "key": personal,
+                            "protegido": protegidos[1] is True,
+                            "acto": f"{acto}_personal",
+                            **comunes,
+                        }
+                    )
+                if sobre:
+                    specs.append(
+                        {
+                            "ruta": f"clasificado/sobres/{base}-{acto}.xml",
+                            "key": sobre,
+                            "protegido": protegidos[2] is True,
+                            "acto": "sobre",
+                            "excepcion": e,
+                            "acto_origen": acto,
+                            **comunes,
+                        }
+                    )
+        return specs
+
+    async def paquete_entrega(self, transferencia_id: uuid.UUID, actor: Actor):
+        """`POST /transferencias/{id}/paquete-entrega` (admin nivel 3, router) — paquete de
+        entrega de la transferencia SECUNDARIA recibida (ver `app.services.paquete_entrega`).
+
+        404 neutro por no-read-up (el gate de clearance va en el WHERE del expediente); 409
+        `paquete_solo_secundaria_recibida` si no es secundaria o no está recibida; 409
+        `componentes_sin_object_lock` si algún componente no está bajo Object-Lock (fail-closed,
+        sin descargar nada); 503 si el almacén no entrega un componente. Los asientos
+        —`transferencia.acta_fundamento_leido` (via=`paquete`) por cada constancia cuyo
+        fundamento viaja en un sobre, y `transferencia.paquete_entrega_generado`— se escriben en
+        UNA transacción y ANTES de servir el primer byte: sin asiento no hay paquete.
+
+        Devuelve `(fichero ZIP rebobinado, tamaño)`; el llamante lo cierra."""
+        from app.clients import storage_client
+        from app.services import paquete_entrega as pe
+
+        row, exp, _clearance = await self._cargar_visible(transferencia_id, actor.id)  # 404 neutros
+        acta = await self._repo.get_acta(transferencia_id) if row["estado"] == "recibida" else None
+        if row["tipo"] != "secundaria" or acta is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "paquete_solo_secundaria_recibida",
+                    "detail": "El paquete de entrega solo existe para una transferencia secundaria recibida",
+                    "status": 409,
+                },
+            )
+        # Recotejo del acta ANTES de tocar nada más: `acta_fuid_xml` no tiene trigger de
+        # inmutabilidad, así que la huella congelada es lo único que prueba que no cambió.
+        acta_bytes = acta["acta_fuid_xml"].encode("utf-8")
+        if hashlib.sha256(acta_bytes).hexdigest() != acta["acta_fuid_sha256"]:
+            await self._incidente_paquete(
+                transferencia_id, actor, ruta="acta/acta-fuid.xml", clasificado=False,
+                motivo="acta_fuid_xml_distinta_de_su_huella",
+                esperado=acta["acta_fuid_sha256"], observado=hashlib.sha256(acta_bytes).hexdigest(),
+            )
+        specs = await self._especificar_paquete(transferencia_id, acta, row["expediente_id"])
+        aip_row = await self._aip_repo.get_empaquetado(row["expediente_id"])
+        try:
+            aip = await storage_client.get_aip(
+                tenant_slug=self._tenant, expediente_id=str(row["expediente_id"])
+            )
+        except storage_client.StorageAipError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "componente_no_disponible",
+                    "detail": "No se pudo consultar el AIP en el almacén; reintente",
+                    "status": 503,
+                },
+            ) from exc
+        aip_protegido = bool(
+            aip_row is not None
+            and aip_row["estado"] == "empaquetado"
+            and aip_row["aip_worm_object_id"] is not None
+            and aip is not None
+            and aip.get("object_key")
+            and aip.get("retention_mode")
+            and aip.get("aip_sha256")
+        )
+        # Aviso: la lista NO enumera las rutas `clasificado/...` (revelaría cuántas excepciones
+        # tiene la transferencia); se agregan en un recuento.
+        sin_lock = [sp for sp in specs if not (sp["key"] and sp["protegido"])]
+        faltan = [sp["ruta"] for sp in sin_lock if not sp.get("clasificado")]
+        if not aip_protegido:
+            faltan.append("aip")
+        n_clasificados = sum(1 for sp in sin_lock if sp.get("clasificado"))
+        if faltan or n_clasificados:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "componentes_sin_object_lock",
+                    "detail": (
+                        "Hay componentes sin Object-Lock confirmado; el paquete no se genera "
+                        "hasta que todos estén protegidos"
+                        + (f" ({n_clasificados} componentes clasificados)" if n_clasificados else "")
+                    ),
+                    "componentes": faltan,
+                    "componentes_clasificados": n_clasificados,
+                    "status": 409,
+                },
+            )
+        # Huellas de CAPTURA (las que el almacén calculó al subir cada XML): un componente cuyo
+        # contenido actual no las reproduce se rechaza; checksums autoconsistentes solo
+        # certificarían la copia que se entrega, no el original.
+        capturas = await storage_client.fetch_file_hashes_internal(
+            tenant_slug=self._tenant,
+            file_ids=sorted({sp["key"].split("/", 1)[0] for sp in specs}),
+        )
+        if not capturas:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "componente_no_disponible",
+                    "detail": "No se pudieron obtener las huellas de captura; reintente",
+                    "status": 503,
+                },
+            )
+        componentes = [pe.Componente(ruta="acta/acta-fuid.xml", contenido=acta_bytes, acto="acta")]
+        for sp in specs:
+            contenido = await storage_client.download_signed_bytes(
+                tenant_slug=self._tenant, minio_key_firmado=sp["key"]
+            )
+            if contenido is None:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": "componente_no_disponible",
+                        "detail": (
+                            "No se pudo obtener un componente clasificado del almacén; reintente"
+                            if sp.get("clasificado")
+                            else f"No se pudo obtener {sp['ruta']} del almacén; reintente"
+                        ),
+                        "status": 503,
+                    },
+                )
+            observado = hashlib.sha256(contenido).hexdigest()
+            esperado = capturas.get(sp["key"].split("/", 1)[0])
+            if esperado != observado:
+                await self._incidente_paquete(
+                    transferencia_id, actor, ruta=sp["ruta"], clasificado=bool(sp.get("clasificado")),
+                    motivo="huella_de_captura_ausente" if esperado is None else "contenido_distinto_de_la_captura",
+                    esperado=esperado, observado=observado,
+                )
+            if sp["acto"] == "sello_acta":
+                # Copia WORM del acta: lo que firma el sello institucional debe ser el acta
+                # congelada (misma C14N-SHA256 de su contenido sin la firma envolvente).
+                try:
+                    firmado = huella_de_firmado(contenido.decode("utf-8"))
+                    congelada = sha256_c14n(acta["acta_fuid_xml"])
+                except Exception:  # noqa: BLE001 — un XML ilegible es discrepancia, no 500
+                    firmado = congelada = None
+                if firmado is None or firmado != congelada:
+                    await self._incidente_paquete(
+                        transferencia_id, actor, ruta=sp["ruta"], clasificado=False,
+                        motivo="sello_del_acta_no_firma_el_acta_congelada",
+                        esperado=congelada, observado=firmado,
+                    )
+            componentes.append(
+                pe.Componente(
+                    ruta=sp["ruta"],
+                    contenido=contenido,
+                    acto=sp["acto"],
+                    rol=sp.get("rol"),
+                    ordinal=sp.get("ordinal"),
+                    clasificado=sp.get("clasificado", False),
+                    sobre=sp.get("sobre"),
+                )
+            )
+        assert aip is not None  # garantizado por aip_protegido
+        aip_ref = {
+            "bucket": aip.get("bucket"),
+            "object_key": aip.get("object_key"),
+            "sha256": aip.get("aip_sha256"),
+            "bytes": aip.get("aip_bytes"),
+            "formato": aip.get("formato"),
+            "retain_until": aip.get("retain_until"),
+            "retention_mode": aip.get("retention_mode"),
+            "num_documentos": aip.get("num_documentos"),
+            "indice_sha256": aip.get("indice_sha256"),
+        }
+        nota = pe.construir_nota(
+            transferencia_id=str(transferencia_id),
+            tipo=row["tipo"],
+            expediente_code=exp.code,
+            acta_fuid_sha256=acta["acta_fuid_sha256"],
+            componentes=componentes,
+            aip=aip_ref,
+        )
+        paquete, tamano = pe.empaquetar(componentes, nota)
+        try:
+            # Una sola tx y ANTES de servir: lectura del fundamento (por cada constancia cuyo
+            # sobre viaja) + generación. Si cualquiera falla, no sale ni un byte.
+            async with self._conn.transaction():
+                for sp in specs:
+                    if sp["acto"] == "sobre":
+                        await self._asentar_lectura_fundamento(
+                            transferencia_id,
+                            actor.id,
+                            [sp["excepcion"]],
+                            via="paquete",
+                            extra={"acto": sp["acto_origen"]},
+                        )
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant,
+                    service=_SERVICE,
+                    action="transferencia.paquete_entrega_generado",
+                    object_type="transferencia",
+                    object_ref=str(transferencia_id),
+                    actor=actor.audit_actor,
+                    payload={
+                        "transferencia_id": str(transferencia_id),
+                        "expediente_id": str(row["expediente_id"]),
+                        "acta_fuid_sha256": acta["acta_fuid_sha256"],
+                        "nota_sha256": hashlib.sha256(nota).hexdigest(),
+                        "componentes": {c.ruta: c.sha256 for c in componentes},
+                        "aip": {k: aip_ref[k] for k in ("bucket", "object_key", "sha256")},
+                    },
+                    canal=audit.CANAL_PETICION,
+                )
+        except BaseException:
+            paquete.close()
+            raise
+        return paquete, tamano
+
     async def _cotejar_sobre(
         self, minio_key: str | None, e, *, acto: str
     ) -> bool | None:
@@ -5156,7 +5584,7 @@ class TransferenciaService:
         rev_sobre = None
         if e.get("revocacion_sobre_minio_key") is not None:
             rev_sobre = await self._cotejar_sobre(
-                e["revocacion_sobre_minio_key"], e, acto="revocacion"
+                e.get("revocacion_sobre_minio_key"), e, acto="revocacion"
             )
             comparables.append(rev_sobre)
         return FundamentoVerificacion(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 
 import asyncpg
 
@@ -114,7 +115,11 @@ class KnowledgeRepository:
         return row
 
     async def update_nivel_by_source(
-        self, source_type: str, source_ref: str, nivel_seguridad: int
+        self,
+        source_type: str,
+        source_ref: str,
+        nivel_seguridad: int,
+        occurred_at: datetime | None = None,
     ) -> asyncpg.Record:
         """Fija el nivel EXACTO de un chunk indexado — UPSERT-con-centinela.
 
@@ -149,20 +154,37 @@ class KnowledgeRepository:
 
         En conjunto con ``upsert_chunk``: un `created` nunca baja un nivel; solo
         un `reclassified` explícito lo hace, llegue en el orden que llegue.
+
+        SEGUNDA RED (AREA-10-08): ``occurred_at`` es el instante del evento. Un replay
+        tardío desde la DLQ de un ``reclassified`` VIEJO no debe deshacer una
+        reclasificación posterior, y menos bajarla. ``nivel_evento_at`` guarda el
+        instante del último evento aplicado: un evento más antiguo se acepta (no falla,
+        sale de la DLQ) pero no cambia el nivel. Sin ``occurred_at`` (o no
+        interpretable) no hay con qué ordenar: solo puede SUBIR (``GREATEST``).
         """
         row = await self._conn.fetchrow(
             """
-            INSERT INTO knowledge_chunk
-                (source_type, source_ref, texto, embedding, metadata, acl, nivel_seguridad)
-            VALUES ($1, $2, '', NULL, '{}'::jsonb, '{}'::jsonb, $3)
+            INSERT INTO knowledge_chunk AS k
+                (source_type, source_ref, texto, embedding, metadata, acl,
+                 nivel_seguridad, nivel_evento_at)
+            VALUES ($1, $2, '', NULL, '{}'::jsonb, '{}'::jsonb, $3, $4::timestamptz)
             ON CONFLICT (source_type, source_ref) DO UPDATE
-               SET nivel_seguridad = EXCLUDED.nivel_seguridad,
+               SET nivel_seguridad = CASE
+                       WHEN EXCLUDED.nivel_evento_at IS NULL
+                           THEN GREATEST(k.nivel_seguridad, EXCLUDED.nivel_seguridad)
+                       WHEN k.nivel_evento_at IS NULL
+                            OR EXCLUDED.nivel_evento_at >= k.nivel_evento_at
+                           THEN EXCLUDED.nivel_seguridad
+                       ELSE k.nivel_seguridad
+                   END,
+                   nivel_evento_at = GREATEST(k.nivel_evento_at, EXCLUDED.nivel_evento_at),
                    updated_at      = now()
             RETURNING id, source_type, source_ref, created_at
             """,
             source_type,
             source_ref,
             nivel_seguridad,
+            occurred_at,
         )
         assert row is not None
         return row
@@ -204,7 +226,11 @@ class KnowledgeRepository:
         )
 
     async def tombstone_by_source(
-        self, source_type: str, source_ref: str, nivel_seguridad: int
+        self,
+        source_type: str,
+        source_ref: str,
+        nivel_seguridad: int,
+        occurred_at: datetime | None = None,
     ) -> asyncpg.Record:
         """UPSERT a un TOMBSTONE: conserva la fila-centinela pero vacía el material
         derivado (``embedding = NULL``, ``texto = ''``, ``metadata = '{}'``).
@@ -237,8 +263,9 @@ class KnowledgeRepository:
         row = await self._conn.fetchrow(
             """
             INSERT INTO knowledge_chunk
-                (source_type, source_ref, texto, embedding, metadata, acl, nivel_seguridad)
-            VALUES ($1, $2, '', NULL, '{}'::jsonb, '{}'::jsonb, $3)
+                (source_type, source_ref, texto, embedding, metadata, acl,
+                 nivel_seguridad, nivel_evento_at)
+            VALUES ($1, $2, '', NULL, '{}'::jsonb, '{}'::jsonb, $3, $4::timestamptz)
             ON CONFLICT (source_type, source_ref) DO UPDATE
                SET texto           = '',
                    embedding       = NULL,
@@ -246,12 +273,16 @@ class KnowledgeRepository:
                    nivel_seguridad = GREATEST(
                        knowledge_chunk.nivel_seguridad, EXCLUDED.nivel_seguridad
                    ),
+                   nivel_evento_at = GREATEST(
+                       knowledge_chunk.nivel_evento_at, EXCLUDED.nivel_evento_at
+                   ),
                    updated_at      = now()
             RETURNING id, source_type, source_ref, created_at
             """,
             source_type,
             source_ref,
             nivel_seguridad,
+            occurred_at,
         )
         assert row is not None
         return row

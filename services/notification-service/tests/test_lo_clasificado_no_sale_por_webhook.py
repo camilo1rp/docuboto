@@ -167,7 +167,7 @@ async def test_el_recorte_ESTA_CABLEADO_en_el_envio():
     """
     enviados = []
 
-    async def _entregar(client, sub, body, tenant_slug=""):
+    async def _entregar(client, sub, body, tenant_slug="", **_kw):
         enviados.append(body)
 
     with patch("app.services.webhook_service.WebhookRepository") as repo, patch(
@@ -194,7 +194,7 @@ async def test_la_reclasificacion_con_la_forma_del_productor_sale_sin_causal_por
     control positivo."""
     enviados = []
 
-    async def _entregar(client, sub, body, tenant_slug=""):
+    async def _entregar(client, sub, body, tenant_slug="", **_kw):
         enviados.append(body)
 
     sobre = {

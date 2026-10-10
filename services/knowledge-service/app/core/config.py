@@ -7,6 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +40,14 @@ class Settings(BaseSettings):
     # copia independiente del stream a cada consumer-group, así que ambos servicios
     # consumen el mismo stream sin competir entre sí.
     knowledge_ingest_group: str = "knowledge-ingest"
+
+    # Retención de dead-letters terminales en Postgres (ADR-021 Fase 4 — MVP-3, AREA-10-08).
+    # Días tras `resolved_at` a partir de los cuales las filas `resolved`/`discarded`
+    # de `evento_dead_letter` se borran. Las `pending` NUNCA se purgan. La copia legal
+    # de cada dead-letter vive en `audit_log` (inmutable).
+    retention_deadletter_days: int = Field(default=90, ge=1)
+    # Cadencia (segundos) del barrido diario de retención dentro del worker.
+    retention_interval_seconds: int = 86400  # 24 h
 
     # Proveedor de embeddings (ADR-006/E21 Inc.1: pluggable). Default REAL de
     # despliegue: `local_st` (sentence-transformers en el propio contenedor —

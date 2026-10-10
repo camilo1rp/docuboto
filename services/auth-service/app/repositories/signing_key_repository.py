@@ -182,14 +182,15 @@ class SigningKeyRepository:
     # dejaran atrás, anclarían la KEK vieja para siempre impidiendo retirarla).
     # ------------------------------------------------------------------
     async def fetch_ids_to_rewrap(self, active_version: int) -> list[asyncpg.Record]:
-        """IDs (con user_id/key_version) de credenciales cuya KEK NO es la
-        activa Y que AÚN tienen material (`private_key_cifrado IS NOT NULL`) —
+        """IDs (con user_id/key_version) de credenciales cuya KEK es MÁS VIEJA que la
+        activa (`key_version < activa`: nunca se «re-envuelve» hacia atrás si la
+        versión activa configurada retrocede por error) Y que AÚN tienen material (`private_key_cifrado IS NOT NULL`) —
         el conjunto a re-envolver. Una fila PURGADA (material NULL) no necesita
         ninguna KEK, así que se excluye. Cualquier `estado`. Orden estable por
         `id` para reanudabilidad determinista."""
         return await self._conn.fetch(
             "SELECT id, user_id, key_version FROM auth_user_signing_key "
-            "WHERE key_version <> $1 AND private_key_cifrado IS NOT NULL ORDER BY id",
+            "WHERE key_version < $1 AND private_key_cifrado IS NOT NULL ORDER BY id",
             active_version,
         )
 

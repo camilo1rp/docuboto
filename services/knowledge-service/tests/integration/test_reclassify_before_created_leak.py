@@ -202,6 +202,7 @@ async def test_desclasificacion_con_fila_existente_baja_nivel_exacto(
         conn,
         tenant_slug=slug,
         payload={"tracking_number": TRACKING, "nivel_nuevo": 1, "nivel_anterior": 3},
+        occurred_at="2026-10-09T10:00:00Z",  # un evento real siempre lleva su instante
     )
 
     row = await _fetch_chunk(conn)

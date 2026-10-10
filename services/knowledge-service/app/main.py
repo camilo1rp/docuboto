@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import events, identidad, request_log
+from orpycamcp_common import deadletter, events, identidad, request_log
 
 from app.core.clearance import url_es_local
 from app.core.config import settings
@@ -133,4 +133,5 @@ app.add_middleware(request_log.RequestLogMiddleware, servicio="knowledge-service
 
 app.include_router(knowledge_router)
 app.include_router(admin_deadletter_router)
+deadletter.instalar_manejador_radicados_ausente(app)
 app.include_router(health_router)

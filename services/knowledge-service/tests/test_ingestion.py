@@ -334,7 +334,7 @@ async def test_reclassify_sube_a_reservada_con_proveedor_externo_tombstonea(
         mock_repo = _mock_repo(MockRepo)
         await ingestion.apply_reclassification(conn, tenant_slug=TENANT, payload=payload)
 
-    mock_repo.tombstone_by_source.assert_awaited_once_with("radicado", TRACKING, RESERVADA)
+    mock_repo.tombstone_by_source.assert_awaited_once_with("radicado", TRACKING, RESERVADA, occurred_at=None)
     mock_repo.update_nivel_by_source.assert_not_called()
     mock_repo.delete_by_source.assert_not_called()
 
@@ -350,7 +350,7 @@ async def test_reclassify_a_publica_actualiza_nivel_exacto() -> None:
         mock_repo = _mock_repo(MockRepo)
         await ingestion.apply_reclassification(conn, tenant_slug=TENANT, payload=payload)
 
-    mock_repo.update_nivel_by_source.assert_awaited_once_with("radicado", TRACKING, PUBLICA)
+    mock_repo.update_nivel_by_source.assert_awaited_once_with("radicado", TRACKING, PUBLICA, occurred_at=None)
     mock_repo.tombstone_by_source.assert_not_called()
     mock_repo.delete_by_source.assert_not_called()
 
@@ -365,7 +365,7 @@ async def test_reclassify_sube_a_reservada_con_proveedor_stub_actualiza_no_tombs
         mock_repo = _mock_repo(MockRepo)
         await ingestion.apply_reclassification(conn, tenant_slug=TENANT, payload=payload)
 
-    mock_repo.update_nivel_by_source.assert_awaited_once_with("radicado", TRACKING, RESERVADA)
+    mock_repo.update_nivel_by_source.assert_awaited_once_with("radicado", TRACKING, RESERVADA, occurred_at=None)
     mock_repo.tombstone_by_source.assert_not_called()
     mock_repo.delete_by_source.assert_not_called()
 
@@ -390,7 +390,7 @@ async def test_reclassify_sin_nivel_nuevo_falla_cerrado_a_clasificada(
         mock_audit.append = AsyncMock()
         await ingestion.apply_reclassification(conn, tenant_slug=TENANT, payload=payload)
 
-    mock_repo.tombstone_by_source.assert_awaited_once_with("radicado", TRACKING, CLASIFICADA)
+    mock_repo.tombstone_by_source.assert_awaited_once_with("radicado", TRACKING, CLASIFICADA, occurred_at=None)
     mock_repo.update_nivel_by_source.assert_not_called()
     mock_audit.append.assert_awaited_once()
     kw = mock_audit.append.call_args.kwargs
@@ -417,7 +417,7 @@ async def test_reclassify_sin_nivel_nuevo_con_proveedor_stub_actualiza_a_clasifi
         mock_audit.append = AsyncMock()
         await ingestion.apply_reclassification(conn, tenant_slug=TENANT, payload=payload)
 
-    mock_repo.update_nivel_by_source.assert_awaited_once_with("radicado", TRACKING, CLASIFICADA)
+    mock_repo.update_nivel_by_source.assert_awaited_once_with("radicado", TRACKING, CLASIFICADA, occurred_at=None)
     mock_repo.tombstone_by_source.assert_not_called()
     mock_audit.append.assert_awaited_once()
     assert mock_audit.append.call_args.kwargs["action"] == "knowledge.reclassify_malformed_failclose"

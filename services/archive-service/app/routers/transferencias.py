@@ -16,6 +16,8 @@ from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.core.actor import Actor, optional_actor, require_actor
 from app.core.clearance import require_permission
@@ -326,6 +328,43 @@ async def transferencia_acta_firma_inobtenible_sobre(
 ) -> SobreFundamentoResponse:
     return await TransferenciaService(conn, tenant_slug).leer_sobre_fundamento(
         transferencia_id, excepcion_id, actor, acto=acto
+    )
+
+
+@router.post(
+    "/{transferencia_id}/paquete-entrega",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"application/zip": {}}}},
+    summary="Paquete de entrega de la transferencia secundaria (acta + material clasificado)",
+    # Lleva texto + sal de fundamentos que pueden referir salud o fallecimiento (Ley 1712 art. 18
+    # lit. a): administración nivel 3, como `/sobre`. Jamás OAI/EAD/CMIS.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def transferencia_paquete_entrega(
+    transferencia_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> StreamingResponse:
+    # Los asientos ya están escritos cuando `paquete_entrega` retorna: recién entonces sale el
+    # primer byte.
+    paquete, tamano = await TransferenciaService(conn, tenant_slug).paquete_entrega(
+        transferencia_id, actor
+    )
+
+    def _trozos():
+        while chunk := paquete.read(1024 * 1024):
+            yield chunk
+
+    return StreamingResponse(
+        _trozos(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="paquete-entrega-{transferencia_id}.zip"',
+            "Content-Length": str(tamano),
+            "Cache-Control": "no-store",
+        },
+        background=BackgroundTask(paquete.close),
     )
 
 

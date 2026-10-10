@@ -15,7 +15,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -81,6 +81,9 @@ from app.schemas.archive import (
 from app.services.backoff import next_backoff_seconds
 from app.services.eliminacion_acta import construir_acta_xml
 from app.services.metadata_service import validate_metadata
+
+if TYPE_CHECKING:
+    from app.clients.storage_client import ExportZipStream
 
 logger = logging.getLogger(__name__)
 
@@ -616,13 +619,15 @@ class ArchiveService:
         expediente_id: uuid.UUID,
         user_id: uuid.UUID | None = None,
         canal: str = "system",
-    ) -> tuple[bytes, str]:
+    ) -> tuple[ExportZipStream, str]:
         """Exporta el expediente como ZIP de USUARIO (E02/export): índice
         electrónico XML (si existe) + manifiesto CSV + los bytes de los anexos de
         sus radicados VINCULADOS. **No-read-up a nivel de expediente**: 404 si el
         expediente supera el clearance del llamante; si es visible, se exporta su
         contenido (el ensamblado de bytes lo hace storage-service, D-02). Devuelve
-        `(zip_bytes, filename)`.
+        `(stream, filename)`: el ZIP llega de storage ya completo y se reenvía por
+        trozos sin bufferizarlo (B4-5); los fallos de storage se resuelven aquí,
+        antes del primer byte.
         """
         import base64
         import csv
@@ -834,17 +839,32 @@ class ArchiveService:
             }
         )
 
-        zip_bytes = await storage_client.export_zip_internal(
-            tenant_slug=self._tenant_slug, items=items, extra_files=extra_files
-        )
-        await self._audit_export_access(
-            expediente.code,
-            user_id=user_id,
-            canal=canal,
-            num_documentos=num_documentos,
-            num_anexos=len(items),
-        )
-        return zip_bytes, f"expediente-{expediente.code}.zip"
+        try:
+            stream = await storage_client.export_zip_internal(
+                tenant_slug=self._tenant_slug, items=items, extra_files=extra_files
+            )
+        except storage_client.StorageExportError as exc:
+            if exc.status_code == 413:
+                err, code = "export_demasiado_grande", status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+            elif exc.status_code == 507:
+                err, code = "espacio_insuficiente", status.HTTP_507_INSUFFICIENT_STORAGE
+            else:
+                err, code = "export_no_disponible", status.HTTP_502_BAD_GATEWAY
+            raise HTTPException(
+                status_code=code, detail={"error": err, "detail": str(exc), "status": code}
+            ) from exc
+        try:
+            await self._audit_export_access(
+                expediente.code,
+                user_id=user_id,
+                canal=canal,
+                num_documentos=num_documentos,
+                num_anexos=len(items),
+            )
+        except BaseException:
+            await stream.aclose()
+            raise
+        return stream, f"expediente-{expediente.code}.zip"
 
     async def _audit_export_access(
         self,

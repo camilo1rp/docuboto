@@ -118,6 +118,22 @@ sudo nginx -t
 sudo systemctl restart nginx
 ```
 
+### IP verificada de la ventanilla pública (`TRUSTED_PROXIES`)
+
+La constancia de autorización de la ventanilla (Ley 1581/2012, ADR-031) guarda la IP del cliente **solo si el gateway puede afirmarla**. El gateway la deriva recorriendo `X-Forwarded-For` **desde la derecha** y descartando los saltos de `TRUSTED_PROXIES`; la firma con `IDENTITY_SIGNING_SECRET` (ligada a la ruta, válida 120 s) y document-service solo acepta esa firma: **nunca** lee `X-Forwarded-For`. Para que `ip_verificada` sea `true` en producción:
+
+1. `IDENTITY_SIGNING_SECRET` configurado (es obligatorio en producción; sin él la IP queda nula).
+2. `TRUSTED_PROXIES` del api-gateway debe incluir **la red de nginx y la del frontend SSR** (los dos saltos que encadenan `X-Forwarded-For`: `infra/nginx.conf.example` usa `proxy_add_x_forwarded_for` y el SSR reenvía la IP del navegador). Si falta alguna, el gateway ve como cliente al propio proxy: la constancia registra la IP del proxy, no la de la persona.
+3. Con `TRUSTED_PROXIES` vacío (el valor por defecto) la cabecera se ignora y se usa la dirección del socket: es seguro, pero no informa.
+
+**Importante:** la IP solo es fiable si el frontend es alcanzable **únicamente a través de nginx**. Un puerto del SSR expuesto directamente (en desarrollo, `19300` con `XFF_DEPTH=1`) acepta un `X-Forwarded-For` forjado por el cliente y lo encadena como si fuera de confianza; en producción no publique el puerto del frontend: solo nginx debe llegar a él.
+
+Sin firma válida la constancia dice `ip=null, ip_verificada=false` y **no se bloquea** la radicación.
+
+### Política de tratamiento de datos de cada entidad
+
+La ventanilla pública **no radica** hasta que la entidad publique su aviso de privacidad (409 `politica_no_publicada`): defina `politica_tratamiento_version`, `politica_tratamiento_url` y/o `politica_tratamiento_texto` en `/admin/parametros` (administrador nivel 3). Parta de la [plantilla](politica-tratamiento-plantilla.md). `./scripts/verificar-ventanilla.sh <slug>` sale ≠ 0 si falta (`SIN POLITICA`).
+
 ---
 
 ## Secretos y variables de entorno
@@ -567,6 +583,23 @@ escribe `mapa-version-id-<fecha>.tsv` junto a los respaldos y **registra el acto
 mapa y deja el asiento `storage.restauracion` (hash del mapa, recuentos y previas no
 restauradas) en `audit_log`, en una sola transacción. Si ese paso falla, el script termina
 con error: registra el acta a mano con el mapa antes de dar el sistema por bueno.
+
+**Las versiones previas protegidas se respaldan y se restauran (B4).** Además del espejo,
+`backup.sh` copia el contenido de cada versión **previa** con COMPLIANCE vigente o retención
+legal a `minio-versiones/<bucket>/<sha256(clave+version)>` y la anota en
+`minio-versiones.tsv` (fichero aparte: `minio-retencion.tsv` no cambia de formato); viaja
+dentro del tar cifrado y el sello lleva `versiones_previas_capturadas=SI|NO` (**salida 5**
+si no quedó completa). `restore.sh`, antes del `sync`, las sube de la más antigua a la más
+reciente, verifica el sha256, repone la retención sobre el `VersionId` nuevo y sube con
+`put-object` explícito la versión actual de esas claves; el mapa viejo→nuevo las incluye y
+`registrar_restauracion` deja un evento PREMIS `REPLICA` (`motivo=restauracion`) por cada
+objeto remapeado, en la misma transacción, con `hash_after` NULL y `detalle.fixity="no_verificada"`
+(no relee el objeto restaurado: no declara una medición que no hizo). Si la versión actual de una
+clave era un delete marker, el respaldo lo declara (`MARCADOR`) y la restauración repone el borrado;
+una clave del respaldo con `..`, ruta absoluta o caracteres de control se rechaza. `RESTORE_ACEPTAR_PERDIDA_VERSIONES=1` queda solo
+para respaldos anteriores a esto o sellados con `versiones_previas_capturadas=NO`.
+`verify_audit_chains` sale **2** si no hay nada que verificar (filtro vacío o sin tenants):
+`--permitir-objetivo-vacio` es solo para una instalación nueva y los scripts no lo pasan.
 
 Dos cosas que no son evidentes:
 

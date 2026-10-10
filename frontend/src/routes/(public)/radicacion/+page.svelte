@@ -27,7 +27,8 @@
     cumplir.
 -->
 <script>
-  import { mensajeError } from "$lib/utils/apiError.js";
+  import { urlHttpSegura } from "$lib/utils/urlSegura.js";
+  import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -56,6 +57,11 @@
   // la misma (el backend devuelve el radicado ya creado); si el usuario edita el
   // formulario tras un fallo, el contenido cambia y se genera otra, porque la misma
   // clave con otro contenido sería un 409.
+  /** Política vigente de la entidad; se recarga si el servidor dice que cambió. */
+  let politica = data.politica ?? { publicada: false, version: "", url: "", verificable: true };
+  $: sinPolitica = !politica.publicada;
+  $: urlPolitica = urlHttpSegura(politica.url);
+  $: urlSupresion = urlPolitica ? `${urlPolitica.split("#")[0]}#supresion` : "";
   let ultimoEnvio = { firma: "", clave: "" };
 
   function nuevaClave() {
@@ -80,6 +86,20 @@
   $: faltaCanal =
     Boolean(identificacion.trim()) && !(email.trim() || telefono.trim() || direccion.trim());
 
+  const MENSAJE_NO_PUBLICADA = mensajeError({ error: "politica_no_publicada" }, "");
+  const MENSAJE_NO_VERIFICABLE = mensajeError({ error: "politica_no_verificable" }, "");
+
+  /** 409 politica_desactualizada: traer la versión vigente y pedir aceptar de nuevo. */
+  async function recargarPolitica() {
+    aceptaTratamiento = false;
+    try {
+      const res = await fetch("/radicacion/api/politica");
+      if (res.ok) politica = await res.json();
+    } catch {
+      /* se conserva la versión mostrada; el servidor volverá a verificarla */
+    }
+  }
+
   async function radicar() {
     error = "";
     if (!tipoDocumental) {
@@ -97,6 +117,10 @@
       return;
     }
 
+    if (sinPolitica) {
+      error = politica.verificable === false ? MENSAJE_NO_VERIFICABLE : MENSAJE_NO_PUBLICADA;
+      return;
+    }
     if (!aceptaTratamiento) {
       error =
         "Debe autorizar el tratamiento de sus datos personales para poder radicar " +
@@ -106,7 +130,7 @@
 
     const datos = {
       acepta_tratamiento: true,
-      politica_version: data.politica?.version ?? "sin-politica-publicada",
+      politica_version: politica.version,
       sitio_web: sitioWeb,
       tipo_documental: tipoDocumental,
       nombre: nombre.trim(),
@@ -136,6 +160,7 @@
       });
       const resultado = await res.json().catch(() => null);
       if (!res.ok) {
+        if (codigoError(resultado) === "politica_desactualizada") await recargarPolitica();
         error = mensajeError(resultado, "No se pudo radicar en este momento.");
         return;
       }
@@ -354,15 +379,27 @@
             />
             <span>
               Autorizo a la entidad el tratamiento de mis datos personales para gestionar esta
-              solicitud, conforme a la Ley 1581 de 2012{#if data.politica?.url}
+              solicitud, conforme a la Ley 1581 de 2012{#if urlPolitica}
                 y a su
-                <a href={data.politica.url} target="_blank" rel="noopener noreferrer"
+                <a href={urlPolitica} target="_blank" rel="noopener noreferrer"
                   >política de tratamiento de datos</a
-                >{/if}.
+                >{/if}{#if politica.version}
+                (versión {politica.version}){/if}.
             </span>
           </label>
           <p class="vent__hint" id="politica-ayuda">
             Se conserva constancia de su autorización (versión de la política, fecha y hora).
+          </p>
+          {#if sinPolitica}
+            <p class="vent__aviso vent__aviso--error" role="alert" id="politica-no-publicada">
+              {politica.verificable === false ? MENSAJE_NO_VERIFICABLE : MENSAJE_NO_PUBLICADA}
+            </p>
+          {/if}
+          <p class="vent__hint" id="politica-supresion">
+            Mientras corra el plazo legal de conservación no procede la supresión; vea la
+            {#if urlSupresion}
+              <a href={urlSupresion} target="_blank" rel="noopener noreferrer">política</a
+              >{:else}política{/if}.
           </p>
         </fieldset>
 
@@ -370,7 +407,7 @@
           <p class="vent__aviso vent__aviso--error" role="alert">{error}</p>
         {/if}
 
-        <button class="vent__btn" type="submit" disabled={enviando}>
+        <button class="vent__btn" type="submit" disabled={enviando || sinPolitica}>
           {enviando ? "Radicando…" : "Radicar documento"}
         </button>
       </form>

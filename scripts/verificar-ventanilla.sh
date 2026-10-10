@@ -16,12 +16,18 @@
 # script consulta `GET /api/v1/public/{tenant}/ventanilla/estado` (sin autenticación) y
 # sale con código 1 si ALGUNA entidad no está habilitada, para engancharlo al despliegue.
 #
+# B2 (ADR-031): también exige `politica_publicada`. Sin política de tratamiento de datos
+# (aviso de privacidad, Ley 1581/2012 art. 12) la ventanilla responde 409
+# `politica_no_publicada` aunque el organigrama esté listo: es el mismo descubrimiento
+# tardío, así que se comprueba aquí y se dice qué falta (`politica_tratamiento_version`
+# y `..._url` o `..._texto` en /admin/parametros).
+#
 # Uso:
 #   ./scripts/verificar-ventanilla.sh demo icetex       # entidades por argumento
 #   PORTAL_TENANT_SLUG=demo ./scripts/verificar-ventanilla.sh   # o por entorno
 #   GATEWAY_URL=https://api.entidad.gov.co ./scripts/verificar-ventanilla.sh demo
 #
-# Salida: una línea por entidad (`OK` / `NO HABILITADA` con el motivo). Código 0 si todas
+# Salida: una línea por entidad (`OK` / `NO HABILITADA` / `SIN POLITICA`). Código 0 si todas
 # están habilitadas; 1 si alguna no lo está; 2 si no se pudo consultar (red, gateway).
 
 set -euo pipefail
@@ -43,11 +49,14 @@ for slug in "${SLUGS[@]}"; do
         estado=2
         continue
     fi
-    if printf '%s' "$cuerpo" | grep -Eq '"habilitada"[[:space:]]*:[[:space:]]*true'; then
-        echo "OK             $slug  $cuerpo"
-    else
+    if ! printf '%s' "$cuerpo" | grep -Eq '"habilitada"[[:space:]]*:[[:space:]]*true'; then
         echo "NO HABILITADA  $slug  $cuerpo"
         [ "$estado" -eq 2 ] || estado=1
+    elif ! printf '%s' "$cuerpo" | grep -Eq '"politica_publicada"[[:space:]]*:[[:space:]]*true'; then
+        echo "SIN POLITICA   $slug  $cuerpo  (publique politica_tratamiento_* en /admin/parametros)"
+        [ "$estado" -eq 2 ] || estado=1
+    else
+        echo "OK             $slug  $cuerpo"
     fi
 done
 exit "$estado"

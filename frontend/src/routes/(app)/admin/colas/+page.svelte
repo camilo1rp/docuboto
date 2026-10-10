@@ -28,9 +28,6 @@
   reenviar un correo o re-ejecutar una distribución) y también pide
   confirmación, aunque no es irreversible en el mismo sentido.
 
-  Truncamiento: si `X-Truncated: true`, puede haber dead-letters pendientes
-  más antiguos que el backend no incluyó en el conjunto candidato — se
-  muestra como aviso persistente, no solo en un comentario de código.
 -->
 <script>
   import { onMount } from "svelte";
@@ -70,7 +67,6 @@
 
   let items = data.items ?? [];
   let totalCount = data.totalCount ?? 0;
-  let truncated = data.truncated ?? false;
   const pageSize = data.pageSize ?? 20;
   let page = 1;
   let listLoading = false;
@@ -91,7 +87,6 @@
       if (res.ok) {
         items = Array.isArray(body) ? body : [];
         totalCount = Number(res.headers.get("X-Total-Count") ?? items.length);
-        truncated = res.headers.get("X-Truncated") === "true";
         page = targetPage;
       } else {
         listError = mensajeError(body, `Error ${res.status}`);
@@ -304,14 +299,6 @@
       </div>
     </form>
 
-    {#if truncated}
-      <div class="colas-page__warning" role="alert">
-        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-        El conjunto de eventos candidatos alcanzó el límite de la consulta: puede haber eventos pendientes
-        más antiguos que NO aparecen en este listado ni en el total mostrado.
-      </div>
-    {/if}
-
     {#if listError}
       <div class="colas-page__error" role="alert">
         <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
@@ -504,16 +491,6 @@
       border-radius: var(--op-radius);
       background: var(--op-error-bg);
       color: var(--op-error-fg);
-    }
-
-    &__warning {
-      display: flex;
-      align-items: center;
-      gap: var(--op-space-2);
-      padding: var(--op-space-3);
-      border-radius: var(--op-radius);
-      background: var(--op-warning-bg);
-      color: var(--op-warning-fg);
     }
 
     &__mono {

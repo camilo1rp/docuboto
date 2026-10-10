@@ -52,6 +52,14 @@ class AipRepository:
         assert row is not None
         return row
 
+    async def get_empaquetado(self, expediente_id: uuid.UUID) -> asyncpg.Record | None:
+        """Fila de estado del AIP SIN crearla (a diferencia de `get_or_create`): lectura pura
+        para el paquete de entrega, que no debe fabricar un `pendiente` al preguntar."""
+        return await self._conn.fetchrow(
+            f"SELECT {_COLS}, worm_retain_until FROM expediente_aip WHERE expediente_id = $1",
+            expediente_id,
+        )
+
     async def get_aip_object_id(self, expediente_id: uuid.UUID) -> uuid.UUID | None:
         """`preservacion_worm_objeto.id` del AIP empaquetado del expediente, o `None`
         (sin fila, o todavía no empaquetado). Lectura plana, sin gate: el llamador ya

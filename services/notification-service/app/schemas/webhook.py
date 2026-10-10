@@ -49,3 +49,24 @@ class WebhookResponse(BaseModel):
     event_types: list[str]
     active: bool
     created_at: datetime
+
+
+class WebhookEntregaResponse(BaseModel):
+    """Una fila de la constancia de entregas (`webhook_entregas`). Nunca lleva el cuerpo."""
+
+    id: uuid.UUID
+    entrega_id: uuid.UUID
+    fase: str
+    webhook_id: uuid.UUID
+    url_destino: str
+    url_sha256: str  # SHA-256 del ORIGEN (scheme://host:port), no del URL completo
+    event_id: str | None
+    event_type: str
+    intento: int
+    body_sha256: str
+    recortado: bool
+    firmado: bool
+    resultado: str | None
+    http_status: int | None
+    error: str | None
+    at: datetime

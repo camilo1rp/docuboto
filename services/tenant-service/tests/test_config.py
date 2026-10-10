@@ -227,6 +227,36 @@ async def test_set_param(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "valor",
+    ["javascript:alert(1)", "JAVASCRIPT:x", "data:text/html,x", "//evil", "ftp://x.example",
+     "https://a b", 5, None],
+)
+async def test_la_url_de_la_politica_solo_admite_http_s(
+    client_conn: tuple[AsyncClient, AsyncMock], valor
+) -> None:
+    """Se enlaza en la página pública: `javascript:` sería XSS almacenado (B2)."""
+    client, _ = client_conn
+    resp = await client.put(
+        "/api/v1/config/params/politica_tratamiento_url", json={"value": valor}, headers=_HDRS
+    )
+    assert resp.status_code == 422
+    client.audit_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valor", ["https://entidad.example/privacidad", "http://localhost/p", ""])
+async def test_la_url_de_la_politica_admite_https_http_y_vacia(
+    client_conn: tuple[AsyncClient, AsyncMock], valor
+) -> None:
+    client, _ = client_conn
+    resp = await client.put(
+        "/api/v1/config/params/politica_tratamiento_url", json={"value": valor}, headers=_HDRS
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
 async def test_set_param_asienta_antes_y_despues(
     client_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:

@@ -17,6 +17,8 @@ Responsibilities:
 - Audit every auth event to PostgreSQL
 """
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -28,6 +30,7 @@ from orpycamcp_common import secrets as common_secrets
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
+from app.jobs.signing_key_maintenance import maintenance_loop
 from app.routers.audit import router as audit_router
 from app.routers.auth import router as auth_router
 from app.routers.auth import set_auth_service
@@ -90,8 +93,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "/internal/signing-key/activate fallará (503) hasta que se monte "
             "el certificado PÚBLICO de la sub-CA de usuarios (ca-users.crt)"
         )
+    maintenance_task: asyncio.Task[None] | None = None
+    if settings.signing_key_maintenance_enabled:
+        maintenance_task = asyncio.create_task(maintenance_loop(app.state.db_pool))
     yield
     logger.info("auth-service shutting down")
+    if maintenance_task is not None:
+        maintenance_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await maintenance_task
     await service.close()
     await close_pool()
 

@@ -52,7 +52,12 @@ s3api() {
             for f in $FALLAN; do case "$*" in *"--key $f "*) return 1;; esac; done; return 0 ;;
         put-object-legal-hold) [ -n "${FALLA_HOLD:-}" ] && return 1; return 0 ;;
         head-object) echo "NUEVA-VERSION"; return 0 ;;
-        list-object-versions) cat "$T/versiones.txt"; return 0 ;;
+        list-object-versions)
+            case "$*" in
+                *DeleteMarkers*) [ -e "$T/marcadores.txt" ] && cat "$T/marcadores.txt"; return 0 ;;
+            esac
+            cat "$T/versiones.txt"; return 0 ;;
+        delete-object) echo "DELETE $*" >> "$T/orden.log"; return 0 ;;
         get-object-retention)
             k=""; v=""
             while [ $# -gt 0 ]; do case "$1" in --key) k="$2";; --version-id) v="$2";; esac; shift; done
@@ -65,6 +70,18 @@ s3api() {
             if [ -e "$T/errhold-$k" ]; then echo "An error occurred (InternalError)" >&2; return 1; fi
             if [ -e "$T/hold-$k-$v.json" ]; then cat "$T/hold-$k-$v.json"
             else echo "An error occurred (NoSuchObjectLockConfiguration)" >&2; return 254; fi ;;
+        get-object)
+            # get-object --bucket B --key K --version-id V <dest>: el último argumento es el fichero
+            args=("$@"); dest="${args[$#-1]}"; k=""; v=""
+            while [ $# -gt 0 ]; do case "$1" in --key) k="$2";; --version-id) v="$2";; esac; shift; done
+            if [ -e "$T/errget-$k" ]; then echo "An error occurred (InternalError)" >&2; return 1; fi
+            if [ -e "$T/obj-$k-$v" ]; then cat "$T/obj-$k-$v" > "$dest"; else printf 'x' > "$dest"; fi ;;
+        put-object)
+            args=("$@"); k=""; body=""
+            while [ $# -gt 0 ]; do case "$1" in --key) k="$2";; --body) body="$2";; esac; shift; done
+            if [ -e "$T/errput-$k" ]; then return 1; fi
+            n=$(( $(cat "$T/nver" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$T/nver"
+            echo "PUT $k $(cat "$body") NUEVA-$n" >> "$T/orden.log"; echo "NUEVA-$n" ;;
         get-object-lock-configuration)
             if [ -e "$T/err-lock" ]; then echo "An error occurred (AccessDenied)" >&2; return 1; fi
             if [ -e "$T/lock.json" ]; then cat "$T/lock.json"
@@ -85,6 +102,12 @@ def _bash(tmp: Path, cuerpo: str, **env: str) -> subprocess.CompletedProcess[str
         env={**os.environ, **env},
         timeout=60,
     )
+
+
+def _prev(tmp: Path, clave: str, ver: str, contenido: str, ultima: str = "False", lm: str = "2026-01-01T00:00:00+00:00") -> str:
+    """Una fila de `list-object-versions` (4 columnas) y el contenido que devolverá `get-object`."""
+    (tmp / f"obj-{clave}-{ver}").write_text(contenido)
+    return f"{clave}\t{ver}\t{ultima}\t{lm}"
 
 
 def _tsv(tmp: Path, lineas: list[str]) -> Path:
@@ -385,11 +408,21 @@ def test_backup_pasa_la_linea_base_de_roturas_junto_al_ancla_por_stdin(tmp_path:
     [("OK", "SI", 0), ("FALLIDA", "SI", 3), ("OK", "NO", 4), ("FALLIDA", "NO", 3)],
 )
 def test_backup_sale_con_codigo_distinto_de_cero_al_final(tmp_path: Path, verif: str, ret: str, codigo: int) -> None:
+    _salida_final(verif, ret, "SI", codigo)
+
+
+def test_backup_sale_con_5_si_las_versiones_previas_no_quedaron_respaldadas() -> None:
+    """B4: la evidencia previa bajo COMPLIANCE sin respaldar no pasa en verde."""
+    _salida_final("OK", "SI", "NO", 5)
+    _salida_final("OK", "NO", "NO", 4)
+
+
+def _salida_final(verif: str, ret: str, prev: str, codigo: int) -> None:
     """El respaldo ya está completo y sellado: la supervisión se entera por el código de salida."""
     lineas = (RAIZ / "infra" / "backup.sh").read_text(encoding="utf-8").splitlines()
     i = next(n for n, l in enumerate(lineas) if l.startswith('echo "══ Respaldo COMPLETO'))
     r = subprocess.run(
-        ["bash", "-c", f'VERIFICACION_AUDITORIA={verif}\nRETENCION_COMPLETA={ret}\nDESTINO=/x\n' + "\n".join(lineas[i:])],
+        ["bash", "-c", f'VERIFICACION_AUDITORIA={verif}\nRETENCION_COMPLETA={ret}\nVERSIONES_PREVIAS_COMPLETAS={prev}\nDESTINO=/x\n' + "\n".join(lineas[i:])],
         capture_output=True, text=True, check=False, timeout=30,
     )
     assert r.returncode == codigo, r.stderr
@@ -440,3 +473,166 @@ def test_restore_si_la_cadena_esta_rota_no_levanta_los_servicios(tmp_path: Path)
         )
         assert r.returncode == sale, f"rc={rc}: se esperaba salida {sale}, fue {r.returncode}\n{r.stderr}"
         assert ("CONTINUA" in r.stdout) == (rc == 0)
+
+
+# --- B4: versiones previas bajo COMPLIANCE (respaldo y restauración) ---------------------
+
+
+def _previas_tmp(tmp: Path) -> tuple[Path, Path]:
+    d = tmp / "dir"
+    d.mkdir()
+    return d, tmp / "minio-versiones.tsv"
+
+
+_RET = '{"Retention":{"Mode":"COMPLIANCE","RetainUntilDate":"2099-01-01T00:00:00+00:00"}}'
+
+
+def test_el_respaldo_captura_la_previa_bajo_compliance_y_su_sha256(tmp_path: Path) -> None:
+    import hashlib
+
+    (tmp_path / "versiones.txt").write_text(
+        _prev(tmp_path, "indice.json", "v1", "ANTIGUO") + "\n" + _prev(tmp_path, "indice.json", "v2", "ACTUAL", ultima="True")
+        + "\n" + _prev(tmp_path, "suelta.txt", "s1", "SIN-RETENCION") + "\n"
+    )
+    (tmp_path / "ret-indice.json-v1.json").write_text(_RET)
+    (tmp_path / "ret-indice.json-v2.json").write_text(_RET)  # la actual también protegida: la copia el espejo
+    d, tsv = _previas_tmp(tmp_path)
+    r = _bash(tmp_path, f'respaldar_versiones_previas b1 "{d}" "{tsv}"; echo "rc=$?"')
+    assert "rc=0" in r.stdout, r.stderr
+    filas = [l.split("\t") for l in tsv.read_text().splitlines()]
+    assert len(filas) == 1, "solo la previa protegida: ni la actual ni la previa sin retención"
+    tipo, obj, vid, sha, lm = filas[0]
+    assert (tipo, obj, vid, lm) == ("VERSION", "b1/indice.json", "v1", "2026-01-01T00:00:00+00:00")
+    assert sha == hashlib.sha256(b"ANTIGUO").hexdigest()
+    ident = hashlib.sha256(b"indice.json\tv1").hexdigest()
+    assert (d / "b1" / ident).read_text() == "ANTIGUO"
+
+
+def test_una_previa_con_retencion_legal_sin_plazo_tambien_se_respalda(tmp_path: Path) -> None:
+    (tmp_path / "versiones.txt").write_text(_prev(tmp_path, "a", "v1", "A") + "\n")
+    (tmp_path / "hold-a-v1.json").write_text('{"LegalHold":{"Status":"ON"}}')
+    d, tsv = _previas_tmp(tmp_path)
+    r = _bash(tmp_path, f'respaldar_versiones_previas b1 "{d}" "{tsv}"; echo "rc=$?"')
+    assert "rc=0" in r.stdout and tsv.read_text().count("VERSION\t") == 1, r.stderr
+
+
+def test_si_no_se_puede_descargar_la_previa_el_respaldo_falla(tmp_path: Path) -> None:
+    (tmp_path / "versiones.txt").write_text(_prev(tmp_path, "a", "v1", "A") + "\n")
+    (tmp_path / "ret-a-v1.json").write_text(_RET)
+    (tmp_path / "errget-a").write_text("")
+    d, tsv = _previas_tmp(tmp_path)
+    r = _bash(tmp_path, f'respaldar_versiones_previas b1 "{d}" "{tsv}"; echo "rc=$?"')
+    assert "rc=1" in r.stdout and "no se pudo descargar la versión previa" in r.stderr
+
+
+def _respaldo_con_previas(tmp: Path) -> tuple[Path, Path, Path, Path, Path]:
+    """Un respaldo ya hecho: dos previas de la misma clave (v1 más antigua que v2) y la actual v3."""
+    import hashlib
+
+    d = tmp / "dir"
+    (d / "b1").mkdir(parents=True)
+    filas = []
+    for vid, contenido, lm in (("v2", "SEGUNDO", "2026-03-01T00:00:00+00:00"), ("v1", "PRIMERO", "2026-01-01T00:00:00+00:00")):
+        (d / "b1" / hashlib.sha256(f"k.json\t{vid}".encode()).hexdigest()).write_text(contenido)
+        filas.append(f"VERSION\tb1/k.json\t{vid}\t{hashlib.sha256(contenido.encode()).hexdigest()}\t{lm}")
+    vtsv = tmp / "minio-versiones.tsv"
+    vtsv.write_text("\n".join(filas) + "\n")
+    rtsv = _tsv(tmp, [
+        f"OBJETO\tb1/k.json\tCOMPLIANCE\t{FUTURO}\tv1\tOFF\t0",
+        f"OBJETO\tb1/k.json\tCOMPLIANCE\t{FUTURO}\tv2\tON\t0",
+        f"OBJETO\tb1/k.json\tCOMPLIANCE\t{FUTURO}\tv3\tOFF\t1",
+    ])
+    actual = tmp / "minio"
+    (actual / "b1").mkdir(parents=True)
+    (actual / "b1" / "k.json").write_text("ACTUAL")
+    return d, vtsv, rtsv, actual, tmp / "mapa.tsv"
+
+
+def test_la_restauracion_sube_por_lastmodified_ascendente_y_la_actual_la_ultima(tmp_path: Path) -> None:
+    d, vtsv, rtsv, actual, mapa = _respaldo_con_previas(tmp_path)
+    r = _bash(tmp_path, f'restaurar_versiones_previas "{vtsv}" "{d}" "{rtsv}" "{mapa}" "{actual}"; echo "rc=$?"')
+    assert "rc=0" in r.stdout, r.stderr
+    orden = [l.split()[2] for l in (tmp_path / "orden.log").read_text().splitlines()]
+    assert orden == ["PRIMERO", "SEGUNDO", "ACTUAL"], "la más antigua primero y la versión actual al final, explícita"
+    llamadas = (tmp_path / "llamadas.log").read_text()
+    # la retención se repone sobre el VersionId DEVUELTO (NUEVA-n), no sobre el viejo
+    assert "put-object-retention --bucket b1 --key k.json --version-id NUEVA-1" in llamadas
+    assert "put-object-retention --bucket b1 --key k.json --version-id NUEVA-2" in llamadas
+    assert "put-object-legal-hold --bucket b1 --key k.json --version-id NUEVA-2" in llamadas
+    assert "--version-id v1 " not in llamadas.split("put-object-retention")[1]
+    lineas = mapa.read_text().splitlines()
+    assert "OBJETO\tb1/k.json\tv1\tNUEVA-1" in lineas and "OBJETO\tb1/k.json\tv2\tNUEVA-2" in lineas
+    assert "OBJETO\tb1/k.json\tv3\tNUEVA-3" in lineas, "la actual también queda en el mapa"
+
+
+def test_un_sha256_distinto_en_el_respaldo_hace_fallar_la_restauracion_sin_subir_nada(tmp_path: Path) -> None:
+    import hashlib
+
+    d, vtsv, rtsv, actual, mapa = _respaldo_con_previas(tmp_path)
+    (d / "b1" / hashlib.sha256(b"k.json\tv1").hexdigest()).write_text("ALTERADO")
+    r = _bash(tmp_path, f'restaurar_versiones_previas "{vtsv}" "{d}" "{rtsv}" "{mapa}" "{actual}"; echo "rc=$?"')
+    assert "rc=1" in r.stdout and "NO coincide" in r.stderr
+    assert not (tmp_path / "orden.log").exists(), "ni siquiera la primera se sube si su sha no cuadra"
+
+
+def test_una_previa_respaldada_ya_no_cuenta_como_perdida_en_reponer(tmp_path: Path) -> None:
+    d, vtsv, rtsv, actual, mapa = _respaldo_con_previas(tmp_path)
+    sin = _bash(tmp_path, f'reponer_retencion "{rtsv}"; echo "rc=$?"')
+    assert "rc=1" in sin.stdout, "sin minio-versiones.tsv la previa vigente sigue siendo pérdida"
+    con = _bash(tmp_path, f'reponer_retencion "{rtsv}" "{mapa}" "{vtsv}"; echo "rc=$? previas=$RETENCION_PREVIAS_COMPLIANCE"')
+    assert "rc=0 previas=0" in con.stdout, con.stdout + con.stderr
+
+
+def test_backup_y_restore_cablean_las_versiones_previas() -> None:
+    b = _sin_comentarios(RAIZ / "infra" / "backup.sh")
+    r = _sin_comentarios(RAIZ / "infra" / "restore.sh")
+    assert "respaldar_versiones_previas" in b and "minio-versiones.tsv" in b
+    assert "tar -C \"$DESTINO\" -cf - minio minio-versiones" in b, "las previas viajan dentro del tar cifrado"
+    assert 'echo "versiones_previas_capturadas=$VERSIONES_PREVIAS_COMPLETAS"' in b
+    assert "restaurar_versiones_previas" in r
+    assert r.index("restaurar_versiones_previas") < r.index("s3 sync"), "las previas se suben ANTES del sync"
+    assert "versiones_previas_capturadas=NO" in r
+    # nada de verify_audit_chains con el permiso de objetivo vacío en los scripts
+    assert "permitir-objetivo-vacio" not in b and "permitir-objetivo-vacio" not in r
+
+
+def test_la_actual_delete_marker_se_declara_en_el_respaldo_y_se_restaura(tmp_path: Path) -> None:
+    """B4 baja: si la versión actual es un delete marker, el respaldo lo declara y la
+    restauración repone el borrado (antes abortaba: «falta la versión actual»)."""
+    (tmp_path / "versiones.txt").write_text(_prev(tmp_path, "k.json", "v1", "PRIMERO") + "\n")
+    (tmp_path / "ret-k.json-v1.json").write_text(_RET)
+    (tmp_path / "marcadores.txt").write_text("k.json\tdm1\t2026-05-01T00:00:00+00:00\notra\tdm2\t-\n")
+    d, tsv = _previas_tmp(tmp_path)
+    r = _bash(tmp_path, f'respaldar_versiones_previas b1 "{d}" "{tsv}"; echo "rc=$?"')
+    assert "rc=0" in r.stdout, r.stderr
+    lineas = tsv.read_text().splitlines()
+    assert "MARCADOR\tb1/k.json\tdm1\t2026-05-01T00:00:00+00:00" in lineas
+    assert not any("b1/otra" in l for l in lineas), "solo claves con previas capturadas"
+    # restauración: sin fichero actual en el espejo
+    actual = tmp_path / "minio"
+    (actual / "b1").mkdir(parents=True)
+    rtsv = _tsv(tmp_path, [f"OBJETO\tb1/k.json\tCOMPLIANCE\t{FUTURO}\tv1\tOFF\t0"])
+    mapa = tmp_path / "mapa.tsv"
+    r2 = _bash(tmp_path, f'restaurar_versiones_previas "{tsv}" "{d}" "{rtsv}" "{mapa}" "{actual}"; echo "rc=$?"')
+    assert "rc=0" in r2.stdout, r2.stderr
+    orden = (tmp_path / "orden.log").read_text().splitlines()
+    assert orden[0].startswith("PUT k.json PRIMERO") and orden[-1].startswith("DELETE delete-object --bucket b1 --key k.json")
+
+
+@pytest.mark.parametrize("clave", ["../../etc/x", "a/../b", "/abs/x", "a\x01b"])
+def test_una_clave_insegura_del_respaldo_se_rechaza_sin_subir_nada(tmp_path: Path, clave: str) -> None:
+    """B4 baja: path traversal desde un respaldo manipulado."""
+    import hashlib
+
+    d = tmp_path / "dir"
+    (d / "b1").mkdir(parents=True)
+    contenido = "X"
+    (d / "b1" / hashlib.sha256(f"{clave}\tv1".encode()).hexdigest()).write_text(contenido)
+    vtsv = tmp_path / "minio-versiones.tsv"
+    vtsv.write_text(f"VERSION\tb1/{clave}\tv1\t{hashlib.sha256(contenido.encode()).hexdigest()}\t2026-01-01T00:00:00+00:00\n")
+    rtsv = _tsv(tmp_path, [])
+    actual = tmp_path / "minio"
+    actual.mkdir()
+    r = _bash(tmp_path, f'restaurar_versiones_previas "{vtsv}" "{d}" "{rtsv}" "" "{actual}"; echo "rc=$?"')
+    assert "rc=1" in r.stdout and "clave insegura" in r.stderr
+    assert not (tmp_path / "orden.log").exists()

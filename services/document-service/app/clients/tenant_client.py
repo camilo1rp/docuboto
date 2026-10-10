@@ -102,3 +102,24 @@ class TenantServiceClient:
                 tenant_slug,
             )
             return {}
+
+    async def get_params_estricto(self, *, tenant_slug: str) -> dict[str, Any]:
+        """Parámetros de la entidad, **lanzando** ante cualquier fallo.
+
+        `get_params` devuelve `{}` si tenant-service no responde, y para una
+        política de tratamiento eso convertiría un ERROR en «la entidad no tiene
+        política»: se respondería 409 `politica_no_publicada` a un ciudadano cuando
+        lo cierto es que no se pudo verificar (B2, ADR-031). Quien lea la política
+        usa esta variante y responde 503.
+        """
+        try:
+            resp = await self._http.get(
+                "/api/v1/config/params", headers={"X-Tenant-Slug": tenant_slug}
+            )
+            resp.raise_for_status()
+            datos = resp.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise TenantServiceError(f"No se pudieron leer los parametros: {exc}") from exc
+        if not isinstance(datos, dict):
+            raise TenantServiceError("Respuesta inesperada de los parametros de la entidad")
+        return datos

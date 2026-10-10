@@ -35,6 +35,7 @@ import pytest
 from app.core.database import tenant_schema
 from app.schemas.document import DocumentCreate
 from app.services.document_service import DocumentService
+from tests.integration.politica_stub import ENTIDAD, TenantConPolitica
 
 pytestmark = pytest.mark.integration
 
@@ -466,7 +467,7 @@ async def test_dos_envios_simultaneos_con_la_misma_clave_dan_un_solo_radicado(te
         c = await asyncpg.connect(dsn=_require_dsn())
         try:
             await c.execute(f'SET search_path TO "{schema}", public')
-            r = await VentanillaService(c, slug).radicar(
+            r = await VentanillaService(c, slug, ENTIDAD).radicar(
                 _payload(), DocumentService(c, slug), idempotency_key=clave, ip="203.0.113.5"
             )
             return r.tracking_number
@@ -487,10 +488,10 @@ async def test_claves_distintas_dan_radicados_distintos(tenant_ctx) -> None:
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
     servicio = DocumentService(conn, slug)
-    a = await VentanillaService(conn, slug).radicar(
+    a = await VentanillaService(conn, slug, ENTIDAD).radicar(
         _payload(), servicio, idempotency_key="a" * 20
     )
-    b = await VentanillaService(conn, slug).radicar(
+    b = await VentanillaService(conn, slug, ENTIDAD).radicar(
         _payload(), servicio, idempotency_key="b" * 20
     )
     assert a.tracking_number != b.tracking_number
@@ -506,9 +507,9 @@ async def test_la_clave_con_otro_contenido_es_409_y_no_radica(tenant_ctx) -> Non
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
     servicio = DocumentService(conn, slug)
-    await VentanillaService(conn, slug).radicar(_payload(), servicio, idempotency_key="c" * 20)
+    await VentanillaService(conn, slug, ENTIDAD).radicar(_payload(), servicio, idempotency_key="c" * 20)
     with pytest.raises(HTTPException) as exc:
-        await VentanillaService(conn, slug).radicar(
+        await VentanillaService(conn, slug, ENTIDAD).radicar(
             _payload(asunto="OTRO asunto"), servicio, idempotency_key="c" * 20
         )
     assert exc.value.status_code == 409
@@ -522,8 +523,8 @@ async def test_sin_clave_no_hay_deduplicacion_y_se_conserva_el_comportamiento_pr
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
     servicio = DocumentService(conn, slug)
-    await VentanillaService(conn, slug).radicar(_payload(), servicio)
-    await VentanillaService(conn, slug).radicar(_payload(), servicio)
+    await VentanillaService(conn, slug, ENTIDAD).radicar(_payload(), servicio)
+    await VentanillaService(conn, slug, ENTIDAD).radicar(_payload(), servicio)
     assert await conn.fetchval("SELECT count(*) FROM radicados") == 2
 
 
@@ -535,13 +536,16 @@ async def test_la_constancia_de_consentimiento_queda_en_el_radicado_y_en_el_asie
 
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
-    r = await VentanillaService(conn, slug).radicar(
+    r = await VentanillaService(conn, slug, TenantConPolitica("2026-07")).radicar(
         _payload(politica_version="2026-07"), DocumentService(conn, slug), ip="198.51.100.7"
     )
     meta = await conn.fetchval("SELECT metadata FROM radicados WHERE id = $1", r.radicado_id)
     meta = json.loads(meta) if isinstance(meta, str) else meta
     assert meta["consentimiento"]["politica_version"] == "2026-07"
-    assert meta["consentimiento"]["ip_declarada"] == "198.51.100.7"
+    assert meta["consentimiento"]["ip"] == "198.51.100.7"
+    assert meta["consentimiento"]["ip_verificada"] is True
+    assert meta["consentimiento"]["version_constancia"] == 2
+    assert meta["consentimiento"]["politica_huella"]
     asiento = await conn.fetchval(
         "SELECT payload FROM public.audit_log WHERE action = 'document.radicado_created' "
         "AND object_ref = $1",
@@ -556,14 +560,14 @@ async def test_el_estado_de_la_ventanilla_contra_las_tablas_reales(tenant_ctx) -
     from app.services.ventanilla_service import VentanillaService
 
     slug, conn = await _en(tenant_ctx)
-    e = await VentanillaService(conn, slug).estado()
+    e = await VentanillaService(conn, slug, ENTIDAD).estado()
     assert (e.habilitada, e.dependencia_receptora, e.tipos_admitidos) == (False, False, 0)
     await _ventanilla_lista(conn)
-    e = await VentanillaService(conn, slug).estado()
+    e = await VentanillaService(conn, slug, ENTIDAD).estado()
     assert (e.habilitada, e.dependencia_receptora, e.tipos_admitidos) == (True, True, 1)
     # Inactiva la dependencia → deja de estar habilitada (misma condición que radicar).
     await conn.execute("UPDATE dependencias SET activo = false WHERE codigo = 901")
-    assert (await VentanillaService(conn, slug).estado()).habilitada is False
+    assert (await VentanillaService(conn, slug, ENTIDAD).estado()).habilitada is False
 
 
 # --------------------------------------------------------------------- AREA-09-02

@@ -246,8 +246,12 @@ def test_sin_autorizacion_de_tratamiento_no_se_radica() -> None:
 
 @pytest.mark.asyncio
 async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
-    client_with_conn,
+    client_with_conn, monkeypatch
 ) -> None:
+    """Constancia v2 (B2, ADR-031): la IP es la que el GATEWAY firmó para esta ruta."""
+    from orpycamcp_common import identidad
+
+    monkeypatch.setenv("IDENTITY_SIGNING_SECRET", "secreto-de-prueba")
     client, conn = client_with_conn
     _preparar(conn)
     with patch.object(
@@ -255,14 +259,18 @@ async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
     ) as crear:
         resp = await client.post(
             BASE,
-            **_multipart(_cuerpo(politica_version="2026-03")),
-            headers={"X-Forwarded-For": "203.0.113.9, 10.0.0.1"},
+            **_multipart(_cuerpo(politica_version="2026-01")),
+            headers=identidad.firmar_ip_publica("203.0.113.9", BASE),
         )
     assert resp.status_code == 201, resp.text
     c = crear.await_args.args[0].metadata["consentimiento"]
-    assert c["politica_version"] == "2026-03"
+    assert c["politica_version"] == "2026-01"
+    assert c["version_constancia"] == 2
     assert c["norma"] == "Ley 1581/2012"
-    assert c["ip_declarada"] == "203.0.113.9"
+    assert c["ip"] == "203.0.113.9"
+    assert c["ip_verificada"] is True
+    assert c["politica_url"] == "https://entidad.example/privacidad"
+    assert len(c["politica_huella"]) == 64
     datetime.fromisoformat(c["instante"])
 
 
@@ -327,6 +335,7 @@ async def test_el_estado_de_la_ventanilla_dice_si_esta_habilitada(
         "habilitada": esperada,
         "dependencia_receptora": receptora,
         "tipos_admitidos": tipos,
+        "politica_publicada": True,  # el doble de tenant-service la trae vigente
     }
 
 
@@ -512,38 +521,57 @@ def test_entregado_a_mano_exige_el_acuse_pero_los_demas_estados_no() -> None:
     assert ShipmentStatusUpdate(estado="en_transito").estado == "en_transito"
 
 
-def _storage_responde(monkeypatch, huella: str | None, *, cae: bool = False) -> list:
-    """Sustituye la consulta de huella a storage; devuelve las llamadas recibidas."""
+#: Quien registra la entrega en estas pruebas (cabecera `X-User-Id`).
+ACTOR = uuid.uuid4()
+ACTOR_HEADERS = {**TENANT_HEADERS, "X-User-Id": str(ACTOR)}
+
+
+def _storage_responde(
+    monkeypatch,
+    huella: str | None,
+    *,
+    cae: bool = False,
+    autor: uuid.UUID | None = ACTOR,
+    referencias: tuple[str, ...] = (),
+    existe: bool | None = None,
+) -> list:
+    """Sustituye la consulta de procedencia a storage; devuelve las llamadas recibidas."""
     from app.clients import storage_client
 
     llamadas: list = []
+    hay = (huella is not None) if existe is None else existe
 
     async def _f(*, tenant_slug, file_id):
         llamadas.append((tenant_slug, file_id))
         if cae:
             raise storage_client.StorageContentError("storage caído")
-        return huella
+        if not hay:
+            return None
+        return storage_client.ProcedenciaArchivo(
+            sha256=huella, uploaded_by=autor, referencias=list(referencias)
+        )
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _f)
+    monkeypatch.setattr(storage_client, "fetch_file_procedencia", _f)
     return llamadas
 
 
-async def _entregar(client_with_conn, *, sha: str):
+async def _entregar(client_with_conn, *, sha: str, acuse_actual: uuid.UUID | None = None, fid=None):
     from tests.test_postal import _ship_row
 
     client, conn = client_with_conn
-    sid, fid = uuid.uuid4(), uuid.uuid4()
+    sid = uuid.uuid4()
+    fid = fid or uuid.uuid4()
     conn.fetchval.return_value = True
     conn.fetchrow.side_effect = [
         {"is_root": True},
-        _ship_row(id=sid, estado="en_transito"),
+        _ship_row(id=sid, estado="en_transito", acuse_file_id=acuse_actual),
         _ship_row(id=sid, estado="entregado", acuse_file_id=fid, acuse_sha256="c" * 64),
     ]
     conn.fetch.return_value = []
     resp = await client.post(
         f"/api/v1/envios/{sid}/estado",
         json={"estado": "entregado", "acuse_file_id": str(fid), "acuse_sha256": sha},
-        headers={**TENANT_HEADERS, "X-User-Id": str(uuid.uuid4())},
+        headers=ACTOR_HEADERS,
     )
     return resp, conn
 
@@ -558,14 +586,15 @@ def _hubo_update_o_asiento(conn) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_un_acuse_que_storage_no_conoce_es_422_y_no_cambia_nada(
+async def test_un_acuse_que_storage_no_conoce_es_403_igual_que_uno_ajeno(
     client_with_conn, monkeypatch
 ) -> None:
-    """AREA-09-10: un UUID inventado no es constancia de entrega."""
+    """AREA-09-10: un UUID inventado no es constancia. Se responde IGUAL que uno
+    ajeno (403 acuse_ajeno): un 422 distinto revelaría qué file_id existen."""
     llamadas = _storage_responde(monkeypatch, None)
     resp, conn = await _entregar(client_with_conn, sha="c" * 64)
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["error"] == "acuse_invalido"
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "acuse_ajeno"
     assert len(llamadas) == 1
     assert not _hubo_update_o_asiento(conn)
 
@@ -588,6 +617,102 @@ async def test_storage_caido_al_cotejar_el_acuse_es_503_no_se_asienta_sin_coteja
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "acuse_no_verificable"
     assert not _hubo_update_o_asiento(conn)
+
+
+@pytest.mark.asyncio
+async def test_un_acuse_subido_por_otra_persona_es_403_y_no_cambia_nada(
+    client_with_conn, monkeypatch
+) -> None:
+    """B2: nadie presenta como acuse propio el fichero que subió otro."""
+    _storage_responde(monkeypatch, "c" * 64, autor=uuid.uuid4())
+    resp, conn = await _entregar(client_with_conn, sha="c" * 64)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["error"] == "acuse_ajeno"
+    assert not _hubo_update_o_asiento(conn)
+
+
+@pytest.mark.asyncio
+async def test_un_acuse_sin_autor_conocido_es_403(client_with_conn, monkeypatch) -> None:
+    """Subida anónima o de sistema (`uploaded_by` NULL): no es de quien lo presenta."""
+    _storage_responde(monkeypatch, "c" * 64, autor=None)
+    resp, conn = await _entregar(client_with_conn, sha="c" * 64)
+    assert resp.status_code == 403
+    assert not _hubo_update_o_asiento(conn)
+
+
+@pytest.mark.asyncio
+async def test_el_autor_se_comprueba_antes_que_la_huella(client_with_conn, monkeypatch) -> None:
+    """Con el orden inverso, el 422 de la huella distinta sería un oráculo sobre
+    el contenido de un fichero ajeno."""
+    _storage_responde(monkeypatch, "d" * 64, autor=uuid.uuid4())
+    resp, _ = await _entregar(client_with_conn, sha="c" * 64)
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fuentes",
+    [("anexos.file_id",), ("postal_shipment.acuse_file_id",), ("borrador.documento_file_id",),
+     ("anexos(ausente)",)],
+)
+async def test_un_acuse_ya_referenciado_es_409(client_with_conn, monkeypatch, fuentes) -> None:
+    """Un anexo (o el acuse de OTRO envío) no se reutiliza como constancia de entrega."""
+    _storage_responde(monkeypatch, "c" * 64, referencias=fuentes)
+    resp, conn = await _entregar(client_with_conn, sha="c" * 64)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "acuse_ya_referenciado"
+    assert not _hubo_update_o_asiento(conn)
+
+
+@pytest.mark.asyncio
+async def test_reintento_del_mismo_envio_con_su_propio_acuse_es_idempotente(
+    client_with_conn, monkeypatch
+) -> None:
+    fid = uuid.uuid4()
+    _storage_responde(monkeypatch, "c" * 64, referencias=("postal_shipment.acuse_file_id",))
+    resp, _ = await _entregar(client_with_conn, sha="c" * 64, acuse_actual=fid, fid=fid)
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_reintento_no_exime_si_ademas_es_un_anexo(client_with_conn, monkeypatch) -> None:
+    fid = uuid.uuid4()
+    _storage_responde(
+        monkeypatch, "c" * 64,
+        referencias=("postal_shipment.acuse_file_id", "anexos.file_id"),
+    )
+    resp, _ = await _entregar(client_with_conn, sha="c" * 64, acuse_actual=fid, fid=fid)
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_la_carrera_la_cierra_el_indice_unico_con_409(client_with_conn, monkeypatch) -> None:
+    """Dos registros simultáneos pasan el cotejo; el índice 045 rechaza al segundo."""
+    import asyncpg
+
+    _storage_responde(monkeypatch, "c" * 64)
+    client, conn = client_with_conn
+    from tests.test_postal import _ship_row
+
+    sid = uuid.uuid4()
+    conn.fetchval.return_value = True
+
+    async def _fetchrow(sql, *a, **k):
+        if "UPDATE postal_shipment" in sql:
+            raise asyncpg.UniqueViolationError("postal_shipment_acuse_file_id_uq")
+        if "is_root" in sql:
+            return {"is_root": True}
+        return _ship_row(id=sid, estado="en_transito")
+
+    conn.fetchrow.side_effect = _fetchrow
+    conn.fetch.return_value = []
+    resp = await client.post(
+        f"/api/v1/envios/{sid}/estado",
+        json={"estado": "entregado", "acuse_file_id": str(uuid.uuid4()), "acuse_sha256": "c" * 64},
+        headers=ACTOR_HEADERS,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "acuse_ya_referenciado"
 
 
 @pytest.mark.asyncio
@@ -619,7 +744,7 @@ async def test_el_acuse_llega_al_update_y_al_asiento(client_with_conn, monkeypat
     resp = await client.post(
         f"/api/v1/envios/{sid}/estado",
         json={"estado": "entregado", "acuse_file_id": str(fid), "acuse_sha256": "B" * 64},
-        headers={**TENANT_HEADERS, "X-User-Id": str(uuid.uuid4())},
+        headers=ACTOR_HEADERS,
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["acuse_file_id"] == str(fid)

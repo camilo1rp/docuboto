@@ -401,11 +401,34 @@ class Api:
             raise Fallo(f"POST {ruta} → {r.status_code}: {r.text[:300]}")
         return r.json() if r.content else {}
 
+    async def put(self, ruta: str, *, esperado: tuple[int, ...] = (200, 201), **kw: Any) -> Any:
+        r = await self._pedir("PUT", ruta, **kw)
+        if r.status_code not in esperado:
+            raise Fallo(f"PUT {ruta} → {r.status_code}: {r.text[:300]}")
+        return r.json() if r.content else {}
+
     async def patch(self, ruta: str, *, esperado: tuple[int, ...] = (200,), **kw: Any) -> Any:
         r = await self._pedir("PATCH", ruta, **kw)
         if r.status_code not in esperado:
             raise Fallo(f"PATCH {ruta} → {r.status_code}: {r.text[:300]}")
         return r.json() if r.content else {}
+
+
+#: Política de tratamiento de datos de la entidad DEMO (B2, ADR-031). Sin ella la
+#: ventanilla pública responde 409 `politica_no_publicada` (Ley 1581/2012 art. 12):
+#: una entidad real redacta la suya; esta es solo de demostración y lo dice.
+POLITICA_DEMO = {
+    "politica_tratamiento_version": "demo-2026-10",
+    "politica_tratamiento_url": "http://localhost:13000/politica-de-tratamiento-demo",
+    "politica_tratamiento_texto": (
+        "AVISO DE PRIVACIDAD (DEMOSTRACION). Los datos que usted entrega se usan "
+        "únicamente para radicar y tramitar su solicitud en esta entidad de prueba. "
+        "Puede conocer, actualizar o rectificar sus datos y presentar reclamos; la "
+        "supresión no procede mientras exista el deber legal de conservar el "
+        "documento (Ley 594/2000, TRD). Esta política es de ejemplo: cada entidad "
+        "debe publicar la suya."
+    ),
+}
 
 
 def _dsn() -> str:
@@ -860,6 +883,12 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
         )
         creado["dependencias"].append(d)
     ok(f"{len(creado['dependencias'])} dependencias (ventanilla, jurídica, archivo)")
+
+    # ── Política de tratamiento (Ley 1581): sin ella la ventanilla no radica ──
+    paso("Política de tratamiento de datos de la entidad demo")
+    for clave, valor in POLITICA_DEMO.items():
+        await api.put(f"/api/v1/config/params/{clave}", json={"value": valor})
+    ok(f"política «{POLITICA_DEMO['politica_tratamiento_version']}» publicada (aviso de demostración)")
 
     # ── URD: quién trabaja DESDE dónde ──
     #

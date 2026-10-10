@@ -35,11 +35,13 @@ _HOSTS = frozenset({"postgres", "localhost", "127.0.0.1", "db"})
 
 
 class _AuditRoto:
+    CANAL_PETICION = "api"  # el router lo lee del módulo real (AREA-03-07)
+
     def __init__(self, falla: bool) -> None:
         self.falla = falla
         self.llamadas = 0
 
-    async def append(self, conn: asyncpg.Connection, **kw: object) -> str:
+    async def append(self, conn: asyncpg.Connection, *, canal: str, **kw: object) -> str:
         self.llamadas += 1
         if self.falla:
             raise RuntimeError("audit_log caído")

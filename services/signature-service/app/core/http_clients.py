@@ -260,7 +260,10 @@ async def verify_totp(
     """
     if not authorization:
         raise TotpVerifyUnavailableError("Authorization header missing")
-    headers = {"Authorization": authorization}
+    headers = {
+        "Authorization": authorization,
+        "X-Internal-Token": settings.signing_key_internal_token,
+    }
     body: dict = {"code": code}
     if solicitud_id is not None:
         body["contexto"] = str(solicitud_id)

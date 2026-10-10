@@ -30,6 +30,8 @@ def _ship_row(**kw) -> dict:
         "estado": "registrado",
         "destinatario": "Juan Pérez",
         "direccion": "Calle 1 #2-3",
+        "acuse_file_id": None,
+        "acuse_sha256": None,
         "created_at": NOW,
         "updated_at": NOW,
     }

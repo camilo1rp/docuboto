@@ -124,6 +124,15 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
             request.url.path,
             openapi_publico=bool(getattr(request.app.state, "openapi_publico", False)),
         ):
+            # Ruta pública: no hay persona que firmar, pero la IP del cliente
+            # (por saltos de confianza, NUNCA el X-Forwarded-For crudo) viaja
+            # firmada y ligada a la ruta para la constancia de autorización
+            # (Ley 1581, ADR-031). `x-real-ip` no está en la whitelist de
+            # reenvío, así que lo que el cliente mande se sobrescribe.
+            request.state.auth_headers = identidad.firmar_ip_publica(
+                resolve_client_ip(request, getattr(request.app.state, "trusted_proxies", "")),
+                request.url.path,
+            )
             return await call_next(request)
 
         authorization = request.headers.get("Authorization", "")

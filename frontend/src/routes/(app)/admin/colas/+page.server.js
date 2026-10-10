@@ -47,7 +47,6 @@ export async function load({ cookies, parent, fetch }) {
 
   let items = [];
   let totalCount = 0;
-  let truncated = false;
   let loadError = null;
 
   try {
@@ -59,7 +58,6 @@ export async function load({ cookies, parent, fetch }) {
       const raw = await res.json().catch(() => []);
       items = Array.isArray(raw) ? raw : [];
       totalCount = Number(res.headers.get("X-Total-Count") ?? items.length);
-      truncated = res.headers.get("X-Truncated") === "true";
     } else {
       const body = await res.json().catch(() => ({}));
       loadError = mensajeError(body, `Error ${res.status}`);
@@ -72,7 +70,6 @@ export async function load({ cookies, parent, fetch }) {
     defaultService: DEFAULT_SERVICE,
     items,
     totalCount,
-    truncated,
     pageSize: PAGE_SIZE,
     loadError,
   };

@@ -23,7 +23,12 @@ import Pagina from "./+page.svelte";
 const datos = {
   tipos: [{ code: "DP-GEN", nombre: "Derecho de petición" }],
   habilitada: true,
-  politica: { version: "2026-03", url: "https://entidad.example/politica" },
+  politica: {
+    publicada: true,
+    verificable: true,
+    version: "2026-03",
+    url: "https://entidad.example/politica",
+  },
 };
 
 function llenar({ asunto = "Solicitud" } = {}) {
@@ -102,5 +107,59 @@ describe("/radicacion — ventanilla en línea", () => {
     await fireEvent.submit(form);
     await waitFor(() => expect(f).toHaveBeenCalledTimes(3));
     expect(f.mock.calls[2][1].headers["Idempotency-Key"]).not.toBe(k1);
+  });
+
+  it("muestra la versión y la nota de supresión con enlace a #supresion", () => {
+    render(Pagina, { data: datos });
+    expect(screen.getByLabelText(/Autorizo a la entidad/i).closest("label")).toHaveTextContent(
+      /versión 2026-03/,
+    );
+    const nota = document.querySelector("#politica-supresion");
+    expect(nota).toHaveTextContent(/no procede la supresión/i);
+    expect(nota.querySelector("a").getAttribute("href")).toBe(
+      "https://entidad.example/politica#supresion",
+    );
+  });
+
+  it("sin política publicada avisa y no permite radicar", async () => {
+    const f = vi.fn();
+    vi.stubGlobal("fetch", f);
+    render(Pagina, { data: { ...datos, politica: { publicada: false, verificable: true } } });
+    expect(await screen.findByRole("alert")).toHaveTextContent(/no ha publicado su política/i);
+    expect(screen.getByRole("button", { name: /Radicar documento/i })).toBeDisabled();
+    await fireEvent.submit(document.querySelector("form"));
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it("409 politica_desactualizada recarga la política y pide autorizar de nuevo", async () => {
+    const f = vi.fn(async (url) =>
+      url === "/radicacion/api/politica"
+        ? {
+            ok: true,
+            json: async () => ({ publicada: true, verificable: true, version: "2026-09", url: "" }),
+          }
+        : {
+            ok: false,
+            json: async () => ({ error: "politica_desactualizada", detail: "x", status: 409 }),
+          },
+    );
+    vi.stubGlobal("fetch", f);
+    render(Pagina, { data: datos });
+    llenar();
+    const casilla = screen.getByLabelText(/Autorizo a la entidad/i);
+    await fireEvent.click(casilla);
+    await fireEvent.submit(document.querySelector("form"));
+    expect(await screen.findByText(/versión 2026-09/)).toBeTruthy();
+    expect(screen.getByLabelText(/Autorizo a la entidad/i).checked).toBe(false);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/cambió/i);
+  });
+
+  it("una URL de política con esquema peligroso no genera enlace", () => {
+    render(Pagina, {
+      data: { ...datos, politica: { ...datos.politica, url: "javascript:alert(1)" } },
+    });
+    expect(document.querySelector('a[href^="javascript"]')).toBeNull();
+    expect(screen.queryByRole("link", { name: /política de tratamiento/i })).toBeNull();
+    expect(document.querySelector("#politica-supresion a")).toBeNull();
   });
 });

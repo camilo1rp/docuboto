@@ -36,6 +36,7 @@ Los archivos completos están en `docs/es/adr/`.
 | [ADR-027](adr/ADR-027-sustitucion-almacen-objetos-rustfs.md) | MinIO archivó su proyecto libre y retiró sus imágenes: el almacén pasa a **RustFS**, y el motor lo elige una batería de conformidad WORM contra un S3 real (RustFS 7/7, MinIO 7/7, Garage 0/7), no un folleto | Implementado |
 | [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md) | El flujo mueve el estado del radicado: una función pura escrita en la misma transacción que el paso, cierre solo por «Finalizar trámite», `closed`/`anulado` terminales (409) y tenencia en `marcar_leido`; remediación de auditoría: clearance y tenencia en `assign`/`transfer`, la anulación cancela el paso, evidencia inmutable del backfill | Implementado |
 | [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md) | Ubicación actual del radicado: tres columnas `flujo_*` que escribe el workflow-service en el mismo `UPDATE` que el estado, dos columnas generadas `ubicacion_*` (por pares), una función pura `derivar_ubicacion` (último paso por cuándo se cerró, no por su número), código solo si el nombre es único, backfill con evidencia de solo inserción y fuera de todo lo público | Implementado |
+| [ADR-031](adr/ADR-031-constancia-autorizacion-ip-firmada-politica-por-entidad.md) | Constancia de autorización: IP firmada por el gateway en rutas públicas, política de tratamiento por entidad servida y releída por el servidor, y acuse de envío con autor y sin reutilización | Aceptado |
 
 ## Cómo proponer un nuevo ADR
 

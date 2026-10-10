@@ -33,6 +33,7 @@ import asyncpg
 import pytest
 
 from app.core.database import tenant_schema
+from tests.integration.politica_stub import ENTIDAD
 
 pytestmark = pytest.mark.integration
 
@@ -71,7 +72,7 @@ async def _radicar_por_ventanilla(
         async def get_dependencia(self, *, tenant_slug: str, codigo: int) -> dict:
             return {"codigo": codigo, "nombre": "Ventanilla Única"}
 
-    await VentanillaService(conn, slug).radicar(
+    await VentanillaService(conn, slug, ENTIDAD).radicar(
         payload, DocumentService(conn, slug, tenant_client=_TenantStub())
     )
 

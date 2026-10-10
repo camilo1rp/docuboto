@@ -87,7 +87,7 @@ describe("GET /admin/colas/api/[service]", () => {
         capturedUrl = String(input);
         return new Response(JSON.stringify([]), {
           status: 200,
-          headers: { "X-Total-Count": "0", "X-Truncated": "false" },
+          headers: { "X-Total-Count": "0" },
         });
       });
       await listDeadletters({
@@ -99,12 +99,12 @@ describe("GET /admin/colas/api/[service]", () => {
     },
   );
 
-  it("propaga X-Total-Count y X-Truncated intactos", async () => {
+  it("propaga X-Total-Count intacto y no inventa X-Truncated", async () => {
     globalThis.fetch = vi.fn(
       async () =>
         new Response(JSON.stringify([]), {
           status: 200,
-          headers: { "X-Total-Count": "500", "X-Truncated": "true" },
+          headers: { "X-Total-Count": "500" },
         }),
     );
     const res = await listDeadletters({
@@ -113,7 +113,7 @@ describe("GET /admin/colas/api/[service]", () => {
       url: new URL("http://x/"),
     });
     expect(res.headers.get("X-Total-Count")).toBe("500");
-    expect(res.headers.get("X-Truncated")).toBe("true");
+    expect(res.headers.get("X-Truncated")).toBeNull();
   });
 
   it("fallo de red: 503 connection_error", async () => {

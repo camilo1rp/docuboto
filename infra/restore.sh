@@ -65,6 +65,16 @@ if grep -qx 'retencion_capturada_completa=NO' "$ORIGEN/OK" \
     exit 1
 fi
 
+# Idem para las versiones previas bajo COMPLIANCE / retención legal: si el respaldo se
+# selló sin haberlas capturado, la evidencia anterior no se puede restaurar.
+if grep -qx 'versiones_previas_capturadas=NO' "$ORIGEN/OK" \
+        && [ "${RESTORE_ACEPTAR_PERDIDA_VERSIONES:-}" != "1" ]; then
+    echo "ERROR: el respaldo '$ORIGEN' se selló con versiones_previas_capturadas=NO:" >&2
+    echo "  sus versiones previas bajo COMPLIANCE o retención legal no se respaldaron." >&2
+    echo "  Si el responsable lo acepta: RESTORE_ACEPTAR_PERDIDA_VERSIONES=1 (anótelo en el acta)." >&2
+    exit 1
+fi
+
 # ── Un respaldo cifrado se descifra a un área temporal ─────────────────────
 #
 # El respaldo puede venir cifrado (ver `backup.sh`). Sin este paso, cifrar habría
@@ -96,6 +106,7 @@ if [ -f "$ORIGEN/postgres.dump.gpg" ]; then
             || { echo "ERROR: no se pudo descifrar el almacén." >&2; exit 1; }
     fi
     cp -p "$ORIGEN/minio-retencion.tsv" "$DESCIFRADO/" 2>/dev/null || true
+    cp -p "$ORIGEN/minio-versiones.tsv" "$DESCIFRADO/" 2>/dev/null || true
     cp -p "$ORIGEN/OK" "$DESCIFRADO/" 2>/dev/null || true
     # A partir de aquí el resto del script trabaja sobre lo descifrado, sin
     # saber que lo estaba: un solo camino, no dos.
@@ -167,6 +178,27 @@ echo "── Restaurando PostgreSQL..."
 # preservación tiene objetos protegidos, `--remove` los dejará donde están y eso
 # es lo correcto: la inmutabilidad WORM está por encima de esta restauración.
 
+# ── Versiones previas bajo COMPLIANCE / retención legal, ANTES del espejo ───
+#
+# El espejo solo copia la versión actual. Las previas se suben aquí, de la más antigua
+# a la más reciente, con su retención repuesta sobre el VersionId nuevo; luego se sube
+# con `put-object` explícito la versión actual de esas claves (el `sync` podría saltarla
+# por tamaño y la clave quedaría apuntando a una previa). El mapa viejo -> nuevo empieza
+# aquí y lo completa `reponer_retencion` (MAPA_CONSERVAR=1).
+MAPA_VERSIONES="$(dirname "$ORIGEN_REAL")/mapa-version-id-$(date +%Y%m%d_%H%M%S).tsv"
+: > "$MAPA_VERSIONES"
+if [ -f "$ORIGEN/minio-versiones.tsv" ] && [ -f "$ORIGEN/minio-retencion.tsv" ]; then
+    echo "── Restaurando las versiones previas protegidas..."
+    S3_MONTAR="$ORIGEN"
+    if ! restaurar_versiones_previas "$ORIGEN/minio-versiones.tsv" "$ORIGEN/minio-versiones" \
+            "$ORIGEN/minio-retencion.tsv" "$MAPA_VERSIONES" "$ORIGEN/minio"; then
+        S3_MONTAR=""
+        echo "   ✗ Las versiones previas protegidas NO se restauraron: la evidencia anterior se perdería." >&2
+        exit 1
+    fi
+    S3_MONTAR=""
+fi
+
 echo "── Restaurando MinIO..."
 RED="$("${COMPOSE[@]}" config --format json \
     | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin)["networks"])))' 2>/dev/null || echo "")"
@@ -202,8 +234,13 @@ S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}"
 # shellcheck source=lib-retencion-s3.sh
 . "$SCRIPT_DIR/lib-retencion-s3.sh"
 
+# S3_MONTAR: directorio del respaldo que el cliente necesita ver en la MISMA ruta y
+# SOLO LECTURA (`put-object --body`). Nunca se monta el repo ni nada en escritura.
+S3_MONTAR=""
 s3api() {
-    docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
+    local MONTAJE=()
+    [ -n "$S3_MONTAR" ] && MONTAJE=(-v "$S3_MONTAR:$S3_MONTAR:ro")
+    docker run --rm "${RED_ARG[@]}" ${MONTAJE[@]+"${MONTAJE[@]}"} --env-file "$CREDENCIALES" \
         "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" s3api "$@" 2>/dev/null
 }
 
@@ -276,9 +313,9 @@ if [ -f "$ORIGEN/minio-retencion.tsv" ]; then
     # retención legal activa de la versión actual, la restauración TERMINA EN ERROR
     # (igual que la cadena de auditoría): objetos borrables con un mensaje verde es
     # exactamente el defecto que este bloque existe para impedir.
-    MAPA_VERSIONES="$(dirname "$ORIGEN_REAL")/mapa-version-id-$(date +%Y%m%d_%H%M%S).tsv"
     RETENCION_REPUESTOS=0
-    if ! reponer_retencion "$ORIGEN/minio-retencion.tsv" "$MAPA_VERSIONES"; then
+    MAPA_CONSERVAR=1   # el mapa ya lo empezó restaurar_versiones_previas
+    if ! reponer_retencion "$ORIGEN/minio-retencion.tsv" "$MAPA_VERSIONES" "$ORIGEN/minio-versiones.tsv"; then
         echo "" >&2
         echo "   ✗ Quedaron objetos SIN su retención. La restauración NO está completa:" >&2
         echo "     esos objetos son borrables. Corrija y reintente; no dé el sistema por bueno." >&2

@@ -23,6 +23,7 @@ from collections.abc import AsyncGenerator
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -72,6 +73,8 @@ class FakeTenantClient:
         # Parámetros de la entidad (`sgd_param_admin`), que alimentan el
         # membrete del documento de salida (E23, RF-PRO-04).
         self.params: dict[str, str] = {}
+        self.params_error: bool = False
+        self.estricto_calls: int = 0
 
     async def calculate_due_date(
         self, *, tenant_slug: str, from_date: date, business_days: int
@@ -83,6 +86,19 @@ class FakeTenantClient:
 
     async def get_params(self, *, tenant_slug: str) -> dict:
         return self.params
+
+    async def get_params_estricto(self, *, tenant_slug: str) -> dict:
+        """Lectura estricta (política de tratamiento, B2). Por defecto la entidad
+        TIENE política vigente `2026-01`; `params` la pisa y `params_error` la rompe."""
+        self.estricto_calls += 1
+        if self.params_error:
+            raise TenantServiceError("simulated tenant-service failure")
+        return {
+            "politica_tratamiento_version": "2026-01",
+            "politica_tratamiento_url": "https://entidad.example/privacidad",
+            "politica_tratamiento_texto": "Aviso de privacidad de prueba",
+            **self.params,
+        }
 
     async def get_dependencia(self, *, tenant_slug: str, codigo: int) -> dict | None:
         self.dep_calls.append((tenant_slug, codigo))
@@ -261,3 +277,18 @@ async def client_with_redis() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, As
         yield ac, mock_conn, fake_redis
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reloj_de_la_base_fijo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Las suites con `conn` simulado encadenan `fetchval` en un orden fijo; el reloj de la
+    BASE que usa el outbox (`outbox._reloj_bd`) no debe consumir esa cadena. En el carril de
+    integración (Postgres real) NO se sustituye: ahí se prueba el reloj de verdad."""
+    if "integration" in request.node.nodeid:
+        return
+    from app.services import outbox
+
+    async def _fijo(_conn: object) -> datetime:
+        return datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+
+    monkeypatch.setattr(outbox, "_reloj_bd", _fijo)

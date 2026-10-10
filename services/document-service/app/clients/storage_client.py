@@ -491,3 +491,51 @@ async def fetch_file_sha256(*, tenant_slug: str, file_id: uuid.UUID) -> str | No
             f"storage-service → HTTP {resp.status_code} al pedir la huella de {file_id}"
         )
     return (resp.json().get("hashes") or {}).get(str(file_id))
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedenciaArchivo:
+    """Autor, huella y referencias de un fichero, según storage (B2, ADR-031)."""
+
+    sha256: str | None
+    uploaded_by: uuid.UUID | None
+    referencias: list[str]
+
+
+async def fetch_file_procedencia(
+    *, tenant_slug: str, file_id: uuid.UUID
+) -> ProcedenciaArchivo | None:
+    """Quién subió `file_id`, su huella y quién lo referencia hoy.
+
+    `POST /storage/internal/files/procedencia` (sellado con `X-Internal-Token`).
+    `None` si storage no conoce el fichero (404). Igual que `fetch_file_sha256`, un
+    fallo de red o un HTTP inesperado NO se degrada: se lanza `StorageContentError`
+    y el llamante responde 503, porque registrar un acuse sin saber de quién es
+    sería asentar una prueba sin cotejar.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=15.0) as client:
+        try:
+            resp = await client.post(
+                "/api/v1/storage/internal/files/procedencia",
+                json={"file_id": str(file_id)},
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            raise StorageContentError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise StorageContentError(
+            f"storage-service → HTTP {resp.status_code} al pedir la procedencia de {file_id}"
+        )
+    procedencia = resp.json()
+    autor = procedencia.get("uploaded_by")
+    return ProcedenciaArchivo(
+        sha256=procedencia.get("sha256"),
+        uploaded_by=uuid.UUID(autor) if autor else None,
+        referencias=[str(r) for r in procedencia.get("referencias") or []],
+    )

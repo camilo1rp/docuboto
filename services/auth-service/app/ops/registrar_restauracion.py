@@ -20,7 +20,9 @@ Este módulo, en UNA transacción:
  1. actualiza `preservacion_worm_objeto.version_id` (schema `tenant_{slug}` derivado
     del bucket `orpycamcp-{slug}-documents`) desde el mapa, solo donde el
     `version_id` guardado es exactamente el viejo;
- 2. deja el asiento `storage.restauracion` en `public.audit_log` (tenant de sistema)
+ 2. inserta un evento PREMIS `REPLICA` (`detalle.motivo='restauracion'`) por objeto
+    remapeado en `preservacion_evento` (si la tabla falta, todo se revierte);
+ 3. deja el asiento `storage.restauracion` en `public.audit_log` (tenant de sistema)
     con el SHA-256 del mapa, los recuentos y las versiones previas NO restauradas.
 
 Si el asiento falla, la actualización se revierte (auditoría atómica con la
@@ -35,6 +37,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import json
 import re
 import sys
 from collections import Counter
@@ -89,6 +92,7 @@ async def registrar(
     remapeos = parsear_mapa(mapa_texto)
     actualizadas: Counter[str] = Counter()
     sin_fila = 0
+    eventos = 0
     async with conn.transaction():
         for r in remapeos:
             m = _BUCKET_RE.match(r.bucket)
@@ -100,24 +104,56 @@ async def registrar(
             if await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".preservacion_worm_objeto') is None:
                 sin_fila += 1
                 continue
-            res = await conn.execute(
+            filas = await conn.fetch(
                 f'UPDATE "{schema}".preservacion_worm_objeto SET version_id = $1 '
-                "WHERE bucket = $2 AND object_key = $3 AND version_id = $4",
+                "WHERE bucket = $2 AND object_key = $3 AND version_id = $4 "
+                "RETURNING expediente_id, tipo, sha256",
                 r.nueva,
                 r.bucket,
                 r.clave,
                 r.vieja,
             )
-            if res.endswith(" 1"):
-                actualizadas[m.group(1)] += 1
-            else:
+            if not filas:
                 sin_fila += 1
+                continue
+            for fila in filas:
+                actualizadas[m.group(1)] += 1
+                # PREMIS (replicación): el objeto remapeado deja su evento en la MISMA
+                # transacción. Si falta `preservacion_evento` en el schema, el INSERT
+                # falla y TODO se revierte (fail-closed): un remapeo sin evento no existe.
+                # Este módulo NO lee el objeto restaurado (auth-service no tiene cliente ni
+                # credenciales del almacén), así que NO declara `hash_after`: copiar el
+                # SHA-256 registrado como «después» afirmaría una medición que no ocurrió.
+                # `hash_before` es el valor registrado; la fixity queda «no_verificada».
+                await conn.execute(
+                    f'INSERT INTO "{schema}".preservacion_evento '
+                    "(object_ref, tipo, resultado, hash_before, hash_after, detalle, agente) "
+                    "VALUES ($1, 'REPLICA', 'ok', $2, NULL, $3::jsonb, $4)",
+                    str(fila["expediente_id"]),
+                    fila["sha256"],
+                    json.dumps(
+                        {
+                            "evento": "replication",
+                            "motivo": "restauracion",
+                            "respaldo": respaldo,
+                            "bucket": r.bucket,
+                            "object_key": r.clave,
+                            "version_vieja": r.vieja,
+                            "version_nueva": r.nueva,
+                            "artefacto": fila["tipo"],
+                            "fixity": "no_verificada",
+                        }
+                    ),
+                    _ACTOR,
+                )
+                eventos += 1
         resumen: dict[str, int | str] = {
             "respaldo": respaldo,
             "mapa_sha256": hashlib.sha256(mapa_texto.encode("utf-8")).hexdigest(),
             "objetos_en_mapa": len(remapeos),
             "filas_worm_actualizadas": sum(actualizadas.values()),
             "sin_fila_worm": sin_fila,
+            "eventos_premis": eventos,
             "previas_compliance_no_restauradas": previas_no_restauradas,
         }
         await _audit.append(

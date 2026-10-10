@@ -46,7 +46,7 @@ FORWARDED_REQUEST_HEADERS = {
 # Headers NOT listed here are silently dropped — same trust boundary as the
 # request side, and with the same failure mode: what is missing is invisible.
 #
-# `x-total-count` y `x-truncated` NO son cabeceras opcionales de conveniencia,
+# `x-total-count` y `x-faltantes` NO son cabeceras opcionales de conveniencia,
 # son parte de contratos que el sistema documenta y que dependen de ellas:
 #
 #   - `X-Total-Count` es la convención de paginación declarada en
@@ -60,10 +60,6 @@ FORWARDED_REQUEST_HEADERS = {
 #     otro sitio donde ponerla. Sin reenviarla, la pantalla enseña un documento
 #     con huecos y nadie sabe que son huecos — el oficio saldría con un espacio
 #     en blanco donde debía ir un dato, y el fallo llegaría al ciudadano.
-#   - `X-Truncated` es la garantía de honestidad de las tres DLQ (ADR-021):
-#     el backend avisa con ella de que hay eventos pendientes más antiguos que
-#     NO caben en la respuesta. Sin reenviarla, el banner que lo advierte es
-#     código muerto y la pantalla afirma en silencio que se ve todo.
 #   - `X-Sellado-Diferido-Count` dice cuántos índices electrónicos acabó
 #     sellando el job de reconciliación en vez del acto del cierre. La cola de
 #     pendientes solo dice qué falta AHORA, y el job borra su propio rastro al
@@ -82,7 +78,6 @@ FORWARDED_RESPONSE_HEADERS = {
     "last-modified",
     "location",
     "x-total-count",
-    "x-truncated",
     "x-faltantes",
     "x-sellado-diferido-count",
     # La respuesta se reenvía **cruda** (`aiter_raw`), sin descomprimir: es lo que

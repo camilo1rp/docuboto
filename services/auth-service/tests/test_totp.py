@@ -60,6 +60,14 @@ TOTP_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 TEST_KEY = base64.b64encode(b"0" * 32).decode()
 
 
+_STATUS_TOKEN = "test-internal-token"
+
+
+@pytest.fixture(autouse=True)
+def _internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "signing_key_internal_token", _STATUS_TOKEN)
+
+
 class _FakeTx:
     async def __aenter__(self) -> None:
         return None
@@ -682,7 +690,7 @@ async def test_internal_verify_success_advances_timestep(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": code},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -723,7 +731,7 @@ async def test_internal_verify_replay_rejected(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": code},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -757,7 +765,7 @@ async def test_internal_verify_wrong_code_returns_codigo_incorrecto(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -801,7 +809,7 @@ async def test_internal_verify_lockout_after_max_failed_attempts(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -946,7 +954,7 @@ async def test_internal_verify_lost_race_reports_replay(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": code},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -970,7 +978,7 @@ async def test_internal_verify_no_active_credential_returns_no_activo(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": "123456"},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -997,7 +1005,7 @@ async def test_internal_verify_unknown_user_returns_no_activo(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": "123456"},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         assert resp.json()["motivo"] == "no_activo"
@@ -1010,7 +1018,11 @@ async def test_internal_verify_missing_bearer_returns_401(client: AsyncClient) -
     conn = _make_conn()  # dependency resolution still needs a conn, even though unused
     _override_internal(conn)
     try:
-        resp = await client.post("/internal/totp/verify", json={"code": "123456"})
+        resp = await client.post(
+            "/internal/totp/verify",
+            json={"code": "123456"},
+            headers={"X-Internal-Token": _STATUS_TOKEN},
+        )
         assert resp.status_code == 401
         assert resp.json()["detail"]["error"] == "missing_token"
     finally:
@@ -1037,7 +1049,7 @@ async def test_internal_verify_lockout_honored_before_comparing_code(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -1125,7 +1137,7 @@ async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
         resp2 = await client.post(
             "/internal/totp/verify",
             json={"code": code},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
     finally:
         _clear()
@@ -1140,12 +1152,6 @@ async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
 # GET /internal/totp/status — AREA-04-02 / AREA-04-05 (signature-service)
 # ---------------------------------------------------------------------------
 
-_STATUS_TOKEN = "test-internal-token"
-
-
-@pytest.fixture
-def _internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "signing_key_internal_token", _STATUS_TOKEN)
 
 
 @pytest.mark.asyncio
@@ -1301,7 +1307,7 @@ async def test_internal_verify_invalid_code_does_not_attribute_an_owner(
         resp = await client.post(
             "/internal/totp/verify",
             json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
         )
     finally:
         _clear()
@@ -1309,3 +1315,62 @@ async def test_internal_verify_invalid_code_does_not_attribute_an_owner(
     body = resp.json()
     assert body["valido"] is False
     assert body.get("user_id") is None
+
+
+# ---------------------------------------------------------------------------
+# POST /internal/totp/verify — gate D-02 (X-Internal-Token), antes de tocar el bearer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_internal_verify_without_internal_token_returns_401(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    validate = AsyncMock(return_value={"user_id": "kc-sub", "tenant_slug": "demo"})
+    monkeypatch.setattr("app.routers.totp.validate_token", validate)
+    _override_internal(_make_conn())
+    try:
+        resp = await client.post(
+            "/internal/totp/verify",
+            json={"code": "123456"},
+            headers={"Authorization": "Bearer faketoken"},
+        )
+        assert resp.status_code == 401
+        assert resp.json()["detail"]["error"] == "missing_internal_token"
+        validate.assert_not_called()  # el gate precede a cualquier trabajo
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_internal_verify_wrong_internal_token_returns_403(
+    client: AsyncClient,
+) -> None:
+    _override_internal(_make_conn())
+    try:
+        resp = await client.post(
+            "/internal/totp/verify",
+            json={"code": "123456"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": "otro"},
+        )
+        assert resp.status_code == 403
+        assert resp.json()["detail"]["error"] == "invalid_internal_token"
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
+async def test_internal_verify_unconfigured_token_returns_503(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "signing_key_internal_token", "")
+    _override_internal(_make_conn())
+    try:
+        resp = await client.post(
+            "/internal/totp/verify",
+            json={"code": "123456"},
+            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": "x"},
+        )
+        assert resp.status_code == 503
+    finally:
+        _clear()

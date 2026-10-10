@@ -14,10 +14,8 @@ notification-service. Todas las rutas exigen ``PERM_DLQ_ADMIN`` (gate a nivel de
 router) y aplican el no-read-up por clearance sobre el radicado referenciado
 (404 neutro).
 
-ADR-021 (seguimiento no-bloqueante Fase 5): el LISTADO también filtra por
-clearance, resolviendo el nivel de TODAS las filas candidatas en un solo lote
-(``resolve_deadletter_levels``, FIX 2 — misma resolución fail-closed que el
-gate de detalle) — un admin sub-clearance no ve ni la existencia ni el
+ADR-021 / AREA-10-08: el LISTADO también filtra por clearance, en el WHERE de la consulta
+(``orpycamcp_common.deadletter``) — un admin sub-clearance no ve ni la existencia ni el
 conteo de dead-letters sobre objetos clasificados. El DETALLE
 (GET /{event_id}), tras superar el gate, deja un asiento de auditoría
 ``evento.dead_letter.viewed`` (una vista bloqueada devuelve 404 y NO audita).
@@ -45,18 +43,13 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.clearance import (
-    assert_can_read_deadletter,
     get_actor,
     require_permission,
     resolve_caller_clearance,
-    resolve_deadletter_levels,
 )
 from app.core.constants import DLQ_GROUP
 from app.core.database import get_tenant_conn
-from app.repositories.dead_letter_repository import (
-    DEADLETTER_CANDIDATE_CAP,
-    DeadLetterRepository,
-)
+from app.repositories.dead_letter_repository import DeadLetterRepository
 from app.repositories.processed_events_repository import ProcessedEventsRepository
 from app.schemas.dead_letter import (
     DeadLetterActionResult,
@@ -147,65 +140,30 @@ async def list_dead_letters(
     actor: uuid.UUID = Depends(get_actor),
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> list[DeadLetterSummary]:
-    """Lista resúmenes de dead-letters del tenant, filtrados por clearance del llamante.
+    """Lista resúmenes de dead-letters del tenant (sin payload ni last_error).
 
-    ADR-021 (seguimiento no-bloqueante Fase 5): resolución de nivel EN LOTE (FIX 2)
-    sobre el nivel VIVO del radicado referenciado, con la misma semántica
-    fail-closed que el gate de detalle (:func:`resolve_deadletter_level`) — así el
-    listado nunca revela la existencia (ni el conteo) de un dead-letter que el
-    detalle negaría con 404. ``resolve_deadletter_levels`` nunca lanza: cualquier
-    fila cuyo nivel no pueda determinarse con certeza cae a CLASIFICADA.
-
-    La paginación se aplica EN APP sobre el conjunto ya filtrado: no se puede
-    paginar en SQL antes de saber cuántas filas son visibles para este llamante.
-    ``X-Total-Count`` refleja el total POST-filtro, no el total crudo de la tabla.
-
-    FIX 1: ``list_scoped_for_clearance`` acota las candidatas a
-    ``DEADLETTER_CANDIDATE_CAP`` filas (LIMIT SQL). Si el conjunto candidato
-    alcanza ese tope, las filas pendientes más antiguas pueden haber quedado
-    fuera de la consulta — antes esto era silencioso; ahora se señala con un
-    log.warning y el header ``X-Truncated: true`` (ausente cuando no hay
-    truncamiento). ``X-Total-Count`` sigue siendo el total POST-filtro, que en
-    ese caso puede sub-reportar el volumen real de pendientes.
+    No-read-up (RF-SEG-08, AREA-10-08): el clearance del llamante se evalúa contra el
+    radicado VIVO en el ``WHERE`` de la consulta (``orpycamcp_common.deadletter``),
+    antes de paginar y de contar. Una fila por encima de su nivel no aparece ni suma al
+    ``X-Total-Count``, y no hay tope de candidatas: la página y el total son exactos.
+    Ante cualquier duda sobre el nivel de una fila se trata como CLASIFICADA (3).
+    Si ``radicados`` no existe en el schema responde 503 (no una lista vacía).
     """
     caller_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DeadLetterRepository(conn)
     caller_clearance = await resolve_caller_clearance(conn, actor)
 
-    candidates = await repo.list_scoped_for_clearance(
+    page_rows, total = await repo.list_visible(
         caller_slug,
         DLQ_GROUP,
+        caller_clearance,
         status=status_filter,
         origin_stream=origin_stream,
+        offset=(page - 1) * size,
+        limit=size,
     )
-
-    # El repositorio pide cap + 1 filas: solo MÁS de cap candidatas prueba que hay
-    # filas fuera de la ventana (con exactamente cap no se trunca nada).
-    if len(candidates) > DEADLETTER_CANDIDATE_CAP:
-        logger.warning(
-            "DLQ candidate cap reached: tenant=%s origin_group=%s status=%s cap=%d — "
-            "oldest pending rows are invisible; consider keyset pagination",
-            caller_slug,
-            DLQ_GROUP,
-            status_filter,
-            DEADLETTER_CANDIDATE_CAP,
-        )
-        response.headers["X-Truncated"] = "true"
-        candidates = candidates[:DEADLETTER_CANDIDATE_CAP]
-
-    levels = await resolve_deadletter_levels(conn, candidates)
-    visible = [row for row in candidates if caller_clearance >= levels[row["event_id"]]]
-
-    total = len(visible)
-    offset = (page - 1) * size
-    page_rows = visible[offset : offset + size]
     response.headers["X-Total-Count"] = str(total)
-    return [
-        DeadLetterSummary.model_validate(
-            {k: v for k, v in dict(r).items() if k != "payload"}
-        )
-        for r in page_rows
-    ]
+    return [DeadLetterSummary.model_validate(dict(row)) for row in page_rows]
 
 
 @router.get("/{event_id}", response_model=DeadLetterDetail)
@@ -218,10 +176,11 @@ async def get_dead_letter(
     """Detalle completo de un dead-letter (payload + failure), tras gate de clearance."""
     caller_slug = request.headers.get("X-Tenant-Slug", "")
     repo = DeadLetterRepository(conn)
-    row = await repo.get_by_event_id(event_id, caller_slug, DLQ_GROUP)
+    caller_clearance = await resolve_caller_clearance(conn, actor)
+    row = await repo.get_by_event_id(event_id, caller_slug, DLQ_GROUP, caller_clearance)
     if row is None:
         # FIX 1: byte-identical to the clearance-denied 404 raised by
-        # assert_can_read_deadletter below — "does not exist" and "exists but
+        # el predicado de clearance de la consulta — "does not exist" and "exists but
         # caller lacks clearance" must be indistinguishable (no-read-up, RF-SEG-08).
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -232,8 +191,6 @@ async def get_dead_letter(
             },
         )
 
-    caller_clearance = await resolve_caller_clearance(conn, actor)
-    await assert_can_read_deadletter(conn, caller_clearance, row)
 
     # ADR-021 (seguimiento no-bloqueante Fase 5): traza de acceso a detalle.
     # Solo se audita DESPUÉS del gate — una vista bloqueada devuelve 404 y NO
@@ -293,7 +250,8 @@ async def replay_dead_letter(
     async with conn.transaction():
         repo = DeadLetterRepository(conn)
         # H7: SELECT FOR UPDATE con predicado de tenant + origin_group.
-        row = await repo.get_for_update(event_id, caller_slug, DLQ_GROUP)
+        caller_clearance = await resolve_caller_clearance(conn, actor)
+        row = await repo.get_for_update(event_id, caller_slug, DLQ_GROUP, caller_clearance)
         if row is None:
             # FIX 1: same 404 body as the clearance-denied branch below (no-read-up).
             raise HTTPException(
@@ -317,9 +275,6 @@ async def replay_dead_letter(
                 },
             )
 
-        # H1: no-read-up por clearance.
-        caller_clearance = await resolve_caller_clearance(conn, actor)
-        await assert_can_read_deadletter(conn, caller_clearance, row)
 
         # FIX 2(a): fail-closed audit dependency. Without orpycamcp_common.audit
         # a state transition (and, on this path, an outbound email) would commit
@@ -463,7 +418,8 @@ async def discard_dead_letter(
     async with conn.transaction():
         repo = DeadLetterRepository(conn)
         # SELECT FOR UPDATE: symmetric with replay; prevents concurrent discard/replay race.
-        row = await repo.get_for_update(event_id, caller_slug, DLQ_GROUP)
+        caller_clearance = await resolve_caller_clearance(conn, actor)
+        row = await repo.get_for_update(event_id, caller_slug, DLQ_GROUP, caller_clearance)
         if row is None:
             # FIX 1: same 404 body as the clearance-denied branch below (no-read-up).
             raise HTTPException(
@@ -475,9 +431,6 @@ async def discard_dead_letter(
                 },
             )
 
-        # INC1-1: no-write-up clearance gate (404 neutro, symmetric with replay/detail).
-        caller_clearance = await resolve_caller_clearance(conn, actor)
-        await assert_can_read_deadletter(conn, caller_clearance, row)
 
         # FIX 2(a): fail-closed audit dependency — refuse to transition
         # pending → discarded without a durable audit trace (see replay for

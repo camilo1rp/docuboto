@@ -74,6 +74,24 @@ class VentanillaEstado(BaseModel):
     dependencia_receptora: bool
     #: Cuántos tipos documentales admite la ventanilla pública.
     tipos_admitidos: int
+    #: La entidad publicó su política de tratamiento (versión + URL o texto). Sin
+    #: ella `POST /ventanilla` responde 409 `politica_no_publicada` (Ley 1581 art. 12).
+    #: No forma parte de `habilitada` (que describe el organigrama y el catálogo).
+    politica_publicada: bool = False
+
+
+class PoliticaTratamiento(BaseModel):
+    """Aviso de privacidad vigente de la entidad (B2, ADR-031).
+
+    `huella` la calcula el servidor (sha256 de versión, texto y URL): es lo que la
+    constancia de autorización registra, y el cliente no puede aportarla.
+    """
+
+    publicada: bool
+    version: str = ""
+    url: str = ""
+    texto: str = ""
+    huella: str | None = None
 
 
 class TipoVentanilla(BaseModel):
@@ -123,8 +141,10 @@ class VentanillaRadicacion(BaseModel):
 
     # --- Autorización de tratamiento de datos personales (Ley 1581/2012) ------
     # `Literal[True]`: no hay valor «falso» válido —quien no autoriza no radica por
-    # esta puerta—. La versión de la política la fija el cliente a partir de la que
-    # la entidad publicó; el servidor la persiste con el instante y la IP.
+    # esta puerta—. `politica_version` es la que el cliente MOSTRÓ (la de
+    # `GET /ventanilla/politica`): el servidor la contrasta con la vigente y, si
+    # difiere, responde 409 `politica_desactualizada`. La huella, la URL, el
+    # instante y la IP las pone el servidor.
     acepta_tratamiento: Literal[True]
     politica_version: str = Field(..., min_length=1, max_length=50)
 

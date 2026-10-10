@@ -47,6 +47,32 @@ def _campos_de(ruta: Path, clase: str) -> set[str]:
     raise AssertionError(f"no se halló la clase {clase} en {ruta}")
 
 
+def _claves_leidas_de(ruta: Path, variable: str) -> set[str]:
+    """`variable["x"]` y `variable.get("x")` en el módulo, para `variable` dada."""
+    arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
+    claves: set[str] = set()
+    for nodo in ast.walk(arbol):
+        if (
+            isinstance(nodo, ast.Subscript)
+            and isinstance(nodo.value, ast.Name)
+            and nodo.value.id == variable
+            and isinstance(nodo.slice, ast.Constant)
+            and isinstance(nodo.ctx, ast.Load)
+        ):
+            claves.add(str(nodo.slice.value))
+        if (
+            isinstance(nodo, ast.Call)
+            and isinstance(nodo.func, ast.Attribute)
+            and nodo.func.attr == "get"
+            and isinstance(nodo.func.value, ast.Name)
+            and nodo.func.value.id == variable
+            and nodo.args
+            and isinstance(nodo.args[0], ast.Constant)
+        ):
+            claves.add(str(nodo.args[0].value))
+    return claves
+
+
 def _claves_leidas_del_cuerpo(ruta: Path) -> set[str]:
     """Claves literales que el cliente saca del JSON de storage.
 
@@ -101,6 +127,15 @@ def test_toda_clave_que_lee_el_cliente_existe_en_el_contrato_de_storage() -> Non
         f"{inventadas}. Contrato real: {sorted(contrato)}. "
         "Un mock que devuelva la clave inventada deja el camino roto en verde."
     )
+
+
+def test_la_procedencia_que_lee_document_es_la_que_expone_storage() -> None:
+    """B2 (ADR-031): `fetch_file_procedencia` lee `procedencia[...]`; esas claves
+    tienen que ser campos de `FileProcedenciaResponse`, no una creencia."""
+    contrato = _campos_de(ESQUEMA_STORAGE, "FileProcedenciaResponse")
+    leidas = _claves_leidas_de(CLIENTE, "procedencia")
+    assert leidas, "anti-vacuidad: el cliente ya no lee la procedencia por `procedencia[...]`"
+    assert leidas <= contrato, sorted(leidas - contrato)
 
 
 def test_el_id_del_fichero_se_traduce_y_no_se_adivina() -> None:

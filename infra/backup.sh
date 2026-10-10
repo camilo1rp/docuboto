@@ -152,7 +152,7 @@ if [ -n "$RED" ]; then
     RED_ARG=(--network "${PROYECTO}_${RED}")
 fi
 
-mkdir -p "$DESTINO/minio"
+mkdir -p "$DESTINO/minio" "$DESTINO/minio-versiones"
 
 # Las credenciales van por fichero de entorno, no por `-e`.
 #
@@ -188,8 +188,14 @@ S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}"
 # shellcheck source=lib-retencion-s3.sh
 . "$SCRIPT_DIR/lib-retencion-s3.sh"
 
+# S3_MONTAR: directorio del anfitrión que el cliente necesita ver en la MISMA ruta
+# (`get-object` escribe en un fichero). Se monta con el usuario que invoca, para que
+# el contenido salga con su umask y su propiedad (ver `--user` más abajo).
+S3_MONTAR=""
 s3api() {
-    docker run --rm "${RED_ARG[@]}" --env-file "$CREDENCIALES" \
+    local MONTAJE=()
+    [ -n "$S3_MONTAR" ] && MONTAJE=(--user "$(id -u):$(id -g)" -e HOME=/tmp -v "$S3_MONTAR:$S3_MONTAR")
+    docker run --rm "${RED_ARG[@]}" ${MONTAJE[@]+"${MONTAJE[@]}"} --env-file "$CREDENCIALES" \
         "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" s3api "$@"
 }
 
@@ -244,6 +250,8 @@ echo "── Retención del almacén (lo que el espejo no copia)..."
 # ejecutándolo. El contenedor solo emite JSON; interpretarlo es cosa nuestra.
 : > "$DESTINO/minio-retencion.tsv"
 chmod 600 "$DESTINO/minio-retencion.tsv"
+: > "$DESTINO/minio-versiones.tsv"
+chmod 600 "$DESTINO/minio-versiones.tsv"
 
 # La lectura de la retención ya NO convierte un error en «no hay»: ante un fallo
 # distinto de «sin configuración» el respaldo se COMPLETA igual (abortar dejaría un
@@ -251,6 +259,11 @@ chmod 600 "$DESTINO/minio-retencion.tsv"
 # script sale con código 4. La restauración se niega a usar ese respaldo sin una
 # aceptación explícita.
 RETENCION_COMPLETA="SI"
+# Versiones previas bajo COMPLIANCE/retención legal: el espejo no las copia, se
+# respaldan aparte (`minio-versiones/` + `minio-versiones.tsv`). Si alguna no queda
+# capturada, el respaldo se completa pero se sella con `versiones_previas_capturadas=NO`
+# y el script sale con 5.
+VERSIONES_PREVIAS_COMPLETAS="SI"
 BUCKETS="$(s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n')" || {
     echo "   ✗ no se pudieron listar los buckets: la retención NO se capturó" >&2
     RETENCION_COMPLETA="NO"
@@ -283,6 +296,12 @@ for B in $BUCKETS; do
         echo "   ✗ $B: la retención NO quedó capturada por completo" >&2
         RETENCION_COMPLETA="NO"
     fi
+    S3_MONTAR="$DESTINO/minio-versiones"
+    if ! respaldar_versiones_previas "$B" "$DESTINO/minio-versiones" "$DESTINO/minio-versiones.tsv"; then
+        echo "   ✗ $B: las versiones previas protegidas NO quedaron respaldadas por completo" >&2
+        VERSIONES_PREVIAS_COMPLETAS="NO"
+    fi
+    S3_MONTAR=""
 done
 
 echo "   $(grep -c . "$DESTINO/minio-retencion.tsv" 2>/dev/null || echo 0) entradas de retención"
@@ -400,12 +419,12 @@ if [ -n "${BACKUP_GPG_RECIPIENT:-}" ]; then
     [ -s "$DESTINO/postgres.dump.gpg" ] || { echo "ERROR: el cifrado del volcado falló." >&2; exit 1; }
     rm -f "$DESTINO/postgres.dump"
 
-    tar -C "$DESTINO" -cf - minio \
+    tar -C "$DESTINO" -cf - minio minio-versiones \
       | gpg --batch --yes --trust-model always --encrypt \
             --recipient "$BACKUP_GPG_RECIPIENT" \
             --output "$DESTINO/minio.tar.gpg"
     [ -s "$DESTINO/minio.tar.gpg" ] || { echo "ERROR: el cifrado del almacén falló." >&2; exit 1; }
-    rm -rf "$DESTINO/minio"
+    rm -rf "$DESTINO/minio" "$DESTINO/minio-versiones"
 
     chmod 600 "$DESTINO"/*.gpg
     CIFRADO="gpg:$BACKUP_GPG_RECIPIENT"
@@ -453,6 +472,7 @@ fi
     echo "retencion_capturada=$(grep -c . "$DESTINO/minio-retencion.tsv" 2>/dev/null || echo 0)"
     echo "verificacion_auditoria=$VERIFICACION_AUDITORIA"
     echo "retencion_capturada_completa=$RETENCION_COMPLETA"
+    echo "versiones_previas_capturadas=$VERSIONES_PREVIAS_COMPLETAS"
 } > "$DESTINO/OK"
 chmod 600 "$DESTINO/OK"
 
@@ -475,4 +495,9 @@ if [ "$RETENCION_COMPLETA" != "SI" ]; then
     echo "✗ ATENCIÓN: respaldo completo y sellado, pero la RETENCIÓN (Object-Lock) no se" >&2
     echo "  capturó por completo (retencion_capturada_completa=NO). Salida 4." >&2
     exit 4
+fi
+if [ "$VERSIONES_PREVIAS_COMPLETAS" != "SI" ]; then
+    echo "✗ ATENCIÓN: respaldo completo y sellado, pero las versiones PREVIAS bajo COMPLIANCE o" >&2
+    echo "  retención legal no se respaldaron por completo (versiones_previas_capturadas=NO). Salida 5." >&2
+    exit 5
 fi

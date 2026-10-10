@@ -122,9 +122,9 @@ async def test_update_nivel_by_source_sets_exact_level_without_greatest() -> Non
     conn.fetchrow.assert_called_once()
     sql = conn.fetchrow.call_args.args[0]
     assert "ON CONFLICT (source_type, source_ref) DO UPDATE" in sql
-    assert "nivel_seguridad = EXCLUDED.nivel_seguridad" in sql
-    assert "GREATEST" not in sql
-    assert conn.fetchrow.call_args.args[1:] == ("radicado", "2026-DEMO-E-000001", 1)
+    # Segunda red (AREA-10-08): con instante, un evento más viejo que el aplicado no baja el nivel.
+    assert "EXCLUDED.nivel_evento_at >= k.nivel_evento_at" in sql
+    assert conn.fetchrow.call_args.args[1:] == ("radicado", "2026-DEMO-E-000001", 1, None)
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ async def test_tombstone_by_source_upserts_with_greatest_and_clears_material() -
     assert "knowledge_chunk.nivel_seguridad" in sql
     assert "embedding" in sql and "NULL" in sql
     assert "texto" in sql
-    assert args[1:] == ("radicado", "2026-DEMO-E-000001", 3)
+    assert args[1:] == ("radicado", "2026-DEMO-E-000001", 3, None)
 
 
 @pytest.mark.asyncio

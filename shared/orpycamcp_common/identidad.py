@@ -216,6 +216,76 @@ def ip_real_firmada(cabeceras: dict[str, str]) -> str | None:
     return ip
 
 
+# ---------------------------------------------------------------------------
+# IP de una ruta PÚBLICA (B2, ADR-031)
+# ---------------------------------------------------------------------------
+#
+# En una ruta pública no hay persona ni token, así que no hay identidad que
+# firmar; pero la constancia de autorización (Ley 1581) sí lleva la IP de quien
+# la dio, y esa IP no puede salir de `X-Forwarded-For`, que escribe el cliente.
+# El gateway la deriva por saltos de confianza y la firma con un par PROPIO de
+# cabeceras: reusar `X-Identity-Signature` mezclaría un anónimo con una
+# identidad de persona (y `IdentidadFirmadaMiddleware` se dispara por `X-User-Id`).
+# La firma va ligada a la RUTA y al instante: una capturada no sirve en otra ruta
+# ni pasados 120 s. Sin secreto no se emite ni se verifica (fail-safe: IP nula).
+
+#: Instante de emisión (epoch, segundos) de la firma de la IP pública.
+CABECERA_IP_PUBLICA_TS = "X-Real-Ip-Ts"
+#: Firma de la IP pública.
+CABECERA_IP_PUBLICA_FIRMA = "X-Public-Ip-Signature"
+#: Vida máxima de la firma, en segundos.
+VENTANA_IP_PUBLICA_S = 120
+
+
+def _firma_ip_publica(ip: str, path: str, ts: str, secreto: str) -> str:
+    base = "\x1e".join(("ip-publica", ip, path, ts))
+    return hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()
+
+
+def firmar_ip_publica(
+    ip: str, path: str, ts: int | None = None
+) -> dict[str, str]:
+    """Cabeceras ``X-Real-Ip`` + instante + firma, o ``{}`` sin secreto/IP."""
+    secreto = _secreto()
+    ip = (ip or "").strip()
+    if secreto is None or not ip:
+        return {}
+    marca = str(int(time.time()) if ts is None else int(ts))
+    return {
+        "X-Real-Ip": ip,
+        CABECERA_IP_PUBLICA_TS: marca,
+        CABECERA_IP_PUBLICA_FIRMA: _firma_ip_publica(ip, path, marca, secreto),
+    }
+
+
+def ip_publica_verificada(
+    cabeceras: dict[str, str], path: str, *, ahora: float | None = None
+) -> str | None:
+    """IP que el gateway firmó para ESTA ruta hace menos de 120 s, o ``None``.
+
+    Nunca lee ``X-Forwarded-For``. Sin secreto configurado no se confía en nada.
+    """
+    secreto = _secreto()
+    if secreto is None:
+        return None
+    n = {k.lower(): v for k, v in cabeceras.items()}
+    ip = (n.get("x-real-ip") or "").strip()
+    marca = n.get(CABECERA_IP_PUBLICA_TS.lower()) or ""
+    firma = n.get(CABECERA_IP_PUBLICA_FIRMA.lower()) or ""
+    if not ip or not marca or not firma:
+        return None
+    try:
+        emitida = int(marca)
+    except ValueError:
+        return None
+    actual = time.time() if ahora is None else ahora
+    if abs(actual - emitida) > VENTANA_IP_PUBLICA_S:
+        return None
+    if not hmac.compare_digest(firma, _firma_ip_publica(ip, path, marca, secreto)):
+        return None
+    return ip
+
+
 class IdentidadFirmadaMiddleware:
     """Verifica la firma de la identidad, si viene identidad.
 

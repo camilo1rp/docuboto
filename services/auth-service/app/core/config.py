@@ -8,6 +8,7 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 from orpycamcp_common import kek as _kek
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -129,13 +130,18 @@ class Settings(BaseSettings):
     # (irreversible); lo público queda para verificación. Colchón operacional
     # contra revocaciones masivas erróneas, NO reversibilidad criptográfica
     # (imposible por diseño: re-enroll genera par nuevo).
-    signing_key_purge_after_days: int = 30
+    signing_key_purge_after_days: int = Field(default=30, ge=1)
     # Token compartido D-02 para POST /internal/signing-key/sign-digest —
     # SOLO signature-service lo llama, servicio-a-servicio, NUNCA vía gateway
     # (misma familia de gate que app.core.internal_auth en otros servicios).
     # Vacío (default) hace que la ruta responda 503 fail-closed en vez de
     # aceptar cualquier token. NUNCA commitear el valor real.
     signing_key_internal_token: str = ""
+    # Job periódico de mantenimiento de claves de firma (purga de revocadas
+    # vencidas + re-wrap a la KEK activa). Kill-switch e intervalo; el job es
+    # fail-safe: sin auditoría disponible no muta, sin llavero válido no re-envuelve.
+    signing_key_maintenance_enabled: bool = True
+    signing_key_maintenance_interval_seconds: int = Field(default=21600, ge=60)
     # --- Anclaje de la sub-CA de usuarios (E17/F4, Incremento 2 — cierra la
     # Baja #4) --- Ruta al certificado PÚBLICO de la sub-CA que emite los
     # certificados de firma personal (``scripts/gen-user-cert.sh`` en

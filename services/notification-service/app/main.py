@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from orpycamcp_common import events, identidad, request_log
+from orpycamcp_common import deadletter, events, identidad, request_log
 from orpycamcp_common import secrets as common_secrets
 
 from app.core import webhook_secrets
@@ -105,3 +105,4 @@ app.include_router(health.router)
 app.include_router(notifications.router)
 app.include_router(webhooks.router)
 app.include_router(admin_deadletter.router)
+deadletter.instalar_manejador_radicados_ausente(app)

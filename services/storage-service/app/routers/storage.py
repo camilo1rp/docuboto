@@ -31,6 +31,8 @@ from app.repositories.file_repository import FileRepository
 from app.schemas.storage import (
     FileHashesRequest,
     FileHashesResponse,
+    FileProcedenciaRequest,
+    FileProcedenciaResponse,
     FileResponse,
     IntegrityResponse,
     PresignedUrlResponse,
@@ -469,6 +471,33 @@ async def file_hashes_batch(
 ) -> FileHashesResponse:
     hashes = await FileRepository(conn, tenant_slug).hashes_for_ids(payload.file_ids)
     return FileHashesResponse(hashes=hashes)
+
+
+@router.post(
+    "/internal/files/procedencia",
+    response_model=FileProcedenciaResponse,
+    summary="Autor, huella y referencias de un fichero (internal only)",
+    # Sin llamante externo: lo consulta document-service al registrar el acuse de
+    # un envío (B2, ADR-031) para que la constancia sea de quien la sube y no sea
+    # ya el anexo de un radicado.
+    dependencies=[Depends(_require_internal_token)],
+)
+async def file_procedencia(
+    payload: FileProcedenciaRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> FileProcedenciaResponse:
+    datos = await FileRepository(conn, tenant_slug).procedencia(payload.file_id)
+    if datos is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "file_not_found",
+                "detail": "No existe el archivo solicitado",
+                "status": 404,
+            },
+        )
+    return FileProcedenciaResponse(**datos)
 
 
 @router.get(

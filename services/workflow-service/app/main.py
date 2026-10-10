@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from orpycamcp_common import events, identidad, request_log
+from orpycamcp_common import deadletter, events, identidad, request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
@@ -90,6 +90,7 @@ app.include_router(workflow_router)
 app.include_router(rules_router)
 app.include_router(visto_bueno_router)
 app.include_router(admin_dlq_router)
+deadletter.instalar_manejador_radicados_ausente(app)
 app.include_router(health_router)
 
 

@@ -111,7 +111,6 @@ EXCEPCIONES = {
         "auth-service::totp.py::POST /api/v1/auth/me/totp/recovery-codes",
     }),
     "interno_por_bearer": frozenset({
-        "auth-service::totp.py::POST /internal/totp/verify",
     }),
     "permiso_dinamico": frozenset({
         "workflow-service::workflow.py::POST /api/v1/workflows/{radicado_id}/transactions",

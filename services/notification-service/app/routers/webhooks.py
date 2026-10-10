@@ -14,13 +14,14 @@ import uuid
 from urllib.parse import urlsplit
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
 from app.core import webhook_secrets
 from app.core.clearance import get_actor, require_permission
 from app.core.database import get_tenant_conn
+from app.repositories.webhook_entregas_repository import WebhookEntregasRepository
 from app.repositories.webhook_repository import WebhookRepository
-from app.schemas.webhook import WebhookCreate, WebhookResponse
+from app.schemas.webhook import WebhookCreate, WebhookEntregaResponse, WebhookResponse
 
 try:
     from orpycamcp_common import audit as _audit
@@ -57,7 +58,9 @@ def _url_sin_credenciales(url: str) -> str:
 
 
 def _huella_url(url: str) -> str:
-    return hashlib.sha256(url.encode()).hexdigest()
+    # Huella del ORIGEN (scheme://host:port), nunca de la URL completa: un hash sin sal del
+    # URL entero deja CONFIRMAR un webhook de Slack/Teams adivinado (el token va en la ruta).
+    return hashlib.sha256(_url_sin_credenciales(url).encode()).hexdigest()
 
 
 def _exigir_auditoria() -> None:
@@ -146,6 +149,29 @@ async def list_webhooks(
     rows = await WebhookRepository(conn).list()
     response.headers["X-Total-Count"] = str(len(rows))
     return [WebhookResponse(**dict(r)) for r in rows]
+
+
+@router.get(
+    "/{webhook_id}/entregas",
+    response_model=list[WebhookEntregaResponse],
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
+)
+async def list_entregas(
+    webhook_id: uuid.UUID,
+    response: Response,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=200),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[WebhookEntregaResponse]:
+    """Constancia de entregas de la suscripción (más recientes primero).
+
+    No devuelve 404 si la suscripción ya no existe: la constancia sobrevive al
+    borrado (sin FK) y es justo cuando más interesa consultarla.
+    """
+    repo = WebhookEntregasRepository(conn)
+    rows = await repo.list_by_webhook(webhook_id, limit=size, offset=(page - 1) * size)
+    response.headers["X-Total-Count"] = str(await repo.count_by_webhook(webhook_id))
+    return [WebhookEntregaResponse(**dict(r)) for r in rows]
 
 
 @router.delete(

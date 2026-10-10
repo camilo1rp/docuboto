@@ -15,7 +15,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import events, identidad, request_log
+from orpycamcp_common import deadletter, events, identidad, request_log
 from orpycamcp_common import secrets as common_secrets
 
 from app.core.config import settings, variables_retiradas_presentes
@@ -105,4 +105,5 @@ app.add_middleware(request_log.RequestLogMiddleware, servicio="signature-service
 app.include_router(signature_router)
 app.include_router(cadena_router)
 app.include_router(admin_dlq_router)
+deadletter.instalar_manejador_radicados_ausente(app)
 app.include_router(health_router)

@@ -67,6 +67,26 @@ class FileHashesResponse(BaseModel):
     hashes: dict[str, str]
 
 
+class FileProcedenciaRequest(BaseModel):
+    """`POST /api/v1/storage/internal/files/procedencia` (B2, ADR-031)."""
+
+    file_id: uuid.UUID
+
+
+class FileProcedenciaResponse(BaseModel):
+    """Quién subió un fichero, su huella y quién lo referencia hoy.
+
+    Lo consume document-service al registrar el acuse de un envío: la constancia de
+    entrega solo vale si la subió quien la registra y nadie la usa ya como otra cosa
+    (un anexo ajeno no puede pasar por acuse propio). `referencias` vacío = nadie;
+    una tabla ausente cuenta como referenciado (`tabla(ausente)`, fail-closed).
+    """
+
+    sha256: str | None
+    uploaded_by: uuid.UUID | None
+    referencias: list[str]
+
+
 class PurgaDisposicionRequest(BaseModel):
     """`POST /api/v1/storage/internal/purgar-disposicion` (E04, RF-TRD-07 fase 5).
 

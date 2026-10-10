@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     # gatea el guard de arranque de preservación WORM (ver `preservation_startup_guard`).
     app_env: str = "development"
 
+    # Export de expediente (E02/export): el ZIP se arma en un fichero temporal en
+    # DISCO y se sirve por trozos (B4-5); nunca entero en memoria. Tope en bytes
+    # del paquete (declarado y real) y reserva mínima de disco que debe quedar
+    # libre además del paquete. `export_tmp_dir` vacío = directorio temporal del SO.
+    export_max_bytes: int = 4 * 1024 * 1024 * 1024
+    export_min_free_bytes: int = 256 * 1024 * 1024
+    export_tmp_dir: str = ""
+
     # Preservación WORM del índice electrónico firmado (E10 Increment A, ADR-016/E15).
     # Feature flag/kill-switch: con False, POST /preservacion/proteger-indice responde 503.
     preservation_enabled: bool = False

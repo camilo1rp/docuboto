@@ -688,7 +688,47 @@ class StorageEventosError(Exception):
 
 
 class StorageExportError(Exception):
-    """storage-service no pudo ensamblar el ZIP de exportación del expediente."""
+    """storage-service no pudo ensamblar el ZIP de exportación del expediente.
+
+    `status_code` es el de storage cuando respondió (413 tope, 507 disco); `None`
+    si fue inalcanzable."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ExportZipStream:
+    """ZIP de exportación ya ensamblado por storage, listo para reenviarse por
+    trozos SIN bufferizarlo. Storage lo cierra en disco antes de responder, así
+    que cuando existe esta instancia el paquete está completo y su
+    `content_length` es el real."""
+
+    def __init__(self, client: httpx.AsyncClient, response: httpx.Response) -> None:
+        self._client = client
+        self._response = response
+        length = response.headers.get("content-length")
+        self.content_length: int | None = int(length) if length and length.isdigit() else None
+
+    async def aclose(self) -> None:
+        await self._response.aclose()
+        await self._client.aclose()
+
+    async def iter_bytes(self):
+        """Reenvía los trozos y cierra la conexión al terminar, también si el
+        consumidor se va a mitad. Si storage corta antes de completar el
+        `Content-Length`, lanza en vez de dar por terminado un ZIP corto."""
+        recibido = 0
+        try:
+            async for chunk in self._response.aiter_raw(1024 * 1024):
+                recibido += len(chunk)
+                yield chunk
+            if self.content_length is not None and recibido != self.content_length:
+                raise StorageExportError(
+                    f"ZIP incompleto: {recibido} de {self.content_length} bytes"
+                )
+        finally:
+            await self.aclose()
 
 
 async def export_zip_internal(
@@ -696,30 +736,40 @@ async def export_zip_internal(
     tenant_slug: str,
     items: list[dict],
     extra_files: list[dict],
-) -> bytes:
+) -> ExportZipStream:
     """Pide a storage el ZIP de exportación (D-02, `X-Internal-Token`) a partir
     del inventario de anexos (`{file_id, arcname}`) + archivos generados por
-    archive (`{arcname, contenido_b64}`). Devuelve los bytes del ZIP. Timeout
-    amplio: descargar N anexos de MinIO + comprimir es costoso."""
+    archive (`{arcname, contenido_b64}`).
+
+    Devuelve un `ExportZipStream` (no los bytes): el estado de storage se
+    resuelve ANTES de devolver, de modo que cualquier fallo es un error limpio
+    y nunca un 200 con el cuerpo cortado. Timeout de lectura amplio: storage
+    descarga N anexos y comprime antes de responder."""
     headers = {
         "X-Tenant-Slug": tenant_slug,
         "X-Internal-Token": settings.storage_internal_token,
     }
     body = {"items": items, "extra_files": extra_files}
+    client = httpx.AsyncClient(
+        base_url=settings.storage_service_url,
+        timeout=httpx.Timeout(600.0, connect=10.0),
+    )
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.storage_service_url, timeout=120.0
-        ) as client:
-            resp = await client.post(
-                "/api/v1/preservacion/export-zip-internal", json=body, headers=headers
-            )
+        request = client.build_request(
+            "POST", "/api/v1/preservacion/export-zip-internal", json=body, headers=headers
+        )
+        resp = await client.send(request, stream=True)
     except httpx.RequestError as exc:
+        await client.aclose()
         raise StorageExportError(f"storage-service inalcanzable: {exc}") from exc
     if resp.status_code != 200:
+        status_code = resp.status_code
+        await resp.aclose()
+        await client.aclose()
         raise StorageExportError(
-            f"storage-service respondió {resp.status_code} al ensamblar el ZIP"
+            f"storage-service respondió {status_code} al ensamblar el ZIP", status_code
         )
-    return resp.content
+    return ExportZipStream(client, resp)
 
 
 async def purgar_huerfanos_internal(
@@ -797,6 +847,35 @@ async def download_signed_xml(*, tenant_slug: str, minio_key_firmado: str) -> st
             return download.text
     except httpx.RequestError as exc:
         logger.warning("storage-service inalcanzable al descargar el índice firmado: %s", exc)
+    return None
+
+
+async def download_signed_bytes(*, tenant_slug: str, minio_key_firmado: str) -> bytes | None:
+    """Gemela de `download_signed_xml` que devuelve los BYTES tal cual salen del almacén (sin
+    decodificar): quien necesita recotejar la huella de captura (B4, paquete de entrega) no puede
+    hacerlo sobre un `.text` que ya pasó por una decodificación. `None` en cualquier fallo."""
+    file_id = minio_key_firmado.split("/", 1)[0]
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=10.0
+        ) as client:
+            resp = await client.get(
+                f"/api/v1/storage/files/{file_id}/download", headers=headers
+            )
+            if resp.status_code != 200:
+                logger.warning("storage-service → HTTP %s al presignar un componente", resp.status_code)
+                return None
+            download = await client.get(resp.json()["url"])
+            if download.status_code != 200:
+                logger.warning("almacén → HTTP %s al descargar un componente", download.status_code)
+                return None
+            return download.content
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al descargar un componente: %s", exc)
     return None
 
 

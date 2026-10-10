@@ -301,3 +301,97 @@ async def test_leeme_afirma_la_firma_cuando_el_indice_SI_esta_firmado(monkeypatc
     ).decode()
     assert "Indice electronico firmado: si" in leeme
     assert "Estado del expediente al exportar: cerrado" in leeme
+
+
+# --- B4-5: streaming sin bufferizar ---------------------------------------
+
+
+def _patch_storage(monkeypatch, handler):
+    """Hace que `storage_client` hable con `handler` (httpx.MockTransport)."""
+    import httpx
+
+    real = httpx.AsyncClient
+
+    def _factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("app.clients.storage_client.httpx.AsyncClient", _factory)
+
+
+@pytest.mark.asyncio
+async def test_client_streams_chunks_without_buffering(monkeypatch) -> None:
+    import httpx
+
+    from app.clients import storage_client
+
+    trozos = [b"A" * 1000, b"B" * 500]
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-length": "1500"}, content=_AsyncStream(trozos))
+
+    _patch_storage(monkeypatch, _handler)
+    stream = await storage_client.export_zip_internal(tenant_slug="demo", items=[], extra_files=[])
+    assert stream.content_length == 1500
+    recibido = b"".join([c async for c in stream.iter_bytes()])
+    assert recibido == b"".join(trozos)
+
+
+class _AsyncStream:
+    def __init__(self, trozos: list[bytes]) -> None:
+        self._t = trozos
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        for t in self._t:
+            yield t
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_client_detects_truncated_stream(monkeypatch) -> None:
+    """Content-Length dice 1500 y llegan 1000: error, no un ZIP corto «completo»."""
+    import httpx
+
+    from app.clients import storage_client
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-length": "1500"}, content=_AsyncStream([b"A" * 1000]))
+
+    _patch_storage(monkeypatch, _handler)
+    stream = await storage_client.export_zip_internal(tenant_slug="demo", items=[], extra_files=[])
+    with pytest.raises(storage_client.StorageExportError):
+        async for _ in stream.iter_bytes():
+            pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_storage", "esperado", "error"),
+    [(413, 413, "export_demasiado_grande"), (507, 507, "espacio_insuficiente"), (500, 502, "export_no_disponible")],
+)
+async def test_storage_error_maps_before_first_byte(
+    monkeypatch, status_storage, esperado, error
+) -> None:
+    import httpx
+
+    svc = _service_with(_expediente([_radicado(tracking="2026-DEMO-E-000001", estado="vinculado")]))
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        "app.clients.document_client.fetch_radicado_metadata_internal", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        "app.services.index_service.IndexService.get_xml",
+        AsyncMock(side_effect=HTTPException(status_code=404, detail="no indice")),
+    )
+    _patch_storage(monkeypatch, lambda request: httpx.Response(status_storage))
+    with pytest.raises(HTTPException) as ei:
+        await svc.export_expediente_zip(uuid.uuid4(), user_id=uuid.uuid4(), canal="api")
+    assert ei.value.status_code == esperado
+    assert ei.value.detail["error"] == error

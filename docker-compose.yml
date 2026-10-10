@@ -808,11 +808,8 @@ services:
       # variable las pantallas públicas se declaran no habilitadas en vez de
       # apuntar a un inquilino inventado.
       - PORTAL_TENANT_SLUG=demo
-      # Autorización de tratamiento de datos (Ley 1581/2012, AREA-09-08): versión y enlace de la
-      # política que la ENTIDAD publica. Sin versión, la constancia dice «sin-politica-publicada»
-      # (la verdad, no una versión inventada); sin URL, la casilla no lleva enlace.
-      - POLITICA_TRATAMIENTO_VERSION=${POLITICA_TRATAMIENTO_VERSION:-}
-      - POLITICA_TRATAMIENTO_URL=${POLITICA_TRATAMIENTO_URL:-}
+      # La política de tratamiento de datos la publica la ENTIDAD (parámetros del tenant) y
+      # la sirve la ventanilla (ADR-031): ya no se configura aquí.
       # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
       # back-channel logout y los proxys +server.js al gateway). Nunca llegan al cliente.
       - INTERNAL_API_URL=http://api-gateway:8080

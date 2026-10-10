@@ -404,3 +404,33 @@ async def test_handle_dispatches_purged_to_void() -> None:
     mock_void.assert_awaited_once()
     assert mock_void.await_args.kwargs["payload"]["tracking_number"] == TRACKING
     mock_ingest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_purga_dead_letters_terminales_una_vez_al_dia() -> None:
+    """AREA-10-08: la retención de la DLQ corre con la compuerta diaria, no en cada vuelta,
+    y un fallo suyo no tumba el bucle."""
+    from app.core.config import settings
+    from app.workers import document_consumer
+
+    fake_redis = AsyncMock()
+    fake_redis.xreadgroup.side_effect = [[], [], asyncio.CancelledError()]
+    purga = AsyncMock(side_effect=RuntimeError("base caída"))
+    dia = float(settings.retention_interval_seconds)
+
+    with (
+        patch.object(document_consumer, "get_redis", return_value=fake_redis),
+        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch(
+            "app.workers.document_consumer.events.reclaim_stale",
+            AsyncMock(return_value=events.ReclaimStats()),
+        ),
+        patch("app.workers.document_consumer.deadletter_retention.run_once", purga),
+        patch("app.workers.document_consumer.time") as mock_time,
+    ):
+        # inicio, vuelta 1 (antes del día: no purga), vuelta 2 (pasado el día: purga y falla).
+        mock_time.monotonic.side_effect = [0.0, 5.0, dia + 1.0]
+        with pytest.raises(asyncio.CancelledError):
+            await document_consumer.run()
+
+    purga.assert_awaited_once()

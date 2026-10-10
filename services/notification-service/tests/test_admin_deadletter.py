@@ -21,20 +21,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
-import asyncpg
 import pytest
-from fastapi import HTTPException, status
 
-from app.core.clearance import (
-    CLASIFICADA,
-    assert_can_read_deadletter,
-    resolve_deadletter_level,
-    resolve_deadletter_levels,
-)
 from app.core.constants import DLQ_GROUP
 from app.models.notification import Notification
 from app.repositories.dead_letter_repository import (
-    DEADLETTER_CANDIDATE_CAP,
     DeadLetterRepository,
 )
 from app.repositories.processed_events_repository import ProcessedEventsRepository
@@ -49,7 +40,7 @@ TENANT = "icetex"
 OTHER_GROUP = "signature-service"  # another consumer sharing evento_dead_letter
 
 # FIX 1: exact body raised both by the router's "row is None" branches AND by
-# assert_can_read_deadletter's clearance-denied branch — the two cases MUST be
+# the clearance predicate of the query (AREA-10-08) — the two cases MUST be
 # indistinguishable (no-read-up, RF-SEG-08). Every test asserting either 404
 # reuses this constant so a future edit that de-syncs the two literals fails.
 _NOT_FOUND_BODY = {
@@ -146,10 +137,6 @@ async def test_list_returns_summaries(client_with_conn) -> None:
     conn.fetch.return_value = [_summary_row()]
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={EVT: 1}),
-        ),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -165,10 +152,6 @@ async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> No
     conn.fetch.return_value = [_summary_row()]
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={EVT: 1}),
-        ),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     item = resp.json()[0]
@@ -179,113 +162,6 @@ async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> No
 
 
 # ---------------------------------------- list: filtrado por clearance (ADR-021 Fase 5)
-@pytest.mark.asyncio
-async def test_list_excludes_row_above_caller_clearance(client_with_conn) -> None:
-    """ADR-021 (seguimiento no-bloqueante Fase 5): un admin sub-clearance no ve
-    en el listado la fila de un dead-letter cuyo objeto referenciado está por
-    encima de su nivel — ni la fila, ni su existencia en X-Total-Count."""
-    client, conn = client_with_conn
-    conn.fetch.return_value = [_summary_row()]
-    with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=1)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={EVT: 3}),  # CLASIFICADA
-        ),
-    ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json() == []
-    assert resp.headers["X-Total-Count"] == "0"
-
-
-@pytest.mark.asyncio
-async def test_list_includes_row_at_or_below_caller_clearance(client_with_conn) -> None:
-    client, conn = client_with_conn
-    conn.fetch.return_value = [_summary_row()]
-    with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={EVT: 3}),
-        ),
-    ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert len(resp.json()) == 1
-    assert resp.headers["X-Total-Count"] == "1"
-
-
-@pytest.mark.asyncio
-async def test_list_mixed_clearance_filters_and_counts_correctly(client_with_conn) -> None:
-    """De 3 filas candidatas, solo las de nivel <= clearance del llamante son
-    visibles; X-Total-Count refleja el conjunto POST-filtro, no el crudo."""
-    client, conn = client_with_conn
-    rows = [
-        _summary_row(event_id="evt-pub"),
-        _summary_row(event_id="evt-priv"),
-        _summary_row(event_id="evt-clasif"),
-    ]
-    conn.fetch.return_value = rows
-    levels_by_event = {"evt-pub": 1, "evt-priv": 2, "evt-clasif": 3}
-
-    async def fake_resolve_batch(_conn, batch_rows):
-        return {row["event_id"]: levels_by_event[row["event_id"]] for row in batch_rows}
-
-    with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=2)),
-        patch("app.routers.admin_deadletter.resolve_deadletter_levels", fake_resolve_batch),
-    ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    event_ids = {item["event_id"] for item in data}
-    assert event_ids == {"evt-pub", "evt-priv"}
-    assert resp.headers["X-Total-Count"] == "2"
-
-
-@pytest.mark.asyncio
-async def test_list_resolution_error_excludes_row_fail_closed(client_with_conn) -> None:
-    """Si la resolución en lote no puede determinar el nivel de una fila (p. ej.
-    envelope corrupto), ``resolve_deadletter_levels`` la resuelve internamente a
-    CLASIFICADA (fail-closed, nunca lanza — ver clearance.py) y el router la
-    excluye. Aquí se simula ese resultado ya resuelto por el batch."""
-    client, conn = client_with_conn
-    conn.fetch.return_value = [_summary_row()]
-    with (
-        # Un llamante que SÍ alcanzaría CLASIFICADA (3) no sirve para probar el
-        # fail-closed: la fila debe excluirse incluso si el caller es sub-CLASIFICADA.
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=2)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={EVT: 3}),  # CLASIFICADA — fail-closed dentro del batch
-        ),
-    ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json() == []
-    assert resp.headers["X-Total-Count"] == "0"
-
-
-@pytest.mark.asyncio
-async def test_list_pagination_applied_after_filter(client_with_conn) -> None:
-    """La paginación (page/size) se aplica sobre el conjunto YA filtrado."""
-    client, conn = client_with_conn
-    rows = [_summary_row(event_id=f"evt-{i}") for i in range(5)]
-    conn.fetch.return_value = rows
-    with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={f"evt-{i}": 1 for i in range(5)}),
-        ),
-    ):
-        resp = await client.get(f"{BASE}/?page=2&size=2", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 2
-    assert [item["event_id"] for item in data] == ["evt-2", "evt-3"]
-    assert resp.headers["X-Total-Count"] == "5"
 
 
 @pytest.mark.asyncio
@@ -295,153 +171,6 @@ async def test_list_requires_x_user_id(client_with_conn) -> None:
     headers = {"X-Tenant-Slug": TENANT}  # sin X-User-Id
     resp = await client.get(f"{BASE}/", headers=headers)
     assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_resolve_deadletter_level_matches_gate_for_listing() -> None:
-    """Unit-level: la misma resolución usada por el gate de detalle es la que
-    consume el filtro del listado (single source of truth, ver clearance.py)."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=None)  # radicado no hallado
-    row = _summary_row()
-    nivel = await resolve_deadletter_level(conn, row)
-    assert nivel == 3  # CLASIFICADA, fail-closed
-
-
-# --------------------------------------------------- list: cap signaling (FIX 1)
-@pytest.mark.asyncio
-async def test_list_sets_truncated_header_when_cap_reached(client_with_conn) -> None:
-    """"El repositorio pide cap + 1 filas: MÁS de cap candidatas prueba que el listado
-    quedó truncado y la respuesta lo señala con X-Truncated (AREA-10-08)."""
-    client, conn = client_with_conn
-    rows = [_summary_row(event_id=f"evt-{i}") for i in range(DEADLETTER_CANDIDATE_CAP + 1)]
-    conn.fetch.return_value = rows
-    with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={f"evt-{i}": 1 for i in range(DEADLETTER_CANDIDATE_CAP + 1)}),
-        ),
-    ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert resp.headers["X-Truncated"] == "true"
-    # la fila sobrante (cap + 1) solo sirve para detectar el truncado: no se cuenta ni se entrega.
-    assert resp.headers["X-Total-Count"] == str(DEADLETTER_CANDIDATE_CAP)
-
-
-@pytest.mark.asyncio
-async def test_list_exactly_cap_does_not_set_truncated_header_when_cap_reached(client_with_conn) -> None:
-    """AREA-10-08: con EXACTAMENTE cap candidatas no hay nada fuera de la ventana, así
-    que X-Truncated no se emite (antes saltaba con ``len == cap``: falso positivo)."""
-    client, conn = client_with_conn
-    rows = [_summary_row(event_id=f"evt-{i}") for i in range(DEADLETTER_CANDIDATE_CAP)]
-    conn.fetch.return_value = rows
-    with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={f"evt-{i}": 1 for i in range(DEADLETTER_CANDIDATE_CAP)}),
-        ),
-    ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert "X-Truncated" not in resp.headers
-
-
-@pytest.mark.asyncio
-async def test_list_no_truncated_header_below_cap(client_with_conn) -> None:
-    """Bajo el cap, el header X-Truncated está AUSENTE (no se emite 'false')."""
-    client, conn = client_with_conn
-    conn.fetch.return_value = [_summary_row()]
-    with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.resolve_deadletter_levels",
-            AsyncMock(return_value={EVT: 1}),
-        ),
-    ):
-        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert "X-Truncated" not in resp.headers
-
-
-# ---------------------------------- resolve_deadletter_levels: equivalencia batch (FIX 2)
-@pytest.mark.asyncio
-async def test_resolve_deadletter_levels_equivalent_to_per_row() -> None:
-    """Acid test del contrato de equivalencia: para cada fila, resolve_deadletter_levels
-    (una sola query batch) debe coincidir byte a byte con llamar
-    resolve_deadletter_level (per-row) fila por fila — hallado, no-hallado,
-    sin-identificador, payload corrupto y nivel embebido."""
-    tracking_found = "2026-ICETEX-E-000002"
-    tracking_missing = "2026-ICETEX-E-000099"
-
-    rows = {
-        # Hallado: nivel vivo=2, sin embebido.
-        "evt-found": _summary_row(event_id="evt-found", tracking=tracking_found),
-        # No-hallado: identificador presente pero radicado no existe.
-        "evt-missing": _summary_row(event_id="evt-missing", tracking=tracking_missing),
-        # Sin identificador en el sobre.
-        "evt-no-id": {
-            **_summary_row(event_id="evt-no-id"),
-            "payload": {"event_id": "evt-no-id", "payload": {}},
-        },
-        # Payload corrupto (no es JSON válido).
-        "evt-corrupt": {**_summary_row(event_id="evt-corrupt"), "payload": "not-valid-json{{{"},
-        # Nivel embebido que eleva por encima del nivel vivo hallado.
-        "evt-embedded": {
-            **_summary_row(event_id="evt-embedded", tracking=tracking_found),
-            "payload": {
-                "event_id": "evt-embedded",
-                "payload": {"tracking_number": tracking_found, "nivel_nuevo": 3},
-            },
-        },
-    }
-
-    # nivel_seguridad=2 for tracking_found; tracking_missing does not exist.
-    radicados_table = {tracking_found: 2}
-
-    async def fake_fetchval(_sql, ident):
-        # Mirrors the per-row live SELECT: tracking_number OR id::text = $1.
-        return radicados_table.get(ident)
-
-    async def fake_fetch(_sql, idents):
-        return [
-            {"nivel_seguridad": lvl, "tracking_number": t, "id": t}
-            for t, lvl in radicados_table.items()
-            if t in idents
-        ]
-
-    conn = AsyncMock()
-    conn.fetchval = fake_fetchval
-    conn.fetch = fake_fetch
-
-    batch_levels = await resolve_deadletter_levels(conn, list(rows.values()))
-
-    for event_id, row in rows.items():
-        try:
-            expected = await resolve_deadletter_level(conn, row)
-        except Exception:  # noqa: BLE001 — matches the router's own fail-closed wrapping.
-            expected = CLASIFICADA
-        assert batch_levels[event_id] == expected, event_id
-
-    assert batch_levels["evt-found"] == 2
-    assert batch_levels["evt-missing"] == 3  # CLASIFICADA
-    assert batch_levels["evt-no-id"] == 3  # CLASIFICADA
-    assert batch_levels["evt-corrupt"] == 3  # CLASIFICADA
-    assert batch_levels["evt-embedded"] == 3  # max(2, 3) == 3
-
-
-@pytest.mark.asyncio
-async def test_resolve_deadletter_levels_table_absent_falls_closed() -> None:
-    """Notification no tiene tabla `radicados` propia: UndefinedTableError en la
-    query batch se trata igual que en el per-row — mapa vacío → CLASIFICADA."""
-    conn = AsyncMock()
-    conn.fetch = AsyncMock(side_effect=asyncpg.UndefinedTableError())
-    rows = [_summary_row()]
-
-    levels = await resolve_deadletter_levels(conn, rows)
-    assert levels[EVT] == 3  # CLASIFICADA
 
 
 # --------------------------------------------------------------------------- detail
@@ -460,7 +189,7 @@ async def test_detail_not_found(client_with_conn) -> None:
     resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 404
     # FIX 1: row-None body must be byte-identical to the clearance-denied body
-    # (see test_assert_can_read_deadletter_denied_body_matches_row_none_body).
+    # (hidden and nonexistent both come back as None from the repository).
     assert resp.json() == {"detail": _NOT_FOUND_BODY}
 
 
@@ -477,16 +206,9 @@ async def test_detail_requires_x_user_id(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_detail_clearance_denied(client_with_conn) -> None:
     client, conn = client_with_conn
-    conn.fetchrow.return_value = _full_row()
-    denial = HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND, detail={"error": "not_found", "status": 404}
-    )
+    conn.fetchrow.return_value = None
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=1)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter",
-            AsyncMock(side_effect=denial),
-        ),
     ):
         resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 404  # neutro, no 403
@@ -498,9 +220,6 @@ async def test_detail_success(client_with_conn) -> None:
     conn.fetchrow.return_value = _full_row()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
     ):
         resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -521,9 +240,6 @@ async def test_detail_view_writes_audit_log(client_with_conn) -> None:
     mock_audit = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter._audit", mock_audit),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
@@ -549,17 +265,10 @@ async def test_detail_blocked_view_does_not_write_audit_log(client_with_conn) ->
     """Una vista bloqueada (404 por clearance) NO debe auditar — de lo contrario
     confirmaría la existencia del evento a quien no tiene acceso."""
     client, conn = client_with_conn
-    conn.fetchrow.return_value = _full_row()
-    denial = HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND, detail={"error": "not_found", "status": 404}
-    )
+    conn.fetchrow.return_value = None
     mock_audit = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=1)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter",
-            AsyncMock(side_effect=denial),
-        ),
         patch("app.routers.admin_deadletter._audit", mock_audit),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
@@ -579,9 +288,6 @@ async def test_replay_success_workflow_stream(client_with_conn) -> None:
     mock_send = AsyncMock(return_value=_sent_notification("sent"))
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter.send_notification", mock_send),
         patch("app.routers.admin_deadletter._audit", mock_audit),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
@@ -610,9 +316,6 @@ async def test_replay_success_document_stream(client_with_conn) -> None:
     mock_send = AsyncMock(return_value=_sent_notification("sent"))
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter.send_notification", mock_send),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
@@ -630,9 +333,6 @@ async def test_replay_clears_dedup_claim_before_send(client_with_conn) -> None:
     conn.execute.return_value = "UPDATE 1"
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch(
             "app.routers.admin_deadletter.send_notification",
             AsyncMock(return_value=_sent_notification("sent")),
@@ -656,9 +356,6 @@ async def test_replay_smtp_failure_returns_502_and_stays_pending(client_with_con
     mock_send = AsyncMock(return_value=_sent_notification("failed"))
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter.send_notification", mock_send),
         patch("app.routers.admin_deadletter._audit", AsyncMock()) as mock_audit,
     ):
@@ -683,9 +380,6 @@ async def test_replay_handler_raises_returns_502(client_with_conn) -> None:
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
         patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
-        patch(
             "app.routers.admin_deadletter.send_notification",
             AsyncMock(side_effect=RuntimeError("boom")),
         ),
@@ -708,9 +402,6 @@ async def test_replay_audit_unavailable_returns_503(client_with_conn) -> None:
     mock_send = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", False),
         patch("app.routers.admin_deadletter.send_notification", mock_send),
     ):
@@ -730,9 +421,6 @@ async def test_replay_unknown_origin_stream_returns_422(client_with_conn) -> Non
     mock_send = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter.send_notification", mock_send),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
@@ -749,9 +437,6 @@ async def test_replay_not_pending_returns_409(client_with_conn) -> None:
     conn.execute.return_value = "UPDATE 0"  # transition_status → 0 filas
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch(
             "app.routers.admin_deadletter.send_notification",
             AsyncMock(return_value=_sent_notification("sent")),
@@ -774,16 +459,9 @@ async def test_replay_tenant_mismatch_returns_422(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_replay_clearance_denied_returns_404(client_with_conn) -> None:
     client, conn = client_with_conn
-    conn.fetchrow.return_value = _full_row()
-    denial = HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND, detail={"error": "not_found", "status": 404}
-    )
+    conn.fetchrow.return_value = None
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=1)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter",
-            AsyncMock(side_effect=denial),
-        ),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
@@ -810,9 +488,6 @@ async def test_discard_success(client_with_conn) -> None:
     mock_audit = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter._audit", mock_audit),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
@@ -836,16 +511,9 @@ async def test_discard_no_reason_returns_422(client_with_conn) -> None:
 async def test_discard_clearance_denied_returns_404(client_with_conn) -> None:
     """Admin con clearance insuficiente recibe 404 neutro; el estado no transiciona."""
     client, conn = client_with_conn
-    conn.fetchrow.return_value = _full_row()
-    denial = HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND, detail={"error": "not_found", "status": 404}
-    )
+    conn.fetchrow.return_value = None
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=1)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter",
-            AsyncMock(side_effect=denial),
-        ),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(
@@ -863,9 +531,6 @@ async def test_discard_audit_unavailable_returns_503(client_with_conn) -> None:
     conn.fetchrow.return_value = _full_row()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", False),
     ):
         resp = await client.post(
@@ -889,9 +554,6 @@ async def test_discard_not_pending_returns_409(client_with_conn) -> None:
     conn.execute.return_value = "UPDATE 0"
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(
@@ -943,9 +605,6 @@ async def test_discard_reason_stripped_before_storage(client_with_conn) -> None:
     mock_audit = AsyncMock()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter._audit", mock_audit),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
@@ -970,14 +629,7 @@ async def test_discard_reason_stripped_before_storage(client_with_conn) -> None:
 async def test_list_passes_own_origin_group_to_repo(client_with_conn) -> None:
     client, conn = client_with_conn
     conn.fetch.return_value = [_summary_row()]
-    # FIX 2: resolve_deadletter_levels also issues a conn.fetch (the batch radicados
-    # lookup) — mocked here so this test's call_args stays pinned to the repository's
-    # list_scoped_for_clearance call, which is what it's asserting on.
-    with patch(
-        "app.routers.admin_deadletter.resolve_deadletter_levels",
-        AsyncMock(return_value={EVT: 1}),
-    ):
-        await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    await client.get(f"{BASE}/", headers=TENANT_HEADERS)
     params = conn.fetch.call_args[0][1:]
     assert DLQ_GROUP in params
     assert OTHER_GROUP not in params
@@ -989,13 +641,10 @@ async def test_detail_passes_own_origin_group_to_repo(client_with_conn) -> None:
     conn.fetchrow.return_value = _full_row()
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
     ):
         await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     # get_by_event_id(event_id, caller_slug, origin_group)
-    assert conn.fetchrow.call_args[0][-1] == DLQ_GROUP
+    assert conn.fetchrow.call_args[0][-2] == DLQ_GROUP
 
 
 @pytest.mark.asyncio
@@ -1007,9 +656,6 @@ async def test_replay_uses_get_for_update_with_own_origin_group(client_with_conn
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
         patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
-        patch(
             "app.routers.admin_deadletter.send_notification",
             AsyncMock(return_value=_sent_notification("sent")),
         ),
@@ -1019,7 +665,7 @@ async def test_replay_uses_get_for_update_with_own_origin_group(client_with_conn
     # get_for_update(event_id, caller_slug, origin_group) — SELECT ... FOR UPDATE
     fetchrow_call = conn.fetchrow.call_args_list[-1]
     assert "FOR UPDATE" in fetchrow_call.args[0]
-    assert fetchrow_call.args[-1] == DLQ_GROUP
+    assert fetchrow_call.args[-2] == DLQ_GROUP
     # transition_status(event_id, caller_slug, new_status, origin_group)
     transition_calls = [
         c for c in conn.execute.call_args_list if "UPDATE evento_dead_letter" in c.args[0]
@@ -1035,13 +681,10 @@ async def test_discard_passes_own_origin_group(client_with_conn) -> None:
     conn.execute.return_value = "UPDATE 1"
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
         await client.post(f"{BASE}/{EVT}/discard", headers=TENANT_HEADERS, json={"reason": "manual test discard"})
-    assert conn.fetchrow.call_args[0][-1] == DLQ_GROUP
+    assert conn.fetchrow.call_args[0][-2] == DLQ_GROUP
     assert conn.execute.call_args[0][-1] == DLQ_GROUP
 
 
@@ -1055,17 +698,17 @@ async def test_repo_get_by_event_id_filters_by_origin_group() -> None:
         (EVT, TENANT, OTHER_GROUP): {"event_id": EVT, "origin_group": OTHER_GROUP},
     }
 
-    async def fake_fetchrow(_sql, event_id, caller_slug, origin_group):
+    async def fake_fetchrow(_sql, event_id, caller_slug, origin_group, clearance):
         return table.get((event_id, caller_slug, origin_group))
 
     conn = AsyncMock()
     conn.fetchrow = fake_fetchrow
     repo = DeadLetterRepository(conn)
 
-    own_row = await repo.get_by_event_id(EVT, TENANT, DLQ_GROUP)
+    own_row = await repo.get_by_event_id(EVT, TENANT, DLQ_GROUP, 3)
     assert own_row is not None and own_row["origin_group"] == DLQ_GROUP
 
-    cross_row = await repo.get_by_event_id(EVT, TENANT, OTHER_GROUP)
+    cross_row = await repo.get_by_event_id(EVT, TENANT, OTHER_GROUP, 3)
     assert cross_row is not None and cross_row["origin_group"] == OTHER_GROUP
     assert cross_row != own_row
 
@@ -1089,46 +732,6 @@ async def test_repo_transition_status_does_not_affect_other_origin_group() -> No
 
     rows_other = await repo.transition_status(EVT, TENANT, "resolved", OTHER_GROUP)
     assert rows_other == 0
-
-
-# --------------------------------------------------- assert_can_read_deadletter (unit)
-@pytest.mark.asyncio
-async def test_fail_closed_nivel_radicado_not_found() -> None:
-    """Radicado no hallado (fetchval None) → fail-closed CLASIFICADA → 404 si clearance < 3."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=None)  # radicado no encontrado
-    row = {"payload": {"payload": {"tracking_number": TRACKING}}}
-
-    with pytest.raises(HTTPException) as exc:
-        await assert_can_read_deadletter(conn, caller_clearance=1, row=row)
-    assert exc.value.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_assert_can_read_deadletter_denied_body_matches_row_none_body() -> None:
-    """FIX 1: el cuerpo 404 emitido por assert_can_read_deadletter (clearance
-    insuficiente, radicado real hallado con nivel alto) debe ser byte-idéntico
-    al ``_NOT_FOUND_BODY`` que los routers usan para su rama "row is None" —
-    de lo contrario un atacante podría distinguir "no existe" de "existe pero
-    sin clearance" comparando cuerpos de respuesta (RF-SEG-08, no-read-up)."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=3)  # nivel_vivo=CLASIFICADA, radicado existe
-    row = {"payload": {"payload": {"tracking_number": TRACKING}}}
-
-    with pytest.raises(HTTPException) as exc:
-        await assert_can_read_deadletter(conn, caller_clearance=1, row=row)
-
-    assert exc.value.status_code == 404
-    assert exc.value.detail == _NOT_FOUND_BODY
-
-
-@pytest.mark.asyncio
-async def test_fail_closed_nivel_max_clearance_passes() -> None:
-    """Aun con radicado no hallado, un llamante CLASIFICADA (3) no es bloqueado."""
-    conn = AsyncMock()
-    conn.fetchval = AsyncMock(return_value=None)
-    row = {"payload": {"payload": {"tracking_number": TRACKING}}}
-    await assert_can_read_deadletter(conn, caller_clearance=3, row=row)  # no debe lanzar
 
 
 # --------------------------------------------------- ProcessedEventsRepository.delete_one
@@ -1180,9 +783,6 @@ async def test_replay_workflow_resuelve_el_buzon_de_la_dependencia(client_with_c
     mock_resolver = AsyncMock(return_value="dependencia-902@orpycamcp.local")
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch(
-            "app.routers.admin_deadletter.assert_can_read_deadletter", AsyncMock(return_value=None)
-        ),
         patch("app.routers.admin_deadletter.resolver_buzon_dependencia", mock_resolver),
         patch("app.routers.admin_deadletter.send_notification", mock_send),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
@@ -1197,11 +797,41 @@ async def test_replay_workflow_resuelve_el_buzon_de_la_dependencia(client_with_c
     assert mock_send.call_args.args[0].recipient_email == "dependencia-902@orpycamcp.local"
 
 
+# ----------------------------------------------- list: el gate vive en el WHERE (AREA-10-08)
 @pytest.mark.asyncio
-async def test_repo_list_scoped_pide_una_fila_de_mas_para_detectar_el_truncado() -> None:
-    """AREA-10-08: el LIMIT es cap + 1 (la fila sobrante distingue «hay más» de
-    «hay justo cap»)."""
-    conn = AsyncMock()
-    conn.fetch.return_value = []
-    await DeadLetterRepository(conn).list_scoped_for_clearance("demo", "grp")
-    assert conn.fetch.call_args[0][-1] == DEADLETTER_CANDIDATE_CAP + 1
+async def test_list_pasa_el_clearance_del_llamante_al_repositorio(client_with_conn) -> None:
+    """El router ya no filtra en Python: entrega el clearance al repositorio, que lo
+    aplica en el WHERE. El total sale de la misma consulta."""
+    client, conn, *_ = client_with_conn
+    conn.fetchval.return_value = 1  # check_permission
+    lista = AsyncMock(return_value=([_summary_row()], 7))
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=2)),
+        patch("app.routers.admin_deadletter.DeadLetterRepository.list_visible", lista),
+    ):
+        resp = await client.get(f"{BASE}/?page=2&size=5", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    assert resp.headers["X-Total-Count"] == "7"
+    assert "X-Truncated" not in resp.headers
+    args, kwargs = lista.call_args
+    assert args[2] == 2
+    assert (kwargs["offset"], kwargs["limit"]) == (5, 5)
+    assert "payload" not in resp.json()[0]
+
+
+@pytest.mark.asyncio
+async def test_sin_tabla_radicados_el_listado_responde_503(client_with_conn) -> None:
+    from orpycamcp_common.deadletter import RadicadosAusenteError
+
+    client, conn, *_ = client_with_conn
+    conn.fetchval.return_value = 1
+    with (
+        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
+        patch(
+            "app.routers.admin_deadletter.DeadLetterRepository.list_visible",
+            AsyncMock(side_effect=RadicadosAusenteError("relation radicados")),
+        ),
+    ):
+        resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "service_unavailable"

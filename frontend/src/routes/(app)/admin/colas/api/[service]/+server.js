@@ -21,10 +21,8 @@
  *
  * Cabeceras reenviadas intactas:
  *   - X-Total-Count → total POST-filtro de clearance (no el total crudo).
- *   - X-Truncated   → "true" cuando `list_scoped_for_clearance` alcanzó el
- *     cap de candidatas (`DEADLETTER_CANDIDATE_CAP`); en ese caso las filas
- *     pendientes más antiguas pueden no estar en el listado y el total puede
- *     sub-reportar. La pantalla DEBE mostrar esto, no solo saberlo el código.
+ *
+ *   El total es exacto: el backend aplica el clearance en el WHERE (AREA-10-08).
  */
 
 import { json } from "@sveltejs/kit";
@@ -82,7 +80,6 @@ export async function GET({ locals, params, url }) {
       status: res.status,
       headers: {
         "X-Total-Count": res.headers.get("X-Total-Count") ?? "0",
-        "X-Truncated": res.headers.get("X-Truncated") ?? "false",
       },
     });
   } catch {

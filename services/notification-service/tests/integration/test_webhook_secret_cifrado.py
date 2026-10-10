@@ -49,11 +49,13 @@ SECRETO = "secreto-heredado-en-claro-xyz"
 
 
 class _Audit:
+    CANAL_PETICION = "api"  # el router lo lee del módulo real (AREA-03-07)
+
     def __init__(self) -> None:
         self.asientos: list[dict[str, Any]] = []
 
-    async def append(self, conn: asyncpg.Connection, **kw: Any) -> str:
-        self.asientos.append(kw)
+    async def append(self, conn: asyncpg.Connection, *, canal: str, **kw: Any) -> str:
+        self.asientos.append({"canal": canal, **kw})
         return "hash"
 
 

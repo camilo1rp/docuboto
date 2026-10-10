@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 import asyncpg
 from orpycamcp_common import audit
@@ -229,8 +230,31 @@ async def ingest_radicado_created(
     )
 
 
+def _parse_occurred_at(value: object) -> datetime | None:
+    """Instante del sobre (``occurred_at``, ISO 8601) o ``None`` si falta o no se entiende.
+
+    ``None`` degrada la segunda red de ``update_nivel_by_source`` a «solo sube»: ante la
+    duda no se confía en un reloj que no se pudo leer. Un instante sin zona se toma como
+    UTC (el sobre se emite en UTC).
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 async def apply_reclassification(
-    conn: asyncpg.Connection, *, tenant_slug: str, payload: dict
+    conn: asyncpg.Connection,
+    *,
+    tenant_slug: str,
+    payload: dict,
+    occurred_at: object = None,
 ) -> None:
     """Aplica un `document.radicado.reclassified` al chunk indexado (si existe).
 
@@ -308,9 +332,13 @@ async def apply_reclassification(
 
     repo = KnowledgeRepository(conn)
     if nuevo >= RESERVADA and not is_local_embedding_provider(settings.embedding_provider):
-        await repo.tombstone_by_source(_SOURCE_TYPE, tracking_number, nuevo)
+        await repo.tombstone_by_source(
+            _SOURCE_TYPE, tracking_number, nuevo, occurred_at=_parse_occurred_at(occurred_at)
+        )
     else:
-        await repo.update_nivel_by_source(_SOURCE_TYPE, tracking_number, nuevo)
+        await repo.update_nivel_by_source(
+            _SOURCE_TYPE, tracking_number, nuevo, occurred_at=_parse_occurred_at(occurred_at)
+        )
 
 
 async def void_radicado(conn: asyncpg.Connection, *, tenant_slug: str, payload: dict) -> None:

@@ -224,3 +224,42 @@ storage `021`.
 9. **Lectura a petición.** `GET /acta` y `/acta/verificacion` ya no devuelven el texto ni la sal (ni a admin
    nivel 3): `GET .../{excepcion_id}/fundamento?acto=` lo sirve con asiento `via=lectura`. La sal solo viaja
    dentro del sobre.
+
+## Addendum B4 (2026-10-09) — punto 5: el paquete de entrega existe
+
+El punto 5 decía que el sobre viaja «junto a» la constancia en la transferencia secundaria, pero no había
+paquete que lo llevara: el AIP se sella al cerrar el expediente (antes de que existan constancias,
+revocaciones y sobres, y ya está bajo COMPLIANCE), y el acta FUID congelada es probatoria y no se reescribe.
+
+**Decisión.** Un **paquete de entrega** aparte, generado a petición —`POST /transferencias/{id}/paquete-entrega`—
+y reproducible desde componentes que ya están bajo Object-Lock. Solo transferencias *secundarias* y *recibidas*;
+administración nivel 3; no-read-up en el `WHERE` (404 neutro).
+
+1. **Contenido (exacto).** `acta/` (acta congelada tal cual = el **inventario FUID**, + sello XAdES + firmas
+   personales), `indice/indice-electronico.xades.xml` (el **índice electrónico firmado** de la versión que
+   entregó el acta, bajo Object-Lock), `clasificado/` (toda la cadena de constancias y revocaciones, también las
+   revocadas, con sus firmas personales y los sobres), `nota-entrega.xml` y `checksums.txt`. El **AIP** del
+   expediente (BagIt + PREMIS con los documentos) **no viaja dentro del ZIP**: su volumen lo hace inviable y ya
+   está sellado bajo COMPLIANCE; la nota lo **referencia** por `bucket`, `object_key`, `sha256`, `retain_until` y
+   `retention_mode` (`<aip incluido_en_paquete="no">`) y quien recibe lo obtiene del almacén y lo coteja con esa
+   huella. Sin AIP empaquetado con retención confirmada por el almacén, el paquete no se genera.
+2. **La «nota en el FUID» es `nota-entrega.xml`** (`urn:orpycamcp:nota-entrega-transferencia:v1`). El acta no se
+   edita: la nota la referencia por `acta_fuid_sha256` y declara cada componente (`ruta`, `sha256`, `acto`,
+   `rol`, `ordinal`) como `clasificacion="clasificada"`, `fundamento="Ley 1712/2014 art. 18 lit. a"`,
+   `acceso="restringido a la entidad receptora"`. Constancias v2/legadas llevan `sobre="ausente"`: no se
+   sellan retroactivamente. La nota es determinista (sin hora ni autor, que viven en el asiento).
+3. **Fail-closed.** Si algún componente (incluidos índice y AIP) no tiene Object-Lock confirmado, `409
+   componentes_sin_object_lock` y no se descarga nada; las rutas `clasificado/...` no se enumeran (se agregan en
+   `componentes_clasificados`, para no revelar cuántas excepciones hay). Un entorno sin preservación nunca produce paquete.
+   **Fixity de egreso.** Antes de empaquetar se recalcula `sha256(acta_fuid_xml)` contra `acta_fuid_sha256`, el
+   sello del acta debe firmar esa misma acta (C14N-SHA256 sin la firma envolvente) y cada componente se lee como
+   bytes y se coteja con la huella que storage registró al subirlo. Una discrepancia es `409
+   componente_integridad_discrepante` + asiento `transferencia.paquete_entrega_incidente`; sin huellas de captura,
+   `503`. Los checksums del ZIP certifican la copia entregada; esta comprobación certifica el original.
+4. **Asiento antes de servir.** `transferencia.acta_fundamento_leido` (`via="paquete"`, por cada constancia cuyo
+   sobre viaja) y `transferencia.paquete_entrega_generado` (huella de la nota y de cada componente), en una
+   sola transacción y antes del primer byte.
+5. **Exclusión.** Ni OAI-PMH, ni EAD, ni CMIS leen las tablas de excepción (guardián por fuente en las pruebas).
+
+**Límites declarados.** `nota-entrega.xml` no está sellada con XAdES (tocaría signature-service); su huella queda
+anclada en `audit_log`. El paquete se arma en un fichero temporal (son XML pequeños).

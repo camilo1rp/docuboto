@@ -265,9 +265,12 @@ async def test_la_transicion_manual_deja_asiento_con_el_actor(
     from app.clients import storage_client
 
     async def _storage(*, tenant_slug, file_id):
-        return "a" * 64
+        # El acuse lo subió quien registra la entrega (B2, ADR-031).
+        return storage_client.ProcedenciaArchivo(
+            sha256="a" * 64, uploaded_by=uuid.UUID(_USER), referencias=[]
+        )
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _storage)
+    monkeypatch.setattr(storage_client, "fetch_file_procedencia", _storage)
     client, mock_conn = client_with_conn
     sid = uuid.uuid4()
     mock_conn.fetchval.return_value = True  # permiso concedido (y sin hash previo)
@@ -323,9 +326,12 @@ async def test_un_callback_que_gana_la_carrera_hace_que_el_manual_reciba_409(
     from app.clients import storage_client
 
     async def _storage(*, tenant_slug, file_id):
-        return "a" * 64
+        # El acuse lo subió quien registra la entrega (B2, ADR-031).
+        return storage_client.ProcedenciaArchivo(
+            sha256="a" * 64, uploaded_by=uuid.UUID(_USER), referencias=[]
+        )
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _storage)
+    monkeypatch.setattr(storage_client, "fetch_file_procedencia", _storage)
     client, mock_conn = client_with_conn
     sid = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [

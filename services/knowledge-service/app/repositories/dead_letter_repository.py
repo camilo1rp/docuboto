@@ -11,7 +11,7 @@
 
 Espejo de ``workflow-service/app/repositories/dead_letter_repository.py``: ``insert_if_new``
 para el worker y, desde AREA-10-10, inspección/replay/descarte administrativos.
-Sin job de retención propio (diferido).
+``purge_terminal`` respalda el job de retención (``app/jobs/deadletter_retention.py``).
 
 Usado exclusivamente por ``document_consumer._persist_dead_letter``; el INSERT debe
 llamarse dentro de una transacción abierta para que la fila de ``audit_log`` se
@@ -21,10 +21,13 @@ escriba atómicamente junto con la fila de dead-letter.
 from __future__ import annotations
 
 import asyncpg
+from orpycamcp_common import deadletter
 
-# Tope de seguridad de las candidatas de list_scoped_for_clearance. El método pide
-# cap + 1 filas: solo MÁS de cap prueba que el listado quedó truncado.
-DEADLETTER_CANDIDATE_CAP = 1000
+# Columnas del resumen del listado (nunca ``payload`` ni ``failure``).
+_SUMMARY_COLS = (
+    "d.event_id, d.event_type, d.origin_stream, d.origin_group, d.status, "
+    "d.dead_lettered_at, d.resolved_at"
+)
 
 
 class DeadLetterRepository:
@@ -81,77 +84,65 @@ class DeadLetterRepository:
     # repositorio lleva `tenant_slug` Y `origin_group`: sin el segundo, el admin de
     # knowledge vería/reprocesaría/descartaría dead-letters de otro consumidor.
 
-    async def list_scoped_for_clearance(
+    async def list_visible(
         self,
         caller_slug: str,
         origin_group: str,
+        caller_clearance: int,
         *,
         status: str = "pending",
         origin_stream: str | None = None,
-        cap: int = DEADLETTER_CANDIDATE_CAP,
-    ) -> list[asyncpg.Record]:
-        """Candidatas para el filtrado por-clearance del listado (ADR-021, seguimiento).
+        offset: int = 0,
+        limit: int = 20,
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Página + total de dead-letters que el llamante PUEDE ver (AREA-10-08).
 
-        A diferencia de :meth:`list_pending`, INCLUYE ``payload`` (necesario para que
-        el router resuelva el nivel de seguridad de cada fila vía
-        ``resolve_deadletter_level``) y NO aplica ``LIMIT``/``OFFSET`` de paginación:
-        la paginación se aplica en la capa de aplicación **después** de filtrar por
-        clearance (ver nota de diseño en el router), porque el número de filas
-        visibles solo se conoce tras evaluar el nivel de cada una.
-
-        ``cap`` acota la memoria/latencia del peor caso (tope de seguridad, no un
-        tamaño de página): los dead-letters son de volumen bajo por diseño (fallos
-        excepcionales tras agotar reintentos), así que un tope generoso no afecta
-        el uso normal. El resumen expuesto al cliente sigue sin exponer ``payload``
-        ni ``failure`` — el router los descarta antes de serializar.
+        El no-read-up (RF-SEG-08) vive en el ``WHERE`` de la consulta
+        (``orpycamcp_common.deadletter``): el nivel se evalúa contra el radicado VIVO
+        antes de paginar y de contar, así que ``total`` es exactamente lo visible.
+        Predicados de tenant y ``origin_group`` explícitos (tabla compartida, ver nota
+        de módulo). Las columnas devueltas NO incluyen ``payload`` ni ``failure``.
         """
-        params: list[object] = [caller_slug, status, origin_group]
-        extra = ""
-        if origin_stream is not None:
-            params.append(origin_stream)
-            extra = f" AND origin_stream = ${len(params)}"
-        # cap + 1: la fila sobrante distingue «hay más» de «hay justo cap» (X-Truncated
-        # no debe dispararse con exactamente cap candidatas).
-        params.append(cap + 1)
-        sql = (
-            "SELECT event_id, event_type, correlation_id, tenant_slug, origin_stream, "
-            "       origin_group, status, dead_lettered_at, resolved_at, payload "
-            "FROM evento_dead_letter "
-            "WHERE tenant_slug = $1 AND status = $2 AND origin_group = $3"
-            f"{extra} "
-            "ORDER BY dead_lettered_at DESC "
-            f"LIMIT ${len(params)}"
+        return await deadletter.list_visible(
+            self._conn,
+            tenant_slug=caller_slug,
+            origin_group=origin_group,
+            status=status,
+            clearance=caller_clearance,
+            columns=_SUMMARY_COLS,
+            origin_stream=origin_stream,
+            offset=offset,
+            limit=limit,
         )
-        return list(await self._conn.fetch(sql, *params))
 
     async def get_by_event_id(
-        self, event_id: str, caller_slug: str, origin_group: str
+        self, event_id: str, caller_slug: str, origin_group: str, caller_clearance: int
     ) -> asyncpg.Record | None:
-        """Lectura simple (sin lock) de una fila con predicado de tenant + origin_group."""
-        return await self._conn.fetchrow(
-            "SELECT * FROM evento_dead_letter "
-            "WHERE event_id = $1 AND tenant_slug = $2 AND origin_group = $3",
-            event_id,
-            caller_slug,
-            origin_group,
+        """Lectura (sin lock) de una fila VISIBLE; ``None`` si no existe o no se alcanza."""
+        return await deadletter.get_visible(
+            self._conn,
+            event_id=event_id,
+            tenant_slug=caller_slug,
+            origin_group=origin_group,
+            clearance=caller_clearance,
         )
 
     async def get_for_update(
-        self, event_id: str, caller_slug: str, origin_group: str
+        self, event_id: str, caller_slug: str, origin_group: str, caller_clearance: int
     ) -> asyncpg.Record | None:
-        """SELECT … FOR UPDATE con predicado de tenant + origin_group (replay atómico, H7).
+        """``FOR UPDATE OF d`` de una fila VISIBLE (replay/descarte atómicos, H7).
 
-        Debe llamarse dentro de una transacción abierta: bloquea la fila para que
-        dos admins no reprocesen el mismo evento en paralelo. ``origin_group``
-        impide que el admin de un servicio bloquee/reprocese una fila que
-        pertenece al otro consumidor (tabla compartida, ver nota de módulo).
+        Debe llamarse dentro de una transacción abierta. El mismo predicado de
+        clearance que el listado: lo que no se ve no se puede bloquear, reprocesar ni
+        descartar, y el llamante recibe ``None`` igual que para un ``event_id`` ajeno.
         """
-        return await self._conn.fetchrow(
-            "SELECT * FROM evento_dead_letter "
-            "WHERE event_id = $1 AND tenant_slug = $2 AND origin_group = $3 FOR UPDATE",
-            event_id,
-            caller_slug,
-            origin_group,
+        return await deadletter.get_visible(
+            self._conn,
+            event_id=event_id,
+            tenant_slug=caller_slug,
+            origin_group=origin_group,
+            clearance=caller_clearance,
+            for_update=True,
         )
 
     async def transition_status(
@@ -175,5 +166,47 @@ class DeadLetterRepository:
             caller_slug,
             new_status,
             origin_group,
+        )
+        return int(tag.split()[-1])
+
+    async def purge_terminal(self, days: int, tenant_slug: str, origin_group: str) -> int:
+        """Delete rows with terminal status ('resolved' or 'discarded') older than `days` days.
+
+        Only terminal rows (resolved/discarded) are eligible for deletion: 'pending' rows
+        represent unresolved failures that must wait for a human decision, so they are
+        NEVER purged regardless of age.
+
+        Invariant relied upon here: a row can only be terminal (resolved/discarded) if
+        `transition_status` has already set `resolved_at`, which it always does in the
+        same UPDATE that sets `status` — so `status IN ('resolved','discarded')` implies
+        `resolved_at IS NOT NULL`. A row that somehow violated this (NULL `resolved_at`
+        on a terminal row) would simply never satisfy `resolved_at < now() - interval`
+        (NULL comparisons are never true in SQL) — fail-closed, not fail-open.
+
+        `tenant_slug` and `origin_group` scope the purge to one tenant and one service's
+        rows (tabla compartida, ver nota de módulo): without them this call would purge
+        terminal dead-letters belonging to the OTHER service too, coupling the two
+        services' retention windows.
+
+        The `days` guard (fail-closed): if a caller passes 0 or a negative value the
+        predicate `resolved_at < now() - make_interval(days => 0)` becomes
+        `resolved_at < now()` — which would delete ALL terminal rows regardless of age.
+        A misconfigured TTL must not silently widen the purge window, so we raise
+        rather than execute.
+
+        The interval is passed as a parameterised placeholder ($3) so the value never
+        reaches the query as SQL text — no risk of injection even though `make_interval`
+        accepts a plain integer argument.
+        """
+        if days < 1:
+            raise ValueError(f"purge_terminal requires days >= 1, got {days!r}")
+        tag: str = await self._conn.execute(
+            "DELETE FROM evento_dead_letter "
+            "WHERE status IN ('resolved', 'discarded') "
+            "AND tenant_slug = $1 AND origin_group = $2 "
+            "AND resolved_at < now() - make_interval(days => $3)",
+            tenant_slug,
+            origin_group,
+            days,
         )
         return int(tag.split()[-1])

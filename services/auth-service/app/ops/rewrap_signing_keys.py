@@ -113,10 +113,12 @@ async def _verify(conn: asyncpg.Connection) -> int:
         marca = ""
         if ver != active_v and totales[ver] == 0:
             marca = "  <- retirable (conteo 0)"
-        elif ver != active_v:
+        elif ver < active_v:
             marca = "  <- pendiente de re-wrap"
+        elif ver > active_v:
+            marca = "  <- ANOMALÍA: versión mayor que la activa (no se re-envuelve hacia atrás)"
         print(f"  v{ver}: {totales[ver]} credencial(es){marca}")
-    retirables = [v for v, n in totales.items() if v != active_v and n == 0]
+    retirables = [v for v, n in totales.items() if v < active_v and n == 0]
     if retirables:
         print(f"Versiones retirables del llavero (conteo 0 en todos los tenants): {sorted(retirables)}")
     return 0
@@ -152,7 +154,7 @@ async def _rewrap_tenant(
                 row = await repo_tx.get_for_rewrap(p["id"])
                 if (
                     row is None
-                    or row["key_version"] == active_v
+                    or row["key_version"] >= active_v
                     or row["private_key_cifrado"] is None
                 ):
                     # `private_key_cifrado is None`: la purga de revocadas anuló

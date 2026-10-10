@@ -23,6 +23,7 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.responses import StreamingResponse
 
 from app.core.actor import Actor, require_actor
 from app.core.clearance import require_permission, resolve_caller_clearance
@@ -170,14 +171,13 @@ async def export_expediente(
     # llamante; si es visible, se exporta su contenido (bytes ensamblados por
     # storage-service). El nombre de archivo usa el `code` del expediente.
     service = ArchiveService(conn, tenant_slug)
-    zip_bytes, filename = await service.export_expediente_zip(
+    stream, filename = await service.export_expediente_zip(
         expediente_id, user_id=user_id, canal=canal
     )
-    return Response(
-        content=zip_bytes,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    if stream.content_length is not None:
+        headers["Content-Length"] = str(stream.content_length)
+    return StreamingResponse(stream.iter_bytes(), media_type="application/zip", headers=headers)
 
 
 @router.get(

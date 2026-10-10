@@ -631,6 +631,16 @@ replay del DLQ:
 
 ---
 
+## Nota 2026-10 (AREA-10-08): el gate de clearance vive en el `WHERE`
+
+Sustituye al filtro en Python descrito en el seguimiento de la Fase 5 (`resolve_deadletter_level[s]`,
+`DEADLETTER_CANDIDATE_CAP`, `X-Truncated`), que se retiraron. `orpycamcp_common.deadletter` construye una
+consulta única (`LEFT JOIN LATERAL` contra `radicados` vivo; `max(nivel_vivo, nivel_embebido)`; duda = 3) usada
+por lista, recuento, detalle, replay y descarte, con paginación y total exactos en una transacción
+`REPEATABLE READ` de solo lectura. Se descartó guardar el nivel al encolar (una reclasificación posterior hacia
+arriba abriría un read-up). Lo no visible responde el mismo `404` que un `event_id` inexistente. Radicado purgado
+o sin identificadores sigue siendo nivel 3 (decisión del usuario pendiente).
+
 ## Notas de operación
 
 - **`CONSUMER` fijo** (`signature-service-1`): hoy el nombre del consumidor está

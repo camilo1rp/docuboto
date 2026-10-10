@@ -11,12 +11,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.core.clearance import require_permission
 from app.core.config import settings
@@ -782,22 +784,64 @@ async def export_zip_internal(
     payload: ExportZipCreate,
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
-) -> Response:
+) -> StreamingResponse:
     """Gemelo interno (X-Internal-Token, D-02) que materializa el inventario que
     archive-service ya filtró por clearance (no-read-up a nivel de expediente).
     NO persiste nada: descarga bytes + arma el ZIP + lo devuelve. El único
     llamador legítimo es `ArchiveService.export_expediente_zip`; inalcanzable
     desde el gateway y el token interno es la segunda capa fail-closed."""
-    from app.services.export_service import ExportService
+    from app.services.export_service import (
+        ExportDemasiadoGrandeError,
+        ExportEspacioInsuficienteError,
+        ExportFixityError,
+        ExportService,
+        remove_quietly,
+    )
 
+    # Todo fallo ocurre AQUÍ, antes de servir el primer byte: el ZIP se cierra
+    # en un temporal y solo entonces se responde (nunca un 200 truncado).
     try:
-        zip_bytes = await ExportService(conn, tenant_slug).build_export_zip(payload)
+        artifact = await ExportService(conn, tenant_slug).build_export_zip(payload)
     except FileNotFoundForPreservationError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "anexo_no_encontrado", "detail": str(exc), "status": 404},
         )
-    return Response(content=zip_bytes, media_type="application/zip")
+    except ExportDemasiadoGrandeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={"error": "export_demasiado_grande", "detail": str(exc), "status": 413},
+        )
+    except ExportFixityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "fixity_fallida",
+                "detail": f"el anexo {exc.file_id} no coincide con su SHA-256 registrado",
+                "status": 409,
+            },
+        )
+    except ExportEspacioInsuficienteError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+            detail={"error": "espacio_insuficiente", "detail": str(exc), "status": 507},
+        )
+
+    async def _stream():
+        try:
+            with open(artifact.path, "rb") as fh:
+                while chunk := await asyncio.to_thread(fh.read, 1024 * 1024):
+                    yield chunk
+        finally:
+            # También si el cliente corta a mitad: el generador se cierra.
+            remove_quietly(artifact.path)
+
+    return StreamingResponse(
+        _stream(),
+        media_type="application/zip",
+        headers={"Content-Length": str(artifact.size)},
+        background=BackgroundTask(remove_quietly, artifact.path),
+    )
 
 
 @router.post(

@@ -379,6 +379,10 @@ async def test_crear_webhook_deja_asiento_con_actor(client, db_conn, monkeypatch
     assert "tokenpath" not in texto
     assert kw["payload"]["url"] == "https://ext.example.com"
     assert len(kw["payload"]["url_sha256"]) == 64
+    import hashlib
+
+    # Huella del ORIGEN: la del URL completo permitiría confirmar un token adivinado.
+    assert kw["payload"]["url_sha256"] == hashlib.sha256(b"https://ext.example.com").hexdigest()
     # El INSERT y el asiento comparten transacción.
     db_conn.transaction.assert_called()
 

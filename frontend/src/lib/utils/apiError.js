@@ -223,6 +223,24 @@ export const MENSAJES_FIRMA = {
 };
 
 /**
+ * Códigos de la ventanilla en línea (política de tratamiento por entidad, ADR-031)
+ * y del acuse de envío postal, con su mensaje en español.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_VENTANILLA_ENVIO = {
+  politica_desactualizada:
+    "La política de tratamiento de datos cambió mientras llenaba el formulario. Revísela y vuelva a autorizar.",
+  politica_no_publicada:
+    "Esta entidad aún no ha publicado su política de tratamiento de datos, por lo que no puede recibir radicaciones en línea. Intente por otro canal.",
+  politica_no_verificable:
+    "No se pudo verificar la política de tratamiento de datos de la entidad. Vuelva a intentarlo en unos minutos.",
+  acuse_ajeno: "El archivo no sirve como acuse: suba la constancia de entrega usted mismo.",
+  acuse_invalido: "El archivo no sirve como acuse: suba la constancia de entrega usted mismo.",
+  acuse_ya_referenciado:
+    "Ese archivo ya está ligado a otro documento o envío y no puede servir como acuse de este.",
+};
+
+/**
  * Mensaje legible de un cuerpo de respuesta. **Nunca devuelve un objeto**: ese
  * es justo el fallo que motivó este módulo — un `[object Object]` en un aviso
  * de error deja a la persona sin saber qué pasó ni cómo arreglarlo.
@@ -234,7 +252,9 @@ export function mensajeError(data, porDefecto) {
   if (typeof data === "string" && data.trim()) return data;
   if (data && typeof data === "object") {
     const delActo =
-      MENSAJES_ACTO_TRAMITE[codigoError(data) ?? ""] ?? MENSAJES_FIRMA[codigoError(data) ?? ""];
+      MENSAJES_ACTO_TRAMITE[codigoError(data) ?? ""] ??
+      MENSAJES_FIRMA[codigoError(data) ?? ""] ??
+      MENSAJES_VENTANILLA_ENVIO[codigoError(data) ?? ""];
     if (delActo) return delActo;
     if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
     const validacion = mensajeDeValidacion(data.detail);

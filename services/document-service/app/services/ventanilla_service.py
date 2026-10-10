@@ -52,13 +52,16 @@ import asyncpg
 from fastapi import HTTPException, status
 
 from app.clients.storage_client import StorageContentError, upload_anexo_externo
+from app.clients.tenant_client import TenantServiceError
 from app.core.anexos_publicos import (
     AnexoRechazado,
     tipo_por_contenido,
     validar_conjunto,
 )
+from app.core.politica import Politica, politica_de
 from app.schemas.document import AnexoInput, DocumentCreate
 from app.schemas.public import (
+    PoliticaTratamiento,
     TipoVentanilla,
     VentanillaEstado,
     VentanillaRadicacion,
@@ -74,9 +77,87 @@ CANAL = "ventanilla_publica"
 
 
 class VentanillaService:
-    def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+    def __init__(
+        self, conn: asyncpg.Connection, tenant_slug: str, tenant_client: Any = None
+    ) -> None:
         self._conn = conn
         self._tenant = tenant_slug
+        self._tenant_client = tenant_client
+
+    # -- Política de tratamiento (Ley 1581/2012, ADR-031) -------------------
+
+    async def _politica(self) -> Politica:
+        """La política vigente de la entidad, con lectura ESTRICTA.
+
+        `get_params` traga los fallos y devolvería `{}`: un error de tenant-service
+        se leería como «la entidad no tiene política». Aquí un fallo es 503
+        `politica_no_verificable`, distinto del 409 de la política ausente.
+        """
+        if self._tenant_client is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "politica_no_verificable",
+                    "detail": "No se pudo verificar la política de tratamiento.",
+                    "status": 503,
+                },
+            )
+        try:
+            params = await self._tenant_client.get_params_estricto(tenant_slug=self._tenant)
+        except TenantServiceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "politica_no_verificable",
+                    "detail": (
+                        "No se pudo verificar la política de tratamiento de datos de la "
+                        "entidad. No se radicó nada: reintente en un momento."
+                    ),
+                    "status": 503,
+                },
+            ) from exc
+        return politica_de(params)
+
+    async def politica(self) -> PoliticaTratamiento:
+        """Lo que el formulario debe mostrar antes de pedir la autorización."""
+        pol = await self._politica()
+        if not pol.publicada:
+            return PoliticaTratamiento(publicada=False)
+        return PoliticaTratamiento(
+            publicada=True, version=pol.version, url=pol.url, texto=pol.texto, huella=pol.huella
+        )
+
+    async def _exigir_politica_vigente(self, version_mostrada: str) -> Politica:
+        """409 si no hay política publicada o si la mostrada ya no es la vigente."""
+        pol = await self._politica()
+        if not pol.publicada:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "politica_no_publicada",
+                    "detail": (
+                        "Esta entidad todavía no ha publicado su política de tratamiento "
+                        "de datos personales: sin aviso de privacidad no hay autorización "
+                        "informada (Ley 1581/2012 art. 12). Preséntese en la ventanilla "
+                        "de la entidad."
+                    ),
+                    "status": 409,
+                },
+            )
+        if version_mostrada.strip() != pol.version:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "politica_desactualizada",
+                    "detail": (
+                        "La política de tratamiento cambió mientras diligenciaba el "
+                        "formulario. Léala de nuevo y autorice otra vez. No se radicó nada."
+                    ),
+                    "politica_vigente": pol.version,
+                    "status": 409,
+                },
+            )
+        return pol
 
     # -- Catálogo -----------------------------------------------------------
 
@@ -114,6 +195,7 @@ class VentanillaService:
             habilitada=receptora and tipos > 0,
             dependencia_receptora=receptora,
             tipos_admitidos=tipos,
+            politica_publicada=(await self._politica()).publicada,
         )
 
     async def _validar_tipo(self, code: str) -> str:
@@ -281,6 +363,13 @@ class VentanillaService:
                 return previo
             submission_key = (idempotency_key, huella)
 
+        # Política vigente (Ley 1581, ADR-031): el servidor la relee y contrasta
+        # la versión que el cliente mostró. Va ANTES de subir anexos, de reclamar
+        # la `Idempotency-Key` y de consumir el consecutivo: un 409 no deja
+        # rastro. Va DESPUÉS del camino de reintento, que devuelve lo ya radicado
+        # (la autorización se dio bajo la política que regía entonces).
+        politica = await self._exigir_politica_vigente(payload.politica_version)
+
         # Los anexos se resuelven ANTES de crear el radicado: si algo falla, no
         # queda un número asignado —inmutable por Ley 594— sin sus soportes.
         try:
@@ -339,14 +428,22 @@ class VentanillaService:
             actores=actores,
             metadata={
                 "canal": CANAL,
-                # Ley 1581/2012 (AREA-09-08): constancia de la autorización de
-                # tratamiento. La IP es la que declaró el borde (`X-Forwarded-For`
-                # del SSR/gateway), NO una verificada por saltos de confianza.
+                # Ley 1581/2012 (AREA-09-08, ADR-031): constancia de la autorización
+                # de tratamiento. Versión, huella y URL de la política salen del
+                # servidor (no del cliente). `ip` es la que el gateway FIRMÓ
+                # (saltos de confianza); sin firma válida va nula y
+                # `ip_verificada=false`: la IP es evidencia complementaria, no
+                # requisito de la autorización. Las constancias v1 (`ip_declarada`)
+                # se conservan tal cual.
                 "consentimiento": {
                     "norma": "Ley 1581/2012",
-                    "politica_version": payload.politica_version,
+                    "version_constancia": 2,
+                    "politica_version": politica.version,
+                    "politica_huella": politica.huella,
+                    "politica_url": politica.url,
                     "instante": datetime.now(UTC).isoformat(),
-                    "ip_declarada": ip,
+                    "ip": ip,
+                    "ip_verificada": ip is not None,
                 },
                 "remitente": {
                     "nombre": payload.nombre,

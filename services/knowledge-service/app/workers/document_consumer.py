@@ -59,6 +59,7 @@ from orpycamcp_common import events
 from app.core.config import settings
 from app.core.database import acquire_tenant, get_pool
 from app.core.redis_client import get_redis
+from app.jobs import deadletter_retention
 from app.repositories.dead_letter_repository import DeadLetterRepository
 from app.services import ingestion
 
@@ -108,11 +109,17 @@ async def _handle(data: dict) -> None:
         return
 
     async with acquire_tenant(tenant_slug) as conn:
-        await apply_event(conn, event_type, tenant_slug, payload)
+        await apply_event(
+            conn, event_type, tenant_slug, payload, occurred_at=envelope.get("occurred_at")
+        )
 
 
 async def apply_event(
-    conn: asyncpg.Connection, event_type: str, tenant_slug: str, payload: dict
+    conn: asyncpg.Connection,
+    event_type: str,
+    tenant_slug: str,
+    payload: dict,
+    occurred_at: object = None,
 ) -> None:
     """Handler-core: aplica un evento sobre la conexión dada.
 
@@ -126,7 +133,7 @@ async def apply_event(
         )
     elif event_type == "document.radicado.reclassified":
         await ingestion.apply_reclassification(
-            conn, tenant_slug=tenant_slug, payload=payload
+            conn, tenant_slug=tenant_slug, payload=payload, occurred_at=occurred_at
         )
     else:  # "document.radicado.annulled" | "document.radicado.purged"
         # Los DOS llegan al mismo tratamiento, y es deliberado: una
@@ -337,6 +344,8 @@ async def run() -> None:
     await events.ensure_group(redis, DOCUMENT_STREAM, GROUP)
 
     _last_reclaim = time.monotonic()
+    # Compuerta diaria de la retención de dead-letters terminales (AREA-10-08).
+    _last_retention = _last_reclaim
 
     while True:
         try:
@@ -398,3 +407,17 @@ async def run() -> None:
                     "Fallo en barrido de reclamación de knowledge-service", exc_info=True
                 )
             _last_reclaim = now
+
+        # Retención de dead-letters terminales en Postgres: una vez al día, con la misma
+        # compuerta monotónica que workflow. Un fallo no tumba el bucle ni abre la
+        # compuerta: el siguiente ciclo diario lo reintenta.
+        if now - _last_retention >= float(settings.retention_interval_seconds):
+            try:
+                await deadletter_retention.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Fallo en retención de dead-letters de knowledge-service", exc_info=True
+                )
+            _last_retention = now

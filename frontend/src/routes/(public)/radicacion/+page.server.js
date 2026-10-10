@@ -16,15 +16,15 @@
  * recibe nada o si aún está cargando.
  */
 
-import { API_V1, POLITICA_URL, POLITICA_VERSION, PUBLIC_TENANT } from "$lib/utils/config.server.js";
+import { API_V1, PUBLIC_TENANT } from "$lib/utils/config.server.js";
+import { cargarPolitica, SIN_POLITICA } from "$lib/server/politicaVentanilla.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ fetch }) {
-  // La política viaja en TODA respuesta: el formulario no se puede enviar sin ella.
-  const politica = { version: POLITICA_VERSION, url: POLITICA_URL };
   if (!PUBLIC_TENANT) {
-    return { tipos: [], habilitada: false, politica };
+    return { tipos: [], habilitada: false, politica: { ...SIN_POLITICA, verificable: true } };
   }
+  const politica = await cargarPolitica(fetch);
   try {
     const res = await fetch(
       `${API_V1}/public/${encodeURIComponent(PUBLIC_TENANT)}/ventanilla/tipos`,

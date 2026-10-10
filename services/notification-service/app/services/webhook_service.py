@@ -23,6 +23,8 @@ import hashlib
 import hmac
 import json
 import logging
+import re
+import uuid
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -32,6 +34,7 @@ from app.core import webhook_secrets
 from app.core.config import settings
 from app.core.database import acquire_tenant
 from app.core.webhook_security import validate_webhook_target
+from app.repositories.webhook_entregas_repository import WebhookEntregasRepository
 from app.repositories.webhook_repository import WebhookRepository
 
 logger = logging.getLogger(__name__)
@@ -94,14 +97,110 @@ def _firma_de_la_entrega(sub, body: bytes, tenant_slug: str) -> str | None:
     return sign(secreto, body)
 
 
+def _origen_de(url: str) -> str:
+    """scheme://host[:puerto]: sin credenciales, ruta ni query (Slack/Teams llevan el token en la ruta)."""
+    p = urlsplit(url)
+    host = p.hostname or ""
+    host = f"[{host}]" if ":" in host else host
+    return f"{p.scheme}://{host}{f':{p.port}' if p.port else ''}"
+
+
+_URL_EN_TEXTO = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
+
+
+def _error_sin_url(exc: BaseException) -> str:
+    """Clase + mensaje del fallo con toda URL tachada: la constancia es inmutable."""
+    return _URL_EN_TEXTO.sub("<url>", f"{type(exc).__name__}: {exc}")[:500]
+
+
+class BitacoraEntregas:
+    """Constancia inmutable de cada intento de entrega (`webhook_entregas`, B4).
+
+    `envio` se escribe ANTES del POST y su fallo se PROPAGA: el llamador no envía
+    (fail-closed). `resultado` se escribe después; ahí el POST ya salió y un fallo
+    de la constancia solo se registra en el log. Cada escritura va en su propia
+    conexión y commit: la fila `envio` debe existir aunque el proceso muera durante
+    el POST (eso es justo lo que la distingue de una entrega nunca intentada).
+    """
+
+    def __init__(self, tenant_slug: str, *, event_id: str | None, event_type: str, recortado: bool) -> None:
+        self._tenant = tenant_slug
+        self._event_id = event_id
+        self._event_type = event_type
+        self._recortado = recortado
+
+    async def _escribir(
+        self,
+        fase: str,
+        sub,
+        *,
+        entrega_id: uuid.UUID,
+        intento: int,
+        body_sha256: str,
+        firmado: bool,
+        resultado: str | None = None,
+        http_status: int | None = None,
+        error: str | None = None,
+    ) -> None:
+        async with acquire_tenant(self._tenant) as conn:
+            await WebhookEntregasRepository(conn).insert(
+                entrega_id=entrega_id,
+                fase=fase,
+                webhook_id=sub["id"],
+                url_destino=_origen_de(sub["url"]),
+                # Solo el ORIGEN: la huella del URL completo confirmaría un token adivinado.
+                url_sha256=hashlib.sha256(_origen_de(sub["url"]).encode()).hexdigest(),
+                event_id=self._event_id,
+                event_type=self._event_type,
+                intento=intento,
+                body_sha256=body_sha256,
+                recortado=self._recortado,
+                firmado=firmado,
+                resultado=resultado,
+                http_status=http_status,
+                error=error,
+            )
+
+    async def envio(self, sub, **kw) -> None:
+        await self._escribir("envio", sub, **kw)
+
+    async def resultado(self, sub, **kw) -> None:
+        """Best-effort: el POST ya salió; si la constancia falla se avisa a gritos, no se reenvía."""
+        try:
+            await self._escribir("resultado", sub, **kw)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "webhook %s: NO se pudo registrar el resultado de la entrega %s (%s)",
+                sub.get("id"), kw.get("entrega_id"), type(exc).__name__,
+            )
+
+
 async def _deliver_one(
-    client: httpx.AsyncClient, sub, body: bytes, tenant_slug: str = ""
+    client: httpx.AsyncClient,
+    sub,
+    body: bytes,
+    tenant_slug: str = "",
+    *,
+    bitacora: BitacoraEntregas | None = None,
 ) -> bool:
+    """Entrega `body` a `sub`. Con `bitacora` (siempre desde `dispatch`) cada intento
+    deja constancia; sin ella solo se ejerce el transporte (pruebas unitarias)."""
     headers = {"Content-Type": "application/json"}
+    body_sha256 = hashlib.sha256(body).hexdigest()
+
+    async def _sin_envio(intento: int, resultado: str, firmado: bool, error: str) -> None:
+        # Nada llegó a enviarse: solo queda la fila `resultado`.
+        if bitacora is not None:
+            await bitacora.resultado(
+                sub, entrega_id=uuid.uuid4(), intento=intento, body_sha256=body_sha256,
+                firmado=firmado, resultado=resultado, error=error,
+            )
+
     try:
         firma = _firma_de_la_entrega(sub, body, tenant_slug)
     except _SecretoNoUtilizable as exc:
         logger.error("webhook %s no se entrega: %s", sub.get("id"), exc)
+        await _sin_envio(1, "secreto_inutilizable", False, str(exc))
         return False
     if firma:
         headers["X-OrpycaMCP-Signature"] = firma
@@ -125,7 +224,23 @@ async def _deliver_one(
             )
         except ValueError as exc:
             logger.warning("webhook %s destino rechazado, no se entrega: %s", sub["url"], exc)
+            await _sin_envio(attempt, "destino_rechazado", firma is not None, _error_sin_url(exc))
             return False
+        entrega_id = uuid.uuid4()
+        if bitacora is not None:
+            try:
+                await bitacora.envio(
+                    sub, entrega_id=entrega_id, intento=attempt, body_sha256=body_sha256,
+                    firmado=firma is not None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Fail-closed: sin constancia previa no sale nada.
+                logger.error(
+                    "webhook %s NO se envía: no se pudo escribir la constancia previa (%s)",
+                    sub.get("id"), type(exc).__name__,
+                )
+                return False
+        resultado, http_status, error = "error_red", None, None
         try:
             url, host_headers, extensions = _pinned_request(sub["url"], ip)
             resp = await client.post(
@@ -135,13 +250,26 @@ async def _deliver_one(
                 extensions=extensions,
                 follow_redirects=False,
             )
+            http_status = resp.status_code
             if resp.status_code < 400:
+                if bitacora is not None:
+                    await bitacora.resultado(
+                        sub, entrega_id=entrega_id, intento=attempt, body_sha256=body_sha256,
+                        firmado=firma is not None, resultado="entregado", http_status=http_status,
+                    )
                 return True
+            resultado = "http_error"
             logger.warning(
                 "webhook %s → HTTP %s (intento %s)", sub["url"], resp.status_code, attempt
             )
         except httpx.RequestError as exc:
+            error = _error_sin_url(exc)
             logger.warning("webhook %s error: %s (intento %s)", sub["url"], exc, attempt)
+        if bitacora is not None:
+            await bitacora.resultado(
+                sub, entrega_id=entrega_id, intento=attempt, body_sha256=body_sha256,
+                firmado=firma is not None, resultado=resultado, http_status=http_status, error=error,
+            )
     return False
 
 
@@ -272,16 +400,21 @@ async def dispatch(envelope: dict) -> int:
     if not tenant_slug or not event_type:
         return 0
     try:
-        body = json.dumps(
-            recortar_si_clasificado(envelope), default=str, sort_keys=True
-        ).encode()
+        a_enviar = recortar_si_clasificado(envelope)
+        body = json.dumps(a_enviar, default=str, sort_keys=True).encode()
+        bitacora = BitacoraEntregas(
+            tenant_slug,
+            event_id=str(envelope["event_id"]) if envelope.get("event_id") is not None else None,
+            event_type=event_type,
+            recortado=a_enviar != envelope,
+        )
         async with acquire_tenant(tenant_slug) as conn:
             subs = await WebhookRepository(conn).active_for_event(event_type)
         if not subs:
             return 0
         async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=False) as client:
             for sub in subs:
-                await _deliver_one(client, sub, body, tenant_slug)
+                await _deliver_one(client, sub, body, tenant_slug, bitacora=bitacora)
         return len(subs)
     except Exception as exc:  # noqa: BLE001 — best-effort: no romper el consumidor
         logger.warning("dispatch de webhooks falló para %s: %s", tenant_slug, exc)

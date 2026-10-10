@@ -118,6 +118,22 @@ sudo nginx -t
 sudo systemctl restart nginx
 ```
 
+### Verified IP on the public window (`TRUSTED_PROXIES`)
+
+The window's authorization record (Law 1581/2012, ADR-031) stores the client IP **only if the gateway can vouch for it**. The gateway derives it by walking `X-Forwarded-For` **from the right**, dropping the `TRUSTED_PROXIES` hops; it signs it with `IDENTITY_SIGNING_SECRET` (bound to the route, valid 120 s) and document-service accepts only that signature: it **never** reads `X-Forwarded-For`. For `ip_verificada` to be `true` in production:
+
+1. `IDENTITY_SIGNING_SECRET` set (mandatory in production; without it the IP is null).
+2. The api-gateway's `TRUSTED_PROXIES` must include **the nginx network and the SSR frontend's** (the two hops that chain `X-Forwarded-For`: `infra/nginx.conf.example` uses `proxy_add_x_forwarded_for` and the SSR forwards the browser's IP). If one is missing, the gateway sees the proxy itself as the client: the record shows the proxy's IP, not the person's.
+3. With `TRUSTED_PROXIES` empty (the default) the header is ignored and the socket address is used: safe, but uninformative.
+
+**Important:** the IP is only reliable if the frontend is reachable **only through nginx**. An SSR port exposed directly (in development, `19300` with `XFF_DEPTH=1`) accepts a client-forged `X-Forwarded-For` and chains it as if trusted; in production do not publish the frontend port: only nginx may reach it.
+
+Without a valid signature the record says `ip=null, ip_verificada=false` and filing is **not** blocked.
+
+### Each entity's data-processing policy
+
+The public window **does not file** until the entity publishes its privacy notice (409 `politica_no_publicada`): set `politica_tratamiento_version`, `politica_tratamiento_url` and/or `politica_tratamiento_texto` in `/admin/parametros` (level-3 administrator). Start from the [template](politica-tratamiento-plantilla.md). `./scripts/verificar-ventanilla.sh <slug>` exits non-zero when it is missing (`SIN POLITICA`).
+
 ---
 
 ## Secrets and environment variables
@@ -528,6 +544,20 @@ retention cannot be restored (the mirror only copies the current version) and ar
 longer matches any object, the script writes `mapa-version-id-<date>.tsv`, next to the
 backups, with `OBJETO <bucket/key> <old version> <new version>`: the list for the record
 that ADR-027 requires.
+
+**Protected previous versions are backed up and restored (B4).** Besides the mirror,
+`backup.sh` copies the content of each **previous** version under live COMPLIANCE or legal
+hold into `minio-versiones/<bucket>/<sha256(key+version)>` and lists it in
+`minio-versiones.tsv` (a separate file; `minio-retencion.tsv` keeps its format); it travels
+inside the encrypted tar and the seal carries `versiones_previas_capturadas=SI|NO` (**exit 5**
+if incomplete). Before the `sync`, `restore.sh` uploads them oldest first, verifies the
+sha256, restores retention on the new `VersionId` and explicitly `put-object`s the current
+version of those keys; the old→new map includes them and `registrar_restauracion` writes a
+PREMIS `REPLICA` event (`motivo=restauracion`) per remapped object in the same transaction.
+`RESTORE_ACEPTAR_PERDIDA_VERSIONES=1` remains only for older backups or ones sealed with
+`versiones_previas_capturadas=NO`. `verify_audit_chains` exits **2** when there is nothing to
+verify (empty filter or no tenants): `--permitir-objetivo-vacio` is for a fresh install only
+and the scripts do not pass it.
 
 Two things that are not obvious:
 

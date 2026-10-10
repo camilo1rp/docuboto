@@ -221,6 +221,26 @@ class FileRepository:
         )
         return {str(r["id"]): r["sha256"] for r in rows if r["sha256"]}
 
+    async def procedencia(self, file_id: uuid.UUID) -> dict[str, object] | None:
+        """Huella, autor y referencias de un fichero vigente; `None` si no existe.
+
+        Excluye los borrados, igual que `hashes_for_ids`. `uploaded_by` puede ser
+        NULL (subida anónima o de sistema): quien consume esto lo trata como «no es
+        de nadie», nunca como «es de cualquiera».
+        """
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT sha256, uploaded_by FROM files WHERE id = $1 AND deleted_at IS NULL",
+            file_id,
+        )
+        if row is None:
+            return None
+        return {
+            "sha256": row["sha256"],
+            "uploaded_by": row["uploaded_by"],
+            "referencias": await self.referencias(file_id),
+        }
+
     async def get_by_id_any_state(self, file_id: uuid.UUID) -> FileRecord | None:
         """Returns the record regardless of its deleted_at state.
 
@@ -233,6 +253,19 @@ class FileRepository:
             file_id,
         )
         return _row_to_file_record(row) if row is not None else None
+
+    async def get_many_any_state(self, file_ids: list[uuid.UUID]) -> dict[uuid.UUID, FileRecord]:
+        """Registros de todos los `file_ids` en UNA consulta (cualquier estado).
+
+        Sirve a la prevalidación del export: se comprueba que todo el inventario
+        existe ANTES de descargar el primer byte. Los ids ausentes no aparecen.
+        """
+        await self._set_search_path()
+        rows = await self._conn.fetch(
+            f"SELECT {_COLS} FROM files WHERE id = ANY($1::uuid[])", file_ids
+        )
+        records = (_row_to_file_record(r) for r in rows)
+        return {r.id: r for r in records}
 
     async def list_versions(self, root_id: uuid.UUID) -> list[FileRecord]:
         """Lists the version chain excluding soft-deleted entries."""

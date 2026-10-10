@@ -261,6 +261,7 @@ async def regenerate_recovery_codes(
 @internal_router.post(
     "/verify",
     response_model=InternalTotpVerifyResponse,
+    dependencies=[Depends(require_internal_token)],
     summary="Verify-and-consume a TOTP code for the bearer's own identity (signature-service only)",
 )
 async def internal_verify_totp(

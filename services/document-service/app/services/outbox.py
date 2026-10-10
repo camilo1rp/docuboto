@@ -45,6 +45,12 @@ GRACIA_SEGUNDOS = 60
 RETENCION_ENVIADOS_DIAS = 7
 
 
+async def _reloj_bd(conn: asyncpg.Connection) -> datetime:
+    """Instante del reloj de la BASE (``clock_timestamp()``), en la tx en curso."""
+    ahora: datetime = await conn.fetchval("SELECT clock_timestamp()")
+    return ahora
+
+
 async def encolar(
     conn: asyncpg.Connection,
     *,
@@ -55,7 +61,16 @@ async def encolar(
     dedup_key: str | None,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    """Inserta el evento en la tx en curso y devuelve el sobre ya construido."""
+    """Inserta el evento en la tx en curso y devuelve el sobre ya construido.
+
+    ``occurred_at`` sale del reloj de la BASE (``clock_timestamp()``), no del proceso:
+    con varias réplicas, relojes de Python desfasados ordenarían mal dos
+    reclasificaciones del mismo radicado y la segunda red de knowledge (``nivel_evento_at``)
+    descartaría la buena. La BD es un solo reloj; como el encolado ocurre después del
+    ``UPDATE`` del radicado (que toma su candado de fila), el instante crece con el orden
+    real de los cambios de ese radicado.
+    """
+    ahora_bd = await _reloj_bd(conn)
     event = events.build_event(
         event_type,
         tenant_slug=tenant_slug,
@@ -63,7 +78,7 @@ async def encolar(
         actor=actor,
         dedup_key=dedup_key,
         event_id=str(uuid.uuid4()),
-        occurred_at=datetime.now(UTC).isoformat(),
+        occurred_at=ahora_bd.astimezone(UTC).isoformat(),
     )
     await conn.execute(
         "INSERT INTO eventos_salientes "

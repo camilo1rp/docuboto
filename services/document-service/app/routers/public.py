@@ -31,6 +31,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from orpycamcp_common import identidad
 
 from app.core.database import (
     get_db_conn,
@@ -40,6 +41,7 @@ from app.core.database import (
 )
 from app.schemas.public import (
     IDEMPOTENCY_KEY_RE,
+    PoliticaTratamiento,
     PqrsCreate,
     PqrsResponse,
     PublicVerifyResponse,
@@ -75,16 +77,14 @@ def _clave_idempotencia(valor: str | None) -> str | None:
     return valor
 
 
-def _ip_declarada(request: Request) -> str | None:
-    """IP que declara el borde para la constancia de consentimiento (Ley 1581).
+def _ip_cliente(request: Request) -> str | None:
+    """IP del cliente que el GATEWAY firmó para esta ruta (ADR-031), o None.
 
-    NO es una IP verificada por saltos de confianza: el gateway no la inyecta en las
-    rutas públicas, y `X-Forwarded-For` lo puede escribir el cliente. Por eso el campo
-    del radicado se llama `ip_declarada`.
+    Nunca lee `X-Forwarded-For` ni un `X-Real-Ip` sin firma: los escribe el
+    cliente. Sin firma válida (llamada directa, firma vencida o de otra ruta, sin
+    secreto) la constancia registra `ip=null, ip_verificada=false`.
     """
-    crudo = request.headers.get("x-real-ip") or request.headers.get("x-forwarded-for") or ""
-    primero = crudo.split(",")[0].strip()
-    return primero[:64] or None
+    return identidad.ip_publica_verificada(dict(request.headers), request.url.path)
 
 
 @router.post(
@@ -140,11 +140,11 @@ async def radicar_pqrs(
             acepta_tratamiento=payload.acepta_tratamiento,
             politica_version=payload.politica_version,
         )
-        respuesta = await VentanillaService(conn, tenant).radicar(
+        respuesta = await VentanillaService(conn, tenant, tenant_client).radicar(
             ventanilla,
             service,
             idempotency_key=clave,
-            ip=_ip_declarada(request),
+            ip=_ip_cliente(request),
         )
     finally:
         await conn.execute("SET search_path = public")
@@ -248,6 +248,34 @@ async def tipos_de_ventanilla(
 
 
 @router.get(
+    "/{tenant}/ventanilla/politica",
+    response_model=PoliticaTratamiento,
+    summary="Política de tratamiento de datos vigente de la entidad (Ley 1581, público)",
+)
+async def politica_de_ventanilla(
+    tenant: str,
+    conn: asyncpg.Connection = Depends(get_db_conn),
+    tenant_client: Any = Depends(get_tenant_client),
+) -> PoliticaTratamiento:
+    """Aviso de privacidad que el formulario muestra antes de pedir la autorización.
+
+    Lectura estricta: si tenant-service no responde es 503 `politica_no_verificable`,
+    nunca `publicada=false` (error no es «sin política»). La `huella` es del servidor.
+    """
+    schema = tenant_schema(tenant)  # valida el slug (anti-inyección)
+    await conn.execute(f'SET search_path = "{schema}", public')
+    try:
+        # Mismo criterio que `/estado`: un tenant inexistente responde igual de
+        # neutro (sin política) y NO 503, que distinguiría existentes de ausentes.
+        # El 503 queda para fallos reales de tenant-service.
+        if await conn.fetchval("SELECT to_regclass('dependencias')") is None:
+            return PoliticaTratamiento(publicada=False)
+    finally:
+        await conn.execute("SET search_path = public")
+    return await VentanillaService(conn, tenant, tenant_client).politica()
+
+
+@router.get(
     "/{tenant}/ventanilla/estado",
     response_model=VentanillaEstado,
     summary="¿Está habilitada la ventanilla pública de la entidad? (verificación previa)",
@@ -255,6 +283,7 @@ async def tipos_de_ventanilla(
 async def estado_de_ventanilla(
     tenant: str,
     conn: asyncpg.Connection = Depends(get_db_conn),
+    tenant_client: Any = Depends(get_tenant_client),
 ) -> VentanillaEstado:
     """Comprueba, sin radicar, lo que `POST /ventanilla` exige por dentro.
 
@@ -264,7 +293,7 @@ async def estado_de_ventanilla(
     schema = tenant_schema(tenant)  # valida el slug (anti-inyección)
     await conn.execute(f'SET search_path = "{schema}", public')
     try:
-        return await VentanillaService(conn, tenant).estado()
+        return await VentanillaService(conn, tenant, tenant_client).estado()
     except (
         asyncpg.exceptions.UndefinedTableError,
         asyncpg.exceptions.InvalidSchemaNameError,
@@ -393,12 +422,12 @@ async def radicar_en_ventanilla(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
             )
-        return await VentanillaService(conn, tenant).radicar(
+        return await VentanillaService(conn, tenant, tenant_client).radicar(
             payload,
             service,
             ficheros,
             idempotency_key=clave,
-            ip=_ip_declarada(request),
+            ip=_ip_cliente(request),
         )
     finally:
         await conn.execute("SET search_path = public")

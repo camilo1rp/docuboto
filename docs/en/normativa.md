@@ -89,6 +89,20 @@ International standard adopted in Colombia. It defines the principles of:
 
 ---
 
+## Law 1581 of 2012 and DUR 1074 of 2015 — Personal data protection
+
+The **public window** collects personal data from whoever files, so it needs their **prior, express and informed authorization** (Law 1581/2012, arts. 8(b), 9 and 12): the data subject must see the privacy notice (DUR 1074/2015 art. 2.2.2.25.3.2) **before** authorizing.
+
+**What OrpycaMCP implements** (ADR-031):
+- The **processing policy belongs to each entity** (`politica_tratamiento_version`, `_url`, `_texto` in `sgd_param_admin`) and the server serves it at `GET /api/v1/public/{tenant}/ventanilla/politica`. With no policy published the window **does not file** (409 `politica_no_publicada`); if it changed while the form was being filled in, 409 `politica_desactualizada`.
+- The **authorization record** (v2) stores the policy version and hash, its URL, the instant and the IP that the gateway **signed** (never the one declared by the client); without a valid signature the IP is null and `ip_verificada=false`.
+
+### Erasure versus retention {#supresion}
+
+The data subject may ask for **erasure** (Law 1581 art. 8(e) and art. 15), but the right **does not apply while there is a legal duty to keep the data** (DUR 1074/2015 art. 2.2.2.25.2.8; Law 594/2000 art. 11 and the series' TRD). A radicado is an archival record: it is kept for its retention period and **erasure applies when retention expires**, through the TRD's final disposition. The request is **not ignored**: it is answered as a **claim** (art. 15), explaining the duty to keep and the date from which erasure applies.
+
+---
+
 ## International applicability
 
 Although the main reference framework is Colombian, the concepts are applicable to other Latin American countries with similar regulations:

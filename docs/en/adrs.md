@@ -36,6 +36,7 @@ The full files are in `docs/es/adr/`.
 | [ADR-027](adr/ADR-027-sustitucion-almacen-objetos-rustfs.md) | MinIO archived its open-source project and pulled its images: the object store moves to **RustFS**, and the engine is chosen by a WORM conformance battery against a real S3 (RustFS 7/7, MinIO 7/7, Garage 0/7), not by a datasheet | Implemented |
 | [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md) | The workflow moves the radicado's status: one pure function written in the same transaction as the step, closing only via an explicit "Finish processing", `closed`/`anulado` terminal (409) and holder-only `marcar_leido`; audit remediation: clearance and holder gates on `assign`/`transfer`, annulment cancels the step, immutable backfill evidence | Implemented |
 | [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md) | Current location of the radicado: three `flujo_*` columns written by workflow-service in the same `UPDATE` as the status, two generated `ubicacion_*` columns (computed as pairs), one pure `derivar_ubicacion` function (last step by when it closed, not by its number), code only when the name is unique, backfill with insert-only evidence, and kept out of everything public | Implemented |
+| [ADR-031](adr/ADR-031-constancia-autorizacion-ip-firmada-politica-por-entidad.md) | Authorization record: gateway-signed IP on public routes, per-entity data-processing policy served and re-read by the server, and a delivery receipt with author and no reuse | Accepted |
 
 ## How to propose a new ADR
 

@@ -310,6 +310,17 @@ class TransferenciaRepository:
             *params,
         )
 
+    async def bump_fixity_fallos(self, transferencia_id: uuid.UUID) -> int:
+        """Número de este intento de recepción fallido por fixity (migración 066): incrementa y
+        devuelve el contador. Va en la misma tx que el asiento `*_failed`."""
+        await self._sp()
+        n = await self._conn.fetchval(
+            "UPDATE transferencias SET fixity_fallos_intentos = fixity_fallos_intentos + 1 "
+            "WHERE id = $1 RETURNING fixity_fallos_intentos",
+            transferencia_id,
+        )
+        return int(n)
+
     async def insert_acta(self, data: dict) -> None:
         """Congela el acta de entrega (E12 H-I): escritura ÚNICA dentro de la
         MISMA `conn.transaction()` de `TransferenciaService.recibir` -- no hay

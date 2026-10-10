@@ -89,6 +89,20 @@ Estándar internacional adoptado en Colombia. Define los principios de:
 
 ---
 
+## Ley 1581 de 2012 y DUR 1074 de 2015 — Protección de datos personales
+
+La **ventanilla pública** recoge datos personales de quien radica y, por eso, su **autorización previa, expresa e informada** (Ley 1581/2012, arts. 8 lit. b, 9 y 12): el titular debe conocer el aviso de privacidad (DUR 1074/2015 art. 2.2.2.25.3.2) **antes** de autorizar.
+
+**Qué implementa OrpycaMCP** (ADR-031):
+- La **política de tratamiento es de cada entidad** (`politica_tratamiento_version`, `_url`, `_texto` en `sgd_param_admin`) y la sirve el servidor en `GET /api/v1/public/{tenant}/ventanilla/politica`. Sin política publicada la ventanilla **no radica** (409 `politica_no_publicada`); si cambió mientras se diligenciaba el formulario, 409 `politica_desactualizada`.
+- La **constancia de autorización** (v2) guarda versión y huella de la política, su URL, el instante y la IP que el gateway **firmó** (nunca la declarada por el cliente); sin firma válida la IP queda nula y `ip_verificada=false`.
+
+### Supresión y retención {#supresion}
+
+El titular puede pedir la **supresión** de sus datos (Ley 1581 art. 8 lit. e y art. 15), pero el derecho **no procede mientras exista un deber legal de conservarlos** (DUR 1074/2015 art. 2.2.2.25.2.8; Ley 594/2000 art. 11 y la TRD de la serie documental). Un radicado es documento de archivo: se conserva durante su retención y **procede la supresión al vencer la retención**, por la disposición final de la TRD (eliminación, o selección y conservación total). La solicitud **no se ignora**: se responde como **reclamo** (art. 15) explicando el deber de conservación y la fecha a partir de la cual procede. La plantilla de política ([politica-tratamiento-plantilla.md](politica-tratamiento-plantilla.md)) incluye este texto con el ancla `#supresion`, a la que enlaza la interfaz bajo la casilla de autorización.
+
+---
+
 ## Aplicabilidad internacional
 
 Aunque el marco de referencia principal es colombiano, los conceptos son aplicables a otros países latinoamericanos con normativas similares:

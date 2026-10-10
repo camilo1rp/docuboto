@@ -8,6 +8,8 @@
 
 """Unit tests del contrato de issuer (expected_issuer + fail-fast visible)."""
 
+import pytest
+
 from app.core.config import Settings
 
 
@@ -61,3 +63,16 @@ def test_issuer_warnings_silent_on_public_fqdn() -> None:
         keycloak_issuer=None,
     )
     assert s.issuer_config_warnings() == []
+
+
+@pytest.mark.parametrize("campo,valor", [
+    ("signing_key_purge_after_days", 0),
+    ("signing_key_purge_after_days", -1),
+    ("signing_key_maintenance_interval_seconds", 0),
+    ("signing_key_maintenance_interval_seconds", 59),
+])
+def test_ventanas_del_mantenimiento_de_claves_no_arrancan_en_cero(campo: str, valor: int) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(**{campo: valor})

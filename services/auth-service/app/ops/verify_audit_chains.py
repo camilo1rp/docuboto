@@ -159,6 +159,7 @@ async def verificar(
     excluir_prefijos: tuple[str, ...] = (),
     fecha_ancla: str | None = None,
     roturas_declaradas: dict[str, frozenset[int]] | None = None,
+    permitir_objetivo_vacio: bool = False,
 ) -> tuple[int, list[str], list[str]]:
     """(código de salida, mensajes, líneas del ancla nuevo).
 
@@ -171,7 +172,17 @@ async def verificar(
     objetivo = slugs if slugs is not None else sorted(set(await _slugs(conn)) | set(anclas))
     objetivo = [s for s in objetivo if not s.startswith(excluir_prefijos)] if excluir_prefijos else objetivo
     if not objetivo:
-        return 0, ["   (sin tenants: nada que verificar)"], []
+        # Un objetivo vacío NO es «todo bien»: un filtro mal tecleado (o una base
+        # vacía por un restore fallido) verificaría cero cadenas y saldría en verde.
+        filtrado = slugs is not None or bool(excluir_prefijos)
+        if filtrado:
+            return 2, ["✗ objetivo vacío tras filtro: no se verificó ninguna cadena"], []
+        if not permitir_objetivo_vacio:
+            return 2, [
+                "✗ objetivo vacío: no hay tenants ni asientos que verificar "
+                "(use --permitir-objetivo-vacio solo en una instalación nueva)"
+            ], []
+        return 0, ["   (sin tenants: nada que verificar, permitido explícitamente)"], []
 
     mensajes: list[str] = []
     nuevas: list[str] = []
@@ -233,6 +244,8 @@ def _argumentos(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--roturas-declaradas", metavar="FICHERO", default=None,
                    help="línea base de roturas históricas aprobadas (`ROTURA<TAB>slug<TAB>id`)")
     p.add_argument("--slug", action="append", default=None, help="solo este tenant (repetible)")
+    p.add_argument("--permitir-objetivo-vacio", action="store_true",
+                   help="acepta salir en 0 cuando no hay tenants (instalación nueva); backup/restore no lo pasan")
     p.add_argument("--excluir-prefijo", action="append", default=[], help="SOLO desarrollo")
     return p.parse_args(argv)
 
@@ -268,6 +281,7 @@ async def _main(args: argparse.Namespace) -> int:
             excluir_prefijos=tuple(args.excluir_prefijo),
             fecha_ancla=args.emitir_ancla,
             roturas_declaradas=declaradas,
+            permitir_objetivo_vacio=args.permitir_objetivo_vacio,
         )
     finally:
         await conn.close()

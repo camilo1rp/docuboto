@@ -123,6 +123,22 @@ async def test_get_totp_status_remote_envia_token_interno_y_bearer(
 
 
 @pytest.mark.asyncio
+async def test_verify_totp_envia_token_interno_y_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "signing_key_internal_token", "tok-interno-t8")
+    vistas = _wire(monkeypatch, lambda r: httpx.Response(200, json={"valido": True}))
+    body = await http_clients.verify_totp("Bearer tok", "123456")
+    assert body == {"valido": True}
+    (req,) = vistas
+    assert req.method == "POST" and req.url.path == "/internal/totp/verify"
+    assert req.headers["Authorization"] == "Bearer tok"
+    # Sin el token interno auth-service responde 401 y la firma con TOTP queda
+    # caída (fail-closed): el cable debe llevarlo.
+    assert req.headers["X-Internal-Token"] == "tok-interno-t8"
+
+
+@pytest.mark.asyncio
 async def test_get_totp_status_remote_sin_authorization_no_sale_a_la_red(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

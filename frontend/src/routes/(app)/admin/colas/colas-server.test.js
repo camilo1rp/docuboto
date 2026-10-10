@@ -10,7 +10,7 @@
 /**
  * colas-server.test.js — `load` de /admin/colas (+page.server.js, ADR-021
  * Fase 5). Cubre: carga de la primera página del servicio por defecto
- * (workflow, status=pending), propagación de X-Truncated, y degradación
+ * (workflow, status=pending), y degradación
  * ante error/red caída.
  */
 import { describe, it, expect, vi } from "vitest";
@@ -29,7 +29,7 @@ describe("load /admin/colas", () => {
       expect(String(input)).toContain("status=pending");
       return new Response(JSON.stringify([{ event_id: "e1" }]), {
         status: 200,
-        headers: { "X-Total-Count": "1", "X-Truncated": "false" },
+        headers: { "X-Total-Count": "1" },
       });
     });
     const result = await load({
@@ -44,20 +44,7 @@ describe("load /admin/colas", () => {
     expect(result.defaultService).toBe("workflow");
     expect(result.items).toEqual([{ event_id: "e1" }]);
     expect(result.totalCount).toBe(1);
-    expect(result.truncated).toBe(false);
     expect(result.loadError).toBeNull();
-  });
-
-  it("propaga X-Truncated=true cuando el backend alcanzó el cap de candidatas", async () => {
-    const fetch = vi.fn(
-      async () =>
-        new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { "X-Total-Count": "0", "X-Truncated": "true" },
-        }),
-    );
-    const result = await load({ cookies: { get: () => "tok" }, parent: parentWith(), fetch });
-    expect(result.truncated).toBe(true);
   });
 
   it("error del gateway produce loadError y lista vacía", async () => {

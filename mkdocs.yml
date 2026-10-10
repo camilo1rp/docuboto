@@ -65,6 +65,7 @@ plugins:
             El SGD: Records management
             Dominio documental: Documentary domain
             Marco normativo: Regulatory framework
+            Plantilla de política de tratamiento de datos: Data-processing policy template
             Ciclo de vida del documento: Document lifecycle
             Primeros Pasos: Getting started
             Arquitectura: Architecture
@@ -96,6 +97,7 @@ plugins:
             ADR-028 El flujo mueve el estado del radicado: ADR-028 The workflow moves the radicado status
             ADR-029 Ubicación actual del radicado: ADR-029 Current location of the radicado
             ADR-030 Constancia de firma inobtenible: ADR-030 Unobtainable-signature record
+            ADR-031 Constancia de autorización (IP firmada y política por entidad): ADR-031 Authorization record (signed IP and per-entity policy)
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -117,6 +119,7 @@ nav:
   - El SGD:
     - Dominio documental: domain.md
     - Marco normativo: normativa.md
+    - Plantilla de política de tratamiento de datos: politica-tratamiento-plantilla.md
     - Ciclo de vida del documento: lifecycle.md
   - Primeros Pasos: getting-started.md
   - Arquitectura:
@@ -152,6 +155,7 @@ nav:
     - ADR-028 El flujo mueve el estado del radicado: adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md
     - ADR-029 Ubicación actual del radicado: adr/ADR-029-ubicacion-actual-del-radicado.md
     - ADR-030 Constancia de firma inobtenible: adr/ADR-030-constancia-firma-inobtenible.md
+    - ADR-031 Constancia de autorización (IP firmada y política por entidad): adr/ADR-031-constancia-autorizacion-ip-firmada-politica-por-entidad.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md
