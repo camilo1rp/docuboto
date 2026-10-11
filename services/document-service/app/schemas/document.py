@@ -106,7 +106,10 @@ class DocumentCreate(BaseModel):
 
 class DocumentUpdate(BaseModel):
     subject: str | None = Field(default=None, min_length=1, max_length=2000)
+    #: ALIAS deprecado de `dest_dept_code` (ADR-032): se resuelve a código y el
+    #: nombre guardado es el del catálogo. Si llegan los dos deben concordar.
     dest_dept: str | None = Field(default=None, max_length=100)
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
     observations: str | None = None
     # ADR-028: el estado del radicado lo mueve el FLUJO (workflow-service), no el
     # PATCH. El campo se conserva SOLO para poder rechazarlo con un error

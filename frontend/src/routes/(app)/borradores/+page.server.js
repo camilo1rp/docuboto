@@ -47,9 +47,10 @@ export async function load({ cookies, parent, url, fetch }) {
   const borradoresParams = new URLSearchParams();
   if (estadoFilter) borradoresParams.set("estado", estadoFilter);
 
-  const [borradoresRes, plantillasRes] = await Promise.allSettled([
+  const [borradoresRes, plantillasRes, dependenciasRes] = await Promise.allSettled([
     fetch(`${API_V1}/borradores?${borradoresParams.toString()}`, { headers }),
     fetch(`${API_V1}/plantillas?activo=true`, { headers }),
+    fetch(`${API_V1}/dependencias?activo=true`, { headers }),
   ]);
 
   // ---------------------------------------------------------------------------
@@ -84,8 +85,22 @@ export async function load({ cookies, parent, url, fetch }) {
     }
   }
 
+  // Catálogo de dependencias activas: el destino se elige y se envía por CÓDIGO
+  // (ADR-032). Degrada a lista vacía si falla (el selector lo dirá).
+  let dependencias = [];
+  let dependenciasError = null;
+  if (dependenciasRes.status === "fulfilled" && dependenciasRes.value.ok) {
+    const raw = await dependenciasRes.value.json().catch(() => []);
+    if (Array.isArray(raw)) dependencias = raw;
+  } else {
+    dependenciasError =
+      "No se pudo cargar el catálogo de dependencias: no podrá elegir el destino hasta recargar la página.";
+  }
+
   return {
     borradores,
+    dependencias,
+    dependenciasError,
     plantillas,
     loadError,
     initialEstado: estadoFilter,

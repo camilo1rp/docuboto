@@ -83,12 +83,13 @@ def _make_conn(*, claim_result: bool = True) -> AsyncMock:
     conn = AsyncMock()
 
     async def _fetchrow(sql: str, *args):  # noqa: ARG001
-        if "dependencias" in sql:
-            return {"codigo": CODIGO_DEPENDENCIA}
+        if "resolver_codigo_dependencia" in sql:
+            return {"codigo": CODIGO_DEPENDENCIA, "candidatos": 1}
         # ProcessedEventsRepository.claim: registro no-None → claimed (True).
         return {"event_id": "evt-0001"} if claim_result else None
 
     conn.fetchrow.side_effect = _fetchrow
+    conn.fetchval.return_value = True  # la función SQL del catálogo existe
     return conn
 
 
@@ -129,6 +130,53 @@ async def test_process_event_claim_true_despacha_efectos() -> None:
     mock_send.assert_called_once()
     sent_payload = mock_send.call_args.args[0]
     assert "2026-DEMO-E-000001" in sent_payload.subject
+
+
+@pytest.mark.asyncio
+async def test_process_event_to_dept_code_manda_sobre_el_nombre() -> None:
+    """B5: con `to_dept_code` el aviso va a ESE buzón aunque el nombre ya no case."""
+    from app.services import event_consumer
+
+    conn = _make_conn(claim_result=True)
+    raw = _raw_fields(
+        event_type="workflow.step.created",
+        payload={
+            "action": "assign",
+            "tracking_number": "2026-DEMO-E-000001",
+            "to_dept": "Nombre Anterior Al Renombre",
+            "to_dept_code": 905,
+        },
+    )
+    with (
+        patch.object(event_consumer, "acquire_tenant", _fake_acquire(conn)),
+        patch.object(event_consumer, "dispatch_webhooks", AsyncMock()),
+        patch.object(event_consumer, "send_notification", AsyncMock()) as mock_send,
+    ):
+        await event_consumer.process_event(raw)
+
+    assert mock_send.call_args.args[0].recipient_email == "dependencia-905@orpycamcp.local"
+
+
+@pytest.mark.asyncio
+async def test_process_event_viejo_solo_nombre_usa_el_resolutor_con_historico() -> None:
+    """Evento sin código: se resuelve el nombre (función del catálogo, p_historico)."""
+    from app.services import event_consumer
+
+    conn = _make_conn(claim_result=True)
+    raw = _raw_fields(
+        event_type="workflow.step.created",
+        payload={"action": "assign", "tracking_number": "2026-DEMO-E-000001", "to_dept": DEPENDENCIA},
+    )
+    with (
+        patch.object(event_consumer, "acquire_tenant", _fake_acquire(conn)),
+        patch.object(event_consumer, "dispatch_webhooks", AsyncMock()),
+        patch.object(event_consumer, "send_notification", AsyncMock()) as mock_send,
+    ):
+        await event_consumer.process_event(raw)
+
+    assert mock_send.call_args.args[0].recipient_email == (
+        f"dependencia-{CODIGO_DEPENDENCIA}@orpycamcp.local"
+    )
 
 
 @pytest.mark.asyncio

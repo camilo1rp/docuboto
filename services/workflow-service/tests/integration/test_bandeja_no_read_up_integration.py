@@ -46,8 +46,8 @@ async def _radicado(conn: asyncpg.Connection, nivel: int) -> uuid.UUID:
 async def _paso(conn: asyncpg.Connection, rid: uuid.UUID) -> None:
     await conn.execute(
         "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, from_dept, "
-        "to_dept, assigned_by, action, status) "
-        "VALUES ($1, 'T', 1, 'A', 'B', $2, 'assign', 'pending')",
+        "to_dept, to_dept_code, assigned_by, action, status) "
+        "VALUES ($1, 'T', 1, 'A', 'B', 7, $2, 'assign', 'pending')",
         rid,
         uuid.uuid4(),
     )
@@ -68,7 +68,7 @@ async def bandeja(tenant_ctx):
 
 async def _pending(repo: WorkflowRepository, clearance: int):
     return await repo.list_pending(
-        dept="B",  # alcance ampliado: el eje del clearance es el que se prueba, no el de la dependencia
+        dept_code=7,  # alcance ampliado: el eje del clearance es el que se prueba, no el de la dependencia
         assigned_to=None,
         own_scope_user_id=None,
         max_clearance=clearance,
@@ -80,7 +80,7 @@ async def _pending(repo: WorkflowRepository, clearance: int):
 async def _inbox(repo: WorkflowRepository, clearance: int):
     return await repo.list_inbox(
         doc_type=None,
-        dept="B",  # alcance ampliado: el eje del clearance es el que se prueba, no el de la dependencia
+        dept_code=7,  # alcance ampliado: el eje del clearance es el que se prueba, no el de la dependencia
         assigned_to=None,
         own_scope_user_id=None,
         max_clearance=clearance,

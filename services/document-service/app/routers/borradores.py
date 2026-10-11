@@ -31,6 +31,7 @@ from app.clients.storage_client import RenderFallidoError, RenderNoDisponibleErr
 from app.core.clearance import check_permission, require_permission, resolve_caller_clearance
 from app.core.combinacion import desconocidos, vocabulario
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
+from app.core.dependencias import marcar_alias_deprecado, usa_alias
 from app.schemas.borrador import (
     BorradorCreate,
     BorradorRadicar,
@@ -273,9 +274,12 @@ async def borrar_plantilla(
 async def crear_borrador(
     payload: BorradorCreate,
     request: Request,
+    response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
 ) -> BorradorResponse:
+    if usa_alias(payload.dest_dept_code, payload.dest_dept):
+        marcar_alias_deprecado(response, "POST /borradores")
     user_id = _user(request)
     clearance = await resolve_caller_clearance(conn, user_id)
     return await BorradorService(
@@ -321,9 +325,12 @@ async def editar_borrador(
     borrador_id: uuid.UUID,
     payload: BorradorUpdate,
     request: Request,
+    response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     redis: Any = Depends(get_redis),
 ) -> BorradorResponse:
+    if usa_alias(payload.dest_dept_code, payload.dest_dept):
+        marcar_alias_deprecado(response, "PATCH /borradores/{id}")
     user_id = _user(request)
     clearance = await resolve_caller_clearance(conn, user_id)
     # El slug NO es decorativo: el asiento `borrador.editado` se imputa a él.

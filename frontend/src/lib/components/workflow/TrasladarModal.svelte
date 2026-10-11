@@ -13,10 +13,10 @@
   TrasladarModal.svelte — Traslada el paso activo de un radicado a otra
   dependencia (T-Fase1, RF-FLU-03). POST /bandeja/api/transfer.
 
-  `from_dept` es OBLIGATORIO para el backend (missing_from_dept, 422 — ver
-  bandeja/api/transfer/+server.js) pero NUNCA se pide al usuario: se deriva
-  de `step.to_dept` (la dependencia donde el radicado se encuentra ahora, que
-  pasa a ser el origen del traslado).
+  La dependencia viaja por CÓDIGO (`to_dept_code`, ADR-032): el selector tiene
+  el código como valor y el nombre como etiqueta. El origen NO se envía: el
+  servidor lo deriva del paso activo (si el paso cambió entre tanto responde
+  409 `origen_desactualizado`). Aquí solo se MUESTRA, por nombre actual.
 
   Props:
     open          boolean            — controla la visibilidad
@@ -34,6 +34,9 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import UserPicker from "$lib/components/ui/UserPicker.svelte";
+  import { usarNombresDependencia } from "$lib/stores/dependencias.js";
+  const nombresDependencia = usarNombresDependencia();
+  import { nombreActual } from "$lib/utils/dependenciaNombre.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   export let open = false;
@@ -60,6 +63,7 @@
   // había ningún responsable disponible, cuando en realidad la carga falló.
   let usersError = "";
 
+  $: origen = nombreActual(step?.to_dept_code, step?.to_dept, $nombresDependencia);
   $: if (open) resetForm();
 
   function resetForm() {
@@ -95,6 +99,11 @@
     }
   }
 
+  /** Nombre visible de la dependencia elegida (el valor del selector es su CÓDIGO). */
+  function nombreDestino() {
+    return dependencias.find((d) => d.value === toDept)?.label ?? toDept;
+  }
+
   function close() {
     dispatch("close");
   }
@@ -116,8 +125,7 @@
       const payload = {
         radicado_id: step.radicado_id,
         tracking_number: step.tracking_number,
-        to_dept: toDept.trim(),
-        from_dept: step.to_dept,
+        to_dept_code: Number(toDept),
       };
       if (assignedTo[0]) payload.assigned_to = assignedTo[0];
       if (notes.trim()) payload.notes = notes.trim();
@@ -137,11 +145,13 @@
       const result = await res.json();
       if (!res.ok) throw result;
 
-      notifySuccess(`Radicado ${step.tracking_number} trasladado a ${toDept.trim()}.`);
+      notifySuccess(`Radicado ${step.tracking_number} trasladado a ${nombreDestino()}.`);
       dispatch("success", result);
     } catch (err) {
-      if (codigoError(err) === "missing_from_dept") {
-        notifyError("No se pudo determinar la dependencia de origen. Recargue e intente de nuevo.");
+      if (codigoError(err) === "origen_desactualizado") {
+        notifyError(
+          "El radicado ya cambió de dependencia mientras usted trabajaba. Recargue e intente de nuevo.",
+        );
       } else {
         notifyError(mensajeError(err, "No se pudo trasladar el radicado."));
       }
@@ -155,14 +165,14 @@
   {#if step}
     <p class="modal-desc">
       Traslada el radicado <strong>{step.tracking_number}</strong> desde
-      <strong>{step.to_dept}</strong> hacia otra dependencia.
+      <strong>{origen}</strong> hacia otra dependencia.
     </p>
     <div class="modal-form">
       <FormField
         id="traslado-from-dept"
         label="Dependencia de origen"
         type="text"
-        value={step.to_dept}
+        value={origen}
         disabled={true}
         hint="Se deriva automáticamente de la ubicación actual del radicado."
       />

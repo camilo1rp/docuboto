@@ -25,6 +25,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 import { buildConditionsPayload } from "$lib/utils/workflowRuleConditions.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -92,14 +93,12 @@ export async function PATCH({ locals, params, request }) {
       { status: 422 },
     );
   }
-  if (
-    "assign_to_dept" in body &&
-    (typeof body.assign_to_dept !== "string" || !body.assign_to_dept.trim())
-  ) {
+  if ("assign_to_dept_code" in body && parseCodigoDependencia(body.assign_to_dept_code) === null) {
     return json(
       {
         error: "validation_error",
-        detail: "La dependencia de destino de la acción no puede quedar vacía.",
+        detail:
+          "La dependencia de destino de la acción no puede quedar vacía (código entero positivo).",
       },
       { status: 422 },
     );
@@ -136,8 +135,8 @@ export async function PATCH({ locals, params, request }) {
   if ("match_mode" in body) {
     payload.match_mode = MATCH_MODES.has(body.match_mode) ? body.match_mode : "all";
   }
-  if ("assign_to_dept" in body) {
-    payload.assign_to_dept = String(body.assign_to_dept).trim().slice(0, 200);
+  if ("assign_to_dept_code" in body) {
+    payload.assign_to_dept_code = parseCodigoDependencia(body.assign_to_dept_code);
   }
   if ("assign_notes" in body) {
     payload.assign_notes =

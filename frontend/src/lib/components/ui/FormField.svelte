@@ -49,6 +49,10 @@
   export let placeholder = "";
   export let required = false;
   export let disabled = false;
+  /** Solo lectura: se enfoca, se anuncia y se copia (a diferencia de `disabled`). */
+  export let readonly = false;
+  /** @type {number|undefined} */
+  export let maxlength = undefined;
   export let error = "";
   export let hint = "";
   export let rows = 3;
@@ -114,6 +118,8 @@
       bind:value
       {placeholder}
       {disabled}
+      {readonly}
+      {maxlength}
       {required}
       {rows}
       aria-required={required}
@@ -131,6 +137,8 @@
       bind:value
       {placeholder}
       {disabled}
+      {readonly}
+      {maxlength}
       {required}
       aria-required={required}
       aria-invalid={!!error}
@@ -148,6 +156,8 @@
       bind:value
       {placeholder}
       {disabled}
+      {readonly}
+      {maxlength}
       {required}
       aria-required={required}
       aria-invalid={!!error}
@@ -165,6 +175,8 @@
       bind:value
       {placeholder}
       {disabled}
+      {readonly}
+      {maxlength}
       {required}
       aria-required={required}
       aria-invalid={!!error}
@@ -182,6 +194,8 @@
       bind:value
       {placeholder}
       {disabled}
+      {readonly}
+      {maxlength}
       {required}
       aria-required={required}
       aria-invalid={!!error}
@@ -200,6 +214,8 @@
       bind:value
       {placeholder}
       {disabled}
+      {readonly}
+      {maxlength}
       {required}
       {inputmode}
       {autocomplete}

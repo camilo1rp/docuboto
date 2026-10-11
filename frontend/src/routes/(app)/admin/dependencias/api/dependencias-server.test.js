@@ -281,14 +281,17 @@ describe("dependencias/api/[id] PATCH", () => {
     expect(res.status).toBe(400);
   });
 
-  it("codigo presente fuera de rango → 400, sin llamar al gateway", async () => {
+  it("codigo presente (incluso el mismo) → 422 dependencia_codigo_inmutable, sin llamar al gateway (ADR-032)", async () => {
     globalThis.fetch = noFetchExpected();
-    const res = await patchOne({
-      locals: SESSION_LOCALS,
-      params: { id: DEP_ID },
-      request: { json: async () => ({ codigo: 0 }) },
-    });
-    expect(res.status).toBe(400);
+    for (const codigo of [0, 105, 999]) {
+      const res = await patchOne({
+        locals: SESSION_LOCALS,
+        params: { id: DEP_ID },
+        request: { json: async () => ({ codigo, nombre: "Otro" }) },
+      });
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toBe("dependencia_codigo_inmutable");
+    }
   });
 
   it("parent_id presente e inválido → 400, sin llamar al gateway", async () => {

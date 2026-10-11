@@ -39,10 +39,12 @@ async function openCreateModal() {
   await fireEvent.input(screen.getByLabelText("Nombre", { exact: false }), {
     target: { value: "Circulares TIC" },
   });
-  await fireEvent.input(screen.getByLabelText("Dependencia de destino", { exact: false }), {
-    target: { value: "TIC" },
+  await fireEvent.change(screen.getByLabelText("Dependencia de destino", { exact: false }), {
+    target: { value: "7" },
   });
 }
+
+const DEPENDENCIAS = [{ codigo: 7, sigla: "TIC", nombre: "Tecnología" }];
 
 describe("/admin/flujos/reglas — validación de condiciones al guardar", () => {
   const originalFetch = globalThis.fetch;
@@ -60,7 +62,9 @@ describe("/admin/flujos/reglas — validación de condiciones al guardar", () =>
   it("una condición sin valor bloquea el guardado y no llama al proxy", async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock;
-    render(ReglasPage, { props: { data: { reglas: [], loadError: null } } });
+    render(ReglasPage, {
+      props: { data: { reglas: [], loadError: null, dependencias: DEPENDENCIAS } },
+    });
 
     await openCreateModal();
     await fireEvent.click(screen.getByRole("button", { name: "Agregar condición" }));
@@ -76,7 +80,9 @@ describe("/admin/flujos/reglas — validación de condiciones al guardar", () =>
       async () => new Response(JSON.stringify({ id: "r-1" }), { status: 201 }),
     );
     globalThis.fetch = fetchMock;
-    render(ReglasPage, { props: { data: { reglas: [], loadError: null } } });
+    render(ReglasPage, {
+      props: { data: { reglas: [], loadError: null, dependencias: DEPENDENCIAS } },
+    });
 
     await openCreateModal();
     await fireEvent.click(screen.getByRole("button", { name: "Agregar condición" }));
@@ -93,7 +99,9 @@ describe("/admin/flujos/reglas — validación de condiciones al guardar", () =>
       async () => new Response(JSON.stringify({ id: "r-1" }), { status: 201 }),
     );
     globalThis.fetch = fetchMock;
-    render(ReglasPage, { props: { data: { reglas: [], loadError: null } } });
+    render(ReglasPage, {
+      props: { data: { reglas: [], loadError: null, dependencias: DEPENDENCIAS } },
+    });
 
     await openCreateModal();
     await fireEvent.click(screen.getByRole("button", { name: "Crear regla" }));
@@ -110,7 +118,9 @@ describe("/admin/flujos/reglas — validación de condiciones al guardar", () =>
       return new Response(JSON.stringify({ id: "r-1", ...JSON.parse(init.body) }), { status: 201 });
     });
     globalThis.fetch = fetchMock;
-    render(ReglasPage, { props: { data: { reglas: [], loadError: null } } });
+    render(ReglasPage, {
+      props: { data: { reglas: [], loadError: null, dependencias: DEPENDENCIAS } },
+    });
 
     await openCreateModal();
     await fireEvent.click(screen.getByRole("button", { name: "Agregar condición" }));
@@ -126,5 +136,117 @@ describe("/admin/flujos/reglas — validación de condiciones al guardar", () =>
 
     expect(screen.getAllByLabelText("Valor")).toHaveLength(1);
     expect(screen.getByLabelText("Valor")).toHaveValue("segundo");
+  });
+});
+
+describe("/admin/flujos/reglas — dependencia por código (ADR-032)", () => {
+  const originalFetch = globalThis.fetch;
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN"] }));
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("envía assign_to_dept_code (entero) y no el nombre", async () => {
+    let enviado = null;
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviado = JSON.parse(init.body);
+      return new Response(JSON.stringify({ id: "r-1" }), { status: 201 });
+    });
+    render(ReglasPage, {
+      props: { data: { reglas: [], loadError: null, dependencias: DEPENDENCIAS } },
+    });
+    await openCreateModal();
+    await fireEvent.click(screen.getByRole("button", { name: "Crear regla" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Confirmar y guardar" }));
+    await waitFor(() => expect(enviado).not.toBeNull());
+    expect(enviado.assign_to_dept_code).toBe(7);
+    expect(enviado.assign_to_dept).toBeUndefined();
+  });
+
+  it("la tabla muestra el nombre vigente por código, no la instantánea", () => {
+    render(ReglasPage, {
+      props: {
+        data: {
+          reglas: [
+            {
+              id: "r-1",
+              name: "Regla A",
+              priority: 1,
+              is_active: true,
+              conditions: [],
+              match_mode: "all",
+              assign_to_dept: "Nombre viejo",
+              assign_to_dept_code: 7,
+            },
+          ],
+          loadError: null,
+          dependencias: DEPENDENCIAS,
+        },
+      },
+    });
+    expect(screen.getAllByText("Tecnología").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Nombre viejo")).toBeNull();
+  });
+});
+
+describe("/admin/flujos/reglas — operadores y valor por campo (ADR-032)", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["USUA_PERM_ADMIN"] }));
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  async function conCondicion() {
+    render(ReglasPage, {
+      props: {
+        data: {
+          reglas: [],
+          loadError: null,
+          dependencias: DEPENDENCIAS,
+          dependenciasTodas: [...DEPENDENCIAS, { codigo: 9, nombre: "Vieja", activo: false }],
+        },
+      },
+    });
+    await openCreateModal();
+    await fireEvent.click(screen.getByRole("button", { name: "Agregar condición" }));
+  }
+
+  it("un campo de código solo ofrece eq/ne/in y el valor es un select de dependencias", async () => {
+    await conCondicion();
+    await fireEvent.change(screen.getByLabelText("Campo"), { target: { value: "dest_dept_code" } });
+    const ops = [...screen.getByLabelText("Operador").querySelectorAll("option")].map(
+      (o) => o.value,
+    );
+    expect(ops).toEqual(["eq", "ne", "in"]);
+    await waitFor(() => expect(screen.getByLabelText("Valor").tagName).toBe("SELECT"));
+  });
+
+  it("un campo por nombre solo ofrece contains/regex", async () => {
+    await conCondicion();
+    await fireEvent.change(screen.getByLabelText("Campo"), { target: { value: "dest_dept" } });
+    await waitFor(() => {
+      const ops = [...screen.getByLabelText("Operador").querySelectorAll("option")].map(
+        (o) => o.value,
+      );
+      expect(ops).toEqual(["contains", "regex"]);
+    });
+  });
+
+  it("al pasar de texto a select el valor tecleado se limpia", async () => {
+    await conCondicion();
+    await fireEvent.input(screen.getByLabelText("Valor"), { target: { value: "oficio" } });
+    await fireEvent.change(screen.getByLabelText("Campo"), { target: { value: "dest_dept_code" } });
+    await waitFor(() => expect(screen.getByLabelText("Valor").value).toBe(""));
+  });
+
+  it("«in» sobre un código es un grupo de casillas con las dependencias activas", async () => {
+    await conCondicion();
+    await fireEvent.change(screen.getByLabelText("Campo"), { target: { value: "dest_dept_code" } });
+    await fireEvent.change(screen.getByLabelText("Operador"), { target: { value: "in" } });
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Tecnología/ })).toBeTruthy());
   });
 });

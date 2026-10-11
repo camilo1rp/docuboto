@@ -97,13 +97,17 @@ export async function load({ cookies, parent, url, fetch }) {
   // Dependencias activas (mismo endpoint que radicar/+page.server.js) — solo
   // hace falta para el Tablero, pero es barato y evita un segundo viaje al
   // cambiar de vista en cliente.
-  let dependencias = [];
+  // Se pide el catálogo COMPLETO: las inactivas no se ofrecen en los selectores
+  // pero sí hacen falta para pintar el nombre actual de un paso antiguo (ADR-032).
+  let dependenciasTodas = [];
   try {
-    const depRes = await fetch(`${API_V1}/dependencias?activo=true`, { headers });
-    if (depRes.ok) dependencias = await depRes.json().catch(() => []);
+    const depRes = await fetch(`${API_V1}/dependencias`, { headers });
+    if (depRes.ok) dependenciasTodas = await depRes.json().catch(() => []);
   } catch {
-    dependencias = [];
+    dependenciasTodas = [];
   }
+  if (!Array.isArray(dependenciasTodas)) dependenciasTodas = [];
+  const dependencias = dependenciasTodas.filter((d) => d?.activo !== false);
 
   // Causales activas (catálogo del tenant, migración tenant 008). Devolver y
   // anular exigen una: se sirven aquí para que el modal ofrezca el catálogo real
@@ -123,6 +127,7 @@ export async function load({ cookies, parent, url, fetch }) {
     loadError,
     vista,
     dependencias,
+    dependenciasTodas,
     causales,
     // Filtros activos al cargar (para deep-link)
     initialFilters: { docType, status, page },

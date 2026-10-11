@@ -22,7 +22,6 @@
  * POST → crea el radicado de Salida vinculado en el document-service.
  *   Body (RespuestaRapidaCreate): {
  *     subject?: string,
- *     dest_dept?: string,
  *     dest_dept_code?: number,
  *     observations?: string,
  *     response_days?: number,
@@ -53,16 +52,13 @@ export async function POST({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { subject, dest_dept, dest_dept_code, observations, response_days, metadata } = body ?? {};
+  const { subject, dest_dept_code, observations, response_days, metadata } = body ?? {};
 
   // Construir payload — todos los campos son opcionales en RespuestaRapidaCreate
   /** @type {Record<string, unknown>} */
   const payload = {};
   if (subject && typeof subject === "string" && subject.trim()) {
     payload.subject = subject.trim().slice(0, 255);
-  }
-  if (dest_dept && typeof dest_dept === "string" && dest_dept.trim()) {
-    payload.dest_dept = dest_dept.trim();
   }
   if (dest_dept_code !== undefined && dest_dept_code !== null && dest_dept_code !== "") {
     const code = Number(dest_dept_code);

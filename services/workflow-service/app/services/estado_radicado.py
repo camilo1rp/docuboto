@@ -67,10 +67,10 @@ ESTADOS_PASO_ACTIVO: frozenset[str] = frozenset({"pending", "in_progress"})
 class PasoUbicacion:
     """Lo que `derivar_ubicacion` necesita de un `flow_steps`.
 
-    `codigos_candidatos` son los `dependencias.codigo` ACTIVOS cuyo nombre es
-    exactamente `to_dept` (el paso guarda el NOMBRE, sin FK: `dependencias.nombre`
-    no es único). Lo resuelve la consulta; la decisión de qué hacer con ellos es
-    de la función.
+    `to_dept_code` es la LLAVE (`dependencias.codigo`, ADR-032) y `to_dept` la
+    instantánea del nombre. Antes el paso solo guardaba el nombre y el código se
+    adivinaba con una consulta («nombre de UNA dependencia activa»): un renombre o
+    una homónima lo dejaban NULL o apuntando a otra. Ahora es un dato del paso.
     """
 
     step_number: int
@@ -78,7 +78,7 @@ class PasoUbicacion:
     to_dept: str
     assigned_to: uuid.UUID | None
     completed_at: datetime | None
-    codigos_candidatos: tuple[int, ...] = ()
+    to_dept_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,16 +88,6 @@ class Ubicacion:
     dept: str
     dept_code: int | None
     usuario: uuid.UUID | None
-
-
-def resolver_codigo_dependencia(candidatos: Sequence[int]) -> int | None:
-    """El código solo se resuelve si el nombre casa con UNA dependencia activa.
-
-    Con cero (la dependencia se desactivó o el paso lleva una errata) o con varias
-    (el nombre no es único) elegir una sería inventar la ubicación: se devuelve
-    `None` y el nombre queda como instantánea en `flujo_dept`.
-    """
-    return candidatos[0] if len(candidatos) == 1 else None
 
 
 def _paso_de_ubicacion(pasos: Sequence[PasoUbicacion]) -> PasoUbicacion | None:
@@ -146,6 +136,6 @@ def derivar_ubicacion(
         return None
     return Ubicacion(
         dept=paso.to_dept,
-        dept_code=resolver_codigo_dependencia(paso.codigos_candidatos),
+        dept_code=paso.to_dept_code,
         usuario=paso.assigned_to,
     )

@@ -43,7 +43,8 @@ async def _decide(repo: AnulacionRepository, *, aprobar: bool) -> None:
 
 @pytest.mark.asyncio
 async def test_aprobar_cancela_los_pasos_activos_y_deja_un_evento_por_paso() -> None:
-    paso = {"id": uuid.uuid4(), "tracking_number": "2026-DEMO-E-000001", "step_number": 2, "to_dept": "Jurídica"}
+    paso = {"id": uuid.uuid4(), "tracking_number": "2026-DEMO-E-000001", "step_number": 2,
+            "to_dept": "Jurídica", "to_dept_code": 410}
     repo, conn = _repo(pasos=[paso])
 
     await _decide(repo, aprobar=True)
@@ -54,8 +55,9 @@ async def test_aprobar_cancela_los_pasos_activos_y_deja_un_evento_por_paso() -> 
     assert upd.args[1] == RID
     evento = next(c for c in conn.execute.await_args_list if "INSERT INTO flow_events" in c.args[0])
     assert "'anulacion'" in evento.args[0]
-    assert evento.args[4] == DECIDE  # el actor es quien aprobó
-    detalles = json.loads(evento.args[6])
+    assert evento.args[4] == 410  # el evento hereda el CÓDIGO del paso (ADR-032)
+    assert evento.args[5] == DECIDE  # el actor es quien aprobó
+    detalles = json.loads(evento.args[7])
     assert detalles == {"step_id": str(paso["id"]), "step_number": 2, "anulacion_id": str(AID)}
 
 

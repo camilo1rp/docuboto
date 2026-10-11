@@ -13,7 +13,7 @@ import {
   puedeFinalizar,
   puedeMarcarEnTramite,
   puedeDevolver,
-  nombresDeDependenciasDelUsuario,
+  codigosDeDependenciasDelUsuario,
   puedeFinalizarTramite,
   poseiaUltimoPaso,
   puedeAsignarAFlujo,
@@ -25,20 +25,36 @@ import { mensajeError, MENSAJES_ACTO_TRAMITE } from "./apiError.js";
 
 const YO = "u-yo";
 const OTRO = "u-otro";
-const step = (o = {}) => ({ status: "pending", assigned_to: null, to_dept: "Jurídica", ...o });
+const step = (o = {}) => ({
+  status: "pending",
+  assigned_to: null,
+  to_dept: "Jurídica",
+  to_dept_code: 1,
+  ...o,
+});
 
 describe("tenencia del paso (ADR-028)", () => {
   it("poseedor: asignado a mí", () => {
     expect(esPoseedor(step({ assigned_to: YO }), YO, [])).toBe(true);
   });
   it("NO poseedor: asignado a un colega aunque sea de mi dependencia", () => {
-    expect(esPoseedor(step({ assigned_to: OTRO }), YO, ["Jurídica"])).toBe(false);
+    expect(esPoseedor(step({ assigned_to: OTRO }), YO, [1])).toBe(false);
   });
   it("poseedor: sin asignar y de mi dependencia", () => {
-    expect(esPoseedor(step(), YO, ["Jurídica"])).toBe(true);
+    expect(esPoseedor(step(), YO, [1])).toBe(true);
   });
   it("NO poseedor: sin asignar y de otra dependencia", () => {
-    expect(esPoseedor(step(), YO, ["Archivo"])).toBe(false);
+    expect(esPoseedor(step(), YO, [2])).toBe(false);
+  });
+  it("ADR-032: renombrar la dependencia no cambia la tenencia (se compara el código)", () => {
+    const renombrado = step({ to_dept: "Gestión Documental" });
+    expect(esPoseedor(renombrado, YO, [1])).toBe(true);
+    // El mismo nombre con OTRO código no da tenencia.
+    expect(esPoseedor(step({ to_dept_code: 2 }), YO, [1])).toBe(false);
+  });
+  it("ADR-032: un paso sin código (nombre ambiguo/huérfano) no da tenencia, fail-closed", () => {
+    expect(esPoseedor(step({ to_dept_code: null }), YO, [1])).toBe(false);
+    expect(esPoseedor(step({ to_dept_code: undefined }), YO, [1])).toBe(false);
   });
   it("fail-closed: sin usuario, sin paso o paso ya cerrado", () => {
     expect(esPoseedor(step({ assigned_to: YO }), null, [])).toBe(false);
@@ -52,7 +68,7 @@ describe("tenencia del paso (ADR-028)", () => {
     expect(puedeDevolver(s, YO, [])).toBe(true);
     expect(puedeMarcarEnTramite(step({ assigned_to: YO }), YO, [])).toBe(true);
   });
-  it("las dependencias salen del catálogo por código, solo las activas", () => {
+  it("las dependencias son los códigos de available_depts, solo las activas", () => {
     const user = {
       dependencias: [
         { codigo: 1, nombre: "Jurídica" },
@@ -66,8 +82,8 @@ describe("tenencia del paso (ADR-028)", () => {
         ],
       },
     };
-    expect(nombresDeDependenciasDelUsuario(user)).toEqual(["Jurídica"]);
-    expect(nombresDeDependenciasDelUsuario(null)).toEqual([]);
+    expect(codigosDeDependenciasDelUsuario(user)).toEqual([1, 99]);
+    expect(codigosDeDependenciasDelUsuario(null)).toEqual([]);
   });
 });
 
@@ -94,7 +110,7 @@ describe("mensajes de los actos de trámite (ADR-028)", () => {
 
 describe("Finalizar: espejo de PERM_TRAMITAR nivel 3 + tenencia (ADR-028 R3/R12)", () => {
   const propio = step({ assigned_to: YO, status: "in_progress" });
-  const base = { userId: YO, dependencias: ["Jurídica"], radicadoStatus: "in_progress" };
+  const base = { userId: YO, dependencias: [1], radicadoStatus: "in_progress" };
 
   it.each([
     [3, true],
@@ -115,19 +131,23 @@ describe("Finalizar: espejo de PERM_TRAMITAR nivel 3 + tenencia (ADR-028 R3/R12)
 
   describe("sin paso activo: poseedor del último paso completado", () => {
     const h = (...o) =>
-      o.map((x, i) => ({ step_number: i + 1, status: "completed", to_dept: "Jurídica", ...x }));
+      o.map((x, i) => ({
+        step_number: i + 1,
+        status: "completed",
+        to_dept: "Jurídica",
+        to_dept_code: 1,
+        ...x,
+      }));
     it("lo poseía (asignado a mí) o era de mi dependencia sin dueño", () => {
       expect(
         poseiaUltimoPaso(h({ assigned_to: OTRO }, { assigned_to: YO }), "in_progress", YO, []),
       ).toBe(true);
-      expect(poseiaUltimoPaso(h({ assigned_to: null }), "distributed", YO, ["Jurídica"])).toBe(
-        true,
-      );
+      expect(poseiaUltimoPaso(h({ assigned_to: null }), "distributed", YO, [1])).toBe(true);
     });
     it("cuenta el de mayor step_number, no el último del arreglo", () => {
       const pasos = [
-        { step_number: 2, status: "completed", assigned_to: OTRO, to_dept: "X" },
-        { step_number: 1, status: "completed", assigned_to: YO, to_dept: "X" },
+        { step_number: 2, status: "completed", assigned_to: OTRO, to_dept: "X", to_dept_code: 9 },
+        { step_number: 1, status: "completed", assigned_to: YO, to_dept: "X", to_dept_code: 9 },
       ];
       expect(poseiaUltimoPaso(pasos, "in_progress", YO, [])).toBe(false);
     });
@@ -178,6 +198,7 @@ describe("Asignar a flujo sin paso activo (ADR-028 R16)", () => {
     step_number: 1,
     status: "completed",
     to_dept: "Jurídica",
+    to_dept_code: 1,
     ...o,
   });
   const base = { step: null, radicadoStatus: "distributed", userId: YO, dependencias: [] };
@@ -209,9 +230,9 @@ describe("Asignar a flujo sin paso activo (ADR-028 R16)", () => {
 
 describe("Devolver / Revertir con la tenencia de _holder_condition (R19)", () => {
   it("paso sin dueño de mi dependencia: puedo devolver y revertir si está pending", () => {
-    const s = step({ assigned_to: null, to_dept: "Jurídica" });
-    expect(puedeDevolver(s, YO, ["Jurídica"])).toBe(true);
-    expect(puedeRevertir(s, YO, ["Jurídica"])).toBe(true);
+    const s = step({ assigned_to: null, to_dept: "Jurídica", to_dept_code: 1 });
+    expect(puedeDevolver(s, YO, [1])).toBe(true);
+    expect(puedeRevertir(s, YO, [1])).toBe(true);
     expect(puedeRevertir(s, YO, ["Otra"])).toBe(false);
   });
   it("revertir exige pending; devolver admite in_progress", () => {

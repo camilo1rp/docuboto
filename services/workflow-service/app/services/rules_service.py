@@ -20,6 +20,11 @@ from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
 from app.core.database import tenant_schema
+from app.core.dependencias import (
+    dependencia_ambigua,
+    dependencia_desconocida,
+    dependencia_inconsistente,
+)
 from app.repositories.workflow_repository import WorkflowRepository
 from app.schemas.rules import (
     RuleBatchEvaluationRequest,
@@ -48,10 +53,63 @@ _CAMPOS_AUDITABLES = (
     "doc_type",
     "doc_class",
     "dest_dept",
+    "dest_dept_code",
     "subject_contains",
     "assign_to_dept",
+    "assign_to_dept_code",
     "assign_notes",
 )
+
+#: Campos de NOMBRE de dependencia sobre los que ya no se acepta una condición de
+#: igualdad/pertenencia (ADR-032): cambiaban de sentido al renombrar la dependencia.
+_CAMPOS_POR_NOMBRE = ("dest_dept", "origin_dept")
+_OPS_DE_IDENTIDAD = ("eq", "ne", "in")
+
+
+def _condiciones_por_nombre_obsoletas(conditions: list[dict[str, Any]]) -> HTTPException | None:
+    """422 `condicion_por_nombre_obsoleta` si una condición eq/ne/in compara un NOMBRE de
+    dependencia. `contains`/`not_contains`/`regex` siguen permitidas (texto legítimo)."""
+    malas = [
+        c
+        for c in conditions
+        if c.get("field") in _CAMPOS_POR_NOMBRE and c.get("op") in _OPS_DE_IDENTIDAD
+    ]
+    if not malas:
+        return None
+    campos = sorted({f"{c['field']}_code" for c in malas})
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={
+            "error": "condicion_por_nombre_obsoleta",
+            "detail": (
+                "Comparar una dependencia por nombre (eq/ne/in) ya no se admite: el "
+                f"nombre cambia al renombrarla. Use {', '.join(campos)} con el código."
+            ),
+            "campos": campos,
+            "status": 422,
+        },
+    )
+
+
+def _codigos_validos(conditions: list[dict[str, Any]]) -> HTTPException | None:
+    """Las condiciones sobre `*_dept_code` comparan enteros: otra cosa no casaría nunca."""
+    for c in conditions:
+        if c.get("field") not in ("dest_dept_code", "origin_dept_code"):
+            continue
+        valor = c.get("value")
+        items = valor if isinstance(valor, list) else str(valor).split(",")
+        try:
+            [int(str(v).strip()) for v in items if str(v).strip() != ""]
+        except ValueError:
+            return HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "error": "condicion_invalida",
+                    "detail": f"{c.get('field')} compara códigos de dependencia (enteros)",
+                    "status": 422,
+                },
+            )
+    return None
 
 
 def _conditions(raw: Any) -> list[dict[str, Any]]:
@@ -82,6 +140,8 @@ def _context(req: RuleEvaluationRequest) -> dict[str, Any]:
         "doc_class": req.doc_class,
         "dest_dept": req.dest_dept,
         "origin_dept": req.origin_dept,
+        "dest_dept_code": req.dest_dept_code,
+        "origin_dept_code": req.origin_dept_code,
         "subject": req.subject,
         "sender_name": req.sender_name,
         "sender_entity": req.sender_entity,
@@ -99,34 +159,40 @@ class WorkflowRulesService:
         schema = tenant_schema(self.tenant_slug)  # valida + normaliza (fail-closed)
         await self.conn.execute(f'SET search_path TO "{schema}", public')
 
-    async def _validate_assign_to_dept(self, nombre: str) -> None:
-        """422 fail-closed si `assign_to_dept` no es una dependencia ACTIVA del
-        catálogo — mismo criterio y helper (`WorkflowRepository.dependencia_activa`)
-        que `WorkflowService._validate_dept_catalog` usa para `to_dept`/`from_dept`
-        en `_create_step`; NO se escribe una consulta nueva.
+    async def _resolver_dependencia(
+        self, codigo: int | None, nombre: str | None, *, field: str, activa: bool
+    ) -> tuple[int, str]:
+        """(código, nombre del catálogo) de la dependencia que una regla cita.
 
-        Cierra el residual declarado en CLAUDE.md (2026-07-29): `assign_to_dept`
-        (texto libre, sin FK) no se comprobaba al crear/editar una regla, así que
-        una regla mal configurada se aceptaba en silencio y solo se descubría en
-        ejecución — radicado a radicado, vía el `logger.warning` de
-        `app/services/distribution.py:auto_distribute` que nadie lee. Validar al
-        CONFIGURAR la regla pone el error delante de un administrador que acaba de
-        teclear el nombre, en el momento en que puede corregirlo. Dependencia
-        INACTIVA se trata igual que inexistente, mismo criterio ya establecido en
-        `WorkflowService._validate_dept_catalog`/`WorkflowRepository.dependencia_activa`.
+        - código: debe existir (y estar ACTIVA si la regla ASIGNA a ella,
+          `activa=True`); si además llega el alias por nombre debe ser el del catálogo
+          (422 `dependencia_inconsistente`).
+        - solo nombre (alias deprecado): se resuelve con el criterio único de
+          tenant-service (`resolver_codigo_dependencia`, solo ACTIVAS con ese nombre
+          ACTUAL): 1 -> su código; >=2 -> 422 `dependencia_ambigua`; 0 -> 422
+          `dependencia_desconocida`.
+        El nombre guardado es SIEMPRE el del catálogo, nunca el texto del cliente.
+
+        Cierra lo que antes era el residual del servicio: una regla mal configurada se
+        aceptaba en silencio y solo se descubría radicado a radicado en ejecución.
         """
         repo = WorkflowRepository(self.conn, self.tenant_slug)
-        if await repo.dependencia_activa(nombre):
-            return
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "dependencia_desconocida",
-                "detail": f"'{nombre}' no es una dependencia activa del catálogo (assign_to_dept)",
-                "field": "assign_to_dept",
-                "status": 422,
-            },
+        if codigo is None:
+            assert nombre is not None
+            cod, candidatos = await repo.resolver_alias(nombre, historico=False)
+            if candidatos >= 2:
+                raise dependencia_ambigua(field, nombre, candidatos)
+            if cod is None:
+                raise dependencia_desconocida(field, nombre)
+            codigo = cod
+        catalogo = await (
+            repo.dependencia_activa(codigo) if activa else repo.dependencia_existente(codigo)
         )
+        if catalogo is None:
+            raise dependencia_desconocida(field, codigo)
+        if nombre is not None and nombre != catalogo:
+            raise dependencia_inconsistente(field, codigo, nombre, catalogo)
+        return codigo, catalogo
 
     async def create_rule(
         self, payload: WorkflowRuleCreate, created_by: UUID
@@ -144,30 +210,50 @@ class WorkflowRulesService:
         servicio — una regla activa sin asiento es una decisión sin autor.
         """
         await self._set_search_path()
-        await self._validate_assign_to_dept(payload.assign_to_dept)
+        condiciones = [c.model_dump() for c in payload.conditions]
+        for error in (
+            _condiciones_por_nombre_obsoletas(condiciones),
+            _codigos_validos(condiciones),
+        ):
+            if error is not None:
+                raise error
+        assign_code, assign_name = await self._resolver_dependencia(
+            payload.assign_to_dept_code, payload.assign_to_dept,
+            field="assign_to_dept_code", activa=True,
+        )
+        dest_code: int | None = None
+        dest_name: str | None = None
+        if payload.dest_dept_code is not None or payload.dest_dept is not None:
+            dest_code, dest_name = await self._resolver_dependencia(
+                payload.dest_dept_code, payload.dest_dept,
+                field="dest_dept_code", activa=False,
+            )
         async with self.conn.transaction():
             row = await self.conn.fetchrow(
                 """
                 INSERT INTO workflow_rules
                     (name, description, is_active, priority, conditions, match_mode,
                      doc_type, doc_class, dest_dept, subject_contains,
-                     assign_to_dept, assign_notes, created_by)
-                VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)
+                     assign_to_dept, assign_notes, created_by,
+                     assign_to_dept_code, dest_dept_code)
+                VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
                 RETURNING *
                 """,
                 payload.name,
                 payload.description,
                 payload.is_active,
                 payload.priority,
-                json.dumps([c.model_dump() for c in payload.conditions]),
+                json.dumps(condiciones),
                 payload.match_mode,
                 payload.doc_type,
                 payload.doc_class,
-                payload.dest_dept,
+                dest_name,
                 payload.subject_contains,
-                payload.assign_to_dept,
+                assign_name,
                 payload.assign_notes,
                 created_by,
+                assign_code,
+                dest_code,
             )
             await audit.append(
                 self.conn,
@@ -224,12 +310,36 @@ class WorkflowRulesService:
             # llenaría la cadena de asientos que no describen ningún cambio.
             return await self.get_rule(rule_id)
 
-        # PATCH parcial: solo se valida si el cliente TOCÓ `assign_to_dept` en
-        # esta petición (`exclude_unset`, no `data.get(...)` sobre el payload
-        # completo) — un PATCH que edita `name`/`priority`/etc. sin mencionar
-        # `assign_to_dept` no debe re-validar (ni romper) el valor ya vigente.
-        if data.get("assign_to_dept") is not None:
-            await self._validate_assign_to_dept(data["assign_to_dept"])
+        if data.get("conditions") is not None:
+            for error in (
+                _condiciones_por_nombre_obsoletas(data["conditions"]),
+                _codigos_validos(data["conditions"]),
+            ):
+                if error is not None:
+                    raise error
+        # PATCH parcial: solo se valida si el cliente TOCÓ el destino en esta petición
+        # (`exclude_unset`) — un PATCH que edita `name`/`priority`/etc. no debe
+        # re-validar (ni romper) el valor ya vigente. El par (código, nombre) se
+        # reescribe ENTERO desde el catálogo (ADR-032).
+        if data.get("assign_to_dept_code") is not None or data.get("assign_to_dept") is not None:
+            data["assign_to_dept_code"], data["assign_to_dept"] = await self._resolver_dependencia(
+                data.get("assign_to_dept_code"), data.get("assign_to_dept"),
+                field="assign_to_dept_code", activa=True,
+            )
+        else:
+            data.pop("assign_to_dept_code", None)
+            data.pop("assign_to_dept", None)
+        if "dest_dept_code" in data or "dest_dept" in data:
+            if data.get("dest_dept_code") is not None or data.get("dest_dept") is not None:
+                data["dest_dept_code"], data["dest_dept"] = await self._resolver_dependencia(
+                    data.get("dest_dept_code"), data.get("dest_dept"),
+                    field="dest_dept_code", activa=False,
+                )
+            else:  # limpiar la condición: ambos a NULL
+                data["dest_dept_code"] = None
+                data["dest_dept"] = None
+        if not data:
+            return await self.get_rule(rule_id)
 
         set_parts: list[str] = []
         values: list[Any] = []
@@ -363,6 +473,7 @@ class WorkflowRulesService:
             rule_id=match["id"],
             rule_name=match["name"],
             assign_to_dept=match["assign_to_dept"],
+            assign_to_dept_code=match["assign_to_dept_code"],
             assign_notes=match["assign_notes"],
         )
 
@@ -386,6 +497,7 @@ class WorkflowRulesService:
                     rule_id=match["id"],
                     rule_name=match["name"],
                     assign_to_dept=match["assign_to_dept"],
+                    assign_to_dept_code=match["assign_to_dept_code"],
                     assign_notes=match["assign_notes"],
                 )
             )

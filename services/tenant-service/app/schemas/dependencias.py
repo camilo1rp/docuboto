@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 class DependenciaCreate(BaseModel):
     codigo: int = Field(..., ge=1, le=999999, description="depe_codi (3-4 dígitos)")
     sigla: str = Field(..., min_length=1, max_length=20)
-    nombre: str = Field(..., min_length=1, max_length=500)
+    nombre: str = Field(..., min_length=1, max_length=100)
     parent_id: uuid.UUID | None = None
     depe_rad_tp2: bool = False
     activo: bool = True
@@ -27,12 +27,36 @@ class DependenciaCreate(BaseModel):
 class DependenciaUpdate(BaseModel):
     """Actualización parcial: solo se aplican los campos presentes."""
 
-    codigo: int | None = Field(None, ge=1, le=999999)
+    codigo: int | None = Field(
+        None, ge=1, le=999999, description="Inmutable: solo se acepta el valor actual (no-op)"
+    )
     sigla: str | None = Field(None, min_length=1, max_length=20)
-    nombre: str | None = Field(None, min_length=1, max_length=500)
+    nombre: str | None = Field(None, min_length=1, max_length=100)
     parent_id: uuid.UUID | None = None
     depe_rad_tp2: bool | None = None
     activo: bool | None = None
+    motivo: str | None = Field(
+        None,
+        min_length=10,
+        max_length=1000,
+        description=(
+            "Acto de reestructuración que motiva el cambio de nombre (opcional). "
+            "Se guarda en el historial de nombres y en el asiento; no es un campo de la dependencia."
+        ),
+    )
+
+
+class MapeoNombreCreate(BaseModel):
+    """Decisión humana: este nombre (ambiguo/huérfano del backfill) ES esta dependencia."""
+
+    nombre: str = Field(..., min_length=1, max_length=500)
+    motivo: str = Field(..., min_length=10, max_length=1000)
+
+
+class MapeoNombreResponse(BaseModel):
+    codigo: int
+    nombre: str
+    origen: str
 
 
 class DependenciaResponse(BaseModel):

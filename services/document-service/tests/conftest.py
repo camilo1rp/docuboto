@@ -292,3 +292,18 @@ def _reloj_de_la_base_fijo(request: pytest.FixtureRequest, monkeypatch: pytest.M
         return datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
 
     monkeypatch.setattr(outbox, "_reloj_bd", _fijo)
+
+
+@pytest.fixture(autouse=True)
+def _concordancia_sin_consulta(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`exigir_concordancia` (ADR-032) consulta el catálogo con `conn.fetchval`; las suites con
+    `conn` simulado encadenan esos valores en un orden fijo y no deben pagarla. Se ejercita
+    sin sustituir en `test_dependencia_por_codigo.py` y en el carril de integración."""
+    nodeid = request.node.nodeid
+    if "integration" in nodeid or "test_dependencia_por_codigo" in nodeid:
+        return
+
+    async def _nada(*_a: object, **_k: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.routers.documents.exigir_concordancia", _nada)

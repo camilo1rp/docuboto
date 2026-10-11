@@ -37,6 +37,7 @@ from app.clients.tenant_client import TenantServiceClient
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
 from app.core.datos_minimos import exigir_o_422
+from app.core.dependencias import normalizar_dependencia
 from app.models.document import Anexo, Radicado
 from app.repositories.audit_read import AuditReadRepository
 from app.repositories.document_repository import (
@@ -275,8 +276,26 @@ class DocumentService:
         # legal) en los campos de texto origin_dept/dest_dept.
         if payload.origin_dept_code is not None:
             payload.origin_dept = await self._resolve_dependencia(payload.origin_dept_code)
+        elif payload.origin_dept:
+            # ALIAS deprecado por nombre (ADR-032): un nombre ambiguo es 422; uno que no
+            # es dependencia se conserva como texto (la Salida puede ir a un tercero).
+            payload.origin_dept, payload.origin_dept_code, _ = await normalizar_dependencia(
+                self._conn,
+                campo="origin_dept",
+                codigo=None,
+                nombre=payload.origin_dept,
+                estricto=False,
+            )
         if payload.dest_dept_code is not None:
             payload.dest_dept = await self._resolve_dependencia(payload.dest_dept_code)
+        elif payload.dest_dept:
+            payload.dest_dept, payload.dest_dept_code, _ = await normalizar_dependencia(
+                self._conn,
+                campo="dest_dept",
+                codigo=None,
+                nombre=payload.dest_dept,
+                estricto=False,
+            )
 
         # RF-RAD-04: la fecha de vencimiento se calcula en días hábiles desde la
         # radicación. El calendario lo resuelve tenant-service (E14) vía HTTP;
@@ -462,6 +481,7 @@ class DocumentService:
                 "dest_dept": radicado.dest_dept,
                 "dest_dept_code": radicado.dest_dept_code,
                 "origin_dept": radicado.origin_dept,
+                "origin_dept_code": radicado.origin_dept_code,
                 "sender_name": radicado.sender_name,
                 "sender_entity": radicado.sender_entity,
                 "pages": radicado.pages,
@@ -1142,6 +1162,7 @@ class DocumentService:
     _CAMPOS_AUDITABLES = (
         "subject",
         "dest_dept",
+        "dest_dept_code",
         "observations",
         "pages",
         "doc_class",
@@ -1194,10 +1215,25 @@ class DocumentService:
                 # encima de su clearance ya salió por el 404 neutro de arriba.
                 raise DocumentAnuladoError(previo.tracking_number)
 
-            if previo.status == "closed" and payload.dest_dept is not None:
+            if previo.status == "closed" and (
+                payload.dest_dept is not None or payload.dest_dept_code is not None
+            ):
                 # La dependencia de radicación de un radicado cerrado es dato
                 # histórico (ADR-029): su corrección no es un PATCH.
                 raise DestDeptImmutableError(previo.tracking_number)
+
+            if payload.dest_dept is not None or payload.dest_dept_code is not None:
+                # El par (nombre, código) alimenta la ubicación generada (ADR-029) y se
+                # escribe ENTERO desde el catálogo (ADR-032): el código manda; el nombre
+                # solo es alias (422 si es ambiguo, desconocido o discordante). Antes un
+                # nombre sin candidato único dejaba el código en NULL en silencio.
+                payload.dest_dept, payload.dest_dept_code, _ = await normalizar_dependencia(
+                    self._conn,
+                    campo="dest_dept",
+                    codigo=payload.dest_dept_code,
+                    nombre=payload.dest_dept,
+                    estricto=True,
+                )
 
             # Revalidación de metadatos. Se dispara si se toca el tipo O los
             # metadatos: cambiar solo los metadatos también tiene que cumplir la

@@ -33,8 +33,8 @@ const RADICADO = {
 };
 
 const DEPENDENCIAS = [
-  { value: "Jurídica", label: "Jurídica" },
-  { value: "Archivo", label: "Archivo" },
+  { value: "7", label: "Jurídica" },
+  { value: "12", label: "Archivo" },
 ];
 
 const originalFetch = globalThis.fetch;
@@ -91,8 +91,9 @@ describe("AsignarModal", () => {
         radicado_id: RADICADO.id,
         tracking_number: RADICADO.tracking_number,
         doc_type: "E",
-        to_dept: "Archivo",
+        to_dept_code: 12,
       });
+      expect(body.to_dept).toBeUndefined();
       return jsonResponse({ id: "step-1", radicado_id: RADICADO.id, to_dept: "Archivo" });
     });
     globalThis.fetch = fetchMock;
@@ -100,7 +101,7 @@ describe("AsignarModal", () => {
     render(AsignarModal, { props: { open: true, radicado: RADICADO, dependencias: DEPENDENCIAS } });
 
     const select = screen.getByLabelText(/dependencia destino/i);
-    await fireEvent.change(select, { target: { value: "Archivo" } });
+    await fireEvent.change(select, { target: { value: "12" } });
     await fireEvent.click(screen.getByRole("button", { name: "Asignar" }));
 
     await waitFor(() => {
@@ -145,7 +146,7 @@ describe("AsignarModal", () => {
     render(AsignarModal, { props: { open: true, radicado: RADICADO, dependencias: DEPENDENCIAS } });
 
     const select = screen.getByLabelText(/dependencia destino/i);
-    await fireEvent.change(select, { target: { value: "Archivo" } });
+    await fireEvent.change(select, { target: { value: "12" } });
     await fireEvent.change(screen.getByLabelText(/fecha límite/i), {
       target: { value: "2026-08-15" },
     });

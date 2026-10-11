@@ -873,11 +873,14 @@ CATALOG: tuple[Tool, ...] = (
                 label="Asunto",
             ),
             Param(
-                name="dest_dept",
-                max_length=100,
+                name="dest_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
                 description=(
-                    "Nombre de la dependencia destino DE RADICACIÓN (a quién iba "
-                    "dirigido). No mueve el radicado: dónde está lo decide el flujo."
+                    "CÓDIGO de la dependencia destino DE RADICACIÓN (a quién iba "
+                    "dirigido; el de `listar_dependencias`). No mueve el radicado: "
+                    "dónde está lo decide el flujo."
                 ),
                 label="Dependencia de radicación",
             ),
@@ -1238,7 +1241,14 @@ CATALOG: tuple[Tool, ...] = (
         epic="E05",
         operacion="Consultar los pendientes de trámite del equipo",
         params=(
-            Param(name="dept", description="Filtra por dependencia.", label="Dependencia"),
+            Param(
+                name="dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description="Filtra por CÓDIGO de dependencia (el de `listar_dependencias`).",
+                label="Dependencia",
+            ),
             Param(
                 name="assigned_to",
                 format="uuid",
@@ -1302,11 +1312,12 @@ CATALOG: tuple[Tool, ...] = (
             _P_RADICADO_ID_BODY,
             _P_TRACKING_BODY,
             Param(
-                name="to_dept",
+                name="to_dept_code",
+                type="integer",
                 required=True,
-                min_length=1,
-                max_length=100,
-                description="Dependencia destino.",
+                minimum=1,
+                maximum=999999,
+                description="CÓDIGO numérico de la dependencia destino (el de `listar_dependencias`).",
                 label="Dependencia destino",
             ),
             Param(
@@ -1329,8 +1340,8 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="trasladar_radicado",
         description=(
-            "Traslada un radicado de una dependencia a otra. A diferencia de asignar, "
-            "exige indicar la dependencia de origen."
+            "Traslada un radicado de una dependencia a otra. La dependencia de origen la "
+            "deriva el servicio del paso activo; solo se indica el CÓDIGO de destino."
         ),
         method="POST",
         path="/api/v1/workflows/transfer",
@@ -1348,22 +1359,12 @@ CATALOG: tuple[Tool, ...] = (
             _P_RADICADO_ID_BODY,
             _P_TRACKING_BODY,
             Param(
-                name="from_dept",
+                name="to_dept_code",
+                type="integer",
                 required=True,
-                min_length=1,
-                max_length=100,
-                description=(
-                    "Dependencia de origen. El servicio la EXIGE para trasladar; "
-                    "omitirla falla."
-                ),
-                label="Dependencia origen",
-            ),
-            Param(
-                name="to_dept",
-                required=True,
-                min_length=1,
-                max_length=100,
-                description="Dependencia destino.",
+                minimum=1,
+                maximum=999999,
+                description="CÓDIGO numérico de la dependencia destino (el de `listar_dependencias`).",
                 label="Dependencia destino",
             ),
             Param(
@@ -1519,7 +1520,14 @@ CATALOG: tuple[Tool, ...] = (
                 description="Bandeja tipada.",
                 label="Bandeja",
             ),
-            Param(name="dept", description="Filtra por dependencia.", label="Dependencia"),
+            Param(
+                name="dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description="Filtra por CÓDIGO de dependencia (el de `listar_dependencias`).",
+                label="Dependencia",
+            ),
             Param(
                 name="assigned_to",
                 format="uuid",
@@ -1734,12 +1742,6 @@ CATALOG: tuple[Tool, ...] = (
                 label="Asunto",
             ),
             Param(
-                name="dest_dept",
-                max_length=100,
-                description="Dependencia destinataria.",
-                label="Destino",
-            ),
-            Param(
                 name="dest_dept_code",
                 type="integer",
                 minimum=1,
@@ -1844,10 +1846,12 @@ CATALOG: tuple[Tool, ...] = (
                 label="Asunto",
             ),
             Param(
-                name="dest_dept",
-                max_length=100,
-                description="Dependencia destinataria.",
-                label="Destino",
+                name="dest_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description="CÓDIGO de la dependencia destinataria (el de `listar_dependencias`).",
+                label="Código de destino",
             ),
             Param(
                 name="cuerpo",
@@ -1893,10 +1897,12 @@ CATALOG: tuple[Tool, ...] = (
                 label="Asunto",
             ),
             Param(
-                name="dest_dept",
-                max_length=100,
-                description="Dependencia destinataria.",
-                label="Destino",
+                name="dest_dept_code",
+                type="integer",
+                minimum=1,
+                maximum=999999,
+                description="CÓDIGO de la dependencia destinataria (el de `listar_dependencias`).",
+                label="Código de destino",
             ),
             Param(name="cuerpo", description="Texto del documento.", label="Cuerpo"),
         ),
@@ -2456,11 +2462,12 @@ CATALOG: tuple[Tool, ...] = (
         params=(
             _P_RADICADO_ID,
             Param(
-                name="to_dept",
+                name="to_dept_code",
+                type="integer",
                 required=True,
-                min_length=1,
-                max_length=100,
-                description="Dependencia a la que se devuelve.",
+                minimum=1,
+                maximum=999999,
+                description="CÓDIGO numérico de la dependencia a la que se devuelve (el de `listar_dependencias`).",
                 label="Devolver a",
             ),
             Param(

@@ -95,23 +95,64 @@ def _mapa_propio(directory: Path) -> dict[str, list[str]]:
 # necesitan un asiento-ANCLA en `public.audit_log`. El asiento lo escribe esta
 # APLICACIÓN (`audit.append`, que firma la cadena de hash): nunca el SQL de la
 # migración — un INSERT directo ya contaminó la cadena una vez y la rompe.
-# archivo -> (tabla de evidencia, acción del asiento, columna de orden estable)
-_ANCLAS: dict[str, tuple[str, str, str]] = {
-    "013_radicado_estado_desde_flujo.sql": (
-        "radicado_estado_recalculo",
-        "workflow.estado_radicado.backfill",
-        "radicado_id",
-    ),
-    "016_radicado_ubicacion_desde_flujo.sql": (
-        "radicado_ubicacion_recalculo",
-        "workflow.ubicacion_radicado.backfill",
-        "radicado_id",
-    ),
-    "015_sanear_pasos_zombi.sql": (
-        "flow_step_saneamiento",
-        "workflow.flow_step.saneamiento",
-        "step_id",
-    ),
+# archivo -> (tabla de evidencia, acción del asiento, columna de orden estable,
+#             `origen` de las filas que ancla o None = todas)
+#
+# `radicado_ubicacion_recalculo` la escriben DOS migraciones (016 y 019): cada una
+# ancla SOLO sus filas (`origen`) y con su propia acción — el ancla deduplica por
+# (tenant, acción, tabla) y compartir acción dejaría sin ancla a la segunda.
+_ANCLAS: dict[str, list[tuple[str, str, str, str | None]]] = {
+    "013_radicado_estado_desde_flujo.sql": [
+        (
+            "radicado_estado_recalculo",
+            "workflow.estado_radicado.backfill",
+            "radicado_id",
+            None,
+        ),
+    ],
+    "016_radicado_ubicacion_desde_flujo.sql": [
+        (
+            "radicado_ubicacion_recalculo",
+            "workflow.ubicacion_radicado.backfill",
+            "radicado_id",
+            "migracion_016",
+        ),
+    ],
+    "015_sanear_pasos_zombi.sql": [
+        (
+            "flow_step_saneamiento",
+            "workflow.flow_step.saneamiento",
+            "step_id",
+            None,
+        ),
+    ],
+    # La 019 deja DOS evidencias: los nombres que resolvió y el recálculo de la
+    # ubicación (fase C), que reutiliza la tabla de la 016 con su propio `origen`.
+    "019_flujo_dependencia_por_codigo.sql": [
+        (
+            "dependencia_codigo_backfill",
+            "workflow.dependencia_codigo.backfill",
+            "fila_id",
+            None,
+        ),
+        (
+            "radicado_ubicacion_recalculo",
+            "workflow.ubicacion_radicado.backfill_019",
+            "radicado_id",
+            "migracion_019",
+        ),
+    ],
+    # La 020 solo completa columnas NUEVAS (antes, despues, historico_id, reconstruido)
+    # de la evidencia de la 019: ancla propia, con acción distinta porque el ancla
+    # deduplica por (tenant, acción, tabla) y el hash de la 019 ya está escrito.
+    "020_backfill_evidencia_completa.sql": [
+        (
+            "dependencia_codigo_backfill",
+            "workflow.dependencia_codigo.backfill_020",
+            "fila_id",
+            None,
+        ),
+    ],
 }
 _SERVICIO_ANCLA = "workflow-service"
 
@@ -136,19 +177,39 @@ async def _slug_del_schema(conn: asyncpg.Connection, schema: str) -> str:
 async def anclar_evidencia(
     conn: asyncpg.Connection, schema: str, archivo: str, *, tenant_slug: str | None = None
 ) -> bool:
-    """Asiento-ancla de una migración de datos: conteo + SHA-256 del contenido
-    ORDENADO de su tabla de evidencia. Devuelve `True` si escribió el asiento.
+    """Asientos-ancla de una migración de datos: conteo + SHA-256 del contenido
+    ORDENADO de cada tabla de evidencia que deja. Devuelve `True` si escribió algún
+    asiento.
 
     Una vez por tenant: si ya existe el asiento (mismo tenant, acción y tabla) no
     escribe otro. Sin filas de evidencia (la migración no cambió nada) tampoco:
     no hay nada que anclar. Debe correr en la transacción de la migración, con el
     `search_path` ya fijado al schema del tenant.
     """
-    tabla, accion, orden = _ANCLAS[archivo]
+    escribio = False
+    for ancla in _ANCLAS[archivo]:
+        if await _anclar_tabla(conn, schema, archivo, ancla, tenant_slug):
+            escribio = True
+    return escribio
+
+
+async def _anclar_tabla(
+    conn: asyncpg.Connection,
+    schema: str,
+    archivo: str,
+    ancla: tuple[str, str, str, str | None],
+    tenant_slug: str | None,
+) -> bool:
+    tabla, accion, orden, origen = ancla
     if await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".{tabla}') is None:
         return False
     # `schema` y `tabla` salen de information_schema / de la constante de arriba.
-    filas = await conn.fetch(f'SELECT * FROM "{schema}".{tabla} ORDER BY {orden}, id')
+    if origen is None:
+        filas = await conn.fetch(f'SELECT * FROM "{schema}".{tabla} ORDER BY {orden}, id')
+    else:
+        filas = await conn.fetch(
+            f'SELECT * FROM "{schema}".{tabla} WHERE origen = $1 ORDER BY {orden}, id', origen
+        )
     if not filas:
         return False
     slug = tenant_slug or await _slug_del_schema(conn, schema)

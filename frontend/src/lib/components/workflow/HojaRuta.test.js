@@ -16,6 +16,8 @@
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/svelte";
+import { readable } from "svelte/store";
+import { NOMBRES_DEPENDENCIA_KEY } from "$lib/stores/dependencias.js";
 import HojaRuta from "./HojaRuta.svelte";
 
 const RAD_ID = "11111111-1111-1111-1111-111111111111";
@@ -267,6 +269,100 @@ describe("HojaRuta", () => {
 
       await waitFor(() => screen.getByText("Marcar como leído"));
       expect(screen.queryByText("marcar_leido")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("HojaRuta — la dependencia se muestra por nombre actual (ADR-032)", () => {
+  it("la instantánea del paso se conserva y, si la dependencia se renombró, añade «(hoy: …)»", async () => {
+    const originalFetch = globalThis.fetch;
+    const context = new Map([
+      [NOMBRES_DEPENDENCIA_KEY, readable(new Map([[7, "Gestión Jurídica"]]))],
+    ]);
+    globalThis.fetch = vi.fn(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/history")) {
+        return jsonResponse({
+          radicado_id: RAD_ID,
+          tracking_number: "2026-ICETEX-E-000001",
+          steps: [
+            {
+              id: "step-1",
+              action: "assign",
+              to_dept: "Jurídica",
+              to_dept_code: 7,
+              from_dept: null,
+              status: "completed",
+              created_at: "2026-01-01T10:00:00Z",
+              notes: null,
+            },
+          ],
+        });
+      }
+      if (path.endsWith("/events")) return jsonResponse([]);
+      if (path.endsWith("/current")) {
+        return jsonResponse({
+          id: "step-9",
+          to_dept: "Jurídica",
+          to_dept_code: 7,
+          status: "pending",
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    });
+    try {
+      render(HojaRuta, { props: { radicadoId: RAD_ID }, context });
+      // Ubicación actual: nombre vigente.
+      await waitFor(() =>
+        screen.getByText("Gestión Jurídica", { selector: ".op-hoja-ruta__current-dept" }),
+      );
+      // Historial: instantánea intacta + nombre de hoy.
+      expect(screen.getByText("Jurídica", { selector: ".op-hoja-ruta__meta span" })).toBeTruthy();
+      expect(screen.getByText("(hoy: Gestión Jurídica)")).toBeTruthy();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("instantánea nula pero con código: se pinta el nombre actual del catálogo", async () => {
+    const originalFetch = globalThis.fetch;
+    const context = new Map([
+      [NOMBRES_DEPENDENCIA_KEY, readable(new Map([[7, "Gestión Jurídica"]]))],
+    ]);
+    globalThis.fetch = vi.fn(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/history")) {
+        return jsonResponse({
+          radicado_id: RAD_ID,
+          tracking_number: "2026-ICETEX-E-000001",
+          steps: [
+            {
+              id: "step-1",
+              action: "assign",
+              to_dept: null,
+              to_dept_code: 7,
+              from_dept: null,
+              from_dept_code: 7,
+              status: "completed",
+              created_at: "2026-01-01T10:00:00Z",
+              notes: null,
+            },
+          ],
+        });
+      }
+      if (path.endsWith("/events")) return jsonResponse([]);
+      if (path.endsWith("/current")) return jsonResponse(null, 404);
+      throw new Error(`unexpected fetch: ${path}`);
+    });
+    try {
+      render(HojaRuta, { props: { radicadoId: RAD_ID }, context });
+      await waitFor(() =>
+        expect(
+          screen.getAllByText("Gestión Jurídica", { selector: ".op-hoja-ruta__meta span" }).length,
+        ).toBe(2),
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }

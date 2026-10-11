@@ -227,3 +227,26 @@ async def test_la_reclasificacion_con_la_forma_del_productor_sale_sin_causal_por
     assert "document.radicado.reclassified" in cuerpo and '"nivel_nuevo": 3' in cuerpo
     assert "seguridad nacional" not in cuerpo
     assert "1712" not in cuerpo
+
+
+def test_la_ruta_por_codigo_de_un_reservado_tampoco_sale():
+    """B5 (ADR-032): `*_dept_code` dice lo mismo que el nombre y se recorta igual.
+
+    Itera TODA clave `*_dept*` del payload, no una lista fija: si el productor
+    gana otro campo de dependencia y la admisión inversa no lo cubre, rojo.
+    """
+    ruta = {
+        "to_dept": "Despacho Secreto",
+        "to_dept_code": 7771,
+        "from_dept": "Inteligencia",
+        "from_dept_code": 7772,
+        "origin_dept": "Inteligencia",
+        "origin_dept_code": 7773,
+        "assign_to_dept_code": 7774,
+        "dest_dept_code": 7775,
+    }
+    salida = recortar_si_clasificado(_sobre(3, **ruta))
+    for clave in ruta:
+        assert clave not in salida["payload"], clave
+    texto = json.dumps(salida, ensure_ascii=False)
+    assert not any(str(v) in texto for v in ruta.values())

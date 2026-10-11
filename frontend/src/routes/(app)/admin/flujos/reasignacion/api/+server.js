@@ -18,13 +18,14 @@
  * ESCRITA (`confirm: "REASIGNAR"`) como segunda barrera — capa de defensa en
  * profundidad; el backend no la conoce ni la exige, la exige este proxy.
  *
- * POST body: { from_assigned_to?: uuid, from_dept?: string, to_assigned_to: uuid,
+ * POST body: { from_assigned_to?: uuid, from_dept_code?: number, to_assigned_to: uuid,
  *              confirm: string }
  *   Allowlist campo a campo (nunca el body íntegro del cliente).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 import { REASSIGN_CONFIRM_PHRASE, isReassignConfirmed } from "$lib/utils/reassignConfirm.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,7 +44,7 @@ export async function POST({ locals, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { from_assigned_to, from_dept, to_assigned_to, confirm } = body ?? {};
+  const { from_assigned_to, from_dept_code, to_assigned_to, confirm } = body ?? {};
 
   if (!isReassignConfirmed(confirm)) {
     return json(
@@ -56,7 +57,8 @@ export async function POST({ locals, request }) {
   }
 
   const hasFromUser = typeof from_assigned_to === "string" && from_assigned_to.trim();
-  const hasFromDept = typeof from_dept === "string" && from_dept.trim();
+  const fromDeptCode = parseCodigoDependencia(from_dept_code);
+  const hasFromDept = fromDeptCode !== null;
   if (!hasFromUser && !hasFromDept) {
     return json(
       { error: "validation_error", detail: "Indique el usuario o la dependencia de origen." },
@@ -92,7 +94,7 @@ export async function POST({ locals, request }) {
     to_assigned_to: to_assigned_to.trim(),
   };
   if (hasFromUser) payload.from_assigned_to = from_assigned_to.trim();
-  if (hasFromDept) payload.from_dept = from_dept.trim();
+  if (hasFromDept) payload.from_dept_code = fromDeptCode;
 
   try {
     const res = await fetch(`${API_V1}/workflows/reassign/cascade`, {

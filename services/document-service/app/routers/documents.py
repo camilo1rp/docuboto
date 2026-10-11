@@ -42,6 +42,11 @@ from app.clients import storage_client
 from app.clients.tenant_client import TenantServiceClient, TenantServiceError
 from app.core.clearance import check_permission, require_permission, resolve_caller_clearance
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
+from app.core.dependencias import (
+    exigir_concordancia,
+    marcar_alias_deprecado,
+    usa_alias,
+)
 from app.schemas.document import (
     AnexoResponse,
     DispositionResponse,
@@ -154,10 +159,23 @@ def _build_service(
 async def create_document(
     payload: DocumentCreate,
     request: Request,
+    response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
     tenant_client: TenantServiceClient = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
+    # Código Y nombre juntos deben ser la misma dependencia (ADR-032); el nombre que
+    # se guarda lo pone el catálogo, nunca el texto del cliente.
+    await exigir_concordancia(
+        conn, campo="origin_dept", codigo=payload.origin_dept_code, nombre=payload.origin_dept
+    )
+    await exigir_concordancia(
+        conn, campo="dest_dept", codigo=payload.dest_dept_code, nombre=payload.dest_dept
+    )
+    if usa_alias(payload.origin_dept_code, payload.origin_dept) or usa_alias(
+        payload.dest_dept_code, payload.dest_dept
+    ):
+        marcar_alias_deprecado(response, "POST /documents")
     service = _build_service(conn, _tenant_slug(request), tenant_client, redis)
     try:
         return await service.create(payload, _get_registered_by(request))
@@ -702,6 +720,7 @@ async def update_document(
     document_id: uuid.UUID,
     payload: DocumentUpdate,
     request: Request,
+    response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> DocumentResponse:
     """Actualiza campos mutables — `tracking_number` es inmutable.
@@ -734,6 +753,8 @@ async def update_document(
         )
     service = _build_service(conn, _tenant_slug(request))
     actor = _get_registered_by(request)
+    if usa_alias(payload.dest_dept_code, payload.dest_dept):
+        marcar_alias_deprecado(response, "PATCH /documents/{id}")
     if payload.doc_class is not None and not await check_permission(
         conn, actor, "PERM_RADI", 3
     ):

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn
+from app.core.dependencias import marcar_alias_deprecado
 from app.schemas.workflow import (
     CascadeReassignRequest,
     CascadeReassignResponse,
@@ -114,13 +115,17 @@ def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
 )
 async def reassign_cascade(
     payload: CascadeReassignRequest,
+    response: Response,
     tenant_slug: str = Depends(_require_tenant),
     actor: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> CascadeReassignResponse:
+    if payload.from_dept_code is None and payload.from_dept is not None:
+        marcar_alias_deprecado(response, "POST /workflows/reassign/cascade")
     service = WorkflowService(conn, tenant_slug)
     result = await service.reassign_cascade(
         from_assigned_to=payload.from_assigned_to,
+        from_dept_code=payload.from_dept_code,
         from_dept=payload.from_dept,
         to_assigned_to=payload.to_assigned_to,
         actor=actor,
@@ -166,7 +171,10 @@ async def scan_overdue(
 async def get_inbox(
     response: Response,
     box: str | None = Query(default=None, description="entrada | salida | internos"),
-    dept: str | None = Query(default=None),
+    dept_code: int | None = Query(default=None, ge=1, le=999999),
+    dept: str | None = Query(
+        default=None, deprecated=True, description="ALIAS deprecado de dept_code (nombre)"
+    ),
     assigned_to: uuid.UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
@@ -185,8 +193,11 @@ async def get_inbox(
             },
         )
     service = WorkflowService(conn, tenant_slug)
+    if dept_code is None and dept is not None:
+        marcar_alias_deprecado(response, "GET /workflows/inbox")
     items, total = await service.inbox(
         box=box,
+        dept_code=dept_code,
         dept=dept,
         assigned_to=assigned_to,
         page=page,
@@ -207,7 +218,10 @@ async def get_inbox(
 )
 async def list_pending(
     response: Response,
-    dept: str | None = Query(default=None),
+    dept_code: int | None = Query(default=None, ge=1, le=999999),
+    dept: str | None = Query(
+        default=None, deprecated=True, description="ALIAS deprecado de dept_code (nombre)"
+    ),
     assigned_to: uuid.UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
@@ -216,8 +230,11 @@ async def list_pending(
     canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[FlowStepResponse]:
+    if dept_code is None and dept is not None:
+        marcar_alias_deprecado(response, "GET /workflows/pending")
     service = WorkflowService(conn, tenant_slug)
     items, total = await service.list_pending(
+        dept_code=dept_code,
         dept=dept,
         assigned_to=assigned_to,
         page=page,
@@ -238,6 +255,7 @@ async def list_pending(
 )
 async def assign_radicado(
     payload: FlowStepCreate,
+    response: Response,
     tenant_slug: str = Depends(_require_tenant),
     assigned_by: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
@@ -247,6 +265,8 @@ async def assign_radicado(
     # inmutable una "devolución" que nunca pasó por /devolver (sin causal ni
     # verificación de tenencia).
     payload = payload.model_copy(update={"action": "assign"})
+    if payload.to_dept_code is None:
+        marcar_alias_deprecado(response, "POST /workflows/assign")
     service = WorkflowService(conn, tenant_slug)
     return await service.assign(payload, assigned_by)
 
@@ -260,13 +280,18 @@ async def assign_radicado(
 )
 async def transfer_radicado(
     payload: FlowStepCreate,
+    response: Response,
     tenant_slug: str = Depends(_require_tenant),
     assigned_by: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowStepResponse:
     # Hallazgo A: mismo criterio que assign_radicado — con action:"transfer"
-    # falsificado se sorteaba además el 422 missing_from_dept de WorkflowService.transfer.
+    # falsificado se sorteaba la semántica propia del traslado.
     payload = payload.model_copy(update={"action": "transfer"})
+    if payload.to_dept_code is None or (
+        payload.from_dept is not None and payload.from_dept_code is None
+    ):
+        marcar_alias_deprecado(response, "POST /workflows/transfer")
     service = WorkflowService(conn, tenant_slug)
     return await service.transfer(payload, assigned_by)
 
@@ -333,12 +358,16 @@ async def execute_transaction(
 async def devolver_radicado(
     radicado_id: uuid.UUID,
     payload: DevolucionRequest,
+    response: Response,
     tenant_slug: str = Depends(_require_tenant),
     actor: uuid.UUID = Depends(_require_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> FlowStepResponse:
+    if payload.to_dept_code is None:
+        marcar_alias_deprecado(response, "POST /workflows/{id}/devolver")
     return await WorkflowService(conn, tenant_slug).devolver(
         radicado_id,
+        to_dept_code=payload.to_dept_code,
         to_dept=payload.to_dept,
         causal=payload.causal,
         comentario=payload.comentario,

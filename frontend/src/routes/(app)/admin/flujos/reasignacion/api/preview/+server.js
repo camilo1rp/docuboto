@@ -16,7 +16,7 @@
  * (ver `app/routers/workflow.py`/`app/services/workflow_service.py`). Este
  * proxy NO inventa un endpoint nuevo: reutiliza `GET /workflows/pending`
  * (bandeja), cuyo `WHERE status IN ('pending','in_progress') AND
- * (assigned_to=$1 | to_dept=$1)` es —campo a campo— EL MISMO predicado que
+ * (assigned_to=$1 | to_dept_code=$1)` es —campo a campo— EL MISMO predicado que
  * usa `reassign_cascade` en `workflow_repository.py`. Se pide `size=1` (no
  * interesan las filas, solo el total) y se lee `X-Total-Count`.
  *
@@ -32,12 +32,13 @@
  * El `+page.svelte` etiqueta el número como "estimado", nunca como el
  * resultado exacto.
  *
- * GET ?assigned_to=<uuid> | ?dept=<string>  (exactamente uno de los dos)
+ * GET ?assigned_to=<uuid> | ?dept_code=<int>  (exactamente uno de los dos)
  *   → { count: number, estimated: true }
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -50,9 +51,9 @@ export async function GET({ locals, url }) {
   }
 
   const assignedTo = url.searchParams.get("assigned_to");
-  const dept = url.searchParams.get("dept");
+  const dept = parseCodigoDependencia(url.searchParams.get("dept_code"));
 
-  if ((!assignedTo && !dept) || (assignedTo && dept)) {
+  if ((!assignedTo && dept === null) || (assignedTo && dept !== null)) {
     return json(
       {
         error: "validation_error",
@@ -73,7 +74,7 @@ export async function GET({ locals, url }) {
 
   const params = new URLSearchParams({ size: "1" });
   if (assignedTo) params.set("assigned_to", assignedTo);
-  if (dept) params.set("dept", dept);
+  if (dept !== null) params.set("dept_code", String(dept));
 
   /** @type {Record<string, string>} */
   const headers = {

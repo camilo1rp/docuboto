@@ -167,6 +167,7 @@
  * @property {'S'|'I'}                          doc_type
  * @property {string}                           subject
  * @property {string|null}                      dest_dept
+ * @property {number|null} [dest_dept_code]     código de la dependencia destino (ADR-032)
  * @property {string|null}                      cuerpo
  * @property {string} [cuerpo_html]             cuerpo saneado server-side (T-12c)
  * @property {string|null}                      plantilla_id
@@ -487,7 +488,8 @@
  * @property {Record<string,number>} by_doc_type   — { E: n, S: n, I: n }
  * @property {Record<string,number>} by_status      — { registered: n, ... }
  * @property {MonthCount[]}          by_month
- * @property {Record<string,number>} by_dependencia - dependencia de RADICACIÓN: { nombre_dep: n, ... }
+ * @property {Record<string,number>} by_dependencia - dependencia de RADICACIÓN por ETIQUETA (nombre actual): { nombre: n } (compatibilidad; suma homónimas)
+ * @property {Array<{codigo:number|null,nombre:string,count:number}>} [by_dependencia_codigo] - misma serie con la llave `codigo` (ADR-032); es la que usa la UI
  * @property {Record<string,number>} [by_ubicacion]  - ubicación ACTUAL de lo que sigue en trámite (sin cerrados ni anulados, ADR-029)
  */
 
@@ -501,8 +503,10 @@
  * @property {string}      radicado_id
  * @property {string}      tracking_number
  * @property {number}      step_number
- * @property {string|null} from_dept
- * @property {string}      to_dept
+ * @property {string|null} from_dept      — instantánea del NOMBRE al ocurrir el acto (ADR-032)
+ * @property {number|null} [from_dept_code] - código de la dependencia de origen (identidad)
+ * @property {string}      to_dept        — instantánea del NOMBRE al ocurrir el acto
+ * @property {number|null} [to_dept_code] - código de la dependencia destino (identidad; con él se compara la tenencia)
  * @property {string|null} assigned_to   — uuid
  * @property {string}      assigned_by   — uuid
  * @property {string}      action        — 'assign'|'transfer'|'return'|'close'

@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 _OPS = Literal["eq", "ne", "contains", "not_contains", "in", "gt", "lt", "gte", "lte", "regex"]
 _FIELDS = Literal[
@@ -21,6 +21,8 @@ _FIELDS = Literal[
     "doc_class",
     "dest_dept",
     "origin_dept",
+    "dest_dept_code",
+    "origin_dept_code",
     "subject",
     "sender_name",
     "sender_entity",
@@ -46,11 +48,21 @@ class WorkflowRuleCreate(BaseModel):
     # Condiciones legadas (compatibilidad).
     doc_type: str | None = Field(None, description="E, S, or I")
     doc_class: str | None = None
+    #: Condición legada de destino: por CÓDIGO (`dest_dept_code`); `dest_dept` es el
+    #: ALIAS deprecado, se resuelve a código (ADR-032).
     dest_dept: str | None = None
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
     subject_contains: str | None = None
-    # Action
-    assign_to_dept: str = Field(..., min_length=1, max_length=200)
+    # Action: la dependencia destino es un CÓDIGO; `assign_to_dept` es el alias.
+    assign_to_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    assign_to_dept: str | None = Field(default=None, min_length=1, max_length=200)
     assign_notes: str | None = None
+
+    @model_validator(mode="after")
+    def _destino_obligatorio(self) -> "WorkflowRuleCreate":
+        if self.assign_to_dept_code is None and self.assign_to_dept is None:
+            raise ValueError("Indique assign_to_dept_code (o, deprecado, assign_to_dept)")
+        return self
 
 
 class WorkflowRuleUpdate(BaseModel):
@@ -63,7 +75,9 @@ class WorkflowRuleUpdate(BaseModel):
     doc_type: str | None = None
     doc_class: str | None = None
     dest_dept: str | None = None
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
     subject_contains: str | None = None
+    assign_to_dept_code: int | None = Field(default=None, ge=1, le=999999)
     assign_to_dept: str | None = None
     assign_notes: str | None = None
 
@@ -79,8 +93,10 @@ class WorkflowRuleResponse(BaseModel):
     doc_type: str | None
     doc_class: str | None
     dest_dept: str | None
+    dest_dept_code: int | None = None
     subject_contains: str | None
     assign_to_dept: str
+    assign_to_dept_code: int | None = None
     assign_notes: str | None
     created_by: UUID
     created_at: datetime
@@ -96,6 +112,10 @@ class RuleEvaluationRequest(BaseModel):
     doc_class: str | None = None
     dest_dept: str | None = None
     origin_dept: str | None = None
+    #: Códigos del radicado (ADR-032). Un evento anterior puede traer solo el nombre:
+    #: el reparto lo resuelve con el historial y, si no es único, no casa por código.
+    dest_dept_code: int | None = None
+    origin_dept_code: int | None = None
     subject: str | None = None
     sender_name: str | None = None
     sender_entity: str | None = None
@@ -108,6 +128,7 @@ class RuleEvaluationResponse(BaseModel):
     rule_id: UUID | None = None
     rule_name: str | None = None
     assign_to_dept: str | None = None
+    assign_to_dept_code: int | None = None
     assign_notes: str | None = None
 
 

@@ -68,7 +68,7 @@ describe("reglas/api POST (crear) — validación y allowlist", () => {
     });
     const res = await createPost({
       locals: {},
-      request: { json: async () => ({ name: "x", assign_to_dept: "TIC" }) },
+      request: { json: async () => ({ name: "x", assign_to_dept_code: 7 }) },
     });
     expect(res.status).toBe(401);
   });
@@ -79,19 +79,19 @@ describe("reglas/api POST (crear) — validación y allowlist", () => {
     });
     const res = await createPost({
       locals: SESSION_LOCALS,
-      request: { json: async () => ({ name: "  ", assign_to_dept: "TIC" }) },
+      request: { json: async () => ({ name: "  ", assign_to_dept_code: 7 }) },
     });
     expect(res.status).toBe(422);
     expect((await res.json()).error).toBe("validation_error");
   });
 
-  it("sin assign_to_dept: 422 validation_error, sin llamar al gateway", async () => {
+  it("sin assign_to_dept_code: 422 validation_error, sin llamar al gateway", async () => {
     globalThis.fetch = vi.fn(() => {
-      throw new Error("fetch no debió invocarse sin assign_to_dept");
+      throw new Error("fetch no debió invocarse sin assign_to_dept_code");
     });
     const res = await createPost({
       locals: SESSION_LOCALS,
-      request: { json: async () => ({ name: "Regla X", assign_to_dept: "" }) },
+      request: { json: async () => ({ name: "Regla X", assign_to_dept_code: "" }) },
     });
     expect(res.status).toBe(422);
     expect((await res.json()).error).toBe("validation_error");
@@ -117,7 +117,7 @@ describe("reglas/api POST (crear) — validación y allowlist", () => {
           is_active: false,
           priority: 5,
           match_mode: "any",
-          assign_to_dept: "  TIC  ",
+          assign_to_dept_code: "7",
           assign_notes: "auto",
           conditions: [
             { field: "doc_type", op: "eq", value: "E" },
@@ -139,7 +139,7 @@ describe("reglas/api POST (crear) — validación y allowlist", () => {
       is_active: false,
       priority: 5,
       match_mode: "any",
-      assign_to_dept: "TIC",
+      assign_to_dept_code: 7,
       assign_notes: "auto",
       conditions: [
         { field: "doc_type", op: "eq", value: "E" },
@@ -162,7 +162,7 @@ describe("reglas/api POST (crear) — validación y allowlist", () => {
     await createPost({
       locals: SESSION_LOCALS,
       request: {
-        json: async () => ({ name: "X", assign_to_dept: "TIC" }),
+        json: async () => ({ name: "X", assign_to_dept_code: 7 }),
       },
     });
     expect(capturedBody.priority).toBe(100);
@@ -177,7 +177,7 @@ describe("reglas/api POST (crear) — validación y allowlist", () => {
       const res = await createPost({
         locals: SESSION_LOCALS,
         request: {
-          json: async () => ({ name: "X", assign_to_dept: "TIC", priority: bad }),
+          json: async () => ({ name: "X", assign_to_dept_code: 7, priority: bad }),
         },
       });
       expect(res.status).toBe(422);
@@ -191,7 +191,7 @@ describe("reglas/api POST (crear) — validación y allowlist", () => {
     });
     const res = await createPost({
       locals: SESSION_LOCALS,
-      request: { json: async () => ({ name: "X", assign_to_dept: "TIC" }) },
+      request: { json: async () => ({ name: "X", assign_to_dept_code: 7 }) },
     });
     expect(res.status).toBe(503);
     expect((await res.json()).error).toBe("connection_error");

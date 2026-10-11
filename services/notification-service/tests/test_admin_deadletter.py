@@ -783,7 +783,7 @@ async def test_replay_workflow_resuelve_el_buzon_de_la_dependencia(client_with_c
     mock_resolver = AsyncMock(return_value="dependencia-902@orpycamcp.local")
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.resolver_buzon_dependencia", mock_resolver),
+        patch("app.routers.admin_deadletter.resolver_buzon", mock_resolver),
         patch("app.routers.admin_deadletter.send_notification", mock_send),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
@@ -792,7 +792,7 @@ async def test_replay_workflow_resuelve_el_buzon_de_la_dependencia(client_with_c
     assert resp.status_code == 200, resp.text
     # Se resolvió por el NOMBRE que venía en el sobre...
     mock_resolver.assert_awaited_once()
-    assert mock_resolver.await_args.args[1] == "Oficina Jurídica"
+    assert mock_resolver.await_args.args[2] == "Oficina Jurídica"
     # ...y el destinatario es lo que devolvió el catálogo, no el nombre.
     assert mock_send.call_args.args[0].recipient_email == "dependencia-902@orpycamcp.local"
 

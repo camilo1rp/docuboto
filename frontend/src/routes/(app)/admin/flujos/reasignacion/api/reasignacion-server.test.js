@@ -87,7 +87,7 @@ describe("reasignacion/api POST — confirmación escrita OBLIGATORIA (núcleo d
 });
 
 describe("reasignacion/api POST — validación de origen/destino", () => {
-  it("sin from_assigned_to ni from_dept: 422 validation_error, sin llamar al gateway", async () => {
+  it("sin from_assigned_to ni from_dept_code: 422 validation_error, sin llamar al gateway", async () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("fetch no debió invocarse sin origen");
     });
@@ -109,7 +109,7 @@ describe("reasignacion/api POST — validación de origen/destino", () => {
       locals: SESSION_LOCALS,
       request: {
         json: async () => ({
-          from_dept: "TIC",
+          from_dept_code: 12,
           to_assigned_to: "no-es-un-uuid",
           confirm: "REASIGNAR",
         }),
@@ -119,7 +119,7 @@ describe("reasignacion/api POST — validación de origen/destino", () => {
     expect((await res.json()).error).toBe("validation_error");
   });
 
-  it("allowlist: solo reenvía from_assigned_to/from_dept/to_assigned_to — nunca el body íntegro", async () => {
+  it("allowlist: solo reenvía from_assigned_to/from_dept_code/to_assigned_to — nunca el body íntegro", async () => {
     let capturedUrl;
     let capturedBody;
     let capturedHeaders;
@@ -160,7 +160,7 @@ describe("reasignacion/api POST — validación de origen/destino", () => {
       locals: SESSION_LOCALS,
       request: {
         json: async () => ({
-          from_dept: "TIC",
+          from_dept_code: 12,
           to_assigned_to: USER_B,
           confirm: "REASIGNAR",
         }),
@@ -197,7 +197,18 @@ describe("reasignacion/api/preview GET", () => {
     });
     const res = await previewGet({
       locals: SESSION_LOCALS,
-      url: url(`/x/api/preview?assigned_to=${USER_A}&dept=TIC`),
+      url: url(`/x/api/preview?assigned_to=${USER_A}&dept_code=12`),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("dept_code que no es un entero (p. ej. un nombre): 400, sin llamar al gateway", async () => {
+    globalThis.fetch = vi.fn(() => {
+      throw new Error("fetch no debió invocarse con un nombre en lugar del código");
+    });
+    const res = await previewGet({
+      locals: SESSION_LOCALS,
+      url: url("/x/api/preview?dept_code=TIC"),
     });
     expect(res.status).toBe(400);
   });

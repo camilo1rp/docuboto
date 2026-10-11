@@ -48,8 +48,8 @@ from migrations import runner
 
 pytestmark = pytest.mark.integration
 
-DEP_JUR = ("100", "Jurídica")
-DEP_ARC = ("200", "Archivo")
+DEP_JUR = (100, "Jurídica")
+DEP_ARC = (200, "Archivo")
 
 
 # ---------------------------------------------------------------------------
@@ -489,8 +489,8 @@ async def test_cascada_devuelve_a_pending_excluye_terminales_y_asienta_por_radic
 async def _paso(conn: asyncpg.Connection, rid: uuid.UUID, n: int, status: str) -> None:
     await conn.execute(
         "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, "
-        "assigned_by, action, status) SELECT id, tracking_number, $2, 'Jurídica', "
-        "gen_random_uuid(), 'assign', $3 FROM radicados WHERE id = $1",
+        "to_dept_code, assigned_by, action, status) SELECT id, tracking_number, $2, 'Jurídica', "
+        "100, gen_random_uuid(), 'assign', $3 FROM radicados WHERE id = $1",
         rid,
         n,
         status,
@@ -1895,7 +1895,7 @@ async def test_d_los_apply_repiten_la_condicion_de_tenencia(ctx: Any) -> None:
     previo = await svc._repo.get_previous_step(rid, paso.step_number)
     async with conn.transaction():
         assert await svc._repo.apply_devolucion(
-            current=paso, to_dept=DEP_JUR[1], causal="x", comentario=None, actor=intruso, max_clearance=3
+            current=paso, to_dept=DEP_JUR[1], to_dept_code=DEP_JUR[0], causal="x", comentario=None, actor=intruso, max_clearance=3
         ) is None
         assert await svc._repo.apply_rollback(
             current=paso, previous=previo, actor=intruso, comentario="m", max_clearance=3
@@ -1944,11 +1944,12 @@ async def test_rn8_dos_repartos_de_sistema_concurrentes_dejan_un_solo_paso(ctx: 
     await asyncio.sleep(0.6)
     assert not tarea.done()
     await otra.execute(
-        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, assigned_by, action) "
-        "SELECT id, tracking_number, 1, $2, $3, 'assign' FROM radicados WHERE id = $1",
+        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, to_dept_code, "
+        "assigned_by, action) SELECT id, tracking_number, 1, $2, $4, $3, 'assign' FROM radicados WHERE id = $1",
         rid,
         DEP_ARC[1],
         sistema,
+        DEP_ARC[0],
     )
     await tx.commit()
     with pytest.raises(YaDistribuidoError):
@@ -2029,7 +2030,7 @@ async def test_d_los_apply_tambien_exigen_el_nivel_del_radicado_en_el_update(ctx
             current=paso, previous=previo, actor=u2, comentario="m", max_clearance=1
         ) is None
         assert await svc._repo.apply_devolucion(
-            current=paso, to_dept=DEP_JUR[1], causal="x", comentario=None, actor=u2, max_clearance=1
+            current=paso, to_dept=DEP_JUR[1], to_dept_code=DEP_JUR[0], causal="x", comentario=None, actor=u2, max_clearance=1
         ) is None
     assert await _snapshot_pasos(conn) == antes
     async with conn.transaction():  # control positivo: mismo actor, nivel suficiente
@@ -2059,14 +2060,14 @@ async def test_d_los_apply_tambien_exigen_el_estado_del_paso_en_el_update(ctx: A
             current=paso, previous=previo, actor=u2, comentario="m", max_clearance=3
         ) is None
         assert await svc._repo.apply_devolucion(
-            current=paso, to_dept=DEP_JUR[1], causal="x", comentario=None, actor=u2, max_clearance=3
+            current=paso, to_dept=DEP_JUR[1], to_dept_code=DEP_JUR[0], causal="x", comentario=None, actor=u2, max_clearance=3
         ) is None
     assert await _snapshot_pasos(conn) == antes
 
     await conn.execute("UPDATE flow_steps SET status = 'in_progress' WHERE id = $1", paso.id)
     async with conn.transaction():  # control positivo: `devolver` sí admite in_progress
         assert await svc._repo.apply_devolucion(
-            current=paso, to_dept=DEP_JUR[1], causal="x", comentario=None, actor=u2, max_clearance=3
+            current=paso, to_dept=DEP_JUR[1], to_dept_code=DEP_JUR[0], causal="x", comentario=None, actor=u2, max_clearance=3
         ) is not None
 
 

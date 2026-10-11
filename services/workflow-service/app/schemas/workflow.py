@@ -19,13 +19,26 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class FlowStepCreate(BaseModel):
     radicado_id: uuid.UUID
     tracking_number: str = Field(..., min_length=1, max_length=50)
-    to_dept: str = Field(..., min_length=1, max_length=100)
+    #: Destino por CÓDIGO (`dependencias.codigo`, ADR-032): el campo canónico.
+    to_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    #: ALIAS deprecado de `to_dept_code`: se resuelve a código (422 si es ambiguo,
+    #: desconocido o discordante) y el nombre guardado es el del catálogo.
+    to_dept: str | None = Field(default=None, min_length=1, max_length=100)
     assigned_to: uuid.UUID | None = None
     action: Literal["assign", "transfer", "return", "close"]
     notes: str | None = None
-    from_dept: str | None = None  # required for transfer/return, validated in service
+    #: El ORIGEN lo deriva el servidor del paso activo; si el cliente lo envía y no
+    #: coincide, 409 `origen_desactualizado` (control optimista), no se le cree.
+    from_dept: str | None = None
+    from_dept_code: int | None = Field(default=None, ge=1, le=999999)
     doc_type: str | None = None  # E/S/I del radicado, para bandejas tipadas (RF-FLU-03)
     due_at: datetime | None = None  # plazo del paso (RF-FLU-07)
+
+    @model_validator(mode="after")
+    def _destino_obligatorio(self) -> FlowStepCreate:
+        if self.to_dept_code is None and self.to_dept is None:
+            raise ValueError("Indique to_dept_code (o, deprecado, to_dept)")
+        return self
 
 
 class FlowStepComplete(BaseModel):
@@ -39,8 +52,11 @@ class FlowStepResponse(BaseModel):
     radicado_id: uuid.UUID
     tracking_number: str
     step_number: int
+    #: Instantánea del NOMBRE al momento del acto; la llave es el `*_code`.
     from_dept: str | None
     to_dept: str
+    from_dept_code: int | None = None
+    to_dept_code: int | None = None
     assigned_to: uuid.UUID | None
     assigned_by: uuid.UUID
     action: str
@@ -66,6 +82,8 @@ class FlowEventResponse(BaseModel):
     tipo_tx: str
     from_dept: str | None
     to_dept: str | None
+    from_dept_code: int | None = None
+    to_dept_code: int | None = None
     actor: uuid.UUID | None
     comentario: str | None
     detalles: dict
@@ -118,20 +136,34 @@ class FinalizarRequest(BaseModel):
 
 
 class DevolucionRequest(BaseModel):
-    to_dept: str = Field(..., min_length=1, max_length=100)
+    to_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    #: ALIAS deprecado de `to_dept_code` (ADR-032).
+    to_dept: str | None = Field(default=None, min_length=1, max_length=100)
     causal: str = Field(..., min_length=1, max_length=15)
     comentario: str | None = None
+
+    @model_validator(mode="after")
+    def _destino_obligatorio(self) -> DevolucionRequest:
+        if self.to_dept_code is None and self.to_dept is None:
+            raise ValueError("Indique to_dept_code (o, deprecado, to_dept)")
+        return self
 
 
 class CascadeReassignRequest(BaseModel):
     from_assigned_to: uuid.UUID | None = None
+    from_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    #: ALIAS deprecado de `from_dept_code` (ADR-032).
     from_dept: str | None = None
     to_assigned_to: uuid.UUID
 
     @model_validator(mode="after")
     def _at_least_one_source(self) -> CascadeReassignRequest:
-        if self.from_assigned_to is None and self.from_dept is None:
-            raise ValueError("Indique from_assigned_to o from_dept")
+        if (
+            self.from_assigned_to is None
+            and self.from_dept_code is None
+            and self.from_dept is None
+        ):
+            raise ValueError("Indique from_assigned_to o from_dept_code")
         return self
 
 

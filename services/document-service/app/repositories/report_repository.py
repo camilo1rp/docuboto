@@ -64,8 +64,15 @@ class ReportRepository:
         )
         # Dependencia de RADICACIÓN (a quién iba dirigido), no dónde está ahora.
         by_dependencia = await self._conn.fetch(
-            f"SELECT COALESCE(dest_dept, '(sin asignar)') AS dep, COUNT(*) AS n "
-            f"FROM radicados {where} GROUP BY 1 ORDER BY n DESC",
+            # Se agrupa por CÓDIGO (ADR-032): dos dependencias homónimas no se funden y un
+            # renombre no parte la serie. La etiqueta es el nombre ACTUAL del catálogo; el grupo
+            # sin código lleva una etiqueta FIJA (MIN(nombre) rotularía con un nombre que
+            # no es el de todas las filas del grupo).
+            f"SELECT dest_dept_code AS codigo, COALESCE("
+            f"(SELECT d.nombre FROM dependencias d WHERE d.codigo = radicados.dest_dept_code), "
+            f"CASE WHEN dest_dept_code IS NULL THEN '(sin código)' ELSE MIN(dest_dept) END, "
+            f"'(sin código)') AS dep, COUNT(*) AS n "
+            f"FROM radicados {where} GROUP BY dest_dept_code ORDER BY n DESC",
             *params,
         )
         # Ubicación ACTUAL (ADR-029) de lo que aún está en trámite: los terminales
@@ -74,8 +81,11 @@ class ReportRepository:
         no_terminal = "status NOT IN ('closed', 'anulado')"
         donde_ubicacion = f"{where} AND {no_terminal}" if where else f"WHERE {no_terminal}"
         by_ubicacion = await self._conn.fetch(
-            f"SELECT COALESCE(ubicacion_dept, '(sin asignar)') AS dep, COUNT(*) AS n "
-            f"FROM radicados {donde_ubicacion} GROUP BY 1 ORDER BY n DESC",
+            f"SELECT ubicacion_dept_code AS codigo, COALESCE("
+            f"(SELECT d.nombre FROM dependencias d WHERE d.codigo = radicados.ubicacion_dept_code), "
+            f"CASE WHEN ubicacion_dept_code IS NULL THEN '(sin código)' ELSE MIN(ubicacion_dept) END, "
+            f"'(sin código)') AS dep, COUNT(*) AS n "
+            f"FROM radicados {donde_ubicacion} GROUP BY ubicacion_dept_code ORDER BY n DESC",
             *params,
         )
         return by_type, by_status, by_month, by_dependencia, by_ubicacion

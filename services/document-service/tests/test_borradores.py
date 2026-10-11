@@ -95,6 +95,7 @@ def _borrador_row(**kw) -> dict:
         "doc_type": "S",
         "subject": "Respuesta a solicitud",
         "dest_dept": "Jurídica",
+        "dest_dept_code": None,
         "cuerpo": "Texto",
         "plantilla_id": None,
         "estado": "borrador",
@@ -1355,19 +1356,20 @@ async def test_la_derivacion_del_borrador_usa_plantilla_dependencia_y_urd() -> N
     async def _fetchval(query: str, *a: object):
         if "FROM plantilla" in query:
             return "Oficio"
-        if "FROM dependencias" in query:
-            return 4
         if "dest_dept_code FROM radicados" in query:
             return 20
         raise AssertionError(query)
 
     conn.fetchval.side_effect = _fetchval
+    # Borrador anterior a la 046 (solo nombre): se resuelve por el criterio único.
+    conn.fetchrow.return_value = {"codigo": 4, "candidatos": 1}
     conn.fetch.return_value = [{"depe_id": 9}, {"depe_id": 20}]
     svc = BorradorService(conn, "demo")
     row = {
         "doc_type": "S",
         "plantilla_id": uuid.uuid4(),
         "dest_dept": "Jurídica",
+        "dest_dept_code": None,
         "radicado_padre_id": padre,
     }
     tipo, origen, destino = await svc._datos_minimos_del_borrador(row, uuid.uuid4())

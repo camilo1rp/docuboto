@@ -91,7 +91,9 @@ class BorradorRadicar(BaseModel):
 
 class BorradorUpdate(BaseModel):
     subject: str | None = Field(default=None, max_length=2000)
+    #: ALIAS deprecado de `dest_dept_code` (ADR-032): se resuelve a código.
     dest_dept: str | None = Field(default=None, max_length=100)
+    dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
     cuerpo: str | None = None
 
 
@@ -99,7 +101,9 @@ class BorradorResponse(BaseModel):
     id: uuid.UUID
     doc_type: str
     subject: str
+    #: Instantánea del nombre al elegir el destino; la llave es `dest_dept_code`.
     dest_dept: str | None
+    dest_dept_code: int | None = None
     cuerpo: str | None
     plantilla_id: uuid.UUID | None
     radicado_padre_id: uuid.UUID | None = None

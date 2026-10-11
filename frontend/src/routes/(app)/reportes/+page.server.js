@@ -73,9 +73,25 @@ export async function load({ cookies, parent, url }) {
     loadError = "No se pudo conectar al servidor de reportes.";
   }
 
+  // Catálogo para traducir el código de dependencia (ADR-032: el reporte agrupa
+  // por `dest_dept_code`) a su nombre vigente. Si falla, se muestra el código.
+  let dependencias = [];
+  try {
+    const depRes = await fetch(`${API_V1}/dependencias`, {
+      headers: { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant },
+    });
+    if (depRes.ok) {
+      const raw = await depRes.json().catch(() => []);
+      dependencias = Array.isArray(raw) ? raw : [];
+    }
+  } catch {
+    dependencias = [];
+  }
+
   return {
     summary,
     loadError,
+    dependencias,
     // Filtros activos para inicializar el formulario y construir la URL del CSV
     initialFilters: { dateFrom, dateTo },
     // Espejo del gate real del backend (PERM_RECLASIFICAR) — controla si la

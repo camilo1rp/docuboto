@@ -20,13 +20,14 @@
  * La UI ya filtra las acciones por $permissions; el backend re-valida RBAC en cada operación.
  *
  * POST → devuelve el radicado al workflow-service.
- *   Body (DevolucionRequest): { to_dept: string (≤100), causal: string (≤15), comentario?: string }
+ *   Body (DevolucionRequest): { to_dept_code: int (ADR-032), causal: string (≤15), comentario?: string }
  *   Headers requeridos por el backend: X-Tenant-Slug y X-User-Id.
  *   Respuesta: WorkflowEventResponse o { error, detail, status }
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, params, request }) {
@@ -46,33 +47,28 @@ export async function POST({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { to_dept, causal, comentario } = body ?? {};
+  const { to_dept_code, causal, comentario } = body ?? {};
 
   // Validación mínima antes de reenviar
-  if (!to_dept || typeof to_dept !== "string" || !to_dept.trim()) {
+  const toDeptCode = parseCodigoDependencia(to_dept_code);
+  if (toDeptCode === null) {
     return json(
       {
         error: "validation_error",
-        detail: "El campo 'to_dept' (dependencia destino) es obligatorio.",
+        detail: "Seleccione la dependencia destino del catálogo.",
       },
-      { status: 422 },
-    );
-  }
-  if (to_dept.trim().length > 100) {
-    return json(
-      { error: "validation_error", detail: "El campo 'to_dept' no puede superar 100 caracteres." },
       { status: 422 },
     );
   }
   if (!causal || typeof causal !== "string" || !causal.trim()) {
     return json(
-      { error: "validation_error", detail: "El campo 'causal' es obligatorio." },
+      { error: "validation_error", detail: "Seleccione la causal de la devolución." },
       { status: 422 },
     );
   }
   if (causal.trim().length > 15) {
     return json(
-      { error: "validation_error", detail: "El campo 'causal' no puede superar 15 caracteres." },
+      { error: "validation_error", detail: "La causal seleccionada no es válida." },
       { status: 422 },
     );
   }
@@ -87,7 +83,7 @@ export async function POST({ locals, params, request }) {
 
   /** @type {Record<string, unknown>} */
   const payload = {
-    to_dept: to_dept.trim(),
+    to_dept_code: toDeptCode,
     causal: causal.trim(),
   };
   if (comentario && typeof comentario === "string" && comentario.trim()) {

@@ -319,6 +319,11 @@ _CAMPOS_CON_CONTENIDO = (
     "dest_dept",
     "dest_dept_code",
     "origin_dept",
+    # B5 (ADR-032): la ruta por CÓDIGO dice lo mismo que la ruta por nombre.
+    "to_dept_code",
+    "from_dept_code",
+    "origin_dept_code",
+    "assign_to_dept_code",
 )
 
 #: Fundamento de la reserva: NUNCA sale por un webhook, ni siquiera de un

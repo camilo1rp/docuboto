@@ -36,6 +36,9 @@
     on:success  — la reversión se ejecutó; detail = FlowStepResponse del paso anterior
 -->
 <script>
+  import { usarNombresDependencia } from "$lib/stores/dependencias.js";
+  const nombresDependencia = usarNombresDependencia();
+  import { nombreActual } from "$lib/utils/dependenciaNombre.js";
   import { createEventDispatcher, tick } from "svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -125,7 +128,11 @@
       <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
       <span>
         Vas a revertir la última asignación del radicado
-        <strong>{step.tracking_number}</strong> (actualmente en {step.to_dept}). Esta acción
+        <strong>{step.tracking_number}</strong> (actualmente en {nombreActual(
+          step.to_dept_code,
+          step.to_dept,
+          $nombresDependencia,
+        )}). Esta acción
         <strong>no se puede deshacer</strong>.
       </span>
     </p>

@@ -241,6 +241,28 @@ export const MENSAJES_VENTANILLA_ENVIO = {
 };
 
 /**
+ * Códigos de la dependencia identificada por CÓDIGO (ADR-032), con su mensaje
+ * en español. Como los demás diccionarios, se consulta antes del `detail`.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_DEPENDENCIA = {
+  dependencia_codigo_inmutable:
+    "El código de una dependencia no se puede cambiar: es lo que une la dependencia con sus radicados, reglas y bandejas. Si necesita otro código, cree una dependencia nueva y desactive esta.",
+  dependencia_ambigua:
+    "El nombre de la dependencia coincide con más de una. Elíjala del catálogo para enviar su código.",
+  dependencia_desconocida:
+    "La dependencia no existe o está inactiva. Elíjala de nuevo del catálogo.",
+  dependencia_con_tramite_en_curso:
+    "La dependencia tiene trámites en curso (pasos de flujo vivos o reglas que la usan). Reasígnelos antes de desactivarla.",
+  dependencia_con_historia:
+    "La dependencia tiene historia (radicados, flujos, reglas o usuarios) y no se puede eliminar por trazabilidad. Desactívela en su lugar.",
+  origen_desactualizado:
+    "El radicado ya cambió de dependencia mientras usted trabajaba. Actualice la vista e intente de nuevo.",
+  condicion_por_nombre_obsoleta:
+    "Las condiciones «es igual a», «es distinto de» y «está entre» sobre una dependencia deben usar el campo de código, no el nombre.",
+};
+
+/**
  * Mensaje legible de un cuerpo de respuesta. **Nunca devuelve un objeto**: ese
  * es justo el fallo que motivó este módulo — un `[object Object]` en un aviso
  * de error deja a la persona sin saber qué pasó ni cómo arreglarlo.
@@ -254,7 +276,8 @@ export function mensajeError(data, porDefecto) {
     const delActo =
       MENSAJES_ACTO_TRAMITE[codigoError(data) ?? ""] ??
       MENSAJES_FIRMA[codigoError(data) ?? ""] ??
-      MENSAJES_VENTANILLA_ENVIO[codigoError(data) ?? ""];
+      MENSAJES_VENTANILLA_ENVIO[codigoError(data) ?? ""] ??
+      MENSAJES_DEPENDENCIA[codigoError(data) ?? ""];
     if (delActo) return delActo;
     if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
     const validacion = mensajeDeValidacion(data.detail);

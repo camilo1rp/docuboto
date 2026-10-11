@@ -30,11 +30,18 @@ CONTEXT_FIELDS = (
     "doc_class",
     "dest_dept",
     "origin_dept",
+    "dest_dept_code",
+    "origin_dept_code",
     "subject",
     "sender_name",
     "sender_entity",
     "pages",
 )
+
+#: Campos de dependencia por CÓDIGO (ADR-032): la forma de comparar una dependencia.
+#: Las condiciones eq/ne/in sobre el NOMBRE (`dest_dept`/`origin_dept`) ya no se aceptan
+#: al configurar la regla (cambiaban de sentido al renombrar); `contains`/`regex` sí.
+CODE_FIELDS = frozenset({"dest_dept_code", "origin_dept_code"})
 
 OPERATORS = (
     "eq",
@@ -74,6 +81,12 @@ def eval_condition(cond: dict[str, Any], context: dict[str, Any]) -> bool:
         return False
 
     actual = context.get(field)
+
+    # Fail-closed: si el radicado no trae el código (evento anterior cuyo nombre no
+    # resuelve a UNA dependencia) la condición NO se cumple —tampoco `ne`: «no es
+    # Jurídica» no puede darse por cierto sobre un destino que se desconoce.
+    if field in CODE_FIELDS and actual is None:
+        return False
 
     if op == "eq":
         return actual is not None and str(actual) == str(expected)
@@ -178,7 +191,12 @@ def matches_legacy(rule: dict[str, Any], context: dict[str, Any]) -> bool:
         return False
     if rule.get("doc_class") and rule["doc_class"] != context.get("doc_class"):
         return False
-    if rule.get("dest_dept") and rule["dest_dept"] != context.get("dest_dept"):
+    # Por CÓDIGO (ADR-032): la columna `dest_dept` es solo la instantánea del nombre y
+    # la migración 019 impide una regla con `dest_dept` sin `dest_dept_code`. Si el
+    # radicado no trae código (nombre no resoluble), la regla no casa.
+    if rule.get("dest_dept_code") is not None and rule["dest_dept_code"] != context.get(
+        "dest_dept_code"
+    ):
         return False
     if rule.get("subject_contains"):
         subject = str(context.get("subject") or "").lower()

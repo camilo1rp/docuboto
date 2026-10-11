@@ -53,9 +53,31 @@ export async function load({ cookies, parent, fetch }) {
     loadError = "No se pudo conectar al servidor de reglas.";
   }
 
+  // Catálogo de dependencias activas: el destino de la regla se elige por
+  // CÓDIGO (ADR-032). Si falla la carga, el formulario lo dice en vez de
+  // dejar teclear un código a ciegas.
+  // Se pide el catálogo completo: las inactivas no se ofrecen, pero una regla
+  // existente puede apuntar a una y debe verse como «(inactiva)».
+  let dependencias = [];
+  let dependenciasError = false;
+  try {
+    const depRes = await fetch(`${API_V1}/dependencias`, {
+      headers: { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant },
+    });
+    if (depRes.ok) dependencias = await depRes.json().catch(() => []);
+    else dependenciasError = true;
+  } catch {
+    dependenciasError = true;
+  }
+
   return {
     reglas,
     loadError,
+    dependencias: (Array.isArray(dependencias) ? dependencias : []).filter(
+      (d) => d?.activo !== false,
+    ),
+    dependenciasTodas: Array.isArray(dependencias) ? dependencias : [],
+    dependenciasError,
     // token y tenant NO se exponen: las escrituras del cliente usan
     // /admin/flujos/reglas/api/* (D-05).
   };

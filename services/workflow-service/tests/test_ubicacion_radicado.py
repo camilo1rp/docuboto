@@ -24,7 +24,6 @@ from app.services.estado_radicado import (
     PasoUbicacion,
     Ubicacion,
     derivar_ubicacion,
-    resolver_codigo_dependencia,
 )
 
 T0 = datetime(2026, 10, 1, 8, 0, tzinfo=UTC)
@@ -32,11 +31,11 @@ U1, U2 = uuid.uuid4(), uuid.uuid4()
 
 
 def _paso(n: int, status: str, dept: str, *, minutos: int | None = None,
-          usuario: uuid.UUID | None = None, codigos: tuple[int, ...] = ()) -> PasoUbicacion:
+          usuario: uuid.UUID | None = None, codigo: int | None = None) -> PasoUbicacion:
     return PasoUbicacion(
         step_number=n, status=status, to_dept=dept, assigned_to=usuario,
         completed_at=None if minutos is None else T0 + timedelta(minutes=minutos),
-        codigos_candidatos=codigos,
+        to_dept_code=codigo,
     )
 
 
@@ -46,7 +45,7 @@ def test_sin_pasos_no_hay_ubicacion_de_flujo() -> None:
 
 def test_el_paso_activo_manda() -> None:
     pasos = [_paso(1, "returned", "Tecnología", minutos=5),
-             _paso(2, "pending", "Talento Humano", usuario=U2, codigos=(7,))]
+             _paso(2, "pending", "Talento Humano", usuario=U2, codigo=7)]
     assert derivar_ubicacion("distributed", pasos) == Ubicacion("Talento Humano", 7, U2)
 
 
@@ -60,7 +59,7 @@ def test_devolver_deja_el_radicado_en_la_dependencia_destino() -> None:
     devuelto a Control Interno. El paso nuevo (sin dueño) es el activo."""
     pasos = [
         _paso(1, "returned", "Talento Humano", minutos=10, usuario=U1),
-        _paso(2, "pending", "Control Interno", codigos=(3,)),
+        _paso(2, "pending", "Control Interno", codigo=3),
     ]
     assert derivar_ubicacion("distributed", pasos) == Ubicacion("Control Interno", 3, None)
 
@@ -85,7 +84,7 @@ def test_un_paso_sin_fecha_de_cierre_pierde_frente_a_uno_con_fecha() -> None:
 
 
 def test_finalizar_deja_la_dependencia_donde_se_cerro() -> None:
-    pasos = [_paso(1, "completed", "Jurídica", minutos=9, usuario=U1, codigos=(5,))]
+    pasos = [_paso(1, "completed", "Jurídica", minutos=9, usuario=U1, codigo=5)]
     assert derivar_ubicacion("distributed", pasos) == Ubicacion("Jurídica", 5, U1)
 
 
@@ -99,24 +98,23 @@ def test_un_terminal_con_ubicacion_escrita_la_congela(estado: str) -> None:
 @pytest.mark.parametrize("estado", ["closed", "anulado"])
 def test_un_terminal_sin_ubicacion_escrita_se_deriva_del_historial(estado: str) -> None:
     """Es lo que hace el backfill con un cerrado/anulado anterior a ADR-029."""
-    pasos = [_paso(1, "cancelled", "Jurídica", minutos=1, codigos=(5,))]
+    pasos = [_paso(1, "cancelled", "Jurídica", minutos=1, codigo=5)]
     assert derivar_ubicacion(estado, pasos) == Ubicacion("Jurídica", 5, None)
 
 
 def test_un_no_terminal_ignora_la_congelada() -> None:
-    pasos = [_paso(1, "pending", "Archivo", codigos=(9,))]
+    pasos = [_paso(1, "pending", "Archivo", codigo=9)]
     assert derivar_ubicacion("distributed", pasos, congelada=Ubicacion("X", 1, None)).dept == "Archivo"  # type: ignore[union-attr]
 
 
-@pytest.mark.parametrize(
-    ("candidatos", "esperado"),
-    [((), None), ((4,), 4), ((4, 8), None)],
-    ids=["sin dependencia activa", "una sola", "nombre duplicado"],
-)
-def test_el_codigo_solo_se_resuelve_si_el_nombre_es_unico(candidatos: tuple[int, ...], esperado: int | None) -> None:
-    assert resolver_codigo_dependencia(candidatos) == esperado
-    ubic = derivar_ubicacion("distributed", [_paso(1, "pending", "Nombre", codigos=candidatos)])
-    assert ubic is not None and ubic.dept == "Nombre" and ubic.dept_code == esperado
+def test_el_codigo_es_el_del_paso_no_se_adivina_por_el_nombre() -> None:
+    """ADR-032: el código es un DATO del paso. Un paso cuyo nombre ya no coincide con el
+    catálogo (la dependencia se renombró) conserva su código; uno sin código lo deja NULL,
+    nunca el de otra dependencia que hoy se llame igual."""
+    renombrada = derivar_ubicacion("distributed", [_paso(1, "pending", "Nombre viejo", codigo=4)])
+    assert renombrada == Ubicacion("Nombre viejo", 4, None)
+    sin_codigo = derivar_ubicacion("distributed", [_paso(1, "pending", "Historico")])
+    assert sin_codigo is not None and sin_codigo.dept == "Historico" and sin_codigo.dept_code is None
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +145,7 @@ def _repo_falso(estado: str, flujo: tuple[str | None, int | None, uuid.UUID | No
 
 async def test_sincronizar_escribe_la_ubicacion_en_el_mismo_update_que_el_estado() -> None:
     paso = {"step_number": 2, "status": "pending", "to_dept": "Control Interno",
-            "assigned_to": U2, "completed_at": None, "candidatos": [907]}
+            "assigned_to": U2, "completed_at": None, "to_dept_code": 907}
     repo, conn = _repo_falso("registered", (None, None, None), paso)
     rid = uuid.uuid4()
 
@@ -167,9 +165,9 @@ async def test_sincronizar_no_escribe_nada_en_un_terminal(estado: str) -> None:
     conn.fetch.assert_not_awaited()  # ni siquiera lee los pasos
 
 
-async def test_sincronizar_con_nombre_no_unico_deja_el_codigo_nulo() -> None:
-    paso = {"step_number": 1, "status": "pending", "to_dept": "Duplicada",
-            "assigned_to": None, "completed_at": None, "candidatos": [3, 4]}
+async def test_sincronizar_con_un_paso_sin_codigo_deja_el_codigo_nulo() -> None:
+    paso = {"step_number": 1, "status": "pending", "to_dept": "Historica",
+            "assigned_to": None, "completed_at": None, "to_dept_code": None}
     repo, conn = _repo_falso("registered", (None, None, None), paso)
     await _SINCRONIZAR_REAL(repo, uuid.uuid4())
-    assert conn.execute.await_args.args[3:5] == ("Duplicada", None)
+    assert conn.execute.await_args.args[3:5] == ("Historica", None)

@@ -46,7 +46,7 @@ def _payload() -> FlowStepCreate:
     return FlowStepCreate(
         radicado_id=RADICADO_ID,
         tracking_number="ignorado",
-        to_dept="Dirección Jurídica",
+        to_dept_code=4,
         action="assign",
     )
 
@@ -153,6 +153,7 @@ async def test_el_reparto_automatico_se_declara_actor_de_sistema() -> None:
         evaluar.return_value = MagicMock(
             matched=True,
             assign_to_dept="Dirección Jurídica",
+            assign_to_dept_code=4,
             assign_notes=None,
             rule_id=None,
             rule_name="r",
@@ -179,7 +180,7 @@ async def test_ninguna_ruta_http_pasa_sistema_true(client_with_conn: Cliente) ->
                 json={
                     "radicado_id": str(RADICADO_ID),
                     "tracking_number": "x",
-                    "to_dept": "Dirección Jurídica",
+                    "to_dept_code": 4,
                     "action": "assign",
                 },
                 headers=TENANT_HEADERS,

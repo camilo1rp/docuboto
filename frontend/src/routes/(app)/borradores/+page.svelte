@@ -55,6 +55,25 @@
   /** @type {import('$lib/types/api.js').BorradorResponse[]} */
   let borradores = data.borradores ?? [];
   let plantillas = data.plantillas ?? [];
+  // ADR-032: el destino viaja por CÓDIGO; el selector muestra el nombre.
+  $: dependenciaOptions = (data.dependencias ?? []).map((d) => ({
+    value: String(d.codigo),
+    label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
+  }));
+  /**
+   * Valor del selector para un borrador: su código; si es anterior al código y
+   * el nombre identifica UNA dependencia activa, ese código; si no, vacío (el
+   * operador debe elegirla — nunca se adivina entre homónimos).
+   */
+  function codigoDeBorrador(b) {
+    if (b?.dest_dept_code) return String(b.dest_dept_code);
+    const nombre = (b?.dest_dept ?? "").trim().toLowerCase();
+    if (!nombre) return "";
+    const coincidencias = (data.dependencias ?? []).filter(
+      (d) => (d.nombre ?? "").trim().toLowerCase() === nombre,
+    );
+    return coincidencias.length === 1 ? String(coincidencias[0].codigo) : "";
+  }
   let loading = false;
   let estadoFilter = data.initialEstado ?? "";
 
@@ -78,6 +97,13 @@
   let fDocType = "S";
   let fSubject = "";
   let fDestDept = "";
+  /** Valor del selector al abrir el borrador: si no cambia, NO se reenvía el destino
+   *  (un borrador legado con solo `dest_dept` no debe perder su destino al editar). */
+  let fDestDeptInicial = "";
+  $: destinoAnterior =
+    drawerMode === "edit" && editingBorrador && !editingBorrador.dest_dept_code && !fDestDept
+      ? (editingBorrador.dest_dept ?? "").trim()
+      : "";
   let fCuerpo = "";
   let fPlantillaId = "";
   let fSubjectError = "";
@@ -184,6 +210,7 @@
     fDocType = "S";
     fSubject = "";
     fDestDept = "";
+    fDestDeptInicial = "";
     fCuerpo = "";
     fPlantillaId = "";
     fSubjectError = "";
@@ -199,7 +226,8 @@
     editingBorrador = borrador;
     fDocType = borrador.doc_type ?? "S";
     fSubject = borrador.subject ?? "";
-    fDestDept = borrador.dest_dept ?? "";
+    fDestDept = codigoDeBorrador(borrador);
+    fDestDeptInicial = fDestDept;
     // BAJO #6: sembrar el editor desde el cuerpo YA saneado (cuerpo_html).
     fCuerpo = borrador.cuerpo_html ?? borrador.cuerpo ?? "";
     fPlantillaId = borrador.plantilla_id ?? "";
@@ -233,7 +261,7 @@
           body: JSON.stringify({
             doc_type: fDocType,
             subject: fSubject.trim(),
-            dest_dept: fDestDept.trim() || null,
+            dest_dept_code: fDestDept ? Number(fDestDept) : null,
             cuerpo: fCuerpo || null,
             plantilla_id: fPlantillaId || null,
             radicado_padre_id: fRadicadoPadreId || null,
@@ -245,7 +273,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             subject: fSubject.trim(),
-            dest_dept: fDestDept.trim() || null,
+            // Solo si el operador tocó el selector: omitirlo conserva el destino actual.
+            ...(fDestDept !== fDestDeptInicial
+              ? { dest_dept_code: fDestDept ? Number(fDestDept) : null }
+              : {}),
             cuerpo: fCuerpo || null,
           }),
         });
@@ -621,6 +652,12 @@
       {data.loadError}
     </div>
   {/if}
+  {#if data.dependenciasError}
+    <div class="borradores-page__error" role="alert" data-testid="borradores-dependencias-error">
+      <i class="fas fa-exclamation-triangle" aria-hidden="true"></i>
+      {data.dependenciasError}
+    </div>
+  {/if}
 
   <!-- Estado de carga -->
   {#if loading}
@@ -749,9 +786,13 @@
     <FormField
       id="borrador-destdept"
       label="Dependencia destino"
-      type="text"
+      type="select"
+      options={dependenciaOptions}
       bind:value={fDestDept}
-      placeholder="Nombre o código de la dependencia receptora"
+      placeholder="Seleccione la dependencia receptora…"
+      hint={destinoAnterior
+        ? `Destino anterior: «${destinoAnterior}» — elija la dependencia del catálogo.`
+        : ""}
       disabled={!hasPerm || (editingBorrador !== null && !canEdit)}
     />
 

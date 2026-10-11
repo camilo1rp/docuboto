@@ -163,18 +163,72 @@ async def test_pending_dept_widening_allowed_with_perm_tramitar(client_with_conn
     excluyentes por request)."""
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchval.return_value = 1  # check_permission → True, y luego COUNT
-    mock_conn.fetch.return_value = [make_step_record(to_dept="Otra Dependencia")]
+    mock_conn.fetch.return_value = [make_step_record(to_dept="Otra Dependencia", to_dept_code=77)]
 
     response = await client.get(
-        "/api/v1/workflows/pending", params={"dept": "Otra Dependencia"}, headers=TENANT_HEADERS
+        "/api/v1/workflows/pending", params={"dept_code": 77}, headers=TENANT_HEADERS
     )
 
     assert response.status_code == 200
     assert len(response.json()) == 1
     select_sql, *select_params = mock_conn.fetch.call_args[0]
-    assert "to_dept = " in select_sql
+    assert "to_dept_code = " in select_sql  # por CÓDIGO (ADR-032), no por nombre
     assert "urd_usuaroldep" not in select_sql
-    assert "Otra Dependencia" in select_params
+    assert 77 in select_params
+    assert "deprecation" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_bandeja_por_alias_ambiguo_es_422_no_una_lista_vacia(client_with_conn) -> None:
+    """`?dept=<nombre>` (alias deprecado): dos dependencias con ese nombre no devuelven
+    «sin trámite» —parecería que no hay nada— sino 422 `dependencia_ambigua`."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.return_value = {"codigo": None, "candidatos": 2}
+
+    response = await client.get(
+        "/api/v1/workflows/inbox", params={"dept": "Archivo"}, headers=TENANT_HEADERS
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "dependencia_ambigua"
+    mock_conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bandeja_por_alias_unico_resuelve_con_historial_y_marca_deprecation(
+    client_with_conn,
+) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetchrow.return_value = {"codigo": 77, "candidatos": 1}
+    mock_conn.fetch.return_value = [make_step_record(to_dept_code=77)]
+
+    response = await client.get(
+        "/api/v1/workflows/pending", params={"dept": "Archivo"}, headers=TENANT_HEADERS
+    )
+
+    assert response.status_code == 200
+    assert response.headers["deprecation"] == "true"
+    resolver = next(
+        c for c in mock_conn.fetchrow.await_args_list if "resolver_codigo_dependencia" in c.args[0]
+    )
+    assert resolver.args[2] is True  # una LECTURA sí ve nombres anteriores
+    select_sql, *select_params = mock_conn.fetch.call_args[0]
+    assert "to_dept_code = " in select_sql and 77 in select_params
+
+
+@pytest.mark.asyncio
+async def test_alcance_propio_se_une_por_codigo_no_por_nombre(client_with_conn) -> None:
+    """Mutación: volver a `SELECT d.nombre ... to_dept IN (...)` rompe la bandeja al
+    renombrar una dependencia con trámite vivo."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.return_value = 1
+    mock_conn.fetch.return_value = []
+    await client.get("/api/v1/workflows/pending", headers=TENANT_HEADERS)
+    select_sql, *_ = mock_conn.fetch.call_args[0]
+    assert "to_dept_code IN (SELECT u.depe_id FROM urd_usuaroldep" in select_sql
+    assert "d.nombre" not in select_sql and "to_dept IN" not in select_sql
 
 
 @pytest.mark.asyncio

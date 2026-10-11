@@ -15,6 +15,7 @@ import csv
 import io
 import uuid
 from datetime import date
+from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request
@@ -23,7 +24,7 @@ from fastapi.responses import Response
 from app.core.clearance import require_permission
 from app.core.database import get_tenant_conn as get_db
 from app.repositories.report_repository import ReportRepository
-from app.schemas.report import MonthCount, ReportSummary
+from app.schemas.report import DependenciaCount, MonthCount, ReportSummary
 from app.services.document_service import DocumentService
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
@@ -42,6 +43,18 @@ def _caller_id(request: Request) -> uuid.UUID | None:
         return None
 
 
+def _por_etiqueta(filas: Any) -> dict[str, int]:
+    """Serie legada por nombre: suma las filas que comparten etiqueta (no pisa)."""
+    out: dict[str, int] = {}
+    for r in filas:
+        out[r["dep"]] = out.get(r["dep"], 0) + r["n"]
+    return out
+
+
+def _por_codigo(filas: Any) -> list[DependenciaCount]:
+    return [DependenciaCount(codigo=r["codigo"], nombre=r["dep"], count=r["n"]) for r in filas]
+
+
 async def _build_summary(
     conn: asyncpg.Connection, date_from: date | None, date_to: date | None
 ) -> ReportSummary:
@@ -54,8 +67,10 @@ async def _build_summary(
         by_doc_type=by_doc_type,
         by_status={r["status"]: r["n"] for r in by_status},
         by_month=[MonthCount(month=r["month"], count=r["n"]) for r in by_month],
-        by_dependencia={r["dep"]: r["n"] for r in by_dep},
-        by_ubicacion={r["dep"]: r["n"] for r in by_ubic},
+        by_dependencia=_por_etiqueta(by_dep),
+        by_ubicacion=_por_etiqueta(by_ubic),
+        by_dependencia_codigo=_por_codigo(by_dep),
+        by_ubicacion_codigo=_por_codigo(by_ubic),
     )
 
 

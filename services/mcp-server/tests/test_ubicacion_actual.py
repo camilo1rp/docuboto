@@ -44,7 +44,7 @@ def test_la_ubicacion_fuera_de_rango_se_rechaza_antes_de_salir(valor: int) -> No
 
 @pytest.mark.parametrize(
     ("herramienta", "param"),
-    [("buscar_radicados", "dest_dept_code"), ("actualizar_radicado", "dest_dept"),
+    [("buscar_radicados", "dest_dept_code"), ("actualizar_radicado", "dest_dept_code"),
      ("radicar_documento", "dest_dept_code")],
 )
 def test_el_destino_se_describe_como_de_radicacion(herramienta: str, param: str) -> None:

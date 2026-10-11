@@ -48,6 +48,12 @@
   D-05/D-14).
 -->
 <script>
+  /** @type {{dependencias?: any[], dependenciasError?: boolean}} */
+  export let data = { dependencias: [], dependenciasError: false };
+  $: dependenciaOptions = (data.dependencias ?? []).map((d) => ({
+    value: String(d.codigo),
+    label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
+  }));
   import { onMount, onDestroy } from "svelte";
   import { presentacionDelItem, detalleDelItem } from "$lib/utils/loteJob.js";
   import {
@@ -454,7 +460,8 @@
       doc_type: "E",
       subject: "",
       doc_class: "",
-      dest_dept: "",
+      dest_dept_code: "",
+      origin_dept_code: "",
       sender_name: "",
       sender_entity: "",
       pages: "",
@@ -530,7 +537,8 @@
         doc_type: d.doc_type,
         subject: d.subject.trim(),
         doc_class: d.doc_class.trim() || null,
-        dest_dept: d.dest_dept.trim() || null,
+        dest_dept_code: d.dest_dept_code ? Number(d.dest_dept_code) : null,
+        origin_dept_code: d.origin_dept_code ? Number(d.origin_dept_code) : null,
         sender_name: d.sender_name.trim() || null,
         sender_entity: d.sender_entity.trim() || null,
         pages: d.pages ? Number(d.pages) : null,
@@ -940,6 +948,13 @@
           <p class="interop-alert interop-alert--error" role="alert">{loteDocsValidationError}</p>
         {/if}
 
+        {#if data.dependenciasError}
+          <p class="interop-alert interop-alert--error" role="alert">
+            No se pudo cargar el catálogo de dependencias; sin él no se puede elegir la dependencia
+            de cada documento. Recargue la página.
+          </p>
+        {/if}
+
         <div class="interop-rows" role="list" aria-label="Documentos a crear en el lote">
           {#each loteDocs as row, idx (idx)}
             <div class="interop-row" role="listitem">
@@ -961,8 +976,21 @@
                 />
                 <FormField
                   id="doc-{idx}-dependencia"
-                  label="Dependencia destino (opcional)"
-                  bind:value={row.dest_dept}
+                  label="Dependencia destino"
+                  type="select"
+                  options={dependenciaOptions}
+                  placeholder="— Sin dependencia —"
+                  bind:value={row.dest_dept_code}
+                  hint="Obligatoria en entrada e interno."
+                />
+                <FormField
+                  id="doc-{idx}-origen"
+                  label="Dependencia origen"
+                  type="select"
+                  options={dependenciaOptions}
+                  placeholder="— Sin dependencia —"
+                  bind:value={row.origin_dept_code}
+                  hint="Obligatoria en salida."
                 />
                 <FormField
                   id="doc-{idx}-remitente"

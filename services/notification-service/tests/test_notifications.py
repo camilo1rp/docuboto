@@ -320,8 +320,8 @@ DEPENDENCIA = "Oficina Jurídica"
 
 async def _fetchrow_dedup_y_dependencia(sql: str, *args):  # noqa: ARG001
     """La misma conexión sirve al `claim` del evento y al buzón de la dependencia."""
-    if "dependencias" in sql:
-        return {"codigo": 902}
+    if "resolver_codigo_dependencia" in sql:
+        return {"codigo": 902, "candidatos": 1}
     return {"event_id": "claimed"}
 
 

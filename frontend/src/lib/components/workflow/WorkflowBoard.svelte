@@ -82,7 +82,7 @@
   import {
     esPoseedor,
     puedeMarcarEnTramite,
-    nombresDeDependenciasDelUsuario,
+    codigosDeDependenciasDelUsuario,
   } from "$lib/utils/tenencia.js";
 
   /** @type {'inbox'|'pending'} */
@@ -96,7 +96,7 @@
   // ADR-028: tenencia. Los actos que mueven el paso (trasladar, trámite,
   // completar, revertir, marcar en trámite y el arrastre) son del POSEEDOR; un
   // colega ve la tarjeta pero no la acciona (el backend da 404).
-  $: misDependencias = nombresDeDependenciasDelUsuario($sessionUser);
+  $: misDependencias = codigosDeDependenciasDelUsuario($sessionUser);
 
   const ENDPOINT = { inbox: "/bandeja/api/inbox", pending: "/bandeja/api/pending" };
   // Límite pedido a /inbox|/pending (A4, revisión UX): esta vista NO pagina —

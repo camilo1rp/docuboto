@@ -98,6 +98,7 @@ plugins:
             ADR-029 Ubicación actual del radicado: ADR-029 Current location of the radicado
             ADR-030 Constancia de firma inobtenible: ADR-030 Unobtainable-signature record
             ADR-031 Constancia de autorización (IP firmada y política por entidad): ADR-031 Authorization record (signed IP and per-entity policy)
+            ADR-032 La dependencia por código: ADR-032 The dependencia by code
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -156,6 +157,7 @@ nav:
     - ADR-029 Ubicación actual del radicado: adr/ADR-029-ubicacion-actual-del-radicado.md
     - ADR-030 Constancia de firma inobtenible: adr/ADR-030-constancia-firma-inobtenible.md
     - ADR-031 Constancia de autorización (IP firmada y política por entidad): adr/ADR-031-constancia-autorizacion-ip-firmada-politica-por-entidad.md
+    - ADR-032 La dependencia por código: adr/ADR-032-dependencia-por-codigo.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

@@ -22,8 +22,8 @@ async def test_radicado_report(client_with_conn) -> None:
         [{"doc_type": "E", "n": 5}, {"doc_type": "S", "n": 3}],
         [{"status": "registered", "n": 6}, {"status": "archived", "n": 2}],
         [{"month": "2024-01", "n": 4}, {"month": "2024-02", "n": 4}],
-        [{"dep": "Jurídica", "n": 5}, {"dep": "(sin asignar)", "n": 3}],
-        [{"dep": "Archivo", "n": 4}],
+        [{"codigo": 410, "dep": "Jurídica", "n": 5}, {"codigo": None, "dep": "(sin asignar)", "n": 3}],
+        [{"codigo": 420, "dep": "Archivo", "n": 4}],
     ]
 
     resp = await client.get("/api/v1/reports/radicados", headers=TENANT_HEADERS)
@@ -59,8 +59,8 @@ async def test_radicado_report_csv(client_with_conn) -> None:
         [{"doc_type": "E", "n": 5}],
         [{"status": "registered", "n": 5}],
         [{"month": "2024-01", "n": 5}],
-        [{"dep": "Jurídica", "n": 5}],
-        [{"dep": "Archivo", "n": 2}],
+        [{"codigo": 410, "dep": "Jurídica", "n": 5}],
+        [{"codigo": 420, "dep": "Archivo", "n": 2}],
     ]
 
     resp = await client.get("/api/v1/reports/radicados.csv", headers=TENANT_HEADERS)

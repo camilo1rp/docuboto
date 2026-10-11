@@ -35,6 +35,9 @@
   otras — se muestra qué parte no se pudo cargar en vez de fingir que está vacía.
 -->
 <script>
+  import { usarNombresDependencia } from "$lib/stores/dependencias.js";
+  const nombresDependencia = usarNombresDependencia();
+  import { nombreActual, nombreSiCambio } from "$lib/utils/dependenciaNombre.js";
   import { PASO_ESTADO_CHIP, etiquetaPaso, etiquetaEventoFlujo } from "$lib/utils/flujo.js";
   import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
@@ -179,7 +182,13 @@
       {:else if currentStep}
         <div class="op-hoja-ruta__current">
           <i class="fas fa-location-dot" aria-hidden="true"></i>
-          <span class="op-hoja-ruta__current-dept">{currentStep.to_dept}</span>
+          <span class="op-hoja-ruta__current-dept"
+            >{nombreActual(
+              currentStep.to_dept_code,
+              currentStep.to_dept,
+              $nombresDependencia,
+            )}</span
+          >
           <StatusChip
             status={PASO_ESTADO_CHIP[currentStep.status] ?? "neutral"}
             label={etiquetaPaso(currentStep.status)}
@@ -224,6 +233,16 @@
       {:else if timeline.length > 0}
         <ol class="op-hoja-ruta__timeline" aria-label="Línea de tiempo del radicado">
           {#each timeline as item (item.key)}
+            {@const hoyOrigen = nombreSiCambio(
+              item.data.from_dept_code,
+              item.data.from_dept,
+              $nombresDependencia,
+            )}
+            {@const hoyDestino = nombreSiCambio(
+              item.data.to_dept_code,
+              item.data.to_dept,
+              $nombresDependencia,
+            )}
             <li
               class="op-hoja-ruta__item"
               class:op-hoja-ruta__item--current={item.isCurrent}
@@ -255,11 +274,24 @@
                 </div>
 
                 <p class="op-hoja-ruta__meta">
-                  {#if item.data.from_dept}
-                    <span>{item.data.from_dept}</span>
+                  {#if item.data.from_dept || item.data.from_dept_code}
+                    <!-- Instantánea nula pero con código: se usa el nombre actual del catálogo. -->
+                    <span
+                      >{item.data.from_dept ||
+                        nombreActual(item.data.from_dept_code, null, $nombresDependencia)}</span
+                    >
+                    {#if hoyOrigen}
+                      <span class="op-hoja-ruta__hoy">(hoy: {hoyOrigen})</span>
+                    {/if}
                     <i class="fas fa-arrow-right" aria-hidden="true"></i>
                   {/if}
-                  <span>{item.data.to_dept ?? "—"}</span>
+                  <span
+                    >{item.data.to_dept ||
+                      nombreActual(item.data.to_dept_code, null, $nombresDependencia)}</span
+                  >
+                  {#if hoyDestino}
+                    <span class="op-hoja-ruta__hoy">(hoy: {hoyDestino})</span>
+                  {/if}
                 </p>
 
                 {#if item.data.notes || item.data.comentario}
@@ -322,6 +354,11 @@
       i {
         color: var(--op-primary-dark);
       }
+    }
+
+    &__hoy {
+      color: var(--op-text-secondary);
+      font-size: 0.85em;
     }
 
     &__current-dept {

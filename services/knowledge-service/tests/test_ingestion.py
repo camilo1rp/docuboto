@@ -60,6 +60,24 @@ def _mock_repo(MockRepo, *, nivel_existente: int | None = None, voided: bool = F
 
 
 @pytest.mark.asyncio
+async def test_ingest_copia_origin_dept_code_si_llega() -> None:
+    """B5 (ADR-032): el código de origen viaja en los metadatos del chunk."""
+    conn = AsyncMock()
+    payload = {
+        "id": "doc-id-1",
+        "tracking_number": TRACKING,
+        "nivel_seguridad": PUBLICA,
+        "subject": "Solicitud",
+        "origin_dept": "Externo",
+        "origin_dept_code": 77,
+    }
+    with patch("app.services.ingestion.KnowledgeRepository") as MockRepo:
+        mock_repo = _mock_repo(MockRepo, nivel_existente=None)
+        await ingestion.ingest_radicado_created(conn, tenant_slug=TENANT, payload=payload)
+    assert mock_repo.upsert_chunk.await_args.kwargs["metadata"]["origin_dept_code"] == 77
+
+
+@pytest.mark.asyncio
 async def test_ingest_embeddable_upserts_with_derived_text_and_level() -> None:
     """Nivel Público (proveedor stub por defecto), sin chunk previo: se embebe."""
     conn = AsyncMock()
@@ -96,6 +114,8 @@ async def test_ingest_embeddable_upserts_with_derived_text_and_level() -> None:
         "dest_dept": "Jurídica",
         "dest_dept_code": 10,
         "origin_dept": "Externo",
+        # B5: tolera la ausencia (evento viejo) -> None; con ella, se copia.
+        "origin_dept_code": None,
     }
     mock_repo.tombstone_by_source.assert_not_called()
 

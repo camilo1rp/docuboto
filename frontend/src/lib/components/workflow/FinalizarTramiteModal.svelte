@@ -35,6 +35,9 @@
     on:success  — el trámite quedó finalizado; detail = FlowStepResponse
 -->
 <script>
+  import { usarNombresDependencia } from "$lib/stores/dependencias.js";
+  const nombresDependencia = usarNombresDependencia();
+  import { nombreActual } from "$lib/utils/dependenciaNombre.js";
   import { createEventDispatcher, tick } from "svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -147,7 +150,7 @@
         <strong>{step.tracking_number}</strong> ({step.status === "completed"
           ? "último paso en"
           : "actualmente en"}
-        {step.to_dept}). El radicado pasa a
+        {nombreActual(step.to_dept_code, step.to_dept, $nombresDependencia)}). El radicado pasa a
         <strong>Cerrado</strong>
         y esta acción <strong>no se puede deshacer</strong>.
       </span>

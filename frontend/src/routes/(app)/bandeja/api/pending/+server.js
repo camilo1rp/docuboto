@@ -16,12 +16,13 @@
  * (RF-SEG-08, no-read-up) — X-User-Id es opcional aquí, igual que en /inbox.
  *
  * GET → lista de pasos pendientes (`GET /workflows/pending`)
- *   Parámetros: dept, assigned_to (uuid), page, size
+ *   Parámetros: dept_code (int), assigned_to (uuid), page, size
  *   Respuesta: { items: FlowStepResponse[], total: number }
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -42,13 +43,14 @@ export async function GET({ locals, url }) {
     );
   }
 
-  const dept = url.searchParams.get("dept") ?? "";
+  // ADR-032: la dependencia se filtra por CÓDIGO (entero); texto libre se descarta.
+  const deptCode = parseCodigoDependencia(url.searchParams.get("dept_code"));
   const page = url.searchParams.get("page") ?? "1";
   const size = url.searchParams.get("size") ?? "20";
 
   // Allowlist de query params: solo los que el backend acepta.
   const params = new URLSearchParams({ page, size });
-  if (dept) params.set("dept", dept);
+  if (deptCode !== null) params.set("dept_code", String(deptCode));
   if (assignedTo) params.set("assigned_to", assignedTo);
 
   /** @type {Record<string, string>} */

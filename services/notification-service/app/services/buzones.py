@@ -94,29 +94,58 @@ def buzon_de_codigo_o_ventanilla(codigo: int | str | None) -> str:
         return BUZON_VENTANILLA
 
 
-async def resolver_buzon_dependencia(conn: asyncpg.Connection, nombre: str | None) -> str:
-    """Traduce el NOMBRE de una dependencia a su buzón, o cae a la ventanilla.
+async def _codigo_por_nombre(conn: asyncpg.Connection, nombre: str) -> tuple[int | None, int]:
+    """Resuelve un NOMBRE a `(codigo, candidatos)`; `codigo` solo si hay uno.
 
-    `flow_steps.to_dept` es texto libre sin FK a `dependencias` (ver el
-    docstring de `_own_scope_condition` en workflow-service): la correlación
-    por nombre es la convención del sistema, y esta consulta es el mismo
-    `SELECT` que ya hace `dependencia_activa` al crear el paso.
-
-    Cae a la ventanilla —con aviso en el log— cuando el nombre no resuelve.
-    Que un trámite oficial llegue al sitio equivocado es malo; que no llegue a
-    ninguno es peor, y es lo que pasaba.
+    Usa la función única `resolver_codigo_dependencia(nombre, true)` de
+    tenant-service (migración 013), que mira activas, inactivas y nombres
+    ANTERIORES a un renombre: un evento viejo que solo trae el nombre de antes
+    sigue llegando a su dependencia. Si la función aún no existe en el schema
+    (tenant sin migrar) se aplica el mismo criterio sobre `dependencias`:
+    exactamente UN código distinto o nada. Nunca `fetchrow` sin más: con dos
+    homónimos devolvía una fila arbitraria.
     """
-    if nombre:
-        fila = await conn.fetchrow(
-            "SELECT codigo FROM dependencias WHERE nombre = $1 AND activo = true",
-            nombre,
-        )
-        if fila is not None:
-            return buzon_de_codigo(fila["codigo"])
-
-    logger.warning(
-        "dependencia %r sin correspondencia activa en el catálogo: "
-        "el aviso se encamina a la ventanilla única",
-        nombre,
+    existe = await conn.fetchval(
+        "SELECT to_regprocedure('resolver_codigo_dependencia(text,boolean)') IS NOT NULL"
     )
+    if existe:
+        fila = await conn.fetchrow("SELECT codigo, candidatos FROM resolver_codigo_dependencia($1, true)", nombre)
+        if fila is None:
+            return None, 0
+        return fila["codigo"], int(fila["candidatos"] or 0)
+    filas = await conn.fetch("SELECT DISTINCT codigo FROM dependencias WHERE nombre = $1", nombre)
+    if len(filas) == 1:
+        return filas[0]["codigo"], 1
+    return None, len(filas)
+
+
+async def resolver_buzon(
+    conn: asyncpg.Connection, codigo: int | str | None, nombre: str | None
+) -> str:
+    """Buzón de una dependencia: el CÓDIGO manda; el nombre es respaldo.
+
+    Orden (B5, ADR-032): código del evento -> nombre resuelto (con histórico)
+    -> ventanilla. El nombre ambiguo (dos homónimos) o huérfano cae a la
+    ventanilla con aviso: un aviso al buzón de OTRA dependencia es una fuga,
+    uno a la ventanilla es solo un reencamine.
+    """
+    if codigo is not None:
+        return buzon_de_codigo_o_ventanilla(codigo)
+    if nombre:
+        resuelto, candidatos = await _codigo_por_nombre(conn, nombre)
+        if resuelto is not None:
+            return buzon_de_codigo(resuelto)
+        logger.warning(
+            "dependencia %r sin correspondencia única en el catálogo (%d candidatos): "
+            "el aviso se encamina a la ventanilla única",
+            nombre,
+            candidatos,
+        )
+        return BUZON_VENTANILLA
+    logger.warning("aviso sin dependencia: se encamina a la ventanilla única")
     return BUZON_VENTANILLA
+
+
+async def resolver_buzon_dependencia(conn: asyncpg.Connection, nombre: str | None) -> str:
+    """Compatibilidad: resolución solo por NOMBRE (ver `resolver_buzon`)."""
+    return await resolver_buzon(conn, None, nombre)

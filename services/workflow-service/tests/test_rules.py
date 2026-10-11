@@ -39,6 +39,8 @@ def _ctx(**kw):
             "doc_class",
             "dest_dept",
             "origin_dept",
+            "dest_dept_code",
+            "origin_dept_code",
             "subject",
             "sender_name",
             "sender_entity",
@@ -90,15 +92,15 @@ def test_op_regex():
 def test_match_mode_all_vs_any():
     conds = [
         {"field": "doc_type", "op": "eq", "value": "E"},
-        {"field": "dest_dept", "op": "eq", "value": "Jurídica"},
+        {"field": "dest_dept_code", "op": "eq", "value": 4},
     ]
-    ctx = _ctx(doc_type="E", dest_dept="Otra")
+    ctx = _ctx(doc_type="E", dest_dept_code=9)
     assert not matches_conditions(conds, "all", ctx)  # AND falla
     assert matches_conditions(conds, "any", ctx)  # OR pasa por doc_type
 
 
 def test_legacy_fallback():
-    rule = {"doc_type": "E", "doc_class": None, "dest_dept": None, "subject_contains": "pago"}
+    rule = {"doc_type": "E", "doc_class": None, "dest_dept_code": None, "subject_contains": "pago"}
     assert matches_legacy(rule, _ctx(doc_type="E", subject="solicitud de PAGO"))
     assert not matches_legacy(rule, _ctx(doc_type="S", subject="solicitud de pago"))
 
@@ -125,8 +127,10 @@ def make_rule_record(
     doc_type: str | None = None,
     doc_class: str | None = None,
     dest_dept: str | None = None,
+    dest_dept_code: int | None = None,
     subject_contains: str | None = None,
     assign_to_dept: str = "Dirección Jurídica",
+    assign_to_dept_code: int = 4,
     assign_notes: str | None = None,
 ) -> dict:
     return {
@@ -140,8 +144,10 @@ def make_rule_record(
         "doc_type": doc_type,
         "doc_class": doc_class,
         "dest_dept": dest_dept,
+        "dest_dept_code": dest_dept_code,
         "subject_contains": subject_contains,
         "assign_to_dept": assign_to_dept,
+        "assign_to_dept_code": assign_to_dept_code,
         "assign_notes": assign_notes,
         "created_by": uuid.uuid4(),
         "created_at": NOW,
@@ -232,7 +238,7 @@ async def test_create_rule_with_conditions(client_with_conn) -> None:
             "name": "Entrada o Salida",
             "match_mode": "any",
             "conditions": [{"field": "doc_type", "op": "in", "value": "E,S"}],
-            "assign_to_dept": "Ventanilla",
+            "assign_to_dept_code": 4,
         },
         headers=TENANT_HEADERS,
     )
@@ -269,7 +275,7 @@ _CREATE_PAYLOAD = {
     "name": "Entrada o Salida",
     "match_mode": "any",
     "conditions": [{"field": "doc_type", "op": "in", "value": "E,S"}],
-    "assign_to_dept": "Ventanilla",
+    "assign_to_dept_code": 4,
 }
 
 _UPDATE_PAYLOAD = {"name": "Renombrada"}
@@ -420,46 +426,41 @@ async def test_evaluate_batch_con_permiso_ok(client_with_conn) -> None:
 
 
 # ---------------------------------------------------------------------------
-# `assign_to_dept` validado contra el catálogo `dependencias` (cierre del
-# residual declarado en CLAUDE.md 2026-07-29): `POST`/`PATCH` ahora reutilizan
-# `WorkflowRepository.dependencia_activa` (mismo helper que `_create_step`)
-# ANTES de escribir la fila. Secuencia de `fetchval` en cada caso:
+# La dependencia destino de la regla es un CÓDIGO (B5, ADR-032), validado contra el
+# catálogo `dependencias` ANTES de escribir la fila; el nombre que se guarda es el del
+# catálogo. Secuencia de `fetchval` en cada caso:
 #   1) require_permission (USUA_PERM_ADMIN) → True
-#   2) dependencia_activa(assign_to_dept) → True/None
+#   2) dependencia_activa(assign_to_dept_code) → nombre del catálogo / None
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_create_rule_dependencia_inexistente_422(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia_activa → False
+    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia_activa → None
 
     resp = await client.post(
         "/api/v1/workflow/rules",
-        json={**_CREATE_PAYLOAD, "assign_to_dept": "Dependencia Inventada"},
+        json={**_CREATE_PAYLOAD, "assign_to_dept_code": 987},
         headers=TENANT_HEADERS,
     )
 
     assert resp.status_code == 422
     body = resp.json()["detail"]
     assert body["error"] == "dependencia_desconocida"
-    assert "Dependencia Inventada" in body["detail"]
+    assert "987" in body["detail"]
     mock_conn.fetchrow.assert_not_awaited()  # ninguna fila escrita si falla
 
 
 @pytest.mark.asyncio
 async def test_create_rule_dependencia_inactiva_422(client_with_conn) -> None:
-    """`dependencia_activa` filtra `activo = TRUE` en la propia consulta SQL —
-    una dependencia dada de baja es indistinguible de una inexistente desde la
-    capa de servicio (`fetchval` devuelve `None` en ambos casos), mismo
-    criterio ya establecido en `WorkflowService._validate_dept_catalog`."""
+    """`dependencia_activa` filtra `activo = TRUE` en la propia consulta: una dependencia
+    dada de baja es indistinguible de una inexistente desde la capa de servicio."""
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia INACTIVA
+    mock_conn.fetchval.side_effect = [1, None]
 
     resp = await client.post(
-        "/api/v1/workflow/rules",
-        json={**_CREATE_PAYLOAD, "assign_to_dept": "Dependencia De Baja"},
-        headers=TENANT_HEADERS,
+        "/api/v1/workflow/rules", json=_CREATE_PAYLOAD, headers=TENANT_HEADERS
     )
 
     assert resp.status_code == 422
@@ -468,13 +469,13 @@ async def test_create_rule_dependencia_inactiva_422(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_rule_dependencia_activa_ok(client_with_conn) -> None:
-    """Control positivo: con la dependencia activa en el catálogo, el cierre no
-    rompe el flujo de creación normal (gemelo de `test_create_rule_with_conditions`)."""
+async def test_create_rule_dependencia_activa_ok_y_guarda_el_nombre_del_catalogo(
+    client_with_conn,
+) -> None:
     client, mock_conn, _ = client_with_conn
     rid = uuid.uuid4()
-    # permiso OK, dependencia_activa → True, prev_hash de `audit.append` → None
-    mock_conn.fetchval.side_effect = [1, 1, None]
+    # permiso OK, dependencia_activa → nombre del catálogo, prev_hash de `audit.append`
+    mock_conn.fetchval.side_effect = [1, "Ventanilla Única", None]
     mock_conn.fetchrow.return_value = make_rule_record(rule_id=rid)
 
     resp = await client.post(
@@ -483,41 +484,119 @@ async def test_create_rule_dependencia_activa_ok(client_with_conn) -> None:
 
     assert resp.status_code == 201
     assert resp.json()["id"] == str(rid)
+    assert "deprecation" not in resp.headers
+    insert = mock_conn.fetchrow.await_args_list[0].args
+    assert "Ventanilla Única" in insert and 4 in insert  # nombre del catálogo + código
 
 
 @pytest.mark.asyncio
-async def test_update_rule_sin_tocar_assign_to_dept_no_valida(client_with_conn) -> None:
-    """PATCH parcial que NO incluye `assign_to_dept` no debe validarlo ni
-    romperse — solo un `fetchval` (el del gate de permiso); `dependencia_activa`
-    nunca se invoca porque el PATCH no tocó el campo."""
+async def test_create_rule_por_alias_ambiguo_422(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
-    # El gate de permiso y el `prev_hash` del asiento. `dependencia_activa` NO
-    # se invoca: el PATCH no tocó el campo.
+    mock_conn.fetchval.side_effect = [1]
+    mock_conn.fetchrow.return_value = {"codigo": None, "candidatos": 2}
+    payload = {k: v for k, v in _CREATE_PAYLOAD.items() if k != "assign_to_dept_code"}
+    resp = await client.post(
+        "/api/v1/workflow/rules",
+        json={**payload, "assign_to_dept": "Archivo"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "dependencia_ambigua"
+
+
+@pytest.mark.asyncio
+async def test_create_rule_por_alias_unico_marca_deprecation(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, "Archivo", None]
+    mock_conn.fetchrow.side_effect = [{"codigo": 9, "candidatos": 1}, make_rule_record()]
+    payload = {k: v for k, v in _CREATE_PAYLOAD.items() if k != "assign_to_dept_code"}
+    resp = await client.post(
+        "/api/v1/workflow/rules",
+        json={**payload, "assign_to_dept": "Archivo"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+    assert resp.headers["deprecation"] == "true"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["eq", "ne", "in"])
+@pytest.mark.parametrize("field", ["dest_dept", "origin_dept"])
+async def test_condicion_por_nombre_de_dependencia_se_rechaza(client_with_conn, op, field) -> None:
+    """Comparar una dependencia por NOMBRE (eq/ne/in) cambiaba de sentido al renombrar: 422
+    `condicion_por_nombre_obsoleta` que ofrece el campo `_code`."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1]
+    resp = await client.post(
+        "/api/v1/workflow/rules",
+        json={**_CREATE_PAYLOAD, "conditions": [{"field": field, "op": op, "value": "Archivo"}]},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["error"] == "condicion_por_nombre_obsoleta"
+    assert detail["campos"] == [f"{field}_code"]
+    mock_conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_condicion_textual_sobre_el_nombre_sigue_permitida(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1, "Ventanilla", None]
+    mock_conn.fetchrow.return_value = make_rule_record()
+    resp = await client.post(
+        "/api/v1/workflow/rules",
+        json={
+            **_CREATE_PAYLOAD,
+            "conditions": [{"field": "dest_dept", "op": "contains", "value": "Archivo"}],
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_condicion_por_codigo_exige_enteros(client_with_conn) -> None:
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchval.side_effect = [1]
+    resp = await client.post(
+        "/api/v1/workflow/rules",
+        json={
+            **_CREATE_PAYLOAD,
+            "conditions": [{"field": "dest_dept_code", "op": "eq", "value": "Archivo"}],
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "condicion_invalida"
+
+
+@pytest.mark.asyncio
+async def test_update_rule_sin_tocar_el_destino_no_valida(client_with_conn) -> None:
+    """PATCH parcial que NO incluye el destino no debe validarlo ni romperse — solo el
+    gate de permiso y el asiento; `dependencia_activa` nunca se invoca."""
+    client, mock_conn, _ = client_with_conn
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.return_value = make_rule_record(name="Renombrada")
 
     resp = await client.patch(
         f"/api/v1/workflow/rules/{uuid.uuid4()}",
-        json=_UPDATE_PAYLOAD,  # {"name": "Renombrada"} — sin assign_to_dept
+        json=_UPDATE_PAYLOAD,  # {"name": "Renombrada"} — sin destino
         headers=TENANT_HEADERS,
     )
 
     assert resp.status_code == 200
-    # Dos y no tres: el gate y el asiento, sin la consulta de `dependencia_activa`.
     assert mock_conn.fetchval.await_count == 2
 
 
 @pytest.mark.asyncio
-async def test_update_rule_con_assign_to_dept_dependencia_inexistente_422(
-    client_with_conn,
-) -> None:
-    """PATCH que SÍ toca `assign_to_dept` se valida igual que en `create_rule`."""
+async def test_update_rule_con_destino_inexistente_422(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
-    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia_activa → False
+    mock_conn.fetchval.side_effect = [1, None]  # permiso OK, dependencia_activa → None
 
     resp = await client.patch(
         f"/api/v1/workflow/rules/{uuid.uuid4()}",
-        json={"assign_to_dept": "Dependencia Inventada"},
+        json={"assign_to_dept_code": 987},
         headers=TENANT_HEADERS,
     )
 
@@ -527,15 +606,15 @@ async def test_update_rule_con_assign_to_dept_dependencia_inexistente_422(
 
 
 @pytest.mark.asyncio
-async def test_update_rule_con_assign_to_dept_valido_ok(client_with_conn) -> None:
+async def test_update_rule_con_destino_valido_ok(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
-    # permiso OK, dependencia_activa → True, prev_hash del asiento → None
-    mock_conn.fetchval.side_effect = [1, 1, None]
+    # permiso OK, dependencia_activa → nombre, prev_hash del asiento → None
+    mock_conn.fetchval.side_effect = [1, "Ventanilla Nueva", None]
     mock_conn.fetchrow.return_value = make_rule_record(assign_to_dept="Ventanilla Nueva")
 
     resp = await client.patch(
         f"/api/v1/workflow/rules/{uuid.uuid4()}",
-        json={"assign_to_dept": "Ventanilla Nueva"},
+        json={"assign_to_dept_code": 4},
         headers=TENANT_HEADERS,
     )
 

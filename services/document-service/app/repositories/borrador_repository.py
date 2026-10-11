@@ -18,7 +18,7 @@ import asyncpg
 
 _PL = "id, nombre, tipo_documental, cuerpo, activo, created_at, es_global, creado_por"
 _BO = (
-    "id, doc_type, subject, dest_dept, cuerpo, plantilla_id, radicado_padre_id, "
+    "id, doc_type, subject, dest_dept, dest_dept_code, cuerpo, plantilla_id, radicado_padre_id, "
     "estado, radicado_id, creado_por, created_at, updated_at, "
     "documento_file_id, documento_sha256, documento_formato, combinacion, faltantes, "
     "nivel_seguridad, cuerpo_sha256, version"
@@ -47,8 +47,8 @@ _NIVEL_EFECTIVO = (
 # Sin actor ($n NULL) ninguna rama casa (fail-closed).
 def _tenencia_del_padre(idx: int) -> str:
     holder = (
-        f"(fs.assigned_to = ${idx} OR (fs.assigned_to IS NULL AND fs.to_dept IN ("
-        f"SELECT d.nombre FROM urd_usuaroldep u JOIN dependencias d ON d.codigo = u.depe_id "
+        f"(fs.assigned_to = ${idx} OR (fs.assigned_to IS NULL AND fs.to_dept_code IN ("
+        f"SELECT u.depe_id FROM urd_usuaroldep u JOIN dependencias d ON d.codigo = u.depe_id "
         f"WHERE u.user_id = ${idx} AND u.is_active = TRUE AND d.activo = TRUE)))"
     )
     activo = (
@@ -201,10 +201,10 @@ class BorradorRepository:
 
     async def insert_borrador(self, data: dict) -> asyncpg.Record:
         row = await self._conn.fetchrow(
-            f"""INSERT INTO borrador (doc_type, subject, dest_dept, cuerpo, plantilla_id,
-                                     radicado_padre_id, creado_por, faltantes,
+            f"""INSERT INTO borrador (doc_type, subject, dest_dept, dest_dept_code, cuerpo,
+                                     plantilla_id, radicado_padre_id, creado_por, faltantes,
                                      nivel_seguridad)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {_BO}""",
+                VALUES ($1, $2, $3, $10, $4, $5, $6, $7, $8, $9) RETURNING {_BO}""",
             data["doc_type"],
             data["subject"],
             data.get("dest_dept"),
@@ -214,6 +214,7 @@ class BorradorRepository:
             data.get("creado_por"),
             data.get("faltantes") or [],
             data.get("nivel_seguridad", 1),
+            data.get("dest_dept_code"),
         )
         assert row is not None
         return row

@@ -420,7 +420,7 @@ async def test_confirmar_un_procedimiento_envia_el_jti_a_su_ejecutor(
     proc = get_procedimiento("tramitar_peticion_ciudadana")
     tarjeta = write_gate.preparar(
         proc,
-        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept": "JUR"},
+        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept_code": 902},
         sub=ident.user_id,
         ten=ident.tenant_slug,
     )

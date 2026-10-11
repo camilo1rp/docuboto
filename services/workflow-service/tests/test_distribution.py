@@ -43,8 +43,10 @@ def _rule_row(**kw) -> dict:
         "doc_type": None,
         "doc_class": None,
         "dest_dept": None,
+        "dest_dept_code": None,
         "subject_contains": None,
         "assign_to_dept": "Dirección Jurídica",
+        "assign_to_dept_code": 4,
         "assign_notes": "auto",
         "created_by": uuid.uuid4(),
         "created_at": NOW,
@@ -60,6 +62,7 @@ _PAYLOAD = {
     "doc_type": "E",
     "subject": "Solicitud",
     "dest_dept": "Ventanilla",
+    "dest_dept_code": 1,
 }
 
 
@@ -203,3 +206,64 @@ async def test_rn8_la_guarda_autoritativa_va_dentro_del_cerrojo() -> None:
     assert not [
         c for c in conn.execute.await_args_list if "INSERT INTO public.audit_log" in str(c.args[0])
     ]
+
+
+# ---------------------------------------------------------------------------
+# Códigos del evento (ADR-032): código del payload -> nombre con historial -> ausente
+# ---------------------------------------------------------------------------
+
+_SIN_CODIGO = {k: v for k, v in _PAYLOAD.items() if k != "dest_dept_code"}
+
+
+def _regla_por_codigo(op: str, valor: object) -> dict:
+    return _rule_row(
+        conditions=json.dumps([{"field": "dest_dept_code", "op": op, "value": valor}])
+    )
+
+
+@pytest.mark.asyncio
+async def test_evento_viejo_sin_codigo_se_resuelve_por_el_nombre_con_historial() -> None:
+    """Un evento de la cola de fallidos anterior a la 046 trae solo `dest_dept`. Si el
+    nombre (incluidos los anteriores y los mapeos manuales) resuelve a UNA dependencia,
+    las reglas por código casan."""
+    conn = _conn()
+    conn.fetchval.side_effect = [1, 1, TRACKING_NUMBER, 1, 1, 1, None]
+    conn.fetch.return_value = [_regla_por_codigo("eq", 3)]
+    conn.fetchrow.side_effect = [
+        {"codigo": 3, "candidatos": 1},  # resolver_codigo_dependencia(dest_dept, TRUE)
+        make_step_record(action="assign"),
+    ]
+
+    assert await auto_distribute(conn, "demo", _SIN_CODIGO) == "Dirección Jurídica"
+    sql, nombre, historico = conn.fetchrow.await_args_list[0].args
+    assert "resolver_codigo_dependencia" in sql and nombre == "Ventanilla"
+    assert historico is True  # el replay SÍ ve nombres anteriores
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["eq", "ne", "in"])
+async def test_nombre_ambiguo_no_da_codigo_y_las_condiciones_por_codigo_no_casan(op: str) -> None:
+    """Fail-closed: con un destino que se desconoce, ni `ne` («no es X») se da por cierto.
+    Mutación: quitar la guarda `CODE_FIELDS` de `eval_condition` hace casar `ne`."""
+    conn = _conn()
+    conn.fetchval.return_value = 1
+    conn.fetch.return_value = [_regla_por_codigo(op, [3] if op == "in" else 3)]
+    conn.fetchrow.return_value = {"codigo": None, "candidatos": 2}
+
+    assert await auto_distribute(conn, "demo", _SIN_CODIGO) is None
+    assert not any("INSERT INTO flow_steps" in c.args[0] for c in conn.fetchrow.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_regla_legada_por_destino_se_compara_por_codigo() -> None:
+    conn = _conn()
+    conn.fetchval.side_effect = [1, 1, TRACKING_NUMBER, 1, 1, 1, None]
+    conn.fetch.return_value = [_rule_row(conditions="[]", dest_dept="Ventanilla", dest_dept_code=1)]
+    conn.fetchrow.return_value = make_step_record(action="assign")
+    assert await auto_distribute(conn, "demo", _PAYLOAD) == "Dirección Jurídica"
+
+    # El mismo nombre en el evento pero OTRO código: no casa (el nombre ya no cuenta).
+    conn2 = _conn()
+    conn2.fetchval.return_value = 1
+    conn2.fetch.return_value = [_rule_row(conditions="[]", dest_dept="Ventanilla", dest_dept_code=2)]
+    assert await auto_distribute(conn2, "demo", _PAYLOAD) is None

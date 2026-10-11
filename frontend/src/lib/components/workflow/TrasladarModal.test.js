@@ -19,6 +19,8 @@
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
+import { readable } from "svelte/store";
+import { NOMBRES_DEPENDENCIA_KEY } from "$lib/stores/dependencias.js";
 import TrasladarModal from "./TrasladarModal.svelte";
 
 const RAD_ID = "11111111-1111-1111-1111-111111111111";
@@ -29,13 +31,14 @@ const STEP = {
   tracking_number: "2026-ICETEX-E-000001",
   from_dept: "Ventanilla Única",
   to_dept: "Jurídica",
+  to_dept_code: 7,
   doc_type: "E",
   status: "pending",
 };
 
 const DEPENDENCIAS = [
-  { value: "Jurídica", label: "Jurídica" },
-  { value: "Archivo", label: "Archivo" },
+  { value: "7", label: "Jurídica" },
+  { value: "12", label: "Archivo" },
 ];
 
 const originalFetch = globalThis.fetch;
@@ -57,6 +60,17 @@ describe("TrasladarModal", () => {
     expect(origen).toBeDisabled();
   });
 
+  it("el origen se pinta con el nombre ACTUAL del catálogo, no con la instantánea (ADR-032)", () => {
+    const context = new Map([
+      [NOMBRES_DEPENDENCIA_KEY, readable(new Map([[7, "Gestión Jurídica"]]))],
+    ]);
+    render(TrasladarModal, {
+      props: { open: true, step: STEP, dependencias: DEPENDENCIAS },
+      context,
+    });
+    expect(screen.getByLabelText(/dependencia de origen/i)).toHaveValue("Gestión Jurídica");
+  });
+
   it("no llama al proxy si no se selecciona dependencia destino", async () => {
     const fetchMock = vi.fn();
     globalThis.fetch = fetchMock;
@@ -68,7 +82,7 @@ describe("TrasladarModal", () => {
     expect(screen.getByText(/la dependencia destino es obligatoria/i)).toBeTruthy();
   });
 
-  it("POST /bandeja/api/transfer con from_dept derivado (no tecleado) y to_dept elegido", async () => {
+  it("POST /bandeja/api/transfer con to_dept_code elegido y sin origen (lo deriva el servidor)", async () => {
     const fetchMock = vi.fn(async (url, opts) => {
       if (url === "/bandeja/api/users?size=100") return jsonResponse({ users: [] });
       expect(url).toBe("/bandeja/api/transfer");
@@ -76,9 +90,12 @@ describe("TrasladarModal", () => {
       expect(body).toMatchObject({
         radicado_id: RAD_ID,
         tracking_number: "2026-ICETEX-E-000001",
-        to_dept: "Archivo",
-        from_dept: "Jurídica",
+        to_dept_code: 12,
       });
+      // ADR-032: el origen lo deriva el servidor; el front no lo envía.
+      expect(body.from_dept).toBeUndefined();
+      expect(body.from_dept_code).toBeUndefined();
+      expect(body.to_dept).toBeUndefined();
       return jsonResponse({ ...STEP, to_dept: "Archivo" });
     });
     globalThis.fetch = fetchMock;
@@ -86,7 +103,7 @@ describe("TrasladarModal", () => {
     render(TrasladarModal, { props: { open: true, step: STEP, dependencias: DEPENDENCIAS } });
 
     const select = screen.getByLabelText(/dependencia destino/i);
-    await fireEvent.change(select, { target: { value: "Archivo" } });
+    await fireEvent.change(select, { target: { value: "12" } });
     await fireEvent.click(screen.getByRole("button", { name: "Trasladar" }));
 
     await waitFor(() => {
@@ -131,7 +148,7 @@ describe("TrasladarModal", () => {
     render(TrasladarModal, { props: { open: true, step: STEP, dependencias: DEPENDENCIAS } });
 
     const select = screen.getByLabelText(/dependencia destino/i);
-    await fireEvent.change(select, { target: { value: "Archivo" } });
+    await fireEvent.change(select, { target: { value: "12" } });
     await fireEvent.change(screen.getByLabelText(/fecha límite/i), {
       target: { value: "2026-08-15" },
     });

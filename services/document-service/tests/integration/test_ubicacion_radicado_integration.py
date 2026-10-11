@@ -234,18 +234,29 @@ async def _dependencias(conn: asyncpg.Connection) -> None:
 
 
 async def test_el_patch_de_dest_dept_no_deja_el_codigo_de_otra_dependencia(tenant_ctx) -> None:
+    """El par (nombre, código) lo escribe el catálogo (ADR-032) y llega ENTERO al UPDATE."""
+    from fastapi import HTTPException
+
     from app.schemas.document import DocumentUpdate
+    from app.services.document_service import DocumentService
 
     slug, conn = await _en_tenant(tenant_ctx)
     await _dependencias(conn)
-    repo = DocumentRepository(conn, slug)
+    svc = DocumentService(conn, slug)
     rid = await _rad(conn, dest=("Tecnología", 300))
-    r = await repo.update(rid, DocumentUpdate(dest_dept="Archivo"), PUBLICA)
-    assert r is not None and (r.ubicacion_dept, r.ubicacion_dept_code) == ("Archivo", 400)
-    # Nombre ambiguo, inactivo o inexistente: el código NO se inventa ni se hereda.
-    for nombre in ("Duplicada", "Inactiva", "Inexistente"):
-        r = await repo.update(rid, DocumentUpdate(dest_dept=nombre), PUBLICA)
-        assert r is not None and r.ubicacion_dept == nombre and r.ubicacion_dept_code is None, nombre
+    r = await svc.update(rid, DocumentUpdate(dest_dept="Archivo"), PUBLICA, uuid.uuid4())
+    assert (r.ubicacion_dept, r.ubicacion_dept_code) == ("Archivo", 400)
+    # Nombre ambiguo, inactivo o inexistente: 422 y NADA cambia (antes se guardaba el
+    # texto con código NULL en silencio).
+    for nombre, error in (
+        ("Duplicada", "dependencia_ambigua"),
+        ("Inactiva", "dependencia_desconocida"),
+        ("Inexistente", "dependencia_desconocida"),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await svc.update(rid, DocumentUpdate(dest_dept=nombre), PUBLICA, uuid.uuid4())
+        assert exc.value.detail["error"] == error, nombre
+    assert (await _ubic(conn, rid)) == ("Archivo", 400)
 
 
 async def test_el_patch_de_dest_dept_en_un_radicado_cerrado_se_rechaza(tenant_ctx) -> None:

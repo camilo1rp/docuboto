@@ -39,7 +39,7 @@ Cliente = tuple[AsyncClient, AsyncMock, MagicMock]
 _ASSIGN = {
     "radicado_id": str(RADICADO_ID),
     "tracking_number": "x",
-    "to_dept": "Dirección Jurídica",
+    "to_dept_code": 4,
     "action": "assign",
 }
 
@@ -451,7 +451,7 @@ async def test_los_get_nunca_sincronizan(
 # (su efecto real en BD lo prueban los tests de tests/integration/).
 # ---------------------------------------------------------------------------
 
-_DEVOLVER = {"to_dept": "Ventanilla", "causal": "DEV-DEP", "comentario": "No competencia"}
+_DEVOLVER = {"to_dept_code": 7, "causal": "DEV-DEP", "comentario": "No competencia"}
 _MOTIVO = "Se asignó a la dependencia incorrecta por error de digitación."
 
 

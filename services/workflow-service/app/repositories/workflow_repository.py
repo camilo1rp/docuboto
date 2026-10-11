@@ -48,12 +48,16 @@ def _clearance_condition(idx: int) -> str:
 
 
 def _user_depts_subquery(idx: int) -> str:
-    """Nombres de las dependencias ACTIVAS a las que pertenece el usuario `$idx`
+    """CÓDIGOS de las dependencias ACTIVAS a las que pertenece el usuario `$idx`
     (URD activa). Compartido por el alcance de bandeja (`_own_scope_condition`)
     y por la tenencia (`_holder_condition`): una sola definición de «mi
-    dependencia», para que ambos ejes no puedan divergir."""
+    dependencia», para que ambos ejes no puedan divergir.
+
+    Por CÓDIGO (ADR-032): `urd_usuaroldep.depe_id` ya es el código, así que no hay
+    nada que traducir. Por nombre, renombrar una dependencia con trámite vivo
+    dejaba los pasos fuera de toda bandeja."""
     return (
-        f"SELECT d.nombre FROM urd_usuaroldep u "
+        f"SELECT u.depe_id FROM urd_usuaroldep u "
         f"JOIN dependencias d ON d.codigo = u.depe_id "
         f"WHERE u.user_id = ${idx} AND u.is_active = TRUE AND d.activo = TRUE"
     )
@@ -69,7 +73,7 @@ def _holder_condition(idx: int, alias: str = "") -> str:
     tiene). NULL-safe: sin `$idx` ninguna rama casa (fail-closed)."""
     return (
         f"(assigned_to = ${idx} OR "
-        f"(assigned_to IS NULL AND to_dept IN ({_user_depts_subquery(idx)})))"
+        f"(assigned_to IS NULL AND to_dept_code IN ({_user_depts_subquery(idx)})))"
     )
 
 
@@ -96,12 +100,11 @@ def _own_scope_condition(idx: int) -> str:
     Sin `dept`/`assigned_to` explícitos, el llamante ve lo suyo: pasos
     asignados a él (`assigned_to = $idx`) O de una dependencia a la que
     pertenece por URD activa (`urd_usuaroldep`, auth-service) — la
-    correlación es por NOMBRE porque `flow_steps.to_dept`/`from_dept` son
-    texto libre (VARCHAR(100), sin FK a `dependencias`, ver
-    `document-service/migrations/tenant/005_radicado_dept_codes.sql`); es la
-    MISMA convención que usa el resto del sistema (el frontend puebla
-    `to_dept` con `dependencias.nombre` del catálogo SSR, nunca con el
-    código). Ambas tablas viven en el MISMO schema de tenant que `flow_steps`
+    correlación es por CÓDIGO (ADR-032): `flow_steps.to_dept_code` contra
+    `urd_usuaroldep.depe_id` (que ya es el código de `dependencias`). Antes era
+    por NOMBRE y renombrar una dependencia dejaba sus pasos fuera de toda
+    bandeja; `to_dept` es hoy solo la instantánea legible. Ambas tablas
+    viven en el MISMO schema de tenant que `flow_steps`
     (ADR-002/012), igual que `auth_memberships`/`role_clearance` en
     `resolve_caller_clearance` — sin llamada HTTP a otro servicio.
 
@@ -115,7 +118,7 @@ def _own_scope_condition(idx: int) -> str:
     `radicados` de otro servicio — ambas asumen el schema del tenant
     totalmente provisionado.
     """
-    return f"(assigned_to = ${idx} OR to_dept IN ({_user_depts_subquery(idx)}))"
+    return f"(assigned_to = ${idx} OR to_dept_code IN ({_user_depts_subquery(idx)}))"
 
 
 def _no_terminal_condition(tabla: str = "flow_steps") -> str:
@@ -292,15 +295,12 @@ class WorkflowRepository:
         return actual, despues
 
     async def _pasos_para_ubicacion(self, radicado_id: uuid.UUID) -> list[PasoUbicacion]:
-        """Pasos del radicado con los códigos de las dependencias ACTIVAS que
-        llevan exactamente el nombre de `to_dept` (el paso no guarda código)."""
+        """Pasos del radicado con el CÓDIGO de dependencia que cada uno guarda
+        (`to_dept_code`, ADR-032); `to_dept` es solo la instantánea del nombre."""
         rows = await self._conn.fetch(
             """
-            SELECT s.step_number, s.status, s.to_dept, s.assigned_to, s.completed_at,
-                   COALESCE((SELECT array_agg(d.codigo::integer)
-                               FROM dependencias d
-                              WHERE d.nombre = s.to_dept AND d.activo = TRUE),
-                            '{}'::integer[]) AS candidatos
+            SELECT s.step_number, s.status, s.to_dept, s.to_dept_code, s.assigned_to,
+                   s.completed_at
               FROM flow_steps s
              WHERE s.radicado_id = $1
             """,
@@ -313,7 +313,7 @@ class WorkflowRepository:
                 to_dept=r["to_dept"],
                 assigned_to=r["assigned_to"],
                 completed_at=r["completed_at"],
-                codigos_candidatos=tuple(r["candidatos"]),
+                to_dept_code=r["to_dept_code"],
             )
             for r in rows
         ]
@@ -504,11 +504,28 @@ class WorkflowRepository:
                 tipo_tx="finalizar",
                 from_dept=current.to_dept,
                 to_dept=current.to_dept,
+                from_dept_code=current.to_dept_code,
+                to_dept_code=current.to_dept_code,
                 actor=actor,
                 comentario=comentario,
                 detalles={"step_number": current.step_number, "motivo_cierre": motivo_cierre},
             )
         return _row_to_model(row) if row is not None else current
+
+    async def paso_activo(self, radicado_id: uuid.UUID) -> FlowStep | None:
+        """Paso activo (pending/in_progress) del radicado, sin filtro de clearance.
+
+        Solo para DERIVAR el origen de un paso nuevo, dentro del cerrojo del radicado y
+        DESPUÉS de que el acto superó su propio gate de tenencia y clearance: no se
+        devuelve al cliente."""
+        await self._set_search_path()
+        row = await self._conn.fetchrow(
+            "SELECT * FROM flow_steps WHERE radicado_id = $1 "
+            "AND status IN ('pending', 'in_progress') "
+            "ORDER BY step_number DESC LIMIT 1",
+            radicado_id,
+        )
+        return _row_to_model(row) if row is not None else None
 
     async def get_next_step_number(self, radicado_id: uuid.UUID) -> int:
         await self._set_search_path()
@@ -542,30 +559,55 @@ class WorkflowRepository:
             max_clearance,
         )
 
-    async def dependencia_activa(self, nombre: str) -> bool:
-        """¿Existe una dependencia ACTIVA del catálogo con este nombre exacto?
+    async def dependencia_activa(self, codigo: int) -> str | None:
+        """Nombre del catálogo de la dependencia ACTIVA con este CÓDIGO, o `None`.
 
-        Gemelo de `get_radicado_tracking_number`: `_create_step` (assign/transfer)
-        no debe confiar en `to_dept`/`from_dept` como texto libre del cliente
-        (`VARCHAR(100)`, sin FK a `dependencias` — ver docstring de
-        `_own_scope_condition`, que ya depende de esta misma correlación por
-        NOMBRE para acotar `inbox`/`pending`). Sin esta comprobación, un
-        `to_dept` con una errata o inventado crea un paso que no coincide con el
-        alcance propio de NADIE: el radicado queda `pending` en BD pero invisible
-        en toda bandeja — pérdida silenciosa de un trámite oficial.
+        `_create_step` (assign/transfer) no debe confiar en el destino como dato
+        libre del cliente: un código inexistente crea un paso que no coincide con
+        el alcance de NADIE (`pending` en BD pero invisible en toda bandeja —
+        pérdida silenciosa de un trámite oficial). Devuelve el NOMBRE y no un
+        booleano porque la instantánea que se guarda (`to_dept`) la pone el
+        servidor desde el catálogo, nunca el texto del cliente (ADR-032).
 
         `dependencias` vive en el MISMO schema de tenant que `flow_steps`
-        (ADR-002/012, mismo criterio que `_own_scope_condition`) — sin llamada
-        HTTP a otro servicio. Dependencia INACTIVA cuenta como inexistente a
-        propósito: un paso hacia una dependencia dada de baja es igual de
-        invisible en la práctica (nadie tiene URD activa apuntando a ella).
+        (ADR-002/012) — sin llamada HTTP a otro servicio. Una dependencia INACTIVA
+        cuenta como inexistente a propósito: un paso hacia una dependencia dada de
+        baja es igual de invisible en la práctica (nadie tiene URD activa en ella).
         """
         await self._set_search_path()
-        return bool(
-            await self._conn.fetchval(
-                "SELECT 1 FROM dependencias WHERE nombre = $1 AND activo = TRUE", nombre
-            )
+        nombre = await self._conn.fetchval(
+            "SELECT nombre FROM dependencias WHERE codigo = $1 AND activo = TRUE", codigo
         )
+        return str(nombre) if nombre is not None else None
+
+    async def dependencia_existente(self, codigo: int) -> str | None:
+        """Nombre del catálogo de la dependencia con este CÓDIGO, activa o no, o `None`.
+
+        Para lo que CITA una dependencia sin asignarle trabajo (la condición de destino
+        de una regla): una inactiva sigue siendo la misma dependencia."""
+        await self._set_search_path()
+        nombre = await self._conn.fetchval(
+            "SELECT nombre FROM dependencias WHERE codigo = $1", codigo
+        )
+        return str(nombre) if nombre is not None else None
+
+    async def resolver_alias(self, nombre: str, *, historico: bool = False) -> tuple[int | None, int]:
+        """(código, candidatos) de un NOMBRE de dependencia, por el criterio ÚNICO de
+        tenant-service 013 (`resolver_codigo_dependencia`).
+
+        `historico=False` (alias de API): solo dependencias ACTIVAS con ese nombre
+        ACTUAL. `historico=True` (eventos viejos, replay de la cola de fallidos):
+        también inactivas, nombres anteriores y mapeos manuales. El código solo
+        sale con EXACTAMENTE un candidato; 0 es huérfano y >=2 ambiguo: elegir uno
+        sería inventar el destino.
+        """
+        await self._set_search_path()
+        fila = await self._conn.fetchrow(
+            "SELECT * FROM resolver_codigo_dependencia($1, $2)", nombre, historico
+        )
+        if fila is None:
+            return None, 0
+        return fila["codigo"], int(fila["candidatos"])
 
     async def user_exists(self, user_id: uuid.UUID) -> bool:
         """Existencia del destino de una reasignación (Hallazgo C).
@@ -599,6 +641,8 @@ class WorkflowRepository:
         step_number: int,
         from_dept: str | None,
         to_dept: str,
+        to_dept_code: int,
+        from_dept_code: int | None = None,
         assigned_to: uuid.UUID | None,
         assigned_by: uuid.UUID,
         action: str,
@@ -615,8 +659,9 @@ class WorkflowRepository:
                 INSERT INTO flow_steps (
                     radicado_id, tracking_number, step_number,
                     from_dept, to_dept, assigned_to, assigned_by,
-                    action, notes, status, doc_type, due_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11)
+                    action, notes, status, doc_type, due_at,
+                    to_dept_code, from_dept_code
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11, $12, $13)
                 RETURNING *
                 """,
                 radicado_id,
@@ -630,6 +675,8 @@ class WorkflowRepository:
                 notes,
                 doc_type,
                 due_at,
+                to_dept_code,
+                from_dept_code,
             )
             await self._insert_flow_event(
                 radicado_id=radicado_id,
@@ -637,6 +684,8 @@ class WorkflowRepository:
                 tipo_tx=action,
                 from_dept=from_dept,
                 to_dept=to_dept,
+                from_dept_code=from_dept_code,
+                to_dept_code=to_dept_code,
                 actor=assigned_by,
                 comentario=notes,
                 detalles={"step_number": step_number},
@@ -654,6 +703,8 @@ class WorkflowRepository:
         actor: uuid.UUID | None,
         comentario: str | None,
         detalles: dict[str, Any],
+        from_dept_code: int | None = None,
+        to_dept_code: int | None = None,
     ) -> uuid.UUID:
         # Asume search_path ya fijado por el método llamante. El id se genera aquí
         # (no con RETURNING) para poder devolverlo sin cambiar la forma de la
@@ -663,8 +714,9 @@ class WorkflowRepository:
             """
             INSERT INTO flow_events (
                 radicado_id, tracking_number, tipo_tx,
-                from_dept, to_dept, actor, comentario, detalles, id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+                from_dept, to_dept, actor, comentario, detalles, id,
+                from_dept_code, to_dept_code
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
             """,
             radicado_id,
             tracking_number,
@@ -675,6 +727,8 @@ class WorkflowRepository:
             comentario,
             json.dumps(detalles or {}),
             event_id,
+            from_dept_code,
+            to_dept_code,
         )
         self.last_flow_event_id = event_id
         return event_id
@@ -692,7 +746,8 @@ class WorkflowRepository:
             await self._conn.fetch(
                 """
                 SELECT id, radicado_id, tracking_number, tipo_tx,
-                       from_dept, to_dept, actor, comentario, detalles, ts
+                       from_dept, to_dept, from_dept_code, to_dept_code,
+                       actor, comentario, detalles, ts
                 FROM flow_events
                 WHERE radicado_id = $1
                   AND COALESCE(
@@ -756,7 +811,7 @@ class WorkflowRepository:
     async def list_pending(
         self,
         *,
-        dept: str | None,
+        dept_code: int | None,
         assigned_to: uuid.UUID | None,
         own_scope_user_id: uuid.UUID | None,
         max_clearance: int,
@@ -771,7 +826,7 @@ class WorkflowRepository:
 
         ``own_scope_user_id``: cierre de la primitiva de enumeración (`GET
         /workflows/pending` sin acotar). El SERVICIO decide su valor: no
-        ``None`` cuando la petición NO trae `dept`/`assigned_to` (alcance por
+        ``None`` cuando la petición NO trae `dept_code`/`assigned_to` (alcance por
         defecto, `_own_scope_condition`); ``None`` cuando sí los trae (el
         servicio ya exigió `PERM_TRAMITAR`/`USUA_PERM_ADMIN` para ampliar el
         alcance) — ambos ejes son mutuamente excluyentes por request.
@@ -782,9 +837,9 @@ class WorkflowRepository:
         params: list[object] = []
         idx = 1
 
-        if dept is not None:
-            conditions.append(f"to_dept = ${idx}")
-            params.append(dept)
+        if dept_code is not None:
+            conditions.append(f"to_dept_code = ${idx}")
+            params.append(dept_code)
             idx += 1
 
         if assigned_to is not None:
@@ -792,7 +847,7 @@ class WorkflowRepository:
             params.append(assigned_to)
             idx += 1
 
-        if dept is None and assigned_to is None:
+        if dept_code is None and assigned_to is None:
             conditions.append(_own_scope_condition(idx))
             params.append(own_scope_user_id)
             idx += 1
@@ -885,6 +940,8 @@ class WorkflowRepository:
                 tipo_tx="complete",
                 from_dept=row["to_dept"],
                 to_dept=row["to_dept"],
+                from_dept_code=row["to_dept_code"],
+                to_dept_code=row["to_dept_code"],
                 actor=actor,
                 comentario=notes,
                 detalles={"step_id": str(step_id)},
@@ -895,7 +952,7 @@ class WorkflowRepository:
         self,
         *,
         doc_type: str | None,
-        dept: str | None,
+        dept_code: int | None,
         assigned_to: uuid.UUID | None,
         own_scope_user_id: uuid.UUID | None,
         max_clearance: int,
@@ -918,15 +975,15 @@ class WorkflowRepository:
             conditions.append(f"doc_type = ${idx}")
             params.append(doc_type)
             idx += 1
-        if dept is not None:
-            conditions.append(f"to_dept = ${idx}")
-            params.append(dept)
+        if dept_code is not None:
+            conditions.append(f"to_dept_code = ${idx}")
+            params.append(dept_code)
             idx += 1
         if assigned_to is not None:
             conditions.append(f"assigned_to = ${idx}")
             params.append(assigned_to)
             idx += 1
-        if dept is None and assigned_to is None:
+        if dept_code is None and assigned_to is None:
             conditions.append(_own_scope_condition(idx))
             params.append(own_scope_user_id)
             idx += 1
@@ -1040,10 +1097,12 @@ class WorkflowRepository:
                 """
                 INSERT INTO flow_events (
                     radicado_id, tracking_number, tipo_tx,
-                    from_dept, to_dept, actor, comentario, detalles
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                    from_dept, to_dept, actor, comentario, detalles,
+                    from_dept_code, to_dept_code
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $9)
                 RETURNING id, radicado_id, tracking_number, tipo_tx,
-                          from_dept, to_dept, actor, comentario, detalles, ts
+                          from_dept, to_dept, from_dept_code, to_dept_code,
+                          actor, comentario, detalles, ts
                 """,
                 latest.radicado_id,
                 latest.tracking_number,
@@ -1053,6 +1112,7 @@ class WorkflowRepository:
                 actor,
                 comentario,
                 json.dumps(detalles or {}),
+                latest.to_dept_code,
             )
         assert event is not None
         self.last_flow_event_id = event["id"]
@@ -1124,6 +1184,8 @@ class WorkflowRepository:
                 tipo_tx="rollback",
                 from_dept=current.to_dept,
                 to_dept=previous.to_dept,
+                from_dept_code=current.to_dept_code,
+                to_dept_code=previous.to_dept_code,
                 actor=actor,
                 comentario=comentario,
                 detalles={"cancelled_step": current.step_number},
@@ -1135,6 +1197,7 @@ class WorkflowRepository:
         *,
         current: FlowStep,
         to_dept: str,
+        to_dept_code: int,
         causal: str,
         comentario: str | None,
         actor: uuid.UUID | None,
@@ -1163,8 +1226,9 @@ class WorkflowRepository:
                 """
                 INSERT INTO flow_steps (
                     radicado_id, tracking_number, step_number,
-                    from_dept, to_dept, assigned_to, assigned_by, action, notes, status
-                ) VALUES ($1, $2, $3, $4, $5, NULL, $6, 'devolucion', $7, 'pending')
+                    from_dept, to_dept, assigned_to, assigned_by, action, notes, status,
+                    from_dept_code, to_dept_code
+                ) VALUES ($1, $2, $3, $4, $5, NULL, $6, 'devolucion', $7, 'pending', $8, $9)
                 RETURNING *
                 """,
                 current.radicado_id,
@@ -1174,6 +1238,8 @@ class WorkflowRepository:
                 to_dept,
                 actor,
                 comentario,
+                current.to_dept_code,
+                to_dept_code,
             )
             await self._insert_flow_event(
                 radicado_id=current.radicado_id,
@@ -1181,6 +1247,8 @@ class WorkflowRepository:
                 tipo_tx="devolucion",
                 from_dept=current.to_dept,
                 to_dept=to_dept,
+                from_dept_code=current.to_dept_code,
+                to_dept_code=to_dept_code,
                 actor=actor,
                 comentario=comentario,
                 detalles={"causal": causal, "step_number": current.step_number + 1},
@@ -1191,7 +1259,7 @@ class WorkflowRepository:
         self,
         *,
         from_assigned_to: uuid.UUID | None,
-        from_dept: str | None,
+        from_dept_code: int | None,
         to_assigned_to: uuid.UUID,
         actor: uuid.UUID | None,
     ) -> CascadeResult:
@@ -1212,9 +1280,9 @@ class WorkflowRepository:
             conds.append(f"assigned_to = ${idx}")
             params.append(from_assigned_to)
             idx += 1
-        if from_dept is not None:
-            conds.append(f"to_dept = ${idx}")
-            params.append(from_dept)
+        if from_dept_code is not None:
+            conds.append(f"to_dept_code = ${idx}")
+            params.append(from_dept_code)
             idx += 1
         where = " AND ".join(conds)
 
@@ -1278,6 +1346,8 @@ class WorkflowRepository:
                         tipo_tx="reassign",
                         from_dept=r["to_dept"],
                         to_dept=r["to_dept"],
+                        from_dept_code=r["to_dept_code"],
+                        to_dept_code=r["to_dept_code"],
                         actor=actor,
                         comentario=None,
                         detalles={
@@ -1331,4 +1401,6 @@ def _row_to_model(row: asyncpg.Record) -> FlowStep:
         doc_type=row["doc_type"],
         due_at=row["due_at"],
         overdue_notified=row["overdue_notified"],
+        to_dept_code=row["to_dept_code"],
+        from_dept_code=row["from_dept_code"],
     )

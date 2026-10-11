@@ -70,7 +70,8 @@ async def test_publish_declara_el_nivel_real(ctx) -> None:
     rid = await _radicado(conn, 3)
     step = SimpleNamespace(
         id=uuid.uuid4(), radicado_id=rid, tracking_number="T", step_number=1,
-        from_dept="A", to_dept="B", action="assign", status="pending", assigned_by=None,
+        from_dept="A", to_dept="B", from_dept_code=1, to_dept_code=2, action="assign",
+        status="pending", assigned_by=None,
     )
     await svc._publish("workflow.step.created", step)
     assert _niveles(emit) == [3]
@@ -96,8 +97,8 @@ async def test_scan_overdue_declara_el_nivel_real(ctx) -> None:
     rid = await _radicado(conn, 3)
     await conn.execute(
         "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, from_dept, "
-        "to_dept, assigned_by, action, status, due_at) "
-        "VALUES ($1, 'T', 1, 'A', 'B', $2, 'assign', 'pending', $3)",
+        "to_dept, to_dept_code, assigned_by, action, status, due_at) "
+        "VALUES ($1, 'T', 1, 'A', 'B', 7, $2, 'assign', 'pending', $3)",
         rid, uuid.uuid4(), datetime.now(tz=UTC) - timedelta(days=1),
     )
     assert await svc.scan_overdue() == 1
@@ -110,7 +111,8 @@ async def test_un_radicado_purgado_no_declara_nivel_fail_closed(ctx) -> None:
     svc, conn, emit = ctx
     step = SimpleNamespace(
         id=uuid.uuid4(), radicado_id=uuid.uuid4(), tracking_number="T", step_number=1,
-        from_dept="A", to_dept="B", action="assign", status="pending", assigned_by=None,
+        from_dept="A", to_dept="B", from_dept_code=1, to_dept_code=2, action="assign",
+        status="pending", assigned_by=None,
     )
     await svc._publish("workflow.step.created", step)
     assert _niveles(emit) == ["AUSENTE"]

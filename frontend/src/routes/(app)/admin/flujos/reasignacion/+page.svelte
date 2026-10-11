@@ -61,10 +61,10 @@
   $: users = data.users ?? [];
   // Desplegable de dependencias activas (T-08c A10): antes esta pantalla
   // pedía la dependencia como texto libre, referenciando el nombre de una
-  // columna del backend ("to_dept") — ahora ofrece el catálogo real, igual
+  // columna del backend ("to_dept") — ahora ofrece el catálogo real (valor = CÓDIGO, ADR-032), igual
   // que `bandeja/+page.svelte`.
   $: dependenciaOptions = (data.dependencias ?? []).map((d) => ({
-    value: d.nombre,
+    value: String(d.codigo),
     label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
   }));
   $: isAdmin = $permissions.includes("USUA_PERM_ADMIN");
@@ -89,8 +89,8 @@
   /** @type {HTMLElement|null} — recibe el foco tras ejecutar (A12: no perderlo tras la acción irreversible). */
   let resultEl = null;
 
-  $: originValue = originType === "usuario" ? fromUserIds[0] : fromDept.trim();
-  $: originReady = originType === "usuario" ? fromUserIds.length === 1 : fromDept.trim().length > 0;
+  $: originValue = originType === "usuario" ? fromUserIds[0] : fromDept;
+  $: originReady = originType === "usuario" ? fromUserIds.length === 1 : fromDept !== "";
   $: destinationReady = toUserIds.length === 1;
   $: sameOriginAndDestination =
     originType === "usuario" && originReady && destinationReady && fromUserIds[0] === toUserIds[0];
@@ -120,7 +120,7 @@
     try {
       const params = new URLSearchParams();
       if (originType === "usuario") params.set("assigned_to", fromUserIds[0]);
-      else params.set("dept", fromDept.trim());
+      else params.set("dept_code", fromDept);
 
       const res = await fetch(`/admin/flujos/reasignacion/api/preview?${params}`);
       const resData = await res.json();
@@ -150,7 +150,7 @@
         confirm: confirmText.trim(),
       };
       if (originType === "usuario") payload.from_assigned_to = fromUserIds[0];
-      else payload.from_dept = fromDept.trim();
+      else payload.from_dept_code = Number(fromDept);
 
       const res = await fetch("/admin/flujos/reasignacion/api", {
         method: "POST",

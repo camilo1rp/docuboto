@@ -39,6 +39,26 @@ _SERVICE = "workflow-service"
 _INVALID_DEPT_ACTION = "workflow.regla_dependencia_invalida"
 
 
+async def _codigo_del_evento(
+    repo: WorkflowRepository, payload: dict[str, Any], campo: str
+) -> int | None:
+    """Código de `dest_dept`/`origin_dept` de un evento `document.radicado.created`.
+
+    Orden uniforme de preferencia (ADR-032): código del payload -> nombre resuelto con
+    el historial -> ausente. Nunca se desempata un nombre ambiguo."""
+    bruto = payload.get(f"{campo}_code")
+    if bruto not in (None, ""):
+        try:
+            return int(str(bruto))
+        except (TypeError, ValueError):
+            return None
+    nombre = payload.get(campo)
+    if not nombre:
+        return None
+    codigo, candidatos = await repo.resolver_alias(str(nombre), historico=True)
+    return codigo if candidatos == 1 else None
+
+
 async def auto_distribute(
     conn: asyncpg.Connection, tenant_slug: str, payload: dict[str, Any]
 ) -> str | None:
@@ -53,6 +73,13 @@ async def auto_distribute(
     if await repo.get_next_step_number(radicado_id) > 1:
         return None
 
+    # Códigos del radicado (ADR-032). Un evento anterior a la migración 046 (o uno
+    # rescatado de la cola de fallidos) trae solo el NOMBRE: se resuelve con el
+    # historial (nombres anteriores y mapeos manuales incluidos). Si no resuelve a
+    # EXACTAMENTE una dependencia el código queda ausente y las condiciones por
+    # código no casan (fail-closed: reparto por defecto).
+    dest_code = await _codigo_del_evento(repo, payload, "dest_dept")
+    origin_code = await _codigo_del_evento(repo, payload, "origin_dept")
     req = RuleEvaluationRequest(
         radicado_id=radicado_id,
         tracking_number=tracking_number,
@@ -60,13 +87,15 @@ async def auto_distribute(
         doc_class=payload.get("doc_class"),
         dest_dept=payload.get("dest_dept"),
         origin_dept=payload.get("origin_dept"),
+        dest_dept_code=dest_code,
+        origin_dept_code=origin_code,
         subject=payload.get("subject"),
         sender_name=payload.get("sender_name"),
         sender_entity=payload.get("sender_entity"),
         pages=payload.get("pages"),
     )
     result = await WorkflowRulesService(conn, tenant_slug).evaluate(req)
-    if not result.matched or not result.assign_to_dept:
+    if not result.matched or result.assign_to_dept_code is None:
         # Sin regla: queda en la bandeja del radicador (no-op aquí).
         return None
 
@@ -91,13 +120,14 @@ async def auto_distribute(
     # falla real del sistema. Se registra en logs para que quien administra las
     # reglas lo detecte y corrija la regla (fast-follow: alertar/auditar esto
     # explícitamente queda fuera de este cierre).
-    if not await repo.dependencia_activa(result.assign_to_dept):
+    if await repo.dependencia_activa(result.assign_to_dept_code) is None:
         logger.warning(
-            "Regla '%s' (%s) apunta a la dependencia '%s', que no está activa en "
+            "Regla '%s' (%s) apunta a la dependencia %s ('%s'), que no está activa en "
             "el catálogo — radicado %s NO se autodistribuye (queda en la bandeja "
             "del radicador). Corrija la regla o reactive la dependencia.",
             result.rule_name,
             result.rule_id,
+            result.assign_to_dept_code,
             result.assign_to_dept,
             tracking_number,
         )
@@ -133,6 +163,7 @@ async def auto_distribute(
                     "rule_id": str(result.rule_id) if result.rule_id else None,
                     "rule_name": result.rule_name,
                     "assign_to_dept": result.assign_to_dept,
+                    "assign_to_dept_code": result.assign_to_dept_code,
                 },
             )
         except Exception:  # noqa: BLE001 — best-effort, ver docstring arriba.
@@ -146,7 +177,7 @@ async def auto_distribute(
             FlowStepCreate(
                 radicado_id=radicado_id,
                 tracking_number=tracking_number,
-                to_dept=result.assign_to_dept,
+                to_dept_code=result.assign_to_dept_code,
                 action="assign",
                 notes=result.assign_notes,
                 doc_type=payload.get("doc_type"),

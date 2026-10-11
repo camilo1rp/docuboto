@@ -246,8 +246,15 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     # RESUELVA —en vez de inventar la dirección— lo comprueba
     # `test_replay_workflow_resuelve_el_buzon_de_la_dependencia`.
     with patch(
-        "app.routers.admin_deadletter.resolver_buzon_dependencia",
-        AsyncMock(return_value="dependencia-902@orpycamcp.local"),
+        "app.routers.admin_deadletter.resolver_buzon",
+        # El código del evento manda (como el real); sin código, el buzón fijo.
+        AsyncMock(
+            side_effect=lambda _c, codigo, _n: (
+                f"dependencia-{codigo}@orpycamcp.local"
+                if codigo is not None
+                else "dependencia-902@orpycamcp.local"
+            )
+        ),
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, conn

@@ -37,6 +37,7 @@ The full files are in `docs/es/adr/`.
 | [ADR-028](adr/ADR-028-el-flujo-mueve-el-estado-del-radicado.md) | The workflow moves the radicado's status: one pure function written in the same transaction as the step, closing only via an explicit "Finish processing", `closed`/`anulado` terminal (409) and holder-only `marcar_leido`; audit remediation: clearance and holder gates on `assign`/`transfer`, annulment cancels the step, immutable backfill evidence | Implemented |
 | [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md) | Current location of the radicado: three `flujo_*` columns written by workflow-service in the same `UPDATE` as the status, two generated `ubicacion_*` columns (computed as pairs), one pure `derivar_ubicacion` function (last step by when it closed, not by its number), code only when the name is unique, backfill with insert-only evidence, and kept out of everything public | Implemented |
 | [ADR-031](adr/ADR-031-constancia-autorizacion-ip-firmada-politica-por-entidad.md) | Authorization record: gateway-signed IP on public routes, per-entity data-processing policy served and re-read by the server, and a delivery receipt with author and no reuse | Accepted |
+| [ADR-032](adr/ADR-032-dependencia-por-codigo.md) | The dependencia is correlated by code, not by name: immutable `codigo` (trigger + 422), a single `resolver_codigo_dependencia` function with name history, code-canonical contract with the name as deprecated alias, fail-closed backfill on ambiguity, deactivate/delete by code | Accepted |
 
 ## How to propose a new ADR
 

@@ -40,6 +40,8 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
+  import { crearContextoDependencias } from "$lib/stores/dependencias.js";
+  import { mapaNombres } from "$lib/utils/dependenciaNombre.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels, userId, sessionUser } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
@@ -59,7 +61,7 @@
   import WorkflowBoard from "$lib/components/workflow/WorkflowBoard.svelte";
   import FinalizarTramiteModal from "$lib/components/workflow/FinalizarTramiteModal.svelte";
   import {
-    nombresDeDependenciasDelUsuario,
+    codigosDeDependenciasDelUsuario,
     puedeMarcarEnTramite,
     puedeFinalizarTramite,
     poseiaUltimoPaso,
@@ -102,8 +104,13 @@
   // estado en servidor y cliente.
   // ---------------------------------------------------------------------------
   $: vista = data.vista ?? "tablero";
+  // ADR-032: el valor del selector es el CÓDIGO (se envía); la etiqueta, el nombre.
+  // Contexto POR PÁGINA (no store de módulo: en SSR se compartiría entre tenants).
+  // Catálogo COMPLETO (con inactivas) para pintar nombres; los selectores usan solo activas.
+  const nombresDependencia = crearContextoDependencias(data.dependenciasTodas ?? data.dependencias);
+  $: nombresDependencia.set(mapaNombres(data.dependenciasTodas ?? data.dependencias));
   $: dependenciaOptions = (data.dependencias ?? []).map((d) => ({
-    value: d.nombre,
+    value: String(d.codigo),
     label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
   }));
 
@@ -268,7 +275,7 @@
   let anulMotivo = "";
   let anulCausalError = "";
 
-  // Devolver — to_dept (req, ≤100), causal (req, ≤15), comentario (opt)
+  // Devolver — dependencia destino por CÓDIGO (req), causal (req, ≤15), comentario (opt)
   let devToDept = "";
   let devCausal = "";
   let devComentario = "";
@@ -622,7 +629,7 @@
   function openModalResponder() {
     // Precargar asunto del Entrada como punto de partida
     respSubject = selectedDoc?.subject ? `RE: ${selectedDoc.subject}` : "";
-    respDestDept = selectedDoc?.origin_dept ?? "";
+    respDestDept = selectedDoc?.origin_dept_code ? String(selectedDoc.origin_dept_code) : "";
     respObservations = "";
     respResponseDays = "";
     modalResponder = true;
@@ -705,8 +712,8 @@
     if (!devToDept.trim()) {
       devToDeptError = "La dependencia destino es obligatoria.";
       valid = false;
-    } else if (devToDept.trim().length > 100) {
-      devToDeptError = "Máximo 100 caracteres.";
+    } else if (!/^\d{1,6}$/.test(String(devToDept).trim())) {
+      devToDeptError = "Seleccione una dependencia del catálogo.";
       valid = false;
     }
     if (!devCausal.trim()) {
@@ -724,7 +731,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          to_dept: devToDept.trim(),
+          to_dept_code: Number(devToDept),
           causal: devCausal.trim(),
           ...(devComentario.trim() ? { comentario: devComentario.trim() } : {}),
         }),
@@ -758,7 +765,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...(respSubject.trim() ? { subject: respSubject.trim() } : {}),
-          ...(respDestDept.trim() ? { dest_dept: respDestDept.trim() } : {}),
+          ...(respDestDept ? { dest_dept_code: Number(respDestDept) } : {}),
           ...(respObservations.trim() ? { observations: respObservations.trim() } : {}),
           ...(!isNaN(days) && days > 0 ? { response_days: days } : {}),
         }),
@@ -1162,7 +1169,7 @@
   // Pre-computed para evitar condiciones largas en template (printWidth)
   // ADR-028: el acto depende de la TENENCIA del paso activo, no del estado del
   // radicado (que ahora lo mueve el flujo). El backend re-valida.
-  $: misDependencias = nombresDeDependenciasDelUsuario($sessionUser);
+  $: misDependencias = codigosDeDependenciasDelUsuario($sessionUser);
   $: canTramitarPaso = $permissions.includes("PERM_TRAMITAR");
   $: canDevolverInDrawer = canDevolver && puedeDevolver(currentStep, $userId, misDependencias);
   $: canMarcarEnTramite =
@@ -2042,10 +2049,9 @@
     <strong>{selectedDoc?.tracking_number ?? ""}</strong> a otra dependencia dentro del flujo.
   </p>
   <div class="modal-form">
-    <!-- Selector, no texto libre: `to_dept` se correlaciona por NOMBRE EXACTO
-      contra el catálogo de dependencias (el backend responde 422
-      `dependencia_desconocida`, y el alcance de la bandeja compara por nombre),
-      así que una errata al teclear no solo falla: es la única forma de fallar.
+    <!-- Selector, no texto libre: la dependencia viaja por CÓDIGO (`to_dept_code`,
+      ADR-032) y el catálogo es la única fuente de códigos válidos; el nombre
+      solo se muestra.
       Distribuir y Trasladar ya usan este mismo `dependenciaOptions`; pedir aquí
       el mismo dato de otra manera era la asimetría, no una decisión. -->
     <FormField
@@ -2131,9 +2137,9 @@
     <FormField
       id="resp-dest-dept"
       label="Dependencia destino"
-      type="text"
+      type="select"
       bind:value={respDestDept}
-      placeholder="Dependencia que recibirá la respuesta"
+      options={[{ value: "", label: "— Ninguna (sin dependencia) —" }, ...dependenciaOptions]}
     />
     <FormField
       id="resp-observations"

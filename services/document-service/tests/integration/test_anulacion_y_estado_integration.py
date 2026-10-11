@@ -36,13 +36,14 @@ _FLUJO_DDL = """
 CREATE TABLE flow_steps (
     id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     radicado_id UUID NOT NULL, tracking_number VARCHAR(50) NOT NULL, step_number INTEGER NOT NULL,
-    to_dept VARCHAR(100) NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    to_dept VARCHAR(100) NOT NULL, to_dept_code INTEGER,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
     completed_at TIMESTAMPTZ
 );
 CREATE TABLE flow_events (
     id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     radicado_id UUID NOT NULL, tracking_number VARCHAR(50) NOT NULL, tipo_tx VARCHAR(40) NOT NULL,
-    from_dept TEXT, to_dept TEXT, actor UUID, comentario TEXT,
+    from_dept TEXT, to_dept TEXT, from_dept_code INTEGER, to_dept_code INTEGER, actor UUID, comentario TEXT,
     detalles JSONB NOT NULL DEFAULT '{}'::jsonb, ts TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 """
@@ -68,8 +69,8 @@ async def _radicado(conn: asyncpg.Connection, status: str = "registered") -> tup
 
 async def _paso(conn: asyncpg.Connection, rid: uuid.UUID, tn: str, n: int, status: str) -> uuid.UUID:
     return await conn.fetchval(
-        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, status) "
-        "VALUES ($1, $2, $3, 'Jurídica', $4) RETURNING id",
+        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, to_dept_code, "
+        "status) VALUES ($1, $2, $3, 'Jurídica', 410, $4) RETURNING id",
         rid,
         tn,
         n,
@@ -98,7 +99,8 @@ async def test_aprobar_la_anulacion_cancela_el_paso_activo_y_deja_su_evento(tena
     assert await conn.fetchval("SELECT status FROM flow_steps WHERE id = $1", activo) == "cancelled"
     assert await conn.fetchval("SELECT completed_at IS NOT NULL FROM flow_steps WHERE id = $1", activo)
     assert await conn.fetchval("SELECT status FROM flow_steps WHERE id = $1", viejo) == "completed"
-    ev = await conn.fetchrow("SELECT tipo_tx, actor, detalles FROM flow_events WHERE radicado_id = $1", rid)
+    ev = await conn.fetchrow("SELECT tipo_tx, actor, detalles, to_dept_code FROM flow_events WHERE radicado_id = $1", rid)
+    assert ev["to_dept_code"] == 410  # la tenencia sigue por CÓDIGO tras anular (ADR-032)
     assert (ev["tipo_tx"], ev["actor"]) == ("anulacion", decide)
     assert json.loads(ev["detalles"])["step_id"] == str(activo)
 

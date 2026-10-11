@@ -57,7 +57,7 @@ from orpycamcp_common import events
 from app.core.database import acquire_tenant
 from app.repositories.processed_events_repository import ProcessedEventsRepository
 from app.schemas.notification import NotificationSend
-from app.services.buzones import buzon_de_codigo_o_ventanilla, resolver_buzon_dependencia
+from app.services.buzones import resolver_buzon
 from app.services.notification_service import send_notification
 from app.services.webhook_service import dispatch as dispatch_webhooks
 
@@ -213,7 +213,9 @@ async def process_event(data: dict[str, str]) -> None:
     event_type = envelope.get("event_type")
     payload_data = envelope.get("payload") or {}
     async with acquire_tenant(tenant_slug) as conn:
-        buzon_destino = await resolver_buzon_dependencia(conn, payload_data.get("to_dept"))
+        buzon_destino = await resolver_buzon(
+            conn, payload_data.get("to_dept_code"), payload_data.get("to_dept")
+        )
     for send in build_workflow_notifications(envelope, buzon_destino=buzon_destino):
         await send_notification(send, event_type=event_type)
 
@@ -255,13 +257,9 @@ async def process_document_event(data: dict[str, str]) -> None:
     # viene el nombre, se resuelve contra la base. Sin esto, radicar por nombre
     # mandaba el aviso a la ventanilla genérica y la dependencia competente no se
     # enteraba de su documento.
-    codigo = payload_data.get("dest_dept_code")
-    if codigo is not None:
-        buzon_destino = buzon_de_codigo_o_ventanilla(codigo)
-    else:
-        async with acquire_tenant(tenant_slug) as conn:
-            buzon_destino = await resolver_buzon_dependencia(
-                conn, payload_data.get("dest_dept")
-            )
+    async with acquire_tenant(tenant_slug) as conn:
+        buzon_destino = await resolver_buzon(
+            conn, payload_data.get("dest_dept_code"), payload_data.get("dest_dept")
+        )
     for send in build_document_notifications(envelope, buzon_destino=buzon_destino):
         await send_notification(send, event_type=event_type)

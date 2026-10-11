@@ -17,13 +17,14 @@
  * workflow-service degrada a clearance PUBLICA (fail-closed), no rompe la bandeja.
  *
  * GET → lista tipada de pasos (`GET /workflows/inbox`)
- *   Parámetros: box (entrada|salida|internos), dept, assigned_to (uuid), page, size
+ *   Parámetros: box (entrada|salida|internos), dept_code (int), assigned_to (uuid), page, size
  *   Respuesta: { items: FlowStepResponse[], total: number } (mismo envoltorio que
  *   /bandeja/api, derivado de la cabecera X-Total-Count del backend).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VALID_BOXES = new Set(["entrada", "salida", "internos"]);
@@ -53,14 +54,15 @@ export async function GET({ locals, url }) {
     );
   }
 
-  const dept = url.searchParams.get("dept") ?? "";
+  // ADR-032: la dependencia se filtra por CÓDIGO (entero); texto libre se descarta.
+  const deptCode = parseCodigoDependencia(url.searchParams.get("dept_code"));
   const page = url.searchParams.get("page") ?? "1";
   const size = url.searchParams.get("size") ?? "20";
 
   // Allowlist de query params: solo los que el backend acepta (RF-FLU-03).
   const params = new URLSearchParams({ page, size });
   if (box) params.set("box", box);
-  if (dept) params.set("dept", dept);
+  if (deptCode !== null) params.set("dept_code", String(deptCode));
   if (assignedTo) params.set("assigned_to", assignedTo);
 
   /** @type {Record<string, string>} */

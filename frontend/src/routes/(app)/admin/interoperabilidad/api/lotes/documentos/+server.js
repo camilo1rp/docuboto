@@ -23,6 +23,7 @@
 
 import { API_V1 } from "$lib/utils/config.server.js";
 import { json } from "@sveltejs/kit";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 
 const DOC_TYPE_RE = /^[ESI]$/;
 
@@ -64,7 +65,11 @@ export async function POST({ locals, request }) {
       subject: typeof d?.subject === "string" ? d.subject : "",
     };
     if (typeof d?.doc_class === "string" && d.doc_class.trim()) item.doc_class = d.doc_class.trim();
-    if (typeof d?.dest_dept === "string" && d.dest_dept.trim()) item.dest_dept = d.dest_dept.trim();
+    // ADR-032: la dependencia viaja por CÓDIGO; el nombre libre ya no se acepta.
+    const destCode = parseCodigoDependencia(d?.dest_dept_code);
+    if (destCode !== null) item.dest_dept_code = destCode;
+    const origCode = parseCodigoDependencia(d?.origin_dept_code);
+    if (origCode !== null) item.origin_dept_code = origCode;
     if (typeof d?.sender_name === "string" && d.sender_name.trim())
       item.sender_name = d.sender_name.trim();
     if (typeof d?.sender_entity === "string" && d.sender_entity.trim())

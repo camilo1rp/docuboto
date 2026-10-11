@@ -48,8 +48,8 @@ async def _flow(conn: asyncpg.Connection, rid: uuid.UUID) -> None:
     )
     await conn.execute(
         "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, from_dept, "
-        "to_dept, assigned_by, action, status) "
-        "VALUES ($1, 'T', 1, 'A', 'B', $2, 'assign', 'pending')",
+        "to_dept, to_dept_code, assigned_by, action, status) "
+        "VALUES ($1, 'T', 1, 'A', 'B', 7, $2, 'assign', 'pending')",
         rid,
         uuid.uuid4(),
     )
@@ -82,7 +82,7 @@ async def test_huerfano_de_un_reservado_no_es_publico(ctx) -> None:
     assert await repo.get_history(rid, max_clearance=1) == []
     assert await repo.get_current(rid, max_clearance=1) is None
     pend, _ = await repo.list_pending(
-        dept=None, assigned_to=None, own_scope_user_id=None, max_clearance=1, offset=0, limit=50
+        dept_code=None, assigned_to=None, own_scope_user_id=None, max_clearance=1, offset=0, limit=50
     )
     assert rid not in [p.radicado_id for p in pend]
 

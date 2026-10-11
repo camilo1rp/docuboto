@@ -36,6 +36,7 @@ from app.clients.storage_client import (
 )
 from app.core.combinacion import SEGUNDA_PASADA, combinar, desconocidos, marcadores
 from app.core.datos_minimos import exigir_o_422
+from app.core.dependencias import normalizar_dependencia
 from app.repositories.borrador_repository import BorradorRepository
 from app.schemas.borrador import (
     BorradorCreate,
@@ -307,11 +308,23 @@ class BorradorService:
             if cuerpo is None:
                 cuerpo = resultado.texto
 
+        # Destino por CÓDIGO (ADR-032). El nombre que se guarda lo pone el catálogo;
+        # un nombre ambiguo (alias) es 422, no «el de menor código». Un nombre que no
+        # es dependencia alguna se conserva como texto (la Salida puede ir dirigida a
+        # un tercero): sin código, y al radicar Interno se exige código.
+        dest_dept, dest_dept_code, _alias = await normalizar_dependencia(
+            self._conn,
+            campo="dest_dept",
+            codigo=payload.dest_dept_code,
+            nombre=payload.dest_dept,
+            estricto=False,
+        )
         row = await self._repo.insert_borrador(
             {
                 "doc_type": payload.doc_type,
                 "subject": payload.subject,
-                "dest_dept": payload.dest_dept,
+                "dest_dept": dest_dept,
+                "dest_dept_code": dest_dept_code,
                 "cuerpo": cuerpo,
                 "plantilla_id": payload.plantilla_id,
                 "radicado_padre_id": payload.radicado_padre_id,
@@ -368,6 +381,18 @@ class BorradorService:
     ) -> BorradorResponse:
         antes = await self._require_editable(borrador_id, max_clearance)
         cambios = payload.model_dump(exclude_unset=True)
+        if "dest_dept" in cambios or "dest_dept_code" in cambios:
+            # El par (nombre, código) se recalcula ENTERO desde el catálogo: cambiar
+            # solo el nombre dejaría el código de OTRA dependencia (ADR-032).
+            nombre, codigo, _alias = await normalizar_dependencia(
+                self._conn,
+                campo="dest_dept",
+                codigo=cambios.get("dest_dept_code"),
+                nombre=cambios.get("dest_dept"),
+                estricto=False,
+            )
+            cambios["dest_dept"] = nombre
+            cambios["dest_dept_code"] = codigo
         # UPDATE y asiento son UN acto (Regla 6, ADR-010): si el asiento falla,
         # la edición se revierte. La invalidación de circuitos va DESPUÉS del
         # commit: es una llamada HTTP y no debe sostener la transacción abierta.
@@ -724,7 +749,8 @@ class BorradorService:
 
         - tipo documental: el de su plantilla (`plantilla.tipo_documental`);
         - destino: el código de la dependencia ACTIVA cuyo nombre coincide con
-          `dest_dept` (sólo lo exige el Interno);
+          `dest_dept_code` del borrador, o —si es anterior a la 046— el único
+          candidato de `dest_dept` (sólo lo exige el Interno; ambiguo es 422);
         - origen (Salida): la dependencia del autor. Si responde a un radicado y
           el autor pertenece a la que lo recibió, esa; si no, la de menor código
           entre las suyas (determinista). Sin URD activa, `None` (se rechaza).
@@ -735,11 +761,19 @@ class BorradorService:
                 "SELECT tipo_documental FROM plantilla WHERE id = $1", row["plantilla_id"]
             )
         dest_code: int | None = datos.dest_dept_code if datos else None
+        if dest_code is None:
+            dest_code = row["dest_dept_code"]
         if dest_code is None and row["dest_dept"]:
-            dest_code = await self._conn.fetchval(
-                "SELECT codigo FROM dependencias WHERE nombre = $1 AND activo "
-                "ORDER BY codigo LIMIT 1",
-                row["dest_dept"],
+            # Borrador anterior a la 046 (solo nombre). Antes: `ORDER BY codigo LIMIT 1`,
+            # que con dos homónimas radicaba hacia la de menor código EN SILENCIO.
+            # Ahora un nombre ambiguo es 422 (fail-closed) y uno que no es dependencia
+            # deja el código en None, como antes (el Interno lo rechaza más abajo).
+            _nombre, dest_code, _alias = await normalizar_dependencia(
+                self._conn,
+                campo="dest_dept",
+                codigo=None,
+                nombre=row["dest_dept"],
+                estricto=False,
             )
         origin_code: int | None = datos.origin_dept_code if datos else None
         if origin_code is None and row["doc_type"] == "S" and registered_by is not None:
@@ -903,7 +937,9 @@ class BorradorService:
             doc_class=doc_class,
             origin_dept_code=origin_code,
             dest_dept_code=dest_code,
-            dest_dept=row["dest_dept"],
+            # Con código, el nombre lo pone el catálogo: la instantánea del borrador
+            # puede ser anterior a un renombre y `create` la tomaría por discordante.
+            dest_dept=None if dest_code is not None else row["dest_dept"],
             observations=row["cuerpo"],
             nivel_seguridad=nivel,
             clasificacion_fundamento=fundamento,

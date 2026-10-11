@@ -18,7 +18,7 @@
     (default true), priority (1..999, default 100, menor = mayor prioridad),
     conditions[] ({field, op, value} — enums CERRADOS, ver
     `$lib/utils/workflowRuleConditions.js`), match_mode ('all'|'any'),
-    assign_to_dept (obligatorio), assign_notes?.
+    assign_to_dept_code (obligatorio, entero; ADR-032), assign_notes?.
   Existen 4 columnas "legadas" (doc_type/doc_class/dest_dept/subject_contains)
   de compatibilidad hacia atrás — esta UI NO las expone: `conditions[]` es
   estrictamente más expresivo (mismos campos + más operadores) y el propio
@@ -43,10 +43,13 @@
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   import {
     RULE_FIELD_OPTIONS,
-    RULE_OP_OPTIONS,
+    opcionesOperador,
+    operadorPermitido,
+    tipoValor,
     FIELD_VALUES,
     OP_VALUES,
   } from "$lib/utils/workflowRuleConditions.js";
+  import { mapaNombres, nombreActual, opcionesConHuerfanas } from "$lib/utils/dependenciaNombre.js";
 
   import DataTable from "$lib/components/ui/DataTable.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -64,6 +67,43 @@
   let actionLoading = false;
 
   $: isAdmin = $permissions.includes("USUA_PERM_ADMIN");
+  // ADR-032: la dependencia se elige y se envía por CÓDIGO; se muestra el nombre vigente.
+  $: nombresDep = mapaNombres(data.dependencias);
+  $: dependenciaOptions = (data.dependencias ?? []).map((d) => ({
+    value: String(d.codigo),
+    label: `${d.sigla ? d.sigla + " — " : ""}${d.nombre}`,
+  }));
+
+  /** Opciones de dependencia para una condición: activas + el valor heredado si está inactivo. */
+  function opcionesValor(valor) {
+    return opcionesConHuerfanas(dependenciaOptions, data.dependenciasTodas ?? data.dependencias, [
+      valor,
+    ]);
+  }
+  /** Códigos (como cadenas) de un valor `in` guardado como «7, 12». */
+  function codigosDe(valor) {
+    return String(valor ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+  /** Opciones del grupo multi: activas + los códigos heredados que ya no lo son. */
+  function opcionesMulti(valor) {
+    return opcionesConHuerfanas(
+      dependenciaOptions,
+      data.dependenciasTodas ?? data.dependencias,
+      codigosDe(valor),
+    );
+  }
+  function toggleCodigo(cond, codigo, marcado) {
+    const set = new Set(codigosDe(cond.value));
+    if (marcado) set.add(codigo);
+    else set.delete(codigo);
+    cond.value = [...set].join(", ");
+    fConditions = fConditions;
+  }
+  const esInactiva = (codigo) =>
+    !!codigo && !dependenciaOptions.some((o) => o.value === String(codigo));
 
   /** @type {Array<{key: string, label: string, sortable?: boolean, width?: string, filterType?: 'text'|'select'|'dateRange', filterOptions?: Array<{value: string, label: string}>}>} */
   const columns = [
@@ -78,7 +118,7 @@
         { value: "false", label: "Inactiva" },
       ],
     },
-    { key: "assign_to_dept", label: "Asigna a" },
+    { key: "assign_to_dept_nombre", label: "Asigna a" },
     { key: "conditions_count", label: "Condiciones" },
   ];
 
@@ -86,6 +126,8 @@
   // `reglas` (que conserva la forma exacta de WorkflowRuleResponse).
   $: tableRows = reglas.map((r) => ({
     ...r,
+    // Nombre ACTUAL por código (la columna `assign_to_dept` es la instantánea).
+    assign_to_dept_nombre: nombreActual(r.assign_to_dept_code, r.assign_to_dept, nombresDep),
     conditions_count: `${(r.conditions ?? []).length} (${r.match_mode === "any" ? "alguna" : "todas"})`,
   }));
 
@@ -102,15 +144,33 @@
   let fPriority = "100";
   let fPriorityError = "";
   let fMatchMode = "all";
+  /** Código de la dependencia destino, como cadena (valor del selector). */
   let fAssignToDept = "";
   let fAssignNotes = "";
-  /** @type {Array<{id: string, field: string, op: string, value: string}>} */
+  /** @type {Array<{id: string, field: string, op: string, value: string, kind?: "select"|"multi"|"text", fieldPrev?: string}>} */
   let fConditions = [];
   let fNameError = "";
   let fAssignToDeptError = "";
   // Mensaje + fila culpable cuando una condición queda inválida al guardar
   // (ver `saveRule`) — se identifica por `id` estable de la fila, no por
   // índice, para que sobreviva a un `removeCondition` intermedio.
+  // Al cambiar de campo/operador: el operador se acota a lo que el campo admite
+  // y, si el TIPO de control del valor cambia (texto <-> select <-> multi), el
+  // valor se limpia (un código no es un texto y viceversa). `kind` recuerda el
+  // tipo anterior; en filas recién cargadas solo se inicializa (no se altera
+  // la regla guardada).
+  const ajustar = (c) => {
+    if (c.kind === undefined) return { ...c, kind: tipoValor(c.field, c.op), fieldPrev: c.field };
+    const op =
+      c.field !== c.fieldPrev && !operadorPermitido(c.field, c.op)
+        ? opcionesOperador(c.field)[0].value
+        : c.op;
+    const kind = tipoValor(c.field, op);
+    return { ...c, op, kind, fieldPrev: c.field, value: kind !== c.kind ? "" : c.value };
+  };
+  const necesitaAjuste = (c) =>
+    c.kind === undefined || c.field !== c.fieldPrev || c.kind !== tipoValor(c.field, c.op);
+  $: if (fConditions.some(necesitaAjuste)) fConditions = fConditions.map(ajustar);
   let fConditionsError = "";
   /** @type {string|null} */
   let fConditionErrorId = null;
@@ -162,7 +222,7 @@
     fPriority = String(regla.priority ?? 100);
     fPriorityError = "";
     fMatchMode = regla.match_mode === "any" ? "any" : "all";
-    fAssignToDept = regla.assign_to_dept ?? "";
+    fAssignToDept = regla.assign_to_dept_code ? String(regla.assign_to_dept_code) : "";
     fAssignNotes = regla.assign_notes ?? "";
     fConditions = (regla.conditions ?? []).map((c) => ({
       id: nextConditionId(),
@@ -201,7 +261,7 @@
       priority: Number(fPriority),
       conditions: fConditions.map(({ field, op, value }) => ({ field, op, value })),
       match_mode: fMatchMode,
-      assign_to_dept: fAssignToDept.trim(),
+      assign_to_dept_code: Number(fAssignToDept),
       assign_notes: fAssignNotes.trim() || null,
     };
 
@@ -276,6 +336,21 @@
         fConditionsError = `La condición ${i + 1} tiene un campo u operador que ya no existe en el catálogo.`;
         fConditionErrorId = cond.id;
         focusField(`regla-cond-field-${cond.id}`);
+        return;
+      }
+      if (!operadorPermitido(cond.field, cond.op)) {
+        fConditionsError = `La condición ${i + 1}: el operador elegido no aplica a este campo; elija otro operador.`;
+        fConditionErrorId = cond.id;
+        focusField(`regla-cond-op-${cond.id}`);
+        return;
+      }
+      if (
+        tipoValor(cond.field, cond.op) !== "text" &&
+        !codigosDe(cond.value).every((c) => /^\d{1,6}$/.test(c))
+      ) {
+        fConditionsError = `La condición ${i + 1}: el valor debe ser una dependencia del catálogo.`;
+        fConditionErrorId = cond.id;
+        focusField(`regla-cond-value-${cond.id}`);
         return;
       }
       if (!String(cond.value ?? "").trim()) {
@@ -400,7 +475,7 @@
             dot
           />
         </td>
-        <td>{row.assign_to_dept}</td>
+        <td>{nombreActual(row.assign_to_dept_code, row.assign_to_dept, nombresDep)}</td>
         <td>{row.conditions_count}</td>
         <td class="reglas-page__actions">
           <Button
@@ -515,19 +590,60 @@
             id={`regla-cond-op-${cond.id}`}
             label="Operador"
             type="select"
-            options={RULE_OP_OPTIONS}
+            options={opcionesOperador(cond.field, cond.op)}
             bind:value={cond.op}
-          />
-          <FormField
-            id={`regla-cond-value-${cond.id}`}
-            label="Valor"
-            type="text"
-            bind:value={cond.value}
-            hint={cond.op === "in" ? "Lista separada por comas" : ""}
-            error={fConditionErrorId === cond.id && !fConditionsError.includes("catálogo")
+            error={fConditionErrorId === cond.id && fConditionsError.includes("operador")
               ? fConditionsError
               : ""}
           />
+          {#if cond.kind === "select"}
+            <FormField
+              id={`regla-cond-value-${cond.id}`}
+              label="Valor"
+              type="select"
+              options={opcionesValor(cond.value)}
+              placeholder="Seleccione la dependencia…"
+              bind:value={cond.value}
+              hint={esInactiva(cond.value)
+                ? "Esta dependencia ya no está activa en el catálogo; elija una activa."
+                : ""}
+              error={fConditionErrorId === cond.id && fConditionsError.includes("valor")
+                ? fConditionsError
+                : ""}
+            />
+          {:else if cond.kind === "multi"}
+            <fieldset class="regla-form__multi" id={`regla-cond-value-${cond.id}`} tabindex="-1">
+              <legend>Valor: una o varias dependencias</legend>
+              {#each opcionesMulti(cond.value) as op (op.value)}
+                <label class="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={codigosDe(cond.value).includes(op.value)}
+                    on:change={(e) => toggleCodigo(cond, op.value, e.currentTarget.checked)}
+                  />
+                  {op.label}
+                </label>
+              {/each}
+              {#if fConditionErrorId === cond.id && fConditionsError.includes("valor")}
+                <p class="help is-danger" role="alert">{fConditionsError}</p>
+              {/if}
+            </fieldset>
+          {:else}
+            <FormField
+              id={`regla-cond-value-${cond.id}`}
+              label="Valor"
+              type="text"
+              bind:value={cond.value}
+              hint={cond.op === "in"
+                ? "Lista separada por comas"
+                : cond.op === "regex"
+                  ? "Patrón de texto (expresión regular)"
+                  : ""}
+              error={fConditionErrorId === cond.id && fConditionsError.includes("valor")
+                ? fConditionsError
+                : ""}
+            />
+          {/if}
           <Button
             variant="ghost"
             size="sm"
@@ -549,13 +665,23 @@
       <FormField
         id="regla-asigna-a"
         label="Dependencia de destino"
-        type="text"
+        type="select"
+        options={opcionesValor(fAssignToDept)}
+        placeholder="Seleccione la dependencia…"
         bind:value={fAssignToDept}
         required
         error={fAssignToDeptError}
-        hint="Dependencia a la que se asigna el radicado cuando la regla casa."
+        hint={esInactiva(fAssignToDept)
+          ? "Esta dependencia ya no está activa en el catálogo; elija una activa."
+          : "Dependencia a la que se asigna el radicado cuando la regla casa."}
       />
     </div>
+    {#if data.dependenciasError}
+      <p class="regla-form__conditions-hint" role="alert">
+        No se pudo cargar el catálogo de dependencias; sin él no se puede elegir la dependencia de
+        destino. Recargue la página.
+      </p>
+    {/if}
 
     <FormField
       id="regla-notas"
@@ -747,6 +873,23 @@
       font-size: var(--op-font-xs);
       color: var(--op-text-secondary);
       margin: 0;
+    }
+
+    &__multi {
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius);
+      padding: var(--op-space-2);
+      max-height: 12rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: var(--op-space-1, 0.25rem);
+
+      legend {
+        font-size: 0.875rem;
+        color: var(--op-text-secondary);
+        padding: 0 var(--op-space-1, 0.25rem);
+      }
     }
 
     &__condition-row {

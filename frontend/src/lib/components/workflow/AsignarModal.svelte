@@ -98,6 +98,11 @@
     }
   }
 
+  /** Nombre visible de la dependencia elegida (el valor del selector es su CÓDIGO). */
+  function nombreDestino() {
+    return dependencias.find((d) => d.value === toDept)?.label ?? toDept;
+  }
+
   function close() {
     dispatch("close");
   }
@@ -120,7 +125,7 @@
       const payload = {
         radicado_id: radicado.id,
         tracking_number: radicado.tracking_number,
-        to_dept: toDept.trim(),
+        to_dept_code: Number(toDept),
       };
       if (radicado.doc_type) payload.doc_type = radicado.doc_type;
       if (assignedTo[0]) payload.assigned_to = assignedTo[0];
@@ -142,7 +147,7 @@
       const result = await res.json();
       if (!res.ok) throw result;
 
-      notifySuccess(`Radicado ${radicado.tracking_number} asignado a ${toDept.trim()}.`);
+      notifySuccess(`Radicado ${radicado.tracking_number} asignado a ${nombreDestino()}.`);
       dispatch("success", result);
     } catch (err) {
       notifyError(mensajeError(err, "No se pudo asignar el radicado al flujo."));

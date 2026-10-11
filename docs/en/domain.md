@@ -113,7 +113,7 @@ Example: 2024-ICETEX-E-001234
 | `closed` | The dependencia where it was finished (frozen) |
 | `anulado` | The dependencia where it was when annulled (annulment does not rewrite it) |
 
-The step stores the dependencia **name** and `dependencias.nombre` is not unique: the code is only resolved when the name matches **one** active dependencia; otherwise it is `null` and the name is the snapshot. The location is **not public**: neither verification by code, nor OAI-PMH, nor CMIS expose it, and who holds the procedure (`flujo_usuario`) only appears in the authenticated detail. It can be filtered and counted (`?ubicacion_dept_code=`; the "Current location" report, which excludes closed and annulled). See [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
+The step stores the dependencia **code** (`to_dept_code`, ADR-032) and the name at that moment as a snapshot: the location comes from the step's code, so renaming the dependencia does not move it. (The step used to store only the name and the code was guessed when the name matched **one** active dependencia.) The location is **not public**: neither verification by code, nor OAI-PMH, nor CMIS expose it, and who holds the procedure (`flujo_usuario`) only appears in the authenticated detail. It can be filtered and counted (`?ubicacion_dept_code=`; the "Current location" report, which excludes closed and annulled). See [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
 ---
 
 ### Expediente
@@ -237,10 +237,13 @@ Organizational unit of the institution (department, area, office).
 **Why does it exist?** Document distribution occurs between dependencias. The TRD is also organized by sections that correspond to dependencias.
 
 **Key attributes:**
-- Unique code within the entity
+- Unique code within the entity (`depe_codi`) — **immutable** and the **correlation key** of the whole system (ADR-032)
+- Name (≤ 100 characters) — **editable**: display text only; every act also stores a snapshot of the name at that moment
 - Owner (head of the dependencia)
 - Parent dependencia (for the organic hierarchy)
 - Status: active / inactive
+
+**Immutable code, editable name (B5, ADR-032).** As in Orfeo, where everything operational joins on `DEPE_CODI` and the name is only displayed, the workflow, rules, inbox, events and drafts use the **code**. Renaming a dependencia is therefore free, even with live cases; the previous name stays in an insert-only history used to reprocess old events. The code **cannot be changed** (the legacy left it open by oversight, not by rule; here it is a rule, enforced by a database trigger): to fix a mistyped code, create the new dependencia and deactivate the old one. Two deliberate divergences from the legacy: **deactivating** requires that the dependencia has no live cases (the inbox only shows active dependencias and the case would become invisible; Orfeo deactivates without checking) and **a used dependencia is not deleted** (Law 594/2000: traceability) — it is deactivated. Two dependencias with the same name are never confused: an ambiguous name is never resolved "to the lowest code", it is rejected or decided by a person (manual mapping).
 
 ---
 

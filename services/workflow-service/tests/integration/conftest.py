@@ -525,10 +525,40 @@ CREATE TABLE radicados (
     ) STORED
 );
 CREATE TABLE dependencias (
-    codigo  VARCHAR(20)  NOT NULL PRIMARY KEY,
+    codigo  INTEGER      NOT NULL PRIMARY KEY,
     nombre  VARCHAR(100) NOT NULL,
     activo  BOOLEAN      NOT NULL DEFAULT TRUE
 );
+-- COPIA de tenant-service 013 (historial de nombres + criterio ÚNICO nombre -> código).
+-- Su DDL no viaja en esta imagen; `tenant-service/tests/integration/test_dependencia_codigo.py`
+-- fija los mismos casos contra la función REAL: si esta copia diverge, uno de los dos
+-- queda en rojo.
+CREATE TABLE dependencia_nombre_historico (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, codigo INTEGER NOT NULL,
+    nombre TEXT NOT NULL, origen VARCHAR(30) NOT NULL
+        CHECK (origen IN ('renombre', 'mapeo_manual')),
+    motivo TEXT, registrado_por UUID, at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE FUNCTION resolver_codigo_dependencia(p_nombre text, p_historico boolean)
+RETURNS TABLE (codigo integer, candidatos integer)
+LANGUAGE sql STABLE AS $$
+    WITH mapeo AS (
+        SELECT DISTINCT h.codigo AS cod FROM dependencia_nombre_historico h
+         WHERE p_historico AND h.origen = 'mapeo_manual' AND h.nombre = p_nombre
+    ),
+    c AS (
+        SELECT m.cod FROM mapeo m
+        UNION
+        SELECT d.codigo FROM dependencias d
+         WHERE NOT EXISTS (SELECT 1 FROM mapeo)
+           AND d.nombre = p_nombre AND (p_historico OR d.activo)
+        UNION
+        SELECT h.codigo FROM dependencia_nombre_historico h
+         WHERE p_historico AND NOT EXISTS (SELECT 1 FROM mapeo)
+           AND h.origen = 'renombre' AND h.nombre = p_nombre
+    )
+    SELECT CASE WHEN count(*) = 1 THEN min(c.cod) END, count(*)::int FROM c
+$$;
 CREATE TABLE auth_users (
     id      UUID    NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     is_root BOOLEAN NOT NULL DEFAULT FALSE
@@ -544,7 +574,7 @@ CREATE TABLE role_clearance (
 );
 CREATE TABLE urd_usuaroldep (
     user_id   UUID        NOT NULL,
-    depe_id   VARCHAR(20) NOT NULL,
+    depe_id   INTEGER     NOT NULL,
     is_active BOOLEAN     NOT NULL DEFAULT TRUE
 );
 """

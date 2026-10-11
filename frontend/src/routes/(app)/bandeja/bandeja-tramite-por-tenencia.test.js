@@ -118,7 +118,12 @@ const MARCAR = /marcar en trámite/i;
 describe("bandeja — sin avance manual de estado", () => {
   it("la fila ya no ofrece Distribuir ni Iniciar trámite", () => {
     login();
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     render(BandejaPage, { props: { data: data() } });
     expect(screen.queryByText(/^\s*Distribuir\s*$/)).toBeNull();
     expect(screen.queryByText(/iniciar trámite/i)).toBeNull();
@@ -128,7 +133,12 @@ describe("bandeja — sin avance manual de estado", () => {
 describe("bandeja — actos de trámite por tenencia", () => {
   it("poseedor (asignado a mí): ve Marcar en trámite, Finalizar y Devolver", async () => {
     login();
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.getByRole("button", { name: MARCAR })).toBeTruthy();
     expect(screen.getByRole("button", { name: FIN })).toBeTruthy();
@@ -137,14 +147,24 @@ describe("bandeja — actos de trámite por tenencia", () => {
 
   it("poseedor por dependencia (sin asignar): también", async () => {
     login();
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: null, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: null,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.getByRole("button", { name: FIN })).toBeTruthy();
   });
 
   it("paso en trámite: Finalizar sí, Marcar en trámite no", async () => {
     login();
-    globalThis.fetch = mockFetch({ status: "in_progress", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "in_progress",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.getByRole("button", { name: FIN })).toBeTruthy();
     expect(screen.queryByRole("button", { name: MARCAR })).toBeNull();
@@ -152,7 +172,12 @@ describe("bandeja — actos de trámite por tenencia", () => {
 
   it("NO poseedor (asignado a un colega de mi dependencia): ningún acto, ni Devolver", async () => {
     login();
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: OTRO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: OTRO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.queryByRole("button", { name: FIN })).toBeNull();
     expect(screen.queryByRole("button", { name: MARCAR })).toBeNull();
@@ -160,7 +185,12 @@ describe("bandeja — actos de trámite por tenencia", () => {
   });
 
   it("Devolver sigue a PERM_TRAMITAR (lo que gatea el backend), no a PERM_RADI", async () => {
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     login(["PERM_TRAMITAR"]);
     await abrirDetalle();
     expect(screen.getByRole("button", { name: /devolver/i })).toBeTruthy();
@@ -168,7 +198,12 @@ describe("bandeja — actos de trámite por tenencia", () => {
 
   it("con solo PERM_RADI no se ofrece Devolver (el backend daría 403)", async () => {
     login(["PERM_RADI"]);
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.queryByRole("button", { name: /devolver/i })).toBeNull();
   });
@@ -183,7 +218,12 @@ describe("bandeja — actos de trámite por tenencia", () => {
 
   it("poseedor sin PERM_TRAMITAR: no se ofrecen Marcar ni Finalizar", async () => {
     login(["PERM_RADI"]);
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.queryByRole("button", { name: FIN })).toBeNull();
     expect(screen.queryByRole("button", { name: MARCAR })).toBeNull();
@@ -192,7 +232,7 @@ describe("bandeja — actos de trámite por tenencia", () => {
   it("Marcar en trámite envía marcar_leido al proxy de transacciones", async () => {
     login();
     const f = mockFetch(
-      { status: "pending", assigned_to: YO, to_dept: "Jurídica" },
+      { status: "pending", assigned_to: YO, to_dept: "Jurídica", to_dept_code: 7 },
       { [`/bandeja/api/${DOC.id}/transactions`]: () => jr({ ok: true }) },
     );
     globalThis.fetch = f;
@@ -208,7 +248,7 @@ describe("bandeja — actos de trámite por tenencia", () => {
   it("Finalizar exige motivo, comentario Y casilla, y envía { comentario, motivo_cierre }", async () => {
     login();
     const f = mockFetch(
-      { status: "in_progress", assigned_to: YO, to_dept: "Jurídica" },
+      { status: "in_progress", assigned_to: YO, to_dept: "Jurídica", to_dept_code: 7 },
       { [`/bandeja/api/${DOC.id}/finalizar`]: () => jr({ id: "s1" }) },
     );
     globalThis.fetch = f;
@@ -259,14 +299,24 @@ describe("bandeja — actos de trámite por tenencia", () => {
 
   it("PERM_TRAMITAR nivel 2 (editar): NO se ofrece Finalizar (el backend da 403), Marcar sí", async () => {
     login(["PERM_TRAMITAR", "PERM_RADI"], 2);
-    globalThis.fetch = mockFetch({ status: "in_progress", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "in_progress",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.queryByRole("button", { name: FIN })).toBeNull();
   });
 
   it("PERM_TRAMITAR nivel 1 con paso pendiente propio: Marcar sí, Finalizar no", async () => {
     login(["PERM_TRAMITAR", "PERM_RADI"], 1);
-    globalThis.fetch = mockFetch({ status: "pending", assigned_to: YO, to_dept: "Jurídica" });
+    globalThis.fetch = mockFetch({
+      status: "pending",
+      assigned_to: YO,
+      to_dept: "Jurídica",
+      to_dept_code: 7,
+    });
     await abrirDetalle();
     expect(screen.getByRole("button", { name: MARCAR })).toBeTruthy();
     expect(screen.queryByRole("button", { name: FIN })).toBeNull();
@@ -282,6 +332,7 @@ describe("bandeja — actos de trámite por tenencia", () => {
       status: "completed",
       assigned_to: YO,
       to_dept: "Jurídica",
+      to_dept_code: 7,
       ...o,
     });
 

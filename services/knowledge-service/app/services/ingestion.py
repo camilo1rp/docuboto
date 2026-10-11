@@ -224,6 +224,7 @@ async def ingest_radicado_created(
             "dest_dept": payload.get("dest_dept"),
             "dest_dept_code": payload.get("dest_dept_code"),
             "origin_dept": payload.get("origin_dept"),
+            "origin_dept_code": payload.get("origin_dept_code"),
         },
         acl={},
         nivel_seguridad=nivel_efectivo,

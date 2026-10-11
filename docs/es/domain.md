@@ -112,7 +112,7 @@ Ejemplo: 2024-ICETEX-E-001234
 | `closed` | La dependencia donde se finalizó (se congela) |
 | `anulado` | La dependencia donde estaba al anularse (la anulación no la reescribe) |
 
-El paso guarda el **nombre** de la dependencia y `dependencias.nombre` no es único: el código solo se resuelve si el nombre casa con **una** dependencia activa; si no, queda `null` y el nombre es la instantánea. La ubicación **no es pública**: ni la verificación por código, ni OAI-PMH, ni CMIS la exponen, y quién posee el trámite (`flujo_usuario`) solo sale en el detalle autenticado. Se puede filtrar y contar por ella (`?ubicacion_dept_code=`; reporte «Ubicación actual», que excluye cerrados y anulados). Ver [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
+El paso guarda el **código** de la dependencia (`to_dept_code`, ADR-032) y el nombre de ese momento como instantánea: la ubicación sale del código del paso, así que renombrar la dependencia no la mueve. (Antes el paso guardaba solo el nombre y el código se adivinaba si el nombre casaba con **una** dependencia activa.) La ubicación **no es pública**: ni la verificación por código, ni OAI-PMH, ni CMIS la exponen, y quién posee el trámite (`flujo_usuario`) solo sale en el detalle autenticado. Se puede filtrar y contar por ella (`?ubicacion_dept_code=`; reporte «Ubicación actual», que excluye cerrados y anulados). Ver [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
 
 **Reclasificación de seguridad (E08).** El `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) se fija al radicar pero puede **reclasificarse** después vía `PATCH /documents/{id}/security-level` (paridad con el *Cambio Nivel de Seguridad* de Orfeo). Es un cambio del **control de acceso**, no del contenido ni del número: la inmutabilidad del radicado queda intacta. Exige permiso `PERM_RECLASIFICAR`, respeta *no-read-up* (no se puede reclasificar lo que no se puede leer → `404` neutro) y *no-write-up* (no se puede fijar por encima del propio *clearance* → `403`), y **el acto debe motivarse** (motivo obligatorio + fundamento jurídico opcional), registrándose en el `audit_log` inmutable. El cambio se propaga por evento al `signature-service`, que re-sincroniza el nivel de las cadenas de firma del objeto.
 
@@ -239,10 +239,13 @@ Unidad organizacional de la institución (departamento, área, oficina).
 **¿Por qué existe?** La distribución de documentos ocurre entre dependencias. La TRD también se organiza por secciones que corresponden a dependencias.
 
 **Atributos clave:**
-- Código único dentro de la entidad
+- Código único dentro de la entidad (`depe_codi`) — **inmutable** y **llave de correlación** de todo el sistema (ADR-032)
+- Nombre (≤ 100 caracteres) — **editable**: es solo texto para mostrar; cada acto guarda además la instantánea del nombre de ese momento
 - Responsable (jefe de dependencia)
 - Dependencia padre (para jerarquía orgánica)
 - Estado: activa / inactiva
+
+**Código inmutable, nombre editable (B5, ADR-032).** Igual que en Orfeo, donde todo lo operativo se une por `DEPE_CODI` y el nombre solo se muestra, el flujo, las reglas, la bandeja, los eventos y los borradores usan el **código**. Por eso renombrar una dependencia es libre, incluso con trámite vivo; el nombre anterior queda en un historial de solo inserción que sirve para reprocesar eventos viejos. El código **no se puede cambiar** (el legado lo dejaba abierto por descuido, no por regla; aquí se hace regla, con un trigger en la base): para corregir un código mal tecleado se crea la dependencia nueva y se desactiva la vieja. Dos divergencias deliberadas del legado: **desactivar** exige que la dependencia no tenga trámite vivo (la bandeja solo muestra dependencias activas y el trámite quedaría invisible; Orfeo desactiva sin comprobar) y **una dependencia usada no se elimina** (Ley 594/2000: trazabilidad) — se desactiva. Dos dependencias con el mismo nombre no se confunden: un nombre ambiguo nunca se resuelve «a la de menor código», se rechaza o lo decide una persona (mapeo manual).
 
 ---
 

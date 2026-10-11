@@ -927,6 +927,32 @@ async def test_pagination_and_faltantes_headers_are_forwarded_back(test_client):
     )
 
 
+async def test_proxy_reenvia_la_cabecera_deprecation_de_los_alias_por_nombre(test_client):
+    """B5: `Deprecation`/`Link` de un alias por nombre deben llegar al cliente."""
+    client, http_client, _ = test_client
+
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    wire_upstream(http_client, httpx.Response(
+            status_code=200,
+            json={"items": []},
+            headers={
+                "content-type": "application/json",
+                "Deprecation": "true",
+                "Link": '</docs/es/api.md#dependencias-por-codigo>; rel="deprecation"',
+            },
+        )
+    )
+
+    response = await client.get(
+        "/api/v1/workflows/inbox?dept=Archivo",
+        headers={"Authorization": "Bearer valid-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers.get("deprecation") == "true"
+    assert 'rel="deprecation"' in response.headers.get("link", "")
+
+
 async def test_proxy_sin_override_deja_el_timeout_del_cliente(test_client):
     """Sin override, `timeout` debe ser USE_CLIENT_DEFAULT — NUNCA None.
 

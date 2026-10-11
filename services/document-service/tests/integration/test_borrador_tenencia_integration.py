@@ -77,9 +77,9 @@ async def _padre_y_borrador(tenant_ctx, *, con_padre: bool = True):
 
 async def _paso(conn, padre_id, n, status, *, asignado=None, dept="Jurídica") -> None:
     await conn.execute(
-        "INSERT INTO flow_steps (radicado_id, step_number, to_dept, assigned_to, status) "
-        "VALUES ($1, $2, $3, $4, $5)",
-        padre_id, n, dept, asignado, status,
+        "INSERT INTO flow_steps (radicado_id, step_number, to_dept, to_dept_code, assigned_to, "
+        "status) VALUES ($1, $2, $3, $4, $5, $6)",
+        padre_id, n, dept, {"Jurídica": 410, "Contratación": 420}.get(dept), asignado, status,
     )
 
 
@@ -139,6 +139,23 @@ async def test_paso_sin_dueno_edita_cualquiera_de_la_dependencia(tenant_ctx) -> 
     await _paso(conn, padre.id, 1, "pending", asignado=None, dept="Jurídica")
     assert not await _puede_editar(servicio, conn, b, ajeno)
     assert not await _puede_editar(servicio, conn, b, inactivo), "URD inactiva no cuenta"
+    assert await _puede_editar(servicio, conn, b, miembro)
+
+
+@pytest.mark.asyncio
+async def test_renombrar_la_dependencia_no_quita_la_tenencia(tenant_ctx) -> None:
+    """B5/ADR-032: la tenencia se correlaciona por CÓDIGO, no por el nombre del paso.
+
+    Mutación: volver a `fs.to_dept IN (SELECT d.nombre ...)` deja al miembro sin poder
+    editar en cuanto la dependencia se renombra (el paso conserva la instantánea vieja).
+    """
+    _, conn, servicio, padre, b = await _padre_y_borrador(tenant_ctx)
+    miembro = uuid.uuid4()
+    await conn.execute("INSERT INTO dependencias (codigo, nombre) VALUES (410, 'Jurídica')")
+    await conn.execute("INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 410)", miembro)
+    await _paso(conn, padre.id, 1, "pending", asignado=None, dept="Jurídica")
+    assert await _puede_editar(servicio, conn, b, miembro)  # control positivo antes del renombre
+    await conn.execute("UPDATE dependencias SET nombre = 'Asuntos Jurídicos' WHERE codigo = 410")
     assert await _puede_editar(servicio, conn, b, miembro)
 
 

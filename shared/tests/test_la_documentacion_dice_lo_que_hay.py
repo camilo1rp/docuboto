@@ -298,7 +298,8 @@ def test_ni_el_catalogo_ni_el_repositorio_dicen_que_la_cofirma_entrega_no_tiene_
 
 
 def test_los_comentarios_de_deuda_ya_cerrada_se_corrigieron() -> None:
-    assert "_validate_assign_to_dept" in _leer("services/workflow-service/app/services/rules_service.py")
+    # B5 (ADR-032): la validación del destino de la regla pasó a resolverse por código.
+    assert "_resolver_dependencia" in _leer("services/workflow-service/app/services/rules_service.py")
     dist = _plano(_leer("services/workflow-service/app/services/distribution.py"))
     assert "no se valida al crear/editar la regla" not in dist
     assert "def purge_for_disposition" in _leer("services/storage-service/app/services/storage_service.py")

@@ -11,7 +11,7 @@
  * /admin/dependencias/api/[id] — Proxy SSR: actualización parcial de una
  * dependencia (D-05, E14).
  *
- * PATCH → body con los campos a cambiar (codigo?, sigla?, nombre?,
+ * PATCH → body con los campos a cambiar (sigla?, nombre?,
  *   parent_id?, depe_rad_tp2?, activo?). Solo se reenvían las claves
  *   presentes en el body del cliente (edición parcial real, como
  *   `flujos/reglas/api/[id]`), nunca el objeto DependenciaNode completo con
@@ -59,15 +59,17 @@ export async function PATCH({ locals, params, request }) {
   /** @type {Record<string, unknown>} */
   const payload = {};
 
+  // ADR-032: el código es inmutable. No se reenvía jamás; si el cliente lo manda
+  // se rechaza aquí con el mismo código de error que usa el backend.
   if ("codigo" in body) {
-    const codigoNum = Number(body.codigo);
-    if (!Number.isInteger(codigoNum) || codigoNum < 1 || codigoNum > 999999) {
-      return json(
-        { error: "validation_error", detail: "El código debe ser un entero entre 1 y 999999." },
-        { status: 400 },
-      );
-    }
-    payload.codigo = codigoNum;
+    return json(
+      {
+        error: "dependencia_codigo_inmutable",
+        detail: "El código de una dependencia no se puede cambiar.",
+        status: 422,
+      },
+      { status: 422 },
+    );
   }
   if ("sigla" in body) {
     if (typeof body.sigla !== "string" || !body.sigla.trim()) {
@@ -86,6 +88,20 @@ export async function PATCH({ locals, params, request }) {
       );
     }
     payload.nombre = body.nombre.trim();
+  }
+  // Acto de reestructuración que motiva un renombre (opcional, 10..1000).
+  if ("motivo" in body) {
+    if (
+      typeof body.motivo !== "string" ||
+      body.motivo.trim().length < 10 ||
+      body.motivo.trim().length > 1000
+    ) {
+      return json(
+        { error: "validation_error", detail: "El motivo debe tener entre 10 y 1000 caracteres." },
+        { status: 400 },
+      );
+    }
+    payload.motivo = body.motivo.trim();
   }
   if ("parent_id" in body) {
     const parentId = body.parent_id;

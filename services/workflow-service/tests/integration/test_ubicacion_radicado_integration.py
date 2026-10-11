@@ -51,12 +51,12 @@ from tests.integration.test_estado_radicado_integration import (  # noqa: F401
 
 pytestmark = pytest.mark.integration
 
-TEC = ("300", "Tecnología")
-TH = ("400", "Talento Humano")
-CI = ("500", "Control Interno")
+TEC = (300, "Tecnología")
+TH = (400, "Talento Humano")
+CI = (500, "Control Interno")
 
 
-async def _dependencias(conn: asyncpg.Connection, *filas: tuple[str, str, bool]) -> None:
+async def _dependencias(conn: asyncpg.Connection, *filas: tuple[int, str, bool]) -> None:
     for codigo, nombre, activo in filas:
         await conn.execute(
             "INSERT INTO dependencias (codigo, nombre, activo) VALUES ($1, $2, $3)",
@@ -65,14 +65,14 @@ async def _dependencias(conn: asyncpg.Connection, *filas: tuple[str, str, bool])
 
 
 async def _radicado_en(
-    conn: asyncpg.Connection, dep: tuple[str, str] | None, status: str = "registered"
+    conn: asyncpg.Connection, dep: tuple[int, str] | None, status: str = "registered"
 ) -> uuid.UUID:
     """Radicado cuya dependencia de RADICACIÓN es `dep` (dest_dept/dest_dept_code)."""
     rid = await _radicado(conn, status)
     if dep is not None:
         await conn.execute(
             "UPDATE radicados SET dest_dept = $2, dest_dept_code = $3 WHERE id = $1",
-            rid, dep[1], int(dep[0]),
+            rid, dep[1], dep[0],
         )
     return rid
 
@@ -177,10 +177,10 @@ async def test_la_anulacion_congela_la_ubicacion(ctx: Any) -> None:
     antes = await _ubic(conn, rid)
     # Un paso tardío hacia otra dependencia (p. ej. un escritor que no respeta el 409).
     await conn.execute(
-        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, assigned_by, "
-        "action, status) SELECT id, tracking_number, 9, $2, gen_random_uuid(), 'assign', 'pending' "
-        "FROM radicados WHERE id = $1",
-        rid, DEP_ARC[1],
+        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, to_dept_code, "
+        "assigned_by, action, status) SELECT id, tracking_number, 9, $2, $3, gen_random_uuid(), "
+        "'assign', 'pending' FROM radicados WHERE id = $1",
+        rid, DEP_ARC[1], DEP_ARC[0],
     )
 
     assert await svc._repo.sincronizar_estado_radicado(rid) == ("anulado", "anulado")
@@ -221,25 +221,33 @@ async def test_la_cascada_no_reescribe_la_ubicacion_de_un_terminal(ctx: Any) -> 
 # ---------------------------------------------------------------------------
 
 
-async def test_nombre_duplicado_deja_codigo_nulo_y_no_cae_al_codigo_de_radicacion(ctx: Any) -> None:
-    svc, conn, _ = ctx
-    await _dependencias(conn, (*TEC, True), ("610", "Duplicada", True), ("611", "Duplicada", True))
-    rid = await _radicado_en(conn, TEC)
-    u = await _user(conn, "610")
+async def test_nombre_duplicado_no_se_desempata_y_el_codigo_del_paso_fija_la_ubicacion(ctx: Any) -> None:
+    """ADR-032: por NOMBRE, dos homónimas son 422 (antes: código NULL); por CÓDIGO la
+    ubicación es exacta y el par (nombre, código) sale de la misma dependencia."""
+    from fastapi import HTTPException
 
-    await svc.assign(_assign(rid, "Duplicada", u), u)
+    svc, conn, _ = ctx
+    await _dependencias(conn, (*TEC, True), (610, "Duplicada", True), (611, "Duplicada", True))
+    rid = await _radicado_en(conn, TEC)
+    u = await _user(conn, 610)
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.assign(_assign(rid, "Duplicada", u), u)
+    assert exc.value.detail["error"] == "dependencia_ambigua"
+    assert (await _ubic(conn, rid))["flujo_dept"] is None  # nada se escribió
+
+    await svc.assign(_assign(rid, "Duplicada", u, to_dept_code=611), u)
 
     r = await _ubic(conn, rid)
-    assert (r["flujo_dept"], r["flujo_dept_code"]) == ("Duplicada", None)
-    # El par se calcula junto: NO muestra el nombre del flujo con el código de Tecnología.
-    assert (r["ubicacion_dept"], r["ubicacion_dept_code"]) == ("Duplicada", None)
+    assert (r["flujo_dept"], r["flujo_dept_code"]) == ("Duplicada", 611)
+    assert (r["ubicacion_dept"], r["ubicacion_dept_code"]) == ("Duplicada", 611)
 
 
 async def test_una_dependencia_inactiva_con_el_mismo_nombre_no_estorba(ctx: Any) -> None:
     svc, conn, _ = ctx
-    await _dependencias(conn, ("620", "Solo", False), ("621", "Solo", True))
+    await _dependencias(conn, (620, "Solo", False), (621, "Solo", True))
     rid = await _radicado(conn)
-    u = await _user(conn, "621")
+    u = await _user(conn, 621)
 
     await svc.assign(_assign(rid, "Solo", u), u)
 
@@ -273,33 +281,43 @@ async def test_si_la_auditoria_falla_no_queda_ubicacion(ctx: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+_AUTO: Any = object()
+
+
 async def _paso_en(
     conn: asyncpg.Connection, rid: uuid.UUID, n: int, status: str, dept: str,
-    *, minutos: int | None = None, usuario: uuid.UUID | None = None,
+    *, minutos: int | None = None, usuario: uuid.UUID | None = None, code: Any = _AUTO,
 ) -> None:
+    """Un paso con su CÓDIGO (ADR-032). Por omisión, el de la dependencia ACTIVA de ese
+    nombre; un paso vivo exige código (`ck_flow_steps_vivo_con_codigo`), uno cerrado puede
+    llevarlo NULL (`code=None`: la historia que la 019 no pudo resolver)."""
+    if code is _AUTO:
+        code = await conn.fetchval(
+            "SELECT min(codigo) FROM dependencias WHERE nombre = $1 AND activo", dept
+        )
     await conn.execute(
-        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, assigned_to, "
-        "assigned_by, action, status, completed_at) SELECT id, tracking_number, $2, $3, $4, "
+        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, to_dept_code, "
+        "assigned_to, assigned_by, action, status, completed_at) SELECT id, tracking_number, $2, $3, $7, $4, "
         "gen_random_uuid(), 'assign', $5, "
         "CASE WHEN $6::int IS NULL THEN NULL ELSE timestamptz '2026-10-01 08:00+00' + $6 * interval '1 minute' END "
         "FROM radicados WHERE id = $1",
-        rid, n, dept, usuario, status, minutos,
+        rid, n, dept, usuario, status, minutos, code,
     )
 
 
 async def _casos_de_backfill(conn: asyncpg.Connection) -> list[uuid.UUID]:
     await _dependencias(
         conn, (*TEC, True), (*TH, True), (*CI, True),
-        ("610", "Duplicada", True), ("611", "Duplicada", True),
-        ("620", "Solo", False), ("621", "Solo", True), ("630", "Cerrada", False),
+        (610, "Duplicada", True), (611, "Duplicada", True),
+        (620, "Solo", False), (621, "Solo", True), (630, "Cerrada", False),
     )
     u = await _user(conn)
     ids: list[uuid.UUID] = []
 
-    async def caso(status: str, pasos: list[tuple[int, str, str, int | None]], **previa: Any) -> None:
+    async def caso(status: str, pasos: list[tuple], **previa: Any) -> None:
         rid = await _radicado_en(conn, TEC, status)
-        for n, st, dept, min_ in pasos:
-            await _paso_en(conn, rid, n, st, dept, minutos=min_, usuario=u)
+        for n, st, dept, min_, *code in pasos:
+            await _paso_en(conn, rid, n, st, dept, minutos=min_, usuario=u, **({"code": code[0]} if code else {}))
         if previa:
             await conn.execute(
                 "UPDATE radicados SET flujo_dept = $2, flujo_dept_code = $3 WHERE id = $1",
@@ -312,10 +330,11 @@ async def _casos_de_backfill(conn: asyncpg.Connection) -> list[uuid.UUID]:
     await caso("in_progress", [(1, "returned", TH[1], 5), (2, "pending", CI[1], None)])
     await caso("distributed", [(1, "completed", TH[1], 30), (2, "cancelled", CI[1], 10)])  # rollback + completar
     await caso("distributed", [(1, "completed", TH[1], 5), (2, "completed", CI[1], 5)])  # empate
-    await caso("distributed", [(1, "pending", "Duplicada", None)])  # nombre duplicado
-    await caso("distributed", [(1, "pending", "Solo", None)])  # una activa y una inactiva
-    await caso("distributed", [(1, "pending", "Cerrada", None)])  # solo inactiva: sin código
-    await caso("distributed", [(1, "pending", "No existe", None)])  # errata
+    # ADR-032: el código es un DATO del paso, no se adivina por el nombre.
+    await caso("distributed", [(1, "pending", "Duplicada", None, 611)])  # homónimas: la del paso
+    await caso("distributed", [(1, "pending", "Solo", None, 621)])
+    await caso("distributed", [(1, "pending", "Renombrada", None, 300)])  # nombre que ya no existe
+    await caso("distributed", [(1, "completed", "Cerrada", 4, None)])  # historia sin código: NULL
     await caso("closed", [(1, "completed", TH[1], 9)])  # cerrado anterior a ADR-029
     await caso("anulado", [(1, "cancelled", CI[1], 9)])  # anulado anterior a ADR-029
     await caso("closed", [(1, "completed", TH[1], 9)], dept="Antigua", code=1)  # ya escrito: se congela
@@ -325,17 +344,14 @@ async def _casos_de_backfill(conn: asyncpg.Connection) -> list[uuid.UUID]:
 
 
 async def _pasos_python(conn: asyncpg.Connection, rid: uuid.UUID) -> list[PasoUbicacion]:
-    out = []
-    for p in await conn.fetch("SELECT * FROM flow_steps WHERE radicado_id = $1", rid):
-        cods = await conn.fetch(
-            "SELECT codigo FROM dependencias WHERE nombre = $1 AND activo", p["to_dept"]
-        )
-        out.append(PasoUbicacion(
+    return [
+        PasoUbicacion(
             step_number=p["step_number"], status=p["status"], to_dept=p["to_dept"],
             assigned_to=p["assigned_to"], completed_at=p["completed_at"],
-            codigos_candidatos=tuple(int(c["codigo"]) for c in cods),
-        ))
-    return out
+            to_dept_code=p["to_dept_code"],
+        )
+        for p in await conn.fetch("SELECT * FROM flow_steps WHERE radicado_id = $1", rid)
+    ]
 
 
 async def test_backfill_coincide_fila_a_fila_con_la_funcion_pura_y_la_2a_corrida_no_cambia_nada(ctx: Any) -> None:
@@ -353,7 +369,8 @@ async def test_backfill_coincide_fila_a_fila_con_la_funcion_pura_y_la_2a_corrida
         )
     fechas = {r["id"]: r["updated_at"] for r in await conn.fetch("SELECT id, updated_at FROM radicados")}
 
-    await _correr_sql(conn, slug, "radicado_ubicacion_desde_flujo")
+    # Gemelo de `derivar_ubicacion` en SQL: la FASE C de la 019 (el código sale del PASO).
+    await _correr_sql(conn, slug, "flujo_dependencia_por_codigo")
 
     cambiados = 0
     for rid in ids:
@@ -366,7 +383,9 @@ async def test_backfill_coincide_fila_a_fila_con_la_funcion_pura_y_la_2a_corrida
         cambiados += real != previas[rid]
     # `updated_at` no se movió: recalcular un dato derivado no es editar el radicado.
     assert {r["id"]: r["updated_at"] for r in await conn.fetch("SELECT id, updated_at FROM radicados")} == fechas
-    assert await conn.fetchval("SELECT count(*) FROM radicado_ubicacion_recalculo") == cambiados > 0
+    assert await conn.fetchval(
+        "SELECT count(*) FROM radicado_ubicacion_recalculo WHERE origen = 'migracion_019'"
+    ) == cambiados > 0
 
     # El cerrado ya escrito se congela (la evidencia no lo menciona).
     congelado = ids[11]
@@ -375,7 +394,7 @@ async def test_backfill_coincide_fila_a_fila_con_la_funcion_pura_y_la_2a_corrida
 
     # 2.ª corrida: 0 cambios y 0 filas de evidencia nuevas.
     antes = [await _ubic(conn, rid) for rid in ids]
-    await _correr_sql(conn, slug, "radicado_ubicacion_desde_flujo")
+    await _correr_sql(conn, slug, "flujo_dependencia_por_codigo")
     assert [await _ubic(conn, rid) for rid in ids] == antes
     assert await conn.fetchval("SELECT count(*) FROM radicado_ubicacion_recalculo") == cambiados
 

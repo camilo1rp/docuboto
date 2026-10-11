@@ -16,7 +16,7 @@
  *      pide una página grande y pagina/filtra localmente).
  * POST → crea una regla. Body allowlist (nunca el body íntegro del cliente):
  *      { name, description?, is_active?, priority?, conditions?, match_mode?,
- *        assign_to_dept, assign_notes? }
+ *        assign_to_dept_code, assign_notes? }
  *      `conditions[]` se reconstruye campo a campo con `buildConditionsPayload`
  *      (allowlist de field/op del enum cerrado del backend + coerción de
  *      value) — nunca se reenvía la condición cruda del cliente.
@@ -30,6 +30,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 import { buildConditionsPayload } from "$lib/utils/workflowRuleConditions.js";
 
 const MATCH_MODES = new Set(["all", "any"]);
@@ -88,7 +89,7 @@ export async function POST({ locals, request }) {
     priority,
     conditions: rawConditions,
     match_mode,
-    assign_to_dept,
+    assign_to_dept_code,
     assign_notes,
   } = body ?? {};
 
@@ -98,11 +99,12 @@ export async function POST({ locals, request }) {
       { status: 422 },
     );
   }
-  if (typeof assign_to_dept !== "string" || !assign_to_dept.trim()) {
+  const assignCode = parseCodigoDependencia(assign_to_dept_code);
+  if (assignCode === null) {
     return json(
       {
         error: "validation_error",
-        detail: "La dependencia de destino de la acción es obligatoria.",
+        detail: "La dependencia de destino de la acción es obligatoria (código entero positivo).",
       },
       { status: 422 },
     );
@@ -135,7 +137,7 @@ export async function POST({ locals, request }) {
     priority: safePriority,
     conditions: buildConditionsPayload(rawConditions),
     match_mode: MATCH_MODES.has(match_mode) ? match_mode : "all",
-    assign_to_dept: assign_to_dept.trim().slice(0, 200),
+    assign_to_dept_code: assignCode,
     assign_notes:
       typeof assign_notes === "string" && assign_notes.trim() ? assign_notes.trim() : null,
   };

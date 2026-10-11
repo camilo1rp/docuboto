@@ -76,12 +76,14 @@ async def ctx() -> AsyncGenerator[Ctx, None]:
             async with owner.transaction():
                 await owner.execute(f'SET LOCAL search_path = "{schema}", public')
                 await owner.execute(path.read_text())
-        # Tabla mínima de workflow-service (otro servicio) para la correlación por nombre.
+        # Tablas mínimas de workflow-service (otro servicio) para la correlación por código.
         await owner.execute(
-            f'CREATE TABLE "{schema}".flow_steps (id serial PRIMARY KEY, to_dept varchar(100), status varchar(20))'
+            f'CREATE TABLE "{schema}".flow_steps (id serial PRIMARY KEY, '
+            "to_dept_code int, status varchar(20))"
         )
         await owner.execute(
-            f'CREATE TABLE "{schema}".workflow_rules (id serial PRIMARY KEY, assign_to_dept text)'
+            f'CREATE TABLE "{schema}".workflow_rules (id serial PRIMARY KEY, '
+            "assign_to_dept_code int, dest_dept_code int, conditions jsonb NOT NULL DEFAULT '[]')"
         )
         # Mismos privilegios que 008 concede a orpycamcp_app.
         await owner.execute(f"CREATE ROLE {role} LOGIN PASSWORD '{password}'")
@@ -184,18 +186,18 @@ async def test_parametro_asienta_valor_previo(ctx: Ctx) -> None:
     assert antes == 9
 
 
-async def test_dependencia_con_paso_vivo_se_detecta_por_nombre(ctx: Ctx) -> None:
+async def test_dependencia_con_paso_vivo_se_detecta_por_codigo(ctx: Ctx) -> None:
     await ctx.owner.execute(
-        f'INSERT INTO "{ctx.schema}".flow_steps (to_dept, status) VALUES '
-        "('Oficina Viva', 'pending'), ('Oficina Viva', 'completed'), ('Otra', 'pending')"
+        f'INSERT INTO "{ctx.schema}".flow_steps (to_dept_code, status) VALUES '
+        "(901, 'pending'), (901, 'completed'), (902, 'pending')"
     )
     await ctx.owner.execute(
-        f"INSERT INTO \"{ctx.schema}\".workflow_rules (assign_to_dept) VALUES ('Oficina Viva')"
+        f'INSERT INTO "{ctx.schema}".workflow_rules (assign_to_dept_code) VALUES (901)'
     )
     await ctx.app.execute(f'SET search_path = "{ctx.schema}", public')
-    vivos = await DependenciaRepository(ctx.app).tramites_vivos("Oficina Viva")
+    vivos = await DependenciaRepository(ctx.app).tramites_vivos(901)
     assert vivos == {"pasos_vivos": 1, "reglas": 1}
-    assert await DependenciaRepository(ctx.app).tramites_vivos("Sin Tramite") == {
+    assert await DependenciaRepository(ctx.app).tramites_vivos(999) == {
         "pasos_vivos": 0,
         "reglas": 0,
     }
@@ -204,10 +206,24 @@ async def test_dependencia_con_paso_vivo_se_detecta_por_nombre(ctx: Ctx) -> None
 async def test_paso_en_curso_cuenta_como_tramite_vivo(ctx: Ctx) -> None:
     """`in_progress` es estado vivo igual que `pending` (columnas reales de workflow)."""
     await ctx.owner.execute(
-        f'INSERT INTO "{ctx.schema}".flow_steps (to_dept, status) VALUES '
-        "('Oficina Curso', 'in_progress'), ('Oficina Curso', 'completed'), "
-        "('Oficina Curso', 'cancelled')"
+        f'INSERT INTO "{ctx.schema}".flow_steps (to_dept_code, status) VALUES '
+        "(903, 'in_progress'), (903, 'completed'), (903, 'cancelled')"
     )
     await ctx.app.execute(f'SET search_path = "{ctx.schema}", public')
-    vivos = await DependenciaRepository(ctx.app).tramites_vivos("Oficina Curso")
+    vivos = await DependenciaRepository(ctx.app).tramites_vivos(903)
     assert vivos == {"pasos_vivos": 1, "reglas": 0}
+
+
+async def test_regla_con_condicion_por_codigo_cuenta_como_viva(ctx: Ctx) -> None:
+    """Una condición `dest_dept_code` (escalar o lista) cita la dependencia."""
+    await ctx.owner.execute(
+        f'INSERT INTO "{ctx.schema}".workflow_rules (assign_to_dept_code, conditions) VALUES '
+        "(1, '[{\"field\": \"dest_dept_code\", \"op\": \"eq\", \"value\": 905}]'), "
+        "(1, '[{\"field\": \"origin_dept_code\", \"op\": \"in\", \"value\": [906, 907]}]'), "
+        "(1, '[{\"field\": \"subject\", \"op\": \"contains\", \"value\": \"905\"}]')"
+    )
+    await ctx.app.execute(f'SET search_path = "{ctx.schema}", public')
+    repo = DependenciaRepository(ctx.app)
+    assert (await repo.tramites_vivos(905))["reglas"] == 1
+    assert (await repo.tramites_vivos(907))["reglas"] == 1
+    assert (await repo.tramites_vivos(908))["reglas"] == 0

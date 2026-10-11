@@ -48,6 +48,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import { getNivelChip } from "$lib/utils/nivelSeguridad.js";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import { mapaNombres } from "$lib/utils/dependenciaNombre.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -278,11 +279,31 @@
     }));
   }
 
+  /**
+   * Serie por dependencia de radicación. El backend (ADR-032) entrega la llave
+   * `codigo` en `by_dependencia_codigo` (no funde homónimas); `by_dependencia`
+   * queda como mapa por etiqueta (compatibilidad) y es el respaldo.
+   * @param {any} summary
+   * @returns {Array<{clave: string, nombre: string|null, count: number}>}
+   */
+  function filasDeDependencia(summary) {
+    const lista = summary?.by_dependencia_codigo;
+    if (Array.isArray(lista)) {
+      return lista.map((r) => ({
+        clave: r?.codigo == null ? "sin_codigo" : String(r.codigo),
+        nombre: r?.nombre ?? null,
+        count: Number(r?.count) || 0,
+      }));
+    }
+    return filasDeMapa(summary?.by_dependencia).map((r) => ({ ...r, nombre: null }));
+  }
+
   /** Total de radicados del período — el backend ya lo trae contado. */
   $: grandTotal = data.summary?.total ?? 0;
 
   /** Máximo de los conteos de dependencia (para las barras) */
-  $: maxDeptCount = Math.max(...filasDeMapa(data.summary?.by_dependencia).map((d) => d.count), 0);
+  $: filasDependencia = filasDeDependencia(data.summary);
+  $: maxDeptCount = Math.max(...filasDependencia.map((d) => d.count), 0);
 
   /** Máximo de los conteos de ubicación actual (para las barras) */
   $: maxUbicacionCount = Math.max(
@@ -351,16 +372,50 @@
     };
   });
 
-  $: deptRows = filasDeMapa(data.summary?.by_dependencia).map((row) => {
-    const count = row.count ?? 0;
-    const share = maxDeptCount > 0 ? Math.round((count / maxDeptCount) * 100) : 0;
-    return {
-      dept: row.clave || null,
-      dept_label: row.clave || "Sin dependencia",
-      count,
-      share_label: `${share}%`,
-    };
-  });
+  $: nombresDep = mapaNombres(data.dependencias);
+  /**
+   * La clave de `by_dependencia` es el CÓDIGO de la dependencia (ADR-032),
+   * `sin_codigo` cuando el radicado no tiene, o —en datos anteriores— el nombre.
+   * @param {string|null|undefined} clave
+   */
+  function etiquetaDependencia(clave) {
+    if (!clave || clave === "sin_codigo") return "Sin dependencia";
+    if (/^\d+$/.test(clave)) return nombresDep.get(Number(clave)) ?? `Dependencia ${clave}`;
+    return clave;
+  }
+  $: deptRows = distinguirHomonimas(
+    filasDependencia.map((row) => {
+      const count = row.count ?? 0;
+      const share = maxDeptCount > 0 ? Math.round((count / maxDeptCount) * 100) : 0;
+      return {
+        dept_code: /^\d+$/.test(row.clave ?? "") ? Number(row.clave) : null,
+        dept_label:
+          row.clave === "sin_codigo" && row.nombre
+            ? row.nombre
+            : /^\d+$/.test(row.clave ?? "") && nombresDep.has(Number(row.clave))
+              ? etiquetaDependencia(row.clave)
+              : (row.nombre ?? etiquetaDependencia(row.clave)),
+        count,
+        share_label: `${share}%`,
+      };
+    }),
+  );
+
+  /**
+   * Dos dependencias con el MISMO nombre (homónimas) darían filas
+   * indistinguibles: se añade el código a las repetidas (el grupo sin código
+   * no se toca).
+   * @param {Array<{dept_code: number|null, dept_label: string}>} rows
+   */
+  function distinguirHomonimas(rows) {
+    const veces = new Map();
+    for (const r of rows) veces.set(r.dept_label, (veces.get(r.dept_label) ?? 0) + 1);
+    return rows.map((r) =>
+      r.dept_code !== null && veces.get(r.dept_label) > 1
+        ? { ...r, dept_label: `${r.dept_label} (cód. ${r.dept_code})` }
+        : r,
+    );
+  }
 
   const typeColumns = [
     { key: "type_label", label: "Tipo", sortable: true },

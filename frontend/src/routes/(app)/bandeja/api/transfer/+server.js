@@ -16,8 +16,8 @@
  * POST → crea un nuevo paso de flujo por traslado (`POST /workflows/transfer`)
  *   Body (FlowStepCreate, allowlist): {
  *     radicado_id (uuid, requerido), tracking_number (str ≤50, requerido),
- *     to_dept (str ≤100, requerido), from_dept (str ≤100, requerido — el
- *     backend rechaza con 422 `missing_from_dept` si falta, gemelo de /devolver),
+ *     to_dept_code (int, requerido; ADR-032). El origen NO se recibe: el
+ *     servidor lo deriva del paso activo (409 `origen_desactualizado` si cambió),
  *     assigned_to (uuid, opcional), notes (str, opcional), doc_type (E|S|I, opcional),
  *     due_at (ISO datetime, opcional)
  *   }
@@ -28,6 +28,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const VALID_DOC_TYPES = new Set(["E", "S", "I"]);
@@ -48,60 +49,50 @@ export async function POST({ locals, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { radicado_id, tracking_number, to_dept, from_dept, assigned_to, notes, doc_type, due_at } =
+  const { radicado_id, tracking_number, to_dept_code, assigned_to, notes, doc_type, due_at } =
     body ?? {};
 
   if (!radicado_id || typeof radicado_id !== "string" || !UUID_RE.test(radicado_id)) {
     return json(
-      { error: "validation_error", detail: "radicado_id debe ser un UUID válido." },
+      {
+        error: "validation_error",
+        detail: "El radicado indicado no es válido. Recargue la página e intente de nuevo.",
+      },
       { status: 422 },
     );
   }
   if (!tracking_number || typeof tracking_number !== "string" || !tracking_number.trim()) {
     return json(
-      { error: "validation_error", detail: "tracking_number es obligatorio." },
+      {
+        error: "validation_error",
+        detail: "Falta el número de radicado. Recargue la página e intente de nuevo.",
+      },
       { status: 422 },
     );
   }
   if (tracking_number.trim().length > 50) {
     return json(
-      { error: "validation_error", detail: "tracking_number no puede superar 50 caracteres." },
-      { status: 422 },
-    );
-  }
-  if (!to_dept || typeof to_dept !== "string" || !to_dept.trim()) {
-    return json(
-      { error: "validation_error", detail: "to_dept (dependencia destino) es obligatorio." },
-      { status: 422 },
-    );
-  }
-  if (to_dept.trim().length > 100) {
-    return json(
-      { error: "validation_error", detail: "to_dept no puede superar 100 caracteres." },
-      { status: 422 },
-    );
-  }
-  // El backend exige from_dept para transfer (missing_from_dept, 422) — se valida
-  // aquí también para dar un error claro antes de tocar el gateway.
-  if (!from_dept || typeof from_dept !== "string" || !from_dept.trim()) {
-    return json(
       {
         error: "validation_error",
-        detail: "from_dept (dependencia origen) es obligatorio para trasladar.",
+        detail: "El número de radicado supera los 50 caracteres permitidos.",
       },
       { status: 422 },
     );
   }
-  if (from_dept.trim().length > 100) {
+  const toDeptCode = parseCodigoDependencia(to_dept_code);
+  if (toDeptCode === null) {
     return json(
-      { error: "validation_error", detail: "from_dept no puede superar 100 caracteres." },
+      {
+        error: "validation_error",
+        detail: "Seleccione la dependencia destino del catálogo.",
+      },
       { status: 422 },
     );
   }
   if (assigned_to !== undefined && assigned_to !== null && assigned_to !== "") {
     if (typeof assigned_to !== "string" || !UUID_RE.test(assigned_to)) {
       return json(
-        { error: "validation_error", detail: "assigned_to debe ser un UUID válido." },
+        { error: "validation_error", detail: "El funcionario seleccionado no es válido." },
         { status: 422 },
       );
     }
@@ -113,14 +104,17 @@ export async function POST({ locals, request }) {
     !VALID_DOC_TYPES.has(doc_type)
   ) {
     return json(
-      { error: "validation_error", detail: "doc_type debe ser uno de: E, S, I." },
+      {
+        error: "validation_error",
+        detail: "El tipo de documento debe ser entrada, salida o interno.",
+      },
       { status: 422 },
     );
   }
   if (due_at !== undefined && due_at !== null && due_at !== "") {
     if (typeof due_at !== "string" || Number.isNaN(Date.parse(due_at))) {
       return json(
-        { error: "validation_error", detail: "due_at debe ser una fecha ISO 8601 válida." },
+        { error: "validation_error", detail: "La fecha de vencimiento no es válida." },
         { status: 422 },
       );
     }
@@ -139,8 +133,7 @@ export async function POST({ locals, request }) {
   const payload = {
     radicado_id,
     tracking_number: tracking_number.trim(),
-    to_dept: to_dept.trim(),
-    from_dept: from_dept.trim(),
+    to_dept_code: toDeptCode,
     action: "transfer",
   };
   if (assigned_to) payload.assigned_to = assigned_to;

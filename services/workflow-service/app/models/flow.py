@@ -32,6 +32,10 @@ class FlowStep:
     doc_type: str | None = None
     due_at: datetime | None = None
     overdue_notified: bool = False
+    #: Llave de correlación (ADR-032): `dependencias.codigo`. `to_dept`/`from_dept` son
+    #: la instantánea del NOMBRE al momento del acto, no se unen a nada.
+    to_dept_code: int | None = None
+    from_dept_code: int | None = None
 
 
 @dataclass
@@ -46,3 +50,5 @@ class FlowAssignment:
     action: str
     notes: str | None
     from_dept: str | None
+    to_dept_code: int | None = None
+    from_dept_code: int | None = None

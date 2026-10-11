@@ -17,11 +17,10 @@
  * POST → crea una dependencia. Body: { codigo, sigla, nombre, parent_id?,
  *        depe_rad_tp2?, activo? }.
  *
- * DEUDA DE MODELO (advertida en la UI, ver +page.svelte): las dependencias
- * se correlacionan por NOMBRE en otros servicios (workflow_rules.assign_to_dept,
- * flow_steps en vuelo), no por id/código — renombrar o desactivar puede dejar
- * huérfanas esas referencias. Este proxy solo reenvía la petición; la
- * advertencia vive en el flujo de confirmación de la UI, no aquí.
+ * ADR-032: las dependencias se correlacionan por CÓDIGO en todo el sistema.
+ * El código es inmutable tras crearla; renombrar es seguro. Desactivar con
+ * trámite en curso lo rechaza el backend (409). Este proxy solo reenvía la
+ * petición; la confirmación de desactivar vive en la UI.
  */
 
 import { json } from "@sveltejs/kit";

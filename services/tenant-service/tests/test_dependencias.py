@@ -122,6 +122,7 @@ async def test_create_dependencia_forbidden_without_identity(
 async def test_create_dependencia(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
     conn.fetchrow.return_value = _dep(codigo=100, sigla="DG")
+    conn.fetchval.side_effect = [True, False]  # RBAC, código no retirado
     resp = await client.post(
         "/api/v1/dependencias",
         json={"codigo": 100, "sigla": "DG", "nombre": "Dirección General"},
@@ -137,6 +138,7 @@ async def test_create_dependencia(client_conn: tuple[AsyncClient, AsyncMock]) ->
 async def test_create_duplicate_codigo(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
     conn.fetchrow.side_effect = asyncpg.UniqueViolationError("dup")
+    conn.fetchval.side_effect = [True, False]  # RBAC, código no retirado
     resp = await client.post(
         "/api/v1/dependencias",
         json={"codigo": 100, "sigla": "DG", "nombre": "X"},
@@ -150,6 +152,7 @@ async def test_create_duplicate_codigo(client_conn: tuple[AsyncClient, AsyncMock
 async def test_create_bad_parent(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
     conn.fetchrow.side_effect = asyncpg.ForeignKeyViolationError("fk")
+    conn.fetchval.side_effect = [True, False]  # RBAC, código no retirado
     resp = await client.post(
         "/api/v1/dependencias",
         json={"codigo": 200, "sigla": "SUB", "nombre": "Sub", "parent_id": str(uuid.uuid4())},
@@ -230,25 +233,84 @@ async def test_update_partial(client_conn: tuple[AsyncClient, AsyncMock]) -> Non
     assert kw["payload"]["despues"]["nombre"] == "Nuevo Nombre"
 
 
+def _cols(*pares: tuple[str, str]) -> list[dict]:
+    return [{"table_name": t, "column_name": c} for t, c in pares]
+
+
 @pytest.mark.asyncio
-async def test_update_rename_con_tramite_vivo_409(
+async def test_update_rename_con_tramite_vivo_ya_no_bloquea_y_deja_historico(
     client_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """AREA-10-02: renombrar con pasos vivos por nombre deja la bandeja huérfana."""
+    """B5/ADR-032: el flujo correlaciona por CÓDIGO; renombrar con trámite vivo es 200."""
     client, conn = client_conn
     dep_id = uuid.uuid4()
-    conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Vieja")
-    # RBAC, to_regclass(flow_steps), count pasos, to_regclass(workflow_rules), count reglas
-    conn.fetchval.side_effect = [True, "flow_steps", 3, "workflow_rules", 0]
+    conn.fetchrow.side_effect = [
+        _dep(dep_id=dep_id, nombre="Vieja", codigo=901),
+        _dep(dep_id=dep_id, nombre="Nueva", codigo=901),
+    ]
+    conn.fetch.side_effect = lambda sql, *a: (  # el chequeo de mapeos no ve nada
+        [] if "mapeo_manual" in sql else _cols(("flow_steps", "to_dept_code"))
+    )
+    conn.fetchval.side_effect = [True, 3]  # RBAC, y por si alguien cuenta pasos vivos
     resp = await client.patch(
         f"/api/v1/dependencias/{dep_id}", json={"nombre": "Nueva"}, headers=_HDRS
     )
-    assert resp.status_code == 409
-    body = resp.json()["detail"]
-    assert body["error"] == "dependencia_con_tramite_en_curso"
-    assert body["pasos_vivos"] == 3
+    assert resp.status_code == 200
+    # El nombre ANTERIOR queda resoluble para la cola de eventos fallidos.
+    insert = [c for c in conn.execute.await_args_list if "dependencia_nombre_historico" in str(c.args[0])]
+    assert len(insert) == 1
+    assert insert[0].args[1:4] == (901, "Vieja", "renombre")
+    assert not any("flow_steps" in str(c.args[0]) for c in conn.fetchval.await_args_list)
+    assert client.audit_append.await_args.kwargs["payload"]["codigo"] == 901
+
+
+@pytest.mark.asyncio
+async def test_update_codigo_distinto_422_sin_tocar_nada(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, codigo=901)
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"codigo": 902}, headers=_HDRS
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "dependencia_codigo_inmutable"
     assert not any("UPDATE dependencias" in str(c.args[0]) for c in conn.fetchrow.await_args_list)
     client.audit_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_mismo_codigo_es_noop_y_no_llega_al_update(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [_dep(dep_id=dep_id, codigo=901), _dep(dep_id=dep_id, codigo=901, sigla="XX")]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"codigo": 901, "sigla": "XX"}, headers=_HDRS
+    )
+    assert resp.status_code == 200
+    update_sql = str(conn.fetchrow.await_args_list[1].args[0])
+    assert "codigo" not in update_sql.split("WHERE")[0]
+
+
+@pytest.mark.asyncio
+async def test_update_trigger_de_codigo_se_mapea_a_422(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Defensa en profundidad: si el trigger de la 013 salta, el mismo 422."""
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _dep(dep_id=dep_id),
+        asyncpg.CheckViolationError("dependencia_codigo_inmutable: no"),
+    ]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"sigla": "ZZ"}, headers=_HDRS
+    )
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "dependencia_codigo_inmutable"
 
 
 @pytest.mark.asyncio
@@ -257,8 +319,11 @@ async def test_update_desactivar_con_regla_viva_409(
 ) -> None:
     client, conn = client_conn
     dep_id = uuid.uuid4()
-    conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Vieja")
-    conn.fetchval.side_effect = [True, "flow_steps", 0, "workflow_rules", 2]
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Vieja", codigo=901)
+    conn.fetch.return_value = _cols(
+        ("flow_steps", "to_dept_code"), ("workflow_rules", "assign_to_dept_code")
+    )
+    conn.fetchval.side_effect = [True, 0, 2]  # RBAC, pasos, reglas
     resp = await client.patch(
         f"/api/v1/dependencias/{dep_id}", json={"activo": False}, headers=_HDRS
     )
@@ -267,29 +332,31 @@ async def test_update_desactivar_con_regla_viva_409(
 
 
 @pytest.mark.asyncio
-async def test_update_rename_sin_tramite_200(
+async def test_update_desactivar_con_paso_vivo_409_por_codigo(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, codigo=901)
+    conn.fetch.return_value = _cols(("flow_steps", "to_dept_code"))
+    conn.fetchval.side_effect = [True, 3]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"activo": False}, headers=_HDRS
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["pasos_vivos"] == 3
+    sql, codigo = conn.fetchval.await_args_list[1].args
+    assert "to_dept_code = $1" in sql and codigo == 901
+    client.audit_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_rename_sin_workflow_200(
     client_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:
     client, conn = client_conn
     dep_id = uuid.uuid4()
     conn.fetchrow.side_effect = [_dep(dep_id=dep_id, nombre="Vieja"), _dep(dep_id=dep_id, nombre="Nueva")]
-    conn.fetchval.side_effect = [True, "flow_steps", 0, "workflow_rules", 0]
-    resp = await client.patch(
-        f"/api/v1/dependencias/{dep_id}", json={"nombre": "Nueva"}, headers=_HDRS
-    )
-    assert resp.status_code == 200
-    assert resp.json()["nombre"] == "Nueva"
-
-
-@pytest.mark.asyncio
-async def test_update_rename_en_tenant_sin_workflow_200(
-    client_conn: tuple[AsyncClient, AsyncMock],
-) -> None:
-    """Sin las tablas de workflow (to_regclass NULL) no hay nada que proteger."""
-    client, conn = client_conn
-    dep_id = uuid.uuid4()
-    conn.fetchrow.side_effect = [_dep(dep_id=dep_id, nombre="Vieja"), _dep(dep_id=dep_id, nombre="Nueva")]
-    conn.fetchval.side_effect = [True, None, None]
     resp = await client.patch(
         f"/api/v1/dependencias/{dep_id}", json={"nombre": "Nueva"}, headers=_HDRS
     )
@@ -297,16 +364,148 @@ async def test_update_rename_en_tenant_sin_workflow_200(
 
 
 @pytest.mark.asyncio
-async def test_update_sin_cambio_de_nombre_no_cuenta_tramite(
+async def test_nombre_mayor_de_100_422(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    client, _ = client_conn
+    resp = await client.post(
+        "/api/v1/dependencias",
+        json={"codigo": 100, "sigla": "DG", "nombre": "x" * 101},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_sin_cambio_de_nombre_no_deja_historico(
     client_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:
-    """Cambiar solo la sigla no toca la correlación por nombre: no hay consulta."""
     client, conn = client_conn
     dep_id = uuid.uuid4()
     conn.fetchrow.return_value = _dep(dep_id=dep_id, nombre="Igual", sigla="XX")
-    conn.fetchval.side_effect = [True]  # solo el gate RBAC
     resp = await client.patch(f"/api/v1/dependencias/{dep_id}", json={"sigla": "XX"}, headers=_HDRS)
     assert resp.status_code == 200
+    conn.execute.assert_not_awaited()
+
+
+# --- mapeo manual de nombre ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mapeo_nombre_registra_y_asienta(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, codigo=901)
+    conn.fetchval.side_effect = [True, False]  # RBAC, ninguna OTRA activa lleva ese nombre
+    resp = await client.post(
+        f"/api/v1/dependencias/{dep_id}/mapeos-nombre",
+        json={"nombre": "Archivo", "motivo": "El nombre antiguo era esta dependencia"},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 201
+    assert resp.json() == {"codigo": 901, "nombre": "Archivo", "origen": "mapeo_manual"}
+    insert = conn.execute.await_args
+    assert "dependencia_nombre_historico" in insert.args[0]
+    assert insert.args[1:4] == (901, "Archivo", "mapeo_manual")
+    kw = client.audit_append.await_args.kwargs
+    assert kw["action"] == "dependencia.mapeo_nombre" and kw["payload"]["codigo"] == 901
+
+
+@pytest.mark.asyncio
+async def test_mapeo_nombre_resuelto_a_otra_dependencia_409(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Solo se mapean nombres huérfanos o ambiguos: uno que ya resuelve limpio a OTRO código no."""
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, codigo=901)
+    conn.fetchval.side_effect = [True, False]
+    conn.fetch.return_value = [{"codigo": 555, "candidatos": 1}]
+    resp = await client.post(
+        f"/api/v1/dependencias/{dep_id}/mapeos-nombre",
+        json={"nombre": "Archivo", "motivo": "El nombre antiguo era esta dependencia"},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "nombre_resuelto_a_otra_dependencia"
+    conn.execute.assert_not_awaited()
+    client.audit_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filas",
+    [
+        [],  # huérfano
+        [{"codigo": None, "candidatos": 2}],  # ambiguo
+        [{"codigo": 901, "candidatos": 1}],  # ya es esta misma dependencia
+    ],
+)
+async def test_mapeo_nombre_admite_huerfano_ambiguo_o_propio(
+    client_conn: tuple[AsyncClient, AsyncMock], filas: list[dict]
+) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, codigo=901)
+    conn.fetchval.side_effect = [True, False]
+    conn.fetch.return_value = filas
+    resp = await client.post(
+        f"/api/v1/dependencias/{dep_id}/mapeos-nombre",
+        json={"nombre": "Archivo", "motivo": "El nombre antiguo era esta dependencia"},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_update_rename_a_nombre_mapeado_a_otro_codigo_409(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.return_value = _dep(dep_id=dep_id, codigo=901)
+    conn.fetch.return_value = [{"codigo": 555}]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"nombre": "Archivo"}, headers=_HDRS
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "nombre_mapeado_a_otra_dependencia"
+    client.audit_append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mapeo_nombre_exige_admin_y_motivo(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    r = await client.post(
+        f"/api/v1/dependencias/{dep_id}/mapeos-nombre",
+        json={"nombre": "Archivo", "motivo": "corto"},
+        headers=_HDRS,
+    )
+    assert r.status_code == 422
+    conn.fetchval.return_value = False
+    r = await client.post(
+        f"/api/v1/dependencias/{dep_id}/mapeos-nombre",
+        json={"nombre": "Archivo", "motivo": "motivo suficientemente largo"},
+        headers=_HDRS,
+    )
+    assert r.status_code == 403
+    # El 403 deja su asiento de denegación; el acto (mapeo) no se asienta ni se escribe.
+    assert all(c.kwargs.get("action") != "dependencia.mapeo_nombre" for c in client.audit_append.await_args_list)
+    conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mapeo_nombre_dependencia_inexistente_404(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    client, conn = client_conn
+    conn.fetchrow.return_value = None
+    r = await client.post(
+        f"/api/v1/dependencias/{uuid.uuid4()}/mapeos-nombre",
+        json={"nombre": "Archivo", "motivo": "motivo suficientemente largo"},
+        headers=_HDRS,
+    )
+    assert r.status_code == 404
+    client.audit_append.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -338,6 +537,7 @@ async def test_delete_with_children_conflict(client_conn: tuple[AsyncClient, Asy
     client, conn = client_conn
     # 1ª llamada a fetchval: gate RBAC (concedido); 2ª: has_children → True
     conn.fetchval.side_effect = [True, 1]
+    conn.fetchrow.return_value = _dep()  # has_children corre dentro de la tx, tras bloquear la fila
     resp = await client.delete(f"/api/v1/dependencias/{uuid.uuid4()}", headers=_HDRS)
     assert resp.status_code == 409
     client.audit_append.assert_not_awaited()
@@ -346,27 +546,32 @@ async def test_delete_with_children_conflict(client_conn: tuple[AsyncClient, Asy
 @pytest.mark.asyncio
 async def test_delete_ok(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = client_conn
-    # 1ª: gate RBAC (concedido); 2ª: has_children → False (sin hijos)
-    conn.fetchval.side_effect = [True, None, None, None]  # + to_regclass x2 (sin tablas)
+    # RBAC (concedido); has_children → sin hijos; to_regclass del historial → ausente
+    conn.fetchval.side_effect = [True, None, None]
     conn.fetchrow.return_value = _dep(nombre="Vieja")
     conn.execute.return_value = "DELETE 1"
     resp = await client.delete(f"/api/v1/dependencias/{uuid.uuid4()}", headers=_HDRS)
     assert resp.status_code == 204
     kw = client.audit_append.await_args.kwargs
     assert kw["action"] == "dependencia.eliminada"
+    retirada = [c for c in conn.execute.await_args_list if "dependencia_codigo_retirado" in str(c.args[0])]
+    assert len(retirada) == 1 and retirada[0].args[1:3] == (100, "Vieja")
     assert kw["payload"]["antes"]["nombre"] == "Vieja"
 
 
 @pytest.mark.asyncio
-async def test_delete_con_tramite_vivo_409(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
-    """AREA-10-02 por la otra ruta: borrar con pasos vivos deja la bandeja huérfana."""
+async def test_delete_con_historia_409(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    """Una dependencia usada (aunque solo sea historia) no se borra: se desactiva."""
     client, conn = client_conn
-    conn.fetchrow.return_value = _dep(nombre="Vieja")
-    # RBAC, has_children, to_regclass(flow_steps), pasos, to_regclass(workflow_rules), reglas
-    conn.fetchval.side_effect = [True, None, "flow_steps", 17, "workflow_rules", 0]
+    conn.fetchrow.return_value = _dep(nombre="Vieja", codigo=901)
+    conn.fetch.return_value = _cols(("flow_events", "to_dept_code"))
+    # RBAC, has_children, to_regclass del historial (ausente), filas de flow_events
+    conn.fetchval.side_effect = [True, None, None, 4]
     resp = await client.delete(f"/api/v1/dependencias/{uuid.uuid4()}", headers=_HDRS)
     assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "dependencia_con_tramite_en_curso"
+    detail = resp.json()["detail"]
+    assert detail["error"] == "dependencia_con_historia"
+    assert detail["referencias"] == {"flow_events.to_dept_code": 4}
     conn.execute.assert_not_awaited()
     client.audit_append.assert_not_awaited()
 

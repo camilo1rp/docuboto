@@ -453,18 +453,15 @@ class DocumentRepository:
             params.append(payload.subject)
             idx += 1
 
-        if payload.dest_dept is not None:
+        if payload.dest_dept is not None or payload.dest_dept_code is not None:
+            # El par (nombre, código) viaja en el MISMO UPDATE y llega YA normalizado por
+            # el servicio desde el catálogo (ADR-032): alimenta la ubicación generada
+            # (ADR-029) y cambiar solo uno dejaba el código de OTRA dependencia.
             fields.append(f"dest_dept = ${idx}::text")
-            # El código viaja en el MISMO UPDATE y se resuelve por nombre: el par
-            # (dest_dept, dest_dept_code) alimenta la ubicación generada (ADR-029),
-            # y cambiar solo el nombre dejaba el código de OTRA dependencia. Si el
-            # nombre no identifica UNA dependencia activa el código queda NULL
-            # (honesto: ?ubicacion_dept_code= ya no lo devuelve donde no está).
-            fields.append(
-                "dest_dept_code = (SELECT min(codigo) FROM dependencias "
-                f"WHERE nombre = ${idx}::text AND activo HAVING count(*) = 1)"
-            )
             params.append(payload.dest_dept)
+            idx += 1
+            fields.append(f"dest_dept_code = ${idx}::integer")
+            params.append(payload.dest_dept_code)
             idx += 1
 
         if payload.observations is not None:

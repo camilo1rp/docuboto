@@ -636,7 +636,10 @@ async def test_la_derivacion_del_borrador_contra_las_tablas_reales(tenant_ctx) -
     )
     padre = await _radicado(conn, slug, dest_dept_code=20)
     svc = BorradorService(conn, slug)
-    row = {"doc_type": "S", "plantilla_id": plantilla, "dest_dept": "Archivo", "radicado_padre_id": padre}
+    row = {
+        "doc_type": "S", "plantilla_id": plantilla, "dest_dept": "Archivo", "dest_dept_code": None,
+        "radicado_padre_id": padre,
+    }
     tipo, origen, destino = await svc._datos_minimos_del_borrador(row, autor)
     assert (tipo, origen, destino) == ("Oficio", 20, 9)  # el padre está en SU dependencia
     row["radicado_padre_id"] = None
@@ -645,5 +648,8 @@ async def test_la_derivacion_del_borrador_contra_las_tablas_reales(tenant_ctx) -
     datos = BorradorRadicar(tipo_documental="Memorando", origin_dept_code=20, dest_dept_code=1)
     assert await svc._datos_minimos_del_borrador(row, autor, datos) == ("Memorando", 20, 1)
     # Sin plantilla, sin URD y sin destino: nada que derivar.
-    vacio = {"doc_type": "S", "plantilla_id": None, "dest_dept": None, "radicado_padre_id": None}
+    vacio = {
+        "doc_type": "S", "plantilla_id": None, "dest_dept": None, "dest_dept_code": None,
+        "radicado_padre_id": None,
+    }
     assert await svc._datos_minimos_del_borrador(vacio, uuid.uuid4()) == (None, None, None)

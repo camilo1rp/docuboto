@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.tools.catalog import ArgError, Param, Tool, card_fields, coerce_args, json_schema
+from app.tools.catalog import ArgError, Param, Tool, card_fields, coerce_args, get_tool, json_schema
 
 _TOOL = Tool(
     name="t",
@@ -248,3 +248,27 @@ def test_la_retencion_lleva_la_serie_en_la_ruta_y_la_fecha_en_la_query() -> None
     assert preparada.path == "/api/v1/trd/22222222-2222-2222-2222-222222222222/retention"
     assert preparada.query == {"closed_at": "2026-03-01"}
     assert not preparada.body
+
+
+def test_dependencia_se_indica_por_codigo_no_por_nombre():
+    """B5 (ADR-032): asignar/trasladar/devolver piden `to_dept_code`; el origen lo deriva el servicio."""
+    from app.tools.catalog import get_tool
+
+    for nombre in ("asignar_radicado", "trasladar_radicado", "devolver_radicado"):
+        params = {p.name: p for p in get_tool(nombre).params}
+        assert "to_dept" not in params, nombre
+        assert "from_dept" not in params, nombre
+        assert params["to_dept_code"].required and params["to_dept_code"].type == "integer", nombre
+    for nombre in ("bandeja_tramite", "pendientes_equipo"):
+        names = {p.name for p in get_tool(nombre).params}
+        assert "dept_code" in names and "dept" not in names, nombre
+
+
+def test_destino_solo_por_codigo() -> None:
+    """B5 (ADR-032): ninguna tool expone `dest_dept` por nombre (homónimas dan 422)."""
+    for nombre in ("actualizar_radicado", "crear_respuesta_vinculada", "crear_borrador", "editar_borrador"):
+        tool = get_tool(nombre)
+        assert tool is not None
+        nombres = {p.name for p in tool.params}
+        assert "dest_dept" not in nombres, nombre
+        assert "dest_dept_code" in nombres, nombre

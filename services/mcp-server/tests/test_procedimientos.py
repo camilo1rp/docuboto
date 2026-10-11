@@ -143,7 +143,7 @@ async def test_la_cadena_feliz_encadena_el_numero_recien_creado() -> None:
             "subject": "Petición",
             "sender_name": "Ana",
             "dest_dept_code": 902,
-            "to_dept": "Jurídica",
+            "to_dept_code": 902,
         },
         cliente,
     )
@@ -166,7 +166,7 @@ async def test_el_paso_condicionado_se_OMITE_y_se_dice() -> None:
     )
     parte = await _correr(
         proc,
-        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept": "JUR"},
+        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept_code": 902},
         cliente,
     )
     omitido = [p for p in parte["pasos"] if p["paso"] == "expedientar"][0]
@@ -186,7 +186,7 @@ async def test_si_falla_el_SEGUNDO_paso_se_dice_QUE_quedo_hecho() -> None:
     )
     parte = await _correr(
         proc,
-        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept": "JUR"},
+        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept_code": 902},
         cliente,
     )
 
@@ -339,7 +339,7 @@ async def test_cada_paso_de_un_procedimiento_envia_su_propia_idempotency_key() -
     parte = await procedure_runner.ejecutar(
         cliente,
         proc,
-        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept": "JUR"},
+        {"subject": "P", "sender_name": "Ana", "dest_dept_code": 902, "to_dept_code": 902},
         authorization="Bearer x",
         tenant_slug="demo",
         permissions=set(),

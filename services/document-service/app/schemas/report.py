@@ -17,6 +17,14 @@ class MonthCount(BaseModel):
     count: int
 
 
+class DependenciaCount(BaseModel):
+    """Conteo por dependencia, con la LLAVE (código) y la etiqueta (nombre actual)."""
+
+    codigo: int | None
+    nombre: str
+    count: int
+
+
 class ReportSummary(BaseModel):
     total: int
     by_doc_type: dict[str, int]
@@ -27,3 +35,7 @@ class ReportSummary(BaseModel):
     # Dónde está AHORA lo que sigue en trámite (excluye cerrados y anulados): la
     # carga de trabajo real de cada dependencia (ADR-029).
     by_ubicacion: dict[str, int] = {}
+    # Mismas dos series con la llave `codigo` (ADR-032). Los dicts de arriba se
+    # conservan por compatibilidad y suman por etiqueta; estas NO funden homónimas.
+    by_dependencia_codigo: list[DependenciaCount] = []
+    by_ubicacion_codigo: list[DependenciaCount] = []

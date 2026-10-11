@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 
 from app.core.clearance import require_permission
 from app.core.database import get_db_conn as get_db
+from app.core.dependencias import marcar_alias_deprecado
 from app.schemas.rules import (
     RuleBatchEvaluationRequest,
     RuleBatchEvaluationResponse,
@@ -93,12 +94,17 @@ def _user(x_user_id: str | None = Header(default=None)) -> UUID:
 )
 async def create_rule(
     payload: WorkflowRuleCreate,
+    response: Response,
     tenant_slug: str = Depends(_require_tenant),
     user_id: UUID = Depends(_user),
     conn: asyncpg.Connection = Depends(get_db),
 ) -> WorkflowRuleResponse:
     """Crea una regla de enrutamiento. Condiciones con operadores (`conditions`)
     combinadas por `match_mode` (all/any), o columnas legadas. Menor `priority` gana."""
+    if payload.assign_to_dept_code is None or (
+        payload.dest_dept is not None and payload.dest_dept_code is None
+    ):
+        marcar_alias_deprecado(response, "POST /workflow/rules")
     svc = WorkflowRulesService(conn, tenant_slug)
     return await svc.create_rule(payload, user_id)
 
@@ -200,11 +206,16 @@ async def get_rule(
 async def update_rule(
     rule_id: UUID,
     payload: WorkflowRuleUpdate,
+    response: Response,
     tenant_slug: str = Depends(_require_tenant),
     user_id: UUID = Depends(_user),
     conn: asyncpg.Connection = Depends(get_db),
 ) -> WorkflowRuleResponse:
     """Actualiza una regla (parcial — solo los campos provistos)."""
+    if (payload.assign_to_dept is not None and payload.assign_to_dept_code is None) or (
+        payload.dest_dept is not None and payload.dest_dept_code is None
+    ):
+        marcar_alias_deprecado(response, "PATCH /workflow/rules/{id}")
     svc = WorkflowRulesService(conn, tenant_slug)
     rule = await svc.update_rule(rule_id, payload, user_id)
     if not rule:

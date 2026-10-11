@@ -13,13 +13,14 @@
  * El token se lee de locals.accessToken (hook); nunca se expone al cliente.
  *
  * GET  ?estado=  → lista de BorradorResponse[] (cuerpo_html saneado)
- * POST           → crea un nuevo borrador; body: { doc_type, subject, dest_dept?,
+ * POST           → crea un nuevo borrador; body: { doc_type, subject, dest_dept_code?,
  *                  cuerpo?, plantilla_id? }. El cuerpo HTML se SANEA antes de
  *                  reenviar al gateway (D-05).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 import { sanitizeHtml, attachSafeCuerpo } from "$lib/server/sanitizeHtml.js";
 
 /** @type {import('./$types').RequestHandler} */
@@ -71,7 +72,7 @@ export async function POST({ locals, request }) {
   }
 
   // Allowlist explícita — nunca reenviar campos de control (estado, radicado_id, id…).
-  const { doc_type, subject, dest_dept, cuerpo: rawCuerpo, plantilla_id } = body ?? {};
+  const { doc_type, subject, dest_dept_code, cuerpo: rawCuerpo, plantilla_id } = body ?? {};
 
   // T-12c: sanear el cuerpo HTML antes de enviarlo al gateway (D-05).
   const cleanCuerpo = sanitizeHtml(typeof rawCuerpo === "string" ? rawCuerpo : "") || null;
@@ -79,7 +80,8 @@ export async function POST({ locals, request }) {
   const payload = {
     doc_type: doc_type === "I" ? "I" : "S",
     subject: typeof subject === "string" ? subject.trim() : "",
-    dest_dept: typeof dest_dept === "string" && dest_dept.trim() ? dest_dept.trim() : null,
+    // ADR-032: el destino viaja por código; el servidor fija el nombre (instantánea).
+    dest_dept_code: parseCodigoDependencia(dest_dept_code),
     cuerpo: cleanCuerpo,
     plantilla_id: typeof plantilla_id === "string" && plantilla_id ? plantilla_id : null,
   };

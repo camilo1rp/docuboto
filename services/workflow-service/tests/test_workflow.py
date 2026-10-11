@@ -63,7 +63,7 @@ from tests.conftest import (
 _ASSIGN_PAYLOAD = {
     "radicado_id": str(RADICADO_ID),
     "tracking_number": TRACKING_NUMBER,
-    "to_dept": "Dirección Jurídica",
+    "to_dept_code": 4,
     "assigned_to": str(uuid.uuid4()),
     "action": "assign",
     "notes": "Para concepto jurídico",
@@ -72,8 +72,7 @@ _ASSIGN_PAYLOAD = {
 _TRANSFER_PAYLOAD = {
     "radicado_id": str(RADICADO_ID),
     "tracking_number": TRACKING_NUMBER,
-    "from_dept": "Dirección Jurídica",
-    "to_dept": "Secretaría General",
+    "to_dept_code": 5,
     "action": "transfer",
     "notes": "Traslado para firma",
 }
@@ -445,7 +444,7 @@ async def test_list_pending(
 
     response = await client.get(
         "/api/v1/workflows/pending",
-        params={"dept": "Dirección Jurídica", "page": 1, "size": 20},
+        params={"dept_code": 4, "page": 1, "size": 20},
         headers=TENANT_HEADERS,
     )
 
@@ -1041,7 +1040,7 @@ async def test_devolver_al_remitente(
 
     resp = await client.post(
         f"/api/v1/workflows/{RADICADO_ID}/devolver",
-        json={"to_dept": "Ventanilla", "causal": "DEV-DEP", "comentario": "No competencia"},
+        json={"to_dept_code": 7, "causal": "DEV-DEP", "comentario": "No competencia"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 200
@@ -1059,7 +1058,7 @@ async def test_devolver_no_active_step(
 
     resp = await client.post(
         f"/api/v1/workflows/{RADICADO_ID}/devolver",
-        json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
+        json={"to_dept_code": 7, "causal": "DEV-DEP"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 404
@@ -1079,11 +1078,12 @@ async def test_devolver_deja_traza_forense_en_audit_log(
         step_number=2, step_status="pending", to_dept="Jurídica", assigned_to=USER_ID
     )
     devuelto = make_step_record(step_number=3, step_status="pending", to_dept="Ventanilla")
+    mock_conn.fetchval.return_value = "Ventanilla"  # catálogo: dependencia_activa(7)
     mock_conn.fetchrow.side_effect = [current, devuelto]
 
     resp = await client.post(
         f"/api/v1/workflows/{RADICADO_ID}/devolver",
-        json={"to_dept": "Ventanilla", "causal": "DEV-DEP", "comentario": "No competencia"},
+        json={"to_dept_code": 7, "causal": "DEV-DEP", "comentario": "No competencia"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 200
@@ -1102,7 +1102,9 @@ async def test_devolver_deja_traza_forense_en_audit_log(
     payload = json.loads(call.args[8])
     assert payload == {
         "from_dept": "Jurídica",
-        "to_dept": "Ventanilla",
+        "to_dept": "Ventanilla",  # el nombre lo pone el CATÁLOGO, no el cliente
+        "from_dept_code": 4,
+        "to_dept_code": 7,
         "causal": "DEV-DEP",
         "comentario": "No competencia",
     }
@@ -1131,7 +1133,7 @@ async def test_devolver_audit_failure_aborta_la_devolucion(
     ):
         await client.post(
             f"/api/v1/workflows/{RADICADO_ID}/devolver",
-            json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
+            json={"to_dept_code": 7, "causal": "DEV-DEP"},
             headers=TENANT_HEADERS,
         )
 
@@ -1158,7 +1160,7 @@ async def test_devolver_not_current_holder_is_neutral_404(
     ):
         resp = await client.post(
             f"/api/v1/workflows/{RADICADO_ID}/devolver",
-            json={"to_dept": "Ventanilla", "causal": "DEV-DEP"},
+            json={"to_dept_code": 7, "causal": "DEV-DEP"},
             headers=TENANT_HEADERS,
         )
     assert resp.status_code == 404
@@ -1327,7 +1329,7 @@ async def test_reassign_cascade(
 
     response = await client.post(
         "/api/v1/workflows/reassign/cascade",
-        json={"from_dept": "Dirección Jurídica", "to_assigned_to": str(uuid.uuid4())},
+        json={"from_dept_code": 4, "to_assigned_to": str(uuid.uuid4())},
         headers=TENANT_HEADERS,
     )
     assert response.status_code == 200
@@ -1360,7 +1362,7 @@ async def test_reassign_cascade_destino_inexistente_422(
 
     response = await client.post(
         "/api/v1/workflows/reassign/cascade",
-        json={"from_dept": "Dirección Jurídica", "to_assigned_to": str(uuid.uuid4())},
+        json={"from_dept_code": 4, "to_assigned_to": str(uuid.uuid4())},
         headers=TENANT_HEADERS,
     )
 
@@ -1384,7 +1386,7 @@ async def test_reassign_cascade_deja_traza_forense_en_audit_log(
 
     response = await client.post(
         "/api/v1/workflows/reassign/cascade",
-        json={"from_dept": "Dirección Jurídica", "to_assigned_to": str(to_assigned_to)},
+        json={"from_dept_code": 4, "to_assigned_to": str(to_assigned_to)},
         headers=TENANT_HEADERS,
     )
     assert response.status_code == 200
@@ -1404,7 +1406,7 @@ async def test_reassign_cascade_deja_traza_forense_en_audit_log(
     payload = json.loads(call.args[8])
     assert payload == {
         "from_assigned_to": None,
-        "from_dept": "Dirección Jurídica",
+        "from_dept_code": 4,
         "to_assigned_to": str(to_assigned_to),
         "reassigned": 2,
         "skipped_terminal": 0,
@@ -1429,7 +1431,7 @@ async def test_reassign_cascade_audit_failure_aborta_la_reasignacion(
     ):
         await client.post(
             "/api/v1/workflows/reassign/cascade",
-            json={"from_dept": "Dirección Jurídica", "to_assigned_to": str(uuid.uuid4())},
+            json={"from_dept_code": 4, "to_assigned_to": str(uuid.uuid4())},
             headers=TENANT_HEADERS,
         )
 
@@ -1525,6 +1527,8 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
         step_number=1,
         from_dept="A",
         to_dept="B",
+        from_dept_code=1,
+        to_dept_code=2,
         action="assign",
         status="pending",
         assigned_by=None,
@@ -1568,7 +1572,7 @@ async def test_estado_cambiado_y_overdue_declaran_nivel_seguridad() -> None:
     ]
     overdue = SimpleNamespace(
         id=uuid.uuid4(), radicado_id=rid, tracking_number="T", to_dept="B",
-        assigned_to=None, due_at=None,
+        to_dept_code=2, assigned_to=None, due_at=None,
     )
     with (
         patch("app.services.workflow_service.events.emit", emit),

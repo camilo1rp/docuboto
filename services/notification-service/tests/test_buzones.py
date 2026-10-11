@@ -27,6 +27,7 @@ from app.services.buzones import (
     BUZON_VENTANILLA,
     buzon_de_codigo,
     buzon_de_codigo_o_ventanilla,
+    resolver_buzon,
     resolver_buzon_dependencia,
 )
 
@@ -63,13 +64,14 @@ def test_variante_tolerante_cae_a_ventanilla_en_vez_de_reventar():
 @pytest.mark.asyncio
 async def test_resolver_traduce_el_nombre_al_buzon_del_catalogo():
     conn = AsyncMock()
-    conn.fetchrow.return_value = {"codigo": 902}
+    conn.fetchval.return_value = True
+    conn.fetchrow.return_value = {"codigo": 902, "candidatos": 1}
     assert await resolver_buzon_dependencia(conn, "Oficina Jurídica") == (
         "dependencia-902@orpycamcp.local"
     )
-    # Se consulta por nombre exacto y solo dependencias ACTIVAS.
+    # Función única del catálogo, con histórico (nombres anteriores a un renombre).
     sql, arg = conn.fetchrow.await_args.args
-    assert "activo = true" in sql
+    assert "resolver_codigo_dependencia($1, true)" in sql
     assert arg == "Oficina Jurídica"
 
 
@@ -77,8 +79,64 @@ async def test_resolver_traduce_el_nombre_al_buzon_del_catalogo():
 @pytest.mark.parametrize("nombre", ["Dependencia Que No Existe", None, ""])
 async def test_resolver_cae_a_ventanilla_si_el_nombre_no_resuelve(nombre):
     conn = AsyncMock()
+    conn.fetchval.return_value = True
     conn.fetchrow.return_value = None
     assert await resolver_buzon_dependencia(conn, nombre) == BUZON_VENTANILLA
+
+
+def _conn_catalogo(filas: list[dict]) -> AsyncMock:
+    """Conexión sin la función SQL (tenant sin migrar): solo la tabla `dependencias`."""
+    conn = AsyncMock()
+    conn.fetchval.return_value = False
+    conn.fetch.return_value = filas
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_homonimos_van_a_la_ventanilla_no_a_una_fila_arbitraria():
+    """B5/N2: con dos «Archivo» la fila elegida dependía del orden del heap."""
+    for orden in ([{"codigo": 901}, {"codigo": 902}], [{"codigo": 902}, {"codigo": 901}]):
+        conn = _conn_catalogo(orden)
+        assert await resolver_buzon(conn, None, "Archivo") == BUZON_VENTANILLA
+
+
+@pytest.mark.asyncio
+async def test_homonimos_con_la_funcion_del_catalogo_tambien_van_a_ventanilla():
+    conn = AsyncMock()
+    conn.fetchval.return_value = True
+    conn.fetchrow.return_value = {"codigo": None, "candidatos": 2}
+    assert await resolver_buzon(conn, None, "Archivo") == BUZON_VENTANILLA
+
+
+@pytest.mark.asyncio
+async def test_nombre_unico_sin_la_funcion_resuelve_por_el_catalogo():
+    conn = _conn_catalogo([{"codigo": 901}])
+    assert await resolver_buzon(conn, None, "Archivo") == "dependencia-901@orpycamcp.local"
+
+
+@pytest.mark.asyncio
+async def test_el_codigo_del_evento_manda_sobre_el_nombre():
+    """Renombrada la dependencia, el nombre del evento puede ser de otra: gana el código."""
+    conn = AsyncMock()
+    assert await resolver_buzon(conn, 901, "Nombre Que Ya No Es") == (
+        "dependencia-901@orpycamcp.local"
+    )
+    conn.fetchrow.assert_not_called()
+    conn.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_evento_viejo_con_nombre_renombrado_llega_a_la_dependencia():
+    """La función del catálogo resuelve el nombre ANTERIOR vía histórico (p_historico=true)."""
+    conn = AsyncMock()
+    conn.fetchval.return_value = True
+
+    async def _fila(sql, nombre):
+        assert "resolver_codigo_dependencia($1, true)" in sql  # histórico activado
+        return {"codigo": 901, "candidatos": 1} if nombre == "Archivo" else None
+
+    conn.fetchrow.side_effect = _fila
+    assert await resolver_buzon(conn, None, "Archivo") == "dependencia-901@orpycamcp.local"
 
 
 def _direcciones_construidas(ruta: Path) -> list[int]:

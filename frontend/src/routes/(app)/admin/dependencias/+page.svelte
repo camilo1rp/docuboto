@@ -13,17 +13,15 @@
   /admin/dependencias — Organigrama institucional, vista árbol (E14, Fase 5
   cierre de desfase API↔UI, `tenant-service/app/routers/dependencias.py`).
 
-  DEUDA DE MODELO DE DOMINIO (por eso el modal de advertencia más abajo, y no
-  un simple tooltip): las dependencias se correlacionan por NOMBRE en otros
-  servicios, NO por id/código —
-    - `workflow_rules.assign_to_dept` es texto libre, sin FK a `dependencias`.
-    - Los `flow_steps` en vuelo referencian la dependencia asignada también
-      por su nombre/código en el momento en que se creó el paso.
-  Renombrar o desactivar una dependencia NO actualiza esas referencias: un
-  radicado que hoy está "en la bandeja de Tesorería" puede quedar apuntando a
-  un nombre que ya no existe/ya no está activo, sin bandeja visible para
-  nadie. Este archivo pide confirmación EXPLÍCITA (no un tooltip) antes de
-  ambas acciones — ver `confirmarRiesgoOpen` / `RIESGO_TEXTO`.
+  ADR-032: la dependencia se correlaciona por CÓDIGO en todo el sistema
+  (flujos, reglas, radicados, usuarios). Por eso el código es INMUTABLE (aquí
+  solo se muestra al editar; el backend responde 422
+  `dependencia_codigo_inmutable` si se intenta cambiar) y RENOMBRAR es un acto
+  seguro: los trámites, reglas y bandejas siguen por código y el nombre
+  anterior queda en el histórico. Desactivar sigue pidiendo confirmación
+  explícita: la bandeja filtra dependencias activas y un trámite vivo en una
+  dependencia inactiva quedaría invisible (el backend lo rechaza con 409
+  `dependencia_con_tramite_en_curso`) — ver `confirmarRiesgoOpen`.
 
   Árbol: no existía ningún componente de árbol reutilizable en el proyecto
   (se verificó antes de escribir `DependenciaTreeNode.svelte`) — el "árbol de
@@ -84,6 +82,8 @@
   let fNombre = "";
   let fParentId = "";
   let fDepeRadTp2 = false;
+  let fMotivo = "";
+  let fMotivoError = "";
   let fActivo = true;
   let fCodigoError = "";
   let fSiglaError = "";
@@ -116,6 +116,8 @@
     fParentId = node.parent_id ?? "";
     fDepeRadTp2 = node.depe_rad_tp2 ?? false;
     fActivo = node.activo ?? true;
+    fMotivo = "";
+    fMotivoError = "";
     fCodigoError = "";
     fSiglaError = "";
     fNombreError = "";
@@ -124,7 +126,7 @@
 
   // ---------------------------------------------------------------------------
   // Confirmación de riesgo — SIEMPRE en el flujo, nunca un tooltip (ver
-  // cabecera del archivo). Se dispara si el guardado renombra o desactiva.
+  // cabecera del archivo). Se dispara si el guardado desactiva.
   // ---------------------------------------------------------------------------
   let confirmarRiesgoOpen = false;
   /** Payload pendiente de aplicar tras la confirmación. */
@@ -132,13 +134,10 @@
   /** @type {Record<string, any>|null} */
   let pendingTargetNode = null;
 
-  const RIESGO_TEXTO_RENOMBRAR =
-    "Vas a cambiar el nombre de esta dependencia. Otras partes del sistema (las reglas de enrutamiento y los pasos de flujo ya en curso) guardan la dependencia asignada por su NOMBRE, no por un identificador estable — no hay una referencia que las actualice automáticamente. Los radicados que ahora mismo están asignados a esta dependencia pueden quedar sin bandeja visible, y las reglas de enrutamiento que la mencionan por nombre dejarán de encontrarla.";
   const RIESGO_TEXTO_DESACTIVAR =
-    "Vas a desactivar esta dependencia. Otras partes del sistema (las reglas de enrutamiento y los pasos de flujo ya en curso) la referencian por NOMBRE, no por un identificador estable. Los radicados que ahora mismo están asignados a esta dependencia pueden quedar sin bandeja visible para nadie, aunque la dependencia siga existiendo (solo inactiva).";
+    "Vas a desactivar esta dependencia. Deja de aparecer en los selectores y no podrá recibir radicados nuevos. Si tiene trámites en curso (pasos de flujo vivos o reglas de enrutamiento que la usan), el sistema rechazará la desactivación hasta que los reasigne.";
 
-  $: riesgoTexto =
-    pendingPatch?.__riesgo === "renombrar" ? RIESGO_TEXTO_RENOMBRAR : RIESGO_TEXTO_DESACTIVAR;
+  $: riesgoTexto = RIESGO_TEXTO_DESACTIVAR;
 
   async function aplicarPatch(id, payload) {
     actionLoading = true;
@@ -191,6 +190,7 @@
     fCodigoError = "";
     fSiglaError = "";
     fNombreError = "";
+    fMotivoError = "";
 
     const codigoNum = Number(fCodigo);
     if (!Number.isInteger(codigoNum) || codigoNum < 1 || codigoNum > 999999) {
@@ -206,13 +206,22 @@
       return;
     }
 
+    const renombra = !!editingNode && fNombre.trim() !== (editingNode.nombre ?? "");
+    if (renombra && fMotivo.trim() && fMotivo.trim().length < 10) {
+      fMotivoError = "El motivo debe tener al menos 10 caracteres (o déjelo vacío).";
+      return;
+    }
+
     const payload = {
-      codigo: codigoNum,
+      // El código solo viaja al CREAR: es inmutable (ADR-032).
+      ...(editingNode ? {} : { codigo: codigoNum }),
       sigla: fSigla.trim(),
       nombre: fNombre.trim(),
       parent_id: fParentId || null,
       depe_rad_tp2: fDepeRadTp2,
       activo: fActivo,
+      // Solo si hay renombre y viene relleno (el backend lo guarda en el historial de nombres).
+      ...(renombra && fMotivo.trim() ? { motivo: fMotivo.trim() } : {}),
     };
 
     if (!editingNode) {
@@ -220,11 +229,11 @@
       return;
     }
 
-    const renombra = payload.nombre !== editingNode.nombre;
+    // Renombrar es seguro (ADR-032): no pide confirmación. Desactivar sí.
     const desactiva = editingNode.activo === true && payload.activo === false;
 
-    if (renombra || desactiva) {
-      pendingPatch = { ...payload, __riesgo: renombra ? "renombrar" : "desactivar" };
+    if (desactiva) {
+      pendingPatch = { ...payload, __riesgo: "desactivar" };
       pendingTargetNode = editingNode;
       modalForm = false;
       confirmarRiesgoOpen = true;
@@ -354,13 +363,36 @@
         type="number"
         bind:value={fCodigo}
         required
+        readonly={editingNode !== null}
         error={fCodigoError}
-        hint="3-4 dígitos, único en el tenant."
+        hint={editingNode
+          ? "El código identifica la dependencia en todo el sistema y no se puede cambiar."
+          : "Único en el tenant. Una vez creada, no se podrá cambiar."}
       />
       <FormField id="dep-sigla" label="Sigla" bind:value={fSigla} required error={fSiglaError} />
     </div>
 
-    <FormField id="dep-nombre" label="Nombre" bind:value={fNombre} required error={fNombreError} />
+    <FormField
+      id="dep-nombre"
+      label="Nombre"
+      bind:value={fNombre}
+      required
+      maxlength={100}
+      error={fNombreError}
+    />
+
+    {#if editingNode && fNombre.trim() !== (editingNode.nombre ?? "")}
+      <FormField
+        id="dep-motivo"
+        label="Motivo / acto de reestructuración (opcional)"
+        type="textarea"
+        rows={2}
+        bind:value={fMotivo}
+        maxlength={1000}
+        error={fMotivoError}
+        hint="Norma o acto que motiva el cambio de nombre (mínimo 10 caracteres). Queda en el historial."
+      />
+    {/if}
 
     <FormField
       id="dep-parent"
@@ -383,8 +415,8 @@
 
     {#if editingNode}
       <p class="dependencia-form__risk-hint">
-        <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-        Si cambias el nombre o desmarcas "Activa", se te pedirá confirmar el riesgo antes de guardar.
+        Puedes renombrar la dependencia sin riesgo: los trámites, reglas y bandejas siguen por su
+        código. Si desmarcas "Activa", se te pedirá confirmar antes de guardar.
       </p>
     {/if}
   </form>
@@ -402,9 +434,7 @@
      ========================================================================= -->
 <Modal
   open={confirmarRiesgoOpen}
-  title={pendingPatch?.__riesgo === "renombrar"
-    ? "Confirmar cambio de nombre"
-    : "Confirmar desactivación"}
+  title="Confirmar desactivación"
   size="sm"
   closeOnBackdrop={false}
   on:close={cancelarRiesgo}

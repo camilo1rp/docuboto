@@ -20,35 +20,44 @@
  * `_holder_condition` (workflow-service); el backend re-valida y responde
  * `404 no_active_step` a un no-poseedor, sin distinguirlo de «no hay paso».
  *
- * La correlación con la dependencia es por NOMBRE (`flow_steps.to_dept` es
- * texto libre), igual que en el backend.
+ * La correlación con la dependencia es por CÓDIGO (`flow_steps.to_dept_code`,
+ * ADR-032), igual que en el backend: renombrar una dependencia no cambia quién
+ * posee el trámite. `to_dept` es solo la instantánea que se muestra.
  */
 
 const ACTIVOS = ["pending", "in_progress"];
 
 /**
- * Nombres de las dependencias activas a las que pertenece el usuario.
- * @param {{context?: {available_depts?: Array<{depe_id:number,is_active?:boolean}>}|null,
- *          dependencias?: Array<{codigo:number,nombre:string}>}|null|undefined} user
- * @returns {string[]}
+ * Códigos de las dependencias activas a las que pertenece el usuario
+ * (`depe_id` de `context.available_depts` = `dependencias.codigo`).
+ * @param {{context?: {available_depts?: Array<{depe_id:number,is_active?:boolean}>}|null}|null|undefined} user
+ * @returns {number[]}
  */
-export function nombresDeDependenciasDelUsuario(user) {
-  const catalogo = user?.dependencias ?? [];
+export function codigosDeDependenciasDelUsuario(user) {
   return (user?.context?.available_depts ?? [])
     .filter((d) => d.is_active !== false)
-    .map((d) => catalogo.find((c) => c.codigo === d.depe_id)?.nombre)
-    .filter((n) => typeof n === "string" && n !== "");
+    .map((d) => Number(d.depe_id))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
+/**
+ * @param {unknown} codigo
+ * @param {number[]|undefined} propios
+ */
+function esMia(codigo, propios) {
+  const n = Number(codigo);
+  return codigo != null && Number.isInteger(n) && (propios ?? []).includes(n);
 }
 
 /**
  * @param {import('$lib/types/api.js').FlowStepResponse|null|undefined} step
  * @param {string|null|undefined} userId  `auth_users.id` (store `userId`), NO el `sub`.
- * @param {string[]} dependencias  ver nombresDeDependenciasDelUsuario
+ * @param {number[]} dependencias  ver codigosDeDependenciasDelUsuario
  */
 export function esPoseedor(step, userId, dependencias) {
   if (!step || !userId || !ACTIVOS.includes(step.status)) return false;
   if (step.assigned_to) return step.assigned_to === userId;
-  return (dependencias ?? []).includes(step.to_dept);
+  return esMia(step.to_dept_code, dependencias);
 }
 
 /** «Marcar en trámite» solo tiene sentido sobre un paso aún sin leer. */
@@ -82,7 +91,7 @@ export function puedeRevertir(step, userId, dependencias) {
  *    `userId`, NO el `sub`). `registered_by` nulo (importado/ingesta): nadie.
  * @param {{step?: object|null, historial?: object[]|null, radicadoStatus?: string|null,
  *          registeredBy?: string|null, userId?: string|null,
- *          dependencias?: string[]}} a
+ *          dependencias?: number[]}} a
  */
 export function puedeAsignarAFlujo({
   step,
@@ -112,7 +121,7 @@ const TERMINALES = ["closed", "anulado"];
  * último paso `completed` de un radicado no terminal (R12).
  * @param {{nivel?: number|null, step?: object|null, historial?: object[]|null,
  *          radicadoStatus?: string|null, userId?: string|null,
- *          dependencias?: string[]}} a
+ *          dependencias?: number[]}} a
  */
 export function puedeFinalizarTramite({
   nivel,
@@ -131,10 +140,10 @@ export function puedeFinalizarTramite({
  * ¿Poseía yo el último paso (ya `completed`) de un radicado no terminal?
  * Solo se evalúa SIN paso activo (el llamante ya lo comprobó). Espejo de
  * `ultimo_paso_si_lo_poseia`; `historial` = `steps[]` de `GET /history`.
- * @param {Array<{step_number:number,status:string,assigned_to?:string|null,to_dept?:string}>|null|undefined} historial
+ * @param {Array<{step_number:number,status:string,assigned_to?:string|null,to_dept_code?:number|null}>|null|undefined} historial
  * @param {string|null|undefined} radicadoStatus
  * @param {string|null|undefined} userId
- * @param {string[]} dependencias
+ * @param {number[]} dependencias
  */
 export function poseiaUltimoPaso(historial, radicadoStatus, userId, dependencias) {
   if (!userId || !Array.isArray(historial) || historial.length === 0) return false;
@@ -142,7 +151,7 @@ export function poseiaUltimoPaso(historial, radicadoStatus, userId, dependencias
   const ultimo = historial.reduce((a, b) => (b.step_number > a.step_number ? b : a));
   if (ultimo.status !== "completed") return false;
   if (ultimo.assigned_to) return ultimo.assigned_to === userId;
-  return (dependencias ?? []).includes(ultimo.to_dept ?? "");
+  return esMia(ultimo.to_dept_code, dependencias);
 }
 
 /** Motivos de cierre (`motivo_cierre`, ADR-028 R11), en el orden del selector. */

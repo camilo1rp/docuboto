@@ -192,7 +192,7 @@ describe("bandeja/api/assign POST", () => {
   const validBody = {
     radicado_id: RAD_ID,
     tracking_number: "2026-ICETEX-E-000001",
-    to_dept: "Jurídica",
+    to_dept_code: 7,
   };
 
   it("radicado_id inválido: 422 validation_error, sin llamar al gateway", async () => {
@@ -210,13 +210,13 @@ describe("bandeja/api/assign POST", () => {
     }
   });
 
-  it("to_dept ausente: 422 validation_error, sin llamar al gateway", async () => {
+  it("to_dept_code ausente: 422 validation_error, sin llamar al gateway", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = forbidFetch();
     try {
       const res = await assignPost({
         locals: SESSION_LOCALS,
-        request: { json: async () => ({ ...validBody, to_dept: "" }) },
+        request: { json: async () => ({ ...validBody, to_dept_code: undefined }) },
       });
       expect(res.status).toBe(422);
     } finally {
@@ -271,23 +271,47 @@ describe("bandeja/api/transfer POST", () => {
   const validBody = {
     radicado_id: RAD_ID,
     tracking_number: "2026-ICETEX-E-000001",
-    to_dept: "Jurídica",
-    from_dept: "Recepción",
+    to_dept_code: 7,
   };
 
-  it("from_dept ausente: 422 validation_error (el backend exige missing_from_dept)", async () => {
+  it("el origen NO se reenvía aunque el cliente lo mande: lo deriva el servidor (ADR-032)", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = forbidFetch();
+    let capturedBody;
+    globalThis.fetch = vi.fn(async (_input, init) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ id: "step-2" }), { status: 201 });
+    });
     try {
-      const res = await transferPost({
+      await transferPost({
         locals: SESSION_LOCALS,
-        request: { json: async () => ({ ...validBody, from_dept: "" }) },
+        request: {
+          json: async () => ({ ...validBody, from_dept: "Recepción", from_dept_code: 3 }),
+        },
       });
-      expect(res.status).toBe(422);
+      expect(capturedBody.from_dept).toBeUndefined();
+      expect(capturedBody.from_dept_code).toBeUndefined();
+      expect(capturedBody.to_dept_code).toBe(7);
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it.each([["Jurídica"], [0], [-1], [1000000], [1.5], [""]])(
+    "to_dept_code %j inválido: 422, sin llamar al gateway",
+    async (bad) => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = forbidFetch();
+      try {
+        const res = await transferPost({
+          locals: SESSION_LOCALS,
+          request: { json: async () => ({ ...validBody, to_dept_code: bad }) },
+        });
+        expect(res.status).toBe(422);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
 
   it("allowlist: fija action='transfer' server-side", async () => {
     const originalFetch = globalThis.fetch;
@@ -306,7 +330,7 @@ describe("bandeja/api/transfer POST", () => {
       expect(res.status).toBe(201);
       expect(capturedUrl).toContain("/workflows/transfer");
       expect(capturedBody.action).toBe("transfer");
-      expect(capturedBody.from_dept).toBe("Recepción");
+      expect(capturedBody.to_dept_code).toBe(7);
     } finally {
       globalThis.fetch = originalFetch;
     }

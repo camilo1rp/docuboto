@@ -239,17 +239,19 @@ class AnulacionRepository:
                 pasos = await self._conn.fetch(
                     "UPDATE flow_steps SET status = 'cancelled', completed_at = now() "
                     "WHERE radicado_id = $1 AND status IN ('pending', 'in_progress') "
-                    "RETURNING id, tracking_number, step_number, to_dept",
+                    "RETURNING id, tracking_number, step_number, to_dept, to_dept_code",
                     radicado_id,
                 )
                 for paso in pasos:
                     await self._conn.execute(
                         "INSERT INTO flow_events (radicado_id, tracking_number, tipo_tx, "
-                        "from_dept, to_dept, actor, comentario, detalles) "
-                        "VALUES ($1, $2, 'anulacion', $3, $3, $4, $5, $6::jsonb)",
+                        "from_dept, to_dept, from_dept_code, to_dept_code, actor, comentario, "
+                        "detalles) "
+                        "VALUES ($1, $2, 'anulacion', $3, $3, $4, $4, $5, $6, $7::jsonb)",
                         radicado_id,
                         paso["tracking_number"],
                         paso["to_dept"],
+                        paso["to_dept_code"],
                         decidido_por,
                         "Paso cancelado por la anulación del radicado",
                         json.dumps(

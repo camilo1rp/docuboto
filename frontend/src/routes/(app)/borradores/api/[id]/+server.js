@@ -11,11 +11,12 @@
  * /borradores/api/[id] — Proxy SSR para obtener y editar un borrador (D-05, T-12c).
  *
  * GET   → BorradorResponse (cuerpo_html saneado)
- * PATCH → edita subject, dest_dept, cuerpo; sanea cuerpo antes de reenviar
+ * PATCH → edita subject, dest_dept_code, cuerpo; sanea cuerpo antes de reenviar
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { parseCodigoDependencia } from "$lib/utils/dependenciaNombre.js";
 import { sanitizeHtml, attachSafeCuerpo } from "$lib/server/sanitizeHtml.js";
 
 /** @type {import('./$types').RequestHandler} */
@@ -68,14 +69,15 @@ export async function PATCH({ locals, params, request }) {
   }
 
   // Allowlist explícita — los campos editables del borrador; nunca reenviar estado ni IDs.
-  const { subject, dest_dept, cuerpo: rawCuerpo } = body ?? {};
+  const { subject, dest_dept_code, cuerpo: rawCuerpo } = body ?? {};
 
   // T-12c: sanear el cuerpo HTML antes de reenviarlo al gateway (D-05).
   const cleanCuerpo = sanitizeHtml(typeof rawCuerpo === "string" ? rawCuerpo : "") || null;
 
   const payload = {};
   if (typeof subject === "string") payload.subject = subject.trim();
-  if (typeof dest_dept === "string") payload.dest_dept = dest_dept.trim() || null;
+  // ADR-032: por código; `null` limpia el destino.
+  if (dest_dept_code !== undefined) payload.dest_dept_code = parseCodigoDependencia(dest_dept_code);
   payload.cuerpo = cleanCuerpo;
 
   try {

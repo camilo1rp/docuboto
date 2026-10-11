@@ -29,6 +29,7 @@ Lee DATABASE_URL del entorno. Idempotente y re-ejecutable.
 """
 
 import asyncio
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -117,6 +118,77 @@ async def _tenant_schemas(conn: asyncpg.Connection) -> list[str]:
     return [r["schema_name"] for r in rows]
 
 
+# Migraciones de datos con tabla de evidencia de solo inserción que necesitan un
+# asiento-ANCLA en `public.audit_log` (mismo mecanismo que workflow-service: el
+# asiento lo escribe esta APLICACIÓN, que firma la cadena de hash; nunca el SQL).
+# archivo -> (tabla de evidencia, acción del asiento, columna de orden estable)
+_ANCLAS: dict[str, tuple[str, str, str]] = {
+    "046_dependencia_por_codigo.sql": (
+        "dependencia_codigo_backfill_doc",
+        "document.dependencia_codigo.backfill",
+        "fila_id",
+    ),
+    # La 047 solo completa `historico_id` (columna fuera del hash de la 046): su ancla
+    # propia, con acción distinta porque el ancla deduplica por (tenant, acción, tabla).
+    "047_backfill_doc_mapeado.sql": (
+        "dependencia_codigo_backfill_doc",
+        "document.dependencia_codigo.backfill_047",
+        "fila_id",
+    ),
+}
+
+
+async def anclar_evidencia(
+    conn: asyncpg.Connection, schema: str, archivo: str, *, tenant_slug: str | None = None
+) -> bool:
+    """Asiento-ancla de una migración de datos: conteo + SHA-256 del contenido
+    ORDENADO de su tabla de evidencia. Devuelve `True` si escribió el asiento.
+
+    Una vez por tenant/acción/tabla; sin filas de evidencia no hay nada que anclar.
+    Debe correr en la transacción de la migración, con el `search_path` ya fijado.
+    """
+    tabla, accion, orden = _ANCLAS[archivo]
+    if await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".{tabla}') is None:
+        return False
+    # `schema` sale de information_schema y `tabla`/`orden` de la constante de arriba.
+    filas = await conn.fetch(f'SELECT * FROM "{schema}".{tabla} ORDER BY tabla, {orden}, columna, id')
+    if not filas:
+        return False
+    slug = tenant_slug or await _slug_de_schema(conn, schema)
+    ya = await conn.fetchval(
+        "SELECT 1 FROM public.audit_log WHERE tenant_slug = $1 AND action = $2 "
+        "AND object_ref = $3 LIMIT 1",
+        slug,
+        accion,
+        tabla,
+    )
+    if ya:
+        return False
+    # Una línea por fila, columnas en el orden de la tabla, SIN `id`/`at` (los
+    # genera la base): reproducible fuera de ella con la misma consulta.
+    columnas = [c for c in filas[0].keys() if c not in ("id", "at")]
+    contenido = "\n".join("|".join(str(f[c]) for c in columnas) for f in filas)
+    await audit.append(
+        conn,
+        tenant_slug=slug,
+        service=SERVICIO,
+        action=accion,
+        object_type="migracion",
+        object_ref=tabla,
+        actor="system:migracion",
+        canal="system",
+        payload={
+            "schema": schema,
+            "archivo": archivo,
+            "tabla": tabla,
+            "filas": len(filas),
+            "columnas": columnas,
+            "sha256": hashlib.sha256(contenido.encode("utf-8")).hexdigest(),
+        },
+    )
+    return True
+
+
 ACCION_BACKFILL_FUNDAMENTO = "document.clasificacion_fundamento_backfill"
 ACTOR_BACKFILL_FUNDAMENTO = "system:migration-041"
 _PENDIENTE_MOTIVAR = "PENDIENTE DE MOTIVAR:%"
@@ -194,6 +266,8 @@ async def _apply_tenant(conn: asyncpg.Connection) -> None:
             async with conn.transaction():
                 await conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await conn.execute(path.read_text())
+                if path.name in _ANCLAS and await anclar_evidencia(conn, schema, path.name):
+                    print(f"  anchor [{schema}] {path.name} -> audit_log")
                 await ledger.record(conn, schema, SERVICIO, path.name)
         await conn.execute("SET search_path = public")
         n = await asentar_backfill_fundamento(conn, schema, await _slug_de_schema(conn, schema))

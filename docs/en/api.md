@@ -337,7 +337,8 @@ Update `name` or `status`. `slug` and `code` are immutable. Writes a `tenant.upd
 - **Catálogos** (lookups): `GET /api/v1/catalogos` (authenticated) — **which catalogues exist**: returns the list of accepted names, so nobody has to guess them or keep a client-side copy. · `GET /api/v1/catalogos/{catalogo}` (authenticated) · `POST/PATCH/DELETE /api/v1/catalogos/{catalogo}` (**`USUA_PERM_ADMIN` at CRUD level 3**) — `tipos-identificacion`, `tipos-remitente`, `medios-recepcion`, `tipos-anexo`, `causales`, `formas-envio`, `soportes`, `mensajes-rapidos`.
   - **`causales` declares the act it serves** (`ambito`, tenant migration 008): `devolucion`, `anulacion`, `reasignacion`, `devolucion_postal` or `general`. `GET /api/v1/catalogos/causales?ambito=devolucion` filters at the source, and `ambito` travels in the `POST`/`PATCH` body. It is the only catalogue that supports it: asking for it on any other returns **422 `ambito_no_aplica`** instead of ignoring it silently. A causal with no declared ambit stays `general` and every act offers it.
 - **Parameters**: `GET /api/v1/config/params`, `GET /api/v1/config/params/{key}` (authenticated) · `PUT /api/v1/config/params/{key}` (**`USUA_PERM_ADMIN` at level ≥ 3**: an administrator in read or edit mode gets `403`; the audit entry carries `antes`/`despues`). Body `{value, motivo?}`; `value: null` gives `422 valor_nulo` for any key (JSON `null` is only written by the seed). **`firma_personal_require_xades`** (`off`·`clasificados`·`todos`) is the entity's **XAdES policy**, read by signature-service on every chain signature; migration `010` seeds it as JSON `null` (= "the entity does not define it": the environment fallback `FIRMA_PERSONAL_REQUIRE_XADES` rules) and `011` repairs entities where an earlier `010` had seeded `"off"` and nobody had changed it through the API; any other value gives `422 valor_invalido` (an unknown value would be applied as `todos`). **Relaxing the policy** (lowering the requirement, e.g. `todos`→`clasificados`, or setting a lower value when the current one is `null`/unknown, which is assumed to be the strictest) **requires `motivo`** of at least 10 characters: without it, `422 motivo_requerido`; the `config.parametro_actualizado` entry carries `motivo` and `relaja_politica`. Tightening does not ask for it. The generic `/admin/parametros` screen already lists it: no dedicated screen. The numbering parameters (`formato_numero_radicado`, `depe_digits`, `consec_digits`, `expediente_number_format`) are **inert**: no service reads them yet.
-- **Departments — `PATCH` and `DELETE /api/v1/dependencias/{id}`**: renaming, setting `activo=false` or deleting while live flow steps or workflow rules reference the name returns `409 dependencia_con_tramite_en_curso` with `pasos_vivos` and `reglas`.
+- **Departments — `PATCH` and `DELETE /api/v1/dependencias/{id}` (B5, ADR-032)**: `codigo` is **immutable** (`PATCH` with another value → `422 dependencia_codigo_inmutable`; the same value is a no-op; to fix a code, create the new dependencia and deactivate the old one). `nombre` (≤ 100 characters) **can be renamed freely**, also with live cases: the previous name is kept in `dependencia_nombre_historico` (insert-only) in the same transaction as the audit entry. **Deactivating** (`activo=false`) while live `pending`/`in_progress` flow steps or rules cite it by code returns `409 dependencia_con_tramite_en_curso` with `pasos_vivos` and `reglas`. **Deleting** returns `409 dependencia_con_historia` (with `referencias`) if any table cites it — steps, events, rules, radicados, drafts, URD, expedientes: a used dependencia is deactivated, not deleted (Law 594).
+- **`POST /api/v1/dependencias/{id}/mapeos-nombre`** `{nombre, motivo}` (**`USUA_PERM_ADMIN` level 3**, `motivo` ≥ 10 characters, audit entry `dependencia.mapeo_nombre`): the human decision that `nombre` (ambiguous or orphan for the workflow/document migration backfill) **is** this dependencia. It is the way out of a migration that aborted with "ambiguous or nonexistent names"; `201 {codigo, nombre, origen:"mapeo_manual"}`. **Irreversible** (insert-only history); the mapping wins over textual name matches: `409 dependencia_inactiva` if the dependencia is inactive and `409 nombre_de_otra_dependencia` if the name is the current name of another active dependencia (not when the target also bears it: namesakes). `PATCH` also accepts `motivo` (10–1000 characters, optional) when the name changes: it goes to the history and the audit entry. `POST /dependencias` with a deleted code → `409 dependencia_codigo_retirado` (a deleted code is never reused); `DELETE` records the code in `dependencia_codigo_retirado` and its `referencias` sweeps every code column by catalog (transfers, electronic index, templates, active users and the name history itself).
 - **Non-business days / holidays**: `GET /api/v1/config/holidays` (`?year=`, authenticated) · `POST /api/v1/config/holidays`, `DELETE /api/v1/config/holidays/{id}`, `POST /api/v1/config/holidays/seed` (`{year_from, year_to}` → seeds the automatically computed Colombian holidays) — all three writes require **`USUA_PERM_ADMIN` at level ≥ 3** (FIRMA-2: an administrator in read or edit mode gets `403`; the calendar sets the entity's legal deadlines); the seed leaves a `config.festivos_sembrados` entry in the same transaction.
 - **Business days**: `GET /api/v1/business-days/calculate?from=&days=` (authenticated) — computes the due date applying weekends + holidays + the tenant's non-working days (basis for RF-RAD-04).
 
@@ -614,7 +615,7 @@ Get by radicado number (e.g.: `2024-ICETEX-E-000001`). Same clearance scoping as
 
 Update `subject`, `dest_dept`, `observations`, `pages`, `doc_class` and `metadata`.
 `tracking_number`, `doc_type`, `year`, `sequence` are immutable.
-**Correcting `dest_dept` (ADR-029)** also rewrites `dest_dept_code` in the same `UPDATE`, resolved by name: the code of the **only** active dependencia with that name or, if there is not exactly one, `null` (changing only the name left another dependencia's code and the radicado showed up under `?ubicacion_dept_code=` where it no longer was). On a `closed` radicado `dest_dept` is historical data: `409 dest_dept_immutable`.
+**Correcting the destination (ADR-029, ADR-032)** is sent as `dest_dept_code` (canonical; `dest_dept` is the deprecated alias) and the `(dest_dept, dest_dept_code)` pair is rewritten **whole and from the catalogue** in the same `UPDATE` (changing only one left another dependencia's code): a nonexistent/inactive code or an unknown name → `422 dependencia_desconocida`, a name with two candidates → `422 dependencia_ambigua`, a mismatching code and name → `422 dependencia_inconsistente` (a name without a single candidate used to leave the text with a `null` code silently). On a `closed` radicado the destination is historical data: `409 dest_dept_immutable`.
 **`status` is no longer accepted (ADR-028): `422 status_managed_by_workflow`.** The radicado's status (`registered → distributed → in_progress → closed`) is moved by the processing workflow in the same transaction as the step —assign, transfer, return, roll back, reassign, mark as read, finish— and is not edited by hand. The field is not silently ignored: a client that sends it gets the error and the database is untouched. Status stays read-only in `GET /documents` and can still be filtered on (`?status=`).
 **Typing (`doc_class`) requires `PERM_RADI` at `crud >= 3`; the rest of the PATCH, `crud >= 1`.** The document type fixes the TRD series, and with it the radicado's retention and final disposition (Ley 594/2000 art. 24): an act with that consequence cannot be exercised with read permission. The threshold is only checked when `doc_class` is present in the body, so anyone correcting a subject or a page count keeps the level that always sufficed.
 **Re-typing re-validates the metadata.** The effective metadata — whatever comes in the body, or whatever the radicado already had — is validated against the **new** type's active template before anything is written; if it does not fit, `422 metadata_validation_failed` and the radicado is left untouched. A document cannot end up typed as X while carrying the variable fields of Y. `metadata` is **replaced wholesale**, not merged, and the template version used is rewritten whenever re-validation happens — including the `NULL` when the new type has no active template — so the radicado does not keep pointing at the previous type's schema. Sending only `metadata` re-validates too: otherwise the registration-time validation would be bypassable with a later PATCH.
@@ -733,7 +734,32 @@ Deletes from the object store and from the database. Responds `204`.
 
 > **Automatic distribution (RF-FLU-04):** in addition to the endpoints, workflow-service consumes the `orpycamcp.document.events` stream. When a document is registered (`document.radicado.created`) it evaluates the active rules and, if any matches, **auto-assigns** the radicado to its dependencia (step + append-only event, author = system). It is idempotent (it does not redistribute if the radicado already has steps).
 
+#### Dependencias por código
+
+(B5, ADR-032.) The dependencia is correlated by its **code** (`dependencias.codigo`), not by its name: the
+workflow (inbox, holder checks, location), rules, events and drafts use `*_dept_code`; `*_dept` is the
+**snapshot of the name at the time of the act** (responses always carry both). Renaming a dependencia no
+longer affects any case in progress.
+
+- **Deprecated alias.** For one cycle, wherever the name used to be sent (`to_dept`, `from_dept`,
+  `dest_dept`, `assign_to_dept`, `?dept=`) it is still accepted; it is resolved to a code only among the
+  **active** dependencias with that **current** name, and the response carries `Deprecation: true` and
+  `Link: </docs/es/api.md#dependencias-por-codigo>; rel="deprecation"`. The stored name is set by the
+  server from the catalogue, never the client's text.
+- **`422` errors**: `dependencia_desconocida` (does not exist or is inactive), `dependencia_ambigua`
+  (the name matches two or more; includes `candidatos` — "the lowest code" is never picked) and
+  `dependencia_inconsistente` (code and name that are not the same dependencia).
+- **Derived origin.** The origin of a transfer is derived by the server from the active step; the client can
+  only confirm it (`from_dept_code`) and, if it no longer matches, `409 origen_desactualizado`.
+- **Events.** `orpycamcp.workflow.events` (`step.created`/`completed`/`overdue`) and
+  `orpycamcp.document.events` (`radicado.created`) carry **both** fields (`to_dept_code`/`from_dept_code`,
+  `dest_dept_code`/`origin_dept_code`); consumers prefer the code and, for an older event, resolve the name
+  **with history** (previous names and manual mappings). If it does not resolve to a single dependencia the
+  code stays absent and code-based conditions do not match.
+
 ### `POST /api/v1/workflows/assign`
+
+> **Destination by code (ADR-032).** `to_dept_code` is the canonical field and `to_dept` the deprecated alias; see "Dependencias por código" above.
 
 Assigns a radicado to a dependencia (first step or reassignment). Requires `PERM_TRAMITAR`; `403 forbidden` if the permission or the tenant is missing (RF-SEG-03). **ADR-028 (remediation):** the actor's *clearance* is applied **in the `WHERE`** of the radicado read (RF-SEG-08, no write-up): a nonexistent radicado **or one above their level** gives the same `404 radicado_not_found`. With an active step, **only its holder** may distribute it (neutral `404 no_active_step` for anyone else); **without an active step it is not anyone's either** (R16): with history, whoever held the last step (completed, radicado not terminal); with no step at all, whoever registered it (`radicados.registered_by` = actor; a radicado with null `registered_by` cannot be distributed by hand by anyone). A closed one gives `404 no_active_step`, no longer `409`. Redistributing someone else's step is the cascade reassignment (`USUA_PERM_ADMIN`), not this route. Automatic distribution on registration is a system actor and does not go through these gates.
 
@@ -742,17 +768,17 @@ Assigns a radicado to a dependencia (first step or reassignment). Requires `PERM
 {
   "radicado_id": "uuid",
   "tracking_number": "2024-ICETEX-E-000001",
-  "to_dept": "Dirección Jurídica",
+  "to_dept_code": 120,
   "assigned_to": "uuid-usuario",
   "action": "assign",
   "notes": "Para concepto jurídico"
 }
-// Response 201 — FlowStepResponse
+// Response 201 — FlowStepResponse (to_dept_code + to_dept = catalogue name)
 ```
 
 ### `POST /api/v1/workflows/transfer`
 
-Transfers the radicado to another dependencia. Requires `from_dept`. Requires `PERM_TRAMITAR` (RF-SEG-03). Same clearance and holder gates as `assign`.
+Transfers the radicado to another dependencia (`to_dept_code`). The origin is **no longer required**: the server derives it from the active step (`from_dept`/`from_dept_code` are stored on the step and the event); if the client sends it and it no longer matches, `409 origen_desactualizado`. Requires `PERM_TRAMITAR` (RF-SEG-03). Same clearance and holder gates as `assign`.
 
 ### `GET /api/v1/workflows/{radicado_id}/history`
 
@@ -771,7 +797,7 @@ Complete history of steps ordered by `step_number ASC`.
 
 ### `GET /api/v1/workflows/inbox`
 
-Typed inbox of active steps (RF-FLU-03). `?box=entrada|salida|internos` (maps to `doc_type` E/S/I), `&dept=&assigned_to=&page=&size=`. Prioritizes by age; header `X-Total-Count`. `400 invalid_box` if the box is not valid. Each step includes `due_at` and `semaforo` (green/yellow/red/overdue, RF-FLU-07).
+Typed inbox of active steps (RF-FLU-03). `?box=entrada|salida|internos` (maps to `doc_type` E/S/I), `&dept_code=&assigned_to=&page=&size=` (`dept=<name>` is the deprecated alias: an ambiguous name is `422 dependencia_ambigua`, no longer an empty list). Prioritizes by age; header `X-Total-Count`. `400 invalid_box` if the box is not valid. Each step includes `due_at` and `semaforo` (green/yellow/red/overdue, RF-FLU-07).
 
 **Scoped by dependencia (RF-SEG-08):** without `dept`/`assigned_to`, the caller sees **their own** — steps assigned to them or belonging to a dependencia they are a member of (active URD). Passing `dept` and/or `assigned_to` **widens** the scope to another dependencia or user and requires `PERM_TRAMITAR` or `USUA_PERM_ADMIN`; without that permission, `403 forbidden` (the parameter is never silently ignored). `X-Total-Count` always reflects the same filter as the returned rows.
 
@@ -787,7 +813,7 @@ Overdue sweep (RF-FLU-07): detects active overdue steps not yet alerted, emits `
 
 ### `POST /api/v1/workflows/{radicado_id}/devolver` (return to sender)
 
-Re-routes a misassigned radicado: `{ "to_dept": "...", "causal": "DEV-DEP", "comentario"? }`. Closes the active step as `returned` and creates a new one towards `to_dept`, with the reason code in the history. Requires **`PERM_TRAMITAR`** (like `assign`, `transfer` and `complete`; this route and `rollback` were the only two trámite writes in the router with no gate at all). Authorization by tenure on top of the permission: only the current holder of the active step may return it. Holder = the same definition as `finalizar` (assigned to the actor, or an ownerless step of their dependencia) **and** the radicado within their clearance (R15, in the `WHERE`); the step and the holder check are read inside the transaction after the lock (R18). Neutral `404 no_active_step` for a non-holder (there is no `403 not_current_holder` any more), for someone who cannot reach the radicado, and when there is no active step.
+Re-routes a misassigned radicado: `{ "to_dept_code": 120, "causal": "DEV-DEP", "comentario"? }` (`to_dept` is the deprecated alias). Closes the active step as `returned` and creates a new one towards that dependencia, with the reason code in the history. Requires **`PERM_TRAMITAR`** (like `assign`, `transfer` and `complete`; this route and `rollback` were the only two trámite writes in the router with no gate at all). Authorization by tenure on top of the permission: only the current holder of the active step may return it. Holder = the same definition as `finalizar` (assigned to the actor, or an ownerless step of their dependencia) **and** the radicado within their clearance (R15, in the `WHERE`); the step and the holder check are read inside the transaction after the lock (R18). Neutral `404 no_active_step` for a non-holder (there is no `403 not_current_holder` any more), for someone who cannot reach the radicado, and when there is no active step.
 
 ### `POST /api/v1/workflows/{radicado_id}/finalizar` (finish processing, ADR-028)
 
@@ -813,8 +839,8 @@ Re-routes a misassigned radicado: `{ "to_dept": "...", "causal": "DEV-DEP", "com
 Reassigns, in a single transaction, all the active steps of a user or dependencia to a new responsible party, leaving no orphan radicados (RF-FLU-08).
 
 ```json
-// Request (provide from_assigned_to or from_dept)
-{ "from_dept": "Dirección Jurídica", "to_assigned_to": "uuid" }
+// Request (provide from_assigned_to or from_dept_code; from_dept is the deprecated alias)
+{ "from_dept_code": 120, "to_assigned_to": "uuid" }
 // Response 200
 { "reassigned": 12, "skipped_terminal": 0 }
 ```
@@ -846,7 +872,7 @@ Current active step of the radicado. `404` if it is closed or unassigned.
 
 ### `GET /api/v1/workflows/pending`
 
-Pending radicados. Filters: `?dept=Dirección+Jurídica&assigned_to={uuid}&page=1&size=20`.
+Pending radicados. Filters: `?dept_code=120&assigned_to={uuid}&page=1&size=20` (`dept=<name>` is the deprecated alias, same criterion as `/inbox`).
 
 **Scoped by dependencia (RF-SEG-08):** same criterion as `/inbox` — by default, one's own (assigned to the caller or to a dependencia they belong to through an active URD); `dept`/`assigned_to` widen the scope and require `PERM_TRAMITAR` or `USUA_PERM_ADMIN` (`403 forbidden` without the permission).
 
@@ -1719,7 +1745,7 @@ batch status. Requires `USUA_PERM_EXPEDIENTE`.
   Both the file size **and the uncompressed size** are bounded: a few KB compressed can expand to gigabytes, and that second defence is the one that matters. Binary `.doc` and `.rtf` are not accepted (they would require LibreOffice, decision D-1).
 - `GET /api/v1/plantillas/campos` — **merge vocabulary**: the supported markers with `nombre`, `marcador` (`*NOM_R*`), `alias` (`{{nom_r}}`), `descripcion`, `grupo` and `diferido`. Requires `PERM_RADI`. The two `diferido` fields (`RAD_S`, `F_RAD_S`) do not exist until the number is consumed and are resolved in a second pass at registration time.
 - `POST /api/v1/plantillas/{id}/combinar` `{radicado_padre_id?, dest_dept_code?}` — returns `{cuerpo, faltantes[]}`: the template body with the fields **already resolved on the server** and the list of markers left without a value. Requires `PERM_RADI`. **No-read-up (RF-SEG-08):** the parent radicado is read with the caller's clearance; if it exceeds it, its fields come back in `faltantes` exactly as if it did not exist — without that gate, merging would be an exfiltration path, because the parent's subject ends up written inside the body.
-- `POST /api/v1/borradores` `{doc_type, subject, dest_dept?, cuerpo?, plantilla_id?, radicado_padre_id?}` — creates a draft. With `plantilla_id`, the template body is **merged** server-side against the context (parent radicado, sender, producing dependencia, dates); the fields left without a value are stored on the draft and returned as `faltantes[]`. The client never supplies that list: it ends up printed on a document of record.
+- `POST /api/v1/borradores` `{doc_type, subject, dest_dept_code?, dest_dept?, cuerpo?, plantilla_id?, radicado_padre_id?}` — creates a draft. The destination is stored by **code** (`borrador.dest_dept_code`, document migration `046`; `dest_dept` is the deprecated alias and the stored name is the catalogue's; `PATCH` rewrites the whole pair). An ambiguous name is `422 dependencia_ambigua`; a destination that is not a dependencia (an outgoing letter to a third party) is kept as text without a code. When registering, two active namesakes with no code on the draft are `422 dependencia_ambigua` (it used to register towards the lowest code silently). With `plantilla_id`, the template body is **merged** server-side against the context (parent radicado, sender, producing dependencia, dates); the fields left without a value are stored on the draft and returned as `faltantes[]`. The client never supplies that list: it ends up printed on a document of record.
 - `GET /api/v1/borradores` (`?estado=`), `GET /{id}`, `PATCH /{id}` (edit only if not yet registered). **No-read-up (RF-SEG-08)**: a draft **inherits `nivel_seguridad`** from its parent radicado (no parent: 1; `BorradorResponse.nivel_seguridad`). List, read, edit, approve, return, preview and register filter by level in the `WHERE` (effective level = the greater of the inherited one and the parent's current one, so reclassifying the parent also closes its drafts); neutral `404` when out of reach. Creating over an unreachable parent gives `404` (it used to be `201` with empty context). `PATCH` writes a `borrador.editado` entry in the same transaction.
   **Who may EDIT (`PATCH /{id}`, AREA-01-N2, 2026-10-02)**: `PERM_RADI` (the route gate) is **no longer enough**; the caller must also **hold the radicado**. If the draft answers a parent radicado, whoever holds it per ADR-028 tenure edits it (the active flow step assigned to the actor, or unassigned and belonging to one of their dependencias); with no active step, whoever held the last completed step; with no step at all, whoever registered the parent (R16). With no parent, its creator. Anyone else gets the same neutral `404` as for a non-existent draft (the row is untouched), and the rule sits in the `WHERE` of the `UPDATE`. **`aprobar` and `devolver` do NOT require tenure** on purpose: they are review acts (approval is usually someone else's and is bound to the signature circuit); they keep `PERM_RADI` + clearance + state + circuit. **`radicar` DOES require the same tenure** (2026-10 audit, AGN Agreement 060/2001): it is the irreversible act —it consumes an immutable number—, so whoever does not hold the draft gets the neutral `404`, without consuming a number or touching the row (tenure sits in the `WHERE` of the read). And the `PATCH` `UPDATE` carries `estado <> 'radicado'`: if the draft is registered between the guard and the write, it answers `409 borrador_radicado` and does not edit.
 - `POST /api/v1/borradores/{id}/previsualizar` → **`application/pdf`** with an `X-Faltantes` header (comma-separated): the fields **stored** when the template was merged plus any still unresolved in the current text. Without the stored ones this header always came back empty — the body is persisted already merged, so the gaps are empty strings and there are no markers left to report. It merges and renders **without persisting anything**: this is what lets you see the document before spending a number on it.
@@ -2018,7 +2044,7 @@ Requires `X-Tenant-Slug` (and `X-User-Id` to record the author).
 
 Create a rule. Two condition forms (compatible):
 
-- **Operator engine** (`conditions` + `match_mode`): list of `{field, op, value}` combined by `all` (AND) or `any` (OR). Fields: `doc_type, doc_class, dest_dept, origin_dept, subject, sender_name, sender_entity, pages`. Operators: `eq, ne, contains, not_contains, in, gt, lt, gte, lte, regex`.
+- **Operator engine** (`conditions` + `match_mode`): list of `{field, op, value}` combined by `all` (AND) or `any` (OR). Fields: `doc_type, doc_class, dest_dept_code, origin_dept_code, dest_dept, origin_dept, subject, sender_name, sender_entity, pages`. Operators: `eq, ne, contains, not_contains, in, gt, lt, gte, lte, regex`. **A dependencia is compared by code** (ADR-032): `eq/ne/in` on `dest_dept`/`origin_dept` (name) are rejected with `422 condicion_por_nombre_obsoleta` (they changed meaning on rename); `contains`/`not_contains`/`regex` on the text are still allowed. If the radicado carries no resolvable code, no code condition matches (not even `ne`). The target is `assign_to_dept_code` (canonical; `assign_to_dept` is the deprecated alias) and must be an **active** dependencia.
 - **Legacy** (fixed columns `doc_type/doc_class/dest_dept/subject_contains`, AND): used if `conditions` is empty.
 
 ```json

@@ -57,6 +57,7 @@ function step(overrides = {}) {
     step_number: 1,
     from_dept: "Ventanilla Única",
     to_dept: "Jurídica",
+    to_dept_code: 7,
     assigned_to: null,
     assigned_by: "u-1",
     action: "assign",

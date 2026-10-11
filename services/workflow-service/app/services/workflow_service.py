@@ -26,6 +26,11 @@ from app.core.clearance import (
     nivel_efectivo,
 )
 from app.core.database import tenant_schema
+from app.core.dependencias import (
+    dependencia_ambigua,
+    dependencia_desconocida,
+    dependencia_inconsistente,
+)
 from app.core.redis_client import get_redis
 from app.models.flow import FlowStep
 from app.repositories.workflow_repository import (
@@ -131,10 +136,6 @@ def _semaforo(due_at: datetime | None, now: datetime) -> str | None:
     if days <= 3:
         return "amarillo"
     return "verde"
-
-
-# Actions that require from_dept to be provided by the caller.
-_REQUIRES_FROM_DEPT = {"transfer", "return"}
 
 
 def _no_active_step_error(radicado_id: uuid.UUID) -> HTTPException:
@@ -256,16 +257,11 @@ class WorkflowService:
         return _to_response(step)
 
     async def transfer(self, payload: FlowStepCreate, assigned_by: uuid.UUID) -> FlowStepResponse:
-        """Transfer a radicado from one dependencia to another."""
-        if not payload.from_dept:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={
-                    "error": "missing_from_dept",
-                    "detail": "from_dept es obligatorio para traslados y devoluciones",
-                    "status": 422,
-                },
-            )
+        """Transfer a radicado from one dependencia to another.
+
+        El ORIGEN ya no lo aporta el cliente (antes `missing_from_dept` si faltaba): lo
+        deriva el servidor del paso activo (ADR-032) y el cliente solo puede
+        CONFIRMARLO (409 `origen_desactualizado` si ya no coincide)."""
         step = await self._create_step(payload, assigned_by)
         await self._publish(_EVT_CREATED, step)
         await self._emitir_cambios(assigned_by)
@@ -435,7 +431,8 @@ class WorkflowService:
         self,
         *,
         box: str | None,
-        dept: str | None,
+        dept_code: int | None = None,
+        dept: str | None = None,
         assigned_to: uuid.UUID | None,
         page: int,
         size: int,
@@ -447,20 +444,23 @@ class WorkflowService:
         RF-SEG-08 (no-read-up) + RF-BUS-10 (traza agregada de consulta).
 
         Alcance por dependencia (cierre de la primitiva de enumeración): sin
-        `dept`/`assigned_to`, el llamante ve lo suyo (`own_scope_user_id`,
+        `dept_code`/`assigned_to`, el llamante ve lo suyo (`own_scope_user_id`,
         `_own_scope_condition`); con cualquiera de los dos, amplía el alcance
         y debe tener `PERM_TRAMITAR`/`USUA_PERM_ADMIN` (`_require_scope_
         widening_permission`) — ambos ejes son mutuamente excluyentes por
         request, ver `WorkflowRepository.list_inbox`."""
         doc_type = _BOX_TO_DOC_TYPE.get(box) if box else None
         offset = (page - 1) * size
-        widening_scope = dept is not None or assigned_to is not None
+        widening_scope = dept_code is not None or dept is not None or assigned_to is not None
         if widening_scope:
             await self._require_scope_widening_permission(user_id)
+        # `dept` (nombre) es el ALIAS deprecado de `dept_code` (ADR-032): ambiguo es 422
+        # —antes devolvía una lista vacía que parecía «sin trámite»—.
+        dept_code = await self._filtro_dependencia(dept_code, dept, field="dept")
         max_clearance = await self._repo.caller_clearance(user_id)
         steps, total = await self._repo.list_inbox(
             doc_type=doc_type,
-            dept=dept,
+            dept_code=dept_code,
             assigned_to=assigned_to,
             own_scope_user_id=None if widening_scope else user_id,
             max_clearance=max_clearance,
@@ -470,7 +470,7 @@ class WorkflowService:
         await self._audit_bandeja_access(
             filtros={
                 "box": box,
-                "dept": dept,
+                "dept_code": dept_code,
                 "assigned_to": str(assigned_to) if assigned_to else None,
             },
             total=total,
@@ -506,6 +506,7 @@ class WorkflowService:
                             "radicado_id": str(s.radicado_id),
                             "tracking_number": s.tracking_number,
                             "to_dept": s.to_dept,
+                            "to_dept_code": s.to_dept_code,
                             "assigned_to": str(s.assigned_to) if s.assigned_to else None,
                             "due_at": s.due_at.isoformat() if s.due_at else None,
                             **await self._nivel_payload(s.radicado_id),
@@ -563,13 +564,19 @@ class WorkflowService:
             previous = await self._repo.get_previous_step(radicado_id, current.step_number)
             if previous is None:
                 raise RollbackError("cannot_rollback_initial")
-            reactivated = await self._repo.apply_rollback(
-                current=current,
-                previous=previous,
-                actor=actor,
-                comentario=motivo,
-                max_clearance=nivel,
-            )
+            try:
+                reactivated = await self._repo.apply_rollback(
+                    current=current,
+                    previous=previous,
+                    actor=actor,
+                    comentario=motivo,
+                    max_clearance=nivel,
+                )
+            except asyncpg.CheckViolationError as exc:
+                # `ck_flow_steps_vivo_con_codigo`: el paso anterior es histórico y su
+                # nombre nunca resolvió a un código (migración 019): reactivarlo dejaría
+                # un paso vivo que ninguna bandeja ve. Falla cerrado.
+                raise RollbackError("paso_anterior_sin_codigo") from exc
             if reactivated is None:
                 raise RollbackError("no_active_step")
             # ADR-028: el paso anterior vuelve a `pending` => `distributed`.
@@ -585,6 +592,8 @@ class WorkflowService:
                 payload={
                     "from_dept": current.to_dept,
                     "to_dept": previous.to_dept,
+                    "from_dept_code": current.to_dept_code,
+                    "to_dept_code": previous.to_dept_code,
                     "motivo": motivo,
                     **({"estado_radicado": estado} if estado else {}),
                 },
@@ -597,7 +606,8 @@ class WorkflowService:
         self,
         radicado_id: uuid.UUID,
         *,
-        to_dept: str,
+        to_dept_code: int | None = None,
+        to_dept: str | None = None,
         causal: str,
         comentario: str | None,
         actor: uuid.UUID | None,
@@ -624,6 +634,8 @@ class WorkflowService:
         """
         self._iniciar_acto()
         nivel = await self._repo.clearance_para_acto(actor)
+        # Destino por CÓDIGO (ADR-032); el nombre guardado es el del catálogo.
+        to_dept_code, to_dept = await self._destino(to_dept_code, to_dept, field="to_dept")
         # Auditoría forense (Canal A, cierre de deuda declarada 2026-07-30):
         # mismo criterio que `rollback` — `audit.append` DENTRO de la misma
         # transacción que envuelve `apply_devolucion` (savepoint sobre su tx
@@ -641,6 +653,7 @@ class WorkflowService:
             new_step = await self._repo.apply_devolucion(
                 current=current,
                 to_dept=to_dept,
+                to_dept_code=to_dept_code,
                 causal=causal,
                 comentario=comentario,
                 actor=actor,
@@ -661,6 +674,8 @@ class WorkflowService:
                 payload={
                     "from_dept": current.to_dept,
                     "to_dept": to_dept,
+                    "from_dept_code": current.to_dept_code,
+                    "to_dept_code": to_dept_code,
                     "causal": causal,
                     "comentario": comentario,
                     **({"estado_radicado": estado} if estado else {}),
@@ -674,7 +689,8 @@ class WorkflowService:
         self,
         *,
         from_assigned_to: uuid.UUID | None,
-        from_dept: str | None,
+        from_dept_code: int | None = None,
+        from_dept: str | None = None,
         to_assigned_to: uuid.UUID,
         actor: uuid.UUID | None,
     ) -> CascadeResult:
@@ -686,6 +702,7 @@ class WorkflowService:
         Fail-closed: 422 si el destino no existe, antes de tocar `flow_steps`.
         """
         self._iniciar_acto()
+        from_dept_code = await self._filtro_dependencia(from_dept_code, from_dept, field="from_dept")
         if not await self._repo.user_exists(to_assigned_to):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -711,7 +728,7 @@ class WorkflowService:
         async with self._conn.transaction():
             result = await self._repo.reassign_cascade(
                 from_assigned_to=from_assigned_to,
-                from_dept=from_dept,
+                from_dept_code=from_dept_code,
                 to_assigned_to=to_assigned_to,
                 actor=actor,
             )
@@ -743,7 +760,7 @@ class WorkflowService:
                 actor=str(actor) if actor else None,
                 payload={
                     "from_assigned_to": str(from_assigned_to) if from_assigned_to else None,
-                    "from_dept": from_dept,
+                    "from_dept_code": from_dept_code,
                     "to_assigned_to": str(to_assigned_to),
                     "reassigned": result.reassigned,
                     "skipped_terminal": result.skipped_terminal,
@@ -784,7 +801,8 @@ class WorkflowService:
     async def list_pending(
         self,
         *,
-        dept: str | None,
+        dept_code: int | None = None,
+        dept: str | None = None,
         assigned_to: uuid.UUID | None,
         page: int,
         size: int,
@@ -795,12 +813,13 @@ class WorkflowService:
 
         Alcance por dependencia: gemelo exacto de `inbox`, ver su docstring."""
         offset = (page - 1) * size
-        widening_scope = dept is not None or assigned_to is not None
+        widening_scope = dept_code is not None or dept is not None or assigned_to is not None
         if widening_scope:
             await self._require_scope_widening_permission(user_id)
+        dept_code = await self._filtro_dependencia(dept_code, dept, field="dept")
         max_clearance = await self._repo.caller_clearance(user_id)
         steps, total = await self._repo.list_pending(
-            dept=dept,
+            dept_code=dept_code,
             assigned_to=assigned_to,
             own_scope_user_id=None if widening_scope else user_id,
             max_clearance=max_clearance,
@@ -808,7 +827,10 @@ class WorkflowService:
             limit=size,
         )
         await self._audit_bandeja_access(
-            filtros={"dept": dept, "assigned_to": str(assigned_to) if assigned_to else None},
+            filtros={
+                "dept_code": dept_code,
+                "assigned_to": str(assigned_to) if assigned_to else None,
+            },
             total=total,
             page=page,
             size=size,
@@ -865,6 +887,7 @@ class WorkflowService:
                 payload={
                     "step_id": str(step_id),
                     "to_dept": step.to_dept,
+                    "to_dept_code": step.to_dept_code,
                     **({"estado_radicado": estado} if estado else {}),
                 },
                 canal=audit.CANAL_PETICION,
@@ -931,6 +954,7 @@ class WorkflowService:
                 actor=str(actor),
                 payload={
                     "to_dept": current.to_dept,
+                    "to_dept_code": current.to_dept_code,
                     "comentario": comentario,
                     "motivo_cierre": motivo_cierre,
                     "step_id": str(current.id),
@@ -1119,24 +1143,90 @@ class WorkflowService:
             },
         )
 
-    async def _validate_dept_catalog(self, nombre: str, *, field: str) -> None:
-        """422 fail-closed si `nombre` no es una dependencia ACTIVA del catálogo.
+    async def _destino(
+        self, codigo: int | None, nombre: str | None, *, field: str
+    ) -> tuple[int, str]:
+        """(código, nombre del catálogo) del DESTINO de un paso — 422 fail-closed.
 
-        Ver `WorkflowRepository.dependencia_activa` para la justificación completa.
-        `field` distingue `to_dept`/`from_dept` en el detalle del error, para que
-        el cliente sepa cuál de los dos rechazó.
+        El código manda; el NOMBRE es solo el alias deprecado (ADR-032) y se resuelve con
+        el criterio único de tenant-service (`resolver_codigo_dependencia`, solo
+        dependencias ACTIVAS con ese nombre ACTUAL): 1 -> su código; >=2 -> 422
+        `dependencia_ambigua` (jamás «la de menor código»); 0 -> 422
+        `dependencia_desconocida`. Si llegan los dos deben concordar (422
+        `dependencia_inconsistente`). El nombre que se guarda es SIEMPRE el del catálogo.
+
+        Un destino inexistente o inactivo crea un paso que no coincide con el alcance de
+        NADIE (`pending` en BD pero invisible en toda bandeja): pérdida silenciosa de un
+        trámite oficial. Va ANTES de escribir; el 422 revierte la transacción.
         """
-        if await self._repo.dependencia_activa(nombre):
-            return
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "dependencia_desconocida",
-                "detail": f"'{nombre}' no es una dependencia activa del catálogo ({field})",
-                "field": field,
-                "status": 422,
-            },
-        )
+        if codigo is None:
+            if nombre is None:
+                raise dependencia_desconocida(field, None)
+            cod, candidatos = await self._repo.resolver_alias(nombre, historico=False)
+            if candidatos >= 2:
+                raise dependencia_ambigua(field, nombre, candidatos)
+            if cod is None:
+                raise dependencia_desconocida(field, nombre)
+            codigo = cod
+        catalogo = await self._repo.dependencia_activa(codigo)
+        if catalogo is None:
+            raise dependencia_desconocida(field, codigo)
+        if nombre is not None and nombre != catalogo:
+            raise dependencia_inconsistente(field, codigo, nombre, catalogo)
+        return codigo, catalogo
+
+    async def _filtro_dependencia(
+        self, codigo: int | None, nombre: str | None, *, field: str
+    ) -> int | None:
+        """Código de un FILTRO de dependencia (bandeja, cascada). El alias por nombre se
+        resuelve también con el historial (una lectura no debe perder los pasos de una
+        dependencia renombrada o dada de baja); ambiguo es 422, no una lista vacía."""
+        if codigo is None and nombre is None:
+            return None
+        if nombre is not None:
+            cod, candidatos = await self._repo.resolver_alias(nombre, historico=True)
+            if candidatos >= 2:
+                raise dependencia_ambigua(field, nombre, candidatos)
+            if cod is None:
+                raise dependencia_desconocida(field, nombre)
+            if codigo is not None and cod != codigo:
+                raise dependencia_inconsistente(field, codigo, nombre, str(cod))
+            return cod
+        return codigo
+
+    async def _origen_del_paso(
+        self, radicado_id: uuid.UUID, payload: FlowStepCreate
+    ) -> tuple[str | None, int | None]:
+        """(nombre, código) del ORIGEN de un paso nuevo: la dependencia del paso activo.
+
+        El cliente ya no aporta el origen (antes `from_dept: step.to_dept` leído de un
+        estado que podía estar rancio). Si aun así lo envía y el paso activo ya es de
+        otra dependencia -> 409 `origen_desactualizado` (control optimista): el traslado
+        que el usuario ve en pantalla ya no es el que se haría. Sin paso activo no hay
+        origen que confirmar.
+        """
+        activo = await self._repo.paso_activo(radicado_id)
+        if activo is None:
+            return None, None
+        afirmado = payload.from_dept_code
+        if afirmado is None and payload.from_dept is not None:
+            cod, _ = await self._repo.resolver_alias(payload.from_dept, historico=True)
+            afirmado = cod
+            if afirmado is None and payload.from_dept != activo.to_dept:
+                afirmado = -1  # nombre que no resuelve y no es el del paso: no concuerda
+        if afirmado is not None and afirmado != activo.to_dept_code:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "origen_desactualizado",
+                    "detail": (
+                        "El radicado ya no está en la dependencia de origen indicada; "
+                        "recargue el trámite"
+                    ),
+                    "status": 409,
+                },
+            )
+        return activo.to_dept, activo.to_dept_code
 
     async def _create_step(
         self, payload: FlowStepCreate, assigned_by: uuid.UUID, *, sistema: bool = False
@@ -1221,9 +1311,10 @@ class WorkflowService:
             # que hasta aquí solo ha tomado cerrojos). Va DESPUÉS de resolver el
             # radicado y la tenencia: un radicado inaccesible da siempre el mismo 404,
             # sin importar si el cuerpo trae además una dependencia inválida.
-            await self._validate_dept_catalog(payload.to_dept, field="to_dept")
-            if payload.from_dept is not None:
-                await self._validate_dept_catalog(payload.from_dept, field="from_dept")
+            to_dept_code, to_dept = await self._destino(
+                payload.to_dept_code, payload.to_dept, field="to_dept"
+            )
+            from_dept, from_dept_code = await self._origen_del_paso(payload.radicado_id, payload)
             step_number = await self._repo.get_next_step_number(payload.radicado_id)
             # Complete whichever step is currently active before opening a new one.
             await self._repo.complete_active_step(payload.radicado_id)
@@ -1231,8 +1322,10 @@ class WorkflowService:
                 radicado_id=payload.radicado_id,
                 tracking_number=tracking_number,
                 step_number=step_number,
-                from_dept=payload.from_dept,
-                to_dept=payload.to_dept,
+                from_dept=from_dept,
+                to_dept=to_dept,
+                from_dept_code=from_dept_code,
+                to_dept_code=to_dept_code,
                 assigned_to=payload.assigned_to,
                 assigned_by=assigned_by,
                 action=payload.action,
@@ -1256,8 +1349,10 @@ class WorkflowService:
                 object_ref=tracking_number,
                 actor=str(assigned_by) if assigned_by else None,
                 payload={
-                    "to_dept": payload.to_dept,
-                    "from_dept": payload.from_dept,
+                    "to_dept": to_dept,
+                    "from_dept": from_dept,
+                    "to_dept_code": to_dept_code,
+                    "from_dept_code": from_dept_code,
                     **({"estado_radicado": estado} if estado else {}),
                 },
                 canal=audit.CANAL_PETICION,
@@ -1283,6 +1378,10 @@ class WorkflowService:
                     "step_number": step.step_number,
                     "from_dept": step.from_dept,
                     "to_dept": step.to_dept,
+                    # Ambos campos (ADR-010 aditivo): el consumidor prefiere el CÓDIGO y
+                    # cae al nombre solo para eventos anteriores a la migración 019.
+                    "from_dept_code": step.from_dept_code,
+                    "to_dept_code": step.to_dept_code,
                     "action": step.action,
                     "status": step.status,
                     **await self._nivel_payload(step.radicado_id),
@@ -1313,6 +1412,8 @@ def _to_event_response(row: asyncpg.Record) -> FlowEventResponse:
         tipo_tx=row["tipo_tx"],
         from_dept=row["from_dept"],
         to_dept=row["to_dept"],
+        from_dept_code=row["from_dept_code"],
+        to_dept_code=row["to_dept_code"],
         actor=row["actor"],
         comentario=row["comentario"],
         detalles=detalles or {},
@@ -1328,6 +1429,8 @@ def _to_response(step: FlowStep) -> FlowStepResponse:
         step_number=step.step_number,
         from_dept=step.from_dept,
         to_dept=step.to_dept,
+        from_dept_code=step.from_dept_code,
+        to_dept_code=step.to_dept_code,
         assigned_to=step.assigned_to,
         assigned_by=step.assigned_by,
         action=step.action,

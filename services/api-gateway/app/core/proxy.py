@@ -111,6 +111,14 @@ FORWARDED_RESPONSE_HEADERS = {
     # HTML en el origen del sistema — justo lo que la lista vino a impedir.
     # Nadie más la pone: ni el gateway ni nginx.
     "x-content-type-options",
+    # Alias deprecados por nombre de dependencia (B5, ADR-032): el servicio
+    # responde `Deprecation: true` + `Link: <...>; rel="deprecation"` cuando el
+    # cliente usó `to_dept`/`dept` en vez del código. Si el gateway se las come,
+    # el cliente nunca se entera de que debe migrar y el alias no se puede retirar
+    # con datos. (RFC 9745 / RFC 8288.)
+    "deprecation",
+    "sunset",
+    "link",
 }
 
 

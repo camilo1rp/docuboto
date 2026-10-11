@@ -305,6 +305,36 @@ CREATE TABLE IF NOT EXISTS dependencias (
     codigo INT PRIMARY KEY, nombre TEXT NOT NULL,
     activo BOOLEAN NOT NULL DEFAULT true, depe_rad_tp2 BOOLEAN NOT NULL DEFAULT false
 );
+-- COPIA de tenant-service 013 (historial de nombres + criterio único nombre->código).
+-- Su DDL no viaja en esta imagen; `tenant-service/tests/integration/test_dependencia_codigo.py`
+-- fija los mismos casos contra la función REAL, así que si esta copia diverge
+-- uno de los dos se pone en rojo.
+CREATE TABLE IF NOT EXISTS dependencia_nombre_historico (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, codigo INTEGER NOT NULL,
+    nombre TEXT NOT NULL, origen VARCHAR(30) NOT NULL
+        CHECK (origen IN ('renombre', 'mapeo_manual')),
+    motivo TEXT, registrado_por UUID, at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION resolver_codigo_dependencia(p_nombre text, p_historico boolean)
+RETURNS TABLE (codigo integer, candidatos integer)
+LANGUAGE sql STABLE AS $$
+    WITH mapeo AS (
+        SELECT DISTINCT h.codigo AS cod FROM dependencia_nombre_historico h
+         WHERE p_historico AND h.origen = 'mapeo_manual' AND h.nombre = p_nombre
+    ),
+    c AS (
+        SELECT m.cod FROM mapeo m
+        UNION
+        SELECT d.codigo FROM dependencias d
+         WHERE NOT EXISTS (SELECT 1 FROM mapeo)
+           AND d.nombre = p_nombre AND (p_historico OR d.activo)
+        UNION
+        SELECT h.codigo FROM dependencia_nombre_historico h
+         WHERE p_historico AND NOT EXISTS (SELECT 1 FROM mapeo)
+           AND h.origen = 'renombre' AND h.nombre = p_nombre
+    )
+    SELECT CASE WHEN count(*) = 1 THEN min(c.cod) END, count(*)::int FROM c
+$$;
 CREATE TABLE IF NOT EXISTS tipos_documentales (
     code TEXT PRIMARY KEY, nombre TEXT NOT NULL,
     activo BOOLEAN NOT NULL DEFAULT true,
@@ -324,18 +354,19 @@ async def _provision_tenant_schema(conn: asyncpg.Connection, slug: str) -> str:
     entrecomillado-listo (`tenant_schema(slug)`)."""
     schema = tenant_schema(slug)
     await conn.execute(f'CREATE SCHEMA "{schema}"')
-    for path in runner._sql_files(runner.TENANT_DIR):
-        async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
-            await conn.execute(path.read_text())
     # Tablas de OTROS servicios que document-service lee (su DDL no viaja en esta
     # imagen): `dependencias` (tenant-service), `tipos_documentales` (archive-service)
     # y `urd_usuaroldep` (auth). Forma mínima; la dependencia 1 es la que usan los
     # radicados de prueba desde que Ac. AGN 060/2001 §5.2 hace obligatoria la dependencia
-    # (AREA-09-02).
+    # (AREA-09-02). VAN ANTES de las migraciones: la 046 exige la función
+    # `resolver_codigo_dependencia` de tenant-service (mismo orden que `init_tenant`).
     async with conn.transaction():
         await conn.execute(f'SET LOCAL search_path = "{schema}", public')
         await conn.execute(_OTROS_SERVICIOS_DDL)
+    for path in runner._sql_files(runner.TENANT_DIR):
+        async with conn.transaction():
+            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(path.read_text())
     return schema
 
 
@@ -390,7 +421,7 @@ _FLUJO_MINIMO_DDL = """
 CREATE TABLE IF NOT EXISTS flow_steps (
     id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
     radicado_id UUID NOT NULL, tracking_number VARCHAR(50) NOT NULL DEFAULT '',
-    step_number INTEGER NOT NULL, to_dept VARCHAR(100) NOT NULL,
+    step_number INTEGER NOT NULL, to_dept VARCHAR(100) NOT NULL, to_dept_code INTEGER,
     assigned_to UUID, status VARCHAR(20) NOT NULL DEFAULT 'pending',
     completed_at TIMESTAMPTZ
 );

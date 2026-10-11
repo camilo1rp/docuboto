@@ -50,6 +50,9 @@
   step.status==='pending').
 -->
 <script>
+  import { usarNombresDependencia } from "$lib/stores/dependencias.js";
+  const nombresDependencia = usarNombresDependencia();
+  import { nombreActual } from "$lib/utils/dependenciaNombre.js";
   import { PASO_ESTADO_CHIP, PASO_ESTADO_LABEL } from "$lib/utils/flujo.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
   import { createEventDispatcher } from "svelte";
@@ -103,10 +106,14 @@
 
   <div class="wf-card-body__deps">
     {#if step.from_dept}
-      <span class="wf-card-body__dept">{step.from_dept}</span>
+      <span class="wf-card-body__dept"
+        >{nombreActual(step.from_dept_code, step.from_dept, $nombresDependencia)}</span
+      >
       <i class="fas fa-arrow-right" aria-hidden="true"></i>
     {/if}
-    <span class="wf-card-body__dept wf-card-body__dept--current">{step.to_dept}</span>
+    <span class="wf-card-body__dept wf-card-body__dept--current"
+      >{nombreActual(step.to_dept_code, step.to_dept, $nombresDependencia)}</span
+    >
   </div>
 
   <div class="wf-card-body__chips">

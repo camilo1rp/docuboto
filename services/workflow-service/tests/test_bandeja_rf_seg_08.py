@@ -179,7 +179,7 @@ async def test_list_pending_audits_once_per_query_not_per_row(client_with_conn) 
     headers = {**TENANT_HEADERS, "X-Canal": "ui"}
 
     response = await client.get(
-        "/api/v1/workflows/pending", params={"dept": "Jurídica"}, headers=headers
+        "/api/v1/workflows/pending", params={"dept_code": 4}, headers=headers
     )
 
     assert response.status_code == 200
@@ -197,7 +197,7 @@ async def test_list_pending_audits_once_per_query_not_per_row(client_with_conn) 
     import json as _json
 
     payload = _json.loads(args[8])
-    assert payload["dept"] == "Jurídica"
+    assert payload["dept_code"] == 4
     assert payload["total"] == 3
 
 

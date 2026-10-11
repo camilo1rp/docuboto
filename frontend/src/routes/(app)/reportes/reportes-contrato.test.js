@@ -81,6 +81,23 @@ describe("/reportes — sobre el contrato real del resumen", () => {
     expect(screen.getAllByText("Oficina Jurídica").length).toBeGreaterThan(0);
   });
 
+  it("la serie por dependencia usa by_dependencia_codigo: homónimas separadas y nombre vigente", () => {
+    // El backend agrupa por CÓDIGO (ADR-032); `by_dependencia` es un mapa por
+    // etiqueta que FUNDE homónimas y no lleva código.
+    const summary = {
+      ...SUMMARY,
+      by_dependencia: { Archivo: 3 },
+      by_dependencia_codigo: [
+        { codigo: 11, nombre: "Archivo", count: 2 },
+        { codigo: 12, nombre: "Archivo", count: 1 },
+      ],
+    };
+    render(Reportes, { data: { ...pageData(summary), dependencias: [] } });
+    // Homónimas: la etiqueta añade el código para que las filas sean distinguibles.
+    expect(screen.getAllByText("Archivo (cód. 11)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Archivo (cód. 12)").length).toBeGreaterThan(0);
+  });
+
   it("y sin resumen no inventa datos", () => {
     // Gemelo: el camino del fallo era el único que funcionaba antes. Tiene que
     // seguir funcionando ahora, sin confundirse con «cero radicados reales».
