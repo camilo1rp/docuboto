@@ -23,6 +23,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
+import { plantillaMetadatos } from "$lib/testing/plantillaMetadatos.js";
 
 const gotoMock = vi.fn();
 vi.mock("$app/navigation", () => ({ goto: gotoMock }));
@@ -63,7 +64,7 @@ function baseData(overrides = {}) {
 function mockTemplatesFetch(templates) {
   return vi.fn(async (url) => {
     if (String(url).startsWith("/radicar/api/templates")) {
-      return { ok: true, json: async () => templates };
+      return { ok: true, json: async () => templates.map((t) => plantillaMetadatos(t)) };
     }
     return { ok: true, json: async () => [] };
   });
@@ -107,7 +108,7 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
       {
         id: "tpl-1",
         activo: true,
-        schema: {
+        json_schema: {
           properties: { prioridad: { enum: ["alta", "media", "baja"], title: "Prioridad" } },
           required: [],
         },
@@ -129,7 +130,10 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
       {
         id: "tpl-2",
         activo: true,
-        schema: { properties: { urgente: { type: "boolean", title: "Urgente" } }, required: [] },
+        json_schema: {
+          properties: { urgente: { type: "boolean", title: "Urgente" } },
+          required: [],
+        },
       },
     ]);
 
@@ -149,7 +153,7 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
       {
         id: "tpl-3",
         activo: true,
-        schema: {
+        json_schema: {
           properties: {
             motivo: { type: "string", title: "Motivo" },
             cantidad: { type: "integer", title: "Cantidad" },
@@ -180,7 +184,7 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
       {
         id: "tpl-4",
         activo: true,
-        schema: {
+        json_schema: {
           properties: {
             motivo: { type: "string", title: "Motivo" },
             anexos_extra: { type: "object", title: "Anexos extra", properties: {} },
@@ -205,7 +209,7 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
     const TEMPLATE = {
       id: "tpl-5",
       activo: true,
-      schema: {
+      json_schema: {
         properties: {
           motivo: { type: "string", title: "Motivo" },
           cantidad: { type: "integer", title: "Cantidad" },
@@ -223,7 +227,7 @@ describe("/radicar — campo dinámico de metadatos vía SchemaField (E03/T-12)"
     globalThis.fetch = vi.fn(async (url, opts) => {
       const href = String(url);
       if (href.startsWith("/radicar/api/templates")) {
-        return { ok: true, json: async () => [TEMPLATE] };
+        return { ok: true, json: async () => [plantillaMetadatos(TEMPLATE)] };
       }
       if (href === "/radicar/api/documents") {
         capturedBody = JSON.parse(opts.body);

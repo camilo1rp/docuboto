@@ -15,7 +15,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.document import rechazar_claves_reservadas
 
 
 class RespuestaRapidaCreate(BaseModel):
@@ -30,6 +32,11 @@ class RespuestaRapidaCreate(BaseModel):
     observations: str | None = None
     response_days: int | None = Field(default=None, ge=1, le=3650)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_sin_claves_reservadas(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return rechazar_claves_reservadas(v) or {}
 
 
 class RespuestaItem(BaseModel):

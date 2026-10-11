@@ -67,6 +67,8 @@ import asyncpg
 from orpycamcp_common import audit
 
 from app.core.constants import SYSTEM_RECONCILER_ID
+from app.core.tipos import exigir_tipo_documental
+from app.repositories.borrador_repository import BorradorRepository
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
 from app.services.document_service import _zona_de_radicacion
@@ -272,6 +274,9 @@ class BatchService:
                     # plantilla dejaba radicados que la radicación normal rechaza.
                     metadata_template_id: UUID | None = None
                     if doc_data.doc_class:
+                        # Mismo catálogo que `create`: tipo inexistente = ítem fallido
+                        # ANTES de gastar el consecutivo.
+                        await exigir_tipo_documental(self.conn, doc_data.doc_class)
                         template = await MetadataRepository(self.conn).get_active_template(
                             doc_data.doc_class
                         )
@@ -290,6 +295,24 @@ class BatchService:
                         dest_dept = await self._nombre_dependencia(doc_data.dest_dept_code)
                     if doc_data.origin_dept_code is not None:
                         origin_dept = await self._nombre_dependencia(doc_data.origin_dept_code)
+
+                    # Límite de origen de la Salida: espejo de `DocumentService.create`
+                    # (el lote no es puerta lateral). El ítem falla ANTES de gastar el
+                    # consecutivo si el responsable del lote no tiene URD activa ahí.
+                    if (
+                        doc_data.doc_type == "S"
+                        and created_by is not None
+                        and doc_data.origin_dept_code is not None
+                    ):
+                        propias = await BorradorRepository(self.conn).dependencias_del_usuario(
+                            created_by
+                        )
+                        if doc_data.origin_dept_code not in propias:
+                            raise ValueError(
+                                "origen_fuera_de_sus_dependencias: la dependencia de "
+                                f"origen {doc_data.origin_dept_code} no es una de sus "
+                                "dependencias activas"
+                            )
 
                     # Get tenant code and next sequence
                     tenant_code = await self.conn.fetchval(

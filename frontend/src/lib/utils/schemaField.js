@@ -7,6 +7,8 @@
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+import { formatearFecha } from "./fecha.js";
+
 /**
  * schemaField.js — Mapeo de una propiedad de JSON Schema (Draft 2020-12) a un
  * control de UI, y coerción de su valor crudo (string de FormData) al tipo
@@ -259,4 +261,143 @@ export function ubicarErrorDeCampo(field, mensaje, claves) {
   // `lista.1` apunta a un elemento: el control es la lista entera.
   const interior = resto[0] !== undefined && !/^\d+$/.test(resto[0]) ? resto[0] : null;
   return { key, error: mensaje, subErrors: interior ? { [interior]: mensaje } : {} };
+}
+
+// ---------------------------------------------------------------------------
+// Presentación de SOLO LECTURA (AREA-12-05, B6-25): el mismo schema que dibuja
+// los controles decide cómo se lee el valor ya guardado.
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{kind: 'text', text: string}
+ *   | {kind: 'code', text: string}
+ *   | {kind: 'list', items: ValorPresentado[]}
+ *   | {kind: 'group', entries: Array<{key: string, label: string, valor: ValorPresentado}>}} ValorPresentado
+ */
+
+const PROFUNDIDAD_MAX = 4;
+
+/** @param {unknown} v */
+const esObjetoPlano = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * Etiqueta de una opción de `enum` (`enumNames` paralelo) o de `oneOf` con
+ * `const` + `title`; si el schema no la declara, el valor tal cual.
+ * @param {any} schema
+ * @param {unknown} valor
+ * @returns {string|null}
+ */
+function etiquetaDeOpcion(schema, valor) {
+  if (Array.isArray(schema?.enum) && Array.isArray(schema?.enumNames)) {
+    const i = schema.enum.indexOf(valor);
+    if (i >= 0 && typeof schema.enumNames[i] === "string") return schema.enumNames[i];
+  }
+  if (Array.isArray(schema?.oneOf)) {
+    const o = schema.oneOf.find((x) => x && x.const === valor);
+    if (o && typeof o.title === "string") return o.title;
+  }
+  return null;
+}
+
+/**
+ * Descripción presentable de un valor de metadatos, guiada por su schema.
+ *
+ * Nunca devuelve `[object Object]`: un object se convierte en grupo (con los
+ * `title` interiores), una lista en lista, y lo que no tiene lectura natural
+ * (profundidad excesiva) en JSON compacto. Los valores NO se interpretan como
+ * HTML: el llamador los pinta como texto.
+ *
+ * @param {any} schema - la propiedad del schema (puede ser `undefined`)
+ * @param {unknown} valor
+ * @param {number} [profundidad]
+ * @returns {ValorPresentado}
+ */
+export function formatearValorSchema(schema, valor, profundidad = 0) {
+  if (valor === null || valor === undefined || valor === "") return { kind: "text", text: "—" };
+  if (typeof valor === "boolean") return { kind: "text", text: valor ? "Sí" : "No" };
+
+  if (Array.isArray(valor)) {
+    if (profundidad >= PROFUNDIDAD_MAX) return { kind: "code", text: JSON.stringify(valor) };
+    return {
+      kind: "list",
+      items: valor.map((x) => formatearValorSchema(schema?.items, x, profundidad + 1)),
+    };
+  }
+
+  if (esObjetoPlano(valor)) {
+    if (profundidad >= PROFUNDIDAD_MAX) return { kind: "code", text: JSON.stringify(valor) };
+    const props = esObjetoPlano(schema?.properties) ? schema.properties : {};
+    return {
+      kind: "group",
+      entries: Object.entries(valor).map(([k, v]) => ({
+        key: k,
+        label: typeof props[k]?.title === "string" && props[k].title ? props[k].title : k,
+        valor: formatearValorSchema(props[k], v, profundidad + 1),
+      })),
+    };
+  }
+
+  const opcion = etiquetaDeOpcion(schema, valor);
+  if (opcion !== null) return { kind: "text", text: opcion };
+  if (schema?.format === "date" && typeof valor === "string") {
+    return { kind: "text", text: formatearFecha(valor) };
+  }
+  return { kind: "text", text: String(valor) };
+}
+
+/**
+ * Claves que el SISTEMA escribe en `metadata` (el backend las rechaza si las
+ * manda el cliente). No son campos de la plantilla: se muestran aparte, con una
+ * etiqueta legible, en el grupo «Datos del sistema». Mapa cerrado y único: si el
+ * backend reserva otra clave, se añade aquí y en ningún otro sitio.
+ * @type {Record<string, {label: string, code?: boolean}>}
+ */
+export const METADATA_RESERVADA = {
+  from_borrador: { label: "Borrador de origen", code: true },
+  canal: { label: "Canal de ingreso" },
+  consentimiento: { label: "Consentimiento" },
+};
+
+/** @param {string} k */
+export const esClaveReservada = (k) => Object.prototype.hasOwnProperty.call(METADATA_RESERVADA, k);
+
+/**
+ * Reparte los metadatos en tres grupos: los que la plantilla declara, los que
+ * escribe el sistema (claves reservadas) y los que no se reconocen.
+ *
+ * Los no reconocidos NUNCA se ocultan: la plantilla vigente puede no ser la de la
+ * captura (cambió de versión) y ni el expediente ni el radicado guardan cuál se
+ * usó. Ocultarlos sería perder datos a la vista.
+ *
+ * @param {any} schema - `json_schema` completo (con `properties`), o null
+ * @param {Record<string, unknown>|null|undefined} metadata
+ * @returns {{declarados: Array<{key: string, label: string, valor: ValorPresentado}>,
+ *   sistema: Array<{key: string, label: string, valor: ValorPresentado}>,
+ *   otros: Array<{key: string, label: string, valor: ValorPresentado}>}}
+ */
+export function repartirMetadatos(schema, metadata) {
+  const props = esObjetoPlano(schema?.properties) ? schema.properties : {};
+  const declarados = [];
+  const sistema = [];
+  const otros = [];
+  for (const [k, v] of Object.entries(esObjetoPlano(metadata) ? metadata : {})) {
+    if (esClaveReservada(k)) {
+      const def = METADATA_RESERVADA[k];
+      const valor =
+        def.code && v !== null && v !== undefined && v !== "" && typeof v !== "object"
+          ? /** @type {ValorPresentado} */ ({ kind: "code", text: String(v) })
+          : formatearValorSchema(undefined, v);
+      sistema.push({ key: k, label: def.label, valor });
+    } else if (Object.prototype.hasOwnProperty.call(props, k)) {
+      const titulo = props[k]?.title;
+      declarados.push({
+        key: k,
+        label: typeof titulo === "string" && titulo ? titulo : k,
+        valor: formatearValorSchema(props[k], v),
+      });
+    } else {
+      otros.push({ key: k, label: k, valor: formatearValorSchema(undefined, v) });
+    }
+  }
+  return { declarados, sistema, otros };
 }

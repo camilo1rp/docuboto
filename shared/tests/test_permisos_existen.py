@@ -79,13 +79,21 @@ def permisos_exigidos_por_los_gates() -> dict[str, set[str]]:
         for nodo in ast.walk(arbol):
             if not (
                 isinstance(nodo, ast.Call)
-                and getattr(nodo.func, "id", "") == "require_permission"
+                and getattr(nodo.func, "id", "")
+                in ("require_permission", "require_any_permission")
                 and nodo.args
-                and isinstance(nodo.args[0], ast.Constant)
-                and isinstance(nodo.args[0].value, str)
             ):
                 continue
-            exigidos.setdefault(nodo.args[0].value, set()).add(servicio)
+            # `require_any_permission("A", "B")`: TODOS los literales cuentan, un
+            # permiso fantasma en la 2.ª posición dejaría ese brazo inalcanzable.
+            literales = (
+                nodo.args
+                if getattr(nodo.func, "id", "") == "require_any_permission"
+                else nodo.args[:1]
+            )
+            for arg in literales:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    exigidos.setdefault(arg.value, set()).add(servicio)
     return exigidos
 
 

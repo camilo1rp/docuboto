@@ -28,7 +28,12 @@ from fastapi import (
 )
 
 from app.clients.storage_client import RenderFallidoError, RenderNoDisponibleError
-from app.core.clearance import check_permission, require_permission, resolve_caller_clearance
+from app.core.clearance import (
+    check_permission,
+    require_any_permission,
+    require_permission,
+    resolve_caller_clearance,
+)
 from app.core.combinacion import desconocidos, vocabulario
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.core.dependencias import marcar_alias_deprecado, usa_alias
@@ -52,6 +57,7 @@ from app.services.document_service import (
 )
 from app.services.importar_ofimatico import ImportacionError
 from app.services.importar_ofimatico import importar as importar_ofimatico
+from app.services.metadata_service import MetadataValidationError
 
 router = APIRouter(tags=["borradores"])
 
@@ -96,7 +102,7 @@ def _funcionario(request: Request) -> dict[str, Any] | None:
 
 @router.get(
     "/api/v1/plantillas/campos",
-    dependencies=[Depends(require_permission("PERM_RADI"))],
+    dependencies=[Depends(require_any_permission("PERM_RADI", "USUA_PERM_ADMIN"))],
 )
 async def listar_campos_plantilla() -> dict[str, Any]:
     """Vocabulario de marcadores admitidos (E23, RF-PRO-01).
@@ -129,7 +135,7 @@ async def crear_plantilla(
 @router.get(
     "/api/v1/plantillas",
     response_model=list[PlantillaResponse],
-    dependencies=[Depends(require_permission("PERM_RADI"))],
+    dependencies=[Depends(require_any_permission("PERM_RADI", "USUA_PERM_ADMIN"))],
 )
 async def listar_plantillas(
     request: Request,
@@ -147,7 +153,8 @@ async def listar_plantillas(
 
     `?todas=true` **exige permiso de administración**, y se comprueba aquí en
     vez de subir el gate del endpoint: la lista normal la necesita cualquiera
-    con `PERM_RADI` para redactar. Un recorte que el propio llamante puede
+    con `PERM_RADI` para redactar y el administrador (`USUA_PERM_ADMIN`) para
+    gestionar plantillas aunque no radique (gate any-of). Un recorte que el propio llamante puede
     apagar con un parámetro no es un recorte, así que el parámetro no basta —
     hace falta el permiso.
     """
@@ -479,6 +486,17 @@ async def radicar_borrador(
                 "error": "render_fallido",
                 "detail": f"No se pudo generar el documento de salida: {exc}",
                 "status": 422,
+            },
+        ) from exc
+    except MetadataValidationError as exc:
+        # Antes de `next_sequence`: no se consume número. `field` marca el control.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "metadata_validation_failed",
+                "detail": str(exc),
+                "status": 422,
+                **({"field": exc.field} if exc.field else {}),
             },
         ) from exc
     except InvalidDependenciaError as exc:

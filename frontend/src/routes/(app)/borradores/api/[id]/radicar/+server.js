@@ -13,10 +13,18 @@
  * POST → transición aprobado → radicado; devuelve DocumentResponse (201) con
  *   `tracking_number` del radicado real generado.
  *   El backend devuelve 409 si el borrador ya fue radicado.
+ *   Cuerpo opcional: tipo_documental, origin_dept_code, dest_dept_code, metadata
+ *   (lista cerrada; ver `filtrarCuerpoRadicar`).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { filtrarCuerpoRadicar, CUERPO_MAX } from "$lib/utils/radicarBorradorCuerpo.js";
+
+/** @param {string} detail */
+function cuerpoInvalido(detail) {
+  return json({ error: "invalid_body", detail, status: 400 }, { status: 400 });
+}
 
 /** @type {import('./$types').RequestHandler} */
 // El identificador va CODIFICADO al construir la ruta hacia el gateway.
@@ -26,7 +34,7 @@ import { API_V1 } from "$lib/utils/config.server.js";
 // USUARIO: la ruta que el navegador pidió y la que el gateway recibe dejan de
 // ser la misma. El gateway ya rechaza esas rutas, pero eso es su defensa, no la
 // de aquí — quien construye una URL con datos de fuera la codifica.
-export async function POST({ locals, params }) {
+export async function POST({ locals, params, request }) {
   const token = locals.accessToken ?? "";
   if (!token) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
@@ -41,11 +49,37 @@ export async function POST({ locals, params }) {
   };
   if (userId) headers["X-User-Id"] = userId;
 
+  // Cuerpo opcional (B6-23): LISTA CERRADA de cuatro campos, validados. Todo lo
+  // demás se descarta: reenviar el cuerpo crudo dejaría al navegador decidir qué
+  // viaja al gateway con el token del usuario.
+  const texto = await request.text().catch(() => "");
+  /** @type {Record<string, unknown>|null} */
+  let cuerpo = null;
+  if (texto.length > CUERPO_MAX) {
+    return json(
+      { error: "payload_too_large", detail: "El cuerpo es demasiado grande.", status: 413 },
+      { status: 413 },
+    );
+  }
+  if (texto.trim() !== "") {
+    let entrada;
+    try {
+      entrada = JSON.parse(texto);
+    } catch {
+      return cuerpoInvalido("El cuerpo no es JSON válido.");
+    }
+    const r = filtrarCuerpoRadicar(entrada);
+    if (r.error) return cuerpoInvalido(r.error);
+    cuerpo = r.cuerpo;
+  }
+
   try {
-    const res = await fetch(`${API_V1}/borradores/${encodeURIComponent(params.id)}/radicar`, {
-      method: "POST",
-      headers,
-    });
+    const init = /** @type {RequestInit} */ ({ method: "POST", headers });
+    if (cuerpo && Object.keys(cuerpo).length > 0) {
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(cuerpo);
+    }
+    const res = await fetch(`${API_V1}/borradores/${encodeURIComponent(params.id)}/radicar`, init);
 
     const data = await res.json().catch(() => ({}));
     // El resultado es un DocumentResponse — no tiene campo cuerpo_html (es un radicado real).

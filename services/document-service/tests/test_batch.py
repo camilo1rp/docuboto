@@ -304,6 +304,8 @@ async def test_process_batch_documents_emits_one_audit_entry_per_radicado() -> N
             return created_by
         if "FROM dependencias WHERE codigo" in query:
             return "Dirección General"
+        if "FROM tipos_documentales" in query:  # catálogo de tipos (B6)
+            return "Tipo"
         if "SELECT code FROM tenants" in query:
             return "DEMO"
         if "INSERT INTO tracking_sequences" in query:
@@ -403,6 +405,8 @@ async def test_process_batch_documents_item_failure_marks_failed_outside_tx() ->
             return created_by
         if "FROM dependencias WHERE codigo" in query:
             return "Dirección General"
+        if "FROM tipos_documentales" in query:  # catálogo de tipos (B6)
+            return "Tipo"
         if "SELECT code FROM tenants" in query:
             return "DEMO"
         if "INSERT INTO tracking_sequences" in query:

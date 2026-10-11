@@ -62,7 +62,7 @@ def _normalizar(ruta: str) -> str:
     return ruta or "/"
 
 
-def _routers_del_fichero(arbol: ast.AST) -> dict[str, tuple[str, tuple[str | None, int]]]:
+def _routers_del_fichero(arbol: ast.AST) -> dict[str, tuple[str, tuple[str | frozenset[str] | None, int]]]:
     """Variable del router → (prefijo, gate del propio router).
 
     Antes se guardaba UN prefijo por fichero, el del último `APIRouter(...)` que
@@ -78,7 +78,7 @@ def _routers_del_fichero(arbol: ast.AST) -> dict[str, tuple[str, tuple[str | Non
     grave— **no habría cazado a una tool que declarara de MENOS** frente a un
     gate de router, que es el caso que este guardián existe para impedir.
     """
-    routers: dict[str, tuple[str, tuple[str | None, int]]] = {}
+    routers: dict[str, tuple[str, tuple[str | frozenset[str] | None, int]]] = {}
     for nodo in ast.walk(arbol):
         if not isinstance(nodo, ast.Assign) or len(nodo.targets) != 1:
             continue
@@ -96,14 +96,14 @@ def _routers_del_fichero(arbol: ast.AST) -> dict[str, tuple[str, tuple[str | Non
     return routers
 
 
-def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | None, int]]:
+def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | frozenset[str] | None, int]]:
     """(método, ruta normalizada) → (permiso, min_crud) efectivo.
 
     Efectivo = el del decorador si lo declara; si no, el del router que lo
     contiene. Un endpoint sin ninguno queda como `(None, 1)`: no es un vacío de
     información, es la declaración de que no exige permiso atómico.
     """
-    gates: dict[tuple[str, str], tuple[str | None, int]] = {}
+    gates: dict[tuple[str, str], tuple[str | frozenset[str] | None, int]] = {}
     for fichero in sorted(_SERVICIOS.glob("*/app/routers/*.py")):
         try:
             arbol = ast.parse(fichero.read_text(encoding="utf-8"))
@@ -131,12 +131,22 @@ def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | None, int]]:
     return gates
 
 
-def _leer_gate(deco: ast.Call) -> tuple[str | None, int]:
+def _leer_gate(deco: ast.Call) -> tuple[str | frozenset[str] | None, int]:
     for kw in deco.keywords:
         if kw.arg != "dependencies" or not isinstance(kw.value, ast.List):
             continue
         for elemento in kw.value.elts:
             for sub in ast.walk(elemento):
+                if (
+                    isinstance(sub, ast.Call)
+                    and getattr(sub.func, "id", "") == "require_any_permission"
+                ):
+                    # Any-of: una tool declara uno de los brazos. Se devuelve el
+                    # conjunto y `_casa` decide.
+                    brazos = frozenset(
+                        str(a.value) for a in sub.args if isinstance(a, ast.Constant)
+                    )
+                    return brazos, 1
                 if not (
                     isinstance(sub, ast.Call)
                     and getattr(sub.func, "id", "") == "require_permission"
@@ -153,6 +163,13 @@ def _leer_gate(deco: ast.Call) -> tuple[str | None, int]:
                         crud = int(k.value.value)
                 return perm, crud
     return None, 1
+
+
+def _casa(declarado: object, perm_real: object) -> bool:
+    """¿El permiso de la tool es el del gate? Un gate any-of lo admite si es UNO de sus brazos."""
+    if isinstance(perm_real, frozenset):
+        return declarado in perm_real
+    return declarado == perm_real
 
 
 def _tools() -> list[dict]:
@@ -184,7 +201,7 @@ def test_ninguna_tool_declara_menos_permiso_del_que_el_endpoint_exige() -> None:
         perm_real, crud_real = gates[clave]
         if perm_real is None:
             continue
-        if t.get("permission") != perm_real or int(t.get("min_crud", 1)) < crud_real:
+        if not _casa(t.get("permission"), perm_real) or int(t.get("min_crud", 1)) < crud_real:
             mentiras.append(
                 {
                     "tool": t.get("name"),

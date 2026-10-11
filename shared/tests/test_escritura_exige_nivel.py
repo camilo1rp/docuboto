@@ -52,6 +52,32 @@ _DECORADOR = re.compile(r"@router\.(post|patch|put|delete)\(")
 _RUTA = re.compile(r'@router\.\w+\(\s*\n?\s*"([^"]*)"')
 _RUTA_ANY = re.compile(r'@\w+\.\w+\(\s*\n?\s*"([^"]*)"')
 _PERMISO = re.compile(r'require_permission\(\s*\n?\s*"([^"]+)"')
+_GATE = re.compile(r"\brequire_(any_)?permission\(")
+_LITERAL = re.compile(r'"([^"]+)"')
+
+
+def _llamada(texto: str, desde: int) -> str:
+    """Argumentos de la llamada cuyo paréntesis de apertura acaba en `desde - 1`."""
+    profundidad, i = 1, desde
+    while i < len(texto) and profundidad:
+        profundidad += {"(": 1, ")": -1}.get(texto[i], 0)
+        i += 1
+    return texto[desde : i - 1]
+
+
+def _gate_en(texto: str) -> tuple[str, bool] | None:
+    """(etiqueta, ¿lleva min_crud?) del primer gate del texto.
+
+    Reconoce `require_permission("P")` y el any-of `require_any_permission("A", "B")`
+    (etiqueta `A|B`): una escritura any-of con el `min_crud=1` por defecto queda abierta
+    al modo lectura exactamente igual que la de un solo permiso.
+    """
+    m = _GATE.search(texto)
+    if not m:
+        return None
+    args = _llamada(texto, m.end())
+    nombres = [n for n in _LITERAL.findall(args.split("min_crud", 1)[0])]
+    return ("|".join(nombres) if nombres else "?", "min_crud=" in args)
 
 #: Escrituras con gate que hoy NO exigen nivel mínimo. Declaradas, no
 #: aprobadas — ver el docstring. Formato:
@@ -153,9 +179,10 @@ def _gates_de_routers(texto: str) -> dict[str, tuple[str, bool]]:
             profundidad += {"(": 1, ")": -1}.get(texto[i], 0)
             i += 1
         cuerpo = texto[m.end() : i]
-        if "dependencies=" in cuerpo and "require_permission(" in cuerpo:
-            p = _PERMISO.search(cuerpo)
-            gates[m.group(1)] = (p.group(1) if p else "?", "min_crud=" in cuerpo)
+        if "dependencies=" in cuerpo:
+            gate = _gate_en(cuerpo)
+            if gate is not None:
+                gates[m.group(1)] = gate
     return gates
 
 
@@ -181,11 +208,11 @@ def _censo_de(texto: str, clave: str) -> set[str]:
         txt = "\n".join(bloque)
         r = _RUTA_ANY.search(txt)
         permiso: str | None = None
-        if "require_permission(" in txt:
+        propio = _gate_en(txt)
+        if propio is not None:
             # El gate del propio endpoint manda sobre el del router.
-            if "min_crud=" not in txt:
-                p = _PERMISO.search(txt)
-                permiso = p.group(1) if p else "?"
+            if not propio[1]:
+                permiso = propio[0]
         elif gate_router is not None and not gate_router[1]:
             permiso = gate_router[0]
         if permiso is not None:
@@ -301,3 +328,41 @@ def test_administrar_rbac_exige_nivel_3() -> None:
         assert texto.count('require_permission("USUA_PERM_ADMIN", min_crud=3)') >= esperadas, (
             f"{archivo}: faltan gates de escritura a nivel 3"
         )
+
+
+_ANYOF_SINTETICO = '''
+@router.post(
+    "/a",
+    dependencies=[Depends(require_any_permission("PERM_A", "PERM_B"))],
+)
+async def uno() -> None: ...
+
+
+@router.patch(
+    "/b",
+    dependencies=[Depends(require_any_permission("PERM_A", "PERM_B", min_crud=2))],
+)
+async def dos() -> None: ...
+
+
+@router.get(
+    "/c",
+    dependencies=[Depends(require_any_permission("PERM_A", "PERM_B"))],
+)
+async def tres() -> None: ...
+'''
+
+
+def test_el_censo_ve_el_gate_any_of() -> None:
+    """B6: una escritura con `require_any_permission` sin `min_crud` cuenta (con
+    control positivo: la que lo lleva y la lectura quedan fuera). Antes el censo
+    solo reconocía `require_permission(` y una escritura any-of habría escapado."""
+    assert _censo_de(_ANYOF_SINTETICO, "svc::r.py") == {"svc::r.py::POST /a::PERM_A|PERM_B"}
+
+
+def test_el_censo_ve_el_gate_any_de_router() -> None:
+    texto = (
+        'router = APIRouter(dependencies=[Depends(require_any_permission("X", "Y"))])\n\n'
+        '@router.delete("/z")\nasync def f() -> None: ...\n'
+    )
+    assert _censo_de(texto, "svc::r.py") == {"svc::r.py::DELETE /z::X|Y"}

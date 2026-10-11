@@ -133,8 +133,9 @@
   // lo son (aviso) — resolveSchemaControl es la misma función que usa
   // SchemaField internamente (fuente única de verdad, $lib/utils/schemaField.js).
   $: templateProperties =
-    activeTemplate?.schema?.properties && typeof activeTemplate.schema.properties === "object"
-      ? Object.entries(activeTemplate.schema.properties)
+    activeTemplate?.json_schema?.properties &&
+    typeof activeTemplate.json_schema.properties === "object"
+      ? Object.entries(activeTemplate.json_schema.properties)
       : [];
   $: supportedTemplateProperties = templateProperties.filter(
     ([, propSchema]) => resolveSchemaControl(propSchema) !== null,
@@ -235,9 +236,9 @@
       const found = Array.isArray(templates) ? templates.find((t) => t.activo) : null;
       activeTemplate = found ?? null;
       // Inicializar los campos extra con valores vacíos
-      if (activeTemplate?.schema?.properties) {
+      if (activeTemplate?.json_schema?.properties) {
         extraMetadata = Object.fromEntries(
-          Object.keys(activeTemplate.schema.properties).map((k) => [k, ""]),
+          Object.keys(activeTemplate.json_schema.properties).map((k) => [k, ""]),
         );
       }
     } catch {
@@ -432,7 +433,7 @@
     // boolean/enum enviado como string de `<select>` — ver schemaField.js.
     // `coerceSchemaValue` devuelve `undefined` para vacíos/no soportados/
     // coerción inválida, y esas claves no se asignan.
-    const templateSchemaProperties = activeTemplate?.schema?.properties ?? {};
+    const templateSchemaProperties = activeTemplate?.json_schema?.properties ?? {};
     const cleanMetadata = {};
     for (const [key, propSchema] of Object.entries(templateSchemaProperties)) {
       const coerced = coerceSchemaValue(propSchema, extraMetadata[key]);
@@ -925,7 +926,7 @@
                       <SchemaField
                         propKey={key}
                         schema={propSchema}
-                        required={activeTemplate.schema.required?.includes(key)}
+                        required={activeTemplate.json_schema.required?.includes(key)}
                         bind:value={extraMetadata[key]}
                         error={errors[`meta_${key}`] ?? ""}
                         subErrors={errors.metaSub?.[key] ?? {}}

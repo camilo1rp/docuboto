@@ -28,9 +28,9 @@
     en el servidor. El token nunca llega al JS del cliente.
 -->
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, sessionUser } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import Drawer from "$lib/components/ui/Drawer.svelte";
@@ -43,7 +43,23 @@
   import RichEditor from "$lib/components/editor/RichEditor.svelte";
   import RagSuggestButton from "$lib/components/features/rag/RagSuggestButton.svelte";
   import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
-  import { mensajeError } from "$lib/utils/apiError.js";
+  import SchemaField from "$lib/components/ui/SchemaField.svelte";
+  import { mensajeError, codigoError, campoError } from "$lib/utils/apiError.js";
+  import {
+    resolveSchemaControl,
+    coerceSchemaValue,
+    ubicarErrorDeCampo,
+  } from "$lib/utils/schemaField.js";
+
+  /** Nombre de la dependencia destino de un borrador; cae al texto guardado. */
+  function nombreDestino(borrador) {
+    const hallada = (data.dependencias ?? []).find(
+      (d) => Number(d.codigo) === Number(borrador.dest_dept_code),
+    );
+    return hallada?.nombre ?? borrador.dest_dept ?? `Dependencia ${borrador.dest_dept_code}`;
+  }
+  import { faltantes } from "$lib/utils/datosMinimos.js";
+  import { codigosDeDependenciasDelUsuario } from "$lib/utils/tenencia.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -484,23 +500,276 @@
   // ---------------------------------------------------------------------------
   // Radicar (con confirmación)
   // ---------------------------------------------------------------------------
+  // Datos mínimos del radicado (Ac. AGN 060/2001 §5.2, B6-23): tipo documental,
+  // origen (Salida) y metadatos del tipo se capturan AQUÍ, en el acto de radicar,
+  // con los datos a la vista. El destino de un Interno ya vive en el borrador.
+  let radTipo = "";
+  let radOrigen = "";
+  /** @type {Record<string, any>} */
+  let radMeta = {};
+  /** @type {any} plantilla activa del tipo elegido (null = el tipo no tiene) */
+  let radPlantilla = null;
+  let radCargandoPlantilla = false;
+  let radPlantillaError = "";
+  /** Aviso cuando la plantilla del borrador declara un tipo fuera del catálogo. */
+  let radAvisoTipo = "";
+  /** @type {Record<string, any>} */
+  let radErrores = {};
+  let radTokenCarga = 0;
+
+  $: tiposOptions = [
+    { value: "", label: "— elija el tipo documental —" },
+    // Solo tipos con `code`: el backend identifica el tipo por código, nunca por UUID.
+    ...(data.tiposDocumentales ?? [])
+      .filter((t) => t.code)
+      .map((t) => ({ value: t.code, label: t.nombre })),
+  ];
+
+  /** Códigos de las dependencias ACTIVAS del usuario (`/auth/context`). */
+  $: origenesDelUsuario = codigosDeDependenciasDelUsuario($sessionUser);
+  $: origenOptions = origenesDelUsuario.map((c) => {
+    const d = (data.dependencias ?? []).find((x) => Number(x.codigo) === c);
+    return {
+      value: String(c),
+      label: d ? `${d.sigla ? d.sigla + " — " : ""}${d.nombre}` : `Dependencia ${c}`,
+    };
+  });
+  $: esSalida = editingBorrador?.doc_type === "S";
+  /** Una Salida sin dependencia activa no puede radicarse: el backend daría 422. */
+  $: contextoNoCargado = esSalida && !$sessionUser?.context;
+  $: sinOrigen = esSalida && !contextoNoCargado && origenesDelUsuario.length === 0;
+  /** Interno/Entrada sin dependencia destino: el backend daría 422. */
+  $: sinDestino = !!editingBorrador && !esSalida && !editingBorrador.dest_dept_code;
+
+  $: radPropiedades =
+    radPlantilla?.json_schema?.properties && typeof radPlantilla.json_schema.properties === "object"
+      ? Object.entries(radPlantilla.json_schema.properties)
+      : [];
+  $: radPropiedadesSoportadas = radPropiedades.filter(
+    ([, ps]) => resolveSchemaControl(ps) !== null,
+  );
+  $: radNoSoportados = radPropiedades.length - radPropiedadesSoportadas.length;
+
+  /** Metadatos a enviar: solo claves del schema, coaccionadas por tipo declarado. */
+  function metadatosAEnviar() {
+    /** @type {Record<string, any>} */
+    const limpio = {};
+    for (const [k, ps] of radPropiedadesSoportadas) {
+      const v = coerceSchemaValue(ps, radMeta[k]);
+      if (v !== undefined) limpio[k] = v;
+    }
+    return limpio;
+  }
+
+  /** Motivo por el que «Sí, radicar» está deshabilitado; "" si se puede. */
+  function motivoBloqueo(
+    tipo,
+    origen,
+    cargando,
+    plantillaError,
+    tiposError,
+    soportadas,
+    plantilla,
+    dest,
+    meta,
+  ) {
+    if (tiposError) return tiposError;
+    const falta = faltantes(editingBorrador?.doc_type ?? "S", {
+      doc_class: tipo,
+      origin_dept_code: origen || null,
+      dest_dept_code: dest,
+    });
+    if (falta.includes("doc_class")) return "Elija el tipo documental para poder radicar.";
+    if (falta.includes("origin_dept_code")) return "Elija la dependencia de origen.";
+    if (falta.includes("dest_dept_code")) {
+      return "El borrador no tiene dependencia destino: ciérrelo y complételo en «Editar».";
+    }
+    if (cargando) return "Cargando los metadatos del tipo documental…";
+    if (plantillaError) return plantillaError;
+    const requeridos = Array.isArray(plantilla?.json_schema?.required)
+      ? plantilla.json_schema.required
+      : [];
+    for (const [k, ps] of soportadas) {
+      if (requeridos.includes(k) && coerceSchemaValue(ps, meta[k]) === undefined) {
+        return `Complete el metadato obligatorio «${ps?.title ?? k}».`;
+      }
+    }
+    return "";
+  }
+  $: radMotivo = modalRadicar
+    ? motivoBloqueo(
+        radTipo,
+        radOrigen,
+        radCargandoPlantilla,
+        radPlantillaError,
+        data.tiposError,
+        radPropiedadesSoportadas,
+        radPlantilla,
+        editingBorrador?.dest_dept_code ?? null,
+        radMeta,
+      )
+    : "";
+
+  async function cargarPlantillaRadicar() {
+    const token = ++radTokenCarga;
+    radPlantilla = null;
+    radMeta = {};
+    radPlantillaError = "";
+    if (!radTipo) return;
+    radCargandoPlantilla = true;
+    try {
+      const res = await fetch(
+        `/borradores/api/metadata-template?${new URLSearchParams({ tipo_documental: radTipo })}`,
+      );
+      const lista = await res.json().catch(() => null);
+      if (token !== radTokenCarga) return; // respuesta de un tipo ya abandonado
+      if (!res.ok || !Array.isArray(lista)) {
+        radPlantillaError =
+          "No se pudo cargar la plantilla de metadatos de este tipo. Reintente antes de radicar.";
+        return;
+      }
+      const activa = lista.find((t) => t.activo) ?? null;
+      radPlantilla = activa;
+      if (activa?.json_schema?.properties) {
+        radMeta = Object.fromEntries(
+          Object.keys(activa.json_schema.properties).map((k) => [k, ""]),
+        );
+      }
+    } catch {
+      if (token !== radTokenCarga) return;
+      radPlantillaError =
+        "No se pudo cargar la plantilla de metadatos de este tipo. Reintente antes de radicar.";
+    } finally {
+      if (token === radTokenCarga) radCargandoPlantilla = false;
+    }
+  }
+
+  /** @param {Event} e */
+  async function onTipoRadicarChange(e) {
+    // Se lee del evento: no depende del orden entre este manejador y el `bind`.
+    radTipo = /** @type {HTMLSelectElement} */ (e.target).value;
+    radAvisoTipo = "";
+    radErrores = {};
+    await cargarPlantillaRadicar();
+  }
+
+  async function enfocarPrimerVacio() {
+    await tick();
+    await tick();
+    const id = !radTipo ? "rad-tipo" : esSalida && !radOrigen ? "rad-origen" : null;
+    const el = id ? document.getElementById(id) : null;
+    el?.focus?.();
+  }
+
+  /** Tras un 422: el foco va al control señalado o, si no hay, al aviso general. */
+  async function enfocarError() {
+    await tick();
+    await tick();
+    const meta = Object.keys(radErrores).find((k) => k.startsWith("meta_") && k !== "metaSub");
+    const id = radErrores.tipo
+      ? "rad-tipo"
+      : radErrores.origen && origenOptions.length !== 1
+        ? "rad-origen"
+        : meta
+          ? `meta-${meta.slice(5)}`
+          : null;
+    const el = (id && document.getElementById(id)) || document.getElementById("rad-error-general");
+    /** @type {HTMLElement|null} */ (el)?.focus?.();
+  }
+
   function pedirConfirmacionRadicar() {
+    // Estado LIMPIO en cada apertura: el 2.º ciclo (abrir→cerrar→reabrir) no
+    // hereda lo capturado ni los errores del anterior.
+    radErrores = {};
+    radMeta = {};
+    radPlantilla = null;
+    radPlantillaError = "";
+    radCargandoPlantilla = false;
+    radTokenCarga++;
+    radAvisoTipo = "";
+    radTipo = "";
+    radOrigen = "";
+
+    const declarado = (
+      plantillas.find((p) => p.id === editingBorrador?.plantilla_id)?.tipo_documental ?? ""
+    ).trim();
+    if (declarado) {
+      const enCatalogo = (data.tiposDocumentales ?? []).some((t) => t.code === declarado);
+      if (enCatalogo) radTipo = declarado;
+      else {
+        radAvisoTipo = `La plantilla declara «${declarado}», que no está en el catálogo de tipos documentales: elija el tipo.`;
+      }
+    }
+    if (esSalida) {
+      const activa = $sessionUser?.context?.active_depe_id;
+      if (activa != null && origenesDelUsuario.includes(Number(activa))) {
+        radOrigen = String(activa);
+      } else if (origenesDelUsuario.length === 1) {
+        radOrigen = String(origenesDelUsuario[0]);
+      }
+    }
     modalRadicar = true;
+    if (radTipo) cargarPlantillaRadicar();
+    enfocarPrimerVacio();
+  }
+
+  function cerrarModalRadicar() {
+    if (actionLoading) return;
+    modalRadicar = false;
   }
 
   async function confirmarRadicar() {
-    if (!editingBorrador) return;
-    modalRadicar = false;
+    if (!editingBorrador || radMotivo) return;
+    radErrores = {};
     actionLoading = true;
+    // El modal NO se cierra antes de saber el resultado: un 422 debe poder
+    // corregirse sin perder lo capturado.
     try {
+      /** @type {Record<string, any>} */
+      const cuerpo = { tipo_documental: radTipo };
+      if (esSalida && radOrigen) cuerpo.origin_dept_code = Number(radOrigen);
+      const meta = metadatosAEnviar();
+      if (Object.keys(meta).length > 0) cuerpo.metadata = meta;
       const res = await fetch(`/borradores/api/${editingBorrador.id}/radicar`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cuerpo),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(mensajeError(data, "No se pudo radicar el borrador."));
+        const detalle = mensajeError(data, "No se pudo radicar el borrador.");
+        const codigo = codigoError(data);
+        if (codigo === "metadata_validation_failed") {
+          const ubicado = ubicarErrorDeCampo(
+            campoError(data),
+            detalle,
+            radPropiedadesSoportadas.map(([k]) => k),
+          );
+          radErrores = ubicado
+            ? {
+                [`meta_${ubicado.key}`]: ubicado.error,
+                metaSub: { [ubicado.key]: ubicado.subErrors },
+                general: "Revise el metadato señalado.",
+              }
+            : { general: detalle };
+        } else if (codigo === "invalid_dependencia") {
+          radErrores = { origen: detalle, general: detalle };
+        } else if (codigo === "tipo_documental_desconocido") {
+          const msg =
+            "El tipo documental no existe o está inactivo en el catálogo. Elija otro tipo.";
+          radErrores = { tipo: msg, general: msg };
+        } else if (codigo === "datos_minimos_incompletos") {
+          const campo = campoError(data);
+          if (campo === "doc_class") radErrores = { tipo: detalle, general: detalle };
+          else if (campo === "origin_dept_code") radErrores = { origen: detalle, general: detalle };
+          else radErrores = { general: detalle };
+        } else {
+          radErrores = { general: detalle };
+        }
+        enfocarError();
         return;
       }
+      modalRadicar = false;
       // data es DocumentResponse con tracking_number
       trackingNumberResult = data.tracking_number ?? null;
       // MEDIO #4: persistir tracking_number y radicado_id en la fila de la lista
@@ -518,7 +787,8 @@
       modalRadicadoOpen = true;
       drawerOpen = false;
     } catch {
-      notifyError("No se pudo conectar al servidor.");
+      radErrores = { general: "No se pudo conectar al servidor. Reintente." };
+      enfocarError();
     } finally {
       actionLoading = false;
     }
@@ -1001,12 +1271,30 @@
            porque consume el número inmutable: aprobar de más se deshace
            devolviendo a edición, un consecutivo gastado no se devuelve nunca. -->
       {#if canRadicar}
+        {#if sinDestino}
+          <p class="borrador-aviso" role="status" id="borrador-sin-destino">
+            <i class="fas fa-building-circle-exclamation" aria-hidden="true"></i>
+            El borrador no tiene dependencia destino: sin ella el radicado no se puede completar.
+          </p>
+        {/if}
         {#if circuitoAbierto}
           <p class="borrador-aviso" role="status">
             <i class="fas fa-hourglass-half" aria-hidden="true"></i>
             No se puede radicar todavía: quedan
             {turnosDelCircuito.length - turnosCumplidos} de {turnosDelCircuito.length}
             turnos del circuito por resolver. Radicar consume el número, y el número no se devuelve.
+          </p>
+        {:else if contextoNoCargado}
+          <p class="borrador-aviso" role="status" id="borrador-contexto-no-cargado">
+            <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+            No se pudo cargar su contexto de dependencias, así que no se sabe desde qué dependencia radicar.
+            Recargue la página; si persiste, avise a un administrador.
+          </p>
+        {:else if sinOrigen}
+          <p class="borrador-aviso" role="status" id="borrador-sin-origen">
+            <i class="fas fa-user-lock" aria-hidden="true"></i>
+            No tiene una dependencia activa asignada: una Salida se radica desde su dependencia de origen.
+            Pida a un administrador que se la asigne.
           </p>
         {:else}
           <Button
@@ -1040,19 +1328,112 @@
 <!-- =========================================================================
      Modal: confirmación de radicación
      ========================================================================= -->
-<Modal
-  open={modalRadicar}
-  title="Confirmar radicación"
-  size="sm"
-  on:close={() => (modalRadicar = false)}
->
-  <p class="modal-confirm__text">
-    ¿Confirma la radicación de este borrador? Esta acción generará un radicado real con número de
-    control inmutable y no puede deshacerse.
-  </p>
+<Modal open={modalRadicar} title="Confirmar radicación" size="md" on:close={cerrarModalRadicar}>
+  <div class="rad-form">
+    <p class="modal-confirm__text">
+      Se generará un radicado real con número de control inmutable; la acción no puede deshacerse.
+      Confirme los datos mínimos del radicado.
+    </p>
+
+    {#if data.tiposError}
+      <p class="borrador-aviso" role="alert">{data.tiposError}</p>
+    {/if}
+    {#if radAvisoTipo}
+      <p class="borrador-aviso" role="status">{radAvisoTipo}</p>
+    {/if}
+
+    <FormField
+      id="rad-tipo"
+      label="Tipo documental"
+      type="select"
+      required
+      options={tiposOptions}
+      bind:value={radTipo}
+      on:change={onTipoRadicarChange}
+      error={radErrores.tipo ?? ""}
+    />
+
+    {#if esSalida}
+      {#if origenOptions.length === 1}
+        <p class="rad-form__fijo" id="rad-origen-fijo">
+          <span class="rad-form__etiqueta">Dependencia de origen</span>
+          <strong>{origenOptions[0].label}</strong>
+        </p>
+      {:else}
+        <FormField
+          id="rad-origen"
+          label="Dependencia de origen"
+          type="select"
+          required
+          options={[{ value: "", label: "— elija la dependencia —" }, ...origenOptions]}
+          bind:value={radOrigen}
+          error={radErrores.origen ?? ""}
+        />
+      {/if}
+    {:else}
+      <p class="rad-form__fijo" id="rad-destino-fijo">
+        <span class="rad-form__etiqueta">Dependencia destino</span>
+        <strong>
+          {#if editingBorrador?.dest_dept_code}
+            {nombreDestino(editingBorrador)}
+          {:else}
+            Sin definir
+          {/if}
+        </strong>
+      </p>
+    {/if}
+
+    {#if radCargandoPlantilla}
+      <p class="rad-form__estado" role="status">Cargando los metadatos del tipo documental…</p>
+    {:else if radPlantillaError}
+      <p class="borrador-aviso" role="alert">
+        {radPlantillaError}
+        <Button variant="ghost" size="sm" on:click={cargarPlantillaRadicar}>Reintentar</Button>
+      </p>
+    {/if}
+
+    {#if radPropiedades.length > 0}
+      <fieldset class="rad-form__meta">
+        <legend>Metadatos del tipo documental</legend>
+        {#each radPropiedadesSoportadas as [key, propSchema] (key)}
+          <SchemaField
+            propKey={key}
+            schema={propSchema}
+            required={Array.isArray(radPlantilla?.json_schema?.required) &&
+              radPlantilla.json_schema.required.includes(key)}
+            bind:value={radMeta[key]}
+            error={radErrores[`meta_${key}`] ?? ""}
+            subErrors={radErrores.metaSub?.[key] ?? {}}
+          />
+        {/each}
+        {#if radNoSoportados > 0}
+          <p class="rad-form__estado" role="status">
+            {radNoSoportados}
+            {radNoSoportados === 1 ? "campo" : "campos"} de la plantilla no se
+            {radNoSoportados === 1 ? "puede editar" : "pueden editar"} aquí.
+          </p>
+        {/if}
+      </fieldset>
+    {/if}
+
+    {#if radErrores.general}
+      <p class="borrador-aviso rad-form__error" role="alert" id="rad-error-general" tabindex="-1">
+        {radErrores.general}
+      </p>
+    {/if}
+    {#if radMotivo}
+      <p class="rad-form__estado" id="rad-motivo">{radMotivo}</p>
+    {/if}
+  </div>
   <svelte:fragment slot="footer">
-    <Button variant="ghost" on:click={() => (modalRadicar = false)}>Cancelar</Button>
-    <Button icon="fas fa-paper-plane" loading={actionLoading} on:click={confirmarRadicar}>
+    <Button variant="ghost" on:click={cerrarModalRadicar}>Cancelar</Button>
+    <Button
+      icon="fas fa-paper-plane"
+      loading={actionLoading}
+      disabled={!!radMotivo}
+      aria-describedby={radMotivo ? "rad-motivo" : undefined}
+      on:click={confirmarRadicar}
+    >
       Sí, radicar
     </Button>
   </svelte:fragment>
@@ -1617,6 +1998,46 @@
       font-family: var(--op-font-family);
       font-size: var(--op-font-sm);
       margin-bottom: var(--op-space-3);
+    }
+  }
+
+  .rad-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--op-space-3);
+
+    &__fijo {
+      display: flex;
+      flex-direction: column;
+      gap: var(--op-space-1);
+      margin: 0;
+    }
+
+    &__etiqueta {
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+    }
+
+    &__estado {
+      margin: 0;
+      font-size: var(--op-font-sm);
+      color: var(--op-text-secondary);
+    }
+
+    &__meta {
+      border: 1px solid var(--op-border);
+      border-radius: var(--op-radius);
+      padding: var(--op-space-3);
+      display: flex;
+      flex-direction: column;
+      gap: var(--op-space-3);
+      min-width: 0;
+
+      legend {
+        font-size: var(--op-font-sm);
+        font-weight: var(--op-weight-bold);
+        padding: 0 var(--op-space-2);
+      }
     }
   }
 </style>

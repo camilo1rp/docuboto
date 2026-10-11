@@ -218,12 +218,12 @@ async def test_seed_holidays_invalid_range(client_conn: tuple[AsyncClient, Async
 async def test_set_param(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
     client, _ = client_conn
     resp = await client.put(
-        "/api/v1/config/params/dias_respuesta_pqr", json={"value": 15}, headers=_HDRS
+        "/api/v1/config/params/entidad_web", json={"value": 15}, headers=_HDRS
     )
     assert resp.status_code == 200
     assert resp.json()["value"] == 15
     assert client.audit_append.await_args.kwargs["action"] == "config.parametro_actualizado"
-    assert client.audit_append.await_args.kwargs["object_ref"] == "dias_respuesta_pqr"
+    assert client.audit_append.await_args.kwargs["object_ref"] == "entidad_web"
 
 
 @pytest.mark.asyncio
@@ -264,7 +264,7 @@ async def test_set_param_asienta_antes_y_despues(
     client, conn = client_conn
     # RBAC, lectura previa FOR UPDATE (jsonb llega como texto)
     conn.fetchval.side_effect = [True, "6"]
-    resp = await client.put("/api/v1/config/params/consec_digits", json={"value": 8}, headers=_HDRS)
+    resp = await client.put("/api/v1/config/params/entidad_web", json={"value": 8}, headers=_HDRS)
     assert resp.status_code == 200
     payload = client.audit_append.await_args.kwargs["payload"]
     assert payload["antes"] == 6
@@ -279,7 +279,7 @@ async def test_set_param_nuevo_asienta_antes_nulo(
 ) -> None:
     client, conn = client_conn
     conn.fetchval.side_effect = [True, None]
-    resp = await client.put("/api/v1/config/params/otro", json={"value": 1}, headers=_HDRS)
+    resp = await client.put("/api/v1/config/params/entidad_web", json={"value": 1}, headers=_HDRS)
     assert resp.status_code == 200
     payload = client.audit_append.await_args.kwargs["payload"]
     assert payload["antes"] is None and payload["existia"] is False
@@ -292,7 +292,7 @@ async def test_set_param_forbidden_without_permission(
     client, conn = client_conn
     conn.fetchval.return_value = False
     resp = await client.put(
-        "/api/v1/config/params/dias_respuesta_pqr", json={"value": 15}, headers=_HDRS
+        "/api/v1/config/params/entidad_web", json={"value": 15}, headers=_HDRS
     )
     assert resp.status_code == 403
 
@@ -357,7 +357,7 @@ async def test_set_param_exige_nivel_3_no_basta_el_modo_lectura(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["firma_personal_require_xades", "plazo_dias", "otro"])
+@pytest.mark.parametrize("key", ["firma_personal_require_xades", "entidad_nombre", "entidad_web"])
 async def test_set_param_null_es_422_valor_nulo(
     client_conn: tuple[AsyncClient, AsyncMock], key: str
 ) -> None:
@@ -473,6 +473,64 @@ async def test_otro_parametro_no_exige_motivo(
 ) -> None:
     client, conn = client_conn
     conn.fetchval.side_effect = _fetchval_antes("6")
-    resp = await client.put("/api/v1/config/params/consec_digits", json={"value": 4}, headers=_HDRS)
+    resp = await client.put("/api/v1/config/params/entidad_web", json={"value": 4}, headers=_HDRS)
     assert resp.status_code == 200
     assert client.audit_append.await_args.kwargs["payload"]["relaja_politica"] is False
+
+
+# --- allowlist de claves (B6) ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["otro", "api_secret", "smtp_password", "dias_respuesta_pqr"])
+async def test_set_param_clave_desconocida_es_422(
+    client_conn: tuple[AsyncClient, AsyncMock], key: str
+) -> None:
+    """La lectura es abierta al tenant: una clave libre sería un buzón de secretos."""
+    client, conn = client_conn
+    resp = await client.put(f"/api/v1/config/params/{key}", json={"value": "x"}, headers=_HDRS)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "config_param_desconocido"
+    assert client.audit_append.await_count == 0
+    conn.execute.assert_not_awaited()
+
+
+_INERTES = [
+    "unicoconsecutivo", "formato_numero_radicado", "depe_digits", "consec_digits",
+    "dias_bloqueo", "expediente_number_format", "notificaciones_mail",
+    "archivado_requiere_exp", "reasigna_requiere_exp", "firma_digital_provider",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", _INERTES)
+async def test_set_param_clave_inerte_es_422(
+    client_conn: tuple[AsyncClient, AsyncMock], key: str
+) -> None:
+    """B6: sembradas por la 002 pero que ningún servicio lee: editarlas prometería
+    un efecto que no existe. Se rechazan igual que una clave desconocida."""
+    client, conn = client_conn
+    resp = await client.put(f"/api/v1/config/params/{key}", json={"value": 1}, headers=_HDRS)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "config_param_desconocido"
+    assert client.audit_append.await_count == 0
+    conn.execute.assert_not_awaited()
+
+
+def test_las_inertes_no_estan_admitidas_y_el_mensaje_no_las_ofrece() -> None:
+    from app.routers.config import PARAMS_ADMITIDOS, PARAMS_INERTES
+
+    assert PARAMS_INERTES == set(_INERTES)
+    assert not PARAMS_ADMITIDOS & PARAMS_INERTES
+
+
+@pytest.mark.asyncio
+async def test_set_param_clave_sembrada_sigue_admitida(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Control positivo: la allowlist no cierra las claves legítimas."""
+    client, _ = client_conn
+    resp = await client.put(
+        "/api/v1/config/params/entidad_nombre", json={"value": "Entidad"}, headers=_HDRS
+    )
+    assert resp.status_code == 200

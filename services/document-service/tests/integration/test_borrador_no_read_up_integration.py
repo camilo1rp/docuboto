@@ -263,6 +263,11 @@ async def test_radicar_hereda_el_nivel_del_padre_y_el_de_clearance_1_no_lo_ve(
     await conn.execute("UPDATE borrador SET estado = 'aprobado' WHERE id = $1", b.id)
 
     docs = DocumentService(conn, slug)
+    await conn.execute(
+        "INSERT INTO urd_usuaroldep (user_id, depe_id) SELECT $1, 1 "
+        "WHERE NOT EXISTS (SELECT 1 FROM urd_usuaroldep WHERE user_id = $1 AND depe_id = 1)",
+        AUTOR,
+    )
     nuevo = await servicio.radicar(b.id, docs, AUTOR, max_clearance=3, datos=_DATOS)
 
     fila = await conn.fetchrow(
@@ -304,6 +309,11 @@ async def test_radicar_con_padre_reservado_sin_fundamento_no_cae_a_nivel_1(
         max_clearance=3,
     )
     await conn.execute("UPDATE borrador SET estado = 'aprobado' WHERE id = $1", b.id)
+    await conn.execute(
+        "INSERT INTO urd_usuaroldep (user_id, depe_id) SELECT $1, 1 "
+        "WHERE NOT EXISTS (SELECT 1 FROM urd_usuaroldep WHERE user_id = $1 AND depe_id = 1)",
+        AUTOR,
+    )
     nuevo = await servicio.radicar(
         b.id, DocumentService(conn, slug), AUTOR, max_clearance=3, datos=_DATOS
     )

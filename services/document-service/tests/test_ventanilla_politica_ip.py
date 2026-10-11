@@ -73,7 +73,7 @@ async def test_ip_firmada_por_el_gateway_queda_verificada(client_with_conn) -> N
         client, conn, identidad.firmar_ip_publica("203.0.113.9", BASE)
     )
     assert resp.status_code == 201, resp.text
-    c = crear.await_args.args[0].metadata["consentimiento"]
+    c = crear.await_args.kwargs["procedencia"]["consentimiento"]
     assert (c["ip"], c["ip_verificada"]) == ("203.0.113.9", True)
 
 
@@ -91,7 +91,7 @@ async def test_sin_firma_valida_la_ip_es_nula_y_no_bloquea(client_with_conn, cab
     client, conn = client_with_conn
     resp, crear = await _radicar(client, conn, cabeceras)
     assert resp.status_code == 201, resp.text
-    c = crear.await_args.args[0].metadata["consentimiento"]
+    c = crear.await_args.kwargs["procedencia"]["consentimiento"]
     assert (c["ip"], c["ip_verificada"]) == (None, False)
 
 
@@ -102,7 +102,7 @@ async def test_la_firma_de_otra_ruta_no_sirve(client_with_conn) -> None:
         client, conn, identidad.firmar_ip_publica("203.0.113.9", f"{BASE}/otra")
     )
     assert resp.status_code == 201
-    assert crear.await_args.args[0].metadata["consentimiento"]["ip"] is None
+    assert crear.await_args.kwargs["procedencia"]["consentimiento"]["ip"] is None
 
 
 # ------------------------------------------------------------------- Política
@@ -115,7 +115,7 @@ async def test_la_huella_y_la_url_las_pone_el_servidor(client_with_conn) -> None
         client, conn, politica_huella="x" * 64, politica_url="https://evil.example"
     )
     assert resp.status_code == 201, resp.text
-    c = crear.await_args.args[0].metadata["consentimiento"]
+    c = crear.await_args.kwargs["procedencia"]["consentimiento"]
     assert c["politica_url"] == "https://entidad.example/privacidad"
     assert c["politica_huella"] == huella_politica(
         "2026-01", "Aviso de privacidad de prueba", "https://entidad.example/privacidad"

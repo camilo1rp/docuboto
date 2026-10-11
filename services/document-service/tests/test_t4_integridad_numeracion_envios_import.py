@@ -127,6 +127,8 @@ def _conn_lote(item: dict, plantilla: dict | None) -> tuple[AsyncMock, list[str]
             return uuid.uuid4()
         if "FROM dependencias WHERE codigo" in query:
             return "Dirección General"
+        if "FROM tipos_documentales" in query:  # catálogo de tipos (B6)
+            return "Tipo"
         if "SELECT code FROM tenants" in query:
             return "DEMO"
         if "INSERT INTO tracking_sequences" in query:

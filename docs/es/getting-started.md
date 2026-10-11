@@ -209,6 +209,8 @@ muestra y no deja abrir otra: hay que resolverla o rechazarla antes.
 > redacción tienen su propio circuito —visto bueno **y** firma— en
 > `/borradores`, porque allí el texto todavía se puede editar.
 
+> **Radicar un borrador**: al confirmar, la pantalla pide el **tipo documental** (y, en una Salida, la **dependencia de origen** entre las suyas activas) más los metadatos propios del tipo; sin una dependencia activa asignada no se ofrece «Radicar». Los metadatos guardados se leen luego en el detalle de `/bandeja` y en la ficha del expediente.
+
 ### Consultar al asistente conversacional
 
 ```bash

@@ -45,6 +45,7 @@ SERVICIOS = RAIZ / "services"
 #: Nombres que, presentes en el decorador, la firma o el router, constituyen un gate.
 GATES = frozenset({
     "require_permission",
+    "require_any_permission",
     "require_internal_token",
     "_require_internal_token",
     "require_public_interop",

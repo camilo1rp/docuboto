@@ -49,6 +49,7 @@
   // que leen la cookie httpOnly en el servidor — el token nunca llega al cliente (D-05).
   import HistorialAcceso from "$lib/components/features/radicados/HistorialAcceso.svelte";
   import Drawer from "$lib/components/ui/Drawer.svelte";
+  import SchemaValue from "$lib/components/ui/SchemaValue.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
@@ -188,6 +189,54 @@
   let drawerOpen = false;
   /** @type {import('$lib/types/api.js').DocumentResponse|null} */
   let selectedDoc = null;
+
+  // Metadatos del radicado (B6-25): la plantilla activa de su tipo documental da
+  // las etiquetas. Se carga al abrir el detalle; si falla, los datos se muestran
+  // con su clave cruda y se avisa.
+  /** @type {any} */
+  let metaDocSchema = null;
+  let metaDocCargando = false;
+  let metaDocError = "";
+  let metaDocTipoCargado = "";
+  let metaDocPeticion = 0;
+  $: metaDocClaves =
+    selectedDoc?.metadata && typeof selectedDoc.metadata === "object"
+      ? Object.keys(selectedDoc.metadata)
+      : [];
+  $: if (
+    typeof window !== "undefined" &&
+    metaDocClaves.length > 0 &&
+    selectedDoc?.doc_class &&
+    metaDocTipoCargado !== selectedDoc.doc_class
+  ) {
+    cargarPlantillaMetadatosDoc(selectedDoc.doc_class);
+  }
+  /** @param {string} tipo */
+  async function cargarPlantillaMetadatosDoc(tipo) {
+    metaDocTipoCargado = tipo;
+    // Contador: una respuesta tardía de un documento anterior no pisa la del actual.
+    const mio = ++metaDocPeticion;
+    metaDocCargando = true;
+    metaDocError = "";
+    metaDocSchema = null;
+    try {
+      const res = await fetch(
+        `/bandeja/api/metadata-template?${new URLSearchParams({ tipo_documental: tipo })}`,
+      );
+      const lista = await res.json().catch(() => null);
+      if (!res.ok || !Array.isArray(lista)) throw new Error("plantilla");
+      if (mio !== metaDocPeticion) return;
+      metaDocSchema = lista.find((t) => t?.activo)?.json_schema ?? null;
+    } catch {
+      if (mio !== metaDocPeticion) return;
+      // `metaDocTipoCargado` se queda fijado: si no, el bloque reactivo reintentaría
+      // en bucle contra un backend caído. El aviso explica el degradado.
+      metaDocError =
+        "No se pudo cargar la plantilla del tipo documental: se muestran los metadatos con su nombre técnico.";
+    } finally {
+      if (mio === metaDocPeticion) metaDocCargando = false;
+    }
+  }
   let detailLoading = false;
 
   // Estado de la anulación del radicado abierto en el drawer (si tiene una),
@@ -1654,6 +1703,22 @@
           {/if}
         </dl>
       </section>
+
+      <!-- Metadatos del tipo documental (B6-25): solo lectura, con las etiquetas de
+           la plantilla; sin metadatos no hay sección. -->
+      {#if metaDocClaves.length > 0}
+        <section class="doc-detail__section" aria-labelledby="detail-meta-heading">
+          <h4 id="detail-meta-heading" class="doc-detail__section-title">
+            Metadatos del tipo documental
+          </h4>
+          <SchemaValue
+            schema={metaDocSchema}
+            value={selectedDoc.metadata}
+            loading={metaDocCargando}
+            loadError={metaDocError}
+          />
+        </section>
+      {/if}
 
       <!-- Observaciones / cuerpo -->
       {#if selectedDoc.observations}

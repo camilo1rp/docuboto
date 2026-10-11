@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.document import rechazar_claves_reservadas
 
 
 class PlantillaCreate(BaseModel):
@@ -87,6 +89,16 @@ class BorradorRadicar(BaseModel):
     tipo_documental: str | None = Field(default=None, max_length=100)
     origin_dept_code: int | None = Field(default=None, ge=1, le=999999)
     dest_dept_code: int | None = Field(default=None, ge=1, le=999999)
+    #: Metadatos del tipo documental (plantilla activa del tipo). Se validan contra
+    #: su JSON Schema; las claves reservadas (`CLAVES_RESERVADAS`) las pone el sistema y no se aceptan aquí.
+    metadata: dict[str, Any] | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def _sin_procedencia(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        # Misma lista que `DocumentCreate` (única): se rechaza ya en esta puerta para
+        # no renderizar ni subir nada de un borrador que luego no podría radicarse.
+        return rechazar_claves_reservadas(v)
 
 
 class BorradorUpdate(BaseModel):

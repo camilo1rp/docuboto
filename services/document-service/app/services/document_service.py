@@ -31,6 +31,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import asyncpg
+from fastapi import HTTPException
 from orpycamcp_common import audit
 
 from app.clients.tenant_client import TenantServiceClient
@@ -38,14 +39,17 @@ from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
 from app.core.datos_minimos import exigir_o_422
 from app.core.dependencias import normalizar_dependencia
+from app.core.tipos import exigir_tipo_documental
 from app.models.document import Anexo, Radicado
 from app.repositories.audit_read import AuditReadRepository
+from app.repositories.borrador_repository import BorradorRepository
 from app.repositories.document_repository import (
     DocumentRepository,
     InvalidTenantSlugError,
 )
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.document import (
+    CLAVES_RESERVADAS,
     AnexoResponse,
     DispositionUpdate,
     DocumentCreate,
@@ -238,12 +242,31 @@ class DocumentService:
                 "Alguno de los archivos indicados no está disponible para adjuntar."
             )
 
+    async def validar_tipo_y_metadata(
+        self, doc_class: str | None, metadata: dict[str, Any]
+    ) -> uuid.UUID | None:
+        """Tipo en el catálogo + metadatos contra la plantilla activa del tipo.
+
+        Devuelve el id de la plantilla usada (o `None` si el tipo no tiene).
+        Sin efectos: lo llama `create` y también quien, como el borrador, quiere
+        fallar ANTES de producir artefactos (render, subida) que quedarían huérfanos.
+        """
+        if not doc_class:
+            return None
+        await exigir_tipo_documental(self._conn, doc_class)
+        template = await self._metadata_repo.get_active_template(doc_class)
+        if template is None:
+            return None
+        validate_metadata(metadata, template["json_schema"])
+        return template["id"]
+
     async def create(
         self,
         payload: DocumentCreate,
         registered_by: uuid.UUID | None,
         *,
         submission_key: tuple[str, str] | None = None,
+        procedencia: dict[str, Any] | None = None,
     ) -> DocumentResponse:
         """Radica. `submission_key = (clave, huella)` activa la idempotencia pública
         (AREA-02-07): la clave se reclama DENTRO de la transacción, antes de pedir el
@@ -297,6 +320,33 @@ class DocumentService:
                 estricto=False,
             )
 
+        # Límite de origen de la Salida (UNA fuente para todas las puertas: POST
+        # /documents, respuesta rápida, borrador, ingest). Quien radica una Salida solo
+        # puede emitir desde una dependencia donde tiene URD activa; sin esto, cualquiera
+        # con PERM_RADI emitía en nombre de una dependencia ajena. Sin actor humano
+        # (`registered_by` None: sistema) no aplica; las Entradas no emiten.
+        if (
+            payload.doc_type == "S"
+            and registered_by is not None
+            and payload.origin_dept_code is not None
+        ):
+            propias = await BorradorRepository(self._conn).dependencias_del_usuario(
+                registered_by
+            )
+            if payload.origin_dept_code not in propias:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "origen_fuera_de_sus_dependencias",
+                        "detail": (
+                            f"La dependencia de origen {payload.origin_dept_code} no es "
+                            "una de sus dependencias activas; una Salida solo se emite "
+                            "desde una dependencia propia."
+                        ),
+                        "status": 422,
+                    },
+                )
+
         # RF-RAD-04: la fecha de vencimiento se calcula en días hábiles desde la
         # radicación. El calendario lo resuelve tenant-service (E14) vía HTTP;
         # sin response_days el radicado no tiene plazo.
@@ -314,12 +364,16 @@ class DocumentService:
         # plantilla activa, los valores se validan contra su JSON Schema antes de
         # radicar; se guarda la versión de plantilla usada. Sin plantilla, los
         # metadatos se almacenan tal cual (plantillas opt-in por tipo en F1).
-        metadata_template_id: uuid.UUID | None = None
-        if payload.doc_class:
-            template = await self._metadata_repo.get_active_template(payload.doc_class)
-            if template is not None:
-                validate_metadata(payload.metadata, template["json_schema"])
-                metadata_template_id = template["id"]
+        # El tipo tiene que existir y estar activo en el catálogo (422 antes de
+        # consumir el consecutivo): sin serie TRD no hay retención.
+        metadata_template_id = await self.validar_tipo_y_metadata(
+            payload.doc_class, payload.metadata
+        )
+        # `procedencia` es un dato del SISTEMA (p. ej. `from_borrador`), no del tipo
+        # documental: se une DESPUÉS de validar, para que una plantilla con
+        # `additionalProperties: false` no lo rechace. Gana sobre lo del usuario.
+        if procedencia:
+            payload.metadata = {**payload.metadata, **procedencia}
 
         # El VÍNCULO anexo↔radicado no lo puede afirmar el cliente (RF-SEG-08).
         #
@@ -411,6 +465,11 @@ class DocumentService:
             # consultable junto al radicado.
             if isinstance(payload.metadata.get("consentimiento"), dict):
                 audit_payload["consentimiento"] = payload.metadata["consentimiento"]
+            # Procedencia del radicado: un radicado nacido de un borrador lo dice en
+            # su asiento (el PATCH de metadata no puede tocar la clave, pero el
+            # asiento es la traza que no depende de ella).
+            if payload.metadata.get("from_borrador"):
+                audit_payload["from_borrador"] = payload.metadata["from_borrador"]
             if submission_key is not None:
                 await self._conn.execute(
                     "UPDATE public_submission_keys SET radicado_id = $2 WHERE key = $1",
@@ -1241,10 +1300,28 @@ class DocumentService:
             # PATCH posterior.
             template_id: uuid.UUID | None = None
             escribir_template = payload.doc_class is not None or payload.metadata is not None
+            # Retipificar solo a un tipo ACTIVO del catálogo (422 antes de escribir).
+            # Reenviar el MISMO tipo (aunque ya esté inactivo) no es retipificar.
+            if payload.doc_class is not None and payload.doc_class != previo.doc_class:
+                await exigir_tipo_documental(self._conn, payload.doc_class)
+            # Las claves reservadas (procedencia) son del sistema: el PATCH las
+            # PRESERVA tal cual estaban; el reemplazo total de `metadata` no puede
+            # borrarlas ni cambiarlas (el cliente ni siquiera puede enviarlas).
+            reservadas_previas = {
+                k: v for k, v in (previo.metadata or {}).items() if k in CLAVES_RESERVADAS
+            }
             if escribir_template:
                 tipo_efectivo = payload.doc_class or previo.doc_class
+                # La plantilla valida los datos DEL TIPO, sin la procedencia (igual
+                # que `create`, que la une después de validar).
                 meta_efectiva = (
-                    payload.metadata if payload.metadata is not None else (previo.metadata or {})
+                    payload.metadata
+                    if payload.metadata is not None
+                    else {
+                        k: v
+                        for k, v in (previo.metadata or {}).items()
+                        if k not in CLAVES_RESERVADAS
+                    }
                 )
                 if tipo_efectivo:
                     template = await self._metadata_repo.get_active_template(tipo_efectivo)
@@ -1252,6 +1329,8 @@ class DocumentService:
                         validate_metadata(meta_efectiva, template["json_schema"])
                         template_id = template["id"]
 
+            if payload.metadata is not None and reservadas_previas:
+                payload.metadata = {**payload.metadata, **reservadas_previas}
             radicado = await self._repo.update(
                 document_id,
                 payload,

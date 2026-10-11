@@ -24,6 +24,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import Depends, HTTPException, Request, status
+from orpycamcp_common.rbac import make_require_any_permission
 
 from app.core.database import get_tenant_conn
 from app.repositories.rbac_repository import RBACRepository
@@ -120,6 +121,15 @@ async def get_caller(
         is_root=bool(user["is_root"]),
         permissions=perms,
     )
+
+
+# Gate any-of (basta UNO de los permisos): la lógica vive en orpycamcp_common.rbac.
+# `identity=get_caller`: el llamante se resuelve igual que en `require_permission`
+# (401 sin identidad, 403 + asiento `usuario_no_aprovisionado`) y SOLO después se
+# juzga el permiso.
+require_any_permission = make_require_any_permission(
+    service=_SERVICE, get_conn=get_tenant_conn, identity=get_caller
+)
 
 
 def require_permission(name: str, min_crud: int = 1) -> Callable[..., Coroutine[Any, Any, Caller]]:

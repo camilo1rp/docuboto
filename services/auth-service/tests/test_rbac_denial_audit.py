@@ -167,3 +167,53 @@ async def test_not_provisioned_identified_caller_is_audited(client: AsyncClient)
     # insuficiente — un analista que filtre audit_log por motivo no debe
     # confundir "usuario no aprovisionado" con "permiso_insuficiente".
     assert json.loads(args[8])["motivo"] == "usuario_no_aprovisionado"
+
+
+# --- B6: el gate any-of pasa por `get_caller` (paridad con `require_permission`) ---
+_PICKABLE = "/api/v1/auth/users/pickable"
+
+
+@pytest.mark.asyncio
+async def test_anyof_sin_identidad_es_401_y_no_se_audita(client: AsyncClient) -> None:
+    conn = _conn()
+
+    async def _dep() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    app.dependency_overrides[get_tenant_conn] = _dep  # get_caller real
+    response = await client.get(_PICKABLE, headers=TENANT_HEADERS)
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "unauthorized"
+    assert _audit_insert_calls(conn) == []
+
+
+@pytest.mark.asyncio
+async def test_anyof_usuario_no_aprovisionado_deja_asiento(client: AsyncClient) -> None:
+    conn = _conn()
+    conn.fetchrow.return_value = None  # get_user -> sin fila
+
+    async def _dep() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    app.dependency_overrides[get_tenant_conn] = _dep
+    fantasma = str(uuid.uuid4())
+    response = await client.get(_PICKABLE, headers={**TENANT_HEADERS, "X-User-Id": fantasma})
+    assert response.status_code == 403
+    inserts = _audit_insert_calls(conn)
+    assert len(inserts) == 1
+    assert inserts[0].args[7] == "__not_provisioned__"
+    assert json.loads(inserts[0].args[8])["motivo"] == "usuario_no_aprovisionado"
+
+
+@pytest.mark.asyncio
+async def test_anyof_denegado_asienta_la_etiqueta_a_o_b(client: AsyncClient) -> None:
+    conn = _conn()
+    conn.fetchval.return_value = False  # el any-of resuelve en la BD
+    _override_caller(conn, _NON_ADMIN)
+    response = await client.get(
+        _PICKABLE, headers={**TENANT_HEADERS, "X-User-Id": str(uuid.uuid4())}
+    )
+    assert response.status_code == 403
+    inserts = _audit_insert_calls(conn)
+    assert len(inserts) == 1
+    assert inserts[0].args[7] == "PERM_RADI|USUA_PERM_ADMIN"

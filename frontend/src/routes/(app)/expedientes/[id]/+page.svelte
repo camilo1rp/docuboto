@@ -34,9 +34,10 @@
   import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { nombreSerieTrd, vigenciaSerieTrd } from "$lib/utils/trd.js";
   import { invalidateAll } from "$app/navigation";
-  import { tick } from "svelte";
+  import { tick, onMount } from "svelte";
 
   import Card from "$lib/components/ui/Card.svelte";
+  import SchemaValue from "$lib/components/ui/SchemaValue.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
@@ -64,6 +65,48 @@
   // Datos del servidor
   // ---------------------------------------------------------------------------
   $: expediente = data.expediente;
+
+  // Plantilla de metadatos de la serie TRD: da la ETIQUETA (`title`) y la forma de
+  // cada valor (B6-25). Se carga en el cliente al haber metadatos que mostrar; si
+  // falla, los datos se muestran igual con su clave cruda y la pantalla lo dice.
+  /** @type {any} */
+  let metaSchema = null;
+  let metaCargando = false;
+  let metaError = "";
+  let metaSerieCargada = "";
+  let montado = false;
+  onMount(() => {
+    montado = true;
+  });
+  $: if (
+    montado &&
+    expediente?.trd_serie_id &&
+    expediente?.metadata &&
+    Object.keys(expediente.metadata).length &&
+    metaSerieCargada !== expediente.trd_serie_id
+  ) {
+    cargarPlantillaMetadatos(expediente.trd_serie_id);
+  }
+  /** @param {string} serieId */
+  async function cargarPlantillaMetadatos(serieId) {
+    metaSerieCargada = serieId;
+    metaCargando = true;
+    metaError = "";
+    metaSchema = null;
+    try {
+      const res = await fetch(
+        `/expedientes/api/metadata-templates?${new URLSearchParams({ trd_serie_id: serieId })}`,
+      );
+      const lista = await res.json().catch(() => null);
+      if (!res.ok || !Array.isArray(lista)) throw new Error("plantilla");
+      metaSchema = lista.find((t) => t?.activo)?.json_schema ?? null;
+    } catch {
+      metaError =
+        "No se pudo cargar la plantilla de la serie: se muestran los metadatos con su nombre técnico.";
+    } finally {
+      metaCargando = false;
+    }
+  }
 
   // Nombre legible de la serie TRD, del detalle que el `load` ya resuelve.
   // `null` si no se pudo resolver: la ficha cae entonces al UUID, que es feo
@@ -1137,14 +1180,12 @@
             <h3 class="exp-section-subtitle">
               Metadatos de la serie TRD (solo lectura — se definen al crear el expediente)
             </h3>
-            <dl class="exp-meta-list">
-              {#each Object.entries(expediente.metadata) as [k, v] (k)}
-                <div class="exp-meta-list__item">
-                  <dt>{k}</dt>
-                  <dd>{String(v)}</dd>
-                </div>
-              {/each}
-            </dl>
+            <SchemaValue
+              schema={metaSchema}
+              value={expediente.metadata}
+              loading={metaCargando}
+              loadError={metaError}
+            />
           {/if}
         </Card>
 

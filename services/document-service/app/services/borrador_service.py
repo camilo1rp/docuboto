@@ -776,6 +776,8 @@ class BorradorService:
                 estricto=False,
             )
         origin_code: int | None = datos.origin_dept_code if datos else None
+        # El límite de origen de la Salida (URD activa) lo aplica `DocumentService.create`:
+        # una sola fuente para todas las puertas.
         if origin_code is None and row["doc_type"] == "S" and registered_by is not None:
             propias = await self._repo.dependencias_del_usuario(registered_by)
             if propias:
@@ -860,6 +862,27 @@ class BorradorService:
         estado_circuito = await self._gate_circuito_pendiente(borrador_id, acto="radicar")
         # Un circuito CERRADO tampoco basta: hay que comprobar que firmó ESTE texto.
         self._gate_texto_firmado(row, estado_circuito)
+        # Ac. AGN 060/2001 §5.2 (AREA-09-02): tipo documental y dependencia. El
+        # borrador no los guarda como columnas; se derivan de lo que sí sabe y,
+        # si no hay de dónde, se rechaza ANTES de consumir el número (el
+        # consecutivo no se devuelve): el render aún no ha corrido.
+        doc_class, origin_code, dest_code = await self._datos_minimos_del_borrador(
+            row, registered_by, datos
+        )
+        exigir_o_422(
+            row["doc_type"],
+            doc_class=doc_class,
+            origin_dept_code=origin_code,
+            dest_dept_code=dest_code,
+            ayuda="Use una plantilla con tipo documental y una dependencia "
+            "destino/origen reconocibles",
+        )
+        # Tipo en el catálogo y metadatos contra la plantilla: AQUÍ, antes del render y
+        # de la subida, para que un 422 no deje un binario huérfano en el almacén.
+        await document_service.validar_tipo_y_metadata(
+            doc_class, dict(datos.metadata) if datos and datos.metadata else {}
+        )
+
         # ── EL ORDEN, y es la mitad del diseño ─────────────────────────────
         #
         #   1. combinar (1.ª pasada)
@@ -916,21 +939,6 @@ class BorradorService:
                         f"Heredada del radicado {padre['tracking_number']} "
                         "(clasificación vigente del antecedente)"
                     )[:300]
-        # Ac. AGN 060/2001 §5.2 (AREA-09-02): tipo documental y dependencia. El
-        # borrador no los guarda como columnas; se derivan de lo que sí sabe y,
-        # si no hay de dónde, se rechaza ANTES de consumir el número (el
-        # consecutivo no se devuelve): el render de arriba no gastó nada.
-        doc_class, origin_code, dest_code = await self._datos_minimos_del_borrador(
-            row, registered_by, datos
-        )
-        exigir_o_422(
-            row["doc_type"],
-            doc_class=doc_class,
-            origin_dept_code=origin_code,
-            dest_dept_code=dest_code,
-            ayuda="Use una plantilla con tipo documental y una dependencia "
-            "destino/origen reconocibles",
-        )
         payload = DocumentCreate(
             doc_type=row["doc_type"],
             subject=row["subject"],
@@ -945,9 +953,13 @@ class BorradorService:
             clasificacion_fundamento=fundamento,
             clasificacion_causal=causal,
             clasificacion_plazo_meses=plazo,
-            metadata={"from_borrador": str(borrador_id)},
+            # Solo lo que aporta quien radica; la procedencia va aparte para que
+            # no pase por el JSON Schema del tipo.
+            metadata=dict(datos.metadata) if datos and datos.metadata else {},
         )
-        result = await document_service.create(payload, registered_by)
+        result = await document_service.create(
+            payload, registered_by, procedencia={"from_borrador": str(borrador_id)}
+        )
         if padre_id is not None:
             await document_service._repo.set_responde_a(result.id, padre_id)
 

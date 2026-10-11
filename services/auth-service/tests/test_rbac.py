@@ -183,7 +183,7 @@ async def test_list_pickable_users_perm_radi(client: AsyncClient) -> None:
         Caller(user_id=u1, keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}),
     )
     resp = await client.get(
-        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-op"}
+        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": str(u1)}
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -212,7 +212,7 @@ async def test_pickable_dice_cuantos_usuarios_hay_en_total(client: AsyncClient) 
     )
 
     resp = await client.get(
-        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-op"}
+        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": str(u1)}
     )
 
     assert resp.status_code == 200
@@ -239,7 +239,7 @@ async def test_pickable_cuenta_solo_los_activos(client: AsyncClient) -> None:
     )
 
     await client.get(
-        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-op"}
+        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": str(u1)}
     )
 
     sql_total = conn.fetchval.await_args[0][0]
@@ -380,8 +380,9 @@ async def test_list_group_permissions_denied_without_admin(client: AsyncClient) 
 
 @pytest.mark.asyncio
 async def test_list_pickable_users_denies_without_perm_radi(client: AsyncClient) -> None:
-    """Sin PERM_RADI (ni root), el endpoint pickable responde 403."""
+    """Sin PERM_RADI ni USUA_PERM_ADMIN (ni root), el endpoint pickable responde 403."""
     conn = AsyncMock()
+    conn.fetchval.return_value = False  # el gate any-of resuelve en la BD
     conn.transaction = MagicMock(return_value=_FakeTx())  # append_denial() best-effort
     _override_caller(
         conn,
@@ -393,10 +394,69 @@ async def test_list_pickable_users_denies_without_perm_radi(client: AsyncClient)
         ),
     )
     resp = await client.get(
-        "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": "kc-nobody"}
+        "/api/v1/auth/users/pickable",
+        headers={**TENANT_HEADERS, "X-User-Id": str(uuid.uuid4())},
     )
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "forbidden"
+
+
+# --- B6: pickable es any-of {PERM_RADI, USUA_PERM_ADMIN} --------------------
+def _bd_con_permisos(conn: AsyncMock, concedidos: set[str]) -> None:
+    """`fetchval` que contesta como la BD al gate any-of: ``(sql, uid, [permisos], crud)``."""
+
+    async def _fetchval(sql: str, *args: object) -> object:
+        if "ANY(" in sql:
+            return bool(set(args[1]) & concedidos)  # type: ignore[call-overload]
+        return 0  # el conteo de activos del handler
+
+    conn.fetchval.side_effect = _fetchval
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("concedidos", "esperado"),
+    [
+        ({"USUA_PERM_ADMIN"}, 200),  # admin sin PERM_RADI: la pantalla de flujos/grupos
+        ({"PERM_RADI"}, 200),  # operador de radicación, como siempre
+        ({"USUA_PERM_CONSULTA"}, 403),  # ni uno ni otro
+        (set(), 403),
+    ],
+)
+async def test_pickable_es_any_of_radi_o_admin(
+    client: AsyncClient, concedidos: set[str], esperado: int
+) -> None:
+    conn = AsyncMock()
+    conn.fetch.return_value = [{"id": uuid.uuid4(), "username": "ANA"}]
+    conn.transaction = MagicMock(return_value=_FakeTx())
+    _bd_con_permisos(conn, concedidos)
+    uid = uuid.uuid4()
+    _override_caller(
+        conn,
+        Caller(
+            user_id=uid, keycloak_sub="kc", is_root=False, permissions={p: 1 for p in concedidos}
+        ),
+    )
+    resp = await client.get(
+        "/api/v1/auth/users/pickable",
+        headers={**TENANT_HEADERS, "X-User-Id": str(uid)},
+    )
+    assert resp.status_code == esperado
+    if esperado == 403:
+        assert resp.json()["detail"]["error"] == "forbidden"
+        conn.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pickable_sin_identidad_es_401(client: AsyncClient) -> None:
+    """El any-of resuelve al llamante por `get_caller`, como `require_permission`:
+    sin `X-User-Id` es 401 (no 403), y no llega a consultar permisos."""
+    conn = AsyncMock()
+    _bd_con_permisos(conn, {"PERM_RADI", "USUA_PERM_ADMIN"})
+    app.dependency_overrides[get_tenant_conn] = lambda: conn
+    resp = await client.get("/api/v1/auth/users/pickable", headers=TENANT_HEADERS)
+    assert resp.status_code == 401
+    conn.fetch.assert_not_called()
 
 
 # --- gate de autorización (ADR-013) ----------------------------------------

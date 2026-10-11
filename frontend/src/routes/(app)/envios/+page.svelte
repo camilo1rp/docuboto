@@ -35,7 +35,7 @@
     Destinatario, Dirección, Fecha.
 -->
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions } from "$lib/stores/auth.js";
@@ -234,6 +234,8 @@
   let fEstado = "";
   let fEstadoDescripcion = "";
   let fEstadoError = "";
+  /** Error del acuse: va asociado al CAMPO del archivo, no a «Nuevo estado». */
+  let fAcuseError = "";
   let actionLoading = false;
   // Acuse de recibo (AREA-09-10): pasar a mano a «entregado» exige la constancia de entrega.
   /** @type {FileList|null} */
@@ -260,6 +262,7 @@
     fEstado = selectedShipment.estado;
     fEstadoDescripcion = "";
     fEstadoError = "";
+    fAcuseError = "";
     fAcuseArchivos = null;
     // IMPORTANTE #3: cerrar el drawer antes de abrir el modal para evitar dos
     // trampas de foco y que Escape cierre ambos diálogos a la vez.
@@ -268,9 +271,19 @@
     modalEstado = true;
   }
 
+  /** Lleva el foco al campo del archivo cuando su error aparece. */
+  async function enfocarAcuse() {
+    await tick();
+    document.getElementById("envio-acuse")?.focus();
+  }
+
+  // Cambiar a un estado que no es «entregado» deja sin objeto el error del acuse.
+  $: if (fEstado !== "entregado") fAcuseError = "";
+
   async function cambiarEstado() {
     if (!selectedShipment) return;
     fEstadoError = "";
+    fAcuseError = "";
     if (!fEstado) {
       fEstadoError = "Seleccione el nuevo estado.";
       return;
@@ -278,8 +291,9 @@
 
     const archivoAcuse = fAcuseArchivos?.[0] ?? null;
     if (fEstado === "entregado" && !archivoAcuse) {
-      fEstadoError =
+      fAcuseError =
         "Adjunte el acuse de recibo: sin la constancia de entrega no se registra «entregado».";
+      enfocarAcuse();
       return;
     }
 
@@ -291,7 +305,8 @@
         try {
           acuseSubido = await subirAcuse(archivoAcuse);
         } catch (e) {
-          fEstadoError = e instanceof Error ? e.message : "No se pudo subir el acuse de recibo.";
+          fAcuseError = e instanceof Error ? e.message : "No se pudo subir el acuse de recibo.";
+          enfocarAcuse();
           return;
         }
       }
@@ -990,19 +1005,32 @@
     />
     {#if fEstado === "entregado"}
       <div class="field">
-        <label class="label" for="envio-acuse">Acuse de recibo</label>
+        <label class="label" for="envio-acuse">
+          Acuse de recibo
+          <span class="envio-obligatorio" aria-hidden="true">*</span>
+          <span class="sr-only">(obligatorio)</span>
+        </label>
         <input
           id="envio-acuse"
           class="input"
           type="file"
           accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff"
           bind:files={fAcuseArchivos}
-          aria-describedby="envio-acuse-ayuda"
+          required
+          aria-required="true"
+          aria-invalid={fAcuseError ? "true" : "false"}
+          aria-describedby={fAcuseError
+            ? "envio-acuse-ayuda envio-acuse-error"
+            : "envio-acuse-ayuda"}
+          on:change={() => (fAcuseError = "")}
         />
         <p class="help" id="envio-acuse-ayuda">
           Obligatorio: la constancia de entrega firmada por el destinatario o certificada por el
           operador. Queda ligada al envío por su huella SHA-256.
         </p>
+        {#if fAcuseError}
+          <p class="help is-danger" id="envio-acuse-error" role="alert">{fAcuseError}</p>
+        {/if}
       </div>
     {/if}
     <FormField
@@ -1123,6 +1151,11 @@
 
 <style lang="scss">
   @use "$styles/_tokens" as t;
+
+  .envio-obligatorio {
+    color: var(--op-error);
+    margin-left: 2px;
+  }
 
   // ---------------------------------------------------------------------------
   // Página

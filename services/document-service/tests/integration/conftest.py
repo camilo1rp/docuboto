@@ -345,6 +345,13 @@ CREATE TABLE IF NOT EXISTS urd_usuaroldep (
 );
 INSERT INTO dependencias (codigo, nombre) VALUES (1, 'Dirección General')
     ON CONFLICT DO NOTHING;
+-- B6: `DocumentService.create` exige un tipo ACTIVO del catálogo. Los que usan los
+-- radicados de prueba; los de ventanilla/publicación (PQRS, OFICIO, DEM-PET) los
+-- siembra cada prueba, porque su bandera `admite_ventanilla_publica` es parte de ella.
+INSERT INTO tipos_documentales (code, nombre) VALUES
+    ('Petición', 'Petición'), ('Oficio', 'Oficio'), ('Memorando', 'Memorando'),
+    ('TPLM', 'TPLM'), ('TPL', 'TPL'), ('Derechos de Petición', 'Derechos de Petición')
+    ON CONFLICT DO NOTHING;
 """
 
 

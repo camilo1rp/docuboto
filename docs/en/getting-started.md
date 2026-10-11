@@ -213,6 +213,8 @@ or rejected first.
 > written have their own circuit — visto bueno **and** signature — under
 > `/borradores`, because the text can still be edited there.
 
+> **Registering a draft**: on confirmation the screen asks for the **document type** (and, for an outgoing document, the **origin department** among your active ones) plus the type's own metadata; with no active department assigned, "Radicar" is not offered. Stored metadata is then readable in the `/bandeja` detail and in the expediente record.
+
 ### Query the conversational assistant
 
 ```bash

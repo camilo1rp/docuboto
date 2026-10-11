@@ -190,7 +190,12 @@ async def test_la_respuesta_rapida_hereda_origen_y_tipo_del_antecedente(client_w
     entrada = make_radicado_record(dest_dept_code=7, doc_class="Tutela")
     salida = make_radicado_record(doc_type="S", tracking_number="2024-DEMO-S-000001")
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = []
+    # La Salida hereda origen 7 del antecedente: el actor tiene URD activa ahí (create).
+
+    async def _fetch(sql: str, *a: object):
+        return [{"depe_id": 7}] if "urd_usuaroldep" in sql else []
+
+    mock_conn.fetch.side_effect = _fetch
     insertados: list[tuple] = []
 
     async def _fetchrow(query: str, *a: object, **k: object):

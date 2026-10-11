@@ -32,6 +32,7 @@ from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás 
     CLASIFICADA,
     PUBLICA,
     check_permission,
+    make_require_any_permission,
     mensaje_denegacion,
     nivel_efectivo,
     resolve_caller_clearance,
@@ -49,6 +50,12 @@ except ImportError:  # pragma: no cover — common not installed in some test en
 _SERVICE = "document-service"
 logger = logging.getLogger(__name__)
 
+
+
+# Gate any-of (basta UNO de los permisos): la lógica vive en orpycamcp_common.rbac.
+require_any_permission = make_require_any_permission(
+    service=_SERVICE, get_conn=get_tenant_conn
+)
 
 
 def require_permission(perm_name: str, min_crud: int = 1):

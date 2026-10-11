@@ -187,6 +187,52 @@ PARAMS_VOCABULARIO_CERRADO: dict[str, tuple[str, ...]] = {
     "firma_personal_require_xades": ("off", "clasificados", "todos"),
 }
 
+#: Claves que `PUT /config/params/{key}` admite: las que SIEMBRAN las migraciones de
+#: tenant (009 membrete «Entidad», 010 política XAdES, 012 política de tratamiento
+#: de datos) y que el código de algún servicio LEE. Cerrado a propósito: la lectura
+#: (`GET /config/params`) es abierta a todo el tenant, así que el upsert de una clave
+#: cualquiera convertiría la tabla en un buzón donde alguien guardaría un secreto que
+#: cualquier usuario lee. Añadir un parámetro = sembrarlo en una migración Y listarlo
+#: aquí; el guardián `shared/tests/test_params_admitidos_son_los_sembrados.py` falla
+#: si divergen (sembradas = admitidas ∪ `PARAMS_INERTES`).
+PARAMS_ADMITIDOS: frozenset[str] = frozenset({
+    # 009_params_entidad (membrete)
+    "entidad_nombre",
+    "entidad_sigla",
+    "entidad_nit",
+    "entidad_direccion",
+    "entidad_telefono",
+    "entidad_email",
+    "entidad_web",
+    # 010_params_firma
+    "firma_personal_require_xades",
+    # 012_politica_tratamiento
+    "politica_tratamiento_version",
+    "politica_tratamiento_url",
+    "politica_tratamiento_texto",
+})
+
+#: Claves que la migración 002 SIEMBRA (herencia de `sgd_param_admin` de Orfeo) pero
+#: que NINGÚN servicio lee: configuración inerte. Se SIEMBRAN, pero el PUT las rechaza
+#: (422): admitir su edición prometería un efecto que no existe (p. ej. cambiar
+#: `formato_numero_radicado` no cambia el número, que sale de
+#: `{YEAR}-{TENANT_CODE}-{TYPE}-{SEQ}`; y si algún día se cablea, cambiarlo a mitad de
+#: año rompería la numeración continua del Ac. AGN 060/2001). Para volver a
+#: configurarlas: que un servicio las lea Y moverlas a `PARAMS_ADMITIDOS`. El guardián
+#: exige que toda sembrada esté en una de las dos listas y que ninguna esté en ambas.
+PARAMS_INERTES: frozenset[str] = frozenset({
+    "unicoconsecutivo",
+    "formato_numero_radicado",
+    "depe_digits",
+    "consec_digits",
+    "dias_bloqueo",
+    "expediente_number_format",
+    "notificaciones_mail",
+    "archivado_requiere_exp",
+    "reasigna_requiere_exp",
+    "firma_digital_provider",
+})
+
 #: Mínimo de caracteres (sin espacios laterales) del `motivo` de un cambio que
 #: RELAJA una política. Una sola palabra no es una justificación auditable.
 MOTIVO_MIN_CARACTERES = 10
@@ -239,6 +285,18 @@ async def set_param(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> ParamResponse:
+    if key not in PARAMS_ADMITIDOS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "config_param_desconocido",
+                "detail": (
+                    f"«{key}» no es un parámetro configurable. Admitidos: "
+                    f"{', '.join(sorted(PARAMS_ADMITIDOS))}"
+                ),
+                "status": 422,
+            },
+        )
     if payload.value is None:
         # JSON null solo lo escribe la siembra (010/011: «la entidad no lo define»,
         # manda el entorno). Por la API borraría en silencio la decisión de la

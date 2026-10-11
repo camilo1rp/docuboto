@@ -26,7 +26,14 @@ from orpycamcp_common import rbac
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _SERVICIOS = _RAIZ / "services"
-_UNICAS = {"check_permission", "resolve_caller_clearance", "nivel_efectivo", "mensaje_denegacion"}
+_UNICAS = {
+    "check_permission",
+    "check_any_permission",
+    "require_any_permission",
+    "resolve_caller_clearance",
+    "nivel_efectivo",
+    "mensaje_denegacion",
+}
 
 _necesita_arbol = pytest.mark.skipif(
     not _SERVICIOS.is_dir(), reason="el árbol de servicios no está montado"

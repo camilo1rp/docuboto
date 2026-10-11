@@ -59,6 +59,7 @@ from app.core.anexos_publicos import (
     validar_conjunto,
 )
 from app.core.politica import Politica, politica_de
+from app.core.tipos import nombre_tipo_documental
 from app.schemas.document import AnexoInput, DocumentCreate
 from app.schemas.public import (
     PoliticaTratamiento,
@@ -205,11 +206,7 @@ class VentanillaService:
         TRD y con ella la retención del documento, en silencio y sin que nadie
         lo decida.
         """
-        nombre = await self._conn.fetchval(
-            "SELECT nombre FROM tipos_documentales "
-            "WHERE code = $1 AND activo AND admite_ventanilla_publica",
-            code,
-        )
+        nombre = await nombre_tipo_documental(self._conn, code, solo_ventanilla=True)
         if nombre is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -222,7 +219,7 @@ class VentanillaService:
                     "status": 422,
                 },
             )
-        return str(nombre)
+        return nombre
 
     # -- Destino ------------------------------------------------------------
 
@@ -416,6 +413,28 @@ class VentanillaService:
                 {"tercero_id": tercero["id"], "rol": "remitente", "principal": True}
             ]
 
+        # Claves RESERVADAS (`CLAVES_RESERVADAS`): las pone el sistema por
+        # `procedencia`, nunca el cuerpo de un cliente.
+        procedencia = {
+            "canal": CANAL,
+            # Ley 1581/2012 (AREA-09-08, ADR-031): constancia de la autorización
+            # de tratamiento. Versión, huella y URL de la política salen del
+            # servidor (no del cliente). `ip` es la que el gateway FIRMÓ
+            # (saltos de confianza); sin firma válida va nula y
+            # `ip_verificada=false`: la IP es evidencia complementaria, no
+            # requisito de la autorización. Las constancias v1 (`ip_declarada`)
+            # se conservan tal cual.
+            "consentimiento": {
+                "norma": "Ley 1581/2012",
+                "version_constancia": 2,
+                "politica_version": politica.version,
+                "politica_huella": politica.huella,
+                "politica_url": politica.url,
+                "instante": datetime.now(UTC).isoformat(),
+                "ip": ip,
+                "ip_verificada": ip is not None,
+            },
+        }
         doc = DocumentCreate(
             doc_type="E",
             subject=payload.asunto,
@@ -427,24 +446,6 @@ class VentanillaService:
             anexos=anexos,
             actores=actores,
             metadata={
-                "canal": CANAL,
-                # Ley 1581/2012 (AREA-09-08, ADR-031): constancia de la autorización
-                # de tratamiento. Versión, huella y URL de la política salen del
-                # servidor (no del cliente). `ip` es la que el gateway FIRMÓ
-                # (saltos de confianza); sin firma válida va nula y
-                # `ip_verificada=false`: la IP es evidencia complementaria, no
-                # requisito de la autorización. Las constancias v1 (`ip_declarada`)
-                # se conservan tal cual.
-                "consentimiento": {
-                    "norma": "Ley 1581/2012",
-                    "version_constancia": 2,
-                    "politica_version": politica.version,
-                    "politica_huella": politica.huella,
-                    "politica_url": politica.url,
-                    "instante": datetime.now(UTC).isoformat(),
-                    "ip": ip,
-                    "ip_verificada": ip is not None,
-                },
                 "remitente": {
                     "nombre": payload.nombre,
                     "entidad": payload.entidad,
@@ -458,7 +459,10 @@ class VentanillaService:
         )
         try:
             result = await document_service.create(
-                doc, registered_by=None, submission_key=submission_key
+                doc,
+                registered_by=None,
+                submission_key=submission_key,
+                procedencia=procedencia,
             )
         except DuplicateSubmissionError:
             # Carrera: otra petición con la misma clave ganó mientras esta preparaba

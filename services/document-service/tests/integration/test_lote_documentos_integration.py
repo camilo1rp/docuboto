@@ -180,12 +180,17 @@ async def test_los_items_quedan_con_su_numero_de_radicado(
     async with _tenant_registrado(conn, slug):
         await conn.execute(f'SET search_path = "{_schema(slug)}", public')
 
+        actor = uuid.uuid4()
+        # Límite de origen de la Salida: el responsable del lote tiene URD activa en la 1.
+        await conn.execute(
+            "INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 1)", actor
+        )
         servicio = BatchService(conn, slug)
         job_id = await servicio.create_batch_documents(
             BatchDocumentsRequest(
                 documents=[BatchDocumentCreate(doc_type="S", doc_class="Petición", origin_dept_code=1, subject="Lote — salida")]
             ),
-            uuid.uuid4(),
+            actor,
         )
         async with acquire_tenant(slug) as conn_tarea:
             await BatchService(conn_tarea, slug).process_batch_documents(job_id)
@@ -199,3 +204,35 @@ async def test_los_items_quedan_con_su_numero_de_radicado(
         assert items[0]["status"] == "success", f"motivo: {items[0]['error_message']}"
         assert items[0]["result_id"] is not None, "ítem en éxito sin el radicado que creó"
         assert items[0]["error_message"] is None
+
+
+async def test_el_lote_rechaza_una_salida_con_origen_ajeno_al_responsable(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+    pool_del_proceso: None,
+) -> None:
+    """El límite de origen de la Salida también rige en el lote: el ítem falla ANTES de
+    gastar el consecutivo."""
+    slug, conn = tenant_ctx
+    async with _tenant_registrado(conn, slug):
+        await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+        servicio = BatchService(conn, slug)
+        job_id = await servicio.create_batch_documents(
+            BatchDocumentsRequest(
+                documents=[
+                    BatchDocumentCreate(
+                        doc_type="S", doc_class="Petición", origin_dept_code=1,
+                        subject="Lote — salida ajena",
+                    )
+                ]
+            ),
+            uuid.uuid4(),  # sin URD en ninguna dependencia
+        )
+        async with acquire_tenant(slug) as conn_tarea:
+            await BatchService(conn_tarea, slug).process_batch_documents(job_id)
+        await _esperar_job(conn, job_id)
+        item = await conn.fetchrow(
+            "SELECT status, error_message FROM batch_job_items WHERE job_id = $1", job_id
+        )
+        assert item["status"] == "failed"
+        assert "origen_fuera_de_sus_dependencias" in item["error_message"]
+        assert await conn.fetchval("SELECT count(*) FROM radicados") == 0

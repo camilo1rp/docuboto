@@ -18,6 +18,8 @@ radicación se prueban contra Postgres real en
 
 import pytest
 
+from tests.conftest import TENANT_HEADERS
+
 # ── La fecha de recibo ───────────────────────────────────────────────────────
 
 
@@ -127,12 +129,19 @@ def _gate_de(ruta: str, metodo: str) -> set[str]:
                 continue
             for dep in list(router.dependencies) + list(route.dependencies):
                 cierre = getattr(dep.dependency, "__closure__", None) or ()
-                exigidos |= {
-                    celda.cell_contents
-                    for celda in cierre
-                    if isinstance(celda.cell_contents, str)
-                    and celda.cell_contents.startswith(("PERM_", "USUA_", "SGD_"))
-                }
+                for celda in cierre:
+                    valor = celda.cell_contents
+                    # `require_permission` cierra sobre un `str`; `require_any_permission`
+                    # sobre la TUPLA de brazos (y sobre su etiqueta «A|B», que no es un
+                    # permiso). Se aplanan las dos formas.
+                    candidatos = valor if isinstance(valor, tuple) else (valor,)
+                    exigidos |= {
+                        c
+                        for c in candidatos
+                        if isinstance(c, str)
+                        and "|" not in c
+                        and c.startswith(("PERM_", "USUA_", "SGD_"))
+                    }
     return exigidos
 
 
@@ -164,14 +173,17 @@ def test_saber_que_buzones_tengo_es_la_misma_competencia_que_trabajarlos() -> No
     listado = _gate_de("/api/v1/email/cuentas", "GET")
     bandeja = _gate_de("/api/v1/email/cuentas/{cuenta_id}/bandeja", "GET")
 
-    assert listado == {"PERM_RADI"}, (
-        f"el listado de cuentas exige {sorted(listado)}: si vuelve a pedir "
-        "USUA_PERM_ADMIN, el funcionario de ventanilla se queda otra vez sin "
-        "forma de encontrar su buzón"
+    # B6: el listado es any-of {PERM_RADI, USUA_PERM_ADMIN}. La bandeja sigue siendo
+    # de PERM_RADI; el listado SUMA al administrador de /admin/correo (que configura
+    # buzones sin radicar) sin quitar al funcionario de ventanilla.
+    assert listado == {"PERM_RADI", "USUA_PERM_ADMIN"}, (
+        f"el listado de cuentas exige {sorted(listado)}: si deja de admitir PERM_RADI, "
+        "el funcionario de ventanilla se queda otra vez sin forma de encontrar su "
+        "buzón; si deja de admitir USUA_PERM_ADMIN, /admin/correo da 403 al admin"
     )
-    assert listado == bandeja, (
-        f"listado {sorted(listado)} y bandeja {sorted(bandeja)} divergen: saber "
-        "qué buzones tengo y trabajarlos son la misma competencia"
+    assert bandeja <= listado, (
+        f"listado {sorted(listado)} y bandeja {sorted(bandeja)} divergen: quien puede "
+        "trabajar un buzón tiene que poder saber que existe"
     )
 
 
@@ -183,3 +195,32 @@ def test_crear_una_cuenta_sigue_siendo_de_administrador() -> None:
     """
     assert _gate_de("/api/v1/email/cuentas", "POST") == {"USUA_PERM_ADMIN"}
     assert _gate_de("/api/v1/email/apps-oauth", "GET") == {"USUA_PERM_ADMIN"}
+
+
+# ── B6: el listado es any-of; el WHERE del repositorio decide QUÉ cuentas ─────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("concedidos", "esperado"),
+    [
+        ({"USUA_PERM_ADMIN"}, 200),  # admin sin PERM_RADI
+        ({"PERM_RADI"}, 200),  # funcionario de ventanilla
+        ({"PERM_TRAMITAR"}, 403),  # ni uno ni otro
+        (set(), 403),
+    ],
+)
+async def test_listar_cuentas_basta_radi_o_admin(client_with_conn, concedidos, esperado) -> None:
+    client, conn = client_with_conn
+
+    async def _fetchval(sql, *args):
+        if "ANY(" in sql:  # gate any-of
+            return bool(set(args[1]) & concedidos)
+        return bool({args[1]} & concedidos) if len(args) > 1 else False
+
+    conn.fetchval.side_effect = _fetchval
+    conn.fetch.return_value = []
+    resp = await client.get("/api/v1/email/cuentas", headers=TENANT_HEADERS)
+    assert resp.status_code == esperado, resp.text
+    if esperado == 403:
+        conn.fetch.assert_not_called()

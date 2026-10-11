@@ -59,13 +59,47 @@ describe("/admin/parametros — valor null", () => {
     const f = vi.fn();
     vi.stubGlobal("fetch", f);
     render(ParametrosPage, { props: { data: data() } });
-    await fireEvent.input(screen.getByLabelText(/^clave/i), { target: { value: "nuevo" } });
+    await fireEvent.change(screen.getByLabelText(/^clave/i), {
+      target: { value: "entidad_sigla" },
+    });
     await fireEvent.click(screen.getByRole("button", { name: /crear parámetro/i }));
     expect(screen.getByText(/el valor es obligatorio/i)).toBeTruthy();
     await fireEvent.input(screen.getByLabelText(/valor \(json\)/i), { target: { value: "null" } });
     await fireEvent.click(screen.getByRole("button", { name: /crear parámetro/i }));
     expect(screen.getByText(/no puede quedar vacío/i)).toBeTruthy();
     expect(f).not.toHaveBeenCalled();
+  });
+
+  it("la clave nueva es un selector de las admitidas que aún no existen", () => {
+    sesion(3);
+    render(ParametrosPage, { props: { data: { ...data(), params: { entidad_sigla: "X" } } } });
+    const opciones = [...screen.getByLabelText(/^clave/i).querySelectorAll("option")].map(
+      (o) => o.value,
+    );
+    expect(opciones).toContain("entidad_nombre");
+    expect(opciones).not.toContain("entidad_sigla");
+    expect(opciones).not.toContain("plazo_dias");
+  });
+
+  it("un 422 config_param_desconocido se explica en español", async () => {
+    sesion(3);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        json: async () => ({ detail: { error: "config_param_desconocido", detail: "x" } }),
+      })),
+    );
+    render(ParametrosPage, { props: { data: data() } });
+    await fireEvent.change(screen.getByLabelText(/^clave/i), {
+      target: { value: "entidad_sigla" },
+    });
+    await fireEvent.input(screen.getByLabelText(/valor \(json\)/i), { target: { value: "1" } });
+    await fireEvent.click(screen.getByRole("button", { name: /crear parámetro/i }));
+    await waitFor(() =>
+      expect(get(toasts).some((t) => /no es configurable/i.test(t.message))).toBe(true),
+    );
   });
 
   it("un 422 valor_nulo del servidor se explica en español", async () => {
@@ -79,7 +113,9 @@ describe("/admin/parametros — valor null", () => {
       })),
     );
     render(ParametrosPage, { props: { data: data() } });
-    await fireEvent.input(screen.getByLabelText(/^clave/i), { target: { value: "nuevo" } });
+    await fireEvent.change(screen.getByLabelText(/^clave/i), {
+      target: { value: "entidad_sigla" },
+    });
     await fireEvent.input(screen.getByLabelText(/valor \(json\)/i), { target: { value: "1" } });
     await fireEvent.click(screen.getByRole("button", { name: /crear parámetro/i }));
     await waitFor(() =>

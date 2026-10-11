@@ -76,11 +76,9 @@ describe("/envios — modal de acuse de recibo", () => {
     globalThis.fetch = original;
   });
 
-  function simular({ estado }) {
+  function simular({ estado, storage = respuesta(201, { id: "file-1", sha256: "abc" }) }) {
     const f = vi.fn(async (url) => {
-      if (String(url).startsWith("/radicar/api/storage")) {
-        return respuesta(201, { id: "file-1", sha256: "abc" });
-      }
+      if (String(url).startsWith("/radicar/api/storage")) return storage;
       if (String(url).endsWith("/estado")) return estado;
       return respuesta(200, ENVIO); // detalle del drawer
     });
@@ -127,5 +125,67 @@ describe("/envios — modal de acuse de recibo", () => {
     await prepararEntrega();
     await aplicar();
     await waitFor(() => expect(mensajes().join(" ")).toMatch(/ya está ligado a otro/i));
+  });
+
+  const huboLlamadaEstado = (f) => f.mock.calls.some(([u]) => String(u).endsWith("/estado"));
+
+  it("si falla la subida del acuse NO cambia el estado y el error queda en el campo del archivo", async () => {
+    const f = simular({
+      estado: respuesta(200, { ...ENVIO, estado: "entregado" }),
+      storage: respuesta(500, { error: "storage_down", detail: "Almacén no disponible." }),
+    });
+    await prepararEntrega();
+    await aplicar();
+    const error = await screen.findByRole("alert");
+    expect(error.textContent).toMatch(/acuse|almac/i);
+    expect(huboLlamadaEstado(f)).toBe(false);
+    // El error está asociado al campo del archivo, no a «Nuevo estado».
+    const archivo = screen.getByLabelText(/Acuse de recibo/i);
+    expect(archivo.getAttribute("aria-describedby")).toContain(error.id);
+    expect(screen.getByLabelText(/Nuevo estado/i).getAttribute("aria-invalid")).toBe("false");
+  });
+
+  it("un estado distinto de «entregado» no manda el acuse aunque se hubiera adjuntado antes", async () => {
+    const f = simular({ estado: respuesta(200, { ...ENVIO, estado: "devuelto" }) });
+    await prepararEntrega();
+    await fireEvent.change(screen.getByLabelText(/Nuevo estado/i), {
+      target: { value: "devuelto" },
+    });
+    await aplicar();
+    await waitFor(() => expect(huboLlamadaEstado(f)).toBe(true));
+    const [, init] = f.mock.calls.find(([u]) => String(u).endsWith("/estado"));
+    const cuerpo = JSON.parse(init.body);
+    expect(cuerpo.estado).toBe("devuelto");
+    expect(cuerpo).not.toHaveProperty("acuse_file_id");
+    expect(cuerpo).not.toHaveProperty("acuse_sha256");
+    expect(f.mock.calls.some(([u]) => String(u).startsWith("/radicar/api/storage"))).toBe(false);
+  });
+
+  it("el error de «sin archivo» es del campo del archivo (aria-invalid y aria-describedby)", async () => {
+    simular({ estado: respuesta(200, ENVIO) });
+    await prepararEntrega({ conArchivo: false });
+    await aplicar();
+    const error = await screen.findByText(/Adjunte el acuse de recibo/i);
+    const archivo = screen.getByLabelText(/Acuse de recibo/i);
+    expect(archivo.getAttribute("aria-invalid")).toBe("true");
+    expect(archivo.getAttribute("aria-describedby")).toContain(error.id);
+    expect(screen.getByLabelText(/Nuevo estado/i).getAttribute("aria-invalid")).toBe("false");
+    expect(document.activeElement).toBe(archivo);
+  });
+
+  it("segundo ciclo: abrir, adjuntar, cerrar y reabrir vuelve a exigir el archivo", async () => {
+    const f = simular({ estado: respuesta(200, { ...ENVIO, estado: "entregado" }) });
+    await prepararEntrega();
+    await fireEvent.click(screen.getByRole("button", { name: /Cancelar/i }));
+    await waitFor(() => expect(screen.queryByLabelText(/Nuevo estado/i)).toBeNull());
+
+    await fireEvent.click(screen.getByRole("button", { name: /Ver detalle del envío G-123/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: /Cambiar estado/i }));
+    await fireEvent.change(await screen.findByLabelText(/Nuevo estado/i), {
+      target: { value: "entregado" },
+    });
+    await aplicar();
+    expect(await screen.findByText(/Adjunte el acuse de recibo/i)).toBeTruthy();
+    expect(huboLlamadaEstado(f)).toBe(false);
   });
 });

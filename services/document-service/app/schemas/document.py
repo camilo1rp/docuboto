@@ -11,7 +11,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.datos_minimos import faltantes, mensaje_faltantes
 from app.schemas.tercero import ActorVincular
@@ -25,6 +25,24 @@ class AnexoInput(BaseModel):
     tipo_anexo: str | None = Field(default=None, max_length=50)
     es_principal: bool = False
     folios: int | None = Field(default=None, ge=0)
+
+
+#: Claves de `metadata` que son PROCEDENCIA del sistema, no dato del tipo
+#: documental: `from_borrador` (radicado nacido de un borrador), `canal` (vía de
+#: entrada; alimenta el gate de publicación de la Ley 1581) y `consentimiento`
+#: (constancia de autorización de tratamiento, con valor probatorio). Las pone el
+#: servidor por `procedencia`; un cliente (API, MCP, borrador) NO puede aportarlas
+#: ni, por PATCH, cambiarlas o borrarlas. Lista ÚNICA para todas las puertas.
+CLAVES_RESERVADAS: frozenset[str] = frozenset({"from_borrador", "canal", "consentimiento"})
+
+
+def rechazar_claves_reservadas(metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    reservadas = sorted(CLAVES_RESERVADAS & set(metadata or {}))
+    if reservadas:
+        raise ValueError(
+            f"metadata no admite las claves {reservadas}: las asigna el sistema"
+        )
+    return metadata
 
 
 class DocumentCreate(BaseModel):
@@ -77,6 +95,11 @@ class DocumentCreate(BaseModel):
     # y una Entrada radicada de urgencia puede completarse después con
     # `POST /terceros/radicado/{id}/actores`.
     actores: list[ActorVincular] = Field(default_factory=list, max_length=200)
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_sin_claves_reservadas(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return rechazar_claves_reservadas(v) or {}
 
     @model_validator(mode="after")
     def _require_datos_minimos(self) -> "DocumentCreate":
@@ -134,6 +157,13 @@ class DocumentUpdate(BaseModel):
     # sobreviviendo a la retipificación sin que nadie los hubiera pedido, y ese
     # residuo es exactamente lo que hace que un expediente deje de cuadrar.
     metadata: dict[str, Any] | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_sin_claves_reservadas(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return rechazar_claves_reservadas(v)
 
 
 class AnexoResponse(BaseModel):

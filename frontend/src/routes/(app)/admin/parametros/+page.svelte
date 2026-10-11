@@ -50,6 +50,8 @@
     relajaPolitica,
     etiquetaPolitica,
   } from "$lib/utils/firmaInobtenible.js";
+  import { clavesPorCrear } from "$lib/utils/paramsAdmitidos.js";
+  import { etiquetaDeParam } from "$lib/utils/paramsEtiquetas.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -98,6 +100,8 @@
   let newKey = "";
   let newValueRaw = "";
   let newKeyError = "";
+  // Solo se ofrecen las claves que el backend admite y que el tenant aún no tiene.
+  $: clavesDisponibles = clavesPorCrear(paramEntries.map(([k]) => k));
   let newValueError = "";
 
   // Política XAdES de la entidad: selector cerrado + motivo si se relaja.
@@ -120,6 +124,12 @@
   function mensajeGuardar(res, resData) {
     if (res.status === 403) {
       return "Cambiar parámetros exige administración a nivel 3 (crear y borrar). Su nivel actual no alcanza.";
+    }
+    if (codigoError(resData) === "config_param_desconocido") {
+      return "Ese parámetro no es configurable. Elija una de las claves de la lista.";
+    }
+    if (codigoError(resData) === "url_invalida") {
+      return "La dirección debe empezar por http:// o https://.";
     }
     if (codigoError(resData) === "valor_nulo") {
       return "El valor no puede quedar vacío: un parámetro no se puede dejar sin valor para que se herede. Escriba un valor concreto.";
@@ -225,7 +235,7 @@
     newKeyError = "";
     newValueError = "";
     if (!newKey.trim()) {
-      newKeyError = "La clave es obligatoria.";
+      newKeyError = "Elija una clave.";
       return;
     }
     if (paramEntries.some(([k]) => k === newKey.trim())) {
@@ -575,23 +585,36 @@
     {#if canWriteParams}
       <form class="param-form" on:submit|preventDefault={crearParam} novalidate>
         <h2 class="param-page__section-title">Nuevo parámetro</h2>
-        <FormField
-          id="new-param-key"
-          label="Clave"
-          required
-          bind:value={newKey}
-          error={newKeyError}
-        />
-        <FormField
-          id="new-param-value"
-          label="Valor (JSON)"
-          type="textarea"
-          rows={3}
-          bind:value={newValueRaw}
-          error={newValueError}
-          placeholder={'"texto", 123, true, {"a": 1} …'}
-        />
-        <Button type="submit" icon="fas fa-plus" loading={actionLoading}>Crear parámetro</Button>
+        {#if clavesDisponibles.length === 0}
+          <p class="param-page__hint" data-testid="params-sin-claves-nuevas">
+            Todos los parámetros configurables ya existen; edítelos en la tabla.
+          </p>
+        {:else}
+          <FormField
+            id="new-param-key"
+            label="Clave"
+            type="select"
+            required
+            bind:value={newKey}
+            error={newKeyError}
+            options={[
+              { value: "", label: "Elija una clave…" },
+              ...clavesDisponibles.map((k) => ({ value: k, label: etiquetaDeParam(k) })),
+            ]}
+          />
+        {/if}
+        {#if clavesDisponibles.length > 0}
+          <FormField
+            id="new-param-value"
+            label="Valor (JSON)"
+            type="textarea"
+            rows={3}
+            bind:value={newValueRaw}
+            error={newValueError}
+            placeholder={'"texto", 123, true, {"a": 1} …'}
+          />
+          <Button type="submit" icon="fas fa-plus" loading={actionLoading}>Crear parámetro</Button>
+        {/if}
       </form>
     {/if}
   </div>

@@ -61,7 +61,12 @@ async def _radicado(conn, slug, **kw) -> uuid.UUID:
         "dest_dept_code": 1,
     }
     base.update(kw)
-    creado = await DocumentService(conn, slug).create(DocumentCreate(**base), registered_by=None)
+    # `canal` es procedencia del SISTEMA (B6): no entra por el `metadata` del cliente.
+    meta = base.get("metadata") or {}
+    procedencia = {k: meta.pop(k) for k in ("canal", "consentimiento", "from_borrador") if k in meta}
+    creado = await DocumentService(conn, slug).create(
+        DocumentCreate(**base), registered_by=None, procedencia=procedencia or None
+    )
     return creado.id
 
 
@@ -581,6 +586,11 @@ async def test_el_lote_con_dependencia_inexistente_falla_el_item_sin_gastar_nume
 
     slug, conn = await _en(tenant_ctx)
     async with _tenant_registrado(conn, slug):
+        actor = uuid.uuid4()
+        # Límite de origen de la Salida: el responsable del lote tiene URD activa en la 1.
+        await conn.execute(
+            "INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 1)", actor
+        )
         servicio = BatchService(conn, slug)
         job = await servicio.create_batch_documents(
             BatchDocumentsRequest(
@@ -595,7 +605,7 @@ async def test_el_lote_con_dependencia_inexistente_falla_el_item_sin_gastar_nume
                     ),
                 ]
             ),
-            uuid.uuid4(),
+            actor,
         )
         await servicio.process_batch_documents(job)
         estados = [

@@ -27,9 +27,14 @@ Política **fail-closed**: ante ausencia de identidad, usuario inexistente, tabl
 RBAC no provisionadas o cualquier duda, el nivel es PUBLICA (1) y el permiso `False`.
 """
 
+import logging
 import uuid
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
@@ -168,3 +173,126 @@ def mensaje_denegacion(perm_name: str, min_crud: int, nivel: int | None) -> str:
         f"Tiene el permiso {perm_name} con nivel {nivel}, y esta acción requiere "
         f"nivel {min_crud} o superior"
     )
+
+
+async def check_any_permission(
+    conn: asyncpg.Connection,
+    user_id: uuid.UUID | None,
+    perm_names: Sequence[str],
+    min_crud: int = 1,
+) -> bool:
+    """``True`` si ``user_id`` tiene AL MENOS UNO de ``perm_names`` (o es ROOT).
+
+    Gemela any-of de :func:`check_permission`, con la misma política fail-closed:
+    sin usuario, sin lista de permisos, tablas RBAC ausentes o usuario inexistente
+    es ``False``. Una sola consulta (``= ANY``), no un bucle de ``check_permission``:
+    así un permiso revocado a mitad de petición no puede dar dos respuestas.
+    """
+    if user_id is None or not perm_names:
+        return False
+    try:
+        allowed = await conn.fetchval(
+            """
+            SELECT (
+                u.is_root
+                OR EXISTS (
+                    SELECT 1
+                    FROM auth_memberships m
+                    JOIN auth_group_permissions gp ON gp.group_id = m.group_id
+                    JOIN auth_permissions p ON p.id = gp.permission_id
+                    WHERE m.user_id = u.id
+                      AND p.nombre = ANY($2::text[])
+                      AND gp.crud >= $3
+                )
+            )
+            FROM auth_users u
+            WHERE u.id = $1
+            """,
+            user_id,
+            list(perm_names),
+            min_crud,
+        )
+    except asyncpg.UndefinedTableError:
+        return False
+    return bool(allowed) if allowed is not None else False
+
+
+async def _sin_identidad_previa() -> None:
+    """Identidad previa por defecto: ninguna (el gate decide solo con `X-User-Id`)."""
+    return None
+
+
+def make_require_any_permission(
+    *,
+    service: str,
+    get_conn: Callable[..., Any],
+    identity: Callable[..., Any] | None = None,
+) -> Callable[..., Callable[..., Awaitable[None]]]:
+    """Fabrica ``require_any_permission`` para un servicio (su ``get_tenant_conn``).
+
+    Cada servicio hace ``require_any_permission = make_require_any_permission(...)``
+    en su ``core`` y los routers escriben
+    ``Depends(require_any_permission("PERM_A", "PERM_B"))``: la LÓGICA vive aquí una
+    vez; lo único propio del servicio es de dónde sale la conexión con el
+    ``search_path`` del tenant. Basta UNO de los permisos (any-of); ROOT pasa.
+
+    Una denegación deja asiento (``audit.append_denial``) igual que
+    ``require_permission``, solo para un llamante identificado, con
+    ``perm_name="A|B"``, best-effort. El 403 usa el mismo cuerpo
+    ``{"error": "forbidden", "detail": ..., "status": 403}``.
+
+    ``identity`` (opcional): dependencia que resuelve y VALIDA al llamante ANTES de
+    juzgar el permiso, para que el any-of se comporte como ``require_permission`` del
+    servicio (401 sin identidad, asiento «usuario no aprovisionado»). Sin ella, un
+    llamante sin identidad válida cae a 403 fail-closed.
+    """
+    from fastapi import Depends, Header, HTTPException, status
+
+    from orpycamcp_common import audit
+
+    def require_any_permission(
+        *perm_names: str, min_crud: int = 1
+    ) -> Callable[..., Awaitable[None]]:
+        if not perm_names:
+            raise ValueError("require_any_permission exige al menos un permiso")
+        etiqueta = "|".join(perm_names)
+
+        async def _dep(
+            x_user_id: str | None = Header(default=None),
+            x_tenant_slug: str | None = Header(default=None),
+            conn: asyncpg.Connection = Depends(get_conn),
+            _identidad: Any = Depends(identity or _sin_identidad_previa),
+        ) -> None:
+            try:
+                user_id = uuid.UUID(x_user_id) if x_user_id else None
+            except ValueError:
+                user_id = None
+            if await check_any_permission(conn, user_id, perm_names, min_crud):
+                return
+            if user_id is not None:
+                try:
+                    await audit.append_denial(
+                        conn,
+                        tenant_slug=x_tenant_slug,
+                        service=service,
+                        actor=str(user_id),
+                        perm_name=etiqueta,
+                        min_crud=min_crud,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                    logger.warning("audit.append_denial failed", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "forbidden",
+                    "detail": (
+                        f"Se requiere alguno de los permisos {', '.join(perm_names)} "
+                        f"(nivel {min_crud} o superior)"
+                    ),
+                    "status": 403,
+                },
+            )
+
+        return _dep
+
+    return require_any_permission

@@ -43,7 +43,7 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 
-from app.core.clearance import check_permission, require_permission
+from app.core.clearance import check_permission, require_any_permission, require_permission
 from app.core.database import get_redis, get_tenant_client, get_tenant_conn
 from app.schemas.email_cuenta import (
     AppOAuthCrear,
@@ -173,7 +173,7 @@ async def crear_cuenta(
 
 @cuentas_router.get(
     "", response_model=list[CuentaResponse],
-    # `PERM_RADI`, no `USUA_PERM_ADMIN`, y el cambio no afloja nada: **QUÉ cuentas
+    # `PERM_RADI` **o** `USUA_PERM_ADMIN` (any-of), y el cambio no afloja nada: **QUÉ cuentas
     # devuelve esto no lo decide el gate, lo decide el `WHERE` del repositorio**
     # (`_VISIBLE`), que reparte una cuenta personal a su dueño y una institucional
     # a los funcionarios asignados. Ese `WHERE` recibe `es_admin` como PARÁMETRO
@@ -187,7 +187,9 @@ async def crear_cuenta(
     # listado, cerrado con un permiso que esa persona no tiene. Capacidad
     # construida, gateada para su público y sin puerta — el mismo patrón que ya se
     # corrigió en `liberar()`.
-    dependencies=[Depends(require_permission("PERM_RADI"))],
+    # El administrador de /admin/correo configura buzones aunque no radique: el
+    # gate solo de PERM_RADI le daba 403 en la carga inicial de la pantalla.
+    dependencies=[Depends(require_any_permission("PERM_RADI", "USUA_PERM_ADMIN"))],
 )
 async def listar_cuentas(
     request: Request, conn: asyncpg.Connection = Depends(get_tenant_conn)

@@ -15,6 +15,7 @@
  *      (por defecto sin filtro — muestra todos).
  *   2. GET /api/v1/plantillas?activo=true — plantillas activas para el selector
  *      del formulario de creación de borrador.
+ *   3. GET /api/v1/tipos-documentales?activo=true — catálogo para el modal de radicar.
  *
  * El cuerpo HTML (campo `cuerpo`) de cada borrador/plantilla se SANEA server-side
  * con `attachSafeCuerpo` antes de entregarse al cliente (D-05, T-12c).
@@ -47,10 +48,11 @@ export async function load({ cookies, parent, url, fetch }) {
   const borradoresParams = new URLSearchParams();
   if (estadoFilter) borradoresParams.set("estado", estadoFilter);
 
-  const [borradoresRes, plantillasRes, dependenciasRes] = await Promise.allSettled([
+  const [borradoresRes, plantillasRes, dependenciasRes, tiposRes] = await Promise.allSettled([
     fetch(`${API_V1}/borradores?${borradoresParams.toString()}`, { headers }),
     fetch(`${API_V1}/plantillas?activo=true`, { headers }),
     fetch(`${API_V1}/dependencias?activo=true`, { headers }),
+    fetch(`${API_V1}/tipos-documentales?activo=true`, { headers }),
   ]);
 
   // ---------------------------------------------------------------------------
@@ -97,10 +99,24 @@ export async function load({ cookies, parent, url, fetch }) {
       "No se pudo cargar el catálogo de dependencias: no podrá elegir el destino hasta recargar la página.";
   }
 
+  // Catálogo de tipos documentales: se elige al radicar (Ac. AGN 060/2001 §5.2).
+  // Si falla se DICE: un catálogo vacío por error no puede leerse como «no hay tipos».
+  let tiposDocumentales = [];
+  let tiposError = null;
+  if (tiposRes.status === "fulfilled" && tiposRes.value.ok) {
+    const raw = await tiposRes.value.json().catch(() => []);
+    if (Array.isArray(raw)) tiposDocumentales = raw;
+  } else {
+    tiposError =
+      "No se pudo cargar el catálogo de tipos documentales: no podrá radicar borradores hasta recargar la página.";
+  }
+
   return {
     borradores,
     dependencias,
     dependenciasError,
+    tiposDocumentales,
+    tiposError,
     plantillas,
     loadError,
     initialEstado: estadoFilter,

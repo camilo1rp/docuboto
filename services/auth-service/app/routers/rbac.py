@@ -22,7 +22,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
-from app.core.authz import Caller, get_caller, require_permission
+from app.core.authz import Caller, get_caller, require_any_permission, require_permission
 from app.core.database import get_tenant_conn
 from app.repositories.clearance_repository import MAX_LEVEL, ClearanceRepository
 from app.repositories.rbac_repository import RBACRepository
@@ -47,14 +47,17 @@ router = APIRouter(
 )
 
 # D-10: router hermano para selectores de UI. NO hereda el gate admin del router
-# principal; solo exige PERM_RADI (cualquier operador de radicación). Devuelve una
-# proyección mínima (id + username) sin PII administrativa, para el UserPicker (T-08c).
+# principal; exige PERM_RADI **o** USUA_PERM_ADMIN (any-of): el operador de
+# radicación lo necesita para elegir destinatario y el administrador de /admin
+# (flujos, grupos) para elegir usuario aunque no radique. No se gana exposición:
+# el administrador ya lista TODOS los usuarios con `GET /users`, con más datos.
+# Devuelve una proyección mínima (id + username) sin PII administrativa, para el UserPicker (T-08c).
 # Debe incluirse ANTES de `router` en main.py: la ruta estática `/users/pickable`
 # tiene prioridad y no colisiona con `/users/{user_id}/...`.
 pick_router = APIRouter(
     prefix="/api/v1/auth",
     tags=["rbac"],
-    dependencies=[Depends(require_permission("PERM_RADI"))],
+    dependencies=[Depends(require_any_permission("PERM_RADI", "USUA_PERM_ADMIN"))],
 )
 
 
@@ -66,7 +69,7 @@ async def list_pickable_users(
 ) -> list[UserPickItem]:
     """Lista mínima de usuarios activos (id + username) para selectores de UI.
 
-    Gateado con `PERM_RADI` (no admin), a diferencia de `GET /users` (USUA_PERM_ADMIN).
+    Gateado con `PERM_RADI` o `USUA_PERM_ADMIN` (any-of), a diferencia de `GET /users` (USUA_PERM_ADMIN).
 
     Emite `X-Total-Count` con **cuántos usuarios activos hay**, no cuántos caben
     en la respuesta. Sin esa cabecera, el `LIMIT` recortaba sin que nada lo

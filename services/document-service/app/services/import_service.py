@@ -54,6 +54,7 @@ from orpycamcp_common import audit
 
 from app.clients import storage_client
 from app.repositories.import_repository import ImportRepository
+from app.schemas.document import CLAVES_RESERVADAS
 from app.services.export_service import RADICADO_SCHEMA
 from app.services.import_huerfanos_service import ImportHuerfanosService
 
@@ -105,6 +106,19 @@ def _parse_dt(value: str | None) -> datetime | None:
         return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError:
         return None
+
+
+def _sin_claves_reservadas(contextual: dict | None) -> dict:
+    """Las claves de procedencia DEL SISTEMA (`canal`, `consentimiento`, `from_borrador`)
+    no pueden venir de un ZIP: los consumidores las leen como hechos de ESTE sistema
+    (gate de publicación Ley 1581, origen del borrador). Si el sistema de origen las
+    traía, se conservan como dato de procedencia bajo `procedencia_origen`."""
+    meta = dict(contextual or {})
+    movidas = {k: meta.pop(k) for k in sorted(CLAVES_RESERVADAS & set(meta))}
+    if movidas:
+        previa = meta.get("procedencia_origen")
+        meta["procedencia_origen"] = {**(previa if isinstance(previa, dict) else {}), **movidas}
+    return meta
 
 
 class ImportService:
@@ -463,7 +477,7 @@ class ImportService:
                 "sender_entity": sist.get("sender_entity"),
                 "observations": sist.get("observations"),
                 "registered_at": _parse_dt(entity.get("fecha_radicacion")),
-                "metadata": entity.get("metadata_contextual") or {},
+                "metadata": _sin_claves_reservadas(entity.get("metadata_contextual")),
                 "disposition": entity.get("disposicion"),
                 "clasificacion_fundamento": clasif.get("fundamento"),
                 "clasificacion_causal": clasif.get("causal"),

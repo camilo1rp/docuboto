@@ -202,6 +202,18 @@ _USER = str(uuid.uuid4())
 
 # -- Plantillas: USUA_PERM_ADMIN (crear/borrar) y PERM_RADI (listar) --------
 
+def _fetch_con_urd(*deps: int):
+    """`fetch` del mock: el actor tiene URD activa en `deps` (límite de origen de la
+    Salida en `DocumentService.create`); el resto de lecturas devuelven vacío."""
+
+    async def _f(sql: str, *a: object):
+        if "urd_usuaroldep" in sql:
+            return [{"depe_id": d} for d in deps]
+        return []
+
+    return _f
+
+
 
 @pytest.mark.asyncio
 async def test_crear_plantilla_sin_permiso_403(client_with_conn) -> None:
@@ -377,7 +389,7 @@ async def test_radicar_borrador_con_permiso_201(client_with_conn) -> None:
     radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
     # fetchval covers: check_permission (True) + next_sequence (True=1) + audit hash (True).
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = []  # _get_anexos
+    mock_conn.fetch.side_effect = _fetch_con_urd(1)  # _get_anexos
     mock_conn.fetchrow.side_effect = [
         _CLEARANCE_ROW,                                            # resolve_caller_clearance
         _borrador_row(id=bid, doc_type="S", estado="aprobado", cuerpo=None),  # get_borrador
@@ -389,7 +401,7 @@ async def test_radicar_borrador_con_permiso_201(client_with_conn) -> None:
         f"/api/v1/borradores/{bid}/radicar",
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 201, resp.text
     assert "tracking_number" in resp.json()
 
 
@@ -738,7 +750,7 @@ async def test_sin_marcadores_diferidos_se_renderiza_una_sola_vez(
     bid, rid = uuid.uuid4(), uuid.uuid4()
     radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = _fetch_con_urd(1)
     mock_conn.fetchrow.side_effect = _radicar_side_effects(
         bid, rid, radicado, cuerpo="<p>Sin numero propio</p>"
     )
@@ -765,7 +777,7 @@ async def test_con_RAD_S_hay_segunda_pasada_con_el_numero(
     bid, rid = uuid.uuid4(), uuid.uuid4()
     radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = _fetch_con_urd(1)
     mock_conn.fetchrow.side_effect = _radicar_side_effects(
         bid, rid, radicado, cuerpo="<p>Radicado *RAD_S* del *F_RAD_S*</p>"
     )
@@ -790,7 +802,7 @@ async def test_el_documento_se_anexa_como_principal(client_with_conn, render_fal
     bid, rid = uuid.uuid4(), uuid.uuid4()
     radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = _fetch_con_urd(1)
     mock_conn.fetchrow.side_effect = _radicar_side_effects(
         bid, rid, radicado, cuerpo="<p>Cuerpo</p>"
     )
@@ -821,7 +833,7 @@ async def test_el_contexto_congelado_manda_sobre_el_actual(
     bid, rid = uuid.uuid4(), uuid.uuid4()
     radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = []
+    mock_conn.fetch.side_effect = _fetch_con_urd(1)
     mock_conn.fetchrow.side_effect = _radicar_side_effects(
         bid,
         rid,
@@ -1380,3 +1392,98 @@ async def test_la_derivacion_del_borrador_usa_plantilla_dependencia_y_urd() -> N
     assert (await svc._datos_minimos_del_borrador(row, uuid.uuid4()))[1] == 9
     conn.fetch.return_value = []
     assert (await svc._datos_minimos_del_borrador(row, uuid.uuid4()))[1] is None
+
+
+@pytest.mark.asyncio
+async def test_radicar_borrador_metadata_invalida_es_422_con_field(client_with_conn) -> None:
+    """B6 ítem 23: `MetadataValidationError` salía como 500. Es 422 con `field`."""
+    from unittest.mock import patch
+
+    from app.services.metadata_service import MetadataValidationError
+
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW]
+    with patch(
+        "app.routers.borradores.BorradorService.radicar",
+        side_effect=MetadataValidationError("'x' es obligatorio", field="expediente_ref"),
+    ):
+        resp = await client.post(
+            f"/api/v1/borradores/{uuid.uuid4()}/radicar",
+            json={"tipo_documental": "TPL", "metadata": {}},
+            headers={**TENANT_HEADERS, "X-User-Id": _USER},
+        )
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["error"] == "metadata_validation_failed"
+    assert detail["field"] == "expediente_ref"
+    assert detail["status"] == 422
+
+
+def test_borrador_radicar_rechaza_from_borrador_del_cliente() -> None:
+    """La procedencia la pone el sistema: el cliente no la afirma."""
+    from pydantic import ValidationError
+
+    from app.schemas.borrador import BorradorRadicar
+
+    assert BorradorRadicar(metadata={"a": 1}).metadata == {"a": 1}
+    with pytest.raises(ValidationError):
+        BorradorRadicar(metadata={"from_borrador": "x"})
+
+
+# ── B6: /plantillas y /plantillas/campos son any-of {PERM_RADI, USUA_PERM_ADMIN} ──
+
+
+def _bd_con_permisos(mock_conn, concedidos: set[str]) -> None:
+    async def _fetchval(sql, *args):
+        if "ANY(" in sql:  # gate any-of del endpoint
+            return bool(set(args[1]) & concedidos)
+        return bool({args[1]} & concedidos)  # check_permission del cuerpo
+
+    mock_conn.fetchval.side_effect = _fetchval
+    mock_conn.fetch.return_value = []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ruta", ["/api/v1/plantillas/campos", "/api/v1/plantillas"])
+@pytest.mark.parametrize(
+    ("concedidos", "esperado"),
+    [
+        ({"USUA_PERM_ADMIN"}, 200),  # admin sin PERM_RADI
+        ({"PERM_RADI"}, 200),  # redactor, como siempre
+        ({"PERM_TRAMITAR"}, 403),  # ni uno ni otro
+        (set(), 403),
+    ],
+)
+async def test_plantillas_leer_basta_radi_o_admin(
+    client_with_conn, ruta: str, concedidos: set[str], esperado: int
+) -> None:
+    client, mock_conn = client_with_conn
+    _bd_con_permisos(mock_conn, concedidos)
+    resp = await client.get(ruta, headers={**TENANT_HEADERS, "X-User-Id": _USER})
+    assert resp.status_code == esperado, resp.text
+    if esperado == 403:
+        assert resp.json()["detail"]["error"] == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_todas_sigue_exigiendo_admin_aunque_solo_tenga_radi(client_with_conn) -> None:
+    """El any-of abre la lista normal, NO el parámetro que apaga el recorte."""
+    client, mock_conn = client_with_conn
+    _bd_con_permisos(mock_conn, {"PERM_RADI"})
+    resp = await client.get(
+        "/api/v1/plantillas?todas=true", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    assert resp.status_code == 403
+    mock_conn.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_admin_sin_radi_ve_todas(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    _bd_con_permisos(mock_conn, {"USUA_PERM_ADMIN"})
+    mock_conn.fetch.return_value = [_plantilla_row()]
+    resp = await client.get(
+        "/api/v1/plantillas?todas=true", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    assert resp.status_code == 200

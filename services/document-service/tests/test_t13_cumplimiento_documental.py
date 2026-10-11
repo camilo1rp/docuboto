@@ -153,7 +153,7 @@ async def test_un_reintento_con_la_misma_clave_devuelve_el_mismo_radicado(client
     conn.fetchrow.side_effect = _fetchrow
 
     # 1.er envío: crea, y «guarda» la huella con la que se reclamó.
-    async def _crear(self, doc, registered_by=None, *, submission_key=None):
+    async def _crear(self, doc, registered_by=None, *, submission_key=None, procedencia=None):
         huella_guardada["h"] = submission_key[1]
         return SimpleNamespace(id=rid, tracking_number="2026-DEMO-E-000007")
 
@@ -214,7 +214,7 @@ async def test_si_la_carrera_la_gana_otra_peticion_se_devuelve_su_radicado(clien
     conn.fetchval.side_effect = _fetchval_por_consulta("Derecho de petición", "cod")
     conn.fetchrow.side_effect = _fetchrow
 
-    async def _crear(self, doc, registered_by=None, *, submission_key=None):
+    async def _crear(self, doc, registered_by=None, *, submission_key=None, procedencia=None):
         estado["ya"] = True
         estado["h"] = submission_key[1]
         raise DuplicateSubmissionError(submission_key[0])
@@ -263,7 +263,7 @@ async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
             headers=identidad.firmar_ip_publica("203.0.113.9", BASE),
         )
     assert resp.status_code == 201, resp.text
-    c = crear.await_args.args[0].metadata["consentimiento"]
+    c = crear.await_args.kwargs["procedencia"]["consentimiento"]
     assert c["politica_version"] == "2026-01"
     assert c["version_constancia"] == 2
     assert c["norma"] == "Ley 1581/2012"
@@ -276,8 +276,12 @@ async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
 
 @pytest.mark.asyncio
 async def test_el_consentimiento_queda_en_el_asiento_de_creacion(client_with_conn) -> None:
-    """Se ejerce `create` REAL con la constancia en `metadata`: el asiento la lleva."""
-    client, conn = client_with_conn
+    """Se ejerce `create` REAL con la constancia por `procedencia` (la única vía: el
+    cuerpo de un cliente ya no puede aportarla): el asiento la lleva."""
+    from app.schemas.document import DocumentCreate
+    from app.services.document_service import DocumentService
+
+    _client, conn = client_with_conn
     conn.fetchrow.side_effect = [
         None,
         {"code": "DEMO"},
@@ -285,18 +289,17 @@ async def test_el_consentimiento_queda_en_el_asiento_de_creacion(client_with_con
     ]
     conn.fetchval.return_value = 1
     conn.fetch.return_value = []
-    resp = await client.post(
-        "/api/v1/documents",
-        json={
-            "doc_type": "E",
-            "subject": "Con constancia",
-            "doc_class": "Petición",
-            "dest_dept_code": 1,
-            "metadata": {"consentimiento": {"politica_version": "v9", "norma": "Ley 1581/2012"}},
-        },
-        headers=TENANT_HEADERS,
+    doc = DocumentCreate(
+        doc_type="E", subject="Con constancia", doc_class="Petición", dest_dept_code=1
     )
-    assert resp.status_code == 201, resp.text
+    from tests.conftest import FakeTenantClient
+
+    svc = DocumentService(conn, "demo", FakeTenantClient())  # type: ignore[arg-type]
+    await svc.create(
+        doc,
+        None,
+        procedencia={"consentimiento": {"politica_version": "v9", "norma": "Ley 1581/2012"}},
+    )
     asientos = [
         c.args
         for c in conn.execute.call_args_list
@@ -306,6 +309,27 @@ async def test_el_consentimiento_queda_en_el_asiento_de_creacion(client_with_con
     ]
     assert len(asientos) == 1
     assert json.loads(asientos[0][8])["consentimiento"]["politica_version"] == "v9"
+
+
+@pytest.mark.asyncio
+async def test_el_cliente_no_puede_aportar_el_consentimiento(client_with_conn) -> None:
+    """B6: `consentimiento` es una constancia con valor probatorio: la pone el
+    sistema por `procedencia`; en el cuerpo de un cliente es 422."""
+    client, conn = client_with_conn
+    resp = await client.post(
+        "/api/v1/documents",
+        json={
+            "doc_type": "E",
+            "subject": "Con constancia",
+            "doc_class": "Petición",
+            "dest_dept_code": 1,
+            "metadata": {"consentimiento": {"politica_version": "v9"}},
+        },
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 422
+    assert "consentimiento" in resp.text
+    conn.execute.assert_not_called()
 
 
 # --------------------------------------------------------------------------- 09-07

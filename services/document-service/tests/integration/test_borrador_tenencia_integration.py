@@ -214,6 +214,13 @@ async def _intenta_radicar(slug, conn, servicio, b, actor) -> bool:
     from app.services.document_service import DocumentService
 
     radicados = await conn.fetchval("SELECT count(*) FROM radicados")
+    # B6: el origen de una Salida debe ser una dependencia del actor (URD activa).
+    if actor is not None:
+        await conn.execute(
+            "INSERT INTO urd_usuaroldep (user_id, depe_id) SELECT $1, 1 "
+            "WHERE NOT EXISTS (SELECT 1 FROM urd_usuaroldep WHERE user_id = $1 AND depe_id = 1)",
+            actor,
+        )
     try:
         await servicio.radicar(
             b.id, DocumentService(conn, slug), actor, max_clearance=3, datos=_DATOS
