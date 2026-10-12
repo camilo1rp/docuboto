@@ -709,17 +709,23 @@ class CadenaFirmaService:
         Emits a one-time OTP-by-email 2FA challenge for the caller's active turn
         (E06 Inc.2, RF-FIR-13).
 
-        Guards (in order, all under the FOR UPDATE lock of solicitud+turno so a
-        concurrent challenge/sign cannot race this check):
-        1. 404 solicitud_no_encontrada — solicitud missing OR below the actor's
-           clearance (no-read-up, RF-SEG-08 — same neutral 404 as get_solicitud).
-        2. 403 no_es_firmante — actor is not in the chain at all (checked BEFORE
-           the turn, so the message never tells a non-member to wait their turn).
-        2b. 403 no_es_su_turno — actor IS in the chain but the active turn is
-           someone else's, or there is no active turn.
-        (No hay guard de huella: el desafío se ata a `huella_para_desafio(sol)`,
-        que devuelve `payload_sha256` donde existe y el digest del identificador
-        —los bytes que la firma sella— donde el tipo se firma como conjunto.)
+        Guards, in order (the SAME preconditions as ``firmar``; none creates a
+        challenge, sends mail or consumes a factor — the reads run BEFORE the
+        transaction, which only re-reads solicitud+turno under FOR UPDATE):
+        1. 404 solicitud_no_encontrada — missing OR below the actor's clearance
+           (no-read-up, RF-SEG-08 — neutral, anti-enumeration).
+        2. ``_precondiciones_de_turno``: 403 no_es_firmante, 409
+           solicitud_no_pendiente, 403 no_es_su_turno, 409 turno_es_de_visto_bueno,
+           409 radicado_anulado.
+        3. ``_gate_documento_vigente``: 409 cadena_sin_huella / documento_desaparecido
+           / documento_modificado, 503 verificacion_documento_no_disponible.
+        4. Credencial personal (la misma consulta que ``firmar``): 409
+           totp_requerido si hay certificado activo (el correo no sirve), 403
+           identidad_incoherente, y bajo el gate XAdES 422 firma_xades_requerida /
+           503 canal_firma_personal_no_disponible.
+        (El desafío se ata a `huella_para_desafio(sol)`, que devuelve
+        `payload_sha256` donde existe y el digest del identificador —los bytes que
+        la firma sella— donde el tipo se firma como conjunto.)
 
         Idempotent reissue: a live challenge (pendiente|verificado) for the same
         (solicitud, firmante, hash_documento) is expired before inserting the
@@ -731,74 +737,104 @@ class CadenaFirmaService:
         transaction, so anything already written (INSERT, expired-replacement)
         rolls back — no orphaned challenge whose OTP was never delivered.
         """
+        # Guardas de LECTURA antes de abrir la transacción, como `firmar`: la
+        # consulta saliente de la credencial no debe correr con el `FOR UPDATE`
+        # tomado (AREA-04-06).
+        sol = await self._repo.get_solicitud(solicitud_id)
+        # No-read-up gate (RF-SEG-08, D-15): below-clearance actors get the
+        # same neutral 404 as a missing solicitud (anti-enumeration).
+        if sol is None or sol["nivel_seguridad"] > await resolve_caller_clearance(
+            self._conn, actor
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "solicitud_no_encontrada",
+                    "detail": "No existe la solicitud de firma",
+                    "status": 404,
+                },
+            )
+
+        # Pertenencia, estado, turno, rol y anulación: las MISMAS que `firmar`.
+        await self._precondiciones_de_turno(sol, actor)
+
+        # El gate de huella vigente, igual que en `firmar`: no se emite ni se
+        # envía un OTP para firmar un texto que ya cambió. Después de la
+        # pertenencia y el turno (a un ajeno no se le confirma que el texto
+        # cambió) y antes de la consulta de credencial.
+        await self._gate_documento_vigente(sol)
+
+        # Credencial personal y política XAdES de la entidad: la MISMA consulta
+        # que `firmar`. El OTP-correo no sirve a quien firma con certificado
+        # personal (`firmar` pide su TOTP y nada más), así que enviarlo sería un
+        # correo que nunca se podrá usar. Ninguna de las dos lecturas consume un
+        # factor.
+        personal_res = await self._resolve_personal_signing_status(authorization)
+        modo_xades = await modo_xades_de_la_entidad(self._conn)
+        if personal_res.body is not None:
+            if str(personal_res.body.get("user_id") or "") != str(actor):
+                raise _IdentidadIncoherente(
+                    objeto_tipo=sol["objeto_tipo"],
+                    objeto_id=sol["objeto_id"],
+                    via="signing_key_status",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "totp_requerido",
+                    "detail": (
+                        "Su firma es con certificado personal: use el código de su "
+                        "app autenticadora; el correo no sirve para este acto"
+                    ),
+                    "status": 409,
+                },
+            )
+        if _xades_gate_activo(sol["nivel_seguridad"], modo_xades):
+            # Sin el asiento `firma.xades_requerida_denegada`: pertenece al acto
+            # de firmar, y repetirlo aquí lo duplicaría.
+            if personal_res.disponible:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "firma_xades_requerida",
+                        "detail": (
+                            "Este acto exige un certificado XAdES personal según la "
+                            "política vigente (firma_personal_require_xades) y usted no "
+                            "tiene ninguno activo."
+                        ),
+                        "status": 422,
+                    },
+                )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "canal_firma_personal_no_disponible",
+                    "detail": (
+                        "No se pudo verificar el estado de la credencial de firma "
+                        "personal (auth-service); la política de XAdES para este acto "
+                        "exige que esa comprobación tenga éxito (falla cerrado)."
+                    ),
+                    "status": 503,
+                },
+            )
+
         async with self._conn.transaction():
-            sol = await self._repo.get_solicitud_for_update(solicitud_id)
-            if sol is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={
-                        "error": "solicitud_no_encontrada",
-                        "detail": "No existe la solicitud de firma",
-                        "status": 404,
-                    },
-                )
-            # No-read-up gate (RF-SEG-08, D-15): below-clearance actors get the
-            # same neutral 404 as a missing solicitud (anti-enumeration).
-            clearance = await resolve_caller_clearance(self._conn, actor)
-            if sol["nivel_seguridad"] > clearance:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={
-                        "error": "solicitud_no_encontrada",
-                        "detail": "No existe la solicitud de firma",
-                        "status": 404,
-                    },
-                )
-
-            # Pertenencia ANTES que turno, igual que `firmar`. Este guard decía
-            # «no es el turno de este actor» también a quien NO está en la
-            # cadena, y a ese le afirmaba algo falso: no espera turno, es que
-            # nunca le va a llegar. Quien lo lea se quedará esperando —el mismo
-            # daño que un filtro silencioso—, y el colapso no protegía nada,
-            # porque `firmar` sobre esa misma solicitud ya distingue los dos
-            # casos y responde `no_es_firmante`. Un colapso que solo existe en
-            # uno de dos caminos no es una defensa: es una incoherencia.
-            if not await self._repo.es_firmante(solicitud_id, actor):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "error": "no_es_firmante",
-                        "detail": "El actor no pertenece a esta cadena de firma",
-                        "status": 403,
-                    },
-                )
-
-            # A closed chain (firmado/rechazado) must not accept a new challenge:
-            # rechazar() only resolves the active turn, leaving later turns
-            # 'pendiente' — turno_activo_for_update below would still return one
-            # of them. Without this guard, a signer further down an already
-            # rejected/completed chain could trigger a real OTP email for a
-            # challenge that firmar() will unconditionally reject afterwards
-            # (409 solicitud_no_pendiente, same check there) — wasted OTP,
-            # email noise and a misleading firma.challenge.emitido audit entry.
-            if sol["estado"] != "pendiente":
+            # Relectura AUTORITATIVA con bloqueo (TOCTOU, RF-FIR-04): un
+            # challenge/sign concurrente espera aquí y ve el turno ya resuelto.
+            sol_bloq = await self._repo.get_solicitud_for_update(solicitud_id)
+            turno = await self._repo.turno_activo_for_update(solicitud_id)
+            if (
+                sol_bloq is None
+                or sol_bloq["estado"] != "pendiente"
+                or turno is None
+                or turno["firmante_id"] != actor
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
                         "error": "solicitud_no_pendiente",
-                        "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
+                        "detail": "El turno activo cambió antes de emitir el desafío",
                         "status": 409,
-                    },
-                )
-
-            turno = await self._repo.turno_activo_for_update(solicitud_id)
-            if turno is None or turno["firmante_id"] != actor:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "error": "no_es_su_turno",
-                        "detail": "No es el turno de este actor en la cadena de firma (RF-FIR-04)",
-                        "status": 403,
                     },
                 )
 
@@ -1194,6 +1230,92 @@ class CadenaFirmaService:
                 },
             )
 
+    @staticmethod
+    def _gate_turno_de_firma(turno) -> None:
+        """Un turno de VISTO BUENO no se resuelve firmando ni pidiendo un desafío.
+
+        Firmar un turno de visto bueno produce una firma electrónica que compromete
+        a la entidad por un acto que su autor entendía como «lo he leído y me
+        parece bien»; pedir el OTP para él es además correo desperdiciado, porque
+        `firmar` lo rechazaría. Una sola definición para `firmar` y `/challenge`.
+        """
+        if turno["rol"] != "firma":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "turno_es_de_visto_bueno",
+                    "detail": (
+                        "Este turno es de VISTO BUENO, no de firma: firmar lo "
+                        "comprometería a la entidad con un acto que solo era "
+                        "una revisión. Use POST "
+                        "/signature/requests/{id}/visto-bueno."
+                    ),
+                    "status": 409,
+                },
+            )
+
+    async def _precondiciones_de_turno(self, sol, actor: uuid.UUID):
+        """Las guardas de lectura que comparten `firmar` y `/challenge`.
+
+        Orden (ninguna crea un desafío, envía correo ni consume un factor):
+        pertenencia (403 `no_es_firmante`), estado (409 `solicitud_no_pendiente`),
+        turno (403 `no_es_su_turno`; sin turno activo, 409), rol de firma
+        (409 `turno_es_de_visto_bueno`) y radicado anulado (409 `radicado_anulado`).
+        Devuelve el turno activo (lectura sin bloqueo: la autoritativa, con
+        `FOR UPDATE`, la hace cada camino dentro de su transacción).
+
+        Existe UNA vez para que los dos caminos no puedan divergir: `/challenge`
+        llegó a emitir y enviar el OTP en casos que `firmar` rechazaba — la
+        lección de siempre, un colapso que solo existe en uno de dos caminos.
+        La pertenencia va ANTES que el estado (AREA-04-09 Media-2): el 409 solo
+        se le cuenta a quien es parte de la cadena.
+        """
+        if not await self._repo.es_firmante(sol["id"], actor):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "no_es_firmante",
+                    "detail": "El actor no pertenece a esta cadena de firma",
+                    "status": 403,
+                },
+            )
+
+        if sol["estado"] != "pendiente":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "solicitud_no_pendiente",
+                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
+                    "status": 409,
+                },
+            )
+
+        turno = await self._repo.turno_activo(sol["id"])
+        if turno is None:
+            # Todos los turnos resueltos pero la solicitud sigue 'pendiente':
+            # incoherencia de datos, no un turno ajeno.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "solicitud_no_pendiente",
+                    "detail": "No hay ningún turno activo; puede que la cadena de firma ya esté completa",
+                    "status": 409,
+                },
+            )
+        if turno["firmante_id"] != actor:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": "no_es_su_turno",
+                    "detail": "No es el turno de este actor en la cadena de firma (RF-FIR-04)",
+                    "status": 403,
+                },
+            )
+
+        self._gate_turno_de_firma(turno)
+        self._gate_no_anulado(sol)
+        return turno
+
     async def firmar(
         self,
         solicitud_id: uuid.UUID,
@@ -1263,52 +1385,10 @@ class CadenaFirmaService:
         # chain existence from 409/403 response codes (RF-SEG-08, D-15).
         await self._assert_can_read(sol, actor)
 
-        # Pertenencia ANTES que el estado (AREA-04-09 Media-2): el estado de la
-        # solicitud (409) solo se le cuenta a quien es parte de la cadena; a un
-        # ajeno le llega el mismo 403 sea cual sea el estado.
-        if not await self._repo.es_firmante(solicitud_id, actor):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "no_es_firmante",
-                    "detail": "El actor no pertenece a esta cadena de firma",
-                    "status": 403,
-                },
-            )
-
-        if sol["estado"] != "pendiente":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "solicitud_no_pendiente",
-                    "detail": f"La solicitud de firma ya está en estado «{sol['estado']}»",
-                    "status": 409,
-                },
-            )
-
-        # Early (non-locking) turn check for a fast 403 before doing the signing work.
-        turno = await self._repo.turno_activo(solicitud_id)
-        if turno is None:
-            # All turns are resolved but solicitud.estado is still 'pendiente' — data inconsistency.
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": "solicitud_no_pendiente",
-                    "detail": "No hay ningún turno activo; puede que la cadena de firma ya esté completa",
-                    "status": 409,
-                },
-            )
-        if turno["firmante_id"] != actor:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "no_es_su_turno",
-                    "detail": "No es el turno de este actor en la cadena de firma (RF-FIR-04)",
-                    "status": 403,
-                },
-            )
-
-        self._gate_no_anulado(sol)
+        # Pertenencia, estado, turno, rol y anulación: las MISMAS precondiciones que
+        # `/challenge` (`_precondiciones_de_turno`), para que los dos caminos no
+        # puedan divergir.
+        await self._precondiciones_de_turno(sol, actor)
 
         # Sin huella fijada por la cadena, el firmante NO elige qué bytes se
         # sellan (AREA-04-09). Antes, `payload_xml` del body se firmaba tal cual
@@ -1389,20 +1469,7 @@ class CadenaFirmaService:
             # casilla de firma en lote sobre las filas de visto bueno, así que
             # bastaba un «seleccionar todas» para comprometer a la entidad en
             # bloque sin proponérselo.
-            if turno["rol"] != "firma":
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "error": "turno_es_de_visto_bueno",
-                        "detail": (
-                            "Este turno es de VISTO BUENO, no de firma: firmarlo "
-                            "comprometería a la entidad con un acto que solo era "
-                            "una revisión. Use POST "
-                            "/signature/requests/{id}/visto-bueno."
-                        ),
-                        "status": 409,
-                    },
-                )
+            self._gate_turno_de_firma(turno)
 
             # Payload: solicitud.payload_sha256 > identificador (payload_xml del firmante ya no se admite).
             # huella_de_contenido=False marca el caso de "sellado de identificador": se firma

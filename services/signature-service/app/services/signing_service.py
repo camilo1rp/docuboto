@@ -48,7 +48,11 @@ from app.core.secret_derivation import KEY_VERSION_LEGACY
 from app.core.tsa import TsaUnavailableError
 from app.providers import get_provider
 from app.providers.base import SignerRef
-from app.providers.local import LtMaterialRequiredError
+from app.providers.local import (
+    LtMaterialRequiredError,
+    SelloInstitucionalVencidoError,
+    XmldsigNoConformeError,
+)
 from app.repositories.firma_repository import FirmaRepository
 from app.repositories.signer_config_repository import SignerConfigRepository
 from app.schemas.firma import FirmaResponse, SignXmlRequest
@@ -201,6 +205,31 @@ async def sign_payload(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "error": "lt_material_required",
+                "detail": str(exc),
+                "status": 503,
+            },
+        ) from exc
+    except SelloInstitucionalVencidoError as exc:
+        # ARC-M2: el sello institucional caducó; ANTES de firmar nada. Fallo de
+        # infraestructura (el tenant debe renovar su sello), no del cliente: el llamador
+        # best-effort deja el índice 'pendiente_firma' y no se archiva (WORM) algo
+        # que nace inverificable.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "sello_institucional_vencido",
+                "detail": str(exc),
+                "status": 503,
+            },
+        ) from exc
+    except XmldsigNoConformeError as exc:
+        # ADR-034: la firma recién producida no pasó la autoverificación con un
+        # verificador XMLDSig por defecto. Nada se sella ni se persiste: un
+        # tercero no podría comprobarla.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "firma_no_conforme_xmldsig",
                 "detail": str(exc),
                 "status": 503,
             },

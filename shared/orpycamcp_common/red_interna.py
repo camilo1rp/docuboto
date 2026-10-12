@@ -46,12 +46,12 @@ _DOCKER_SERVICE_HOSTNAMES = frozenset(
         "workflow-service",
         "notification-service",
         "frontend",
-        "mailhog",
+        "mailpit",
         "orpycamcp-postgres",
         "orpycamcp-redis",
         "orpycamcp-minio",
         "orpycamcp-keycloak",
-        "orpycamcp-mailhog",
+        "orpycamcp-mailpit",
     }
 )
 

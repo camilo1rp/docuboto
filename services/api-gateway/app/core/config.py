@@ -117,6 +117,15 @@ class Settings(BaseSettings):
     #   TRUSTED_PROXIES=172.20.0.0/16,10.0.0.5
     trusted_proxies: str = ""
 
+    # Perfil de ejecución. Con `production`, el arranque exige que `trusted_proxies` NO
+    # contenga la puerta de enlace de la red Docker (ARC-B4). En desarrollo el valor por
+    # defecto de compose (172.16.0.0/12) la contiene A PROPÓSITO y no se comprueba.
+    app_env: str = ""
+
+    # IP de la puerta de enlace de la red Docker del gateway. Vacío = se deriva de la ruta
+    # por defecto del contenedor. El manifiesto de producción la declara explícita.
+    gateway_red_docker_gateway: str = ""
+
     # Tope propio para el alta ciudadana de PQRS (`POST /public/{tenant}/pqrs`),
     # muy por debajo del general: ese endpoint crea radicados SIN autenticar y
     # consume números de radicado que **no se reutilizan**, así que un bucle

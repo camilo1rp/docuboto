@@ -793,6 +793,11 @@ async def test_sign_xml_xades_fingerprint_mismatch(signature_env) -> None:
 
 @pytest.mark.asyncio
 async def test_sign_xml_xades_expired_cert_detected(signature_env) -> None:
+    """ARC-M2: un sello caducado NO firma (503 `sello_institucional_vencido`).
+
+    Antes se firmaba, se archivaba (WORM) y solo `/verify` lo rechazaba después: el sistema
+    emitía firmas que nacían inverificables. La vigencia se exige ANTES de producir nada.
+    """
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     now = datetime.now(UTC)
     cert_pem, key_pem = _generate_cert(
@@ -803,18 +808,10 @@ async def test_sign_xml_xades_expired_cert_detected(signature_env) -> None:
     install_seal(_signer_ref(cert_pem, key_pem))
 
     resp = await _sign_indice(client)
-    firma_id = resp.json()["firma_id"]
-    signed_xml = uploads[0]["content"]
-
-    verify_resp = await client.post(
-        "/api/v1/signature/verify",
-        json={"firma_id": firma_id, "payload_xml": signed_xml.decode()},
-        headers=TENANT_HEADERS,
-    )
-    assert verify_resp.status_code == 200
-    vbody = verify_resp.json()
-    assert vbody["valida"] is False
-    assert vbody["motivo"] == "certificado_fuera_de_vigencia"
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "sello_institucional_vencido"
+    assert uploads == [], "no se sube nada a MinIO"
+    assert not table.rows, "no se persiste ninguna firma"
 
 
 # ---------------------------------------------------------------------------

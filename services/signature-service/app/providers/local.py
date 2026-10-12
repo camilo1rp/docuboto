@@ -45,21 +45,26 @@ EXHIBICIÓN pre-firma (para detectar alteración del contenido ANTES de firmar,
 o para mostrarla en UI); la integridad AUTORITATIVA post-firma es la propia
 firma XAdES, verificable con :func:`verify_xades`.
 
---- Nota de compatibilidad con signxml (bug de referencia por defecto) ---
-``signxml`` (validado con 5.0.1) tiene una particularidad en su implementación
-de XAdES: las referencias XAdES adicionales (``SignedProperties``, ``KeyInfo``)
-NO llevan un elemento ``<ds:Transforms>`` explícito en la firma generada. Al
-verificar, si una referencia no tiene ``Transforms``, ``XMLVerifier`` usa
-``SignatureConfiguration.default_reference_c14n_method`` — que por defecto es
-C14N 1.1 (**no** el algoritmo configurado en el `XAdESSigner`) — en vez del
-algoritmo realmente usado al firmar. Con canonicalización exclusiva
-configurada (nuestro caso), esto produce un falso ``InvalidDigest`` incluso al
-verificar una firma propia sin alterar. El workaround (ver :func:`verify_xades`)
-es pasar un ``expect_config`` con ``default_reference_c14n_method`` igualado
-explícitamente al mismo algoritmo exclusivo usado al firmar — así los
-`DigestValue` de esas referencias se recalculan con el algoritmo correcto.
-Verificado con un script de humo end-to-end (firma + verificación + alteración
-+ fingerprint distinto + certificado caducado) antes de fijar este diseño.
+--- Conformidad XMLDSig (ADR-034, B7) ---
+``signxml`` (validado con 5.1.0) construye las referencias XAdES adicionales
+(``SignedProperties``, ``KeyInfo``) SIN ``<ds:Transforms>``, pero calcula su
+digest con el algoritmo de canonicalización del firmante (aquí, exclusiva).
+XMLDSig §4.4.3.2 dice que una referencia sin ``Transforms`` se convierte a
+octetos con C14N 1.0 INCLUSIVA: un verificador conforme (EU DSS) recalcula
+otro digest y da ``HASH_FAILURE``. Eso NO era un bug de la librería sino
+nuestro: declaramos algo distinto de lo que aplicábamos, y lo escondíamos al
+verificar con un ``expect_config`` que le decía a nuestro propio verificador
+«asume exclusiva» (el atajo, ya eliminado).
+
+Corrección (:func:`_declarar_transforms` + :func:`_firmar_signed_info`): tras
+``XAdESSigner.sign`` se declara explícitamente exc-c14n en cada referencia que
+no lleve ``Transforms`` (los digests no cambian: ya eran exclusivos), y SOLO
+ENTONCES se firma ``ds:SignedInfo`` —tanto el sello institucional como la
+firma personal—, porque parchear cambia los octetos que se firman. La firma
+resultante se autoverifica fail-closed con ``XAdESVerifier()`` en su
+configuración por defecto (:func:`_autoverificar`) antes de sellar el tiempo o
+persistir nada. :func:`verify_xades` verifica SOLO conforme al estándar: las
+firmas anteriores a ADR-034 (referencias sin ``Transforms``) ya no validan.
 
 --- XAdES-T (E06, Inc.4, RT-16) ---
 Con ``settings.signer_timestamp_enabled=True`` (default), tras
@@ -89,10 +94,11 @@ la misma ``xades:UnsignedSignatureProperties``, en ORDEN ETSI EN 319 132
   2. ``xades:RevocationValues`` — la CRL de la CA (``xades:CRLValues``).
   3. ``xadesv141:ArchiveTimeStamp`` (namespace v1.4.1, distinto de v1.3.2) —
      SIEMPRE el ÚLTIMO: un sello RFC 3161 (misma TSA que XAdES-T) sobre la
-     concatenación C14N-exclusiva de un conjunto FIJO y determinista de
-     elementos precedentes (ver :func:`_archive_ts_covered_bytes` — build y
-     verify comparten la MISMA función; cualquier divergencia rompe la
-     verificación).
+     entrada de ETSI EN 319 132-1 §5.5.2 (octetos de cada referencia,
+     SignedInfo, SignatureValue, KeyInfo y propiedades no firmadas previas; ver
+     :func:`_archive_ts_covered_bytes` — build y verify comparten la MISMA
+     función; cualquier divergencia rompe la verificación). Desde ADR-034 esa
+     entrada la valida EU DSS (antes no era la de la norma).
 
 LT y LTA se producen SIEMPRE juntos al firmar (nunca queda una firma "solo
 LT" persistida) — la distinción entre ambos niveles solo emerge en
@@ -126,15 +132,16 @@ verificación de la ``BasicOCSPResponse``.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import uuid
 from base64 import b64decode, b64encode
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, rsa
+from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, padding, rsa
 from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
@@ -148,6 +155,7 @@ _SIGN_ALG = SignatureMethod.RSA_SHA256
 _DIGEST_ALG = DigestAlgorithm.SHA256
 _C14N_ALG = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 _DS_NS = {"ds": "http://www.w3.org/2000/09/xmldsig#"}
+_ENVELOPED_SIGNATURE_URI = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
 _XADES_NS_URI = "http://uri.etsi.org/01903/v1.3.2#"
 _XADES_NS = {"xades": _XADES_NS_URI}
 # XAdES-LTA (v1.4.1): namespace DISTINTO de v1.3.2 — SOLO el ArchiveTimeStamp
@@ -162,6 +170,45 @@ class LtMaterialRequiredError(RuntimeError):
     CA local (``ca.crt``/``crl.der``) montado junto a su sello institucional
     (RT-16, Pieza 3) — fail-closed, el router lo traduce a 503.
     """
+
+
+class SelloInstitucionalVencidoError(RuntimeError):
+    """El certificado del sello institucional está caducado (o aún no vigente): no se firma
+    (ARC-M2). Fail-closed ANTES de producir nada; el router lo traduce a 503
+    ``sello_institucional_vencido``. Antes se firmaba y solo ``/verify`` lo rechazaba, así que
+    el sistema emitía y archivaba (WORM) firmas que nacían inverificables."""
+
+
+class CertificadoPersonalVencidoError(RuntimeError):
+    """El certificado de firma PERSONAL está caducado (o aún no vigente): no se firma
+    (SEG-B3). Se lanza ANTES de ``remote_sign``, es decir, antes de que auth-service
+    verifique y consuma el TOTP; el llamador lo traduce a 422 ``certificado_personal_vencido``."""
+
+
+def _exigir_certificado_vigente(signer: SignerRef) -> None:
+    """Vigencia del certificado del firmante AHORA, antes de cualquier acto de firma."""
+    cert = x509.load_pem_x509_certificate(signer.cert_pem)
+    ahora = datetime.now(UTC)
+    if cert.not_valid_before_utc <= ahora <= cert.not_valid_after_utc:
+        return
+    estado = "caducó" if ahora > cert.not_valid_after_utc else "aún no es vigente"
+    limite = (
+        cert.not_valid_after_utc if ahora > cert.not_valid_after_utc else cert.not_valid_before_utc
+    ).isoformat()
+    if signer.remote_sign is not None:
+        raise CertificadoPersonalVencidoError(
+            f"su certificado de firma personal {estado} ({limite}); renuévelo antes de firmar"
+        )
+    raise SelloInstitucionalVencidoError(
+        f"el certificado del sello institucional {estado} ({limite}); renueve el sello del tenant"
+    )
+
+
+class XmldsigNoConformeError(RuntimeError):
+    """La firma recién producida no la verifica un verificador XMLDSig conforme
+    (``XAdESVerifier()`` por defecto) — fail-closed (ADR-034): nunca se sella el
+    tiempo ni se persiste una firma que un tercero no podría comprobar. El
+    router lo traduce a 503."""
 
 
 def _safe_parser() -> etree.XMLParser:
@@ -208,12 +255,6 @@ def _parse_no_doctype(xml_bytes: bytes) -> etree._Element:
         raise ValueError("dtd_no_permitido")
     return root
 
-# Ver la nota "compatibilidad con signxml" en el docstring del módulo: sin este
-# override, `XAdESVerifier().verify()` rechaza incluso una firma propia sin
-# alterar cuando el signer usa canonicalización exclusiva.
-_VERIFY_CONFIG = replace(XAdESSignatureConfiguration(), default_reference_c14n_method=_C14N_ALG)
-
-
 @dataclass(slots=True)
 class VerifyOutcome:
     """Resultado de :func:`verify_xades` — nunca lanza para fallos de negocio."""
@@ -258,6 +299,102 @@ def _c14n_element(el: etree._Element) -> bytes:
     es el mismo tanto sobre el árbol en memoria recién firmado como sobre un
     XML re-parseado desde bytes."""
     return etree.tostring(el, method="c14n", exclusive=True)
+
+
+def _c14n_con_algoritmo(el: etree._Element, algorithm_uri: str) -> bytes:
+    """Canonicaliza ``el`` con el algoritmo DECLARADO por URI (no uno fijo):
+    quien firma debe aplicar exactamente lo que declara en el XML."""
+    if algorithm_uri == CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0.value:
+        return etree.tostring(el, method="c14n", exclusive=True)
+    if algorithm_uri == CanonicalizationMethod.CANONICAL_XML_1_0.value:
+        return etree.tostring(el, method="c14n", exclusive=False)
+    raise ValueError(f"c14n_no_soportada: {algorithm_uri}")
+
+
+def _declarar_transforms(signed_root: etree._Element) -> int:
+    """Declara ``ds:Transforms`` exc-c14n en cada ``ds:Reference`` de
+    ``ds:SignedInfo`` que no lo tenga (las de ``SignedProperties`` y
+    ``KeyInfo`` que deja ``signxml``). Los digests NO cambian: ``signxml`` ya
+    los calculó con ``_C14N_ALG``; aquí solo se declara lo que se aplicó, que
+    es lo que un verificador conforme necesita (XMLDSig §4.4.3.2). Devuelve
+    cuántas referencias se parchearon. Debe ejecutarse ANTES de firmar
+    ``SignedInfo``."""
+    parcheadas = 0
+    for ref in signed_root.iterfind(".//ds:Signature/ds:SignedInfo/ds:Reference", namespaces=_DS_NS):
+        if ref.find("ds:Transforms", namespaces=_DS_NS) is not None:
+            continue
+        transforms = etree.Element(f"{{{_DS_NS['ds']}}}Transforms")
+        etree.SubElement(transforms, f"{{{_DS_NS['ds']}}}Transform").set(
+            "Algorithm", _C14N_ALG.value
+        )
+        ref.insert(0, transforms)  # XMLDSig: Transforms precede a DigestMethod
+        parcheadas += 1
+    return parcheadas
+
+
+def _c14n_declarado(sello_el: etree._Element, objetivo: etree._Element) -> bytes:
+    """C14N de ``objetivo`` con el algoritmo que el propio sello de tiempo declara en su
+    ``ds:CanonicalizationMethod`` (ARC-B2): quien verifica aplica lo que el XML declara, no
+    un valor fijo. Sin método declarado o con uno no soportado: ``ValueError`` (fail-closed)."""
+    metodo = sello_el.find("ds:CanonicalizationMethod", namespaces=_DS_NS)
+    if metodo is None or not metodo.get("Algorithm"):
+        raise ValueError("canonicalization_method_ausente_en_sello_de_tiempo")
+    return _c14n_con_algoritmo(objetivo, metodo.get("Algorithm", ""))
+
+
+def _signed_info_c14n(signed_root: etree._Element) -> bytes:
+    """Octetos de ``ds:SignedInfo`` a firmar, con el algoritmo que ESE elemento
+    declara en su ``CanonicalizationMethod`` (no un ``exclusive=True`` fijo)."""
+    signed_info = signed_root.find(".//ds:Signature/ds:SignedInfo", namespaces=_DS_NS)
+    if signed_info is None:  # pragma: no cover — signxml siempre produce SignedInfo
+        raise ValueError("signed_info_no_encontrado")
+    method = signed_info.find("ds:CanonicalizationMethod", namespaces=_DS_NS)
+    if method is None:  # pragma: no cover
+        raise ValueError("canonicalization_method_no_encontrado")
+    return _c14n_con_algoritmo(signed_info, method.get("Algorithm", ""))
+
+
+async def _firmar_signed_info(
+    signed_root: etree._Element, signer: SignerRef
+) -> etree._Element:
+    """Firma ``ds:SignedInfo`` YA parcheado y escribe ``ds:SignatureValue``.
+
+    Un solo camino para los dos firmantes: sello institucional (clave en
+    proceso) y firma personal (``remote_sign`` sobre el SHA-256 de los octetos
+    canónicos). El digest sale del ``SignedInfo`` FINAL, nunca de uno previo.
+    Devuelve el elemento ``ds:SignatureValue``.
+    """
+    c14n = _signed_info_c14n(signed_root)
+    if signer.remote_sign is not None:
+        signature = await signer.remote_sign(hashlib.sha256(c14n).digest())
+    else:
+        key = serialization.load_pem_private_key(signer.key_pem, password=signer.key_password)
+        if not isinstance(key, rsa.RSAPrivateKey):
+            raise ValueError("clave_de_sello_no_rsa")
+        signature = key.sign(c14n, padding.PKCS1v15(), hashes.SHA256())
+
+    sig_value_el = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
+    if sig_value_el is None:  # pragma: no cover — signxml siempre produce SignatureValue
+        raise ValueError("signature_value_no_encontrado")
+    sig_value_el.text = b64encode(signature).decode("ascii")
+    return sig_value_el
+
+
+def _autoverificar(signed_root: etree._Element, cert_pem: bytes) -> None:
+    """Verifica la firma recién producida con ``XAdESVerifier()`` en su
+    configuración por defecto —sin tocar la canonicalización por defecto, ni el
+    instante de verificación, ni ningún atajo—: si eso falla, un tercero tampoco
+    podrá verificarla. Fail-closed (ADR-034).
+
+    La vigencia del certificado ya se exigió ANTES de firmar
+    (:func:`_exigir_certificado_vigente`), así que no hace falta acotar
+    ``verification_time``: un certificado caducado no llega hasta aquí.
+    """
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    try:
+        XAdESVerifier().verify(signed_root, x509_cert=cert)
+    except Exception as exc:  # noqa: BLE001 — cualquier fallo == firma no conforme
+        raise XmldsigNoConformeError(f"autoverificacion_xmldsig_fallida: {exc}") from exc
 
 
 def _get_or_create_unsigned_sig_props(signed_root: etree._Element) -> etree._Element:
@@ -364,85 +501,112 @@ def _insert_ocsp_values(revocation_values_el: etree._Element, ocsp_der: bytes) -
     encapsulated_ocsp.text = b64encode(ocsp_der).decode("ascii")
 
 
-def _archive_ts_covered_bytes(signed_root: etree._Element) -> bytes:
-    """Concatena la canonicalización exclusiva (exc-c14n 1.0) del conjunto FIJO
-    y determinista que cubre el ``xadesv141:ArchiveTimeStamp`` (XAdES-LTA
-    SIMPLIFICADO, Pieza 5), en ESTE orden:
+def _octetos_de_referencia(ref: etree._Element, root: etree._Element) -> bytes:
+    """Octetos que digiere una ``ds:Reference`` (XMLDSig §4.3.3.2/§4.4.3): la
+    referida por su URI (``""`` = el documento SIN la firma que la contiene;
+    ``#Id`` = ese elemento) tras aplicar sus ``ds:Transforms`` declarados; una
+    referencia sin ``Transforms`` se canonicaliza con C14N 1.0 inclusiva.
+    Solo las transformaciones que esta firma produce (enveloped-signature,
+    exc-c14n, C14N 1.0); cualquier otra es ``ValueError`` (fail-closed)."""
+    uri = ref.get("URI", "")
+    if uri == "":
+        objetivo = copy.deepcopy(root)
+        firma_propia = ref.getparent().getparent()
+        # La firma que contiene la referencia, localizada en la copia por posición.
+        copia_firma = list(objetivo.iter())[list(root.iter()).index(firma_propia)]
+        copia_firma.getparent().remove(copia_firma)
+    elif uri.startswith("#"):
+        encontrados = root.xpath("//*[@Id=$i]", i=uri[1:])
+        if len(encontrados) != 1:
+            raise ValueError(f"referencia_no_resuelve: {uri}")
+        objetivo = encontrados[0]
+    else:
+        raise ValueError(f"uri_de_referencia_no_soportada: {uri}")
 
-        C14N(ds:SignedInfo) || C14N(ds:SignatureValue) || C14N(ds:KeyInfo) ||
-        C14N(xades:SignedProperties) || C14N(xades:SignatureTimeStamp) ||
-        C14N(xades:CertificateValues) || C14N(xades:RevocationValues)
+    algoritmo = CanonicalizationMethod.CANONICAL_XML_1_0.value
+    for t in ref.findall("ds:Transforms/ds:Transform", namespaces=_DS_NS):
+        alg = t.get("Algorithm", "")
+        if alg == _ENVELOPED_SIGNATURE_URI:
+            continue  # ya retirada arriba
+        algoritmo = alg
+    return _c14n_con_algoritmo(objetivo, algoritmo)
 
-    Debe llamarse ANTES de insertar el propio ``ArchiveTimeStamp`` (que cubre
-    todo lo anterior, nunca a sí mismo). Usado TANTO al construir
-    (``LocalSigner.sign``) COMO al verificar (:func:`verify_xades`) — la MISMA
-    función en ambos lados: cualquier no-determinismo (prefijos de namespace,
-    espacios) invalidaría la verificación (RT-16, requisito no negociable del
-    contrato de este incremento).
 
-    ``ds:SignedInfo`` ya lleva el digest del documento enveloped (referencia
-    principal calculada por ``signxml``) — no hace falta re-canonicalizar el
-    cuerpo del índice electrónico aparte.
+def _archive_ts_covered_bytes(
+    signed_root: etree._Element, algoritmo: str = _C14N_ALG.value
+) -> bytes:
+    """Entrada del ``xadesv141:ArchiveTimeStamp`` según ETSI EN 319 132-1
+    §5.5.2, concatenada en este orden:
+
+      1. los octetos de CADA ``ds:Reference`` de ``SignedInfo``, en su orden
+         (documento, ``SignedProperties``, ``KeyInfo``), tras sus Transforms
+         (:func:`_octetos_de_referencia`);
+      2. C14N(``ds:SignedInfo``) || C14N(``ds:SignatureValue``) ||
+         C14N(``ds:KeyInfo``);
+      3. C14N de cada propiedad no firmada de ``UnsignedSignatureProperties``
+         que PRECEDE al ``ArchiveTimeStamp`` (en construcción, todas las
+         presentes), en orden de documento: ``SignatureTimeStamp``,
+         ``CertificateValues``, ``RevocationValues`` (con ``OCSPValues`` dentro).
+
+    Antes de B7 la entrada omitía los octetos de las referencias y metía
+    ``SignedProperties`` entre ``KeyInfo`` y los sellos: no era la de la norma
+    y un validador independiente (EU DSS) daba ``MESSAGE_IMPRINT`` no íntegro.
+    Esta forma la valida DSS (humo en ``tests/test_dss_smoke.py``).
+
+    Debe llamarse ANTES de insertar el propio ``ArchiveTimeStamp``; build
+    (``LocalSigner.sign``) y verify (:func:`verify_xades`) usan LA MISMA
+    función.
 
     Raises:
-        ValueError: falta alguno de los siete elementos requeridos (firma
-            XAdES-B/-T/-LT incompleta o corrupta).
+        ValueError: falta un elemento requerido (firma incompleta o corrupta)
+            o una referencia no se puede resolver.
     """
+    signature = signed_root.find(".//ds:Signature", namespaces=_DS_NS)
     signed_info = signed_root.find(".//ds:Signature/ds:SignedInfo", namespaces=_DS_NS)
     signature_value = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
     key_info = signed_root.find(".//ds:Signature/ds:KeyInfo", namespaces=_DS_NS)
     qp = signed_root.find(".//xades:QualifyingProperties", namespaces=_XADES_NS)
-    signed_props = qp.find("xades:SignedProperties", namespaces=_XADES_NS) if qp is not None else None
-    sig_ts = (
-        qp.find(
-            "xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:SignatureTimeStamp",
-            namespaces=_XADES_NS,
-        )
-        if qp is not None
-        else None
-    )
-    cert_values = (
-        qp.find(
-            "xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:CertificateValues",
-            namespaces=_XADES_NS,
-        )
-        if qp is not None
-        else None
-    )
-    rev_values = (
-        qp.find(
-            "xades:UnsignedProperties/xades:UnsignedSignatureProperties/xades:RevocationValues",
-            namespaces=_XADES_NS,
-        )
+    usp = (
+        qp.find("xades:UnsignedProperties/xades:UnsignedSignatureProperties", namespaces=_XADES_NS)
         if qp is not None
         else None
     )
 
-    required = {
+    required: dict[str, etree._Element | None] = {
+        "ds:Signature": signature,
         "ds:SignedInfo": signed_info,
         "ds:SignatureValue": signature_value,
         "ds:KeyInfo": key_info,
-        "xades:SignedProperties": signed_props,
-        "xades:SignatureTimeStamp": sig_ts,
-        "xades:CertificateValues": cert_values,
-        "xades:RevocationValues": rev_values,
+        "xades:UnsignedSignatureProperties": usp,
     }
     missing = [name for name, el in required.items() if el is None]
     if missing:
         raise ValueError(f"elementos_faltantes_para_archive_timestamp: {missing}")
+    assert signed_info is not None and usp is not None  # para el tipado
 
-    return b"".join(
-        etree.tostring(el, method="c14n", exclusive=True)
-        for el in (
-            signed_info,
-            signature_value,
-            key_info,
-            signed_props,
-            sig_ts,
-            cert_values,
-            rev_values,
-        )
-    )
+    previas: list[etree._Element] = []
+    for hijo in usp:
+        if hijo.tag == f"{{{_XADESV141_NS_URI}}}ArchiveTimeStamp":
+            break
+        previas.append(hijo)
+    presentes = {etree.QName(h).localname for h in previas}
+    faltan = [
+        n for n in ("SignatureTimeStamp", "CertificateValues", "RevocationValues") if n not in presentes
+    ]
+    if faltan:
+        raise ValueError(f"elementos_faltantes_para_archive_timestamp: {faltan}")
+
+    partes = [
+        _octetos_de_referencia(ref, signed_root)
+        for ref in signed_info.findall("ds:Reference", namespaces=_DS_NS)
+    ]
+    # `algoritmo` es el que declara el `ArchiveTimeStamp` (al firmar, el que se va a declarar).
+    partes += [
+        _c14n_con_algoritmo(el, algoritmo)
+        for el in (signed_info, signature_value, key_info, *previas)
+        if el is not None
+    ]
+    return b"".join(partes)
 
 
 def _insert_archive_timestamp(
@@ -513,6 +677,10 @@ class LocalSigner:
         )
 
     async def sign(self, prepared: PreparedDoc, signer: SignerRef) -> SignedDoc:
+        # Fail-closed ANTES de firmar (ARC-M2/SEG-B3): certificado caducado => ni firma, ni
+        # llamada a `remote_sign` (que consumiría el TOTP), ni archivo de algo inverificable.
+        _exigir_certificado_vigente(signer)
+
         # Huella de EXHIBICIÓN pre-firma — ver nota de canonicalización arriba.
         payload_sha256 = hashlib.sha256(prepared.xml_bytes).hexdigest()
 
@@ -548,23 +716,6 @@ class LocalSigner:
             )
             del ephemeral_key, ephemeral_pem  # REGLA no-fuga: descartada apenas se usa
 
-            signed_info_el = signed_root.find(
-                ".//ds:Signature/ds:SignedInfo", namespaces=_DS_NS
-            )
-            if signed_info_el is None:  # pragma: no cover — signxml siempre produce SignedInfo
-                raise ValueError("signed_info_no_encontrado")
-            signed_info_digest = hashlib.sha256(
-                etree.tostring(signed_info_el, method="c14n", exclusive=True)
-            ).digest()
-            real_signature = await signer.remote_sign(signed_info_digest)
-
-            sig_value_el = signed_root.find(
-                ".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS
-            )
-            if sig_value_el is None:  # pragma: no cover — signxml siempre produce SignatureValue
-                raise ValueError("signature_value_no_encontrado")
-            sig_value_el.text = b64encode(real_signature).decode("ascii")
-            signature_value_b64 = sig_value_el.text
         else:
             signed_root = xades_signer.sign(
                 root,
@@ -572,8 +723,13 @@ class LocalSigner:
                 passphrase=signer.key_password,
                 cert=signer.cert_pem.decode("ascii"),  # ver nota arriba
             )
-            sig_value_el = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
-            signature_value_b64 = (sig_value_el.text or "") if sig_value_el is not None else ""
+
+        # Común a sello y firma personal (ADR-034): declarar los Transforms que
+        # signxml omite, firmar el SignedInfo FINAL y autoverificar conforme.
+        _declarar_transforms(signed_root)
+        sig_value_el = await _firmar_signed_info(signed_root, signer)
+        signature_value_b64 = sig_value_el.text or ""
+        _autoverificar(signed_root, signer.cert_pem)
 
         xades_level = SignatureFormat.XADES_B.value
         nivel_conformidad = signer.nivel_conformidad
@@ -819,8 +975,19 @@ def verify_xades(
     expected_ocsp_responder_fingerprint: str | None = None,
     expected_user_ca_fingerprint: str | None = None,
     advertencias: list[str] | None = None,
+    _vigencia_diferida: bool = False,
 ) -> VerifyOutcome:
     """Verifica una firma XAdES-B/-T/-LT/-LTA enveloped (E06, RF-FIR-15).
+
+    VIGENCIA DEL CERTIFICADO (ARC-M1, ADR-034). Por regla, el certificado firmante se
+    juzga a «ahora». Única excepción: si ya CADUCÓ y la firma lleva un
+    ``ArchiveTimeStamp`` que valida (nivel verificado ``XAdES-LTA``), se juzga a la fecha
+    ``genTime`` del ``SignatureTimeStamp`` —ya validado contra la vigencia del certificado
+    en ``tsa.verify_timestamp_token``—, y la respuesta lo avisa en ``advertencias``. Sin un
+    LTA válido (B, T, LT, o un ``ArchiveTimeStamp`` que no valida) se mantiene
+    ``certificado_fuera_de_vigencia``. ``_vigencia_diferida`` es el modo interno de esa
+    segunda pasada; los llamadores no lo usan. NO hay renovación del ``ArchiveTimeStamp``:
+    la prueba descansa en el primero (deuda declarada).
 
     ``advertencias``: lista del LLAMADOR a la que se añaden los avisos de una
     verificación que sigue siendo válida (hoy: sello de tiempo sin ESSCertID
@@ -946,7 +1113,33 @@ def verify_xades(
         return VerifyOutcome(False, f"certificado_ilegible: {exc}")
 
     now = datetime.now(UTC)
-    if not (embedded_cert.not_valid_before_utc <= now <= embedded_cert.not_valid_after_utc):
+    if not _vigencia_diferida and not (
+        embedded_cert.not_valid_before_utc <= now <= embedded_cert.not_valid_after_utc
+    ):
+        # Caducado (no «aún no vigente») y con ArchiveTimeStamp: segunda pasada, que solo
+        # lo acepta si el nivel verificado es XAdES-LTA. El resto, fuera de vigencia.
+        if embedded_cert.not_valid_after_utc < now and root.find(
+            ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties"
+            "/xadesv141:ArchiveTimeStamp",
+            namespaces=_LT_NS,
+        ) is not None:
+            avisos: list[str] = []
+            segunda = verify_xades(
+                signed_xml,
+                expected_fingerprint,
+                expected_tsa_fingerprint,
+                expected_ca_fingerprint,
+                expected_ocsp_responder_fingerprint,
+                expected_user_ca_fingerprint,
+                avisos,
+                _vigencia_diferida=True,
+            )
+            if segunda.valida and segunda.xades_level == SignatureFormat.XADES_LTA.value:
+                if advertencias is not None:
+                    for a in (*avisos, "certificado_vencido_vigencia_juzgada_al_sello_de_firma"):
+                        if a not in advertencias:
+                            advertencias.append(a)
+                return segunda
         return VerifyOutcome(False, "certificado_fuera_de_vigencia")
 
     embedded_fingerprint = embedded_cert.fingerprint(hashes.SHA256()).hex()
@@ -954,9 +1147,21 @@ def verify_xades(
         return VerifyOutcome(False, "fingerprint_no_coincide_sello_tenant")
 
     try:
-        results = XAdESVerifier().verify(
-            root, x509_cert=embedded_cert, expect_config=_VERIFY_CONFIG
-        )
+        # Configuración POR DEFECTO, sin atajos: lo que no verifique así tampoco
+        # lo verificará un tercero (ADR-034).
+        if _vigencia_diferida:
+            # Solo para que signxml no rechace por tiempo la comprobación CRIPTOGRÁFICA de
+            # una firma con certificado caducado; la vigencia a la fecha de la firma la
+            # decide el `SignatureTimeStamp` (signer_cert) más abajo, no este instante.
+            results = XAdESVerifier().verify(
+                root,
+                x509_cert=embedded_cert,
+                expect_config=XAdESSignatureConfiguration(
+                    verification_time=embedded_cert.not_valid_after_utc
+                ),
+            )
+        else:
+            results = XAdESVerifier().verify(root, x509_cert=embedded_cert)
     except Exception as exc:  # noqa: BLE001 — cualquier fallo == firma inválida (fail-closed)
         return VerifyOutcome(False, f"firma_invalida: {exc}")
 
@@ -985,12 +1190,14 @@ def verify_xades(
 
     try:
         token_der = b64decode(encapsulated_ts.text.strip())
-    except Exception:  # noqa: BLE001 — base64 corrupto, fail-closed
+        # Lo que el sello DECLARA (ARC-B2), no un exc-c14n fijo.
+        sig_value_c14n = _c14n_declarado(encapsulated_ts.getparent(), sig_value_el)
+    except Exception:  # noqa: BLE001 — base64 corrupto o c14n no declarada/soportada, fail-closed
         return VerifyOutcome(True, None, sello_tiempo_valido=False)
 
     ts_outcome = tsa.verify_timestamp_token(
         token_der,
-        _c14n_element(sig_value_el),
+        sig_value_c14n,
         expected_tsa_fingerprint=expected_tsa_fingerprint,
         # El genTime del SignatureTimeStamp tiene que caer en la vigencia del
         # certificado firmante (AREA-04-08). El ArchiveTimeStamp de más abajo NO.
@@ -1003,6 +1210,9 @@ def verify_xades(
 
     xades_level = SignatureFormat.XADES_T.value
     tsa_timestamp = ts_outcome.gen_time
+    # Instante con el que se juzgan las CA: «ahora», salvo en la segunda pasada de una
+    # firma LTA con certificado caducado, donde es la fecha del SignatureTimeStamp.
+    instante_ca = tsa_timestamp if _vigencia_diferida and tsa_timestamp is not None else now
 
     # (XAdES-LT/LTA) Solo se evalúa si la firma trae CertificateValues — ver
     # docstring de la función, sección "XAdES-LT/LTA". Ausente: retrocompat
@@ -1056,7 +1266,7 @@ def verify_xades(
         if not sub_ca_ku.value.key_cert_sign:
             return VerifyOutcome(False, "user_ca_sin_key_usage_cert_sign")
         if not (
-            embedded_ca_cert.not_valid_before_utc <= now <= embedded_ca_cert.not_valid_after_utc
+            embedded_ca_cert.not_valid_before_utc <= instante_ca <= embedded_ca_cert.not_valid_after_utc
         ):
             return VerifyOutcome(False, "user_ca_certificado_fuera_de_vigencia")
         try:
@@ -1090,7 +1300,7 @@ def verify_xades(
     if not ca_ku.value.key_cert_sign:
         return VerifyOutcome(False, "ca_sin_key_usage_cert_sign")
 
-    if not (ca_cert.not_valid_before_utc <= now <= ca_cert.not_valid_after_utc):
+    if not (ca_cert.not_valid_before_utc <= instante_ca <= ca_cert.not_valid_after_utc):
         return VerifyOutcome(False, "ca_certificado_fuera_de_vigencia")
 
     # (c) Cadena seal -> CA: el certificado del sello debe haber sido
@@ -1185,7 +1395,12 @@ def verify_xades(
     if archive_timestamp_present:
         try:
             archive_token_der = b64decode(archive_ts_el.text.strip())
-            covered = _archive_ts_covered_bytes(root)
+            archive_metodo = archive_ts_el.getparent().find(
+                "ds:CanonicalizationMethod", namespaces=_DS_NS
+            )
+            if archive_metodo is None or not archive_metodo.get("Algorithm"):
+                raise ValueError("canonicalization_method_ausente_en_archive_timestamp")
+            covered = _archive_ts_covered_bytes(root, archive_metodo.get("Algorithm", ""))
         except Exception as exc:  # noqa: BLE001 — fail-closed
             return VerifyOutcome(False, f"archive_timestamp_ilegible: {exc}")
 

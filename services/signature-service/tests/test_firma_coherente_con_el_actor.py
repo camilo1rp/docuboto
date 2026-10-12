@@ -86,8 +86,10 @@ async def test_otp_no_sale_si_bearer_y_actor_divergen(monkeypatch: pytest.Monkey
     conn = _make_conn()
     conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
     conn.fetchrow.side_effect = [
-        _sol_row(),                       # get_solicitud_for_update
+        _sol_row(),                       # get_solicitud (previa a la transacción)
         {},                               # resolve_caller_clearance
+        _turno_row(firmante_id=USER),     # turno_activo (sin bloqueo)
+        _sol_row(),                       # get_solicitud_for_update
         _turno_row(firmante_id=USER),     # turno_activo_for_update
         None,                             # get_activo
         # (crear() sería la 5.ª: no debe ejecutarse)
@@ -100,7 +102,7 @@ async def test_otp_no_sale_si_bearer_y_actor_divergen(monkeypatch: pytest.Monkey
     assert status_code == 403, body
     assert body["detail"]["error"] == "identidad_incoherente"
     mock_send.assert_not_awaited()
-    assert conn.fetchrow.await_count == 4  # ni INSERT del desafío
+    assert conn.fetchrow.await_count == 6  # ni INSERT del desafío
     assert "firma.identidad_incoherente" in _acciones(audit_mock)
     assert "firma.challenge.emitido" not in _acciones(audit_mock)
     emitido = next(
@@ -121,7 +123,8 @@ async def test_otp_si_bearer_y_actor_coinciden_el_correo_sale(
     conn = _make_conn()
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [
-        _sol_row(), {}, _turno_row(firmante_id=USER), None, _challenge_row(),
+        _sol_row(), {}, _turno_row(firmante_id=USER), _sol_row(), _turno_row(firmante_id=USER),
+        None, _challenge_row(),
     ]
     _override(conn)
     try:
@@ -329,6 +332,8 @@ async def test_nivel2_con_totp_activo_emitir_desafio_correo_es_totp_requerido(
         _sol_row(nivel_seguridad=2),
         {"is_root": True, "max_level": None},
         _turno_row(firmante_id=USER),
+        _sol_row(nivel_seguridad=2),
+        _turno_row(firmante_id=USER),
         None,
     ]
     _override(conn)
@@ -339,7 +344,7 @@ async def test_nivel2_con_totp_activo_emitir_desafio_correo_es_totp_requerido(
     assert status_code == 409, body
     assert body["detail"]["error"] == "totp_requerido"
     mock_send.assert_not_awaited()
-    assert conn.fetchrow.await_count == 4  # no se creó el desafío
+    assert conn.fetchrow.await_count == 6  # no se creó el desafío
 
 
 @pytest.mark.asyncio
@@ -355,6 +360,8 @@ async def test_nivel2_estado_totp_no_consultable_no_baja_al_correo(
     conn.fetchrow.side_effect = [
         _sol_row(nivel_seguridad=2),
         {"is_root": True, "max_level": None},
+        _turno_row(firmante_id=USER),
+        _sol_row(nivel_seguridad=2),
         _turno_row(firmante_id=USER),
         None,
     ]
@@ -379,7 +386,8 @@ async def test_nivel1_con_totp_activo_el_correo_sigue_firmando(
     conn = _make_conn()
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [
-        _sol_row(nivel_seguridad=1), {}, _turno_row(firmante_id=USER), None, _challenge_row(),
+        _sol_row(nivel_seguridad=1), {}, _turno_row(firmante_id=USER),
+        _sol_row(nivel_seguridad=1), _turno_row(firmante_id=USER), None, _challenge_row(),
     ]
     _override(conn)
     try:
@@ -403,6 +411,8 @@ async def test_nivel2_sin_totp_el_correo_firma(monkeypatch: pytest.MonkeyPatch) 
     conn.fetchrow.side_effect = [
         _sol_row(nivel_seguridad=2),
         {"is_root": True, "max_level": None},
+        _turno_row(firmante_id=USER),
+        _sol_row(nivel_seguridad=2),
         _turno_row(firmante_id=USER),
         None,
         _challenge_row(),

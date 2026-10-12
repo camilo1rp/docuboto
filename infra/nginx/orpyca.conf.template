@@ -1,0 +1,208 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# OrpycaMCP — reverse proxy de producción (servicio `edge` de
+# infra/docker-compose.prod.yml, ADR-033)
+#
+# Es una PLANTILLA de la imagen oficial de nginx: al arrancar, su envsubst
+# sustituye ${FRONTEND_HOSTNAME}, ${API_PUBLIC_HOSTNAME} y ${KEYCLOAK_HOSTNAME}
+# (NGINX_ENVSUBST_FILTER deja intactos los `$host`, `$remote_addr`... de nginx) y
+# escribe /etc/nginx/conf.d/orpyca.conf. No hay nada que copiar ni editar: los
+# tres dominios salen del mismo `.env` que el resto de la pila.
+#
+# Por qué existe cada pieza (la lección de la plantilla anterior, que solo servía
+# para nginx en el anfitrión y dejaba la pila inalcanzable):
+#
+#   1. `ORIGIN` / `PROTOCOL_HEADER` / `HOST_HEADER` del frontend SSR. Sin
+#      `X-Forwarded-Proto`, adapter-node cree que el origen es `http://` y arma
+#      un `redirect_uri` que Keycloak rechaza: el login PKCE no funciona.
+#   2. `TRUSTED_PROXIES` del gateway. `X-Forwarded-For` se ACUMULA; la IP que se
+#      sella en `audit_log` y en la constancia de la ventanilla sale de esa
+#      cadena. Ver "TRUSTED_PROXIES" en docs/es/deployment.md: el gateway de la
+#      red Docker (172.20.0.1) NO es de confianza, a propósito.
+#   3. Las descargas grandes (anexos, ZIP de expediente, AIP): sin desactivar el
+#      buffering, nginx las materializa antes de reenviarlas.
+#   4. Keycloak (P2): el login PKCE necesita una entrada pública para
+#      /realms/ y /resources/; la consola de administración NO se publica.
+#
+# TLS: los certificados los emite certbot en el anfitrión (/etc/letsencrypt) y
+# se montan de solo lectura. Primera emisión: `certbot certonly --standalone`
+# ANTES del primer `up` (el puerto 80 aún está libre); renovaciones por webroot.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Tope de subida. Debe coincidir con `MAX_REQUEST_BODY_BYTES` del gateway y con
+# `BODY_SIZE_LIMIT` del frontend (512 MiB): es el tamaño del ZIP de importación
+# interoperable, la carga legítima más grande del sistema. Si nginx lo deja más
+# bajo, la subida muere aquí con un 413 y los topes de la aplicación no llegan a
+# opinar — y el mensaje de error no dice quién la cortó.
+client_max_body_size 512M;
+
+# Cabeceras que viajan a TODO backend. `X-Forwarded-For` se ACUMULA con
+# `proxy_add_x_forwarded_for` en vez de sobrescribirse: el gateway resuelve la IP
+# real caminando la cadena desde el final hacia atrás por saltos de confianza
+# (services/api-gateway/app/core/client_ip.py), y con un valor plano no puede.
+proxy_set_header Host              $host;
+proxy_set_header X-Real-IP         $remote_addr;
+proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host  $host;
+
+proxy_http_version 1.1;
+
+# DNS interno de Docker. Con `proxy_pass` a una VARIABLE, nginx resuelve el nombre
+# en cada petición (valid=10s) y reparte entre las réplicas de frontend y gateway;
+# con un nombre literal lo resolvería una sola vez al arrancar y se quedaría con
+# la IP de una réplica (o fallaría al arrancar si aún no existe).
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+# ─── Redirección a HTTPS ──────────────────────────────────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${FRONTEND_HOSTNAME} ${API_PUBLIC_HOSTNAME} ${KEYCLOAK_HOSTNAME};
+
+    # Único hueco sin redirigir: la validación de certificados de Let's Encrypt.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ─── Frontend (SvelteKit SSR) ─────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${FRONTEND_HOSTNAME};
+
+    ssl_certificate     /etc/letsencrypt/live/${FRONTEND_HOSTNAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${FRONTEND_HOSTNAME}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    # HSTS. Va aquí y no en la aplicación a propósito: es una promesa sobre el
+    # DOMINIO ENTERO, y quien puede hacerla es quien termina el TLS. `preload` es
+    # prácticamente irreversible; no lo añadas sin entenderlo.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Las demás cabeceras de seguridad (CSP, nosniff, referrer-policy,
+    # X-Frame-Options, permissions-policy) las emite el propio SSR
+    # (frontend/src/lib/server/securityHeaders.js y la CSP de svelte.config.js).
+    # No las dupliques aquí: dos valores distintos de la misma cabecera dan un
+    # comportamiento que depende del navegador.
+
+    location / {
+        set $frontend http://frontend:3000;
+        proxy_pass $frontend;
+
+        # El SSR emite HTML en flujo; con buffering, la página no empieza a
+        # pintarse hasta que termina de generarse entera.
+        proxy_buffering off;
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+}
+
+# ─── API pública (gateway) ────────────────────────────────────────────────────
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${API_PUBLIC_HOSTNAME};
+
+    ssl_certificate     /etc/letsencrypt/live/${API_PUBLIC_HOSTNAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${API_PUBLIC_HOSTNAME}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # La sonda de disponibilidad enumera el estado de los servicios río abajo: no es
+    # para internet. SOLO la alcanza el propio contenedor `edge` (127.0.0.1). La IP
+    # del gateway de la red Docker (172.20.0.1) NO se admite: es la que ve nginx para
+    # todo lo que entra por el puerto publicado (docker-proxy), es decir, también la de
+    # cualquier cliente de internet. Sondeo desde el anfitrión:
+    #   docker exec <edge> wget --no-check-certificate -qO- \
+    #       --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready
+    location = /health/ready {
+        allow 127.0.0.1;
+        deny  all;
+        set $gateway http://api-gateway:8080;
+        proxy_pass $gateway;
+    }
+
+    location / {
+        set $gateway http://api-gateway:8080;
+        proxy_pass $gateway;
+
+        # IMPRESCINDIBLE para las descargas: anexos, ZIP de expediente, AIP y
+        # actas se sirven por trozos desde storage a través del gateway.
+        proxy_buffering off;
+        proxy_request_buffering off;
+
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    120s;
+        # 120 s cubre las importaciones y exportaciones grandes. El asistente
+        # conversacional (E18) tiene su propio timeout de 180 s en el gateway;
+        # si lo publicas por aquí, sube este valor por encima o el usuario verá
+        # un 504 en vez del error real.
+        proxy_read_timeout    120s;
+    }
+}
+
+# ─── Keycloak (login PKCE) ────────────────────────────────────────────────────
+# Los servicios y el SSR llaman a https://${KEYCLOAK_HOSTNAME} desde dentro de la
+# red: el alias del servicio `edge` lo resuelve a este mismo nginx.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${KEYCLOAK_HOSTNAME};
+
+    ssl_certificate     /etc/letsencrypt/live/${KEYCLOAK_HOSTNAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${KEYCLOAK_HOSTNAME}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Cabeceras y cookies de token grandes: con los búferes por defecto (4k/8k)
+    # nginx responde 502 «upstream sent too big header» en el callback del login.
+    proxy_buffer_size       128k;
+    proxy_buffers           4 256k;
+    proxy_busy_buffers_size 256k;
+
+    # LISTA DE ADMISIÓN, no de denegación. Antes se negaban `/admin/` y
+    # `/realms/master/`, y esa denegación era esquivable: `/realms/master;x/...`
+    # (el `;` hace que nginx no lo case con `/realms/master/` y Keycloak lo trate
+    # como el realm master) y `/realms/master` sin barra final llegaban a Keycloak con
+    # 200. Ahora solo se publica lo que el login PKCE necesita —el realm de la
+    # aplicación y los recursos estáticos del tema— y TODO lo demás es 404 (la consola
+    # de administración y el realm `master` se usan por túnel SSH al puerto 8080 del
+    # contenedor). Un `;` en la ruta ya decodificada no tiene uso legítimo aquí.
+    if ($uri ~ ";") {
+        return 404;
+    }
+
+    location /realms/orpycamcp/ {
+        set $keycloak http://keycloak:8080;
+        proxy_pass $keycloak;
+    }
+
+    location /resources/ {
+        set $keycloak http://keycloak:8080;
+        proxy_pass $keycloak;
+    }
+
+    # Todo lo demás (incluida la raíz) no existe de cara al público.
+    location / {
+        return 404;
+    }
+}

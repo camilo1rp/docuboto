@@ -143,13 +143,14 @@ echo "   volcado legible: $OBJETOS entradas en el índice"
 
 echo "── Almacén de objetos (espejo S3)..."
 RED="$("${COMPOSE[@]}" config --format json \
-    | python3 -c 'import json,sys; print(next(iter(json.load(sys.stdin)["networks"])))' 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); k=next(iter(d["services"]["minio"].get("networks") or {"default": None})); print(d.get("networks", {}).get(k, {}).get("name") or (d.get("name", "") + "_" + k))' 2>/dev/null \
     || echo "")"
+# La red es la del SERVICIO `minio`, con el nombre ya resuelto por compose. Antes se
+# tomaba la primera red declarada del fichero: en producción esa es `default` (la
+# de los `migrate-*`), en la que el almacén no está, y el espejo salía vacío.
 RED_ARG=()
 if [ -n "$RED" ]; then
-    PROYECTO="$("${COMPOSE[@]}" config --format json \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))')"
-    RED_ARG=(--network "${PROYECTO}_${RED}")
+    RED_ARG=(--network "$RED")
 fi
 
 mkdir -p "$DESTINO/minio" "$DESTINO/minio-versiones"
@@ -182,7 +183,7 @@ trap 'borrar_credenciales; marcar_parcial' EXIT
 # Un solo sitio que sepa invocar el cliente S3. Antes cada llamada repetía el
 # `docker run` entero con su imagen y sus credenciales: seis copias que había que
 # cambiar a la vez, y la migración de cliente lo demostró.
-S3_IMAGEN="${S3_CLI_IMAGEN:-amazon/aws-cli:latest}"
+S3_IMAGEN="${S3_CLI_IMAGEN:-amazon/aws-cli:2.37.12@sha256:ce44b800602264c12298bbf3399055a4cefdb9ed4a098abe564afe26e7071bce}"
 S3_ENDPOINT="${S3_ENDPOINT:-http://minio:9000}"
 
 # shellcheck source=lib-retencion-s3.sh
@@ -207,11 +208,29 @@ s3api() {
 # lo que este script trata de impedir— y encima no editable ni purgable sin
 # privilegios. Se comprobó ejecutándolo: los anexos salían `-rw-r--r-- root`.
 # Dárselo al usuario que invoca hace que hereden su umask y su propiedad.
+# El espejo tiene que contener el bucket de documentos de CADA tenant que no esté dado de
+# baja (`active` Y `suspended`: suspender no borra datos y su evidencia sigue obligando
+# a conservarla). $1: buckets del almacén (uno por línea); $2: slugs (uno por línea). Sale 1 si falta alguno.
+exigir_espejo_completo() {
+    local slug
+    for slug in $2; do
+        if ! printf '%s\n' "$1" | grep -qx "orpycamcp-$slug-documents"; then
+            echo "ERROR: el espejo no contiene orpycamcp-$slug-documents (tenant activo)." >&2
+            echo "       El almacén no respondió o la red/credenciales son incorrectas." >&2
+            return 1
+        fi
+    done
+}
+
 # `aws s3 sync` trabaja bucket a bucket (no hay equivalente de `mc mirror` sobre
 # el alias entero), así que se enumeran primero y se sincroniza cada uno a su
 # subcarpeta. Mantener la jerarquía `<destino>/minio/<bucket>/...` importa: es la
 # que `restore.sh` espera.
-BUCKETS_ESPEJO="$(s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' || true)"
+#
+# SIN `|| true`: si el almacén no responde, la enumeración debe abortar el respaldo
+# (con `pipefail` la tubería falla). Tragarse el error dejaba `BUCKETS_ESPEJO` vacío
+# y un respaldo «correcto» con el espejo vacío —el síntoma de R5—.
+BUCKETS_ESPEJO="$(s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n')"
 for B in $BUCKETS_ESPEJO; do
     mkdir -p "$DESTINO/minio/$B"
     docker run --rm "${RED_ARG[@]}" \
@@ -222,6 +241,13 @@ for B in $BUCKETS_ESPEJO; do
         "$S3_IMAGEN" --endpoint-url "$S3_ENDPOINT" \
         s3 sync "s3://$B" /respaldo --only-show-errors
 done
+
+# Cobertura mínima del espejo: el bucket de documentos de CADA tenant no dado de baja (activo o suspendido) tiene
+# que estar en lo copiado. Una lista vacía o recortada (almacén sin responder, red
+# equivocada, credencial sin permiso de listado) ya no pasa por respaldo bueno.
+SLUGS_ACTIVOS="$("${COMPOSE[@]}" exec -T postgres \
+    psql -U "$DB_USER" -d "$DB_NAME" -Atc "SELECT slug FROM public.tenants WHERE status <> 'inactive'")"
+exigir_espejo_completo "$BUCKETS_ESPEJO" "$SLUGS_ACTIVOS" || exit 1
 
 # Cinturón y tirantes: si una versión futura del cliente volviera a escribir con
 # otro umask, esto lo corrige en vez de dejarlo pasar en silencio.

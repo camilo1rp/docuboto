@@ -135,3 +135,19 @@ def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncM
     mock = AsyncMock(return_value={"activo": False, "user_id": str(USER)})
     monkeypatch.setattr("app.services.cadena_service.get_totp_status_remote", mock)
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _estado_de_credencial_personal_sin_clave_por_defecto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock:
+    """Doble por defecto de ``GET /internal/signing-key/status`` (auth-service).
+
+    ``firmar`` y ``/challenge`` consultan la credencial personal del actor con el
+    ``Authorization`` reenviado. Sin red en estas suites, el actor «no tiene
+    certificado» (``sin_clave``): es el caso de la firma nativa por OTP. Los tests
+    de la firma personal y del gate XAdES lo sustituyen.
+    """
+    mock = AsyncMock(return_value={"estado": "sin_clave"})
+    monkeypatch.setattr("app.services.cadena_service.get_signing_key_status_remote", mock)
+    return mock

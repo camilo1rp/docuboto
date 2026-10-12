@@ -65,7 +65,7 @@ inmutable en la base y un asiento en `audit_log`. Los dos auditores la devolvier
 
 ## Consecuencias
 
-**Positivas**: la constancia es verificable por terceros (XAdES-T + huella del acta + Object-Lock) y no
+**Positivas**: la constancia es verificable por terceros (XAdES-T + huella del acta + Object-Lock; *desde ADR-034 — antes de él, la firma XAdES no la verificaba un validador independiente*) y no
 depende de que la base se conserve intacta; el texto sensible no vive en artefactos replicados.
 
 **Negativas / límites**:
@@ -263,3 +263,9 @@ administración nivel 3; no-read-up en el `WHERE` (404 neutro).
 
 **Límites declarados.** `nota-entrega.xml` no está sellada con XAdES (tocaría signature-service); su huella queda
 anclada en `audit_log`. El paquete se arma en un fichero temporal (son XML pequeños).
+
+## Nota ADR-034 (2026-10-11)
+
+La conformidad XMLDSig de la firma (ADR-034) **no cambia** `constancia_sha256` ni `huella_de_firmado`: son huellas de la aplicación
+sobre el XML sin `ds:Signature`. Cambia solo la `ds:Signature` que lo sella (con `Transforms` declarados). Las constancias selladas
+antes de ADR-034 conservan sus huellas, pero su sello XAdES no verifica con un validador independiente y se regenera si hace falta.

@@ -28,7 +28,7 @@ services:
   postgres:
     # pgvector/pgvector:pg15 = PostgreSQL 15 + extensión pgvector (capa de conocimiento E21).
     # Mismo major (15) que la imagen anterior (postgres:15-alpine) → compatible con el volumen existente.
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:0.8.7-pg15-bookworm@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9
     container_name: orpycamcp-postgres
     environment:
       POSTGRES_USER: orpycamcp
@@ -48,7 +48,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: orpycamcp-redis
     ports:
       # Solo el bucle local, y CON contraseña: en desarrollo Redis guarda los
@@ -120,7 +120,7 @@ services:
       retries: 3
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0
+    image: quay.io/keycloak/keycloak:24.0.5@sha256:f8ade94c1d0ad2f2fa7734a455fee5392764f402c43ca35e9af6bf63a2541dc9
     container_name: orpycamcp-keycloak
     command: start-dev --import-realm
     environment:
@@ -744,7 +744,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
-      - SMTP_HOST=mailhog
+      - SMTP_HOST=mailpit
       - SMTP_PORT=1025
       - SMTP_FROM=noreply@orpycamcp.local
       - KEYCLOAK_URL=http://keycloak:8080
@@ -823,12 +823,14 @@ services:
 
   # ─── Development Tools ────────────────────────────────────────────────────────
 
-  mailhog:
-    image: mailhog/mailhog:latest
-    container_name: orpycamcp-mailhog
+  # Mailpit (sucesor mantenido de MailHog, abandonado desde 2020). Tag y digest
+  # fijos: con `latest` el arranque dependía de lo que el registro sirviera ese día.
+  mailpit:
+    image: axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48
+    container_name: orpycamcp-mailpit
     ports:
-      - "1025:1025"   # SMTP
-      - "8025:8025"   # Web UI
+      - "127.0.0.1:1025:1025"   # SMTP
+      - "127.0.0.1:8025:8025"   # Web UI
     networks:
       - orpycamcp-net
     profiles:

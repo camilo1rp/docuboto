@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # `orpycamcp_common.audit.verify_chain`, que recorre el registro entero).
     db_command_timeout: float = 120.0
     redis_url: str = "redis://redis:6379/0"
-    smtp_host: str = "mailhog"
+    smtp_host: str = "mailpit"
     smtp_port: int = 1025
     smtp_from: str = "noreply@orpycamcp.local"
     smtp_max_attempts: int = 3

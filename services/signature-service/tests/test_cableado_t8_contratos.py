@@ -294,7 +294,8 @@ async def test_emitir_challenge_persiste_hash_que_verifica_con_su_propio_id_y_ve
     conn = _make_conn()
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [
-        _sol_row(), {}, _turno_row(firmante_id=USER), None, _challenge_row(),
+        _sol_row(), {}, _turno_row(firmante_id=USER), _sol_row(), _turno_row(firmante_id=USER),
+        None, _challenge_row(),
     ]
     _override(conn)
     try:

@@ -66,22 +66,34 @@ sudo mkdir -p /srv/orpyca/{postgres,minio,redis,certs}
 sudo chown $USER:$USER /srv/orpyca -R
 ```
 
-### 2. Obtener certificado TLS
+### 2. Obtener certificados TLS
 
-Con Let's Encrypt (gratuito, requiere puerto 80 accesible):
+El servicio `edge` (nginx en contenedor, §4) monta `/etc/letsencrypt` del servidor en solo lectura y
+necesita **un certificado por dominio**: `FRONTEND_HOSTNAME`, `API_PUBLIC_HOSTNAME` y
+`KEYCLOAK_HOSTNAME`. Con Let's Encrypt (gratuito, requiere el puerto 80 libre y los tres nombres
+resolviendo al servidor), la **primera emisión** va con `--standalone` y **antes del primer `up`** (el
+puerto 80 aún no lo ocupa nadie):
 
 ```bash
 sudo apt install certbot
+sudo certbot certonly --standalone -d app.yourdomain.com
+sudo certbot certonly --standalone -d api.yourdomain.com
 sudo certbot certonly --standalone -d keycloak.yourdomain.com
-# Certificados en /etc/letsencrypt/live/keycloak.yourdomain.com/
-
-# Copiar a la carpeta del proyecto (renovación automática)
-sudo cp /etc/letsencrypt/live/keycloak.yourdomain.com/fullchain.pem /srv/orpyca/certs/tls.crt
-sudo cp /etc/letsencrypt/live/keycloak.yourdomain.com/privkey.pem /srv/orpyca/certs/tls.key
-sudo chown $USER:$USER /srv/orpyca/certs/tls.*
+# Certificados en /etc/letsencrypt/live/<dominio>/{fullchain,privkey}.pem
 ```
 
-Con CA corporativa: proporcione `tls.crt` y `tls.key` en la carpeta de certs.
+Las **renovaciones** ya no pueden usar `--standalone` (el puerto 80 lo tiene `edge`): van por *webroot*
+sobre `infra/certbot-www` (que `edge` sirve en `/.well-known/acme-challenge/`) y recargan nginx al
+terminar:
+
+```bash
+mkdir -p infra/certbot-www
+sudo certbot renew --webroot -w "$PWD/infra/certbot-www" \
+  --deploy-hook "docker compose -f $PWD/infra/docker-compose.prod.yml --env-file $PWD/infra/.env exec edge nginx -s reload"
+```
+
+Con CA corporativa: deje `fullchain.pem` y `privkey.pem` de cada dominio en
+`/etc/letsencrypt/live/<dominio>/` (o monte su propia ruta en el servicio `edge`).
 
 ### 3. Configurar firewall
 
@@ -93,29 +105,57 @@ sudo ufw default allow outgoing
 # Permitir SSH (CRÍTICO: no bloquee tu acceso)
 sudo ufw allow ssh
 
-# Permitir Nginx (proxy reverso)
+# Permitir el proxy de entrada (servicio `edge`)
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-
-# Denegar acceso directo a servicios internos
-sudo ufw deny 5432  # PostgreSQL
-sudo ufw deny 6379  # Redis
-sudo ufw deny 8080  # API Gateway sin proxy
-sudo ufw deny 9000  # almacén de objetos (S3)
 
 sudo ufw enable
 ```
 
-### 4. Instalar Nginx como proxy reverso (recomendado)
+> **Docker se salta ufw en los puertos que publica.** Un `ports:` en el compose abre el puerto
+> en `iptables` por delante de las reglas de ufw, así que `ufw deny 5432` **no protege** un
+> PostgreSQL publicado. La defensa real es no publicarlos: el manifiesto de producción publica
+> **solo** `80` y `443`, y solo en el servicio `edge`; un guardián
+> (`shared/tests/test_manifiesto_prod_seguro.py`) falla si cualquier otro servicio publica un
+> puerto. Compruébelo desde fuera con `scripts/preflight-prod.sh`.
+
+### 4. Entrada de producción: servicio `edge` (nginx en contenedor)
+
+La entrada la hace el servicio `edge` de `infra/docker-compose.prod.yml` (ADR-033): nginx en
+contenedor, **el único servicio con `ports:`** (`80:80`, `443:443`). No se instala nginx en el
+servidor. La plantilla es `infra/nginx/orpyca.conf.template`; la imagen oficial sustituye
+`${FRONTEND_HOSTNAME}`, `${API_PUBLIC_HOSTNAME}` y `${KEYCLOAK_HOSTNAME}` al arrancar, así que **no hay
+nada que copiar ni editar**: los tres dominios salen del mismo `infra/.env`.
+
+Por qué en contenedor y no en el servidor:
+
+- `api-gateway` y `frontend` tienen `deploy.replicas: 2`: publicar un puerto fijo del servidor lo
+  tomaría la primera réplica y la segunda moriría con «port is already allocated». nginx resuelve
+  el nombre del servicio en cada petición (`resolver 127.0.0.11`) y reparte entre réplicas.
+- Con nginx en el servidor, el gateway vería como par a la IP del docker-proxy
+  (ver `TRUSTED_PROXIES`, abajo).
+- Los servicios llaman a `https://${KEYCLOAK_HOSTNAME}` desde dentro de la red: `edge` lleva ese
+  nombre (y los otros dos) como **alias** en `orpycamcp-net`, así que el DNS de Docker lo resuelve al
+  propio `edge`, con certificado válido, sin *hairpin* NAT ni DNS externo. Eso es lo que hace funcionar
+  el login PKCE del SSR (`INTERNAL_KEYCLOAK_URL`).
+
+Qué publica cada dominio:
+
+| Dominio | Destino | Nota |
+|---|---|---|
+| `FRONTEND_HOSTNAME` | `frontend:3000` | HSTS; el resto de cabeceras las emite el SSR |
+| `API_PUBLIC_HOSTNAME` | `api-gateway:8080` | `/health/ready` solo desde el propio contenedor `edge` (`127.0.0.1`); sondeo: `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. La IP del gateway de la red (`172.20.0.1`) **no** se admite: es la que ve nginx para cualquier cliente de internet |
+| `KEYCLOAK_HOSTNAME` | `keycloak:8080` | lista de **admisión**: solo `/realms/orpycamcp/` y `/resources/`; todo lo demás (incluidos `/admin/`, `/realms/master`, `/realms/master;x/…`) responde 404, y una ruta con `;` también |
+
+La consola de administración de Keycloak **no se publica**: úsela por túnel SSH
+(`ssh -L 8080:localhost:8080 servidor`, hacia el puerto del contenedor) o con
+`docker compose exec keycloak`.
 
 ```bash
-sudo apt install nginx
-
-# Ver plantilla en infra/nginx.conf.example
-sudo cp infra/nginx.conf.example /etc/nginx/sites-available/orpyca
-sudo ln -s /etc/nginx/sites-available/orpyca /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
+cd infra
+docker compose -f docker-compose.prod.yml --env-file .env config -q   # valida el manifiesto
+docker compose -f docker-compose.prod.yml --env-file .env up -d
+docker compose -f docker-compose.prod.yml --env-file .env exec edge nginx -t
 ```
 
 ### IP verificada de la ventanilla pública (`TRUSTED_PROXIES`)
@@ -123,10 +163,18 @@ sudo systemctl restart nginx
 La constancia de autorización de la ventanilla (Ley 1581/2012, ADR-031) guarda la IP del cliente **solo si el gateway puede afirmarla**. El gateway la deriva recorriendo `X-Forwarded-For` **desde la derecha** y descartando los saltos de `TRUSTED_PROXIES`; la firma con `IDENTITY_SIGNING_SECRET` (ligada a la ruta, válida 120 s) y document-service solo acepta esa firma: **nunca** lee `X-Forwarded-For`. Para que `ip_verificada` sea `true` en producción:
 
 1. `IDENTITY_SIGNING_SECRET` configurado (es obligatorio en producción; sin él la IP queda nula).
-2. `TRUSTED_PROXIES` del api-gateway debe incluir **la red de nginx y la del frontend SSR** (los dos saltos que encadenan `X-Forwarded-For`: `infra/nginx.conf.example` usa `proxy_add_x_forwarded_for` y el SSR reenvía la IP del navegador). Si falta alguna, el gateway ve como cliente al propio proxy: la constancia registra la IP del proxy, no la de la persona.
+2. `TRUSTED_PROXIES` del api-gateway debe incluir **la red del `edge` y la del frontend SSR** (los dos saltos que encadenan `X-Forwarded-For`: nginx usa `proxy_add_x_forwarded_for` y el SSR reenvía la IP del navegador). El valor por defecto del manifiesto es **`172.20.128.0/17`**: el `ip_range` de `orpycamcp-net` (la subred es `172.20.0.0/16`, pero los contenedores reciben IP solo de la mitad alta). Si falta alguna, el gateway ve como cliente al propio proxy: la constancia registra la IP del proxy, no la de la persona.
+
+   **Por qué el gateway de la red (`172.20.0.1`) queda fuera.** nginx *añade* `$remote_addr` a lo que mande el cliente en `X-Forwarded-For`. Si `$remote_addr` llegara a ser `172.20.0.1` (un cliente IPv6 servido por el docker-proxy, o un proceso del propio servidor) y esa IP fuera de confianza, el gateway de la API la saltaría y se quedaría con la entrada **forjada por el cliente**, que acabaría sellada en `audit_log` y en la constancia (ADR-031). Con el gateway de la red fuera del rango de confianza el resultado es *fail-closed*: se registra `172.20.0.1`, nunca una IP inventada. Un guardián (`test_trusted_proxies_excluye_el_gateway_de_la_red`) impide volver a un `/16`. Si cambia la subred de la red en el compose, cambie `TRUSTED_PROXIES` a la par.
+
+   **IPv6.** Docker entrega los clientes IPv6 por su docker-proxy, que oculta la IP real (se vería `172.20.0.1`). Para conservarla active `"ip6tables": true` en `/etc/docker/daemon.json`; sin eso, la IP de un cliente IPv6 queda como `172.20.0.1` (no informa, pero no se puede forjar).
 3. Con `TRUSTED_PROXIES` vacío (el valor por defecto) la cabecera se ignora y se usa la dirección del socket: es seguro, pero no informa.
 
-**Importante:** la IP solo es fiable si el frontend es alcanzable **únicamente a través de nginx**. Un puerto del SSR expuesto directamente (en desarrollo, `19300` con `XFF_DEPTH=1`) acepta un `X-Forwarded-For` forjado por el cliente y lo encadena como si fuera de confianza; en producción no publique el puerto del frontend: solo nginx debe llegar a él.
+**Importante:** la IP solo es fiable si el frontend es alcanzable **únicamente a través de `edge`**. Un puerto del SSR expuesto directamente (en desarrollo, `19300` con `XFF_DEPTH=1`) acepta un `X-Forwarded-For` forjado por el cliente y lo encadena como si fuera de confianza; en producción ningún servicio salvo `edge` publica puertos (guardián del manifiesto).
+
+Si su `infra/.env` viene de una versión anterior y fija `TRUSTED_PROXIES=172.20.0.0/16`, **cámbielo** a `172.20.128.0/17` (o bórrelo): con el `/16` el gateway de la red vuelve a ser de confianza.
+
+**El gateway de la API se niega a arrancar si se lo deja así (ARC-B4).** El manifiesto de producción define `APP_ENV=production` y `GATEWAY_RED_DOCKER_GATEWAY=172.20.0.1` (debe coincidir con `gateway:` de la red; un guardián lo vigila); si `TRUSTED_PROXIES` cubre esa IP el arranque termina con un error que lo explica. Si la variable estuviera vacía, la IP se deriva de la ruta por defecto del contenedor. **Solo en producción:** en desarrollo `docker-compose.yml` fija `172.16.0.0/12` (que sí la contiene) a propósito y no se comprueba.
 
 Sin firma válida la constancia dice `ip=null, ip_verificada=false` y **no se bloquea** la radicación.
 
@@ -168,6 +216,7 @@ nano .env
 | `KEYCLOAK_HOSTNAME` | Dominio FQDN de Keycloak | `keycloak.yourdomain.com` |
 | `KEYCLOAK_ADMIN_PASSWORD` | Contraseña admin Keycloak | `<secure password>` |
 | `KEYCLOAK_*_SECRET` | Secrets de clientes OAuth2 | `<32 char hex>` |
+| `ORPYCA_REGISTRY` / `ORPYCA_TAG` | Registro de imágenes y tag inmutable a desplegar (el SHA del commit; nunca `latest`). **Obligatorias** (`:?`): sin ellas ningún comando `docker compose` arranca | `registry.example.org/orpyca` / `<sha>` |
 | `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN` y el `redirect_uri` del login) | `app.yourdomain.com` |
 | `API_PUBLIC_HOSTNAME` | FQDN público del api-gateway que ve el navegador | `api.yourdomain.com` |
 | `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar. **El servicio no arranca sin ella** | `<openssl rand -base64 32>` |
@@ -555,8 +604,10 @@ En cron, redirigiendo a un log **que alguien mire**:
 ### Restauración
 
 ```bash
-ENV_FILE=infra/.env ./infra/restore.sh /srv/orpyca/backups/20260808_020000
+RESTORE_OPERADOR="Nombre Apellido" ENV_FILE=infra/.env ./infra/restore.sh /srv/orpyca/backups/20260808_020000
 ```
+
+`RESTORE_OPERADOR` es **obligatorio** (la persona que ejecuta la restauración; el script termina antes de confirmar o parar nada si falta): el acta `storage.restauracion` de `audit_log` se atribuye a `operador:<nombre>` y declara, por tenant, la **ventana de traza perdida** —el extremo de `audit_log` (conteo, id y hash del último asiento) se anota *antes* de `pg_restore` y se compara con el restaurado—. Restaurar un respaldo anterior al estado vivo suprime legalmente los asientos posteriores; el acta dice cuáles `(desde_id, hasta_id]` y cuántos.
 
 Para las aplicaciones y Keycloak pero **deja en pie Postgres y el almacén**, que son el
 destino del trabajo. Exige confirmación escrita: restaurar destruye el estado
@@ -600,6 +651,21 @@ una clave del respaldo con `..`, ruta absoluta o caracteres de control se rechaz
 para respaldos anteriores a esto o sellados con `versiones_previas_capturadas=NO`.
 `verify_audit_chains` sale **2** si no hay nada que verificar (filtro vacío o sin tenants):
 `--permitir-objetivo-vacio` es solo para una instalación nueva y los scripts no lo pasan.
+
+**Fail-closed (B7).** `restore.sh` termina con error —y deja los servicios parados— si
+`pg_restore` falla por cualquier motivo: solo se admite el error inocuo de las PK heredadas de las
+particiones de `audit_log` («cannot drop inherited constraint»), y **solo si** el código de salida es
+exactamente 1, hay al menos una de esas PK y la línea final `errors ignored on restore: N` declara
+N igual a ese número (cualquier otro código, o un N mayor —errores sin línea propia—, es fallo); una
+salida ≠ 0 *sin* líneas `pg_restore: error:` (contenedor caído, OOM) no se toma por inocua. **Antes de
+parar servicios y de `pg_restore`** (pre-vuelo) crea o comprueba cada bucket protegido con
+`get-object-lock-configuration` y exige `Enabled`; si no (el bucket existía sin bloqueo y eso no se
+puede habilitar a posteriori), **aborta sin haber parado ni restaurado nada**: «no se ha tocado ningún
+dato» es cierto. `backup.sh` ya
+no se traga un fallo al listar los buckets: exige que el espejo contenga
+`orpycamcp-<slug>-documents` de cada tenant que no esté dado de baja (`active` y `suspended`); con el almacén sin responder o la red
+equivocada el respaldo **falla** en vez de salir «correcto» con el espejo vacío. Ambos scripts toman
+la red del servicio `minio` y usan `amazon/aws-cli` por tag y digest (`S3_CLI_IMAGEN` lo sobrescribe).
 
 Dos cosas que no son evidentes:
 
@@ -795,8 +861,14 @@ Configurar alertas para:
 
 > Lo que se puede verificar en el repositorio **ya tiene guardián** y corre en cada push
 > (`shared/tests/test_manifiesto_prod_seguro.py`): el manifiesto de producción no publica
-> `ports:`, Redis lleva `--requirepass ${REDIS_PASSWORD:?}`, toda credencial es obligatoria
-> (`${VAR:?}`) y sin valor por defecto, y las imágenes de terceros llevan tag fijo o digest.
+> `ports:` salvo `edge` (80 y 443), Redis lleva `--requirepass ${REDIS_PASSWORD:?}`, toda credencial es obligatoria
+> (`${VAR:?}`) y sin valor por defecto, y las imágenes de terceros llevan **tag y digest** (`@sha256:`; un
+> tag se puede mover en el registro, el digest no). `TRUSTED_PROXIES` no incluye el gateway de la red, la
+> plantilla de nginx cubre los tres dominios y `infra/.env.example` contiene toda variable del manifiesto.
+> Para actualizar una imagen: `docker buildx imagetools inspect <imagen>:<tag>`, copiar el `Digest` al
+> manifiesto (y a `docker-compose.yml`, para que lo validado en desarrollo sea lo que va a producción) y
+> correr el guardián. **Keycloak 24.0.5 está fuera de soporte**: actualizarlo es una tanda aparte (cambia la
+> API de administración y el tema).
 > Lo que depende del **host** se comprueba, desde fuera del servidor, con
 > `scripts/preflight-prod.sh <host-publico>` (TLS válido, HTTP redirige a HTTPS, puertos
 > internos cerrados). Lo demás sigue siendo manual.
@@ -805,8 +877,9 @@ Configurar alertas para:
 - [ ] PostgreSQL no es accesible externamente (manifiesto: guardián; host: `preflight-prod.sh`)
 - [ ] El almacén de objetos requiere autenticación (sin acceso público)
 - [ ] Redis requiere contraseña (manifiesto: guardián)
-- [ ] Keycloak usa HTTPS con certificado válido
-- [ ] Firewall bloquea puertos internos (5432, 6379, 9000) (`scripts/preflight-prod.sh`)
+- [ ] Keycloak usa HTTPS con certificado válido (los tres dominios tienen certificado y `edge` los sirve; la consola `/admin/` no es pública)
+- [ ] Solo `edge` publica puertos (80 y 443): Docker se salta ufw en los puertos publicados (manifiesto: guardián; host: `scripts/preflight-prod.sh`)
+- [ ] `TRUSTED_PROXIES` sin el gateway de la red (`172.20.128.0/17`, no el `/16`)
 - [ ] CORS configurado restringidamente
 - [ ] Audit logging habilitado en PostgreSQL y Keycloak
 - [ ] Backup diario con pruebas de recuperación
@@ -815,9 +888,8 @@ Configurar alertas para:
 
 ### Cabeceras de seguridad en Nginx
 
-Están en `infra/nginx.conf.example`, que hasta ahora esta guía mandaba copiar sin
-que el archivo existiera. Lo importante de esa plantilla no son las cabeceras: son
-las tres cosas que dependen de `X-Forwarded-*` y fallan en silencio sin ellas — el
+Están en `infra/nginx/orpyca.conf.template` (servicio `edge`). Lo importante de esa plantilla no son las
+cabeceras: son las tres cosas que dependen de `X-Forwarded-*` y fallan en silencio sin ellas — el
 `redirect_uri` del login PKCE, la IP real que se sella en `audit_log` (registro con
 valor probatorio) y el reparto del límite por IP. Lleva también `proxy_buffering off`,
 sin el cual nginx vuelve a acumular en disco cada descarga que el sistema sirve por
@@ -830,6 +902,16 @@ inalcanzable durante un año. Las demás cabeceras (CSP, `nosniff`, `Referrer-Po
 `X-Frame-Options`, `Permissions-Policy`) **las emite el propio SSR**: no las
 dupliques en nginx, porque `add_header` no sustituye la del backend y dos valores
 distintos de la misma cabecera dan un comportamiento que depende del navegador.
+
+### Dictado por voz (whisper) fuera del manifiesto de producción
+
+`whisper-service` (perfil `assistant`, arranca apagado) **no está en `infra/docker-compose.prod.yml`
+en v1, y es intencional**: `mcp-server` no define `STT_PROVIDER`, así que se aplica el defecto
+`disabled` y el dictado queda apagado; no falta ninguna pieza. Declararlo con `profiles: [assistant]`
+costaría que Compose interpolara también los perfiles inactivos y obligara a todo operador a definir
+`WHISPER_INTERNAL_TOKEN` aunque no use el dictado. Cuando una entidad lo pida, se añade el servicio
+con su token **y** `STT_PROVIDER` en `mcp-server`; un guardián
+(`test_stt_en_prod_tiene_quien_lo_sirva`) falla si se enciende el dictado sin el servicio.
 
 ### Auditoría de seguridad
 

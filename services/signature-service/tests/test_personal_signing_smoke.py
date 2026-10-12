@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import hashlib
 from base64 import b64decode, b64encode
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from cryptography import x509
@@ -61,17 +60,14 @@ from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import NameOID
 from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
-from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
+from signxml.xades import XAdESSigner, XAdESVerifier
+
+from app.providers.local import _declarar_transforms
 
 _SIGN_ALG = SignatureMethod.RSA_SHA256
 _DIGEST_ALG = DigestAlgorithm.SHA256
 _C14N_ALG = CanonicalizationMethod.EXCLUSIVE_XML_CANONICALIZATION_1_0
 _DS_NS = {"ds": "http://www.w3.org/2000/09/xmldsig#"}
-
-# Mismo workaround que app/providers/local.py::_VERIFY_CONFIG — sin él,
-# XAdESVerifier rechaza incluso una firma propia sin alterar cuando el signer
-# usa canonicalización exclusiva (ver la nota de módulo allí).
-_VERIFY_CONFIG = replace(XAdESSignatureConfiguration(), default_reference_c14n_method=_C14N_ALG)
 
 _DOC_XML = (
     b'<solicitud xmlns="urn:orpyca:firma-personal">'
@@ -158,9 +154,12 @@ def _sign_with_ephemeral_key_and_real_cert(
         digest_algorithm=_DIGEST_ALG,
         c14n_algorithm=_C14N_ALG,
     )
-    return xades_signer.sign(
+    signed_root = xades_signer.sign(
         root, key=ephemeral_key_pem, cert=real_cert_pem, always_add_key_value=False
     )
+    # ADR-034: declara los Transforms que signxml omite ANTES de firmar SignedInfo.
+    _declarar_transforms(signed_root)
+    return signed_root
 
 
 def _sign_signed_info_with_real_key(signed_info_c14n: bytes, real_key: rsa.RSAPrivateKey) -> bytes:
@@ -180,13 +179,10 @@ def _swap_signature_value(signed_root: etree._Element, signature_der: bytes) -> 
 
 
 def _verify(signed_root: etree._Element, expected_cert: x509.Certificate) -> bool:
-    """Paso 6: ``XAdESVerifier`` contra el certificado REAL — mismo
-    ``expect_config`` que ``app.providers.local.verify_xades`` usa para
-    sortear la particularidad de referencias sin ``Transforms`` explícito."""
+    """Paso 6: ``XAdESVerifier`` POR DEFECTO contra el certificado REAL (sin
+    atajos de canonicalización: así verifica un tercero, ADR-034)."""
     try:
-        results = XAdESVerifier().verify(
-            signed_root, x509_cert=expected_cert, expect_config=_VERIFY_CONFIG
-        )
+        results = XAdESVerifier().verify(signed_root, x509_cert=expected_cert)
     except Exception:  # noqa: BLE001 — cualquier fallo == inválida (fail-closed, ver local.py)
         return False
     return len(results) > 0

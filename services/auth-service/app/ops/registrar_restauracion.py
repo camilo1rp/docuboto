@@ -23,13 +23,22 @@ Este módulo, en UNA transacción:
  2. inserta un evento PREMIS `REPLICA` (`detalle.motivo='restauracion'`) por objeto
     remapeado en `preservacion_evento` (si la tabla falta, todo se revierte);
  3. deja el asiento `storage.restauracion` en `public.audit_log` (tenant de sistema)
-    con el SHA-256 del mapa, los recuentos y las versiones previas NO restauradas.
+    con el SHA-256 del mapa, los recuentos y las versiones previas NO restauradas;
+ 4. (ARC-M4) atribuye el acto a una PERSONA (`--operador`, obligatorio) y declara la
+    VENTANA DE TRAZA PERDIDA: `restore.sh` captura, ANTES de `pg_restore`, el extremo
+    de `audit_log` por tenant (conteo, id y hash del último asiento) y lo envía en el
+    mismo stdin; aquí se compara con el extremo ya restaurado. Restaurar un respaldo
+    más viejo que el estado vivo suprime asientos legales: el acta dice cuáles
+    (`(desde_id, hasta_id]`) y cuántos, no lo calla.
 
 Si el asiento falla, la actualización se revierte (auditoría atómica con la
-escritura). Entrada: el mapa TSV por stdin (`OBJETO<TAB>bucket/clave<TAB>vieja<TAB>nueva`).
+escritura). Entrada: el mapa TSV por stdin (`OBJETO<TAB>bucket/clave<TAB>vieja<TAB>nueva`)
+precedido de la captura previa (`CAPTURA_PREVIA<TAB>OK` y una línea
+`EXTREMO_PREVIO<TAB>slug<TAB>asientos<TAB>ultimo_id<TAB>ultimo_hash` por tenant). Sin
+el marcador no hay acta: una captura ausente no puede confundirse con «no había nada».
 
     python -m app.ops.registrar_restauracion --respaldo 20261003_020000 \
-        --previas-no-restauradas 0 < mapa-version-id.tsv
+        --operador "Ana Pérez" --previas-no-restauradas 0 < captura+mapa.tsv
 """
 
 from __future__ import annotations
@@ -59,6 +68,89 @@ _ACTOR = "system:ops-restauracion"
 
 
 @dataclass(frozen=True, slots=True)
+class Extremo:
+    """Extremo de la cadena de un tenant en `audit_log`."""
+
+    slug: str
+    asientos: int
+    ultimo_id: int | None
+    ultimo_hash: str | None
+
+
+def parsear_extremos_previos(texto: str) -> list[Extremo]:
+    """Extremos capturados ANTES de `pg_restore`. Exige el marcador `CAPTURA_PREVIA OK`."""
+    capturada = False
+    out: list[Extremo] = []
+    for n, linea in enumerate(texto.splitlines(), start=1):
+        if linea == "CAPTURA_PREVIA\tOK":
+            capturada = True
+        elif linea.startswith("EXTREMO_PREVIO\t"):
+            campos = linea.split("\t")
+            if len(campos) != 5:
+                raise ValueError(f"línea {n}: EXTREMO_PREVIO malformado")
+            try:
+                out.append(Extremo(campos[1], int(campos[2]), int(campos[3]), campos[4]))
+            except ValueError as exc:
+                raise ValueError(f"línea {n}: EXTREMO_PREVIO con número inválido ({exc})") from exc
+    if not capturada:
+        raise ValueError(
+            "falta la captura previa del extremo de audit_log (CAPTURA_PREVIA OK): "
+            "sin ella no se puede declarar la ventana de traza perdida"
+        )
+    return out
+
+
+def validar_operador(operador: str) -> str:
+    """Una persona identificable: no vacío, sin caracteres de control, mínimo 3."""
+    limpio = (operador or "").strip()
+    if len(limpio) < 3 or any(ord(c) < 32 for c in limpio):
+        raise ValueError("--operador es obligatorio: nombre de la persona que ejecuta la restauración")
+    return limpio
+
+
+async def _extremo_restaurado(conn: asyncpg.Connection, slug: str) -> tuple[int, int | None, str | None]:
+    fila = await conn.fetchrow(
+        "SELECT count(*) AS n, max(id) AS ultimo_id FROM public.audit_log WHERE tenant_slug = $1", slug
+    )
+    assert fila is not None
+    ultimo_id = fila["ultimo_id"]
+    hash_ = None
+    if ultimo_id is not None:
+        hash_ = await conn.fetchval(
+            "SELECT hash FROM public.audit_log WHERE id = $1 AND tenant_slug = $2", ultimo_id, slug
+        )
+    return int(fila["n"]), ultimo_id, hash_
+
+
+async def ventanas_de_traza_perdida(conn: asyncpg.Connection, previos: list[Extremo]) -> list[dict[str, object]]:
+    """Por tenant con asientos que la restauración dejó fuera: `(desde_id, hasta_id]`.
+
+    `hasta_id` es el último asiento que existía ANTES de restaurar (con su hash, como
+    prueba); `desde_id` es el último que quedó. Solo se listan los tenants con pérdida.
+    """
+    ventanas: list[dict[str, object]] = []
+    for p in previos:
+        if p.ultimo_id is None:
+            continue
+        n, ultimo_id, hash_ = await _extremo_restaurado(conn, p.slug)
+        if ultimo_id is not None and ultimo_id >= p.ultimo_id and n >= p.asientos:
+            continue
+        ventanas.append(
+            {
+                "tenant_slug": p.slug,
+                "desde_id": ultimo_id or 0,
+                "desde_hash": hash_,
+                "hasta_id": p.ultimo_id,
+                "hasta_hash": p.ultimo_hash,
+                "asientos_previos": p.asientos,
+                "asientos_restaurados": n,
+                "asientos_perdidos": max(p.asientos - n, 0),
+            }
+        )
+    return ventanas
+
+
+@dataclass(frozen=True, slots=True)
 class Remapeo:
     bucket: str
     clave: str
@@ -84,11 +176,14 @@ async def registrar(
     *,
     mapa_texto: str,
     respaldo: str,
+    operador: str,
     previas_no_restauradas: int = 0,
-) -> dict[str, int | str]:
+) -> dict[str, object]:
     """Aplica el mapa y asienta el acta en una sola transacción. Devuelve el resumen."""
     if _audit is None:
         raise RuntimeError("orpycamcp_common.audit no está disponible: no se registra sin traza")
+    operador = validar_operador(operador)
+    previos = parsear_extremos_previos(mapa_texto)
     remapeos = parsear_mapa(mapa_texto)
     actualizadas: Counter[str] = Counter()
     sin_fila = 0
@@ -147,8 +242,12 @@ async def registrar(
                     _ACTOR,
                 )
                 eventos += 1
-        resumen: dict[str, int | str] = {
+        ventanas = await ventanas_de_traza_perdida(conn, previos)
+        resumen: dict[str, object] = {
             "respaldo": respaldo,
+            "operador": operador,
+            "tenants_con_traza_perdida": len(ventanas),
+            "asientos_perdidos": sum(int(v["asientos_perdidos"]) for v in ventanas),  # type: ignore[call-overload]
             "mapa_sha256": hashlib.sha256(mapa_texto.encode("utf-8")).hexdigest(),
             "objetos_en_mapa": len(remapeos),
             "filas_worm_actualizadas": sum(actualizadas.values()),
@@ -163,8 +262,8 @@ async def registrar(
             action="storage.restauracion",
             object_type="respaldo",
             object_ref=respaldo,
-            actor=_ACTOR,
-            payload={**resumen, "por_tenant": dict(actualizadas)},
+            actor=f"operador:{operador}",
+            payload={**resumen, "por_tenant": dict(actualizadas), "ventanas_de_traza_perdida": ventanas},
             canal="system",
         )
     return resumen
@@ -178,6 +277,7 @@ async def _main(args: argparse.Namespace) -> int:
             conn,
             mapa_texto=texto,
             respaldo=args.respaldo,
+            operador=args.operador,
             previas_no_restauradas=args.previas_no_restauradas,
         )
     except Exception as exc:  # noqa: BLE001
@@ -192,6 +292,7 @@ async def _main(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Registra la restauración del almacén en audit_log.")
     p.add_argument("--respaldo", required=True, help="nombre del directorio de respaldo restaurado")
+    p.add_argument("--operador", required=True, help="persona que ejecuta la restauración (obligatorio)")
     p.add_argument("--previas-no-restauradas", type=int, default=0)
     return asyncio.run(_main(p.parse_args(sys.argv[1:] if argv is None else argv)))
 

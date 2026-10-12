@@ -1,6 +1,6 @@
 # ADR-016: Firma electrónica nativa (hash + identidad + sello de tiempo)
 
-**Estado**: Aceptado
+**Estado**: Aceptado — enmendado por [ADR-034](ADR-034-xmldsig-conforme-firma-verificable-por-terceros.md) (conformidad XMLDSig, 2026-10-11)
 **Fecha**: 2026-06-21
 **Autores**: Giampiero (mantenedor principal)
 
@@ -269,3 +269,20 @@ TOTP es factor de **posesión de dispositivo** (más fuerte que el OTP-correo), 
 - **Lectura de la cadena: alcance aceptado.** `GET /signature/requests/{id}` y `GET /signature/requests?objeto_tipo&objeto_id` muestran estado y turnos a cualquiera con `PERM_FIRMA` cuyo clearance alcance el objeto, sea o no firmante. Es una decisión de producto (un jefe de área o un auditor sigue el trámite; no hay contenido, solo estado), declarada y no cambiada; restringirla a los participantes sería otra decisión.
 - **`TSA_ESSCERTID_OBLIGATORIO`** sigue sin leerse: si aparece en el entorno al arrancar, signature-service registra un error que nombra a `TSA_ESSCERTID_CORTE`.
 - **HSM/KMS: no se implementa** (pendiente de proveedor). El enganche existe en `auth-service/app/core/signing_keys.py::sign_digest`.
+
+## Enmienda ADR-034 (2026-10-11) — «verificable» no era verificable por terceros
+
+Donde este ADR dice que la firma XAdES es verificable (incluido «verificable a largo plazo» del Inc.5), debe leerse con esta salvedad:
+hasta ADR-034 **ningún tercero** la verificaba. Las referencias a `SignedProperties` y `KeyInfo` salían sin `ds:Transforms` pero con
+digest exclusivo, y EU DSS daba `HASH_FAILURE`; nuestro `/verify` lo ocultaba con un atajo de canonicalización. ADR-034 declara los
+`Transforms`, firma el `SignedInfo` final, autoverifica fail-closed con `XAdESVerifier()` por defecto, elimina el atajo y alinea la
+entrada del `ArchiveTimeStamp` a EN 319 132-1 §5.5.2 (el «perfil simplificado» del Inc.5 deja de serlo en ese punto). Las firmas
+anteriores del corpus de prueba no verifican y se regeneran.
+
+**Vigencia (ronda de corrección B7, ADR-034 §4-§6).** Donde este ADR habla de «vigencia del certificado» en `/verify` (y de que firmar
+con un sello caducado «se rechaza al verificar»): (1) **no se firma** con un certificado caducado o aún no vigente —el sello
+institucional da `503 sello_institucional_vencido`, la firma personal `422 certificado_personal_vencido` antes de consumir el TOTP—;
+(2) la vigencia sigue juzgándose a «ahora», **salvo** una firma XAdES-LTA cuyo `ArchiveTimeStamp` valida: si su certificado caducó
+después de firmar, se juzga a la fecha del `SignatureTimeStamp` y la respuesta lleva la advertencia
+`certificado_vencido_vigencia_juzgada_al_sello_de_firma`; sin LTA válido sigue siendo `certificado_fuera_de_vigencia`; (3) el
+`ArchiveTimeStamp` **no se renueva** (deuda declarada); (4) los sellos de tiempo se verifican con la canonicalización que declaran.

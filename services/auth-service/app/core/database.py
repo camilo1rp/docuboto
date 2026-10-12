@@ -93,6 +93,22 @@ async def get_optional_tenant_conn(
     schema = tenant_schema(slug)  # raises HTTP 400 if slug is syntactically invalid
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
+        # Una entidad registrada que aún no tiene schema (`pending` antes de
+        # `init_tenant`, o un slug que no existe) NO es un error del servidor: es
+        # «sin usuario aprovisionado», el mismo caso que ya documenta `/auth/me`.
+        # `SET search_path` sobre un schema inexistente no falla, así que sin esta
+        # comprobación la primera consulta reventaba con `UndefinedTableError`
+        # (500). `to_regclass` verifica EXACTAMENTE la precondición de `/me`
+        # (que exista `auth_users` en el schema) sin tapar con un `except` la
+        # deriva de esquema de un tenant que sí existe. Los vacíos no permiten
+        # distinguir pending, inexistente y usuario sin aprovisionar: no es un
+        # oráculo, y es fail-closed (nada se interpreta como «sin restricción»).
+        aprovisionado = await conn.fetchval(
+            "SELECT to_regclass(format('%I.auth_users', $1::text)) IS NOT NULL", schema
+        )
+        if not aprovisionado:
+            yield None
+            return
         await conn.execute(f'SET search_path = "{schema}", public')
         try:
             yield conn

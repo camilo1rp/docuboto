@@ -517,3 +517,115 @@ async def test_ready_con_keycloak_caido_devuelve_503(client: AsyncClient) -> Non
     assert response.status_code == 503
     assert response.json()["checks"]["keycloak"] == "error"
     assert response.json()["status"] == "not_ready"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/auth/me — entidad sin schema (B7, F3)
+# ---------------------------------------------------------------------------
+
+
+class _PoolFalso:
+    """Pool mínimo: `acquire()` entrega la conexión doblada."""
+
+    def __init__(self, conn: AsyncMock) -> None:
+        self._conn = conn
+
+    def acquire(self):  # noqa: ANN201
+        conn = self._conn
+
+        class _Cm:
+            async def __aenter__(self) -> AsyncMock:
+                return conn
+
+            async def __aexit__(self, *exc: object) -> bool:
+                return False
+
+        return _Cm()
+
+
+@pytest.mark.asyncio
+async def test_me_entidad_sin_schema_permisos_vacios(client: AsyncClient) -> None:
+    """Slug bien formado de una entidad SIN schema: 200 con vacíos, nunca 500.
+
+    Antes el `SET search_path` sobre un schema inexistente no fallaba y la primera
+    consulta reventaba con `UndefinedTableError` (500): `/me` es el arranque del
+    frontend, así que «entidad aún no lista» se veía como un login roto. Aquí la
+    conexión doblada REVIENTA si alguien consulta `auth_users` (como Postgres) y
+    responde que el schema no existe: solo el camino con `to_regclass` pasa.
+    """
+    import asyncpg
+
+    from app.schemas.auth import UserInfoResponse
+
+    user_info = UserInfoResponse(
+        user_id="kc-sub-1",
+        username="nuevo",
+        email="n@demo.test",
+        tenant_slug="sin-schema-b7",
+        roles=[],
+    )
+    conn = AsyncMock()
+    conn.fetchval.return_value = False  # to_regclass(...) IS NOT NULL
+    conn.fetchrow.side_effect = asyncpg.UndefinedTableError('relation "auth_users" does not exist')
+    app.state.db_pool = _PoolFalso(conn)
+    try:
+        with patch(
+            "app.services.auth_service.AuthService.get_current_user",
+            new_callable=AsyncMock,
+            return_value=user_info,
+        ):
+            response = await client.get(
+                "/api/v1/auth/me",
+                headers={"Authorization": "Bearer eyFAKE", "X-Tenant-Slug": "sin-schema-b7"},
+            )
+    finally:
+        del app.state.db_pool
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["user_id"] == "kc-sub-1"  # el `sub`: no hay usuario interno
+    assert body["permissions"] == []
+    assert body["permission_levels"] == {}
+    conn.fetchrow.assert_not_awaited()
+    # Ni siquiera se fija el search_path hacia un schema que no existe.
+    conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_me_entidad_con_schema_sigue_resolviendo_permisos(client: AsyncClient) -> None:
+    """Control positivo: con `auth_users` presente se consulta como siempre."""
+    from app.schemas.auth import UserInfoResponse
+
+    user_info = UserInfoResponse(
+        user_id="kc-sub-2", username="x", email="x@demo.test", tenant_slug="demo", roles=[]
+    )
+    conn = AsyncMock()
+    conn.fetchval.return_value = True
+    conn.fetchrow.return_value = None  # usuario no aprovisionado
+    app.state.db_pool = _PoolFalso(conn)
+    try:
+        with patch(
+            "app.services.auth_service.AuthService.get_current_user",
+            new_callable=AsyncMock,
+            return_value=user_info,
+        ):
+            response = await client.get(
+                "/api/v1/auth/me",
+                headers={"Authorization": "Bearer eyFAKE", "X-Tenant-Slug": "demo"},
+            )
+    finally:
+        del app.state.db_pool
+
+    assert response.status_code == 200, response.text
+    conn.fetchrow.assert_awaited()
+    assert any("search_path" in str(c.args[0]) for c in conn.execute.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_me_slug_malformado_sigue_siendo_400(client: AsyncClient) -> None:
+    """La validación del slug no se relaja: el 400 es previo a tocar la base."""
+    response = await client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": "Bearer eyFAKE", "X-Tenant-Slug": 'x"; DROP SCHEMA public;--'},
+    )
+    assert response.status_code == 400

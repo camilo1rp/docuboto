@@ -162,8 +162,10 @@ async def test_create_challenge_happy_path(monkeypatch: pytest.MonkeyPatch) -> N
 
     conn.fetchval.side_effect = [True, 1]  # check_permission only (audit is mocked)  # check_permission | es_firmante
     conn.fetchrow.side_effect = [
-        sol,            # get_solicitud_for_update
+        sol,            # get_solicitud (lectura previa a la transacción)
         {},             # resolve_caller_clearance
+        turno,          # turno_activo (sin bloqueo, precondiciones)
+        sol,            # get_solicitud_for_update (relectura en la transacción)
         turno,          # turno_activo_for_update
         None,           # get_activo — no live challenge
         challenge_row,  # crear() RETURNING
@@ -292,12 +294,17 @@ async def test_create_challenge_sin_huella_se_ata_al_identificador(
     _patch_audit(monkeypatch)
     _, mock_send = _patch_email(monkeypatch)
     conn = _make_conn()
-    sol = _sol_row(payload_sha256=None)
+    # Un tipo SIN resolutor de huella: sobre `radicado`/`expediente` una cadena sin
+    # huella ya no puede existir (el servidor la fija al abrirla y `/challenge`,
+    # igual que `firmar`, responde `cadena_sin_huella` si falta). Lo que se prueba
+    # aquí es la rama del desafío atado al identificador para los tipos que se
+    # firmen como conjunto.
+    sol = {**_sol_row(payload_sha256=None), "objeto_tipo": "documento"}
     turno = _turno_row(firmante_id=USER)
     challenge_row = _challenge_row()
 
     conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
-    conn.fetchrow.side_effect = [sol, {}, turno, None, challenge_row]
+    conn.fetchrow.side_effect = [sol, {}, turno, sol, turno, None, challenge_row]
 
     _override(conn)
     try:
@@ -351,10 +358,13 @@ async def test_create_challenge_cooldown_returns_429(monkeypatch: pytest.MonkeyP
     sol = _sol_row()
     turno = _turno_row(firmante_id=USER)
     # Issued 5s ago — well inside the 30s default cooldown, no sleep() needed.
-    activo = _challenge_row(creado_at=NOW - timedelta(seconds=5))
+    # Se mide contra la hora de ESTE test y no contra `NOW` (fijada al importar el
+    # módulo): con el tier de integración corriendo antes, la suite tarda más de 30 s
+    # en llegar aquí y el desafío «reciente» ya había vencido su cooldown.
+    activo = _challenge_row(creado_at=datetime.now(tz=UTC) - timedelta(seconds=5))
 
     conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
-    conn.fetchrow.side_effect = [sol, {}, turno, activo]
+    conn.fetchrow.side_effect = [sol, {}, turno, sol, turno, activo]
 
     _override(conn)
     try:
@@ -385,7 +395,7 @@ async def test_create_challenge_replaces_expired_cooldown_active(
     new_challenge = _challenge_row()
 
     conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
-    conn.fetchrow.side_effect = [sol, {}, turno, stale_active, new_challenge]
+    conn.fetchrow.side_effect = [sol, {}, turno, sol, turno, stale_active, new_challenge]
 
     _override(conn)
     try:
@@ -416,7 +426,7 @@ async def test_create_challenge_email_unavailable_returns_503(
     turno = _turno_row(firmante_id=USER)
 
     conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
-    conn.fetchrow.side_effect = [sol, {}, turno, None]
+    conn.fetchrow.side_effect = [sol, {}, turno, sol, turno, None]
 
     _override(conn)
     try:
@@ -448,7 +458,7 @@ async def test_create_challenge_notification_unavailable_returns_503(
     challenge_row = _challenge_row()
 
     conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
-    conn.fetchrow.side_effect = [sol, {}, turno, None, challenge_row]
+    conn.fetchrow.side_effect = [sol, {}, turno, sol, turno, None, challenge_row]
 
     _override(conn)
     try:

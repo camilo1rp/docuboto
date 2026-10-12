@@ -99,6 +99,8 @@ plugins:
             ADR-030 Constancia de firma inobtenible: ADR-030 Unobtainable-signature record
             ADR-031 Constancia de autorización (IP firmada y política por entidad): ADR-031 Authorization record (signed IP and per-entity policy)
             ADR-032 La dependencia por código: ADR-032 The dependencia by code
+            ADR-033 Entrada de producción (nginx en contenedor): ADR-033 Production entry (containerised nginx)
+            ADR-034 XMLDSig conforme (firma verificable por terceros): ADR-034 Conformant XMLDSig (third-party verifiable signature)
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -158,6 +160,8 @@ nav:
     - ADR-030 Constancia de firma inobtenible: adr/ADR-030-constancia-firma-inobtenible.md
     - ADR-031 Constancia de autorización (IP firmada y política por entidad): adr/ADR-031-constancia-autorizacion-ip-firmada-politica-por-entidad.md
     - ADR-032 La dependencia por código: adr/ADR-032-dependencia-por-codigo.md
+    - ADR-033 Entrada de producción (nginx en contenedor): adr/ADR-033-entrada-de-produccion-nginx-en-contenedor.md
+    - ADR-034 XMLDSig conforme (firma verificable por terceros): adr/ADR-034-xmldsig-conforme-firma-verificable-por-terceros.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

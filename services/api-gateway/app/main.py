@@ -16,6 +16,7 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.client_ip import exigir_proxies_sin_gateway, gateway_de_la_ruta_por_defecto
 from app.core.config import settings
 from app.middleware.auth import JWTValidationMiddleware
 from app.middleware.path_guard import PathNormalizationMiddleware
@@ -27,8 +28,23 @@ logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
 
 
+def _exigir_proxies_de_produccion() -> None:
+    """Producción: `TRUSTED_PROXIES` no puede contener la puerta de enlace de la red (ARC-B4)."""
+    if settings.app_env.strip().lower() != "production":
+        return
+    gateway = settings.gateway_red_docker_gateway.strip() or gateway_de_la_ruta_por_defecto()
+    if gateway is None:
+        logger.warning(
+            "APP_ENV=production pero no se pudo determinar la puerta de enlace de la red: "
+            "declare GATEWAY_RED_DOCKER_GATEWAY para que se compruebe TRUSTED_PROXIES"
+        )
+        return
+    exigir_proxies_sin_gateway(settings.trusted_proxies, gateway)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    _exigir_proxies_de_produccion()
     app.state.http_client = httpx.AsyncClient(timeout=settings.proxy_timeout)
     app.state.auth_service_url = settings.auth_service_url
     app.state.tenant_service_url = settings.tenant_service_url

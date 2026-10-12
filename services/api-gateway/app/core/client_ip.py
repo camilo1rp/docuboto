@@ -43,7 +43,10 @@ la política es visible y comprobable.
 """
 
 import ipaddress
+import socket
+import struct
 from functools import lru_cache
+from pathlib import Path
 
 from fastapi import Request
 
@@ -111,3 +114,46 @@ def resolve_client_ip(request: Request, trusted_proxies: str) -> str:
     # dentro de la infraestructura (p. ej. el SSR llamando al gateway sin haber
     # propagado la IP del navegador). Devolver el socket es lo honesto.
     return socket_ip
+
+
+def gateway_de_la_ruta_por_defecto(ruta: str = "/proc/net/route") -> str | None:
+    """IP de la puerta de enlace de la ruta por defecto del contenedor (la de la red Docker).
+
+    En una red bridge de Docker es el `gateway` de la red: la dirección con la que llega
+    al contenedor todo lo que entra por un puerto publicado (docker-proxy) o desde el
+    anfitrión. `None` si no se puede leer (fuera de Linux/Docker): no se inventa.
+    """
+    try:
+        lineas = Path(ruta).read_text(encoding="utf-8").splitlines()[1:]
+    except OSError:
+        return None
+    for linea in lineas:
+        campos = linea.split()
+        if len(campos) >= 3 and campos[1] == "00000000":
+            try:
+                return socket.inet_ntoa(struct.pack("<L", int(campos[2], 16)))
+            except (ValueError, struct.error):
+                return None
+    return None
+
+
+def exigir_proxies_sin_gateway(trusted_proxies: str, gateway: str) -> None:
+    """Falla si `trusted_proxies` confía en la puerta de enlace de la red Docker (ARC-B4).
+
+    Esa IP no es un salto nuestro: es la que ve el gateway para cualquier cliente que
+    llegue por docker-proxy o desde el anfitrión. Si fuera de confianza, el gateway
+    saltaría ese par y se quedaría con la entrada de `X-Forwarded-For` forjada por el
+    cliente, que acaba sellada en `audit_log` y en la constancia de la ventanilla.
+    Solo se invoca en el perfil de producción (en desarrollo el rango es amplio a propósito).
+    """
+    try:
+        ip = ipaddress.ip_address(gateway)
+    except ValueError as exc:
+        raise RuntimeError(f"GATEWAY_RED_DOCKER_GATEWAY inválido: {gateway!r}") from exc
+    dentro = [str(r) for r in _parse_networks(trusted_proxies) if ip in r]
+    if dentro:
+        raise RuntimeError(
+            f"TRUSTED_PROXIES confía en la puerta de enlace de la red ({gateway}) a través de "
+            f"{', '.join(dentro)}: un cliente podría forjar su IP. Use solo el rango de los "
+            "contenedores (p. ej. el ip_range de la red)."
+        )

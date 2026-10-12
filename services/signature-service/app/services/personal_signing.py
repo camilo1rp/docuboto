@@ -53,7 +53,11 @@ from app.core.http_clients import (
     sign_digest_remote,
 )
 from app.providers.base import SignedDoc, SignerRef
-from app.providers.local import LocalSigner
+from app.providers.local import (
+    CertificadoPersonalVencidoError,
+    LocalSigner,
+    XmldsigNoConformeError,
+)
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.firma_repository import FirmaRepository
 from app.schemas.firma import FirmaResponse, SignPersonalRequest
@@ -132,7 +136,24 @@ async def sign_personal_xml(
     )
     provider = LocalSigner()
     prepared = await provider.prepare(xml_bytes, objeto_tipo=objeto_tipo, objeto_id=objeto_id)
-    return await provider.sign(prepared, signer_ref)
+    try:
+        return await provider.sign(prepared, signer_ref)
+    except CertificadoPersonalVencidoError as exc:
+        # SEG-B3: se lanza ANTES de `remote_sign`, o sea antes de que auth-service verifique
+        # y consuma el TOTP. 422 accionable: la persona renueva su certificado.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "certificado_personal_vencido", "detail": str(exc), "status": 422},
+        ) from exc
+    except XmldsigNoConformeError as exc:
+        # SEG-B2/ARC-B1 (ADR-034): la autoverificación va tras `remote_sign` (necesita el
+        # SignatureValue, que solo produce auth-service al consumir el TOTP), así que en esta
+        # ruta el factor ya está consumido cuando esto ocurre: se declara, ver ADR-034. Nada
+        # se sella ni se persiste, y el llamante recibe un 503 limpio, no un 500.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "firma_no_conforme_xmldsig", "detail": str(exc), "status": 503},
+        ) from exc
 
 
 class PersonalSigningService:

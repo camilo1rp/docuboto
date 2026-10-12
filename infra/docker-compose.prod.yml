@@ -16,9 +16,18 @@ networks:
   orpycamcp-net:
     driver: bridge
     # In production, consider using custom driver with encryption
+    # El `gateway` (172.20.0.1) queda FUERA de `ip_range`: los contenedores reciben
+    # IP solo de 172.20.128.0/17, y `TRUSTED_PROXIES` confía únicamente en ese rango.
+    # Así, si un cliente llega al `edge` con la IP del gateway de la red (IPv6 servido
+    # por docker-proxy, o un proceso del anfitrión), el gateway de la API NO la salta
+    # como «salto de confianza» y se queda con ella, en vez de con una entrada de
+    # `X-Forwarded-For` forjada por el cliente (ADR-033; ADR-031 por el sello en
+    # `audit_log`).
     ipam:
       config:
         - subnet: 172.20.0.0/16
+          ip_range: 172.20.128.0/17
+          gateway: 172.20.0.1
 
   # Optional: separated network for database if using RDS/managed DB
   # postgres-net:
@@ -47,6 +56,11 @@ volumes:
 x-migracion: &migracion
   restart: "no"
   command: ["python", "migrations/runner.py"]
+  # Sin esta línea los `migrate-*` caían en la red `default`, donde `postgres` no
+  # está: el runner no resolvía el host, ninguna migración terminaba y, como cada
+  # servicio espera `service_completed_successfully`, no arrancaba ninguno.
+  networks:
+    - orpycamcp-net
   depends_on:
     postgres:
       condition: service_healthy
@@ -64,7 +78,7 @@ services:
     # pgvector, no postgres a secas: knowledge-service (E21) crea la extensión
     # `vector` en el init. Con la imagen base la extensión no existe y la
     # migración falla a mitad de la provisión del primer tenant.
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:0.8.7-pg15-bookworm@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9
     container_name: orpycamcp-postgres-prod
     restart: unless-stopped
     # ── Presupuesto de conexiones ──────────────────────────────────────────
@@ -138,7 +152,7 @@ services:
         max-file: "3"
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: orpycamcp-redis-prod
     restart: unless-stopped
     command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?Redis password required}
@@ -237,7 +251,7 @@ services:
         max-file: "3"
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0
+    image: quay.io/keycloak/keycloak:24.0.5@sha256:f8ade94c1d0ad2f2fa7734a455fee5392764f402c43ca35e9af6bf63a2541dc9
     container_name: orpycamcp-keycloak-prod
     restart: unless-stopped
     command: start --db=postgres --hostname-strict=true --hostname=${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
@@ -330,9 +344,15 @@ services:
       # escriben ellos (ver services/api-gateway/app/core/client_ip.py). Sin
       # declararlos, la cabecera se ignora entera y todo el tráfico comparte la
       # IP del contenedor del SSR — que es el estado fail-closed, correcto pero
-      # inservible para limitar por IP. Por defecto: la subred de esta red Docker,
-      # donde viven el frontend SSR y el reverse proxy si corre en el mismo host.
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.0.0/16}
+      # inservible para limitar por IP. Por defecto: el `ip_range` de esta red
+      # (172.20.128.0/17), donde viven el frontend SSR y el `edge`, y NO el gateway
+      # de la red (172.20.0.1): ver el comentario de `networks:`.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.128.0/17}
+      # Perfil de producción: el gateway NO arranca si TRUSTED_PROXIES contiene la puerta
+      # de enlace de la red (ARC-B4). Debe coincidir con `gateway:` de `networks:` arriba
+      # (lo vigila shared/tests/test_manifiesto_prod_seguro.py).
+      APP_ENV: production
+      GATEWAY_RED_DOCKER_GATEWAY: 172.20.0.1
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -923,6 +943,10 @@ services:
       MCP_PROPOSAL_SECRET_PREVIOUS: ${MCP_PROPOSAL_SECRET_PREVIOUS:-}
       # Marca de origen del canal 'mcp' (AREA-11-04) e IP real firmada (AREA-11-08).
       MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
+      # `STT_PROVIDER` NO se define a propósito: se aplica el defecto `disabled`
+      # (app/core/config.py) y el dictado por voz queda apagado. `whisper-service`
+      # (perfil `assistant`) no forma parte del manifiesto de producción en v1;
+      # activarlo exige declararlo aquí junto con su token (ver deployment.md).
     networks:
       - orpycamcp-net
     expose:
@@ -1006,6 +1030,56 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ─── Entrada de producción (ADR-033) ───────────────────────────────────────────
+  # ÚNICO servicio que publica puertos. nginx corre en contenedor y no en el
+  # anfitrión porque `api-gateway` y `frontend` tienen dos réplicas (un puerto fijo
+  # del anfitrión lo tomaría la primera y la segunda moriría), y porque con nginx en
+  # el anfitrión el gateway vería como par a la IP del docker-proxy.
+  # Los alias hacen que, dentro de la red, `https://${KEYCLOAK_HOSTNAME}` resuelva
+  # a este mismo servicio: certificado válido, sin hairpin NAT ni DNS externo.
+  edge:
+    image: nginx:1.30-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+    restart: unless-stopped
+    environment:
+      FRONTEND_HOSTNAME: ${FRONTEND_HOSTNAME:?Frontend hostname required}
+      API_PUBLIC_HOSTNAME: ${API_PUBLIC_HOSTNAME:?Public API hostname required}
+      KEYCLOAK_HOSTNAME: ${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
+      # La imagen solo sustituye estas variables en la plantilla: así los `$host`,
+      # `$remote_addr`... de nginx llegan intactos.
+      NGINX_ENVSUBST_FILTER: ^(FRONTEND|API_PUBLIC|KEYCLOAK)_HOSTNAME$$
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/orpyca.conf.template:/etc/nginx/templates/orpyca.conf.template:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - ./certbot-www:/var/www/certbot:ro
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /etc/nginx/conf.d
+    networks:
+      orpycamcp-net:
+        aliases:
+          - ${KEYCLOAK_HOSTNAME}
+          - ${FRONTEND_HOSTNAME}
+          - ${API_PUBLIC_HOSTNAME}
+    depends_on:
+      - frontend
+      - api-gateway
+      - keycloak
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
     logging:
       driver: "json-file"
       options:
