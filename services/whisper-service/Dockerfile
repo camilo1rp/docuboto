@@ -9,8 +9,8 @@
 
 # whisper-service — transcripción de voz EN LA PROPIA ENTIDAD (ADR-020).
 #
-# Se construye con el contexto en el directorio del servicio: a diferencia de los
-# demás, NO instala `shared/` porque no escribe en `audit_log` ni publica eventos
+# Se construye con el contexto en la raíz del repo (como los demás), pero a
+# diferencia de ellos NO instala `shared/` porque no escribe en `audit_log` ni publica eventos
 # — transcribe un audio y devuelve texto, sin tocar base de datos. Añadir la
 # librería compartida "por si acaso" sería superficie que nadie usa.
 #

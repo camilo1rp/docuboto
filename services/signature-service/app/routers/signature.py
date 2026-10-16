@@ -14,16 +14,16 @@ Autorización: /sign-xml requiere PERM_FIRMA verificado en la BD del tenant
 interno, resuelto por auth-service /validate). Ya NO se valida el JWT aquí — el
 api-gateway lo validó y el hash de identidad es el id interno, no el keycloak_sub.
 
-/verify no requiere autenticación — es una operación de consulta pública.
+/verify exige JWT y aplica no-read-up (ver su docstring); la verificación
+pública va por ``/api/v1/public/`` con código de verificación (E13).
 
---- Selección de proveedor (Inc.1, ADR-016) ---
-``objeto_tipo == "indice"`` y ``settings.signer_provider == "xades_local"``
-producen una firma XAdES-B real con el sello institucional del tenant
+--- Selección de proveedor (ADR-016, ADR-034) ---
+Un ``objeto_tipo`` de ``XADES_ELIGIBLE_OBJETO_TIPOS`` (índice y actas de
+transferencia/eliminación) con ``settings.signer_provider == "xades_local"``
+produce una firma XAdES real con el sello institucional del tenant
 (:mod:`app.providers.local`); cualquier otro caso cae al HMAC nativo
-preexistente (:mod:`app.providers.native`), preservando exactamente el
-comportamiento de antes del Incremento 1 (incluida la cadena de firma
-secuencial en ``app/routers/cadena.py``, que sigue llamando a
-``app.services.signer`` directamente y no pasa por este router).
+(:mod:`app.providers.native`). La cadena de firma personal
+(``app/routers/cadena.py``) no pasa por este router.
 """
 
 from __future__ import annotations
@@ -161,7 +161,9 @@ async def sign_xml(
     con identidad firmada Y token. El resto de tipos (HMAC nativo) queda acotado
     por ``SignXmlRequest.objeto_tipo`` (422 fuera del conjunto).
 
-    TODO (RF-FIR-13): reto 2FA ligado al hash_documento — diferido a F4.
+    Sin reto 2FA aquí: el 2FA de la firma humana (RF-FIR-13) vive en la
+    cadena (``/challenge`` + ``/sign`` de ``app/routers/cadena.py``). Los tipos
+    HMAC nativos de este endpoint no lo piden — pendiente declarado.
     """
     if payload.objeto_tipo in XADES_ELIGIBLE_OBJETO_TIPOS:
         require_internal_token(x_internal_token)
