@@ -48,6 +48,14 @@ describe("admin/+layout.server.js", () => {
     expect(await destino("/admin/usuarios", { permissions: ["PERM_RADI"] })).toBe("303 /403");
   });
 
+  it("con la entidad no operativa NO redirige a /403 (el layout pinta su pantalla)", async () => {
+    const e = {
+      url: new URL("http://localhost/admin/usuarios"),
+      parent: async () => ({ user: { permissions: [] }, entidadNoOperativa: "suspendida" }),
+    };
+    await expect(load(e)).resolves.toEqual({});
+  });
+
   it("con USUA_PERM_ADMIN, /admin/usuarios pasa", async () => {
     expect(await destino("/admin/usuarios", { permissions: ["USUA_PERM_ADMIN"] })).toBeNull();
   });

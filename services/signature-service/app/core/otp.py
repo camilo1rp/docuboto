@@ -18,9 +18,9 @@ AREA-04-11 (migración 020, ``key_version``): el HMAC ya no usa el secreto raíz
 las entidades. Con ``key_version=1`` la clave es una derivada por HKDF para el
 propósito ``otp`` y la entidad (``app.core.secret_derivation``) y el mensaje
 ata además el ``challenge_id``: el mismo código en dos desafíos produce hashes
-distintos, y un hash copiado a otro desafío o a otra entidad no verifica. Los
-desafíos anteriores (``key_version=0``) siguen verificándose con el esquema
-original mientras no expiran (el OTP vive minutos).
+distintos, y un hash copiado a otro desafío o a otra entidad no verifica. El
+esquema anterior (``key_version=0``) se retiró en B9: un desafío con 0 no
+verifica (de todos modos caducó hace mucho: el OTP vive minutos).
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ import uuid
 from app.core.secret_derivation import (
     KEY_VERSION_ACTUAL,
     KEY_VERSION_HKDF,
-    KEY_VERSION_LEGACY,
     PROPOSITO_OTP,
     derive_key,
 )
@@ -59,8 +58,6 @@ def _key_and_msg(
     tenant_slug: str,
     challenge_id: uuid.UUID,
 ) -> tuple[bytes, bytes]:
-    if key_version == KEY_VERSION_LEGACY:
-        return secret.encode(), otp.encode()
     if key_version == KEY_VERSION_HKDF:
         key = derive_key(secret, purpose=PROPOSITO_OTP, tenant_slug=tenant_slug)
         msg = json.dumps(

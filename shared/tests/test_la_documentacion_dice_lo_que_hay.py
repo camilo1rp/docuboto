@@ -304,7 +304,15 @@ def test_los_comentarios_de_deuda_ya_cerrada_se_corrigieron() -> None:
     assert "no se valida al crear/editar la regla" not in dist
     assert "def purge_for_disposition" in _leer("services/storage-service/app/services/storage_service.py")
     assert "es un roadmap item" not in _plano(_leer("services/storage-service/app/schemas/preservacion.py"))
-    assert "app/jobs/retention.py" in _leer("services/notification-service/CLAUDE.md")
+    # El hecho que sostiene la frase vive en el árbol versionado y se exige SIEMPRE.
+    assert (_SERVICIOS / "notification-service" / "app" / "jobs" / "retention.py").is_file()
+    # El CLAUDE.md del servicio es infraestructura local (gitignored, symlink a
+    # ~/Documents/claudeCode): no existe en CI ni, colgante, en un contenedor que no
+    # monta ese directorio. Solo cuando es legible se le exige la frase; `is_file()` sigue
+    # el symlink, así que un enlace colgante cuenta como ausente (nada que vigilar).
+    claude_md = _SERVICIOS / "notification-service" / "CLAUDE.md"
+    if claude_md.is_file():
+        assert "app/jobs/retention.py" in claude_md.read_text(encoding="utf-8")
 
 
 def test_oai_de_document_no_promete_un_fast_follow_que_ya_se_cerro() -> None:

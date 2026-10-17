@@ -294,23 +294,34 @@
           {#if verifyError}
             <p class="cert-drawer__error" role="alert">{verifyError}</p>
           {:else if verifyResult}
-            <p
-              class="cert-drawer__verify-result"
-              class:cert-drawer__verify-result--ok={verifyResult.valida}
-              class:cert-drawer__verify-result--bad={!verifyResult.valida}
-              role="status"
-            >
-              <i
-                class={verifyResult.valida ? "fas fa-check-circle" : "fas fa-times-circle"}
-                aria-hidden="true"
-              ></i>
-              {verifyResult.valida
-                ? "La firma es válida para este documento."
-                : "La firma NO es válida para este documento."}
-              {#if verifyResult.motivo}
-                <span class="cert-drawer__hint"> — {verifyResult.motivo}</span>
-              {/if}
-            </p>
+            {#if verifyResult.motivo === "esquema_hmac_retirado"}
+              <!-- Esquema retirado: no es «inválida» ni indica alteración; el sistema
+                   ya no puede verificarla. `firma_criptograficamente_valida` puede
+                   venir null (no evaluada) y no se pinta como inválida. -->
+              <p class="cert-drawer__verify-result" role="status">
+                <i class="fas fa-circle-info" aria-hidden="true"></i>
+                Firma emitida con un esquema retirado: el sistema ya no puede verificarla. No indica que
+                el documento haya sido alterado.
+              </p>
+            {:else}
+              <p
+                class="cert-drawer__verify-result"
+                class:cert-drawer__verify-result--ok={verifyResult.valida}
+                class:cert-drawer__verify-result--bad={!verifyResult.valida}
+                role="status"
+              >
+                <i
+                  class={verifyResult.valida ? "fas fa-check-circle" : "fas fa-times-circle"}
+                  aria-hidden="true"
+                ></i>
+                {verifyResult.valida
+                  ? "La firma es válida para este documento."
+                  : "La firma NO es válida para este documento."}
+                {#if verifyResult.motivo}
+                  <span class="cert-drawer__hint"> — {verifyResult.motivo}</span>
+                {/if}
+              </p>
+            {/if}
             <AdvertenciasVerificacion advertencias={verifyResult.advertencias} />
             {#if verifyResult.revocacion_status && verifyResult.revocacion_status !== "vigente"}
               <p class="cert-drawer__error" role="alert">

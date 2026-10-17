@@ -22,6 +22,7 @@ from urllib.parse import quote
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from orpycamcp_common.tenant import AtencionPublica, atencion_publica
 from starlette.background import BackgroundTask
 
 from app.clients import storage_client
@@ -60,11 +61,12 @@ async def _acquire(request: Request, tenant: str):
     pool: asyncpg.Pool = request.app.state.db_pool
     conn = await pool.acquire()
     try:
-        await conn.execute(f'SET search_path = "{schema}", public')
-        exists = await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".radicados')
-        if exists is None:
+        # ADR-035: operativa o suspendida se sirven (solo lectura); inexistente y
+        # sin aprovisionar son el mismo `None` (objectNotFound).
+        if await atencion_publica(conn, tenant) is AtencionPublica.NINGUNA:
             await _release(pool, conn)
             return None
+        await conn.execute(f'SET search_path = "{schema}", public')
         return pool, conn
     except BaseException:
         await _release(pool, conn)

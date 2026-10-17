@@ -7,6 +7,8 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -41,6 +43,10 @@ class ValidateResponse(BaseModel):
     #: con él el TTL de su caché de validación: sin este campo la caché nunca
     #: sabría cuándo caduca el token y usaría siempre su máximo.
     expires_in: int | None = None
+    #: Estado de la entidad del token (ADR-035). `None` = el token no trae
+    #: `tenant_slug`. `desconocido` = el registro no respondió. El api-gateway lo
+    #: hace cumplir y falla cerrado ante todo lo que no sea `operativa`.
+    tenant_estado: Literal["operativa", "inactiva", "no_provisionada", "desconocido"] | None = None
 
 
 class UserInfoResponse(BaseModel):

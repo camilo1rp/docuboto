@@ -22,6 +22,7 @@
 <script>
   import { initSession } from "$lib/stores/auth.js";
   import AppLayout from "$lib/components/layout/AppLayout.svelte";
+  import EntidadNoOperativa from "$lib/components/layout/EntidadNoOperativa.svelte";
   import ToastContainer from "$lib/components/ui/Toast.svelte";
 
   /** @type {import('./$types').LayoutData} */
@@ -33,9 +34,14 @@
   $: initSession(data.user);
 </script>
 
-<AppLayout>
-  <slot />
-</AppLayout>
+{#if data.entidadNoOperativa}
+  <!-- ADR-035: la entidad no se atiende. Pantalla propia, con salida. -->
+  <EntidadNoOperativa estado={data.entidadNoOperativa} />
+{:else}
+  <AppLayout>
+    <slot />
+  </AppLayout>
+{/if}
 
 <!-- Contenedor global de toasts (aria-live gestionado por el componente) -->
 <ToastContainer />

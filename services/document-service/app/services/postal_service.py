@@ -95,6 +95,14 @@ def _acuse_ya_referenciado() -> HTTPException:
     )
 
 
+def _no_encontrado_neutro() -> HTTPException:
+    """El mismo cuerpo que `app.core.database._no_encontrado` (rutas públicas, ADR-035)."""
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"error": "not_found", "detail": "No encontrado", "status": 404},
+    )
+
+
 class PostalService:
     def __init__(
         self,
@@ -488,7 +496,12 @@ class PostalService:
         )
 
     async def apply_operator_callback(
-        self, raw_body: bytes, signature_header: str | None, tenant_slug: str
+        self,
+        raw_body: bytes,
+        signature_header: str | None,
+        tenant_slug: str,
+        *,
+        suspendida: bool = False,
     ) -> CallbackResult:
         """Webhook ENTRANTE del operador (E20 F5): autentica por HMAC, deduplica y
         aplica la transición como acto de SISTEMA (nunca un usuario).
@@ -497,6 +510,11 @@ class PostalService:
         401; estado del operador no mapeable → 422; guía desconocida → 404. La
         idempotencia (dedup por `(operador, event_id)`) + la transición + el
         asiento son atómicos; el evento Redis se emite tras confirmar la tx.
+
+        `suspendida` (ADR-035): la entidad existe pero está suspendida. La firma se
+        verifica igual y ANTES de cualquier efecto: válida => 503 `canal_no_disponible`
+        con `Retry-After`; cualquier otra cosa (cuerpo ilegible, firma mala, operador
+        sin credencial) => el 404 neutro, para que un anónimo no averigüe el estado.
         """
         self._slug = tenant_slug
         # 1) Parseo estructural (para enrutar al secreto del operador). NO se
@@ -504,6 +522,8 @@ class PostalService:
         try:
             data = json.loads(raw_body)
         except (json.JSONDecodeError, UnicodeDecodeError):
+            if suspendida:
+                raise _no_encontrado_neutro()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "cuerpo_invalido", "detail": "JSON inválido", "status": 400},
@@ -522,6 +542,18 @@ class PostalService:
         #    provisionados en el tenant (remediación de auditoría, Baja). Con dos
         #    ranuras (rotación, AREA-09-10) se prueban las vigentes sin cortocircuito.
         valid = verify_any(secretos or ["\x00unconfigured"], raw_body, signature_header)
+        if suspendida:
+            if secretos and valid:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    headers={"Retry-After": "3600"},
+                    detail={
+                        "error": "canal_no_disponible",
+                        "detail": "La entidad está suspendida; reintente más tarde.",
+                        "status": 503,
+                    },
+                )
+            raise _no_encontrado_neutro()
         if not secretos or not valid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

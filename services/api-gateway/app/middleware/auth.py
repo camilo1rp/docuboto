@@ -59,8 +59,9 @@ def derive_canal(
     """Returns the audit canal for *path*, derived entirely server-side.
 
     *origen* is the raw `X-Origen-Canal` header value; it only counts when its
-    signature verifies for this *tenant* and *authorization*. Never call this with
-    any other client-supplied header.
+    signature verifies for this *tenant* and *authorization*. *tenant* is the one of
+    the validated token, never a client-supplied header. Never call this with any
+    other client-supplied header.
     """
     if path.startswith(_MCP_PREFIX):
         return "mcp"
@@ -210,7 +211,14 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
         # Solo se cachea el SÍ. Un `valid: false` cacheado ahorraría poco y
         # retrasaría el momento en que un token recién emitido empieza a funcionar.
         ttl = _ttl_validacion(payload, request.app.state.auth_cache_ttl)
-        if redis is not None and payload.get("valid", False) and ttl > 0:
+        # `desconocido` (la base de auth-service no respondió) tampoco se cachea: un
+        # fallo transitorio no debe bloquear a la entidad durante todo el TTL.
+        if (
+            redis is not None
+            and payload.get("valid", False)
+            and ttl > 0
+            and payload.get("tenant_estado") != "desconocido"
+        ):
             try:
                 await redis.set(
                     cache_key,
@@ -291,6 +299,40 @@ def _ttl_validacion(payload: dict, ttl_maximo: int) -> int:
     return 0
 
 
+#: Veredicto por estado de la entidad: (HTTP, error, detalle). Ausente o desconocido
+#: es fail-closed: un auth-service que no emite el campo no abre la puerta.
+_VETO_ENTIDAD: dict[str, tuple[int, str, str]] = {
+    "inactiva": (403, "tenant_inactivo", "Esta entidad no está activa en la plataforma."),
+    "no_provisionada": (
+        503,
+        "tenant_no_provisionado",
+        "Esta entidad aún no está disponible.",
+    ),
+}
+_VETO_DESCONOCIDO = (
+    503,
+    "tenant_estado_no_disponible",
+    "No se pudo comprobar el estado de la entidad.",
+)
+
+
+def _veto_por_estado_de_entidad(payload: dict) -> JSONResponse | None:
+    """`None` si se sigue; si no, la respuesta que corta la petición.
+
+    Sin `tenant_slug` (superadmin sin entidad) se sigue: los servicios exigen la
+    cabecera y el slug vacío no resuelve ningún schema.
+    """
+    if not payload.get("tenant_slug"):
+        return None
+    estado = payload.get("tenant_estado")
+    if estado == "operativa":
+        return None
+    codigo, error, detalle = _VETO_ENTIDAD.get(str(estado), _VETO_DESCONOCIDO)
+    return JSONResponse(
+        status_code=codigo, content={"error": error, "detail": detalle, "status": codigo}
+    )
+
+
 async def _continuar_con_identidad(request: Request, call_next, payload: dict) -> Response:
     """Inyecta la identidad validada y sigue la cadena.
 
@@ -299,6 +341,12 @@ async def _continuar_con_identidad(request: Request, call_next, payload: dict) -
     una cabecera nueva fallará solo cuando la caché esté caliente — es decir, en
     producción y no en las pruebas.
     """
+    # B9-1 (ADR-035): una entidad no operativa no se atiende. Va AL PRINCIPIO para que
+    # el camino con caché y el camino sin ella pasen por el mismo veredicto. La
+    # suspensión surte efecto como mucho tras `auth_cache_ttl` (15 s por defecto).
+    veto = _veto_por_estado_de_entidad(payload)
+    if veto is not None:
+        return veto
     roles = payload.get("roles", [])
     request.state.auth_headers = {
         "X-User-Id": payload.get("user_id", ""),
@@ -308,7 +356,7 @@ async def _continuar_con_identidad(request: Request, call_next, payload: dict) -
         "X-Canal": derive_canal(
             request.url.path,
             request.headers.get(identidad.CABECERA_ORIGEN),
-            tenant=request.headers.get("x-tenant-slug", ""),
+            tenant=payload.get("tenant_slug") or "",
             authorization=request.headers.get("authorization", ""),
         ),
         # IP derivada AQUÍ por saltos de confianza (D-03, mismo criterio que

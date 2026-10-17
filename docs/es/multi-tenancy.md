@@ -68,3 +68,12 @@ El stream **no lleva el slug**: es uno por servicio, y la entidad viaja dentro d
 evento (ADR-010).
 
 <!-- TODO: translate to English -->
+
+## Estado de la entidad
+
+Una entidad solo se atiende si está **operativa**: `public.tenants.status = 'active'`,
+`provisioning_status = 'active'` y su schema existe. El api-gateway lo hace cumplir con el
+`tenant_estado` de `/auth/validate` (la suspensión surte efecto en ≤ 15 s, el TTL de la caché de
+validación), y cada `get_tenant_conn` lo vuelve a comprobar antes de fijar el `search_path`. Las
+rutas públicas responden el mismo `404` a una entidad inexistente, dada de baja o sin aprovisionar; una entidad **suspendida** conserva las lecturas públicas (verificación, OAI, CMIS, publicidad de la eliminación) y sus escrituras responden `503 canal_no_disponible`.
+Detalle y alternativas en [ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md).

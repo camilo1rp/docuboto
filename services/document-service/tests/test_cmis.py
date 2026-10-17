@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.tenant import AtencionPublica
 
 from app.main import app
 
@@ -32,6 +33,14 @@ def _rad(tn: str = "2026-DEMO-E-000001", subject: str = "Acta pública") -> dict
         "registered_at": datetime(2026, 3, 1, 10, 0, 0, tzinfo=UTC),
         "tenant_code": "DEMO",
     }
+
+
+@pytest.fixture(autouse=True)
+def _entidad_operativa():
+    """ADR-035: estos tests ejercen el protocolo, no el estado (eso lo cubre
+    `test_estado_entidad.py`), así que la entidad se da por operativa."""
+    with patch("app.routers.cmis.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
+        yield
 
 
 class _FakePool:
@@ -79,7 +88,7 @@ async def test_repository_info(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> None:
 @pytest.mark.asyncio
 async def test_get_children(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = cmis_ctx
-    conn.fetchval.side_effect = [1, 2]  # to_regclass, count_public
+    conn.fetchval.side_effect = [2]  # count_public
     conn.fetch.return_value = [_rad(), _rad(tn="2026-DEMO-E-000002")]
     resp = await client.get("/api/v1/public/cmis/demo/root?cmisselector=children")
     assert resp.status_code == 200
@@ -174,8 +183,10 @@ async def test_content_stream_ok(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> Non
 @pytest.mark.asyncio
 async def test_nonexistent_tenant_is_404(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = cmis_ctx
-    conn.fetchval.side_effect = [None]  # to_regclass → NULL (tenant inexistente)
-    resp = await client.get("/api/v1/public/cmis/demo")
+    with patch(
+        "app.routers.cmis.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
+    ):
+        resp = await client.get("/api/v1/public/cmis/demo")
     assert resp.status_code == 404
     assert resp.json()["exception"] == "objectNotFound"
 

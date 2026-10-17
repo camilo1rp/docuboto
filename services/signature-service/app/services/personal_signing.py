@@ -378,6 +378,10 @@ class PersonalSigningService:
                         "ca_fingerprint": signed.extra.get("ca_fingerprint"),
                         "indice_id": payload.indice_id,
                         "version": payload.version,
+                        # Nivel de seguridad con que se resolvió el objeto al firmar
+                        # (B9-S4): el asiento de un acto sobre un objeto clasificado
+                        # tiene que decir qué nivel regía.
+                        "nivel_seguridad": nivel,
                         "origen": "manual",
                     },
                     canal=_audit.CANAL_PETICION,

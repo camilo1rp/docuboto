@@ -31,15 +31,25 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from xml.etree import ElementTree as ET
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from lxml import etree
+from orpycamcp_common.tenant import AtencionPublica
 
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def _entidad_operativa():
+    """ADR-035: aquí se prueba el EAD, no el estado de la entidad (`test_estado_entidad.py`)."""
+    with patch(
+        "app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)
+    ):
+        yield
 
 EAD = "{urn:isbn:1-931666-22-9}"
 FIXTURES = Path(__file__).parent / "fixtures"

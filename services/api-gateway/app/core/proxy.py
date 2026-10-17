@@ -119,6 +119,11 @@ FORWARDED_RESPONSE_HEADERS = {
     "deprecation",
     "sunset",
     "link",
+    # `503 canal_no_disponible` de una entidad suspendida (B9-N1/N2, ADR-035): el
+    # callback del operador postal y quien radica por la ventanilla pública necesitan
+    # `Retry-After` para reintentar al reactivarse la entidad en vez de descartar el
+    # evento. Sin esta línea el gateway se la comía y el 503 quedaba sin instrucción.
+    "retry-after",
 }
 
 

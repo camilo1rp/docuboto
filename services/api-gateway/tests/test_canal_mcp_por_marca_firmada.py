@@ -157,3 +157,34 @@ def test_aceptar_sugerencia_se_enruta_a_knowledge_y_ingest_sigue_cerrado():
         == "http://knowledge:8011"
     )
     assert _route_to_upstream("/api/v1/knowledge/ingest", estado) is None
+
+
+# -- B9-4: la marca se ata al tenant del TOKEN, no a una cabecera del cliente -----
+
+
+async def test_una_marca_de_otro_tenant_no_vale_aunque_la_cabecera_diga_otro(test_client) -> None:
+    """El token es de `icetex`; la marca está firmada para `otro` y el cliente manda
+    además `X-Tenant-Slug: otro`. Con la cabecera como referencia la marca verificaba
+    y se asentaba `mcp` en una entidad que no es la del token."""
+    marca = _marca(tenant="otro")
+
+    canal = await _canal_que_recibe_el_upstream(
+        test_client, {identidad.CABECERA_ORIGEN: marca, "X-Tenant-Slug": "otro"}
+    )
+
+    assert canal == "api"
+
+
+async def test_la_marca_del_tenant_del_token_vale_sin_cabecera_de_tenant(test_client) -> None:
+    """El mcp-server firma con el tenant del token; la cabecera del cliente no
+    interviene (puede faltar)."""
+    client, http_client, _ = test_client
+    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
+    wire_upstream(http_client, httpx.Response(status_code=200, json={"ok": True}))
+
+    await client.get(
+        "/api/v1/documents/",
+        headers={"Authorization": TOKEN, identidad.CABECERA_ORIGEN: _marca(tenant="icetex")},
+    )
+
+    assert http_client.build_request.call_args.kwargs["headers"]["X-Canal"] == "mcp"

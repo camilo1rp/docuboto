@@ -19,6 +19,7 @@ repositorio → la omisión de reservados es indistinguible (spec §5 inv. 11; L
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response
+from orpycamcp_common.tenant import AtencionPublica, atencion_publica
 
 from app.core.database import tenant_schema
 from app.core.public_audit import audit_public_access
@@ -83,15 +84,15 @@ async def oai_pmh(tenant: str, request: Request) -> Response:
     req_attrs = {k: v for k, v in params.items() if v != ""}
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
+        # ADR-035: inexistente y sin aprovisionar responden el MISMO 400 badArgument
+        # que un slug malformado (la suspendida SÍ se sirve: es solo lectura), y el estado se lee ANTES de fijar el search_path.
+        if await atencion_publica(conn, tenant) is AtencionPublica.NINGUNA:
+            svc0 = OaiService(None, base_url=base_url, tenant=tenant)  # type: ignore[arg-type]
+            body = svc0.error_xml({}, "badArgument", "Tenant inválido")
+            return Response(body, media_type="application/xml", status_code=400)
         await conn.execute(f'SET search_path = "{schema}", public')
         try:
             svc = OaiService(OaiRepository(conn), base_url=base_url, tenant=tenant)
-            # Tenant con formato válido pero INEXISTENTE: responder uniforme (400
-            # badArgument), no dejar que la 1ª query reviente en un 500 (que sería un
-            # oráculo de existencia de tenant distinto del slug malformado). Seg #1.
-            if await conn.fetchval("SELECT to_regclass($1)", f'"{schema}".radicados') is None:
-                body = svc.error_xml({}, "badArgument", "Tenant inválido")
-                return Response(body, media_type="application/xml", status_code=400)
             try:
                 _validate(verb, params)
                 body = await _dispatch(svc, verb, params)

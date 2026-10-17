@@ -12,8 +12,13 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
-from fastapi import HTTPException, Request, status
-from orpycamcp_common.tenant import slug_valido
+from fastapi import HTTPException, Path, Request, status
+from orpycamcp_common.tenant import (
+    AtencionPublica,
+    atencion_publica,
+    slug_valido,
+    veredicto_entidad,
+)
 from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
@@ -92,17 +97,6 @@ def get_redis(request: Request) -> Any:
     return request.app.state.redis
 
 
-async def _tenant_activo(conn: asyncpg.Connection, slug: str) -> bool:
-    """¿Está la entidad activa en el registro? Fail-closed ante la duda."""
-    try:
-        estado = await conn.fetchval(
-            "SELECT status FROM public.tenants WHERE slug = $1", slug
-        )
-    except Exception:  # noqa: BLE001 — no poder saberlo se responde como «no»
-        return False
-    return estado == "active"
-
-
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     """Conexión con search_path al schema del tenant (X-Tenant-Slug). ADR-002/012.
 
@@ -113,25 +107,14 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
     schema = tenant_schema(slug)
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
-        # El ESTADO de la entidad se mira en cada petición.
-        #
-        # El registro tiene una columna `status` y ningún camino la consultaba:
-        # suspender una entidad no le retiraba el acceso, porque el schema sigue
-        # ahí y las credenciales siguen siendo válidas. Un interruptor que no
-        # apaga nada es peor que no tenerlo, porque quien lo acciona cree haber
-        # cortado el acceso.
-        #
-        # Fail-CLOSED sobre el desconocido: si el registro no responde, no se
-        # atiende. La alternativa —seguir sirviendo ante la duda— convierte una
-        # degradación de la base en una suspensión ignorada.
-        if not await _tenant_activo(conn, slug):
+        # El ESTADO de la entidad se mira en cada petición (ADR-035): suspender
+        # una entidad tiene que retirarle el acceso, y un schema inexistente es un
+        # 503 limpio, no un `UndefinedTableError` (500). Fail-CLOSED: si el registro
+        # no responde, no se atiende.
+        if (veto := await veredicto_entidad(conn, slug)) is not None:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "tenant_inactivo",
-                    "detail": "Esta entidad no está activa en la plataforma.",
-                    "status": 403,
-                },
+                status_code=veto[0],
+                detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
             )
         await conn.execute(f'SET search_path = "{schema}", public')
         try:
@@ -164,3 +147,99 @@ async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection,
             yield conn
         finally:
             await conn.execute("SET search_path = public")
+
+
+def _no_encontrado() -> HTTPException:
+    """404 NEUTRO de las rutas públicas: el mismo cuerpo exacto para una entidad
+    inexistente, suspendida o aún sin aprovisionar (no es un oráculo de existencia)."""
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"error": "not_found", "detail": "No encontrado", "status": 404},
+    )
+
+
+def _canal_no_disponible() -> HTTPException:
+    """503 de las ESCRITURAS públicas de una entidad suspendida (ADR-035).
+
+    No es un 404: la entidad existe y quien radica merece saber que el canal está
+    cerrado, no creer que se equivocó de dirección.
+    """
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        headers={"Retry-After": "3600"},
+        detail={
+            "error": "canal_no_disponible",
+            "detail": (
+                "Esta entidad tiene suspendida la recepción de comunicaciones. "
+                "Las consultas y verificaciones siguen disponibles."
+            ),
+            "status": 503,
+        },
+    )
+
+
+@asynccontextmanager
+async def public_tenant_conn_atencion(
+    pool: asyncpg.Pool, slug: str, *, escritura: bool = False
+) -> AsyncGenerator[tuple[asyncpg.Connection, AtencionPublica], None]:
+    """Conexión pública que entrega TAMBIÉN la atención.
+
+    Con `escritura=False` (el callback postal, que tiene que autenticar la firma con el
+    secreto del schema antes de decidir 503 o 404) la entidad suspendida se sirve. Con
+    `escritura=True` una suspendida se corta ANTES de fijar su schema. Inexistente, dada
+    de baja y sin aprovisionar son siempre el 404 neutro.
+    """
+    if not slug_valido(slug):
+        raise _no_encontrado()
+    async with pool.acquire() as conn:
+        try:
+            atencion = await atencion_publica(conn, slug)
+        except Exception as exc:  # noqa: BLE001 — no poder saberlo se niega
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "tenant_estado_no_disponible",
+                    "detail": "No se pudo comprobar el estado de la entidad.",
+                    "status": 503,
+                },
+            ) from exc
+        if atencion is AtencionPublica.NINGUNA:
+            raise _no_encontrado()
+        if escritura and atencion is not AtencionPublica.COMPLETA:
+            raise _canal_no_disponible()
+        await conn.execute(f'SET search_path = "{_schema_de(slug)}", public')
+        try:
+            yield conn, atencion
+        finally:
+            await conn.execute("SET search_path = public")
+
+
+@asynccontextmanager
+async def public_tenant_conn(
+    pool: asyncpg.Pool, slug: str, *, escritura: bool = False
+) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Conexión con `search_path` al tenant para una ruta PÚBLICA (sin JWT), ADR-035.
+
+    El slug viaja en el path. Una entidad OPERATIVA se sirve entera; una SUSPENDIDA
+    solo en LECTURA (`escritura=True` => 503 `canal_no_disponible`); inexistente, dada
+    de baja y sin aprovisionar responden el mismo 404 neutro. Si el registro no
+    responde: 503 (fail-closed), que no distingue entidades.
+    """
+    async with public_tenant_conn_atencion(pool, slug, escritura=escritura) as (conn, _):
+        yield conn
+
+
+async def get_public_tenant_conn(
+    request: Request, tenant: str = Path(...)
+) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Dependencia de las LECTURAS públicas `/public/{tenant}/...` (ver `public_tenant_conn`)."""
+    async with public_tenant_conn(request.app.state.db_pool, tenant) as conn:
+        yield conn
+
+
+async def get_public_tenant_conn_escritura(
+    request: Request, tenant: str = Path(...)
+) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Dependencia de las ESCRITURAS públicas (PQRS, ventanilla): cerradas en suspensión."""
+    async with public_tenant_conn(request.app.state.db_pool, tenant, escritura=True) as conn:
+        yield conn

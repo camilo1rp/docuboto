@@ -17,7 +17,7 @@ de una cabecera nueva fallaría solo en la ruta que menos se prueba.
 
 Además de `Authorization` y `X-Tenant-Slug`:
 
-- **`X-Origen-Canal`** (AREA-11-04): marca firmada con el secreto de identidad,
+- **`X-Origen-Canal`** (AREA-11-04): marca firmada con `MCP_ORIGIN_SECRET`,
   ligada al tenant y al token. Es lo que permite al gateway asentar `canal='mcp'`
   en lo que el asistente hace en nombre de una persona; sin ella, un radicado
   confirmado desde la tarjeta quedaba como 'api', igual que una llamada directa.

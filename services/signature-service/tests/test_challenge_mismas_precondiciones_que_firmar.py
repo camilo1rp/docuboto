@@ -79,6 +79,7 @@ def _servicio(
     repo.es_firmante.return_value = es_firmante
     repo.turno_activo.return_value = turno
     repo.turno_activo_for_update.return_value = turno
+    repo.actualizar_nivel_seguridad.return_value = 1
     svc._repo = repo
     monkeypatch.setattr(mod, "resolve_caller_clearance", AsyncMock(return_value=3))
     monkeypatch.setattr(mod._audit, "append", AsyncMock(return_value="h"))
@@ -293,3 +294,30 @@ async def test_paridad_challenge_sign(esperado: str, monkeypatch: pytest.MonkeyP
     assert _codigo(en_challenge) == esperado
     assert _codigo(en_sign) == esperado
     assert en_challenge.status_code == en_sign.status_code
+
+
+# ---------------------------------------------------------------------------
+# B9-2 — el nivel vivo (releído bajo bloqueo) manda en los dos caminos
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.nivel_vigente_real
+@pytest.mark.asyncio
+async def test_paridad_nivel_vivo_mayor_que_la_copia(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Copia 1, objeto vivo 2, actor de clearance 1: los dos caminos responden el
+    MISMO 404 neutro —y con el MISMO código `solicitud_not_found` (antes challenge
+    decía `solicitud_no_encontrada`)—. Mutación: dejar de reemplazar el nivel en
+    `_sol_con_nivel_vigente`, o poner la relectura en un solo camino => cae."""
+    resultados = []
+    for camino in ("challenge", "sign"):
+        svc, enviar, identidad = _servicio(monkeypatch)
+        monkeypatch.setattr(mod, "resolve_caller_clearance", AsyncMock(return_value=1))
+        svc._repo.nivel_vigente_for_update.return_value = (2, 1)
+        if camino == "challenge":
+            exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+        else:
+            exc = await _error(svc.firmar(SOL_ID, USER, None, "Bearer x"))
+        enviar.assert_not_awaited()
+        svc._repo.actualizar_nivel_seguridad.assert_not_awaited()
+        resultados.append((exc.status_code, _codigo(exc)))
+    assert resultados == [(404, "solicitud_not_found")] * 2

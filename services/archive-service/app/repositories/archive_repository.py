@@ -21,6 +21,27 @@ from app.core.database import tenant_schema
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 
 
+def _noop_cte(n: int) -> str:
+    """CTE `noop(desde, hasta)`: intervalos en que la entidad NO fue operativa.
+
+    Se reconstruyen de los asientos `tenant.updated` de `public.audit_log` (los
+    deja tenant-service con `payload.antes/despues.status`): cada cambio de
+    `status` abre un tramo que dura hasta el cambio siguiente, y es no operativo
+    si el estado resultante no es `active`. Antes del primer asiento se supone
+    operativa (una entidad nace activa). `$n` es el slug del tenant
+    (`object_ref` del asiento)."""
+    return f"""ev AS (
+        SELECT ts, payload->'despues'->>'status' AS st,
+               lead(ts) OVER (ORDER BY ts, id) AS fin
+          FROM public.audit_log
+         WHERE action = 'tenant.updated' AND object_type = 'tenant'
+           AND object_ref = ${n}
+           AND payload->'antes'->>'status' IS DISTINCT FROM payload->'despues'->>'status'
+    ), noop AS (
+        SELECT ts AS desde, COALESCE(fin, now()) AS hasta FROM ev WHERE st <> 'active'
+    )"""
+
+
 class ArchiveRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
@@ -1880,25 +1901,84 @@ class ArchiveRepository:
         guarda sigue siendo esta."""
         await self._set_search_path()
         return await self._conn.fetchrow(
-            """
-            UPDATE eliminacion_lotes
+            f"""
+            WITH {_noop_cte(6)}
+            UPDATE eliminacion_lotes l
                SET estado = 'avalado',
                    acta_comite = $2,
                    fecha_aval = $3,
                    acto_administrativo = $4,
                    avalado_por = $5,
                    avalado_at = now()
-             WHERE id = $1
-               AND estado = 'publicado'
-               AND publicado_hasta < CURRENT_DATE
-               AND creado_por <> $5
-            RETURNING *
+             WHERE l.id = $1
+               AND l.estado = 'publicado'
+               AND l.publicado_hasta < CURRENT_DATE
+               -- ADR-035: la ventanilla es el canal de oposicion y estuvo cerrada
+               -- mientras la entidad no fue operativa. El plazo se cuenta en dias
+               -- OPERATIVOS: un dia tocado por una no-operatividad no corre.
+               AND (
+                   SELECT count(*)
+                     FROM generate_series(
+                              l.publicado_at::date, CURRENT_DATE - 1, interval '1 day'
+                          ) g(d)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM noop n
+                         WHERE n.desde < g.d::date + 1 AND n.hasta > g.d::date
+                    )
+               ) >= l.publicado_hasta - l.publicado_at::date + 1
+               AND l.creado_por <> $5
+            RETURNING l.*
             """,
             lote_id,
             acta_comite,
             fecha_aval,
             acto_administrativo,
             avalado_por,
+            self._tenant_slug,
+        )
+
+    async def plazo_oposicion_efectivo(self, lote_id: uuid.UUID) -> asyncpg.Record | None:
+        """Plazo de oposicion EFECTIVO de un lote publicado (ADR-035).
+
+        Devuelve `plazo_efectivo_hasta` (ultimo dia del plazo ya extendido por
+        los dias en que la entidad no fue operativa, suponiendo operativos los
+        dias futuros) y `dias_suspendidos` (= efectivo - `publicado_hasta`). Lee
+        los asientos `tenant.updated` de `public.audit_log`. Solo EXPLICA y
+        declara en el acta: la guarda es el `WHERE` de `avalar_lote_eliminacion`,
+        que usa el mismo `_noop_cte`. `None` si el lote no existe o no se publico."""
+        await self._set_search_path()
+        return await self._conn.fetchrow(
+            f"""
+            WITH {_noop_cte(2)},
+            l AS (
+                SELECT publicado_at::date AS d0, publicado_hasta,
+                       publicado_hasta - publicado_at::date + 1 AS plazo
+                  FROM eliminacion_lotes
+                 WHERE id = $1 AND publicado_at IS NOT NULL
+            ),
+            dias AS (
+                SELECT g.d::date AS dia,
+                       NOT EXISTS (
+                           SELECT 1 FROM noop n
+                            WHERE n.desde < g.d::date + 1 AND n.hasta > g.d::date
+                       ) AS operativo
+                  FROM l, generate_series(
+                           l.d0, GREATEST(l.publicado_hasta, CURRENT_DATE) + l.plazo,
+                           interval '1 day'
+                       ) g(d)
+            ),
+            acum AS (
+                SELECT dia,
+                       count(*) FILTER (WHERE operativo) OVER (ORDER BY dia) AS corridos
+                  FROM dias
+            )
+            SELECT l.publicado_hasta,
+                   (SELECT min(dia) FROM acum WHERE corridos >= l.plazo)
+                       AS plazo_efectivo_hasta
+              FROM l
+            """,
+            lote_id,
+            self._tenant_slug,
         )
 
     async def anular_lote_eliminacion(

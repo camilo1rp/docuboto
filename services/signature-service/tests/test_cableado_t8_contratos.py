@@ -23,6 +23,8 @@ T8 — huecos de cableado que las suites con dobles por nombre no ven.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
 import uuid
 
@@ -38,8 +40,7 @@ from app.core.http_clients import (
     get_signer_identity,
     get_totp_status_remote,
 )
-from app.core.otp import hmac_otp
-from app.core.secret_derivation import KEY_VERSION_ACTUAL, KEY_VERSION_LEGACY
+from app.core.secret_derivation import KEY_VERSION_ACTUAL, KEY_VERSION_SIN_HMAC
 from app.main import app
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
@@ -226,28 +227,28 @@ async def _firmar(conn, otp: str = "123456"):
         _clear()
 
 
-def _legacy_row(otp: str = "123456") -> dict:
+def _row_esquema_retirado(otp: str = "123456") -> dict:
+    """Desafío del esquema retirado en B9: ``key_version=0`` y el hash que lo
+    firmaba (clave raíz directa, sin ``challenge_id``)."""
     row = _challenge_row(otp=otp)
-    row["key_version"] = KEY_VERSION_LEGACY
-    row["otp_hash"] = hmac_otp(
-        otp,
-        settings.signature_secret,
-        tenant_slug="demo",
-        challenge_id=CHALLENGE_ID,
-        key_version=KEY_VERSION_LEGACY,
-    )
+    row["key_version"] = KEY_VERSION_SIN_HMAC
+    row["otp_hash"] = hmac.new(
+        settings.signature_secret.encode(), otp.encode(), digestmod=hashlib.sha256
+    ).hexdigest()
     return row
 
 
 @pytest.mark.asyncio
-async def test_desafio_key_version_0_en_vuelo_sigue_verificando_en_la_cadena(
+async def test_desafio_key_version_0_ya_no_se_consume_en_la_cadena(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Un desafío emitido antes de la 020 (vive minutos) debe poder consumirse:
-    ``_gate_2fa`` verifica con la ``key_version`` DE LA FILA, no con la actual."""
+    """B9-5: el esquema 0 se retiró. Un desafío con ``key_version=0`` y el código
+    CORRECTO de su hash viejo ya no verifica en ``_gate_2fa`` (401), aunque el hash
+    sea exactamente el que ese esquema producía. Mutación: restaurar la rama v0 en
+    ``otp._key_and_msg`` => 200 y esta prueba cae."""
     _patch_audit(monkeypatch)
-    resp = await _firmar(_conn_firma(_legacy_row()))
-    assert resp.status_code == 200, resp.text
+    resp = await _firmar(_conn_firma(_row_esquema_retirado()))
+    assert resp.status_code == 401, resp.text
 
 
 @pytest.mark.asyncio
@@ -256,7 +257,7 @@ async def test_desafio_cuya_key_version_no_corresponde_al_hash_se_rechaza(
 ) -> None:
     """Control negativo del anterior: la fila dice v1 pero el hash es de v0 -> 401."""
     _patch_audit(monkeypatch)
-    row = _legacy_row()
+    row = _row_esquema_retirado()
     row["key_version"] = KEY_VERSION_ACTUAL
     resp = await _firmar(_conn_firma(row))
     assert resp.status_code == 401, resp.text

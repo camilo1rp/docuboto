@@ -58,6 +58,8 @@ def construir_acta_xml(
     observaciones: str | None,
     generado_por: str,
     generado_ts: datetime,
+    plazo_efectivo_hasta: Any = None,
+    dias_interrumpido: int = 0,
 ) -> str:
     """El acta de eliminación como XML canónico.
 
@@ -90,6 +92,11 @@ def construir_acta_xml(
     pub = ET.SubElement(root, f"{{{NS}}}publicidadPrevia")
     _texto(pub, "publicadoDesde", lote["publicado_at"])
     _texto(pub, "plazoOposicionHasta", lote["publicado_hasta"])
+    # ADR-035: solo si la entidad dejo de ser operativa dentro del plazo. En el
+    # caso normal el acta es byte a byte la de siempre.
+    if dias_interrumpido > 0:
+        _texto(pub, "plazoOposicionEfectivoHasta", plazo_efectivo_hasta)
+        _texto(pub, "diasPlazoInterrumpido", dias_interrumpido)
 
     ET.SubElement(root, f"{{{NS}}}metodoBorrado").text = metodo_borrado
     _texto(root, "observaciones", observaciones)

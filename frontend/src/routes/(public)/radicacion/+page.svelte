@@ -217,10 +217,23 @@
       <a class="vent__btn" href="/consulta">Consultar mi trámite</a>
     {:else if !data.habilitada}
       <h1 class="vent__title">Radicación en línea no disponible</h1>
-      <p class="vent__lead">
-        Esta entidad todavía no ha habilitado la radicación en línea. Preséntese en la ventanilla de
-        radicación de la entidad.
-      </p>
+      {#if data.canalSuspendido}
+        <p class="vent__lead" role="status">
+          Esta entidad tiene suspendida temporalmente la recepción de comunicaciones. Las consultas
+          y verificaciones siguen disponibles.
+        </p>
+        <a class="vent__btn" href="/consulta">Consultar mi trámite</a>
+      {:else if data.sinVentanilla}
+        <p class="vent__lead" role="status">
+          Esta entidad no tiene ventanilla disponible. Preséntese en la ventanilla de radicación de
+          la entidad.
+        </p>
+      {:else}
+        <p class="vent__lead">
+          Esta entidad todavía no ha habilitado la radicación en línea. Preséntese en la ventanilla
+          de radicación de la entidad.
+        </p>
+      {/if}
     {:else}
       <h1 class="vent__title">Radicar un documento</h1>
       <p class="vent__lead">

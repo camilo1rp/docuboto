@@ -205,7 +205,7 @@ async def test_create_challenge_not_found_returns_404(monkeypatch: pytest.Monkey
                 headers=TENANT_HEADERS,
             )
         assert resp.status_code == 404
-        assert resp.json()["detail"]["error"] == "solicitud_no_encontrada"
+        assert resp.json()["detail"]["error"] == "solicitud_not_found"
     finally:
         _clear()
 

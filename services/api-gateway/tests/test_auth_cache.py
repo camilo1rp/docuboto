@@ -204,7 +204,7 @@ async def test_sin_expires_in_no_se_cachea(test_client) -> None:
 # ---------------------------------------------------------------------------
 
 _KEY_FORJADO = _validation_key("Bearer forjado")
-_FORJADA = {"valid": True, "tenant_slug": "otra", "user_id": "X", "username": "x", "roles": ["admin"]}
+_FORJADA = {"valid": True, "tenant_slug": "otra", "tenant_estado": "operativa", "user_id": "X", "username": "x", "roles": ["admin"]}
 
 
 def _con_mac(clave: str, payload: dict, secreto: str = AUTH_CACHE_MAC_SECRET_TEST) -> str:

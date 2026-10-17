@@ -12,6 +12,7 @@ import logging
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from orpycamcp_common.tenant import ERROR_ESTADO_NO_DISPONIBLE, ERRORES_ENTIDAD
 
 from app.core.database import get_db_conn, get_optional_tenant_conn
 from app.repositories.audit_repository import AuditRepository
@@ -79,6 +80,13 @@ def _keycloak_error_to_http(exc: KeycloakError) -> HTTPException:
         403: ("tenant_mismatch", "User does not belong to the specified tenant"),
     }
     error_code, detail = error_map.get(exc.status_code, ("keycloak_error", exc.detail))
+    # ADR-035: la entidad no operativa se responde con el MISMO código que el gateway.
+    for estado_http, estado_codigo, estado_detalle in (
+        *ERRORES_ENTIDAD.values(),
+        ERROR_ESTADO_NO_DISPONIBLE,
+    ):
+        if exc.status_code == estado_http and exc.detail == estado_codigo:
+            error_code, detail = estado_codigo, estado_detalle
     return HTTPException(
         status_code=exc.status_code,
         detail={"error": error_code, "detail": detail, "status": exc.status_code},
@@ -99,7 +107,9 @@ async def token(
 ) -> TokenResponse:
     audit = AuditRepository(conn)
     try:
-        result = await service.login(payload.username, payload.password, payload.tenant_slug)
+        result = await service.login(
+            payload.username, payload.password, payload.tenant_slug, conn=conn
+        )
         await audit.log(
             "login_success",
             username=payload.username,
@@ -133,7 +143,7 @@ async def refresh_token(
 ) -> TokenResponse:
     audit = AuditRepository(conn)
     try:
-        result = await service.refresh(payload.refresh_token)
+        result = await service.refresh(payload.refresh_token, conn=conn)
         await audit.log("token_refresh", ip_address=_client_ip(request))
         return result
     except KeycloakError as exc:

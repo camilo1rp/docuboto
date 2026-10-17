@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator
 
 import asyncpg
 from fastapi import HTTPException, Request, status
-from orpycamcp_common.tenant import slug_valido
+from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
@@ -121,9 +121,15 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
 
     El tenant se toma de la cabecera ``X-Tenant-Slug`` que inyecta el api-gateway.
     """
-    schema = tenant_schema(request.headers.get("X-Tenant-Slug", ""))
+    slug = request.headers.get("X-Tenant-Slug", "")
+    schema = tenant_schema(slug)
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
+        if (veto := await veredicto_entidad(conn, slug)) is not None:
+            raise HTTPException(
+                status_code=veto[0],
+                detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
+            )
         await conn.execute(f'SET search_path = "{schema}", public')
         try:
             yield conn

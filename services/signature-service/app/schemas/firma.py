@@ -16,7 +16,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.constants import CADENA_OBJETO_TIPOS, XADES_ELIGIBLE_OBJETO_TIPOS
+from app.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
 
 
 class SignXmlRequest(BaseModel):
@@ -43,14 +43,13 @@ class SignXmlRequest(BaseModel):
     @field_validator("objeto_tipo")
     @classmethod
     def _objeto_tipo_cerrado(cls, v: str) -> str:
-        # Conjunto CERRADO: el sello institucional (XADES_ELIGIBLE, además
-        # gateado por token interno en el router) y los tipos firmables de una
-        # cadena. Un texto libre dejaba firmar «cualquier cosa» a nombre de un
-        # objeto que no existe (hallazgo AREA-04-07).
-        if v not in XADES_ELIGIBLE_OBJETO_TIPOS | CADENA_OBJETO_TIPOS:
+        # Conjunto CERRADO al sello institucional (B9-3). La firma humana de
+        # radicado/expediente/borrador va por la cadena (`/requests`); aceptarla
+        # aquí daba una firma verificable sin turno, sin 2FA y sin gate XAdES.
+        if v not in XADES_ELIGIBLE_OBJETO_TIPOS:
             raise ValueError(
-                f"objeto_tipo debe ser uno de "
-                f"{sorted(XADES_ELIGIBLE_OBJETO_TIPOS | CADENA_OBJETO_TIPOS)}"
+                f"objeto_tipo debe ser uno de {sorted(XADES_ELIGIBLE_OBJETO_TIPOS)} "
+                "(solo sello institucional; la firma humana va por /requests)"
             )
         return v
 
@@ -263,7 +262,12 @@ class VerifyResponse(BaseModel):
     # Para `provider != 'xades_personal'` (sello institucional/HMAC nativo),
     # la revocación no aplica — `revocacion_status` queda `None` y
     # `firma_criptograficamente_valida == valida` siempre.
-    firma_criptograficamente_valida: bool = False
+    #
+    # `None` = «no se pudo evaluar»: la firma se emitió con un esquema HMAC retirado
+    # (`motivo = esquema_hmac_retirado`) y el sistema ya no puede verificarla. NO es
+    # `False`: `False` afirma que la verificación se hizo y el contenido no
+    # coincide (manipulación), y aquí no se hizo ninguna (B9-S6).
+    firma_criptograficamente_valida: bool | None = False
     # `vigente`/`revocado`/`no_verificable` (canal de revocación caído) /
     # `desconocido` (huella no encontrada — otro tenant, forjada, o el
     # usuario titular fue borrado por CASCADE; fail-closed, NUNCA `vigente`

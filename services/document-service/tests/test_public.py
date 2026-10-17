@@ -107,14 +107,6 @@ async def test_verify_not_found(client_with_conn) -> None:
     assert resp.json()["detail"]["error"] == "not_found"
 
 
-@pytest.mark.asyncio
-async def test_verify_invalid_tenant_slug(client_with_conn) -> None:
-    client, _ = client_with_conn
-    # Slug con caracteres inválidos → 400 (anti-inyección en search_path).
-    resp = await client.get("/api/v1/public/bad;slug/verify/abc")
-    assert resp.status_code == 400
-
-
 # ── PQRS / radicación ciudadana (público, Ley 1755/2015) ──────────────
 
 

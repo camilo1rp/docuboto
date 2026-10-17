@@ -21,7 +21,6 @@ import { POST as signPost } from "./[id]/sign/+server.js";
 import { GET as certificadoGet } from "./certificado/[firmaId]/+server.js";
 import { POST as verifyPost } from "./verify/+server.js";
 import { POST as requestsPost, GET as requestsGet } from "./requests/+server.js";
-import { POST as signXmlPost } from "./sign-xml/+server.js";
 import { POST as signPersonalPost } from "./sign-personal/+server.js";
 import { GET as documentoGet, POST as documentoPost } from "./documento/[documentId]/+server.js";
 import { GET as documentoVerifyGet } from "./documento/[documentId]/verify/+server.js";
@@ -407,49 +406,6 @@ describe("firmas/api/requests GET — por objeto", () => {
     expect(res.status).toBe(200);
     expect(capturedUrl).toContain("objeto_tipo=radicado");
     expect(capturedUrl).toContain("objeto_id=r1");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// /firmas/api/sign-xml
-// ---------------------------------------------------------------------------
-describe("firmas/api/sign-xml POST", () => {
-  it("401 unauthenticated, sin llamar al gateway", async () => {
-    globalThis.fetch = noFetch();
-    const res = await signXmlPost({ locals: {}, request: { json: async () => ({}) } });
-    expect(res.status).toBe(401);
-  });
-
-  it("sin payload_xml: 422 validation_error", async () => {
-    globalThis.fetch = noFetch();
-    const res = await signXmlPost({
-      locals: SESSION_LOCALS,
-      request: { json: async () => ({ objeto_tipo: "indice" }) },
-    });
-    expect(res.status).toBe(422);
-  });
-
-  it("allowlist + X-User-Id de trazabilidad", async () => {
-    let capturedBody;
-    let capturedHeaders;
-    globalThis.fetch = vi.fn(async (_input, init) => {
-      capturedBody = JSON.parse(init.body);
-      capturedHeaders = init.headers;
-      return new Response(JSON.stringify({ firma_id: FIRMA_ID }), { status: 201 });
-    });
-    const res = await signXmlPost({
-      locals: SESSION_LOCALS,
-      request: {
-        json: async () => ({
-          payload_xml: "<indice/>",
-          objeto_tipo: "indice",
-          firmante_id: "otro-usuario",
-        }),
-      },
-    });
-    expect(res.status).toBe(201);
-    expect(capturedBody).toEqual({ payload_xml: "<indice/>", objeto_tipo: "indice" });
-    expect(capturedHeaders["X-User-Id"]).toBe(USER_SUB);
   });
 });
 

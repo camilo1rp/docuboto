@@ -26,6 +26,7 @@ def _make_validate_response(
     tenant_slug: str = "icetex",
     roles: list[str] | None = None,
     expires_in: int | None = 300,
+    tenant_estado: str | None = "operativa",
 ) -> httpx.Response:
     # La forma REAL de `ValidateResponse` (auth-service): incluye `expires_in`
     # desde AREA-02-12. Un doble que lo omitiera volvería a esconder que el tope
@@ -39,6 +40,10 @@ def _make_validate_response(
     }
     if expires_in is not None:
         cuerpo["expires_in"] = expires_in
+    # B9-1: el estado de la entidad viaja en la validación; `None` = campo ausente
+    # (un auth-service viejo), que el gateway debe tratar como NO operativa.
+    if tenant_estado is not None:
+        cuerpo["tenant_estado"] = tenant_estado
     return httpx.Response(status_code=200, json=cuerpo)
 
 
@@ -106,8 +111,11 @@ def make_validate_response(
     tenant_slug: str = "icetex",
     roles: list[str] | None = None,
     expires_in: int | None = 300,
+    tenant_estado: str | None = "operativa",
 ) -> httpx.Response:
-    return _make_validate_response(valid, user_id, username, tenant_slug, roles, expires_in)
+    return _make_validate_response(
+        valid, user_id, username, tenant_slug, roles, expires_in, tenant_estado
+    )
 
 
 def wire_upstream(

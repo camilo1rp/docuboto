@@ -52,8 +52,8 @@ async def _poblar(conn: asyncpg.Connection, slug: str, nivel: int) -> uuid.UUID:
     )
     return await conn.fetchval(
         """INSERT INTO firma (objeto_tipo, objeto_id, firmante_id, payload_sha256,
-                              firma_blob, provider, sello_tiempo, tipo_firma)
-           VALUES ('radicado', 'R-COMUN', $1, 'a', 'b', 'nativa', now(), 'nativa')
+                              firma_blob, provider, sello_tiempo, tipo_firma, key_version)
+           VALUES ('radicado', 'R-COMUN', $1, 'a', 'b', 'nativa', now(), 'nativa', 1)
            RETURNING id""",
         uuid.uuid4(),
     )

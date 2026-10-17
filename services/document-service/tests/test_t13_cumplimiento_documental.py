@@ -454,12 +454,18 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
             _ship_row(estado="en_transito"),
         ]
         cuerpo = _body(event_id=f"evt-{uuid.uuid4()}")
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.post(
-                _url(),
-                content=cuerpo,
-                headers={"Content-Type": "application/json", "X-OrpycaMCP-Signature": _firma(viejo, cuerpo)},
-            )
+        from orpycamcp_common.tenant import AtencionPublica
+
+        with patch(
+            "app.core.database.atencion_publica",
+            new=AsyncMock(return_value=AtencionPublica.COMPLETA),  # ADR-035: aquí no se prueba el estado
+        ):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.post(
+                    _url(),
+                    content=cuerpo,
+                    headers={"Content-Type": "application/json", "X-OrpycaMCP-Signature": _firma(viejo, cuerpo)},
+                )
         app.dependency_overrides.clear()
         return r.status_code
 

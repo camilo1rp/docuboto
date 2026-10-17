@@ -74,6 +74,29 @@ class Identity:
 # gateway inyecte los permisos ya validados, no cachearlos aquí.
 
 
+def _codigo_de_entidad(resp: httpx.Response) -> str | None:
+    """`tenant_inactivo` / `tenant_*` del cuerpo de error, o `None`.
+
+    Solo códigos del estado de la entidad (lista cerrada): lo demás no se reenvía.
+    """
+    try:
+        cuerpo = resp.json()
+    except ValueError:
+        return None
+    if isinstance(cuerpo, dict) and isinstance(cuerpo.get("detail"), dict):
+        cuerpo = cuerpo["detail"]
+    codigo = cuerpo.get("error") if isinstance(cuerpo, dict) else None
+    if codigo in _CODIGOS_DE_ENTIDAD:
+        return str(codigo)
+    return None
+
+
+#: Códigos de error del estado de la entidad (ADR-035): únicos que se propagan.
+_CODIGOS_DE_ENTIDAD = frozenset(
+    {"tenant_inactivo", "tenant_no_provisionado", "tenant_estado_no_disponible"}
+)
+
+
 async def resolve_identity(
     gateway_client: httpx.AsyncClient,
     *,
@@ -97,6 +120,12 @@ async def resolve_identity(
     if resp.status_code == 401:
         raise IdentityError(401, "unauthenticated")
     if resp.status_code != 200:
+        # ADR-035 (B9-N4): una entidad no operativa se responde con el MISMO código que
+        # el gateway (`tenant_inactivo` 403; `tenant_*` 503), no con un genérico
+        # `auth_service_error` que el cliente no sabe distinguir de una caída.
+        codigo = _codigo_de_entidad(resp)
+        if codigo is not None and resp.status_code in (403, 503):
+            raise IdentityError(resp.status_code, codigo)
         raise IdentityError(503, "auth_service_error")
 
     data = resp.json()

@@ -14,12 +14,13 @@ el protocolo (verbos, errores, Dublin Core, resumptionToken indistinguible)."""
 
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from xml.etree import ElementTree as ET
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.tenant import AtencionPublica
 
 from app.main import app
 
@@ -37,6 +38,14 @@ def _rad(tn: str = "2026-DEMO-E-000001", subject: str = "Acta pública", doc_typ
         "registered_at": datetime(2026, 3, 1, 10, 0, 0, tzinfo=UTC),
         "tenant_code": "DEMO",
     }
+
+
+@pytest.fixture(autouse=True)
+def _entidad_operativa():
+    """ADR-035: estos tests ejercen el protocolo, no el estado (eso lo cubre
+    `test_estado_entidad.py`), así que la entidad se da por operativa."""
+    with patch("app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
+        yield
 
 
 class _FakePool:
@@ -232,8 +241,10 @@ async def test_nonexistent_tenant_is_400_not_500(oai_ctx: tuple[AsyncClient, Asy
     """Seg #1: un tenant con formato válido pero inexistente responde uniforme
     (400 badArgument), NO revienta en 500 (oráculo de existencia)."""
     client, conn = oai_ctx
-    conn.fetchval.side_effect = [None]  # to_regclass('"tenant_x".radicados') -> NULL
-    resp = await client.get(_url(verb="Identify"))
+    with patch(
+        "app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
+    ):
+        resp = await client.get(_url(verb="Identify"))
     assert resp.status_code == 400
     assert ET.fromstring(resp.content).find(f"{OAI}error").get("code") == "badArgument"
 

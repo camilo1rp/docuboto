@@ -30,6 +30,8 @@ from httpx import ASGITransport, AsyncClient
 from app.clients.tenant_client import TenantServiceError
 from app.core.database import (
     get_db_conn,
+    get_public_tenant_conn,
+    get_public_tenant_conn_escritura,
     get_redis,
     get_tenant_client,
     get_tenant_conn,
@@ -221,6 +223,8 @@ def _override_conn(mock_conn: AsyncMock, fake_client: FakeTenantClient) -> None:
 
     app.dependency_overrides[get_tenant_conn] = _dep
     app.dependency_overrides[get_db_conn] = _dep
+    app.dependency_overrides[get_public_tenant_conn] = _dep
+    app.dependency_overrides[get_public_tenant_conn_escritura] = _dep
     # El endpoint de creación depende de get_tenant_client y get_redis (sin
     # lifespan no hay http_client ni redis reales); se sustituyen por dobles.
     app.dependency_overrides[get_tenant_client] = lambda: fake_client

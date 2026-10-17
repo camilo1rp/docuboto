@@ -27,8 +27,8 @@ La `firma_blob` es un HMAC-SHA256 que incorpora:
     ``firma_nativa`` y esa entidad (``app.core.secret_derivation``), no el
     secreto raíz directo. Una fila copiada a otro schema, o reasignada a otro
     objeto, deja de verificar.
-  - Las firmas anteriores (``key_version=0``) siguen verificando con el
-    esquema original; ya no se produce nada nuevo con él.
+  - El esquema anterior (``key_version=0``, clave raíz directa) se retiró en
+    B9: una firma nativa con 0 no verifica.
 
 Consecuencia: la firma NO es reproducible desde fuera aunque el payload y el
 firmante_id sean públicos — se necesita el secreto del servicio.
@@ -49,15 +49,9 @@ import json
 from app.core.secret_derivation import (
     KEY_VERSION_ACTUAL,
     KEY_VERSION_HKDF,
-    KEY_VERSION_LEGACY,
     PROPOSITO_FIRMA_NATIVA,
     derive_key,
 )
-
-
-def _mensaje_v0(payload_sha256: str, firmante_id: str, sello_tiempo: str) -> bytes:
-    """Esquema original (``key_version=0``): sin entidad ni objeto. Solo verifica."""
-    return f"{payload_sha256}|{firmante_id}|{sello_tiempo}".encode()
 
 
 def _mensaje_v1(
@@ -101,12 +95,6 @@ def _mac(
     objeto_tipo: str,
     objeto_id: str | None,
 ) -> str:
-    if key_version == KEY_VERSION_LEGACY:
-        return hmac.new(
-            secret.encode(),
-            _mensaje_v0(payload_sha256, firmante_id, sello_tiempo),
-            digestmod=hashlib.sha256,
-        ).hexdigest()
     if key_version == KEY_VERSION_HKDF:
         key = derive_key(secret, purpose=PROPOSITO_FIRMA_NATIVA, tenant_slug=tenant_slug)
         return hmac.new(

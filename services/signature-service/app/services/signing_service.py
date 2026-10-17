@@ -44,7 +44,7 @@ from app.core.events import publish_indice_firmado
 from app.core.keys import SealNotFoundError, load_seal
 from app.core.ocsp import OcspMaterialRequiredError
 from app.core.redis_client import get_redis
-from app.core.secret_derivation import KEY_VERSION_LEGACY
+from app.core.secret_derivation import KEY_VERSION_SIN_HMAC
 from app.core.tsa import TsaUnavailableError
 from app.providers import get_provider
 from app.providers.base import SignerRef
@@ -384,7 +384,7 @@ async def sign_payload(
                 "ocsp_this_update": ocsp_this_update_dt,
                 "ocsp_next_update": ocsp_next_update_dt,
                 "ocsp_response_der": signed.extra.get("ocsp_response_der"),
-                "key_version": signed.extra.get("key_version", KEY_VERSION_LEGACY),
+                "key_version": signed.extra.get("key_version", KEY_VERSION_SIN_HMAC),
             }
         )
 

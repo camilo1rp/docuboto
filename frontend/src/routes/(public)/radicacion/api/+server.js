@@ -59,6 +59,26 @@ export async function POST({ request, fetch }) {
       ...(clave ? { headers: { "Idempotency-Key": clave } } : {}),
     });
     const datos = await res.json().catch(() => null);
+    if (res.status === 404) {
+      // Entidad sin ventanilla (inexistente, dada de baja o sin aprovisionar): un
+      // solo texto, sin distinguir cuál (ADR-035).
+      return json(
+        { error: "not_found", detail: "Esta entidad no tiene ventanilla disponible." },
+        { status: 404 },
+      );
+    }
+    if (res.status === 503 && codigoError(datos) === "canal_no_disponible") {
+      // Entidad suspendida: el portal queda en solo lectura (ADR-035); las
+      // escrituras públicas dan un mensaje claro, no «No encontrado».
+      return json(
+        {
+          error: "canal_no_disponible",
+          detail:
+            "Esta entidad tiene suspendida temporalmente la recepción de comunicaciones. Las consultas y verificaciones siguen disponibles.",
+        },
+        { status: 503 },
+      );
+    }
     if (!res.ok) {
       return json(
         {

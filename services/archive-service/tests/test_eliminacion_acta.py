@@ -197,6 +197,28 @@ def test_el_acta_lleva_el_fundamento_y_la_publicidad_previa() -> None:
     assert "Borrado seguro completo" in xml
 
 
+def test_el_acta_declara_el_plazo_EFECTIVO_solo_si_hubo_interrupcion() -> None:
+    """ADR-035: si la entidad no fue operativa dentro del plazo, el acta dice
+    hasta cuando corrio de verdad; sin interrupcion no añade nada."""
+    args = dict(
+        lote=_lote_row(),
+        items=[_item()],
+        tenant_slug="demo",
+        metodo_borrado="Borrado seguro completo",
+        observaciones=None,
+        generado_por="u-1",
+        generado_ts=datetime(2026, 8, 29, tzinfo=UTC),
+    )
+    base = construir_acta_xml(**args)
+    ext = construir_acta_xml(
+        **args, plazo_efectivo_hasta=date(2026, 8, 18), dias_interrumpido=3
+    )
+    assert "plazoOposicionEfectivoHasta" not in base
+    assert "diasPlazoInterrumpido" not in base
+    assert "plazoOposicionEfectivoHasta" in ext and "2026-08-18" in ext
+    assert "diasPlazoInterrumpido" in ext
+
+
 def test_el_inventario_del_acta_NO_se_recorta_por_clasificacion() -> None:
     """Un acta a la que le faltan los expedientes clasificados no da fe de lo
     que se destruyó. Lo que se acota es quién la lee, no lo que dice."""
@@ -232,6 +254,7 @@ async def test_generar_congela_el_acta_y_ancla_su_sha_en_la_auditoria(client_wit
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         {"id": LOTE},  # INSERT ... RETURNING
         _acta_row(firma_estado="firmado"),  # la relee el cableado WORM
         _acta_row(firma_estado="firmado"),  # lectura final de la respuesta
@@ -281,6 +304,7 @@ async def test_el_acta_no_se_regenera(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         None,  # el INSERT no creó nada
     ]
     mock_conn.fetch.return_value = [_item()]
@@ -334,6 +358,7 @@ async def test_si_no_hay_sello_el_acta_QUEDA_igual_con_el_motivo_a_la_vista(
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         {"id": LOTE},
         _acta_row(last_error="sello_ausente"),
         _CLEARANCE,
@@ -365,6 +390,7 @@ async def test_el_acta_se_sella_como_acta_eliminacion_y_sobre_SU_xml(
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         {"id": LOTE},
         _acta_row(firma_estado="firmado"),  # la relee el cableado WORM
         _acta_row(firma_estado="firmado"),  # lectura final de la respuesta
@@ -498,6 +524,7 @@ async def test_una_firma_SIN_artefacto_no_se_marca_firmada(client_with_conn) -> 
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         {"id": LOTE},
         _acta_row(last_error="sellado_sin_artefacto"),
         _CLEARANCE,
@@ -550,6 +577,7 @@ def _entorno_firmada(mock_conn):
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         {"id": LOTE},
         _acta_row(firma_estado="firmado"),
         _acta_row(firma_estado="firmado"),
@@ -648,6 +676,7 @@ async def test_agotados_los_intentos_el_acta_se_marca_agotada_y_deja_asiento(
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         {"id": LOTE},
         previa,
         previa,
@@ -684,6 +713,7 @@ async def test_sin_sello_NO_se_llega_siquiera_a_pedir_el_candado(client_with_con
     mock_conn.fetchrow.side_effect = [
         {"estado": "avalado", "publicado_hasta": date(2026, 8, 15), "publicidad_abierta": False},
         _lote_row(),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         {"id": LOTE},
         _acta_row(last_error="sello_ausente"),
         _CLEARANCE,

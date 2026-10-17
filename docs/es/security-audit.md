@@ -130,7 +130,7 @@ es cada factor y signature-service exige que coincida (`403 identidad_incoherent
 pedir el factor). Quien ya tiene TOTP no baja al correo en actos de nivel ≥ 2. La huella de radicado y
 expediente no la elige el cliente, y el firmante tampoco elige los bytes al firmar donde la cadena no fija
 huella. El HMAC de la firma nativa y el del OTP usan claves derivadas por entidad y propósito (HKDF) con un
-mensaje que ata entidad y objeto, y `key_version` conserva la verificación de lo anterior. `/verify` y
+mensaje que ata entidad y objeto; `key_version` etiqueta el esquema y el anterior (`0`) se retiró en B9 (migración `024`: ya no verifica, `motivo=esquema_hmac_retirado`). El nivel que rige el acto de firmar se relee bajo bloqueo (SEG-B4 **cerrado**, B9-2: el mayor entre la copia de la cadena y el nivel vivo del objeto) y `/sign-xml` ya no firma radicados, expedientes ni borradores (B9-3: solo sello institucional con token interno). `/verify` y
 `GET /firmas/{id}` aplican el no-read-up. **Pendiente (decisión de la entidad o externo)**: activar
 `FIRMA_PERSONAL_REQUIRE_XADES` (lo clasificado aún puede firmarse con HMAC nativo si el gate sigue en `off`;
 ahora hay aviso al arrancar y asiento si el canal de credenciales cae), el vocabulario de motivos de

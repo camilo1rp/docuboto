@@ -45,6 +45,7 @@ HTTP — el mismo criterio que `resolve_caller_clearance` con las tablas RBAC.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -58,7 +59,7 @@ from app.core.anexos_publicos import (
     tipo_por_contenido,
     validar_conjunto,
 )
-from app.core.politica import Politica, politica_de
+from app.core.politica import PARAM_TEXTO, PARAM_URL, PARAM_VERSION, Politica, politica_de
 from app.core.tipos import nombre_tipo_documental
 from app.schemas.document import AnexoInput, DocumentCreate
 from app.schemas.public import (
@@ -119,9 +120,47 @@ class VentanillaService:
             ) from exc
         return politica_de(params)
 
+    async def _politica_de_la_tabla(self) -> Politica:
+        """La política leída DIRECTO de `sgd_param_admin` del schema de la entidad.
+
+        Solo la usa el `GET .../politica` (lectura pública, abierta con la entidad
+        suspendida, ADR-035): tenant-service veta a la entidad suspendida en su
+        `get_tenant_conn`, así que pasar por él cerraba de hecho el aviso que la
+        ruta pretende servir. Es la misma tabla y la misma extracción
+        (`politica_de`) que usa tenant-service; la radicación sigue leyendo por
+        tenant-service (`_politica`), que es la que exige la entidad operativa.
+        Un fallo de lectura es 503 `politica_no_verificable`, nunca «sin política».
+        """
+        try:
+            filas = await self._conn.fetch(
+                "SELECT key, value FROM sgd_param_admin WHERE key = ANY($1::text[])",
+                [PARAM_VERSION, PARAM_URL, PARAM_TEXTO],
+            )
+        except asyncpg.UndefinedTableError:
+            return politica_de({})  # la entidad aún no tiene parámetros: sin política
+        except Exception as exc:  # noqa: BLE001 — no poder leerla no es «no hay política»
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "politica_no_verificable",
+                    "detail": "No se pudo verificar la política de tratamiento de datos de la entidad.",
+                    "status": 503,
+                },
+            ) from exc
+        params: dict[str, Any] = {}
+        for fila in filas:
+            valor = fila["value"]
+            if isinstance(valor, (str, bytes)):
+                try:
+                    valor = json.loads(valor)
+                except ValueError:
+                    pass  # texto no JSON: `politica_de` lo trata como cadena o lo descarta
+            params[fila["key"]] = valor
+        return politica_de(params)
+
     async def politica(self) -> PoliticaTratamiento:
         """Lo que el formulario debe mostrar antes de pedir la autorización."""
-        pol = await self._politica()
+        pol = await self._politica_de_la_tabla()
         if not pol.publicada:
             return PoliticaTratamiento(publicada=False)
         return PoliticaTratamiento(

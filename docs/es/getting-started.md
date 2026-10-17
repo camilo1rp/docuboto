@@ -257,6 +257,10 @@ mensual) siguen disponibles, pero en una sección secundaria colapsable, cerrada
 defecto, y **solo si el usuario tiene el permiso `SGD_PERM_ESTADISTICA`** — el mismo que
 habilita la vista `/reportes`.
 
+### Entidad suspendida o no lista
+
+Si la entidad está suspendida, aún no está aprovisionada o no se pudo comprobar su estado, la sesión muestra una pantalla propia («La entidad está suspendida», «La entidad aún no está lista», «No se pudo comprobar el estado de la entidad») con **Reintentar** (cuando el estado puede cambiar) y **Cerrar sesión**. En la ventanilla pública (`/radicacion`, `/eliminacion`) esos mismos casos se ven como «Esta entidad no tiene ventanilla disponible».
+
 ### 3. Búsqueda global desde cualquier pantalla
 
 La barra superior lleva un campo de **búsqueda global** disponible en todas las pantallas

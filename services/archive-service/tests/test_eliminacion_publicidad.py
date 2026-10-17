@@ -28,10 +28,24 @@ Lo que se prueba:
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from orpycamcp_common.tenant import AtencionPublica
 
 from tests.conftest import TENANT_HEADERS
+
+
+@pytest.fixture(autouse=True)
+def _entidad_operativa():
+    """ADR-035: estos tests ejercen la publicidad, no el estado de la entidad (eso lo
+    cubre `test_estado_entidad.py`), así que la entidad se da por operativa."""
+    with patch(
+        "app.routers.public_eliminacion.atencion_publica",
+        new=AsyncMock(return_value=AtencionPublica.COMPLETA),
+    ):
+        yield
+
 
 LOTE = uuid.uuid4()
 PUBLICO = "/api/v1/public/archive/eliminacion/demo/lotes"
@@ -279,15 +293,23 @@ async def test_un_slug_inexistente_y_un_lote_inexistente_dan_la_MISMA_respuesta(
 
     client, mock_conn = client_with_conn
 
-    mock_conn.fetchval.return_value = None  # el slug no está en `public.tenants`
     # Lo que haría Postgres si la consulta llegara a ejecutarse con el
     # `search_path` apuntando a un schema que no existe.
     mock_conn.fetchrow.side_effect = asyncpg.UndefinedTableError("el schema no existe")
-    sin_entidad = await client.get(f"/api/v1/public/archive/eliminacion/no-existe/lotes/{LOTE}")
-    mock_conn.fetchval.return_value = True  # la entidad existe; el lote no
+    with patch(
+        "app.routers.public_eliminacion.atencion_publica",
+        new=AsyncMock(return_value=AtencionPublica.NINGUNA),  # no está en `public.tenants`
+    ):
+        sin_entidad = await client.get(
+            f"/api/v1/public/archive/eliminacion/no-existe/lotes/{LOTE}"
+        )
     mock_conn.fetchrow.side_effect = None
     mock_conn.fetchrow.return_value = None
-    sin_lote = await client.get(f"{PUBLICO}/{uuid.uuid4()}")
+    with patch(
+        "app.routers.public_eliminacion.atencion_publica",
+        new=AsyncMock(return_value=AtencionPublica.COMPLETA),  # la entidad existe; el lote no
+    ):
+        sin_lote = await client.get(f"{PUBLICO}/{uuid.uuid4()}")
 
     assert sin_entidad.status_code == sin_lote.status_code == 404
     assert sin_entidad.json() == sin_lote.json()

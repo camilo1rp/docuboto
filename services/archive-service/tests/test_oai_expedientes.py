@@ -17,12 +17,13 @@ import base64
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from xml.etree import ElementTree as ET
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.tenant import AtencionPublica
 
 from app.main import app
 
@@ -31,6 +32,14 @@ DC = "{http://purl.org/dc/elements/1.1/}"
 EAD = "{urn:isbn:1-931666-22-9}"
 
 SERIE_ID = uuid.uuid4()
+
+
+@pytest.fixture(autouse=True)
+def _entidad_operativa():
+    """ADR-035: estos tests ejercen el protocolo, no el estado (eso lo cubre
+    `test_estado_entidad.py`), así que la entidad se da por operativa."""
+    with patch("app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
+        yield
 
 
 def _exp(
@@ -262,8 +271,10 @@ async def test_nonexistent_tenant_is_400_not_500(oai_ctx: tuple[AsyncClient, Asy
     """Un tenant con formato válido pero inexistente responde uniforme
     (400 badArgument), NO revienta en 500 (oráculo de existencia)."""
     client, conn = oai_ctx
-    conn.fetchval.side_effect = [None]  # to_regclass('"tenant_x".expedientes') -> NULL
-    resp = await client.get(_url(verb="Identify"))
+    with patch(
+        "app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
+    ):
+        resp = await client.get(_url(verb="Identify"))
     assert resp.status_code == 400
     assert ET.fromstring(resp.content).find(f"{OAI}error").get("code") == "badArgument"
 

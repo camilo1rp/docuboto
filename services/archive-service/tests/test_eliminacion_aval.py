@@ -155,6 +155,7 @@ async def test_quien_propuso_el_lote_no_lo_avala_y_la_guarda_va_EN_EL_SQL(
     mock_conn.fetchrow.side_effect = [
         None,
         _diagnostico("publicado", abierta=False, creado_por=USER_ID),
+        None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
     ]
 
     resp = await client.post(f"{BASE}/avalar", json=AVAL, headers=TENANT_HEADERS)

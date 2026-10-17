@@ -30,6 +30,11 @@ export async function load({ fetch }) {
     const res = await fetch(
       `${API_V1}/public/archive/eliminacion/${encodeURIComponent(PUBLIC_TENANT)}/lotes`,
     );
+    if (res.status === 404) {
+      // Entidad sin portal público (inexistente, dada de baja o sin aprovisionar):
+      // no se distingue cuál (ADR-035).
+      return { disponible: false, lotes: [], loadError: null };
+    }
     if (!res.ok) {
       return {
         disponible: true,

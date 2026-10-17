@@ -5025,6 +5025,29 @@ class ArchiveService:
                     "status": 409,
                 },
             )
+        if accion == "avalar" and fila["estado"] == "publicado":
+            # ADR-035: el plazo original venció pero la entidad estuvo no
+            # operativa dentro de él (la ventanilla, canal de oposicion, daba
+            # 503): el plazo efectivo se extiende por esos dias.
+            plazo = await self._repo.plazo_oposicion_efectivo(lote_id)
+            efectivo = plazo["plazo_efectivo_hasta"] if plazo is not None else None
+            if plazo is not None and efectivo is not None and efectivo >= date.today():
+                dias = (efectivo - plazo["publicado_hasta"]).days
+                return HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "plazo_oposicion_interrumpido",
+                        "detail": (
+                            f"La entidad no estuvo operativa {dias} dia(s) dentro "
+                            "del plazo para oponerse y la ventanilla estuvo cerrada: "
+                            f"el plazo efectivo vence el {efectivo} y el aval no se "
+                            "registra antes de que termine."
+                        ),
+                        "dias_suspendidos": dias,
+                        "plazo_efectivo_hasta": str(efectivo),
+                        "status": 409,
+                    },
+                )
         if (
             accion == "avalar"
             and actor is not None
@@ -5119,7 +5142,16 @@ class ArchiveService:
         fila = await self._repo.get_lote_row(lote_id)
         items = await self._repo.list_items_lote_completo(lote_id)
         generado_at = datetime.now(UTC)
+        # ADR-035: si el plazo de oposicion se extendio por una no-operatividad
+        # de la entidad, el acta declara el plazo efectivo (no solo el original).
+        plazo = await self._repo.plazo_oposicion_efectivo(lote_id)
+        hasta_efectivo = plazo["plazo_efectivo_hasta"] if plazo is not None else None
+        dias_interrumpido = 0
+        if plazo is not None and hasta_efectivo is not None:
+            dias_interrumpido = max(0, (hasta_efectivo - plazo["publicado_hasta"]).days)
         acta_xml = construir_acta_xml(
+            plazo_efectivo_hasta=hasta_efectivo if dias_interrumpido else None,
+            dias_interrumpido=dias_interrumpido,
             lote=fila,
             items=items,
             tenant_slug=self._tenant_slug,

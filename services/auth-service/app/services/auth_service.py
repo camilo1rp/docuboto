@@ -27,7 +27,13 @@ import time
 import asyncpg
 import httpx
 from jwt import PyJWTError
-from orpycamcp_common.tenant import slug_valido, tenant_schema
+from orpycamcp_common.tenant import (
+    EstadoEntidad,
+    estado_entidad,
+    slug_valido,
+    tenant_schema,
+    veredicto_entidad,
+)
 
 from app.core.config import settings
 from app.core.security import validate_token
@@ -62,7 +68,48 @@ class AuthService:
     # Token issuance
     # ------------------------------------------------------------------
 
-    async def login(self, username: str, password: str, tenant_slug: str) -> TokenResponse:
+    @staticmethod
+    async def _exigir_entidad_operativa(
+        conn: asyncpg.Connection, access_token: str
+    ) -> None:
+        """No se entrega un token de una entidad que no se atiende (ADR-035, B9-N4).
+
+        Se mira la entidad que el TOKEN lleva en su claim (la que el gateway verá), no
+        la del cuerpo. Sin entidad (superadmin global) no hay nada que comprobar.
+        Fail-closed: si el registro no responde, 503 `tenant_estado_no_disponible`.
+        """
+        claims = await validate_token(access_token)
+        slug = claims.get("tenant_slug") or ""
+        if not slug:
+            return
+        veto = await veredicto_entidad(conn, slug)
+        if veto is not None:
+            raise KeycloakError(veto[0], veto[1])
+
+    async def _exigir_entidad_operativa_o_revocar(
+        self, conn: asyncpg.Connection, payload: dict
+    ) -> None:
+        """Veto de entidad no operativa que, al rechazar, REVOCA la sesion recien emitida.
+
+        Keycloak ya emitio el par de tokens antes de que se consulte el estado de la
+        entidad; rechazar sin mas dejaba la sesion (y su refresh token) viva en el
+        realm. Se revoca por el endpoint de logout, best-effort: un fallo al revocar
+        se registra pero no sustituye al rechazo. Es defensa en PROFUNDIDAD: la
+        barrera real es el gateway (vetar por el slug del claim en cada peticion) y
+        la via PKCE del front no pasa por este servicio (ADR-035).
+        """
+        try:
+            await self._exigir_entidad_operativa(conn, payload["access_token"])
+        except KeycloakError:
+            try:
+                await self.logout(payload["refresh_token"])
+            except Exception:  # noqa: BLE001 — revocar es best-effort; el rechazo manda
+                logger.warning("no se pudo revocar la sesion de una entidad no operativa", exc_info=True)
+            raise
+
+    async def login(
+        self, username: str, password: str, tenant_slug: str, *, conn: asyncpg.Connection
+    ) -> TokenResponse:
         """Resource Owner Password Credentials grant via the api-gateway client."""
         data = {
             "grant_type": "password",
@@ -92,6 +139,8 @@ class AuthService:
             if token_tenant != tenant_slug:
                 raise KeycloakError(403, "tenant_mismatch")
 
+        await self._exigir_entidad_operativa_o_revocar(conn, payload)
+
         return TokenResponse(
             access_token=payload["access_token"],
             refresh_token=payload["refresh_token"],
@@ -99,7 +148,7 @@ class AuthService:
             expires_in=payload.get("expires_in", 300),
         )
 
-    async def refresh(self, refresh_token: str) -> TokenResponse:
+    async def refresh(self, refresh_token: str, *, conn: asyncpg.Connection) -> TokenResponse:
         data = {
             "grant_type": "refresh_token",
             "client_id": settings.keycloak_gateway_client_id,
@@ -115,6 +164,7 @@ class AuthService:
             raise KeycloakError(response.status_code, "keycloak_error")
 
         payload = response.json()
+        await self._exigir_entidad_operativa_o_revocar(conn, payload)
         return TokenResponse(
             access_token=payload["access_token"],
             refresh_token=payload["refresh_token"],
@@ -167,7 +217,21 @@ class AuthService:
 
             # Resolve internal auth_users.id (tenant-aware, lazy provisioning).
             user_id: str = keycloak_sub                    # default: fall back to sub
-            if tenant_slug and conn is not None and slug_valido(tenant_slug):
+
+            # ADR-035: el estado de la entidad va ANTES de tocar su schema. Una
+            # entidad no operativa no aprovisiona `auth_users` (el alta perezosa
+            # crearía usuarios dentro de una entidad suspendida); el veredicto de
+            # servir o no lo toma el api-gateway con este campo.
+            tenant_estado: str | None = None
+            if tenant_slug:
+                tenant_estado = await self._estado_de_la_entidad(conn, tenant_slug)
+
+            if (
+                tenant_slug
+                and conn is not None
+                and tenant_estado == EstadoEntidad.OPERATIVA
+                and slug_valido(tenant_slug)
+            ):
                 schema = tenant_schema(tenant_slug)
                 try:
                     await conn.execute(f'SET search_path = "{schema}", public')
@@ -220,9 +284,21 @@ class AuthService:
                 tenant_slug=tenant_slug,
                 roles=claims.get("roles", []),
                 expires_in=max(0, int(claims["exp"]) - int(time.time())),
+                tenant_estado=tenant_estado,
             )
         except PyJWTError:
             return ValidateResponse(valid=False)
+
+    @staticmethod
+    async def _estado_de_la_entidad(conn: asyncpg.Connection | None, slug: str) -> str:
+        """Estado de la entidad; `desconocido` si el registro no responde (no se lanza)."""
+        if conn is None:
+            return "desconocido"
+        try:
+            return str(await estado_entidad(conn, slug))
+        except Exception:
+            logger.exception("validate: no se pudo leer el estado de la entidad '%s'", slug)
+            return "desconocido"
 
     async def get_current_user(self, token: str) -> UserInfoResponse:
         try:

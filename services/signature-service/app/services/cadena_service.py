@@ -157,6 +157,23 @@ except ImportError:  # pragma: no cover — common not installed in all test env
 _SERVICE = "signature-service"
 
 
+def _solicitud_no_encontrada() -> HTTPException:
+    """404 neutro ÚNICO de la cadena (anti-enumeración, RF-SEG-08, D-15).
+
+    «No existe», «no la alcanzas» y «cambió bajo bloqueo» salen de aquí: un cuerpo
+    distinto en cualquiera de los caminos sería un oráculo de existencia. Una sola
+    definición evita que las copias divergen (ya divergió una).
+    """
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "error": "solicitud_not_found",
+            "detail": "No existe la solicitud de firma",
+            "status": 404,
+        },
+    )
+
+
 def _build_response(sol: asyncpg.Record, turnos: list[asyncpg.Record]) -> SolicitudResponse:
     items = [
         TurnoItem(
@@ -302,35 +319,96 @@ class CadenaFirmaService:
     async def _get_or_404(self, solicitud_id: uuid.UUID) -> asyncpg.Record:
         sol = await self._repo.get_solicitud(solicitud_id)
         if sol is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "solicitud_not_found",
-                    "detail": "No existe la solicitud de firma indicada",
-                    "status": 404,
-                },
-            )
+            raise _solicitud_no_encontrada()
         return sol
 
     async def _assert_can_read(
         self, sol: asyncpg.Record, actor: uuid.UUID
-    ) -> None:
+    ) -> int:
         """Raises 404 when actor's clearance is below sol's nivel_seguridad.
 
         Uses 404 (not 403) so under-clearance actors cannot distinguish
         "does not exist" from "exists but classified" (no-read-up, RF-SEG-08, D-15).
         Fail-closed: any DB/table error resolves clearance to PUBLICA=1.
+        Devuelve el clearance resuelto: quien firma lo reutiliza para reevaluar
+        el nivel bajo bloqueo (`_sol_con_nivel_vigente`) sin una segunda consulta.
         """
         clearance = await resolve_caller_clearance(self._conn, actor)
         if sol["nivel_seguridad"] > clearance:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "solicitud_not_found",
-                    "detail": "No existe la solicitud de firma",
-                    "status": 404,
-                },
+            raise _solicitud_no_encontrada()
+        return clearance
+
+    async def _assert_can_read_vigente(
+        self, sol: asyncpg.Record, actor: uuid.UUID
+    ) -> dict:
+        """No-read-up de las LECTURAS con ``max(copia, nivel vivo)`` (B9-S1, SEG #1).
+
+        La copia ``firma_solicitud.nivel_seguridad`` puede ir atrasada (evento en DLQ,
+        o cadena declarada ``borrador`` sobre el UUID de un radicado): gatear la lectura
+        solo con ella dejaba leer los metadatos de una cadena de un objeto que el
+        actor ya no puede ver. Misma regla que ``_sol_con_nivel_vigente``, sin
+        bloqueo (no se escribe nada). Devuelve la solicitud con el nivel efectivo.
+        """
+        clearance = await resolve_caller_clearance(self._conn, actor)
+        vivo = await self._repo.resolver_nivel_por_objeto(sol["objeto_id"])
+        nivel = max(int(sol["nivel_seguridad"]), int(vivo)) if vivo is not None else int(
+            sol["nivel_seguridad"]
+        )
+        if nivel > clearance:
+            raise _solicitud_no_encontrada()
+        return {**dict(sol), "nivel_seguridad": nivel}
+
+    async def _sol_con_nivel_vigente(
+        self,
+        sol: asyncpg.Record,
+        clearance: int,
+        actor: uuid.UUID | None = None,
+    ) -> dict:
+        """Reevalúa el nivel bajo bloqueo y devuelve la solicitud con él (B9-2, SEG-B4).
+
+        Se llama DENTRO de la transacción, tomando antes el bloqueo de la fila de la
+        solicitud. Todo gate que dependa del nivel (clearance, XAdES, 2FA, veto del
+        correo, asientos) debe usar el registro devuelto, no el leído sin bloqueo.
+
+        - Si el nivel vigente supera el clearance del actor: 404 neutro (el
+          rollback deja todo sin consumir).
+        - Si supera la copia, la corrige en la MISMA transacción (lo mismo que haría
+          el evento `reclassified`; idempotente), SOLO hacia arriba (monótono: no
+          baja cadenas hermanas del mismo objeto) y deja el asiento
+          `firma.solicitud_reclasificada` atómico con la corrección (B9-S2/S3).
+        """
+        vigente = await self._repo.nivel_vigente_for_update(sol["id"], sol["objeto_id"])
+        if vigente is None:
+            raise _solicitud_no_encontrada()
+        # La copia BLOQUEADA, no `sol["nivel_seguridad"]` (leído sin bloqueo y quizá
+        # ya corregido por otra transacción): de ella salen el «antes» del asiento y
+        # la decisión de corregir (re-auditoría B9 H).
+        nivel, copia = vigente
+        if nivel > clearance:
+            raise _solicitud_no_encontrada()
+        if nivel > copia:
+            filas = await self._repo.actualizar_nivel_seguridad(
+                sol["objeto_tipo"], [sol["objeto_id"]], nivel, solo_subir=True
             )
+            if filas > 0 and _AUDIT_AVAILABLE:
+                await _audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="firma.solicitud_reclasificada",
+                    object_type=sol["objeto_tipo"],
+                    object_ref=sol["objeto_id"],
+                    actor=str(actor) if actor is not None else None,
+                    payload={
+                        "solicitud_id": str(sol["id"]),
+                        "nivel_anterior": copia,
+                        "nivel_nuevo": nivel,
+                        "filas": filas,
+                        "origen": "relectura_al_firmar",
+                    },
+                    canal="system",
+                )
+        return {**dict(sol), "nivel_seguridad": nivel, "nivel_copia": copia}
 
     # ------------------------------------------------------------------
     # Public operations
@@ -369,14 +447,7 @@ class CadenaFirmaService:
             # Dice ser un documento registrado y no existe ninguno: mismo 404 neutro
             # que el no-read-up de abajo, para no distinguir "no existe" de "no lo
             # alcanzas" (la creación de cadenas no puede ser un oráculo).
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "solicitud_not_found",
-                    "detail": "No existe la solicitud de firma",
-                    "status": 404,
-                },
-            )
+            raise _solicitud_no_encontrada()
         else:
             # Borrador o documento sin registrar: no hay tabla que consultar, así
             # que el nivel que declara su autor es la única verdad disponible.
@@ -388,14 +459,7 @@ class CadenaFirmaService:
         # before existe_abierta so the conflict path does not leak either.
         clearance = await resolve_caller_clearance(self._conn, actor)
         if nivel > clearance:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "solicitud_not_found",
-                    "detail": "No existe la solicitud de firma",
-                    "status": 404,
-                },
-            )
+            raise _solicitud_no_encontrada()
 
         # Abrir la cadena también se rechaza, aunque la garantía viva en el acto
         # de firmar: dejar componer los turnos para negarlos uno a uno después es
@@ -517,7 +581,7 @@ class CadenaFirmaService:
     async def get(self, solicitud_id: uuid.UUID, actor: uuid.UUID) -> SolicitudResponse:
         """Returns the full chain: header + items. 404 if not found or above clearance."""
         sol = await self._get_or_404(solicitud_id)
-        await self._assert_can_read(sol, actor)
+        sol = await self._assert_can_read_vigente(sol, actor)
         turnos = await self._repo.list_turnos(solicitud_id)
         return _build_response(sol, turnos)
 
@@ -535,7 +599,7 @@ class CadenaFirmaService:
                     "status": 404,
                 },
             )
-        await self._assert_can_read(sol, actor)
+        sol = await self._assert_can_read_vigente(sol, actor)
         turnos = await self._repo.list_turnos(sol["id"])
         return _build_response(sol, turnos)
 
@@ -712,7 +776,7 @@ class CadenaFirmaService:
         Guards, in order (the SAME preconditions as ``firmar``; none creates a
         challenge, sends mail or consumes a factor — the reads run BEFORE the
         transaction, which only re-reads solicitud+turno under FOR UPDATE):
-        1. 404 solicitud_no_encontrada — missing OR below the actor's clearance
+        1. 404 solicitud_not_found — missing OR below the actor's clearance
            (no-read-up, RF-SEG-08 — neutral, anti-enumeration).
         2. ``_precondiciones_de_turno``: 403 no_es_firmante, 409
            solicitud_no_pendiente, 403 no_es_su_turno, 409 turno_es_de_visto_bueno,
@@ -743,17 +807,11 @@ class CadenaFirmaService:
         sol = await self._repo.get_solicitud(solicitud_id)
         # No-read-up gate (RF-SEG-08, D-15): below-clearance actors get the
         # same neutral 404 as a missing solicitud (anti-enumeration).
-        if sol is None or sol["nivel_seguridad"] > await resolve_caller_clearance(
-            self._conn, actor
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "solicitud_no_encontrada",
-                    "detail": "No existe la solicitud de firma",
-                    "status": 404,
-                },
-            )
+        clearance = (
+            await resolve_caller_clearance(self._conn, actor) if sol is not None else 0
+        )
+        if sol is None or sol["nivel_seguridad"] > clearance:
+            raise _solicitud_no_encontrada()
 
         # Pertenencia, estado, turno, rol y anulación: las MISMAS que `firmar`.
         await self._precondiciones_de_turno(sol, actor)
@@ -789,35 +847,6 @@ class CadenaFirmaService:
                     "status": 409,
                 },
             )
-        if _xades_gate_activo(sol["nivel_seguridad"], modo_xades):
-            # Sin el asiento `firma.xades_requerida_denegada`: pertenece al acto
-            # de firmar, y repetirlo aquí lo duplicaría.
-            if personal_res.disponible:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "error": "firma_xades_requerida",
-                        "detail": (
-                            "Este acto exige un certificado XAdES personal según la "
-                            "política vigente (firma_personal_require_xades) y usted no "
-                            "tiene ninguno activo."
-                        ),
-                        "status": 422,
-                    },
-                )
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error": "canal_firma_personal_no_disponible",
-                    "detail": (
-                        "No se pudo verificar el estado de la credencial de firma "
-                        "personal (auth-service); la política de XAdES para este acto "
-                        "exige que esa comprobación tenga éxito (falla cerrado)."
-                    ),
-                    "status": 503,
-                },
-            )
-
         async with self._conn.transaction():
             # Relectura AUTORITATIVA con bloqueo (TOCTOU, RF-FIR-04): un
             # challenge/sign concurrente espera aquí y ve el turno ya resuelto.
@@ -835,6 +864,42 @@ class CadenaFirmaService:
                         "error": "solicitud_no_pendiente",
                         "detail": "El turno activo cambió antes de emitir el desafío",
                         "status": 409,
+                    },
+                )
+
+            # El nivel que rige el acto se relee bajo bloqueo (B9-2, SEG-B4); el
+            # gate XAdES, el veto del correo y el resto usan este registro.
+            sol = await self._sol_con_nivel_vigente(sol, clearance, actor)
+
+            # Política XAdES: dentro de la transacción y detrás de la relectura,
+            # porque depende del nivel. Lanzar aquí no tiene efectos: aún no hay
+            # desafío ni correo.
+            if _xades_gate_activo(sol["nivel_seguridad"], modo_xades):
+                # Sin el asiento `firma.xades_requerida_denegada`: pertenece al acto
+                # de firmar, y repetirlo aquí lo duplicaría.
+                if personal_res.disponible:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "firma_xades_requerida",
+                            "detail": (
+                                "Este acto exige un certificado XAdES personal según la "
+                                "política vigente (firma_personal_require_xades) y usted no "
+                                "tiene ninguno activo."
+                            ),
+                            "status": 422,
+                        },
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "error": "canal_firma_personal_no_disponible",
+                        "detail": (
+                            "No se pudo verificar el estado de la credencial de firma "
+                            "personal (auth-service); la política de XAdES para este acto "
+                            "exige que esa comprobación tenga éxito (falla cerrado)."
+                        ),
+                        "status": 503,
                     },
                 )
 
@@ -1031,14 +1096,7 @@ class CadenaFirmaService:
         try:
             vigente = await resolutor(str(objeto_id), self._tenant_slug)
         except ObjetoDesaparecidoError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "solicitud_not_found",
-                    "detail": "No existe la solicitud de firma",
-                    "status": 404,
-                },
-            ) from exc
+            raise _solicitud_no_encontrada() from exc
         except HuellaSinContenidoError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1383,7 +1441,7 @@ class CadenaFirmaService:
         sol = await self._get_or_404(solicitud_id)
         # No-read-up gate: 404 before any other guard so actor cannot infer
         # chain existence from 409/403 response codes (RF-SEG-08, D-15).
-        await self._assert_can_read(sol, actor)
+        clearance = await self._assert_can_read(sol, actor)
 
         # Pertenencia, estado, turno, rol y anulación: las MISMAS precondiciones que
         # `/challenge` (`_precondiciones_de_turno`), para que los dos caminos no
@@ -1443,6 +1501,14 @@ class CadenaFirmaService:
         consumed_challenge: dict | None = None
 
         async with self._conn.transaction():
+            # El NIVEL que rige el acto se relee bajo bloqueo (B9-2, SEG-B4): la
+            # copia de `firma_solicitud` puede ir atrasada, y el gate XAdES, el
+            # 2FA obligatorio, el veto del correo y los asientos de abajo usan el
+            # registro devuelto, no el leído sin bloqueo. Primero la fila de la
+            # solicitud y después el turno: el MISMO orden que `/challenge`,
+            # `rechazar` y `dar_visto_bueno` (B9-S5), así ningún par de caminos
+            # se bloquea en cruz.
+            sol = await self._sol_con_nivel_vigente(sol, clearance, actor)
             # Authoritative turn read under a row lock (TOCTOU guard, RF-FIR-04): a
             # concurrent sign of the same turn blocks here until the first commits,
             # then sees the turn already resolved and fails the marcar_turno guard.
@@ -1767,6 +1833,11 @@ class CadenaFirmaService:
                         payload={
                             "solicitud_id": str(solicitud_id),
                             "orden": turno["orden"],
+                            # Nivel que RIGIÓ el acto (releído bajo bloqueo) y el de la
+                            # copia con que se entró: si difieren, el asiento lo dice
+                            # (B9-S4); el hecho probatorio no puede llevar el viejo.
+                            "nivel_seguridad": sol["nivel_seguridad"],
+                            "nivel_copia": sol.get("nivel_copia", sol["nivel_seguridad"]),
                             "firma_id": str(firma_id),
                             "huella_de_contenido": huella_de_contenido,
                             # Política XAdES EFECTIVA con la que se firmó (la de la
@@ -2297,7 +2368,7 @@ class CadenaFirmaService:
         """
         sol = await self._get_or_404(solicitud_id)
         # No-read-up gate before any other guard (RF-SEG-08, D-15).
-        await self._assert_can_read(sol, actor)
+        clearance = await self._assert_can_read(sol, actor)
 
         # Pertenencia ANTES que el estado (AREA-04-09 Media-2): el estado de la
         # solicitud (409) solo se le cuenta a quien es parte de la cadena; a un
@@ -2344,6 +2415,10 @@ class CadenaFirmaService:
             )
 
         async with self._conn.transaction():
+            # Primero la fila de la solicitud (con el nivel releído bajo bloqueo, B9-S10)
+            # y después el turno: el MISMO orden que `firmar` y `/challenge` (B9-S5), así
+            # ningún par de caminos se bloquea en cruz.
+            sol = await self._sol_con_nivel_vigente(sol, clearance, actor)
             # Authoritative turn read under a row lock (TOCTOU guard, RF-FIR-04).
             turno = await self._repo.turno_activo_for_update(solicitud_id)
             if turno is None or turno["firmante_id"] != actor:
@@ -2419,7 +2494,7 @@ class CadenaFirmaService:
         """
         sol = await self._get_or_404(solicitud_id)
         # No-read-up antes que cualquier otra guarda (RF-SEG-08, D-15).
-        await self._assert_can_read(sol, actor)
+        clearance = await self._assert_can_read(sol, actor)
 
         # Pertenencia ANTES que el estado (AREA-04-09 Media-2): el estado de la
         # solicitud (409) solo se le cuenta a quien es parte de la cadena; a un
@@ -2457,6 +2532,9 @@ class CadenaFirmaService:
         await self._gate_documento_vigente(sol)
 
         async with self._conn.transaction():
+            # Solicitud primero (nivel releído bajo bloqueo, B9-S10) y turno después:
+            # el mismo orden que `firmar` y `/challenge` (B9-S5).
+            sol = await self._sol_con_nivel_vigente(sol, clearance, actor)
             turno = await self._repo.turno_activo_for_update(solicitud_id)
             if turno is None or turno["firmante_id"] != actor:
                 raise HTTPException(

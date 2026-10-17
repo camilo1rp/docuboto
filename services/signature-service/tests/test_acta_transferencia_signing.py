@@ -22,7 +22,7 @@ prefijo `acta-transferencia-` y NUNCA se publica `firma.indice.firmado`
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -187,30 +187,25 @@ async def test_sign_xml_indice_still_publishes_event_retrocompat(
 
 
 @pytest.mark.asyncio
-async def test_sign_xml_other_objeto_tipo_falls_back_to_nativa_retrocompat(
-    signature_env,
+async def test_sign_xml_ya_no_admite_tipos_fuera_del_sello(
+    signature_env, monkeypatch
 ) -> None:
-    """Cualquier `objeto_tipo` fuera del allow-set (radicado, anexo, ...)
-    sigue cayendo a HMAC 'nativa' — comportamiento sin cambios."""
+    """B9-3: ``/sign-xml`` es solo sello institucional. Un ``objeto_tipo`` fuera del
+    allow-set (radicado, anexo, ...) da 422 incluso con el token interno, y no se
+    firma ni se sube nada (antes caía a HMAC 'nativa')."""
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
+    monkeypatch.setattr(settings, "signature_internal_token", _INTERNAL_TOKEN)
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    with (
-        patch(
-            "app.routers.signature.CadenaRepository.objeto_visible",
-            new=AsyncMock(return_value=True),
-        ),
-        patch("app.routers.signature.resolve_caller_clearance", new=AsyncMock(return_value=1)),
-    ):
-        resp = await client.post(
-            "/api/v1/signature/sign-xml",
-            json={"payload_xml": "<radicado/>", "objeto_tipo": "radicado", "objeto_id": "R-1"},
-            headers=TENANT_HEADERS,
-        )
-    assert resp.status_code == 201
-    assert resp.json()["provider"] == "nativa"
+    resp = await client.post(
+        "/api/v1/signature/sign-xml",
+        json={"payload_xml": "<radicado/>", "objeto_tipo": "radicado", "objeto_id": "R-1"},
+        headers={**TENANT_HEADERS, "X-Internal-Token": _INTERNAL_TOKEN},
+    )
+    assert resp.status_code == 422
     assert uploads == []
+    assert table.rows == {}
 
 
 # ---------------------------------------------------------------------------

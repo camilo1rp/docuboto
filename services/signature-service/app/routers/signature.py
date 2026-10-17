@@ -41,7 +41,6 @@ from app.core.config import settings
 from app.core.constants import (
     NIVELES_CONFORMIDAD_ACREDITADOS,
     SYSTEM_RECONCILER_ID,
-    XADES_ELIGIBLE_OBJETO_TIPOS,
 )
 from app.core.database import get_tenant_conn
 from app.core.http_clients import (
@@ -49,6 +48,7 @@ from app.core.http_clients import (
     get_signing_key_revocation_status_remote,
 )
 from app.core.internal_auth import require_internal_token
+from app.core.secret_derivation import KEY_VERSION_HKDF
 from app.providers.local import verify_xades
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.firma_repository import FirmaRepository
@@ -152,37 +152,16 @@ async def sign_xml(
       (RF-FIR-12), no reproducible sin conocer el secreto del servicio.
     - El acto de firma queda registrado en audit_log (RF-FIR-14).
 
-    El SELLO INSTITUCIONAL (``objeto_tipo`` del allow-set XAdES) exige además
-    ``X-Internal-Token`` (D-02): el sello es de la ENTIDAD, no de quien llama, y
-    un humano con ``PERM_FIRMA`` nivel 1 podía estampárselo a un XML arbitrario
-    llamando directo y saltándose los gates de archive-service (expediente
-    cerrado, permiso, versión del índice). La única ruta humana legítima es
-    ``IndexService.firmar_indice`` / sellado del acta, que llega desde archive
-    con identidad firmada Y token. El resto de tipos (HMAC nativo) queda acotado
-    por ``SignXmlRequest.objeto_tipo`` (422 fuera del conjunto).
-
-    Sin reto 2FA aquí: el 2FA de la firma humana (RF-FIR-13) vive en la
-    cadena (``/challenge`` + ``/sign`` de ``app/routers/cadena.py``). Los tipos
-    HMAC nativos de este endpoint no lo piden — pendiente declarado.
+    SOLO SELLO INSTITUCIONAL (B9-3): ``objeto_tipo`` queda acotado a
+    ``XADES_ELIGIBLE_OBJETO_TIPOS`` (``422`` fuera de ese conjunto, también para
+    ``radicado|expediente|borrador``) y ``X-Internal-Token`` es obligatorio
+    SIEMPRE (D-02): el sello es de la ENTIDAD, no de quien llama. La firma humana
+    de radicados, expedientes y borradores va exclusivamente por la cadena
+    (``/requests``: turno, 2FA y gate XAdES); este endpoint ya no emite una
+    atestación verificable que esquive ese circuito. Quien llega es archive-service
+    con identidad firmada Y token.
     """
-    if payload.objeto_tipo in XADES_ELIGIBLE_OBJETO_TIPOS:
-        require_internal_token(x_internal_token)
-    else:
-        # Tipos de cadena (HMAC nativo): el objeto debe EXISTIR y ser visible
-        # para el firmante (no-read-up, RF-SEG-08). `404` neutro para «no existe»
-        # y «te supera el clearance»: no es un oráculo sobre objetos reservados.
-        clearance = await resolve_caller_clearance(conn, actor)
-        if payload.objeto_id is None or not await CadenaRepository(conn).objeto_visible(
-            payload.objeto_id, clearance
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail={
-                    "error": "objeto_no_encontrado",
-                    "detail": "El objeto a firmar no existe",
-                    "status": 404,
-                },
-            )
+    require_internal_token(x_internal_token)
     tenant_slug: str = request.headers.get("X-Tenant-Slug", "")
     return await signing_service.sign_payload(
         conn=conn,
@@ -502,14 +481,29 @@ async def verify(
         else ""
     )
 
+    if row["key_version"] != KEY_VERSION_HKDF:
+        # Esquema HMAC retirado en B9 (la fila nativa es anterior a la 020). Se
+        # dice EXACTAMENTE eso y no se recomputa: `hmac_no_coincide` acusaría una
+        # manipulación que no ocurrió.
+        return VerifyResponse(
+            firma_id=row["id"],
+            valida=False,
+            provider=row["provider"],
+            nivel_conformidad=row.get("nivel_conformidad"),
+            acreditado=_acreditado(row, valida=False),
+            motivo="esquema_hmac_retirado",
+            # No se evaluó nada: `None`, no `False` (que afirmaría manipulación).
+            firma_criptograficamente_valida=None,
+        )
+
     valida = signer.verificar(
         payload.payload_xml.encode(),
         firmante_id,
         row["firma_blob"],
         sello_tiempo_str,
         settings.signature_secret,
-        # Esquema con que se firmó ESTA fila (migración 020): 0 = anterior (clave
-        # raíz, mensaje sin entidad ni objeto), 1 = HKDF por entidad. La entidad
+        # Esquema con que se firmó ESTA fila (migración 020): solo 1 (HKDF por
+        # entidad) llega aquí; lo demás se corta arriba. La entidad
         # es la de la petición —el schema donde vive la fila—, así una fila
         # copiada a otro tenant deja de verificar.
         key_version=row["key_version"],

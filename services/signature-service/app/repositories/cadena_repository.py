@@ -89,46 +89,51 @@ class CadenaRepository:
             for table, id_cols in CADENA_NIVEL_AUTORITATIVO.values()
         ]
         try:
-            return await self._conn.fetchval(
-                f"SELECT MAX(nivel_seguridad) FROM ({' UNION ALL '.join(selects)}) AS n",
-                objeto_id,
-            )
+            # Savepoint: invocada DENTRO de la transacción de firmar (B9-2), un
+            # `UndefinedTableError` sin él deja la transacción abortada y el
+            # reintento por tabla de abajo falla con `InFailedSQLTransaction`.
+            async with self._conn.transaction():
+                return await self._conn.fetchval(
+                    f"SELECT MAX(nivel_seguridad) FROM ({' UNION ALL '.join(selects)}) AS n",
+                    objeto_id,
+                )
         except asyncpg.UndefinedTableError:
             # Alguna tabla fuente falta en este schema (tenant sin document- o
             # archive-service, o entorno de test aislado): se reintenta tabla a
             # tabla para no perder las que SÍ están.
             return await self._resolver_nivel_por_tabla(objeto_id)
 
-    async def objeto_visible(self, objeto_id: str, max_clearance: int) -> bool:
-        """¿El identificador resuelve a un objeto REAL cuyo nivel no supera el
-        clearance del llamante? (AREA-04-07, ruta cruda ``/sign-xml``.)
+    async def nivel_vigente_for_update(
+        self, solicitud_id: uuid.UUID, objeto_id: str
+    ) -> tuple[int, int] | None:
+        """Nivel que RIGE el acto de firmar, leído bajo bloqueo (B9-2, SEG-B4).
 
-        El clearance viaja DENTRO de la consulta (``FILTER``), no en una
-        comprobación posterior: autorización y lectura son un solo acto. Visible
-        solo si hay al menos una coincidencia y NINGUNA excede el clearance (el
-        lado seguro si el id coincide en dos tablas). Fail-closed: tabla ausente
-        en el schema => esa fuente no aporta, y sin coincidencias => ``False``.
-        No consulta ``objeto_tipo`` (lo elige el cliente), igual que
-        :meth:`resolver_nivel_por_objeto`.
+        Devuelve ``(nivel_efectivo, copia_bloqueada)``: la copia es la que se leyó
+        bajo ``FOR UPDATE``, y es de ella (no de la solicitud leída antes, sin
+        bloqueo) de donde sale el ``nivel_anterior`` del asiento de la relectura
+        (re-auditoría B9 H).
+
+        ``max(copia de la cadena bajo FOR UPDATE, nivel autoritativo vivo del
+        objeto)``. La copia (`firma_solicitud.nivel_seguridad`) se sincroniza por
+        evento y puede ir atrasada (DLQ, o cadena declarada `borrador` sobre el UUID
+        de un radicado, que el consumidor no alcanza): firmar con ella dejaba el
+        acto sin 2FA, sin gate XAdES y con un actor de clearance menor. ``max`` es
+        monótono: una desclasificación aún no sincronizada se trata con más rigor,
+        nunca con menos.
+
+        ``None`` si la solicitud ya no existe. No bloquea ``radicados``: una
+        reclasificación que confirma después de esta lectura queda serializada como
+        posterior a la firma, y eso es legítimo.
         """
-        total = 0
-        visibles = 0
-        for table, id_cols in CADENA_NIVEL_AUTORITATIVO.values():
-            where = " OR ".join(f"{col} = $1" for col in id_cols)
-            try:
-                row = await self._conn.fetchrow(
-                    "SELECT COUNT(*) AS total, "
-                    "COUNT(*) FILTER (WHERE nivel_seguridad <= $2) AS visibles "
-                    f"FROM {table} WHERE {where}",
-                    objeto_id,
-                    max_clearance,
-                )
-            except asyncpg.UndefinedTableError:
-                continue
-            if row is not None:
-                total += int(row["total"])
-                visibles += int(row["visibles"])
-        return total > 0 and total == visibles
+        copia = await self._conn.fetchval(
+            "SELECT nivel_seguridad FROM firma_solicitud WHERE id = $1 FOR UPDATE",
+            solicitud_id,
+        )
+        if copia is None:
+            return None
+        vivo = await self.resolver_nivel_por_objeto(objeto_id)
+        efectivo = max(int(copia), int(vivo)) if vivo is not None else int(copia)
+        return efectivo, int(copia)
 
     async def objeto_anulado(self, objeto_id: str) -> bool | None:
         """¿El identificador apunta a un radicado ANULADO?
@@ -159,10 +164,11 @@ class CadenaRepository:
         for table, id_cols in CADENA_NIVEL_AUTORITATIVO.values():
             where = " OR ".join(f"{col} = $1" for col in id_cols)
             try:
-                nivel = await self._conn.fetchval(
-                    f"SELECT nivel_seguridad FROM {table} WHERE {where} LIMIT 1",
-                    objeto_id,
-                )
+                async with self._conn.transaction():  # savepoint, ver arriba
+                    nivel = await self._conn.fetchval(
+                        f"SELECT nivel_seguridad FROM {table} WHERE {where} LIMIT 1",
+                        objeto_id,
+                    )
             except asyncpg.UndefinedTableError:
                 continue
             if nivel is not None:
@@ -425,7 +431,12 @@ class CadenaRepository:
         return tag.split()[-1] == "1"
 
     async def actualizar_nivel_seguridad(
-        self, objeto_tipo: str, objeto_ids: list[str], nivel: int
+        self,
+        objeto_tipo: str,
+        objeto_ids: list[str],
+        nivel: int,
+        *,
+        solo_subir: bool = False,
     ) -> int:
         """Syncs nivel_seguridad in firma_solicitud after a radicado reclassification.
 
@@ -434,6 +445,12 @@ class CadenaRepository:
         nivel_seguridad differs from ``nivel``.  The ``nivel_seguridad <> $1``
         predicate makes this idempotent: redelivered events produce 0 updates.
 
+        ``solo_subir=True`` (la corrección que hace la RELECTURA al firmar, B9-S3)
+        cambia el predicado a ``nivel_seguridad < $1``: es monótona y NO baja las
+        cadenas hermanas del mismo objeto que ya van por encima del nivel vivo. El
+        evento `reclassified` (``solo_subir=False``) sí puede bajar, porque es la
+        reclasificación autoritativa del objeto.
+
         Returns the number of rows actually updated (for audit/logging).
 
         Tolerates asyncpg.UndefinedTableError (tenant schema without firma_solicitud)
@@ -441,12 +458,13 @@ class CadenaRepository:
         chains to sync, so the event is safely consumed without re-queuing.
         This mirrors resolver_nivel_radicado's pattern for the radicados table.
         """
+        comparador = "<" if solo_subir else "<>"
         try:
             tag: str = await self._conn.execute(
                 "UPDATE firma_solicitud "
                 "SET nivel_seguridad = $1, updated_at = now() "
                 "WHERE objeto_tipo = $2 AND objeto_id = ANY($3::text[]) "
-                "  AND nivel_seguridad <> $1",
+                f"  AND nivel_seguridad {comparador} $1",
                 nivel,
                 objeto_tipo,
                 objeto_ids,
@@ -475,8 +493,44 @@ class CadenaRepository:
 
         Each row contains: solicitud_id, objeto_tipo, objeto_id, titulo, orden, created_at.
         """
-        rows = await self._conn.fetch(
-            """
+        args = (firmante_id, limit, offset, max_clearance)
+        try:
+            # Savepoint: un `UndefinedTableError` sin él aborta la transacción ambiente.
+            async with self._conn.transaction():
+                rows = await self._conn.fetch(
+                    _sql_pendientes(tuple(CADENA_NIVEL_AUTORITATIVO.values())), *args
+                )
+        except asyncpg.UndefinedTableError:
+            # Tenant sin alguna tabla fuente (sin document- o archive-service): se
+            # consulta con las que SÍ existen. Sin ninguna, el nivel vivo no existe
+            # y rige la copia (igual que `resolver_nivel_por_objeto`).
+            presentes = []
+            for tabla, cols in CADENA_NIVEL_AUTORITATIVO.values():
+                if await self._conn.fetchval("SELECT to_regclass($1) IS NOT NULL", tabla):
+                    presentes.append((tabla, cols))
+            rows = await self._conn.fetch(_sql_pendientes(tuple(presentes)), *args)
+        total = int(rows[0]["total_count"]) if rows else 0
+        return list(rows), total
+
+
+def _sql_pendientes(fuentes: tuple[tuple[str, tuple[str, ...]], ...]) -> str:
+    """Consulta de la bandeja con el gate sobre ``GREATEST(copia, nivel vivo)``.
+
+    La misma condición vale para las filas y para el ``COUNT(*) OVER()`` (comparten
+    ``WHERE``), así ``X-Total-Count`` no revela cadenas por encima del clearance. El
+    nivel vivo sale de las tablas dueñas (nombres de la constante del módulo, jamás
+    del request); la copia sola iría atrasada si el evento `reclassified` no llegó.
+    """
+    if fuentes:
+        selects = " UNION ALL ".join(
+            f"SELECT t.nivel_seguridad AS n FROM {tabla} t WHERE "
+            + " OR ".join(f"t.{col} = s.objeto_id" for col in cols)
+            for tabla, cols in fuentes
+        )
+        vivo = f"COALESCE((SELECT MAX(v.n) FROM ({selects}) v), 0)"
+    else:
+        vivo = "0"
+    return f"""
             SELECT
                 s.id            AS solicitud_id,
                 s.objeto_tipo,
@@ -494,7 +548,7 @@ class CadenaRepository:
             WHERE s.estado          = 'pendiente'
               AND c.firmante_id     = $1
               AND c.estado          = 'pendiente'
-              AND s.nivel_seguridad <= $4
+              AND GREATEST(s.nivel_seguridad, {vivo}) <= $4
               AND c.orden = (
                   SELECT MIN(c2.orden)
                   FROM firma_cadena c2
@@ -502,11 +556,4 @@ class CadenaRepository:
               )
             ORDER BY s.created_at DESC
             LIMIT $2 OFFSET $3
-            """,
-            firmante_id,
-            limit,
-            offset,
-            max_clearance,
-        )
-        total = int(rows[0]["total_count"]) if rows else 0
-        return list(rows), total
+            """

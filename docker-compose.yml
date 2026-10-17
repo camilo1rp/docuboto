@@ -680,6 +680,7 @@ services:
       # valor que STORAGE_INTERNAL_TOKEN en document/archive/signature-service.
       # Dev-only — NUNCA este valor en producción.
       - INTERNAL_SERVICE_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       # Generación del documento de salida (E23, RF-PRO-03). A diferencia de
       # veraPDF y Ghostscript —que solo van en la imagen `production`—, las
       # librerías nativas de WeasyPrint SÍ están en la imagen base, así que aquí

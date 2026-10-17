@@ -41,10 +41,27 @@ CAMPOS_FIRMADOS = (
     "X-User-Roles",
     "X-Canal",
     "X-Real-Ip",
+    # El instante de emisión VA FIRMADO (ADR-035, B9-N3): sin él, un juego de
+    # cabeceras capturado dentro de la red valía para siempre y permitía
+    # reproducirlo contra un servicio que no consulta el estado de la entidad
+    # (archive, workflow, storage), evadiendo una suspensión.
+    "X-Identity-Ts",
 )
 
 #: Cabecera donde viaja la firma.
 CABECERA_FIRMA = "X-Identity-Signature"
+
+#: Cabecera con el instante de emisión (epoch, segundos). La pone `firmar`.
+CABECERA_TS = "X-Identity-Ts"
+
+#: Antigüedad máxima aceptada de una identidad firmada, en segundos. Cubre de sobra
+#: el trayecto gateway->servicio y los reintentos de un cliente interno; configurable
+#: con `IDENTITY_MAX_AGE_SECONDS`.
+VENTANA_IDENTIDAD_S = 120
+
+#: Adelanto máximo tolerado del reloj del emisor respecto del verificador, en
+#: segundos (desfase entre contenedores). `IDENTITY_MAX_SKEW_SECONDS`.
+SKEW_IDENTIDAD_S = 30
 
 
 class IdentidadNoAutentica(ValueError):
@@ -62,19 +79,35 @@ def _firma(cabeceras: dict[str, str], secreto: str) -> str:
     return hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()
 
 
-def firmar(cabeceras: dict[str, str]) -> dict[str, str]:
-    """Devuelve las cabeceras con su firma, si hay secreto configurado."""
+def _entero_env(nombre: str, defecto: int) -> int:
+    try:
+        valor = int(os.environ.get(nombre, ""))
+    except ValueError:
+        return defecto
+    return valor if valor >= 0 else defecto
+
+
+def firmar(cabeceras: dict[str, str], *, ahora: float | None = None) -> dict[str, str]:
+    """Devuelve las cabeceras con su instante y su firma, si hay secreto configurado."""
     secreto = _secreto()
     if secreto is None:
         return cabeceras
-    return {**cabeceras, CABECERA_FIRMA: _firma(cabeceras, secreto)}
+    con_ts = {
+        **{k: v for k, v in cabeceras.items() if k.lower() != CABECERA_TS.lower()},
+        CABECERA_TS: str(int(time.time() if ahora is None else ahora)),
+    }
+    return {**con_ts, CABECERA_FIRMA: _firma(con_ts, secreto)}
 
 
-def verificar(cabeceras: dict[str, str]) -> None:
-    """Lanza `IdentidadNoAutentica` si la identidad no viene del gateway.
+def verificar(cabeceras: dict[str, str], *, ahora: float | None = None) -> None:
+    """Lanza `IdentidadNoAutentica` si la identidad no viene del gateway o caducó.
 
     Las claves se comparan sin distinguir mayúsculas, porque los nombres de
     cabecera no las distinguen y el servidor puede entregarlas en minúscula.
+
+    Además de la firma, el instante firmado tiene que estar dentro de la ventana
+    (`IDENTITY_MAX_AGE_SECONDS`, 120 s) y no más de `IDENTITY_MAX_SKEW_SECONDS`
+    (30 s) en el futuro: una identidad capturada deja de servir.
     """
     secreto = _secreto()
     if secreto is None:
@@ -83,6 +116,22 @@ def verificar(cabeceras: dict[str, str]) -> None:
     recibidas = {c: normalizadas.get(c.lower(), "") for c in CAMPOS_FIRMADOS}
     esperada = _firma(recibidas, secreto)
     if not hmac.compare_digest(normalizadas.get(CABECERA_FIRMA.lower(), ""), esperada):
+        raise IdentidadNoAutentica(
+            "Las cabeceras de identidad no vienen firmadas por el gateway."
+        )
+    # La firma ya cubre el instante: solo falta que sea reciente. Mismo mensaje que
+    # una firma mala, a propósito (no se le dice a un atacante cuál de las dos falló).
+    try:
+        emitida = int(recibidas[CABECERA_TS])
+    except ValueError:
+        raise IdentidadNoAutentica(
+            "Las cabeceras de identidad no vienen firmadas por el gateway."
+        ) from None
+    actual = time.time() if ahora is None else ahora
+    edad = actual - emitida
+    if edad > _entero_env("IDENTITY_MAX_AGE_SECONDS", VENTANA_IDENTIDAD_S) or -edad > _entero_env(
+        "IDENTITY_MAX_SKEW_SECONDS", SKEW_IDENTIDAD_S
+    ):
         raise IdentidadNoAutentica(
             "Las cabeceras de identidad no vienen firmadas por el gateway."
         )

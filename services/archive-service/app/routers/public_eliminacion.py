@@ -35,6 +35,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
+from orpycamcp_common.tenant import AtencionPublica, atencion_publica
 
 from app.core.database import get_db_conn
 from app.schemas.archive import LoteEliminacionPublico
@@ -43,12 +44,13 @@ from app.services.archive_service import ArchiveService
 router = APIRouter(prefix="/api/v1/public/archive/eliminacion", tags=["public"])
 
 
-async def _tenant_existe(conn: asyncpg.Connection, slug: str) -> bool:
-    """¿Está esa entidad alojada aquí? Se pregunta al registro, no al schema."""
+async def _tenant_operativo(conn: asyncpg.Connection, slug: str) -> bool:
+    """¿Es esa entidad servible aquí? Se pregunta al registro (ADR-035), no al schema.
+
+    Operativa y suspendida se sirven (solo lectura); inexistente y sin aprovisionar son el mismo «no».
+    """
     try:
-        return bool(
-            await conn.fetchval("SELECT 1 FROM public.tenants WHERE slug = $1", slug)
-        )
+        return await atencion_publica(conn, slug) is not AtencionPublica.NINGUNA
     except Exception:  # noqa: BLE001 — no poder saberlo se responde como «no»
         return False
 
@@ -70,7 +72,7 @@ async def listar_publicos(
     # están alojadas en la instalación probando nombres. Es el mismo criterio de
     # respuesta indistinguible que ya rige en el resto del sistema, aplicado a la
     # única puerta pública que se había quedado fuera.
-    if not await _tenant_existe(conn, tenant):
+    if not await _tenant_operativo(conn, tenant):
         return []
 
     # El tenant viaja en la RUTA, no en una cabecera: aquí no hay sesión de la
@@ -95,7 +97,7 @@ async def ver_publico(
     # un UUID inventado daba 404 -- la diferencia le decía a cualquiera, sin
     # token, qué entidades aloja la instalación. El 404 es el MISMO cuerpo que
     # `get_lote_publico` da para un lote que no existe o no está publicado.
-    if not await _tenant_existe(conn, tenant):
+    if not await _tenant_operativo(conn, tenant):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={

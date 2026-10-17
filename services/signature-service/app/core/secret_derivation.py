@@ -25,10 +25,11 @@ propia clave derivada, y las dos no se pueden intercambiar.
 ``key_version`` (columna de ``firma`` y ``firma_challenge``, migración 020) dice
 con qué esquema se produjo cada fila:
 
-- ``0`` (``KEY_VERSION_LEGACY``): el esquema anterior —clave raíz directa, mensaje
-  sin entidad ni objeto—. Es el DEFAULT de la columna, así que TODA fila
-  existente queda en 0 y sigue verificando. Solo se **verifica**; nada nuevo se
-  firma así.
+- ``0`` (``KEY_VERSION_SIN_HMAC``): «sin HMAC de servicio». Es el relleno de las
+  filas no nativas (XAdES), que no tienen este MAC. El esquema HMAC anterior a
+  la 020 (clave raíz directa, mensaje sin entidad ni objeto) se **retiró** en B9:
+  una fila nativa con 0 ya no verifica, ni se produce nada nuevo así. Desde la
+  024 la columna ya no tiene DEFAULT: cada INSERT declara el valor.
 - ``1`` (``KEY_VERSION_HKDF``): clave derivada + mensaje que ata entidad, tipo y
   objeto. Es lo que se firma desde la 020.
 """
@@ -38,7 +39,7 @@ from __future__ import annotations
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-KEY_VERSION_LEGACY = 0
+KEY_VERSION_SIN_HMAC = 0
 KEY_VERSION_HKDF = 1
 #: Versión con la que se produce todo lo nuevo.
 KEY_VERSION_ACTUAL = KEY_VERSION_HKDF

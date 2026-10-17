@@ -58,6 +58,8 @@ async def test_una_firma_nativa_se_inserta_sin_tipo_firma_explicito(
             # test le pasó None y cayó — con razón: replicar la llamada de
             # verdad es la mitad del valor de este tier.
             "sello_tiempo": datetime.now(UTC),
+            # Desde B9-S7 la nativa declara su esquema HMAC (sin default silencioso).
+            "key_version": 1,
         }
     )
 

@@ -16,7 +16,7 @@ import uuid
 import asyncpg
 
 from app.core.constants import CADENA_NIVEL_AUTORITATIVO
-from app.core.secret_derivation import KEY_VERSION_LEGACY
+from app.core.secret_derivation import KEY_VERSION_HKDF, KEY_VERSION_SIN_HMAC
 
 _COLS = (
     "id, objeto_tipo, objeto_id, formato_solicitado, firmante_id, "
@@ -88,6 +88,18 @@ class FirmaRepository:
         firma nativa: 1 para lo que se firma hoy, 0 para lo anterior. Sin él,
         ``/verify`` no sabría con qué clave recomputar.
         """
+        # La firma NATIVA declara SIEMPRE su esquema HMAC (B9-S7): sin valor por omisión
+        # que la deje etiquetada como «sin HMAC» —y por tanto sin verificar— en silencio.
+        # La migración 025 lo respalda con un CHECK; aquí falla antes, con el motivo.
+        if data["provider"] == "nativa":
+            key_version = data.get("key_version")
+            if key_version != KEY_VERSION_HKDF:
+                raise ValueError(
+                    "una firma nativa exige key_version="
+                    f"{KEY_VERSION_HKDF} explícito (recibido {key_version!r})"
+                )
+        else:
+            key_version = data.get("key_version", KEY_VERSION_SIN_HMAC)
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma (id, objeto_tipo, objeto_id, formato_solicitado,
                 firmante_id, payload_sha256, firma_blob, provider, sello_tiempo,
@@ -160,10 +172,10 @@ class FirmaRepository:
             data.get("ocsp_response_der"),
             # Esquema del HMAC de la firma NATIVA (migración 020, AREA-04-11).
             # El llamante de la rama nativa lo pasa SIEMPRE desde `signer.firmar`;
-            # las demás (XAdES) no tienen HMAC de servicio y quedan en 0, que es
-            # también el DEFAULT de la columna — escrito aquí explícito porque un
-            # NULL explícito ignoraría el DEFAULT y la columna es NOT NULL.
-            data.get("key_version", KEY_VERSION_LEGACY),
+            # las demás (XAdES) no tienen HMAC de servicio y quedan en 0
+            # (`KEY_VERSION_SIN_HMAC`). Desde la 024 la columna no tiene DEFAULT:
+            # el valor se declara siempre aquí.
+            key_version,
         )
         assert row is not None
         return row

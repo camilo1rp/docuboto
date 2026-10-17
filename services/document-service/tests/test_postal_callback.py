@@ -20,10 +20,12 @@ import hmac
 import json
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.tenant import AtencionPublica
 
 from app.core.postal_webhook_auth import verify_signature
 from app.main import app
@@ -101,8 +103,13 @@ async def callback_ctx():
 
     app.dependency_overrides[get_redis] = lambda: fake_redis
     app.state.db_pool = _FakePool(mock_conn)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-        yield ac, mock_conn, fake_redis
+    # ADR-035: estos tests ejercen el callback, no el estado de la entidad (eso lo
+    # cubre `test_estado_entidad_publicas.py`), así que se da por operativa.
+    with patch(
+        "app.core.database.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            yield ac, mock_conn, fake_redis
     app.dependency_overrides.clear()
     if hasattr(app.state, "db_pool"):
         delattr(app.state, "db_pool")
@@ -320,3 +327,49 @@ async def test_tracking_sin_permiso_403(client_with_conn) -> None:
         headers={**TENANT_HEADERS, "X-User-Id": str(uuid.uuid4())},
     )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# N2 (ADR-035): entidad SUSPENDIDA — la firma se verifica ANTES del estado
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_callback_de_entidad_suspendida_con_firma_valida_es_503_con_retry_after(
+    callback_ctx,
+) -> None:
+    from orpycamcp_common.tenant import AtencionPublica
+
+    client, conn, redis = callback_ctx
+    body = _body(event_id="evt-susp")
+    conn.fetchrow.side_effect = [_cred()]
+    with patch(
+        "app.core.database.atencion_publica",
+        new=AsyncMock(return_value=AtencionPublica.SOLO_LECTURA),
+    ):
+        resp = await client.post(_url(), content=body, headers=_hdr(body))
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "canal_no_disponible"
+    assert resp.headers["retry-after"]
+    redis.xadd.assert_not_awaited()  # no se aplicó nada: el operador reintenta
+
+
+@pytest.mark.asyncio
+async def test_callback_de_entidad_suspendida_con_firma_invalida_es_el_404_neutro(
+    callback_ctx,
+) -> None:
+    from orpycamcp_common.tenant import AtencionPublica
+
+    client, conn, _redis = callback_ctx
+    body = _body(event_id="evt-susp2")
+    conn.fetchrow.side_effect = [_cred(), _cred(), _cred()]
+    with patch(
+        "app.core.database.atencion_publica",
+        new=AsyncMock(return_value=AtencionPublica.SOLO_LECTURA),
+    ):
+        mala = await client.post(_url(), content=body, headers=_hdr(body, secret="otro"))
+        sin_firma = await client.post(_url(), content=body)
+        ilegible = await client.post(_url(), content=b"no-es-json")
+    for resp in (mala, sin_firma, ilegible):
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == {"error": "not_found", "detail": "No encontrado", "status": 404}

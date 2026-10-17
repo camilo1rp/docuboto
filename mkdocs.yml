@@ -101,6 +101,7 @@ plugins:
             ADR-032 La dependencia por código: ADR-032 The dependencia by code
             ADR-033 Entrada de producción (nginx en contenedor): ADR-033 Production entry (containerised nginx)
             ADR-034 XMLDSig conforme (firma verificable por terceros): ADR-034 Conformant XMLDSig (third-party verifiable signature)
+            ADR-035 Estado de la entidad (cumplimiento en el borde): ADR-035 Entity state (enforcement at the edge)
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -162,6 +163,7 @@ nav:
     - ADR-032 La dependencia por código: adr/ADR-032-dependencia-por-codigo.md
     - ADR-033 Entrada de producción (nginx en contenedor): adr/ADR-033-entrada-de-produccion-nginx-en-contenedor.md
     - ADR-034 XMLDSig conforme (firma verificable por terceros): adr/ADR-034-xmldsig-conforme-firma-verificable-por-terceros.md
+    - ADR-035 Estado de la entidad (cumplimiento en el borde): adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

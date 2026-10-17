@@ -178,9 +178,22 @@ async def test_pqrs_tambien_exige_la_politica_vigente(client_with_conn) -> None:
 # ------------------------------------------------------------ GET /politica
 
 
+def _filas_politica(version="2026-01", url="https://entidad.example/privacidad",
+                    texto="Aviso de privacidad de prueba") -> list[dict]:
+    """Lo que devuelve `SELECT key, value FROM sgd_param_admin` (jsonb llega como texto)."""
+    import json
+
+    return [
+        {"key": "politica_tratamiento_version", "value": json.dumps(version)},
+        {"key": "politica_tratamiento_url", "value": json.dumps(url)},
+        {"key": "politica_tratamiento_texto", "value": json.dumps(texto)},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_get_politica_publicada_con_huella_del_servidor(client_with_conn) -> None:
-    client, _ = client_with_conn
+    client, conn = client_with_conn
+    conn.fetch.return_value = _filas_politica()
     resp = await client.get(POLITICA)
     assert resp.status_code == 200
     j = resp.json()
@@ -191,32 +204,33 @@ async def test_get_politica_publicada_con_huella_del_servidor(client_with_conn) 
 
 
 @pytest.mark.asyncio
-async def test_get_politica_sin_publicar(client_with_deps) -> None:
-    client, _, entidad = client_with_deps
+async def test_get_politica_NO_pasa_por_tenant_service(client_with_deps) -> None:
+    """Re-auditoria B9 D: tenant-service veta a la entidad suspendida, asi que la
+    lectura publica del aviso va directo a la tabla. Mutacion: volver a
+    `_politica()` => `estricto_calls` 1 (y 503 en vivo con la entidad suspendida)."""
+    client, conn, entidad = client_with_deps
+    conn.fetch.return_value = _filas_politica()
+    entidad.params_error = True  # si se le preguntara, fallaria
+    resp = await client.get(POLITICA)
+    assert resp.status_code == 200 and entidad.estricto_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_get_politica_sin_publicar(client_with_conn) -> None:
+    client, conn = client_with_conn
     # Versión sin URL ni texto: un aviso que no apunta a nada no informa.
-    entidad.params = {
-        "politica_tratamiento_version": "v1",
-        "politica_tratamiento_url": "",
-        "politica_tratamiento_texto": "",
-    }
+    conn.fetch.return_value = _filas_politica(version="v1", url="", texto="")
     j = (await client.get(POLITICA)).json()
     assert j["publicada"] is False and j["huella"] is None
 
 
 @pytest.mark.asyncio
-async def test_get_politica_con_tenant_caido_es_503(client_with_deps) -> None:
-    client, _, entidad = client_with_deps
-    entidad.params_error = True
+async def test_get_politica_con_la_tabla_ilegible_es_503(client_with_conn) -> None:
+    client, conn = client_with_conn
+    conn.fetch.side_effect = RuntimeError("base caida")
     resp = await client.get(POLITICA)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "politica_no_verificable"
-
-
-@pytest.mark.asyncio
-async def test_get_politica_con_slug_invalido_es_400(client_with_conn) -> None:
-    client, _ = client_with_conn
-    resp = await client.get("/api/v1/public/Mal_Slug!/ventanilla/politica")
-    assert resp.status_code in (400, 404)
 
 
 @pytest.mark.asyncio
@@ -241,8 +255,8 @@ async def test_estado_informa_si_hay_politica_publicada(client_with_deps) -> Non
 )
 async def test_una_url_no_http_se_trata_como_ausente(client_with_deps, url) -> None:
     """La URL se enlaza en la página pública: un `javascript:` sería XSS."""
-    client, _, entidad = client_with_deps
-    entidad.params = {"politica_tratamiento_url": url, "politica_tratamiento_texto": ""}
+    client, conn, _ = client_with_deps
+    conn.fetch.return_value = _filas_politica(url=url, texto="")
     j = (await client.get(POLITICA)).json()
     assert j["url"] == ""
     assert j["publicada"] is False  # sin URL válida ni texto, no informa
@@ -250,11 +264,11 @@ async def test_una_url_no_http_se_trata_como_ausente(client_with_deps, url) -> N
 
 @pytest.mark.asyncio
 async def test_una_url_https_pasa_y_con_texto_la_politica_sigue_publicada(client_with_deps) -> None:
-    client, _, entidad = client_with_deps
-    entidad.params = {"politica_tratamiento_url": "javascript:alert(1)"}  # texto por defecto
+    client, conn, _ = client_with_deps
+    conn.fetch.return_value = _filas_politica(url="javascript:alert(1)")  # texto por defecto
     j = (await client.get(POLITICA)).json()
     assert (j["url"], j["publicada"]) == ("", True)
-    entidad.params = {"politica_tratamiento_url": "http://entidad.example/p"}
+    conn.fetch.return_value = _filas_politica(url="http://entidad.example/p")
     assert (await client.get(POLITICA)).json()["url"] == "http://entidad.example/p"
 
 

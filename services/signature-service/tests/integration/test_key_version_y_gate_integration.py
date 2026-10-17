@@ -10,9 +10,8 @@
 
 """AREA-04-11 y AREA-04-10 contra Postgres REAL.
 
-- ``key_version`` (migración 020): lo que ya existía queda etiquetado como esquema
-  anterior (0) por el DEFAULT y SIGUE verificando; lo nuevo se escribe en 1 y la
-  CHECK rechaza cualquier otro valor. Un doble de conexión acepta cualquier fila:
+- ``key_version`` (migraciones 020 y 024): lo nuevo se escribe en 1, el esquema 0
+  quedó retirado (no verifica) y la CHECK rechaza cualquier otro valor. Un doble de conexión acepta cualquier fila:
   quien impone esto es la base.
 - El gate no-read-up de ``FirmaRepository.get`` es SQL con ``NOT EXISTS`` sobre
   ``radicados``/``expedientes`` — su sintaxis y su comparación por identidad natural
@@ -46,9 +45,10 @@ async def _en_tenant(tenant_ctx) -> tuple[str, asyncpg.Connection]:
     return slug, db_conn
 
 
-async def test_la_firma_anterior_a_la_020_queda_en_0_y_sigue_verificando(tenant_ctx) -> None:
-    """Se inserta SIN ``key_version`` (como el INSERT de antes de la 020) con un
-    HMAC calculado a mano con la fórmula literal de entonces."""
+async def test_la_firma_anterior_a_la_020_con_key_version_0_ya_no_verifica(tenant_ctx) -> None:
+    """B9-5: una fila NATIVA con ``key_version=0`` y el HMAC correcto de aquel
+    esquema (fórmula literal de entonces) ya no verifica. Mutación: restaurar la
+    rama v0 en ``signer._mac`` => ``True`` y esta prueba cae."""
     slug, conn = await _en_tenant(tenant_ctx)
     payload = b"<indice/>"
     firmante = uuid.uuid4()
@@ -58,23 +58,15 @@ async def test_la_firma_anterior_a_la_020_queda_en_0_y_sigue_verificando(tenant_
         f"{sha}|{firmante}|{SELLO_STR}".encode(),
         digestmod=hashlib.sha256,
     ).hexdigest()
-    firma_id = await conn.fetchval(
-        """INSERT INTO firma (objeto_tipo, objeto_id, firmante_id, payload_sha256,
-                              firma_blob, provider, sello_tiempo, tipo_firma)
-           VALUES ('indice', 'exp-1', $1, $2, $3, 'nativa', $4, 'nativa')
-           RETURNING id""",
-        firmante, sha, blob, SELLO,
-    )
-
-    row = await FirmaRepository(conn).get(firma_id)
-    assert row is not None
-    assert row["key_version"] == 0
+    # Desde la migración 025 (B9-S7) la base ya no admite esa fila (CHECK
+    # `provider <> 'nativa' OR key_version = 1`; lo prueba
+    # `test_correcciones_b9_integration`), así que no se inserta: se verifica el
+    # esquema retirado directamente con los valores que tendría.
     assert signer.verificar(
-        payload, str(row["firmante_id"]), row["firma_blob"],
-        row["sello_tiempo"].astimezone(UTC).isoformat(), settings.signature_secret,
-        key_version=row["key_version"], tenant_slug=slug,
-        objeto_tipo=row["objeto_tipo"], objeto_id=row["objeto_id"],
-    ) is True
+        payload, str(firmante), blob, SELLO.astimezone(UTC).isoformat(),
+        settings.signature_secret, key_version=0, tenant_slug=slug,
+        objeto_tipo="indice", objeto_id="exp-1",
+    ) is False
 
 
 async def test_la_firma_nueva_se_escribe_en_1_y_solo_verifica_en_su_entidad(tenant_ctx) -> None:
@@ -129,8 +121,8 @@ async def test_la_check_de_key_version_rechaza_valores_desconocidos(tenant_ctx, 
 async def _firma_sobre(conn, objeto_id: str) -> uuid.UUID:
     return await conn.fetchval(
         """INSERT INTO firma (objeto_tipo, objeto_id, firmante_id, payload_sha256,
-                              firma_blob, provider, sello_tiempo, tipo_firma)
-           VALUES ('radicado', $1, $2, 'a', 'b', 'nativa', now(), 'nativa') RETURNING id""",
+                              firma_blob, provider, sello_tiempo, tipo_firma, key_version)
+           VALUES ('radicado', $1, $2, 'a', 'b', 'nativa', now(), 'nativa', 1) RETURNING id""",
         objeto_id, uuid.uuid4(),
     )
 

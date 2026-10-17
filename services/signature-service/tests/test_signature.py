@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -100,10 +100,11 @@ def test_firma_nativa_nueva_sale_en_key_version_actual() -> None:
     assert _firmar()["key_version"] == KEY_VERSION_HKDF == 1
 
 
-def test_firma_nativa_legada_key_version_0_sigue_verificando() -> None:
-    """Las firmas anteriores a la 020 NO se rompen: se verifican con el esquema
-    original. El HMAC se calcula a mano, con la fórmula literal de entonces, para
-    no probar el código con sí mismo."""
+def test_firma_nativa_key_version_0_ya_no_verifica() -> None:
+    """B9-5: el esquema anterior a la 020 se retiró. El HMAC se calcula a mano, con
+    la fórmula literal de entonces, para no probar el código con sí mismo: aun
+    siendo el correcto de aquel esquema, ``key_version=0`` ya no verifica.
+    Mutación: restaurar la rama v0 en ``signer._mac`` => ``True`` y cae."""
     import hashlib
     import hmac
 
@@ -114,15 +115,11 @@ def test_firma_nativa_legada_key_version_0_sigue_verificando() -> None:
         f"{sha}|{USER}|{SELLO_STR}".encode(),
         digestmod=hashlib.sha256,
     ).hexdigest()
-    assert signer.verificar(
-        payload, str(USER), blob, SELLO_STR, settings.signature_secret,
-        key_version=0, **OBJ,
-    ) is True
-    # …y el mismo blob NO verifica como v1 (la versión no es decorativa).
-    assert signer.verificar(
-        payload, str(USER), blob, SELLO_STR, settings.signature_secret,
-        key_version=1, **OBJ,
-    ) is False
+    for kv in (0, 1):
+        assert signer.verificar(
+            payload, str(USER), blob, SELLO_STR, settings.signature_secret,
+            key_version=kv, **OBJ,
+        ) is False
 
 
 def test_key_version_desconocida_no_verifica() -> None:
@@ -182,31 +179,24 @@ def _firma_row(payload: bytes, firmante: uuid.UUID) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_sign_xml_happy_path(client_with_conn) -> None:
-    """POST /sign-xml with valid X-User-Id (PERM_FIRMA granted) creates a firma record.
+async def test_sign_xml_happy_path(client_with_conn, monkeypatch) -> None:
+    """POST /sign-xml con token interno y PERM_FIRMA crea la fila ``firma``.
 
-    Uses objeto_tipo="radicado" (not "indice") on purpose: since Inc.1 (E06,
-    ADR-016) objeto_tipo="indice" with the default settings.signer_provider=
-    "xades_local" routes to the REAL XAdES-B provider (app.providers.local),
-    which needs a mounted seal — see tests/test_sign_xml_xades.py for that
-    coverage. This test keeps exercising the preexisting HMAC 'nativa' path
-    end-to-end through the router, which any objeto_tipo other than "indice"
-    still selects (app.services.signing_service._select_provider_name).
+    Desde B9-3 solo admite el sello institucional (``indice``, actas) y exige
+    ``X-Internal-Token``. Con ``signer_provider`` distinto de ``xades_local`` el
+    sello cae al HMAC 'nativa', y es lo que se ejercita aquí de punta a punta por
+    el router (la ruta XAdES real vive en tests/test_sign_xml_xades.py).
     """
+    monkeypatch.setattr(settings, "signer_provider", "nativa")
+    monkeypatch.setattr(settings, "signature_internal_token", "tok-interno")
     client, conn = client_with_conn
     conn.fetchrow.return_value = _firma_row(b"<indice/>", USER)
 
-    # El objeto debe existir y ser visible (AREA-04-07): la consulta propia se
-    # resuelve aparte para no mezclarla con la fila de firma de este mock.
-    with patch(
-        "app.routers.signature.CadenaRepository.objeto_visible",
-        new=AsyncMock(return_value=True),
-    ):
-        resp = await client.post(
-            "/api/v1/signature/sign-xml",
-            json={"payload_xml": "<indice/>", "objeto_tipo": "radicado", "objeto_id": "exp-1"},
-            headers=TENANT_HEADERS,
-        )
+    resp = await client.post(
+        "/api/v1/signature/sign-xml",
+        json={"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"},
+        headers={**TENANT_HEADERS, "X-Internal-Token": "tok-interno"},
+    )
     assert resp.status_code == 201
     body = resp.json()
     assert body["provider"] == "nativa"

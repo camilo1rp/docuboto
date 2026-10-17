@@ -16,9 +16,10 @@ from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from orpycamcp_common.tenant import AtencionPublica
 
 from app.core.clearance import require_permission, resolve_caller_clearance
-from app.core.database import get_redis, get_tenant_conn, tenant_schema
+from app.core.database import get_redis, get_tenant_conn, public_tenant_conn_atencion, tenant_schema
 from app.schemas.postal import (
     CallbackResult,
     CredencialRotacion,
@@ -200,14 +201,16 @@ async def postal_callback(
     secreto vive en el schema de ESE tenant, así que una firma válida prueba que
     el emisor lo conoce y no puede falsificar callbacks de otro tenant.
     """
-    schema = tenant_schema(tenant_slug)  # valida el slug (400 si es inválido)
+    tenant_schema(tenant_slug)  # valida el slug (400 si es inválido)
     raw = await request.body()
     signature = request.headers.get("X-OrpycaMCP-Signature")
     pool: asyncpg.Pool = request.app.state.db_pool
-    async with pool.acquire() as conn:
-        await conn.execute(f'SET search_path = "{schema}", public')
-        try:
-            svc = PostalService(conn, redis=redis, tenant_slug=tenant_slug)
-            return await svc.apply_operator_callback(raw, signature, tenant_slug)
-        finally:
-            await conn.execute("SET search_path = public")
+    # ADR-035: inexistente o sin aprovisionar => 404 neutro. Una entidad SUSPENDIDA
+    # no recibe el efecto, pero la firma se verifica ANTES: firma válida => 503 con
+    # `Retry-After` (el operador reintenta al reactivarse, no pierde el evento);
+    # firma inválida => el mismo 404 neutro (un anónimo no averigua el estado).
+    async with public_tenant_conn_atencion(pool, tenant_slug) as (conn, atencion):
+        svc = PostalService(conn, redis=redis, tenant_slug=tenant_slug)
+        return await svc.apply_operator_callback(
+            raw, signature, tenant_slug, suspendida=atencion is not AtencionPublica.COMPLETA
+        )

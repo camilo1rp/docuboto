@@ -28,8 +28,10 @@ export async function load({ parent, url }) {
   const requeridos = permisosRequeridosAdmin(url.pathname);
   if (!requeridos) return {};
 
-  const { user } = await parent();
-  if (user?.permisosDegradados) return {};
+  const { user, entidadNoOperativa } = await parent();
+  // Entidad no operativa (ADR-035): el layout (app) pinta su pantalla; no se
+  // expulsa a /403 a quien no perdió ningún permiso.
+  if (entidadNoOperativa || user?.permisosDegradados) return {};
 
   const tiene = user?.permissions ?? [];
   if (!requeridos.some((p) => tiene.includes(p))) {

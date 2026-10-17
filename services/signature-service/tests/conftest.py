@@ -151,3 +151,39 @@ def _estado_de_credencial_personal_sin_clave_por_defecto(
     mock = AsyncMock(return_value={"estado": "sin_clave"})
     monkeypatch.setattr("app.services.cadena_service.get_signing_key_status_remote", mock)
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _nivel_vigente_neutro(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """B9-2: la relectura del nivel bajo bloqueo hace dos consultas más dentro de la
+    transacción de firmar/challenge, y las suites de mocks fijan la SECUENCIA exacta
+    de ``fetchrow``/``fetchval``. Aquí se devuelve la solicitud tal cual; la
+    relectura real se prueba en ``test_nivel_vigente_bajo_bloqueo.py`` (unit, marca
+    ``nivel_vigente_real``) y en ``tests/integration`` contra Postgres real.
+
+    B9-S1: igual para la lectura con ``max(copia, nivel vivo)``
+    (``_assert_can_read_vigente``, que añade una consulta a ``get``): se neutraliza
+    al comportamiento previo (solo la copia) salvo marca ``lectura_vigente_real``.
+
+    NO aplica a ``tests/integration`` (re-auditoria B9 E): ese tier ejerce la
+    lectura/relectura reales contra Postgres, y neutralizarlas ahi daria falsos
+    verdes en un carril que existe justamente para no mockear el SQL.
+    """
+    if "/integration/" in request.node.nodeid:
+        return
+    from app.services.cadena_service import CadenaFirmaService
+
+    if not request.node.get_closest_marker("nivel_vigente_real"):
+
+        async def _identidad(self, sol, clearance, actor=None):  # noqa: ANN001
+            return dict(sol)
+
+        monkeypatch.setattr(CadenaFirmaService, "_sol_con_nivel_vigente", _identidad)
+
+    if not request.node.get_closest_marker("lectura_vigente_real"):
+
+        async def _solo_copia(self, sol, actor):  # noqa: ANN001
+            await self._assert_can_read(sol, actor)
+            return dict(sol)
+
+        monkeypatch.setattr(CadenaFirmaService, "_assert_can_read_vigente", _solo_copia)

@@ -44,10 +44,11 @@ import {
   tokenVigente,
 } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { clasificarEstadoEntidad } from "$lib/utils/estadoEntidad.js";
 
 /**
  * @param {import('@sveltejs/kit').RequestEvent} event
- * @returns {Promise<{ user: import('$lib/services/auth.server.js').SessionUser }>}
+ * @returns {Promise<{ user: import("$lib/services/auth.server.js").SessionUser, entidadNoOperativa: import("$lib/utils/estadoEntidad.js").EstadoEntidad | null }>}
  */
 export async function load({ cookies, url, fetch }) {
   let accessToken = cookies.get(COOKIE_ACCESS_TOKEN);
@@ -130,6 +131,19 @@ export async function load({ cookies, url, fetch }) {
       if (me.name) user.name = me.name;
       if (me.email) user.email = me.email;
     } else {
+      // Entidad no operativa (ADR-035): NO es una degradación de permisos, es
+      // que la entidad no se atiende. Se devuelve el estado para que el layout
+      // pinte una pantalla propia con salida, sin cerrar la sesión ni redirigir
+      // al login (un bucle, porque el login con sesión vuelve aquí).
+      const cuerpo = await meData.json().catch(() => null);
+      const estado = clasificarEstadoEntidad(meData.status, cuerpo);
+      if (estado) {
+        user.permissions = [];
+        user.permission_levels = {};
+        user.context = null;
+        user.dependencias = [];
+        return { user, entidadNoOperativa: estado };
+      }
       // 401/403/503 del gateway: se degrada, pero se declara.
       user.permissions = [];
       user.permission_levels = {};
@@ -173,5 +187,5 @@ export async function load({ cookies, url, fetch }) {
     }));
   }
 
-  return { user };
+  return { user, entidadNoOperativa: null };
 }

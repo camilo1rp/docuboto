@@ -953,6 +953,24 @@ async def test_proxy_reenvia_la_cabecera_deprecation_de_los_alias_por_nombre(tes
     assert 'rel="deprecation"' in response.headers.get("link", "")
 
 
+async def test_proxy_reenvia_retry_after_del_503_de_una_entidad_suspendida(test_client):
+    """B9-N2: el callback postal y la ventanilla necesitan `Retry-After` para reintentar."""
+    client, http_client, _ = test_client
+    wire_upstream(http_client, httpx.Response(
+            status_code=503,
+            json={"detail": {"error": "canal_no_disponible", "status": 503}},
+            headers={"content-type": "application/json", "Retry-After": "3600"},
+        )
+    )
+
+    response = await client.post("/api/v1/public/demo/pqrs", json={"x": 1})
+
+    assert response.status_code == 503
+    assert response.headers.get("retry-after") == "3600", (
+        "sin Retry-After el operador no sabe cuándo reintentar y descarta el evento"
+    )
+
+
 async def test_proxy_sin_override_deja_el_timeout_del_cliente(test_client):
     """Sin override, `timeout` debe ser USE_CLIENT_DEFAULT — NUNCA None.
 

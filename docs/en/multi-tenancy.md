@@ -66,3 +66,12 @@ or unquoted slug into a `SET search_path`.
 
 The stream **does not carry the slug**: there is one per service, and the institution travels inside the
 event's signed envelope (ADR-010).
+
+## Entity state
+
+An entity is only served if it is **operational**: `public.tenants.status = 'active'`,
+`provisioning_status = 'active'` and its schema exists. The api-gateway enforces it with the
+`tenant_estado` from `/auth/validate` (a suspension takes effect within ≤ 15 s, the validation cache
+TTL), and every `get_tenant_conn` re-checks it before setting the `search_path`. Public routes answer the
+same `404` for a non-existent, deactivated or unprovisioned entity; a **suspended** entity keeps its public reads (verification, OAI, CMIS, disposal publicity) and its writes answer `503 canal_no_disponible`. Details and alternatives in
+[ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md).

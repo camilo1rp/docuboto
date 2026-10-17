@@ -17,18 +17,40 @@
  */
 
 import { API_V1, PUBLIC_TENANT } from "$lib/utils/config.server.js";
+import { codigoError } from "$lib/utils/apiError.js";
 import { cargarPolitica, SIN_POLITICA } from "$lib/server/politicaVentanilla.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ fetch }) {
   if (!PUBLIC_TENANT) {
-    return { tipos: [], habilitada: false, politica: { ...SIN_POLITICA, verificable: true } };
+    return {
+      tipos: [],
+      habilitada: false,
+      sinVentanilla: true,
+      politica: { ...SIN_POLITICA, verificable: true },
+    };
   }
   const politica = await cargarPolitica(fetch);
+  if (politica.canalSuspendido) {
+    return { tipos: [], habilitada: false, canalSuspendido: true, politica };
+  }
   try {
     const res = await fetch(
       `${API_V1}/public/${encodeURIComponent(PUBLIC_TENANT)}/ventanilla/tipos`,
     );
+    // 503 `canal_no_disponible`: entidad suspendida; recepción cerrada, consulta abierta.
+    if (
+      res.status === 503 &&
+      codigoError(await res.json().catch(() => null)) === "canal_no_disponible"
+    ) {
+      return { tipos: [], habilitada: false, canalSuspendido: true, politica };
+    }
+    // 404 `not_found` (ADR-035): entidad inexistente, dada de baja, sin aprovisionar
+    // o con slug mal formado, sin distinguirlas. Se declara aparte para decir
+    // «no hay ventanilla» y no «la entidad aún no la habilitó».
+    if (res.status === 404) {
+      return { tipos: [], habilitada: false, sinVentanilla: true, politica };
+    }
     const tipos = res.ok ? await res.json() : [];
     // Sin tipos declarados la ventanilla NO está operativa: el backend
     // rechazaría cualquier radicación con 422. Decirlo aquí evita que alguien

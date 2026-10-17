@@ -66,7 +66,7 @@
     <EmptyState
       icon="fas fa-circle-info"
       title="Publicidad no disponible"
-      description="Esta instalación no tiene configurado el portal público."
+      description="Esta entidad no tiene portal público disponible."
     />
   {:else if data.loadError}
     <p class="elim__error" role="alert">{data.loadError}</p>

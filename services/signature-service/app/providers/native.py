@@ -16,9 +16,10 @@ REFACTOR, no reescritura: delega bit a bit en ``app.services.signer.firmar``
 por nombre con :func:`app.providers.get_provider` de forma UNIFORME junto con
 ``xades_local``, sin bifurcar el router en dos implementaciones distintas.
 Desde la migración 020 (AREA-04-11) la firma se produce con ``key_version=1``
-(clave derivada por entidad, mensaje que ata entidad+tipo+objeto); las firmas
-HMAC ya persistidas (``key_version=0``) siguen verificando con el esquema
-original — ver ``app.services.signer``.
+(clave derivada por entidad, mensaje que ata entidad+tipo+objeto). El esquema
+original (``key_version=0``) se RETIRÓ en B9: una fila nativa con 0 ya no
+verifica y ``/verify`` responde ``motivo = esquema_hmac_retirado`` con
+``firma_criptograficamente_valida = null`` — ver ``app.services.signer``.
 
 Reutilización no ortodoxa de ``SignerRef`` (documentada también en
 ``app.providers.base.SignerRef``): al no haber material X.509 en la firma

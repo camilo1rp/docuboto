@@ -12,7 +12,7 @@ Consulta pública por código de verificación (E13, F2).
 
 Endpoint SIN autenticación: un ciudadano consulta la trazabilidad básica de su
 radicado con un código no adivinable. El tenant viaja en la ruta (no hay JWT del
-que extraerlo); el slug se valida y se fija el search_path al schema del tenant
+que extraerlo); la dependencia `get_public_tenant_conn` valida el slug, sirve a una entidad OPERATIVA o SUSPENDIDA en lectura (las escrituras de la suspendida: 503 `canal_no_disponible`; inexistente o sin aprovisionar: 404 neutro) y fija el search_path
 (ADR-002/012). Solo se expone información NO sensible (sin datos personales ni
 contenido del documento).
 """
@@ -34,10 +34,10 @@ from fastapi import (
 from orpycamcp_common import identidad
 
 from app.core.database import (
-    get_db_conn,
+    get_public_tenant_conn,
+    get_public_tenant_conn_escritura,
     get_redis,
     get_tenant_client,
-    tenant_schema,
 )
 from app.schemas.public import (
     IDEMPOTENCY_KEY_RE,
@@ -98,56 +98,51 @@ async def radicar_pqrs(
     payload: PqrsCreate,
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    conn: asyncpg.Connection = Depends(get_db_conn),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> PqrsResponse:
     clave = _clave_idempotencia(idempotency_key)
-    schema = tenant_schema(tenant)  # valida el slug
-    await conn.execute(f'SET search_path = "{schema}", public')
     try:
-        try:
-            service = DocumentService(conn, tenant, tenant_client, redis)
-        except InvalidTenantError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
-            )
-        # DELEGA en la ventanilla única, que es lo que su propio esquema dice
-        # que hace (`PqrsCreate`: «Delega en la ventanilla única mapeando `tipo`
-        # al tipo documental que la entidad haya declarado»).
-        #
-        # No lo hacía: construía el `DocumentCreate` a mano y llamaba directo a
-        # `DocumentService.create`, saltándose las tres decisiones que la
-        # ventanilla declara suyas —el tipo admisible del catálogo, la
-        # dependencia que recibe, y el enrutamiento a su bandeja—. El resultado
-        # era exactamente el defecto que el módulo de la ventanilla dice haber
-        # corregido: el radicado entraba con `dest_dept` nulo, fuera de la
-        # bandeja de todos, con el término de la Ley 1755 corriendo. Y en una
-        # entidad que deliberadamente NO habilitó la radicación en línea —la que
-        # por `/ventanilla` responde 503— esta puerta seguía admitiendo.
-        #
-        # Dos puertas para el mismo acto con reglas distintas no se parchean:
-        # se deja una sola fuente. La heredada se conserva porque es una
-        # superficie pública ya publicada, pero pasa por donde pasan las demás.
-        ventanilla = VentanillaRadicacion(
-            tipo_documental=payload.tipo,
-            nombre=payload.nombre,
-            identificacion=payload.identificacion,
-            email=payload.email,
-            asunto=payload.asunto,
-            descripcion=payload.descripcion,
-            acepta_tratamiento=payload.acepta_tratamiento,
-            politica_version=payload.politica_version,
+        service = DocumentService(conn, tenant, tenant_client, redis)
+    except InvalidTenantError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
         )
-        respuesta = await VentanillaService(conn, tenant, tenant_client).radicar(
-            ventanilla,
-            service,
-            idempotency_key=clave,
-            ip=_ip_cliente(request),
-        )
-    finally:
-        await conn.execute("SET search_path = public")
+    # DELEGA en la ventanilla única, que es lo que su propio esquema dice
+    # que hace (`PqrsCreate`: «Delega en la ventanilla única mapeando `tipo`
+    # al tipo documental que la entidad haya declarado»).
+    #
+    # No lo hacía: construía el `DocumentCreate` a mano y llamaba directo a
+    # `DocumentService.create`, saltándose las tres decisiones que la
+    # ventanilla declara suyas —el tipo admisible del catálogo, la
+    # dependencia que recibe, y el enrutamiento a su bandeja—. El resultado
+    # era exactamente el defecto que el módulo de la ventanilla dice haber
+    # corregido: el radicado entraba con `dest_dept` nulo, fuera de la
+    # bandeja de todos, con el término de la Ley 1755 corriendo. Y en una
+    # entidad que deliberadamente NO habilitó la radicación en línea —la que
+    # por `/ventanilla` responde 503— esta puerta seguía admitiendo.
+    #
+    # Dos puertas para el mismo acto con reglas distintas no se parchean:
+    # se deja una sola fuente. La heredada se conserva porque es una
+    # superficie pública ya publicada, pero pasa por donde pasan las demás.
+    ventanilla = VentanillaRadicacion(
+        tipo_documental=payload.tipo,
+        nombre=payload.nombre,
+        identificacion=payload.identificacion,
+        email=payload.email,
+        asunto=payload.asunto,
+        descripcion=payload.descripcion,
+        acepta_tratamiento=payload.acepta_tratamiento,
+        politica_version=payload.politica_version,
+    )
+    respuesta = await VentanillaService(conn, tenant, tenant_client).radicar(
+        ventanilla,
+        service,
+        idempotency_key=clave,
+        ip=_ip_cliente(request),
+    )
     return PqrsResponse(
         radicado_id=respuesta.radicado_id,
         tracking_number=respuesta.tracking_number,
@@ -159,55 +154,45 @@ async def radicar_pqrs(
 async def verify_radicado(
     tenant: str,
     code: str,
-    conn: asyncpg.Connection = Depends(get_db_conn),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn),
 ) -> PublicVerifyResponse:
-    schema = tenant_schema(tenant)  # valida el slug (anti-inyección)
-    await conn.execute(f'SET search_path = "{schema}", public')
-    try:
-        # NO-READ-UP EN UNA SUPERFICIE ANÓNIMA (RF-SEG-08).
-        #
-        # `verification_code` lo tiene **todo** radicado: la migración 010 lo
-        # añadió con `DEFAULT gen_random_uuid()`, así que existe también para
-        # los internos y para los clasificados, que nunca tuvieron un ciudadano
-        # detrás. Sin este filtro, quien tuviera el código de un radicado
-        # RESERVADO obtenía, sin autenticarse y a través del gateway, su número
-        # oficial, su tipo, su estado y su fecha. El código no es adivinable
-        # (128 bits), pero vive en una columna que viaja en respaldos, informes
-        # y exportaciones: allí donde se filtre uno, seguía una lectura anónima
-        # de metadatos clasificados. Y el resto del sistema trata la EXISTENCIA
-        # de un radicado reservado como protegida — el acceso directo devuelve
-        # 404 y no 403 precisamente para no confirmarla.
-        #
-        # Un llamante anónimo tiene, por definición, el clearance más bajo
-        # (Pública = 1). Esto no es una política nueva: es la que ya rige en
-        # todo el sistema, que faltaba en esta puerta.
-        #
-        # **No se usa `_PUBLIC`** (el chokepoint de OAI/CMIS, que exige
-        # `publicable AND nivel_seguridad = 1 AND status <> 'anulado'`) porque
-        # aquí serían dos errores: una PQRS ciudadana NO es un documento
-        # publicado de oficio —exigir `publicable` rompería la consulta para
-        # todas—, y ocultar los anulados haría creer al ciudadano que su código
-        # es inválido cuando lo que pasó es que su radicado se anuló, que es
-        # justo lo que tiene derecho a saber.
-        row = await conn.fetchrow(
-            "SELECT tracking_number, doc_type, status, registered_at, dest_dept "
-            "FROM radicados WHERE verification_code = $1 AND nivel_seguridad = 1",
-            code,
-        )
-    except (
-        asyncpg.exceptions.UndefinedTableError,
-        asyncpg.exceptions.InvalidSchemaNameError,
-    ):
-        row = None  # tenant inexistente → tratar como no encontrado (sin filtrar)
-    finally:
-        await conn.execute("SET search_path = public")
+    # NO-READ-UP EN UNA SUPERFICIE ANÓNIMA (RF-SEG-08).
+    #
+    # `verification_code` lo tiene **todo** radicado: la migración 010 lo
+    # añadió con `DEFAULT gen_random_uuid()`, así que existe también para
+    # los internos y para los clasificados, que nunca tuvieron un ciudadano
+    # detrás. Sin este filtro, quien tuviera el código de un radicado
+    # RESERVADO obtenía, sin autenticarse y a través del gateway, su número
+    # oficial, su tipo, su estado y su fecha. El código no es adivinable
+    # (128 bits), pero vive en una columna que viaja en respaldos, informes
+    # y exportaciones: allí donde se filtre uno, seguía una lectura anónima
+    # de metadatos clasificados. Y el resto del sistema trata la EXISTENCIA
+    # de un radicado reservado como protegida — el acceso directo devuelve
+    # 404 y no 403 precisamente para no confirmarla.
+    #
+    # Un llamante anónimo tiene, por definición, el clearance más bajo
+    # (Pública = 1). Esto no es una política nueva: es la que ya rige en
+    # todo el sistema, que faltaba en esta puerta.
+    #
+    # **No se usa `_PUBLIC`** (el chokepoint de OAI/CMIS, que exige
+    # `publicable AND nivel_seguridad = 1 AND status <> 'anulado'`) porque
+    # aquí serían dos errores: una PQRS ciudadana NO es un documento
+    # publicado de oficio —exigir `publicable` rompería la consulta para
+    # todas—, y ocultar los anulados haría creer al ciudadano que su código
+    # es inválido cuando lo que pasó es que su radicado se anuló, que es
+    # justo lo que tiene derecho a saber.
+    row = await conn.fetchrow(
+        "SELECT tracking_number, doc_type, status, registered_at, dest_dept "
+        "FROM radicados WHERE verification_code = $1 AND nivel_seguridad = 1",
+        code,
+    )
 
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
                 "error": "not_found",
-                "detail": "Código de verificación no encontrado",
+                "detail": "No encontrado",
                 "status": 404,
             },
         )
@@ -226,25 +211,14 @@ async def verify_radicado(
 )
 async def tipos_de_ventanilla(
     tenant: str,
-    conn: asyncpg.Connection = Depends(get_db_conn),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
 ) -> list[TipoVentanilla]:
     """Sin esto, quien radica tendría que adivinar el código de un tipo documental.
 
     Solo devuelve lo que la entidad marcó `admite_ventanilla_publica`: no expone
     su catálogo interno.
     """
-    schema = tenant_schema(tenant)  # valida el slug (anti-inyección)
-    await conn.execute(f'SET search_path = "{schema}", public')
-    try:
-        return await VentanillaService(conn, tenant).tipos_admitidos()
-    except (
-        asyncpg.exceptions.UndefinedTableError,
-        asyncpg.exceptions.InvalidSchemaNameError,
-    ):
-        # Tenant inexistente: lista vacía, no un error que confirme si existe.
-        return []
-    finally:
-        await conn.execute("SET search_path = public")
+    return await VentanillaService(conn, tenant).tipos_admitidos()
 
 
 @router.get(
@@ -254,25 +228,24 @@ async def tipos_de_ventanilla(
 )
 async def politica_de_ventanilla(
     tenant: str,
-    conn: asyncpg.Connection = Depends(get_db_conn),
-    tenant_client: Any = Depends(get_tenant_client),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn),
 ) -> PoliticaTratamiento:
     """Aviso de privacidad que el formulario muestra antes de pedir la autorización.
 
-    Lectura estricta: si tenant-service no responde es 503 `politica_no_verificable`,
-    nunca `publicada=false` (error no es «sin política»). La `huella` es del servidor.
+    Lectura estricta: si la tabla de parámetros no se puede leer es 503
+    `politica_no_verificable`, nunca `publicada=false` (error no es «sin política»).
+    La `huella` es del servidor. Se lee DIRECTO de `sgd_param_admin` y no por
+    tenant-service, que veta a la entidad suspendida (ADR-035).
+
+    Es LECTURA (`get_public_tenant_conn`): se sirve con la entidad operativa o
+    suspendida; inexistente, dada de baja o sin aprovisionar responde el 404 neutro
+    (ADR-035). No recibe datos del ciudadano, y el aviso se conoce antes de darlos.
     """
-    schema = tenant_schema(tenant)  # valida el slug (anti-inyección)
-    await conn.execute(f'SET search_path = "{schema}", public')
-    try:
-        # Mismo criterio que `/estado`: un tenant inexistente responde igual de
-        # neutro (sin política) y NO 503, que distinguiría existentes de ausentes.
-        # El 503 queda para fallos reales de tenant-service.
-        if await conn.fetchval("SELECT to_regclass('dependencias')") is None:
-            return PoliticaTratamiento(publicada=False)
-    finally:
-        await conn.execute("SET search_path = public")
-    return await VentanillaService(conn, tenant, tenant_client).politica()
+    # Una entidad operativa sin la tabla de dependencias responde neutro (sin
+    # política) y NO 503. El 503 queda para fallos reales de tenant-service.
+    if await conn.fetchval("SELECT to_regclass('dependencias')") is None:
+        return PoliticaTratamiento(publicada=False)
+    return await VentanillaService(conn, tenant).politica()
 
 
 @router.get(
@@ -282,25 +255,16 @@ async def politica_de_ventanilla(
 )
 async def estado_de_ventanilla(
     tenant: str,
-    conn: asyncpg.Connection = Depends(get_db_conn),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
     tenant_client: Any = Depends(get_tenant_client),
 ) -> VentanillaEstado:
     """Comprueba, sin radicar, lo que `POST /ventanilla` exige por dentro.
 
-    Un tenant inexistente responde `habilitada=false` (no un error que confirme si
-    existe), igual que `/ventanilla/tipos` responde lista vacía.
+    Inexistente, dada de baja o sin aprovisionar: el 404 neutro de las rutas públicas
+    (ADR-035). Suspendida: `503 canal_no_disponible` + `Retry-After` (la ventanilla
+    es una escritura pública y está cerrada; quien consulta merece saberlo).
     """
-    schema = tenant_schema(tenant)  # valida el slug (anti-inyección)
-    await conn.execute(f'SET search_path = "{schema}", public')
-    try:
-        return await VentanillaService(conn, tenant, tenant_client).estado()
-    except (
-        asyncpg.exceptions.UndefinedTableError,
-        asyncpg.exceptions.InvalidSchemaNameError,
-    ):
-        return VentanillaEstado(habilitada=False, dependencia_receptora=False, tipos_admitidos=0)
-    finally:
-        await conn.execute("SET search_path = public")
+    return await VentanillaService(conn, tenant, tenant_client).estado()
 
 
 @router.post(
@@ -322,7 +286,7 @@ async def radicar_en_ventanilla(
     ),
     anexos: list[UploadFile] = File(default=[]),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    conn: asyncpg.Connection = Depends(get_db_conn),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> VentanillaRespuesta:
@@ -412,22 +376,17 @@ async def radicar_en_ventanilla(
     except AnexoRechazado as exc:
         raise _rechazar(str(exc)) from exc
 
-    schema = tenant_schema(tenant)
-    await conn.execute(f'SET search_path = "{schema}", public')
     try:
-        try:
-            service = DocumentService(conn, tenant, tenant_client, redis)
-        except InvalidTenantError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
-            )
-        return await VentanillaService(conn, tenant, tenant_client).radicar(
-            payload,
-            service,
-            ficheros,
-            idempotency_key=clave,
-            ip=_ip_cliente(request),
+        service = DocumentService(conn, tenant, tenant_client, redis)
+    except InvalidTenantError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_tenant_slug", "detail": str(exc), "status": 400},
         )
-    finally:
-        await conn.execute("SET search_path = public")
+    return await VentanillaService(conn, tenant, tenant_client).radicar(
+        payload,
+        service,
+        ficheros,
+        idempotency_key=clave,
+        ip=_ip_cliente(request),
+    )

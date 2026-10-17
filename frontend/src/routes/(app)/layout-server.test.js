@@ -161,3 +161,56 @@ describe("(app)/+layout.server.js — vigencia de la sesión", () => {
     expect(refreshAccessToken).not.toHaveBeenCalled();
   });
 });
+
+describe("(app)/+layout.server.js — entidad no operativa (ADR-035)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const cuerpo = (error, status) =>
+    new Response(JSON.stringify({ detail: { error, status } }), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+
+  it.each([
+    [403, "tenant_inactivo", "suspendida"],
+    [503, "tenant_no_provisionado", "no_lista"],
+    [503, "tenant_estado_no_disponible", "sin_comprobar"],
+  ])(
+    "%i %s se devuelve como estado %s, sin redirigir ni cerrar sesión",
+    async (st, cod, esperado) => {
+      const cookies = {
+        get: (n) => (n === "access_token" ? "tok" : undefined),
+        set: vi.fn(),
+        delete: vi.fn(),
+      };
+      const fetch = fetchQue({ "/auth/me": () => cuerpo(cod, st) });
+      const r = await load(evento(fetch, cookies));
+
+      expect(r.entidadNoOperativa).toBe(esperado);
+      expect(r.user.sub).toBe("u-1");
+      expect(r.user.permissions).toEqual([]);
+      expect(cookies.delete).not.toHaveBeenCalled();
+      // No se siguen pidiendo contexto ni dependencias a una entidad que no se atiende.
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("también reconoce el sobre plano {error}", async () => {
+    const fetch = fetchQue({
+      "/auth/me": () => new Response(JSON.stringify({ error: "tenant_inactivo" }), { status: 403 }),
+    });
+    const r = await load(evento(fetch));
+    expect(r.entidadNoOperativa).toBe("suspendida");
+  });
+
+  it("un 403 de otro motivo sigue siendo degradación de permisos", async () => {
+    const r = await load(evento(fetchQue({ "/auth/me": () => cuerpo("permission_denied", 403) })));
+    expect(r.entidadNoOperativa).toBeNull();
+    expect(r.user.permisosDegradados).toBe(true);
+  });
+
+  it("entidad operativa: entidadNoOperativa es null", async () => {
+    const r = await load(evento(fetchQue({ "/auth/me": () => json({ permissions: [] }) })));
+    expect(r.entidadNoOperativa).toBeNull();
+  });
+});
