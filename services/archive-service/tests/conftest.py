@@ -473,3 +473,30 @@ def _firma_personal_worm_doble() -> Iterator[AsyncMock]:
     doble = AsyncMock(return_value="protegido")
     with patch.object(_TransferenciaService, "proteger_worm_firma_personal", doble):
         yield doble
+
+
+# B10 §8: el cableado del AIP consulta a signature-service por el XML VIGENTE del índice (si el
+# ArchiveTimeStamp se renovó). Por defecto «sin renovación» (None = se conserva el original) y sin
+# red; `tests/test_aip_wiring_artefacto_vigente.py` lo sustituye para probar el cambio.
+@pytest.fixture(autouse=True)
+def _artefacto_vigente_doble() -> Iterator[AsyncMock]:
+    doble = AsyncMock(return_value=None)
+    with patch("app.clients.signature_client.artefacto_vigente", doble):
+        yield doble
+
+
+@pytest.fixture(autouse=True)
+def _artefacto_vigente_por_defecto(request: pytest.FixtureRequest):
+    """B10 (R2-1): `IndexService.verify` pregunta a signature-service cuál es el XML vigente.
+    Por defecto un doble que responde sin red (el original: sin renovaciones); las pruebas que
+    ejercen la resolución real lo pisan con su propio `patch`."""
+    if "artefacto_vigente_real" in request.keywords:
+        yield
+        return
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        "app.clients.signature_client.artefacto_vigente",
+        new=AsyncMock(return_value="00000000-0000-0000-0000-0000000000aa/vigente.xml"),
+    ):
+        yield

@@ -40,7 +40,8 @@ max_deliveries). The DLQ replay endpoint (app/routers/admin_deadletter.py) still
 clears any stale claim defensively via ProcessedEventsRepository.delete_one before
 resending, in case this invariant changes in the future.
 
-``build_workflow_notifications`` and ``build_document_notifications`` are PURE
+``build_workflow_notifications``, ``build_document_notifications`` and
+``devolucion.build_devolucion_notifications`` are PURE
 (no DB, no SMTP, no side effects): they map an envelope to zero or more
 ``NotificationSend`` objects. Both the live consumer below and the DLQ replay
 endpoint call the SAME builder for a given origin stream, so the two paths can
@@ -52,12 +53,18 @@ from __future__ import annotations
 
 import logging
 
+import asyncpg
 from orpycamcp_common import events
 
 from app.core.database import acquire_tenant
 from app.repositories.processed_events_repository import ProcessedEventsRepository
 from app.schemas.notification import NotificationSend
 from app.services.buzones import resolver_buzon
+from app.services.devolucion import (
+    EVENTO_DEVUELTO,
+    build_devolucion_notifications,
+    resolver_contexto_devolucion,
+)
 from app.services.notification_service import send_notification
 from app.services.webhook_service import dispatch as dispatch_webhooks
 
@@ -220,10 +227,51 @@ async def process_event(data: dict[str, str]) -> None:
         await send_notification(send, event_type=event_type)
 
 
+async def construir_envios_documento(
+    conn: asyncpg.Connection, envelope: dict
+) -> list[NotificationSend]:
+    """ÚNICO núcleo que convierte un evento del stream de documentos en sus correos.
+
+    Lo llaman el consumidor vivo (``process_document_event``) y el reproceso de la DLQ
+    (``admin_deadletter._construir_envios``): así los dos caminos no pueden divergir en a
+    quién se avisa ni con qué contenido (mismo patrón que ``apply_reclassification`` en
+    signature-service).
+
+    - ``document.envio.devuelto`` (B10): resuelve contexto con I/O (``devolucion``), donde
+      el gate de clearance va en el ``WHERE`` por destinatario. Un envío o radicado
+      inexistente (purgado) se registra en el log y no manda correo; un error de base de
+      datos SE PROPAGA.
+    - ``document.radicado.created``: buzón de la dependencia destino.
+    - cualquier otro tipo: sin correo.
+    """
+    event_type = envelope.get("event_type")
+    payload_data = envelope.get("payload") or {}
+    if event_type == EVENTO_DEVUELTO:
+        shipment_id = payload_data.get("shipment_id")
+        if not shipment_id:
+            logger.warning("document.envio.devuelto sin shipment_id: no hay a quién avisar")
+            return []
+        contexto = await resolver_contexto_devolucion(conn, shipment_id)
+        if contexto is None:
+            return []
+        return build_devolucion_notifications(envelope, contexto=contexto)
+    if event_type != "document.radicado.created":
+        return []
+    # Mismo camino que el stream de flujos: el CÓDIGO enruta directo; si solo
+    # viene el nombre, se resuelve contra la base. Sin esto, radicar por nombre
+    # mandaba el aviso a la ventanilla genérica y la dependencia competente no se
+    # enteraba de su documento.
+    buzon_destino = await resolver_buzon(
+        conn, payload_data.get("dest_dept_code"), payload_data.get("dest_dept")
+    )
+    return build_document_notifications(envelope, buzon_destino=buzon_destino)
+
+
 async def process_document_event(data: dict[str, str]) -> None:
     """Consumidor del stream de document (orpycamcp.document.events).
 
-    Reacciona a ``document.radicado.created`` notificando a la dependencia destino.
+    Reacciona a ``document.radicado.created`` (aviso a la dependencia destino) y a
+    ``document.envio.devuelto`` (aviso a la dependencia productora y a quien radicó).
     Para cualquier otro event_type, aún despacha webhooks (E11) y consume el dedup
     slot para garantizar exactly-once webhook delivery.
     """
@@ -238,6 +286,18 @@ async def process_document_event(data: dict[str, str]) -> None:
             f"(event_id={event_id!r}, tenant_slug={tenant_slug!r})"
         )
 
+    event_type = envelope.get("event_type")
+
+    # ``envio.devuelto``: el contexto se resuelve ANTES del claim. Si la base falla al
+    # resolverlo, el evento aún no está reclamado: sin ack vuelve al PEL y, agotadas las
+    # entregas, ``reclaim_stale`` lo manda a la DLQ. Resolverlo después lo perdería sin
+    # pasar por ella (el trade-off de la cabecera de este módulo). Para los demás tipos
+    # el orden no cambia.
+    sends: list[NotificationSend] | None = None
+    if event_type == EVENTO_DEVUELTO:
+        async with acquire_tenant(tenant_slug) as conn:
+            sends = await construir_envios_documento(conn, envelope)
+
     # Claim the event_id before any external effect.
     async with acquire_tenant(tenant_slug) as conn:
         claimed = await ProcessedEventsRepository(conn).claim(event_id)
@@ -251,15 +311,8 @@ async def process_document_event(data: dict[str, str]) -> None:
     # Interoperabilidad (E11): best-effort webhook delivery for all event types.
     await dispatch_webhooks(envelope)
 
-    event_type = envelope.get("event_type")
-    payload_data = envelope.get("payload") or {}
-    # Mismo camino que el stream de flujos: el CÓDIGO enruta directo; si solo
-    # viene el nombre, se resuelve contra la base. Sin esto, radicar por nombre
-    # mandaba el aviso a la ventanilla genérica y la dependencia competente no se
-    # enteraba de su documento.
-    async with acquire_tenant(tenant_slug) as conn:
-        buzon_destino = await resolver_buzon(
-            conn, payload_data.get("dest_dept_code"), payload_data.get("dest_dept")
-        )
-    for send in build_document_notifications(envelope, buzon_destino=buzon_destino):
+    if sends is None:
+        async with acquire_tenant(tenant_slug) as conn:
+            sends = await construir_envios_documento(conn, envelope)
+    for send in sends:
         await send_notification(send, event_type=event_type)

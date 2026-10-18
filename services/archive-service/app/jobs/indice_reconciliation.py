@@ -77,6 +77,22 @@ async def list_active_tenants(pool: asyncpg.Pool) -> list[str]:
     return [row["slug"] for row in rows]
 
 
+async def list_tenants_conservacion(pool: asyncpg.Pool) -> list[str]:
+    """Entidades `active` y `suspended` (aprovisionadas) para las fases de CONSERVACIÓN
+    (WORM, renovación de retención, fixity). El empaquetado del AIP NO está entre ellas.
+
+    La suspensión detiene la operación de una entidad, no su obligación de conservar (Ley 594
+    art. 46; Ac. AGN 003/2015; ADR-035, enmienda de B10): los plazos WORM, el AIP y la fixity siguen
+    corriendo. `inactive` (dada de baja) y las sin aprovisionar quedan fuera. Los trabajos que
+    OPERAN (sellar índices y actas, origen legado) siguen con `list_active_tenants`."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT slug FROM public.tenants "
+            "WHERE status IN ('active', 'suspended') AND provisioning_status = 'active'"
+        )
+    return [row["slug"] for row in rows]
+
+
 def _next_backoff_seconds(intentos_tras_este_fallo: int) -> int:
     """`min(cap, base * 2**intentos)` — mismo patrón de backoff exponencial
     documentado en el contrato (E06/ADR-021 Fase 4 usa la misma fórmula para
@@ -566,7 +582,7 @@ async def run_once_worm() -> dict[str, int]:
     WORM. Fallos por-tenant o por-índice quedan aislados (WARNING, no
     abortan el resto de la barrida) — mismo patrón que `run_once()`."""
     pool = get_pool()
-    slugs = await list_active_tenants(pool)
+    slugs = await list_tenants_conservacion(pool)
     summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
 
     for slug in slugs:
@@ -681,7 +697,7 @@ async def run_once_actas_worm() -> dict[str, int]:
     WORM. Fallos por-tenant o por-acta quedan aislados (WARNING, no abortan
     el resto de la barrida) — mismo patrón que `run_once_worm`."""
     pool = get_pool()
-    slugs = await list_active_tenants(pool)
+    slugs = await list_tenants_conservacion(pool)
     summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
 
     for slug in slugs:
@@ -808,7 +824,7 @@ async def run_once_origen_legado() -> dict[str, int]:
 
 async def run_once_firmas_personales_worm() -> dict[str, int]:
     pool = get_pool()
-    slugs = await list_active_tenants(pool)
+    slugs = await list_tenants_conservacion(pool)
     summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
 
     for slug in slugs:
@@ -932,7 +948,7 @@ async def run_once_fixity_premis() -> dict[str, int]:
     """Una barrida: por cada tenant activo, hasta `indice_reconciliation_batch_size`
     recepciones con el evento PREMIS del fixity-check sin confirmar."""
     pool = get_pool()
-    slugs = await list_active_tenants(pool)
+    slugs = await list_tenants_conservacion(pool)
     summary = {"pendientes_vistos": 0, "registrados": 0, "fallidos": 0, "agotados": 0}
 
     for slug in slugs:
@@ -1007,7 +1023,7 @@ async def run_once_actas_eliminacion_worm() -> dict[str, int]:
     `indice_reconciliation_batch_size` actas de eliminación 'firmado' sin
     proteger bajo WORM. Fallos por-tenant o por-acta quedan aislados."""
     pool = get_pool()
-    slugs = await list_active_tenants(pool)
+    slugs = await list_tenants_conservacion(pool)
     summary = {"pendientes_vistos": 0, "protegidos": 0, "fallidos": 0, "agotados": 0}
 
     for slug in slugs:
@@ -1189,7 +1205,7 @@ async def run_once_worm_renovacion() -> dict[str, int]:
     entre sí; cada uno SÍ se serializa contra otra instancia de ESTA MISMA
     fase vía su propio lock (mismo criterio que las fases 3/4/6)."""
     pool = get_pool()
-    slugs = await list_active_tenants(pool)
+    slugs = await list_tenants_conservacion(pool)
     summary = {"pendientes_vistos": 0, "renovados": 0, "fallidos": 0, "agotados": 0}
     ct_codes = list(CT_DISPOSITION_CODES)
 
@@ -1524,6 +1540,12 @@ async def run_once_aip() -> dict[str, int]:
     el AIP. Fallos por-tenant o por-expediente quedan aislados (WARNING, no
     abortan el resto de la barrida) — mismo patrón que `run_once_worm`."""
     pool = get_pool()
+    # Solo las ACTIVAS, a propósito (B10 R2-2): empaquetar el AIP necesita los anexos del
+    # expediente, que document-service entrega por `fetch_anexos_internal` y VETA para una
+    # entidad suspendida. Visitarla solo agotaría reintentos (`archive.aip_agotado`, terminal
+    # hasta un reintento manual). El empaquetado ESPERA a la reactivación; lo que no puede
+    # esperar es la retención del AIP ya existente (`run_once_worm_renovacion`), que sí recorre
+    # las suspendidas.
     slugs = await list_active_tenants(pool)
     summary = {
         "pendientes_vistos": 0,

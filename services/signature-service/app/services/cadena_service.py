@@ -1612,6 +1612,26 @@ class CadenaFirmaService:
                         )
                     except HTTPException as exc:
                         otp_fail = exc
+                        # B10 §7 (residuo): si la autoverificación falló DESPUÉS de que auth
+                        # consumió el TOTP, queda constancia en la MISMA txn ambiente (otp_fail
+                        # se levanta tras el commit) para que la persona sepa que su código se usó.
+                        det: dict[str, object] = exc.detail if isinstance(exc.detail, dict) else {}
+                        if _AUDIT_AVAILABLE and det.get("totp_posiblemente_consumido"):
+                            await _audit.append(
+                                self._conn,
+                                tenant_slug=self._tenant_slug,
+                                service=_SERVICE,
+                                action="firma.autoverificacion_fallida_tras_totp",
+                                object_type=sol["objeto_tipo"],
+                                object_ref=sol["objeto_id"],
+                                actor=str(actor),
+                                payload={
+                                    "solicitud_id": str(solicitud_id),
+                                    "ruta": "cadena",
+                                    "error": det.get("error"),
+                                },
+                                canal=_audit.CANAL_PETICION,
+                            )
                     else:
                         consumed_challenge = {
                             "challenge_id": None,

@@ -364,6 +364,15 @@ async def tenant_ctx(
             async with db_conn.transaction():
                 await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await db_conn.execute(path.read_text())
+        # `radicados` es de document-service y `search`/`get_pivot_chunk` la leen para el
+        # gate vivo (B10): sin ella dan 503. Solo las columnas que el gate usa;
+        # IF NOT EXISTS para los tests que la declaran ellos mismos.
+        await db_conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{schema}".radicados ('
+            "id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
+            "tracking_number varchar(50) NOT NULL UNIQUE, "
+            "nivel_seguridad smallint NOT NULL DEFAULT 1)"
+        )
         # Persistente (no LOCAL): las funciones bajo prueba (ingestion.py,
         # KnowledgeRepository) esperan recibir la conexión con el search_path
         # del tenant ya fijado, como lo entrega `acquire_tenant` en producción.

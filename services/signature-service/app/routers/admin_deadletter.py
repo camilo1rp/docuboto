@@ -12,7 +12,7 @@
 Inspección y reproceso del dead-letter durable (``evento_dead_letter``).
 Todas las rutas exigen ``PERM_DLQ_ADMIN`` (gate a nivel de router) y aplican el
 no-read-up por clearance sobre el radicado referenciado (404 neutro). El replay
-re-invoca el handler-core (``apply_reclassification``) en la MISMA transacción que
+re-invoca el handler-core del tipo de evento (``apply_event``) en la MISMA transacción que
 la transición de estado y la auditoría: o commitean los tres, o no commitea nada.
 """
 
@@ -38,7 +38,7 @@ from app.schemas.dead_letter import (
     DeadLetterSummary,
     DiscardRequest,
 )
-from app.workers.document_consumer import GROUP, apply_reclassification
+from app.workers.document_consumer import GROUP, apply_event
 
 try:
     from orpycamcp_common import audit as _audit
@@ -204,10 +204,12 @@ async def replay_dead_letter(
 
         # H3: re-invoca el handler-core en la MISMA conexión/transacción.
         try:
-            await apply_reclassification(
+            await apply_event(
                 conn,
                 caller_slug,
+                row["event_type"],
                 inner_payload,
+                event_id=event_id,
                 actor=str(actor),
                 replayed=True,
             )

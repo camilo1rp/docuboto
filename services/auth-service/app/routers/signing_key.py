@@ -295,7 +295,11 @@ async def internal_sign_digest(
             ca_cert_pem,
             ca_fingerprint,
         ) = await SigningKeyService(conn).load_and_sign_digest(
-            user_id, tenant_slug, digest, payload.totp_code
+            user_id,
+            tenant_slug,
+            digest,
+            payload.totp_code,
+            cert_fingerprint=payload.cert_fingerprint,
         )
 
         return InternalSignDigestResponse(

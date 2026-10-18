@@ -76,4 +76,12 @@ Una entidad solo se atiende si está **operativa**: `public.tenants.status = 'ac
 `tenant_estado` de `/auth/validate` (la suspensión surte efecto en ≤ 15 s, el TTL de la caché de
 validación), y cada `get_tenant_conn` lo vuelve a comprobar antes de fijar el `search_path`. Las
 rutas públicas responden el mismo `404` a una entidad inexistente, dada de baja o sin aprovisionar; una entidad **suspendida** conserva las lecturas públicas (verificación, OAI, CMIS, publicidad de la eliminación) y sus escrituras responden `503 canal_no_disponible`.
+**Excepción de conservación (B10, ADR-035 §8):** la suspensión detiene la operación, no la obligación
+de conservar. storage-service admite para una entidad `suspended` (nunca `inactive`) solo las rutas
+internas de la lista explícita `RUTAS_DE_CONSERVACION` (`app/core/conservacion.py`) con
+`X-Internal-Token` válido, y asienta cada admisión (`entidad.conservacion_admitida`); las fases de
+conservación de archive-service (retención WORM, fixity) y el job de renovación LTA de signature-service
+recorren entidades `active` y `suspended`; el empaquetado de un AIP nuevo espera a la reactivación
+(necesita los anexos, que document-service veta), mientras la retención del AIP existente sigue.
+Todo lo demás sigue vetado.
 Detalle y alternativas en [ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md).

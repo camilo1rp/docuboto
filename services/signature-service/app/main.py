@@ -21,6 +21,7 @@ from orpycamcp_common import secrets as common_secrets
 from app.core.config import settings, variables_retiradas_presentes
 from app.core.database import close_pool, create_pool
 from app.core.redis_client import close_redis, init_redis
+from app.jobs import renovacion_lta
 from app.routers.admin_deadletter import router as admin_dlq_router
 from app.routers.cadena import router as cadena_router
 from app.routers.health import router as health_router
@@ -71,13 +72,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     consumer_task = events.spawn_supervised(
         document_consumer.run, name="signature", logger=logger
     )
+    # B10 §8: renovación del ArchiveTimeStamp de las firmas XAdES-LTA (0 = apagado).
+    lta_task = (
+        events.spawn_supervised(renovacion_lta.run, name="renovacion-lta", logger=logger)
+        if settings.lta_renovacion_intervalo_s > 0
+        else None
+    )
     yield
     logger.info("signature-service shutting down")
-    consumer_task.cancel()
-    try:
-        await consumer_task
-    except asyncio.CancelledError:
-        pass
+    for tarea in (consumer_task, lta_task):
+        if tarea is None:
+            continue
+        tarea.cancel()
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
     await close_pool()
     await close_redis()
 

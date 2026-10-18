@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 import asyncpg
 
@@ -30,6 +31,13 @@ _COLS = (
     "ocsp_present, ocsp_responder_fingerprint, ocsp_cert_status, ocsp_produced_at, "
     "ocsp_this_update, ocsp_next_update, ocsp_response_der, key_version"
 )
+
+
+_SELLO_COLS = (
+    "id, firma_id, ordinal, minio_key, xml_sha256, gen_time, tsa_cert_fingerprint, "
+    "tsa_cert_not_after, estado, ultimo_aviso, created_at"
+)
+_SELLO_COLS_S = ", ".join(f"s.{c.strip()}" for c in _SELLO_COLS.split(","))
 
 
 class FirmaRepository:
@@ -281,3 +289,120 @@ class FirmaRepository:
             tablas,
         )
         return {r["table_name"] for r in rows}
+
+    # --- Cadena de sellos de archivo (B10 §8, migración 026) ---------------------------------
+
+    async def insert_sello_archivo(
+        self,
+        *,
+        firma_id: uuid.UUID,
+        ordinal: int,
+        minio_key: str,
+        xml_sha256: str,
+        gen_time: datetime,
+        tsa_cert_fingerprint: str,
+        tsa_cert_not_after: datetime,
+        estado: str = "vigente",
+    ) -> asyncpg.Record:
+        """Un eslabón de la cadena de ``ArchiveTimeStamp`` de una firma LTA (0 = el original)."""
+        row = await self._conn.fetchrow(
+            f"""INSERT INTO firma_sello_archivo
+                    (firma_id, ordinal, minio_key, xml_sha256, gen_time,
+                     tsa_cert_fingerprint, tsa_cert_not_after, estado)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING {_SELLO_COLS}""",
+            firma_id,
+            ordinal,
+            minio_key,
+            xml_sha256,
+            gen_time,
+            tsa_cert_fingerprint,
+            tsa_cert_not_after,
+            estado,
+        )
+        assert row is not None
+        return row
+
+    async def sellos_de(self, firma_id: uuid.UUID) -> list[asyncpg.Record]:
+        """La cadena completa de la firma, del original (ordinal 0) al último."""
+        return list(
+            await self._conn.fetch(
+                f"SELECT {_SELLO_COLS} FROM firma_sello_archivo WHERE firma_id = $1 ORDER BY ordinal",
+                firma_id,
+            )
+        )
+
+    async def firmas_a_renovar(self, margen_dias: int) -> list[asyncpg.Record]:
+        """Firmas cuyo ÚLTIMO sello vigente tiene el certificado de su TSA a punto de caducar.
+
+        Una firma con un eslabón ``pendiente_worm`` NO sale aquí: ya tiene una renovación en
+        curso y lo que falta es el paso de storage (:meth:`renovaciones_pendientes_worm`)."""
+        return list(
+            await self._conn.fetch(
+                f"""SELECT t.*, f.certificado_fingerprint, f.tsa_cert_fingerprint AS firma_tsa_fp,
+                           f.ca_fingerprint, f.ocsp_responder_fingerprint, f.provider
+                      FROM (
+                        SELECT DISTINCT ON (s.firma_id) {_SELLO_COLS_S}
+                          FROM firma_sello_archivo s
+                         ORDER BY s.firma_id, s.ordinal DESC
+                      ) t
+                      JOIN firma f ON f.id = t.firma_id
+                     -- El ÚLTIMO eslabón, sea cual sea su estado, y solo entonces `vigente`: si se
+                     -- filtrara antes, un `caducado` dejaría al anterior (también vencido) como
+                     -- candidato y se asentaría `lta_cadena_caducada` uno a uno hasta el 0.
+                     WHERE t.estado = 'vigente'
+                       AND t.tsa_cert_not_after < now() + make_interval(days => $1)
+                       AND NOT EXISTS (
+                             SELECT 1 FROM firma_sello_archivo p
+                              WHERE p.firma_id = t.firma_id AND p.estado = 'pendiente_worm')
+                     ORDER BY t.tsa_cert_not_after""",
+                margen_dias,
+            )
+        )
+
+    async def renovaciones_pendientes_worm(self) -> list[asyncpg.Record]:
+        """Eslabones ya subidos a storage cuya herencia WORM aún no se registró, con la clave del
+        eslabón ANTERIOR (lo que storage necesita para heredar la política)."""
+        return list(
+            await self._conn.fetch(
+                f"""SELECT {_SELLO_COLS_S}, a.minio_key AS minio_key_anterior
+                      FROM firma_sello_archivo s
+                      JOIN firma_sello_archivo a
+                        ON a.firma_id = s.firma_id AND a.ordinal = s.ordinal - 1
+                     WHERE s.estado = 'pendiente_worm'
+                     ORDER BY s.created_at"""
+            )
+        )
+
+    async def marcar_sello_vigente(self, sello_id: uuid.UUID) -> None:
+        await self._conn.execute(
+            "UPDATE firma_sello_archivo SET estado = 'vigente' WHERE id = $1", sello_id
+        )
+
+    async def marcar_sello_caducado(self, sello_id: uuid.UUID) -> None:
+        """El certificado de la TSA del último sello caducó sin renovarse: el eslabón deja de ser
+        candidato (no se puede renovar lo que ya no prueba). Sigue siendo el artefacto vigente."""
+        await self._conn.execute(
+            "UPDATE firma_sello_archivo SET estado = 'caducado' WHERE id = $1 AND estado = 'vigente'",
+            sello_id,
+        )
+
+    async def registrar_aviso(self, sello_id: uuid.UUID, aviso: str) -> bool:
+        """Anota el último motivo por el que el eslabón no se renovó. ``True`` si CAMBIÓ (hay que
+        asentarlo); ``False`` si es el mismo de la pasada anterior (no se repite el asiento en un
+        registro que no se puede borrar)."""
+        fila = await self._conn.fetchrow(
+            "UPDATE firma_sello_archivo SET ultimo_aviso = $2"
+            " WHERE id = $1 AND ultimo_aviso IS DISTINCT FROM $2 RETURNING id",
+            sello_id,
+            aviso,
+        )
+        return fila is not None
+
+    async def artefacto_vigente(self, firma_id: uuid.UUID) -> asyncpg.Record | None:
+        """El XML que representa HOY a la firma (vista ``firma_artefacto_vigente``)."""
+        return await self._conn.fetchrow(
+            "SELECT firma_id, minio_key, xml_sha256, ordinal FROM firma_artefacto_vigente"
+            " WHERE firma_id = $1",
+            firma_id,
+        )

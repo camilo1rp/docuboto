@@ -829,6 +829,7 @@ async def test_sign_digest_success(client: AsyncClient, monkeypatch: pytest.Monk
                 "alg": "RSA-SHA256",
                 "prehashed": True,
                 "totp_code": code,
+                "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
             },
             headers={
                 "X-Internal-Token": INTERNAL_TOKEN,
@@ -860,7 +861,7 @@ async def test_sign_digest_no_active_key_returns_422(
     try:
         resp = await client.post(
             "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000"},
+            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": "0" * 64},
             headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake"},
         )
     finally:
@@ -916,7 +917,7 @@ async def test_sign_digest_wrong_totp_never_signs(
     try:
         resp = await client.post(
             "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000"},
+            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex()},
             headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake"},
         )
     finally:
@@ -947,6 +948,7 @@ async def test_sign_digest_identity_from_bearer_ignores_body(
             json={
                 "digest_b64": b64encode(digest).decode(),
                 "totp_code": "000000",
+                "cert_fingerprint": "0" * 64,
                 "user_id": str(OTHER_USER_ID),  # campo espurio, debe ser ignorado
             },
             headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake"},
@@ -971,7 +973,7 @@ async def test_sign_digest_requires_internal_token(client: AsyncClient) -> None:
     try:
         resp = await client.post(
             "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000"},
+            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": "0" * 64},
             headers={"Authorization": "Bearer fake"},
         )
     finally:
@@ -987,7 +989,7 @@ async def test_sign_digest_requires_bearer(client: AsyncClient) -> None:
     try:
         resp = await client.post(
             "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000"},
+            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": "0" * 64},
             headers={"X-Internal-Token": INTERNAL_TOKEN},
         )
     finally:
@@ -1588,6 +1590,7 @@ async def test_sign_digest_includes_ca_cert_pem_when_anchored(
                 "alg": "RSA-SHA256",
                 "prehashed": True,
                 "totp_code": code,
+                "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
             },
             headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake.jwt.token"},
         )
@@ -1629,7 +1632,7 @@ async def test_sign_digest_omits_ca_cert_pem_for_grandfathered_key(
     try:
         resp = await client.post(
             "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": code},
+            json={"digest_b64": b64encode(digest).decode(), "totp_code": code, "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex()},
             headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake.jwt.token"},
         )
     finally:

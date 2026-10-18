@@ -68,7 +68,7 @@ def _patch_sign_digest_remote(
     else:
         assert private_key is not None
 
-        async def _fake_sign(authorization, digest, totp_code):
+        async def _fake_sign(authorization, digest, totp_code, **_kw):
             signature = private_key.sign(digest, padding.PKCS1v15(), Prehashed(hashes.SHA256()))
             return {
                 "signature_value_b64": b64encode(signature).decode("ascii"),

@@ -56,7 +56,7 @@ from typing import Literal
 import asyncpg
 from orpycamcp_common import audit
 
-from app.clients import document_client, storage_client
+from app.clients import document_client, signature_client, storage_client
 from app.core.clearance import CLEARANCE_SIN_RESTRICCION
 from app.core.config import settings
 from app.core.constants import SYSTEM_RECONCILER_ID
@@ -236,6 +236,18 @@ class AipWiringService:
                     motivo="indice_no_worm_protegido",
                 )
             indice_file_id = uuid.UUID(indice_row["minio_key_firmado"].split("/", 1)[0])
+            # B10 §8: si el ArchiveTimeStamp del índice se renovó, el AIP embebe el XML VIGENTE
+            # (que contiene todos los sellos), no el original. El renovado hereda la política
+            # WORM del original. Best-effort: sin respuesta se conserva el original.
+            if indice_row.get("firma_id"):
+                vigente = await signature_client.artefacto_vigente(
+                    tenant_slug=self._tenant_slug, firma_id=str(indice_row["firma_id"])
+                )
+                if vigente:
+                    try:
+                        indice_file_id = uuid.UUID(vigente.split("/", 1)[0])
+                    except ValueError:
+                        logger.warning("Cableado AIP: artefacto vigente ilegible (%r)", vigente)
 
             # Solo radicados VIGENTES (`estado='vinculado'`) aportan
             # contenido al AIP — un radicado EXCLUIDO (soft-delete) ya quedó

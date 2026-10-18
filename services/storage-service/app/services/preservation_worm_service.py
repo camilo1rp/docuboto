@@ -58,6 +58,8 @@ from app.schemas.preservacion import (
     LegalHoldResponse,
     ProtegerIndiceRequest,
     ProtegerIndiceResponse,
+    RenovarArtefactoRequest,
+    RenovarArtefactoResponse,
     RenovarRetencionRequest,
     RenovarRetencionResponse,
 )
@@ -78,6 +80,7 @@ _REPLICA_AUSENTE = frozenset({"NoSuchKey", "NoSuchBucket", "NoSuchVersion"})
 # tocar sus imports — la definición real vive en `retention_policy.py` (E10
 # Increment B: `aip_service.py` también la necesita, sin duplicar el piso/techo).
 __all__ = [
+    "ArtefactoNoEsDeFirmaError",
     "FileNotFoundForPreservationError",
     "FixityMismatchError",
     "InvalidRetentionError",
@@ -116,6 +119,22 @@ class WormObjectNotFoundError(Exception):
     -- nada que renovar (E10 debt: renovación de retención WORM para series
     CT). Distinto de `FileNotFoundForPreservationError` (esa es sobre
     `files.id`, no sobre la fila WORM ya protegida)."""
+
+
+class ArtefactoNoEsDeFirmaError(Exception):
+    """La renovación del ``ArchiveTimeStamp`` (B10 §8) nombra como anterior algo que no es un
+    artefacto de firma, o un nuevo que no es XML: no se hereda ninguna política."""
+
+
+def _es_xml(mime_type: str | None) -> bool:
+    m = (mime_type or "").split(";")[0].strip().lower()
+    return m in ("application/xml", "text/xml") or m.endswith("+xml")
+
+
+def _es_tipo_de_firma(tipo: str) -> bool:
+    """XML firmado que una renovación de sello de archivo puede sustituir: el índice, sus
+    renovaciones y las actas selladas. El AIP (un paquete) no lo es."""
+    return tipo in ("indice", "firma_lta_renovada") or tipo.startswith("acta_")
 
 
 def preservation_bucket_name(tenant_slug: str) -> str:
@@ -457,6 +476,13 @@ class PreservationWormService:
                 f"tipo={payload.tipo}"
             )
 
+        # B10 (SEG #3 / ARCH H5): los XML de una firma XAdES-LTA renovada (`renueva_a`) son
+        # evidencia del MISMO artefacto y tienen que vivir al menos tanto como él. Se extienden
+        # ANTES que la raíz y también cuando la raíz ya está al día (no-op): si una pasada
+        # anterior extendió la raíz y se cortó a medias, la siguiente no vuelve a llamar aquí
+        # por ella (archive solo mira la raíz) y el XML vigente quedaría con la fecha vieja.
+        await self._extender_cadena_renovada(existing, nueva, actor)
+
         if nueva <= existing["retain_until"]:
             # No-op idempotente (E10 debt): la fecha resuelta NO supera la ya
             # persistida -- no se llama a MinIO (COMPLIANCE de todos modos lo
@@ -569,6 +595,244 @@ class PreservationWormService:
             )
         return _worm_row_to_renovacion_response(row, renovado=True)
 
+
+    async def _extender_cadena_renovada(
+        self, raiz: asyncpg.Record, nueva: datetime, actor: str | None
+    ) -> int:
+        """Extiende a ``nueva`` cada fila que renueva (directa o transitivamente) a ``raiz``.
+        Devuelve cuántas extendió. Mismo orden que la raíz: almacén, relectura, y fila + PREMIS +
+        asiento juntos en una transacción."""
+        extendidas = 0
+        for fila in await self._worm_repo.cadena_descendiente(raiz["id"]):
+            if nueva <= fila["retain_until"]:
+                continue
+            minio = get_minio()
+            await minio.set_object_retention(
+                fila["bucket"],
+                fila["object_key"],
+                Retention(fila["retention_mode"], nueva),
+                version_id=fila["version_id"],
+            )
+            await verificar_retencion_aplicada(
+                minio,
+                fila["bucket"],
+                fila["object_key"],
+                version_id=fila["version_id"],
+                modo_esperado=fila["retention_mode"],
+                hasta_esperado=nueva,
+            )
+            async with self._conn.transaction():
+                row = await self._worm_repo.renovar(fila["id"], retain_until=nueva)
+                if row is None:  # pragma: no cover — bajo el advisory lock no debe ocurrir
+                    continue
+                ref = str(fila["file_id"]) if fila["file_id"] else str(fila["id"])
+                await self._evt_repo.insert_evento(
+                    {
+                        "object_ref": ref,
+                        "tipo": "RENOVACION",
+                        "resultado": "ok",
+                        "detalle": {
+                            "tipo": fila["tipo"],
+                            "subtipo": "retencion_en_cascada",
+                            "renueva_a": str(raiz["id"]),
+                            "retain_until_anterior": fila["retain_until"].isoformat(),
+                            "retain_until_nuevo": nueva.isoformat(),
+                        },
+                    },
+                    agente=actor,
+                )
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="file.worm_retencion_renovada",
+                    object_type="file",
+                    object_ref=ref,
+                    actor=actor,
+                    payload={
+                        "expediente_id": fila["expediente_id"],
+                        "tipo": fila["tipo"],
+                        "en_cascada_de": str(raiz["id"]),
+                        "retain_until_anterior": fila["retain_until"].isoformat(),
+                        "retain_until_nuevo": nueva.isoformat(),
+                    },
+                    canal=canal_del_acto(actor),
+                )
+            extendidas += 1
+        return extendidas
+
+    # -- B10 §8: renovación del ArchiveTimeStamp de una firma XAdES-LTA -----
+
+    async def renovar_artefacto(
+        self, payload: RenovarArtefactoRequest, actor: str | None
+    ) -> RenovarArtefactoResponse:
+        """Registra que signature-service renovó el ``ArchiveTimeStamp`` de una firma LTA.
+
+        El XML renovado es un objeto NUEVO (``file_id_nuevo``), no una versión del anterior: el
+        anterior está bajo COMPLIANCE (no se puede sobrescribir, y se perdería la evidencia) y
+        ``version_id`` es el ancla de su fila WORM. Si el anterior estaba bajo WORM, el nuevo
+        hereda su política (mismo ``retain_until``, modo y legal hold) y queda ligado a él por
+        ``renueva_a``. SIEMPRE se registra el evento PREMIS ``RENOVACION``.
+
+        Idempotente por ``dedup_key = lta:{firma_id}:{ordinal}``; la fila WORM, el evento PREMIS
+        y el asiento van en UNA transacción (el ``put_object`` COMPLIANCE queda fuera, como en
+        ``proteger_indice``: ya es irreversible)."""
+        lock_key = _worm_lock_key(self._tenant_slug, str(payload.firma_id), "firma_lta_renovada")
+        await self._conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+        try:
+            return await self._renovar_artefacto_locked(payload, actor)
+        finally:
+            await self._conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+
+    async def _renovar_artefacto_locked(
+        self, payload: RenovarArtefactoRequest, actor: str | None
+    ) -> RenovarArtefactoResponse:
+        dedup_key = f"lta:{payload.firma_id}:{payload.ordinal}"
+        ref_nuevo = str(payload.file_id_nuevo)
+
+        previo = await self._evt_repo.find_evento_por_dedup(
+            object_ref=ref_nuevo, tipo="RENOVACION", dedup_key=dedup_key
+        )
+        if previo is not None:
+            fila = await self._worm_repo.get_by_file_id(payload.file_id_nuevo)
+            return RenovarArtefactoResponse(
+                protegido=fila is not None,
+                retain_until=fila["retain_until"] if fila is not None else None,
+                evento_id=previo["id"],
+                ya_registrada=True,
+            )
+
+        anterior = await self._file_repo.get_by_id_any_state(payload.file_id_anterior)
+        nuevo = await self._file_repo.get_by_id_any_state(payload.file_id_nuevo)
+        if anterior is None or nuevo is None:
+            raise FileNotFoundForPreservationError(
+                str(payload.file_id_anterior if anterior is None else payload.file_id_nuevo)
+            )
+        if nuevo.sha256 != payload.sha256_nuevo:
+            raise FixityMismatchError(
+                f"SHA-256 no coincide: declarado {payload.sha256_nuevo}, registrado {nuevo.sha256}"
+            )
+
+        # El anterior tiene que ser un artefacto de FIRMA (XML firmado) y el nuevo, XML. La
+        # ruta solo la alcanza `X-Internal-Token`, pero heredar una retención COMPLIANCE no debe
+        # depender de que el llamador diga la verdad sobre qué sustituye a qué.
+        if not _es_xml(anterior.mime_type) or not _es_xml(nuevo.mime_type):
+            raise ArtefactoNoEsDeFirmaError(
+                f"el anterior ({anterior.mime_type}) y el nuevo ({nuevo.mime_type}) deben ser XML"
+            )
+        fila_anterior = await self._worm_repo.get_by_file_id(payload.file_id_anterior)
+        if fila_anterior is not None and not _es_tipo_de_firma(fila_anterior["tipo"]):
+            raise ArtefactoNoEsDeFirmaError(
+                f"el objeto WORM anterior es de tipo {fila_anterior['tipo']!r}, no un artefacto de firma"
+            )
+        protege = fila_anterior is not None and settings.preservation_enabled
+        # Hereda el MAYOR retain_until de la cadena (raíz incluida): el anterior puede ir por
+        # detrás si la raíz se extendió después (series de conservación total).
+        retain_heredado = None
+        if protege:
+            assert fila_anterior is not None
+            retain_heredado = max(
+                fila_anterior["retain_until"],
+                await self._worm_repo.retain_until_de_la_raiz(fila_anterior["id"])
+                or fila_anterior["retain_until"],
+            )
+
+        bucket = version_id = None
+        if protege:
+            assert fila_anterior is not None and retain_heredado is not None
+            minio = get_minio()
+            obj = await minio.get_object(nuevo.bucket, nuevo.object_key)
+            try:
+                data = await obj.read()
+            finally:
+                close = getattr(obj, "close", None)
+                if close is not None:
+                    close()
+            actual = hashlib.sha256(data).hexdigest()
+            if actual != nuevo.sha256:
+                raise FixityMismatchError(
+                    f"SHA-256 no coincide: esperado {nuevo.sha256}, obtenido {actual}"
+                )
+            bucket = preservation_bucket_name(self._tenant_slug)
+            await ensure_object_lock_bucket(minio, bucket)
+            write_result = await minio.put_object(
+                bucket,
+                nuevo.object_key,
+                io.BytesIO(data),
+                length=len(data),
+                content_type="application/xml",
+                retention=Retention(fila_anterior["retention_mode"], retain_heredado),
+                legal_hold=bool(fila_anterior["legal_hold"]),
+            )
+            version_id = getattr(write_result, "version_id", None)
+            await verificar_retencion_aplicada(
+                minio,
+                bucket,
+                nuevo.object_key,
+                version_id=version_id,
+                modo_esperado=fila_anterior["retention_mode"],
+                hasta_esperado=retain_heredado,
+            )
+
+        async with self._conn.transaction():
+            if protege:
+                assert fila_anterior is not None and retain_heredado is not None
+                await self._worm_repo.insert(
+                    expediente_id=fila_anterior["expediente_id"],
+                    tipo="firma_lta_renovada",
+                    bucket=bucket or "",
+                    object_key=nuevo.object_key,
+                    version_id=version_id,
+                    sha256=nuevo.sha256,
+                    retain_until=retain_heredado,
+                    retention_mode=fila_anterior["retention_mode"],
+                    legal_hold=bool(fila_anterior["legal_hold"]),
+                    file_id=payload.file_id_nuevo,
+                    objeto_tipo=fila_anterior["objeto_tipo"],
+                    renueva_a=fila_anterior["id"],
+                )
+            evento = await self._evt_repo.insert_evento(
+                {
+                    "object_ref": ref_nuevo,
+                    "tipo": "RENOVACION",
+                    "resultado": "ok",
+                    "hash_before": anterior.sha256,
+                    "hash_after": nuevo.sha256,
+                    "detalle": {
+                        "subtipo": "archive_timestamp",
+                        "firma_id": str(payload.firma_id),
+                        "ordinal": payload.ordinal,
+                        "file_id_anterior": str(payload.file_id_anterior),
+                        "protegido": protege,
+                        "dedup_key": dedup_key,
+                    },
+                },
+                agente=actor,
+            )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="file.lta_renovada",
+                object_type="file",
+                object_ref=ref_nuevo,
+                actor=actor,
+                payload={
+                    "firma_id": str(payload.firma_id),
+                    "ordinal": payload.ordinal,
+                    "file_id_anterior": str(payload.file_id_anterior),
+                    "protegido": protege,
+                    "retain_until": (
+                        retain_heredado.isoformat() if retain_heredado is not None else None
+                    ),
+                },
+                canal=canal_del_acto(actor),
+            )
+        return RenovarArtefactoResponse(
+            protegido=protege,
+            retain_until=retain_heredado,
+            evento_id=evento["id"],
+        )
 
     # -- AREA-08-07: legal hold como acto explícito, con motivo y asiento ---
 

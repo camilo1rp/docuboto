@@ -114,6 +114,13 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+# La ruta que se FIRMA con la identidad (ADR-036) es la misma que se LLAMA: una sola
+# constante en los dos sitios, y un guardián AST lo comprueba.
+_RUTA_PROTEGER_INDICE = "/api/v1/preservacion/proteger-indice"
+_RUTA_PROTEGER_ARTEFACTO = "/api/v1/preservacion/proteger-artefacto"
+_RUTA_LEGAL_HOLD = "/api/v1/preservacion/legal-hold-internal"
+
+
 @dataclass(slots=True)
 class WormProtectionOutcome:
     """Resultado ESTRUCTURADO de un intento de cableado WORM del índice (E10
@@ -225,7 +232,11 @@ async def proteger_indice_worm(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    headers = identidad.firmar(
+        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
+        metodo="POST",
+        ruta=_RUTA_PROTEGER_INDICE,
+    )
     # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
     # la identidad firmada atribuye el acto al humano que cierra, el token prueba
     # que llama archive-service y no un JWT de usuario directo.
@@ -235,7 +246,7 @@ async def proteger_indice_worm(
             base_url=settings.storage_service_url, timeout=15.0
         ) as client:
             resp = await client.post(
-                "/api/v1/preservacion/proteger-indice", json=body, headers=headers
+                _RUTA_PROTEGER_INDICE, json=body, headers=headers
             )
     except httpx.RequestError as exc:
         logger.warning("storage-service inalcanzable al proteger WORM el índice: %s", exc)
@@ -307,7 +318,11 @@ async def proteger_artefacto_worm(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    headers = identidad.firmar(
+        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
+        metodo="POST",
+        ruta=_RUTA_PROTEGER_ARTEFACTO,
+    )
     # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
     # la identidad firmada atribuye el acto al humano que cierra, el token prueba
     # que llama archive-service y no un JWT de usuario directo.
@@ -317,7 +332,7 @@ async def proteger_artefacto_worm(
             base_url=settings.storage_service_url, timeout=15.0
         ) as client:
             resp = await client.post(
-                "/api/v1/preservacion/proteger-artefacto", json=body, headers=headers
+                _RUTA_PROTEGER_ARTEFACTO, json=body, headers=headers
             )
     except httpx.RequestError as exc:
         logger.warning(
@@ -512,7 +527,11 @@ async def fijar_legal_hold_internal(
     FIRMADA del humano que lo decide, para que el asiento de storage lo
     atribuya a él y no a SISTEMA. Lanza `StorageLegalHoldError`; no es
     best-effort: un freeze que no se aplicó no puede darse por declarado."""
-    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    headers = identidad.firmar(
+        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
+        metodo="POST",
+        ruta=_RUTA_LEGAL_HOLD,
+    )
     headers["X-Internal-Token"] = settings.storage_internal_token
     body = {
         "expediente_id": expediente_id,
@@ -525,7 +544,7 @@ async def fijar_legal_hold_internal(
             base_url=settings.storage_service_url, timeout=60.0
         ) as client:
             resp = await client.post(
-                "/api/v1/preservacion/legal-hold-internal", json=body, headers=headers
+                _RUTA_LEGAL_HOLD, json=body, headers=headers
             )
     except httpx.RequestError as exc:
         raise StorageLegalHoldError(503, f"storage-service inalcanzable: {exc}") from exc

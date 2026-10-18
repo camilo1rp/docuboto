@@ -136,12 +136,13 @@ async def update_estado(
     payload: ShipmentStatusUpdate,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    redis: object = Depends(get_redis),
 ) -> ShipmentResponse:
     # RF-SEG-08 (cierra D-14): la transición manual pasa el clearance del llamante
     # → un envío de radicado sobre-clearance colapsa a 404 (sin read-up en el write).
     clearance = await resolve_caller_clearance(conn, _caller_id(request))
     actor = _caller_id(request)
-    svc = PostalService(conn, tenant_slug=request.headers.get("X-Tenant-Slug"))
+    svc = PostalService(conn, redis=redis, tenant_slug=request.headers.get("X-Tenant-Slug"))
     return await svc.update_estado(shipment_id, payload, clearance, actor)
 
 
@@ -192,6 +193,7 @@ async def tracking(
 async def postal_callback(
     tenant_slug: str,
     request: Request,
+    response: Response,
     redis: object = Depends(get_redis),
 ) -> CallbackResult:
     """Callback del operador (4-72/Servientrega). Bajo `/api/v1/public/` → el
@@ -205,12 +207,16 @@ async def postal_callback(
     raw = await request.body()
     signature = request.headers.get("X-OrpycaMCP-Signature")
     pool: asyncpg.Pool = request.app.state.db_pool
-    # ADR-035: inexistente o sin aprovisionar => 404 neutro. Una entidad SUSPENDIDA
-    # no recibe el efecto, pero la firma se verifica ANTES: firma válida => 503 con
-    # `Retry-After` (el operador reintenta al reactivarse, no pierde el evento);
-    # firma inválida => el mismo 404 neutro (un anónimo no averigua el estado).
+    # ADR-035 §7 (B10): inexistente o sin aprovisionar => 404 neutro. Una entidad
+    # SUSPENDIDA no recibe el efecto todavía, pero la firma se verifica ANTES: firma
+    # válida => el cuerpo se encola y se responde 202 `deferred` (se aplica al
+    # reactivarse, con la fecha de recepción); firma inválida => el mismo 404 neutro
+    # (un anónimo no averigua el estado). Con la cola llena, 503 + `Retry-After`.
     async with public_tenant_conn_atencion(pool, tenant_slug) as (conn, atencion):
         svc = PostalService(conn, redis=redis, tenant_slug=tenant_slug)
-        return await svc.apply_operator_callback(
+        resultado = await svc.apply_operator_callback(
             raw, signature, tenant_slug, suspendida=atencion is not AtencionPublica.COMPLETA
         )
+    if resultado.status == "deferred":
+        response.status_code = status.HTTP_202_ACCEPTED
+    return resultado

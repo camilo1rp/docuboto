@@ -48,8 +48,10 @@ SERVICIOS = RAIZ / "services"
 _EMITE = re.compile(
     r'(["\']X-User-Id["\']\s*:)|(\[\s*["\']X-User-Id["\']\s*\]\s*=)'
 )
-#: La llamada que pone la firma. Se acepta cualquier forma de importarla.
-_FIRMA = re.compile(r"\bfirmar\s*\(")
+#: La llamada que pone la firma. Se acepta cualquier forma de importarla, pero
+#: tiene que atarla al método y a la ruta (ADR-036): `firmar(..., metodo=, ruta=)`.
+_FIRMA = re.compile(r"\bfirmar\s*\((?=[^#]*?\bmetodo\s*=)(?=[^#]*?\bruta\s*=)", re.DOTALL)
+_VERBOS = {"get", "post", "put", "patch", "delete", "head"}
 
 
 def _funciones_que_emiten() -> list[tuple[Path, str, str]]:
@@ -78,7 +80,7 @@ def _funciones_que_emiten() -> list[tuple[Path, str, str]]:
 
 def test_el_censo_encuentra_emisores():
     """Anti-vacuidad: si el censo sale vacío, los demás pasan sin mirar nada."""
-    assert len(_funciones_que_emiten()) >= 5
+    assert len(_funciones_que_emiten()) >= 9
 
 
 def test_toda_identidad_propagada_se_firma():
@@ -100,3 +102,102 @@ def test_el_gateway_tambien_esta_en_el_censo():
     dejara de firmar, este guardián tiene que verlo igual que a los demás."""
     emisores = {archivo.name for archivo, _, _ in _funciones_que_emiten()}
     assert "auth.py" in emisores
+
+
+# ---------------------------------------------------------------------------
+# La ruta FIRMADA es la ruta LLAMADA (ADR-036)
+# ---------------------------------------------------------------------------
+#
+# Firmar con la ruta de una operación y llamar a otra no falla en ningún test
+# unitario: la firma "existe". Falla en producción, con un 401 que nadie
+# relaciona con una constante copiada a medias. Por eso se mira por AST que, en
+# cada emisor, el argumento `ruta=` de `firmar` es el MISMO nombre o literal que
+# el primer argumento de la llamada HTTP, y que `metodo=` es el verbo de esa llamada.
+
+
+def _llamada_firmar(nodo: ast.AST) -> ast.Call | None:
+    for n in ast.walk(nodo):
+        if isinstance(n, ast.Call):
+            f = n.func
+            nombre = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if nombre == "firmar":
+                return n
+    return None
+
+
+def _kw(llamada: ast.Call, nombre: str) -> ast.expr | None:
+    return next((k.value for k in llamada.keywords if k.arg == nombre), None)
+
+
+def _llamadas_http(nodo: ast.AST) -> list[tuple[str, ast.expr]]:
+    """(verbo, expresión de la ruta) de cada `<cliente>.<verbo>(ruta, ...)`."""
+    hallazgos: list[tuple[str, ast.expr]] = []
+    for n in ast.walk(nodo):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+            continue
+        verbo = n.func.attr
+        # Una llamada HTTP lleva siempre `headers=` (la identidad va ahí): así
+        # `data.get("k")` de un dict no se confunde con un `client.get(ruta)`.
+        if not any(k.arg == "headers" for k in n.keywords):
+            continue
+        if verbo in _VERBOS and n.args:
+            hallazgos.append((verbo.upper(), n.args[0]))
+        elif verbo in ("request", "stream") and len(n.args) >= 2:
+            if isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str):
+                hallazgos.append((n.args[0].value.upper(), n.args[1]))
+    return hallazgos
+
+
+def _incoherencias() -> list[str]:
+    problemas: list[str] = []
+    for archivo, funcion, _ in _funciones_que_emiten():
+        texto = archivo.read_text(encoding="utf-8")
+        nodo = next(
+            n
+            for n in ast.walk(ast.parse(texto))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == funcion
+        )
+        donde = f"{archivo.relative_to(RAIZ)}::{funcion}"
+        firma = _llamada_firmar(nodo)
+        metodo, ruta = (_kw(firma, "metodo"), _kw(firma, "ruta")) if firma else (None, None)
+        if metodo is None or ruta is None:
+            problemas.append(f"{donde}: `firmar` sin metodo= y ruta=")
+            continue
+        if archivo.name == "auth.py" and "api-gateway" in archivo.parts:
+            # El gateway firma la petición que RECIBE y el proxy reenvía esa misma.
+            if ast.unparse(metodo) != "request.method" or ast.unparse(ruta) != "request.scope['path']":
+                problemas.append(f"{donde}: el gateway debe firmar request.method y request.scope['path']")
+            continue
+        llamadas = _llamadas_http(nodo)
+        if not llamadas:
+            problemas.append(f"{donde}: no hay llamada HTTP de la que comparar la ruta")
+        for verbo, ruta_llamada in llamadas:
+            if ast.dump(ruta_llamada) != ast.dump(ruta):
+                problemas.append(
+                    f"{donde}: firma {ast.unparse(ruta)} y llama {ast.unparse(ruta_llamada)}"
+                )
+            if not (isinstance(metodo, ast.Constant) and str(metodo.value).upper() == verbo):
+                problemas.append(f"{donde}: firma metodo={ast.unparse(metodo)} y llama {verbo}")
+    return problemas
+
+
+def test_la_ruta_firmada_es_la_ruta_llamada():
+    problemas = _incoherencias()
+    assert not problemas, (
+        "La identidad se ata al método y a la ruta de la petición (ADR-036): firmar "
+        "una operación y llamar a otra da 401 en el destino. " + " | ".join(problemas)
+    )
+
+
+def test_el_guardian_ve_una_ruta_firmada_distinta_de_la_llamada():
+    """Control positivo: sobre un emisor falso, el guardián SÍ acusa la divergencia."""
+    fuente = (
+        "async def f(client, actor):\n"
+        "    h = identidad.firmar({'X-User-Id': actor}, metodo='POST', ruta=_A)\n"
+        "    await client.post(_B, headers=h)\n"
+    )
+    nodo = ast.parse(fuente).body[0]
+    firma = _llamada_firmar(nodo)
+    (verbo, llamada), = _llamadas_http(nodo)
+    assert ast.dump(_kw(firma, "ruta")) != ast.dump(llamada)
+    assert verbo == "POST"

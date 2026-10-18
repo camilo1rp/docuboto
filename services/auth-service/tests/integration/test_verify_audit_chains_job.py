@@ -174,17 +174,21 @@ def test_el_proceso_real_propaga_el_codigo_de_salida_y_no_imprime_ancla(tmp_path
     ancla.write_text(f"F0\t{slug}\t5\t99\t{_HASH_JUGUETE}\n")
     app_dir = Path(job.__file__).resolve().parents[2]
     r = subprocess.run(
-        [sys.executable, "-m", "app.ops.verify_audit_chains", "--anclas", str(ancla), "--emitir-ancla", "F1"],
+        [sys.executable, "-m", "app.ops.verify_audit_chains", "--anclas", str(ancla), "--slug", slug, "--emitir-ancla", "F1"],
         cwd=app_dir,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=30,
         check=False,
     )
     assert r.returncode == 1, f"un retroceso debe salir con 1 desde el proceso real: {r.returncode}\n{r.stderr}"
     assert r.stdout == "", f"con un fallo no se emite ninguna línea de ancla por stdout: {r.stdout!r}"
     assert slug in r.stderr and "RETROCEDI" in r.stderr
+    # B10 ítem 8: sin `--slug` el subproceso recorría las ~23.000 cadenas de la base viva.
+    # Fija que recorre SOLO su objetivo.
+    lineas = [ln for ln in r.stderr.splitlines() if ln.startswith(("   ✓", "   ✗", "   !"))]
+    assert len(lineas) == 1 and slug in lineas[0], lineas
 
 
 # ── Línea base de roturas históricas declaradas (T14, hallazgo de auditoría) ──────
@@ -293,10 +297,18 @@ async def test_roturas_no_enumerables_no_las_cubre_la_linea_base(tx: asyncpg.Con
     assert codigo == 1 and nuevas == []
 
 
-async def test_un_filtro_que_deja_cero_tenants_sale_con_2(tx: asyncpg.Connection) -> None:
+async def test_un_filtro_que_deja_cero_tenants_sale_con_2(
+    tx: asyncpg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
     slug, _ = await _cadena(tx, 1)
     codigo, mensajes, nuevas = await job.verificar(tx, anclas={}, slugs=[], fecha_ancla="F1")
     assert codigo == 2 and nuevas == [] and any("objetivo vacío" in m for m in mensajes)
+
+    # `_slugs` hace un DISTINCT sobre TODO `audit_log`: se sustituye para no recorrer la base viva.
+    async def _solo_el_mio(_conn: asyncpg.Connection) -> list[str]:
+        return [slug]
+
+    monkeypatch.setattr(job, "_slugs", _solo_el_mio)
     codigo, _, _ = await job.verificar(tx, anclas={}, excluir_prefijos=(slug[:4], "itest", ""), fecha_ancla="F1")
     assert codigo == 2, "excluir todo (prefijo vacío) deja el objetivo en cero"
 

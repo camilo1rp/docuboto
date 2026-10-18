@@ -26,22 +26,34 @@ siguiente pasada lo reintenta. Corre al arrancar (tras un breve retraso) y cada
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import Any
 
 import asyncpg
+from fastapi import HTTPException
+from orpycamcp_common import audit
 from orpycamcp_common.request_log import canal_de_fondo
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.database import acquire_tenant, get_pool
+from app.repositories.postal_repository import PostalRepository
+from app.schemas.postal import PostalCallbackPayload
 from app.services import outbox
 from app.services.batch_service import BatchService
 from app.services.import_huerfanos_service import ImportHuerfanosService
+from app.services.postal_service import PostalService
 
 logger = logging.getLogger(__name__)
 
 # Una réplica a la vez por tenant en la fase de purga (su cola no es por-fila lockeada).
 _ESPACIO_LOCK_PURGA = 0x50555247  # "PURG"
+# Idem para el drenaje de callbacks postales diferidos: el orden de aplicación importa
+# (máquina de estados), así que dos réplicas no pueden drenar a la vez.
+_ESPACIO_LOCK_POSTAL = 0x50435342  # "PCSB"
+#: Filas que se atienden por tenant y por pasada.
+_LOTE_DIFERIDOS = 100
 
 
 async def tenants_activos(pool: asyncpg.Pool) -> list[str]:
@@ -53,9 +65,145 @@ async def tenants_activos(pool: asyncpg.Pool) -> list[str]:
     return [r["slug"] for r in rows]
 
 
+async def _descartar_diferido(
+    conn: asyncpg.Connection,
+    repo: PostalRepository,
+    slug: str,
+    fila: asyncpg.Record,
+    *,
+    resultado: str,
+    extra: dict[str, Any],
+) -> None:
+    """Cierra una fila diferida como `descartado` y lo asienta; quien llama abre la tx."""
+    await repo.cerrar_diferido(fila["id"], estado="descartado", resultado=resultado)
+    await audit.append(
+        conn,
+        tenant_slug=slug,
+        service="document-service",
+        action="document.envio_callback_diferido_descartado",
+        object_type="postal_shipment",
+        object_ref=fila["guia"],
+        actor=f"postal:{fila['operador']}",
+        payload={
+            "event_id": fila["event_id"],
+            "diferido_id": str(fila["id"]),
+            "motivo": resultado,
+            **extra,
+        },
+        canal="system",
+    )
+
+
+async def drenar_callbacks_diferidos(conn: asyncpg.Connection, slug: str, redis: Any | None) -> int:
+    """Aplica, EN ORDEN DE RECEPCIÓN, los callbacks postales que llegaron con la entidad
+    suspendida (B10, ADR-035 §7). Devuelve cuántos quedaron cerrados (procesados o descartados).
+
+    Solo se llama para tenants activos: reactivar la entidad es lo que dispara el drenaje.
+    No se vuelve a verificar el HMAC: el secreto pudo rotar durante la suspensión y la
+    verificación ya quedó asentada al recibir; en su lugar se coteja `sha256(cuerpo)` con la
+    huella guardada al recibir (una fila reescrita después no se aplica). Cada fila va en su
+    propia transacción (aplicación + cierre + asientos, todo o nada). Un 4xx determinista (la
+    guía ya no existe) o una huella que no casa descarta la fila con asiento; un error
+    transitorio la deja pendiente y corta el lote para no saltarse el orden, pero solo hasta
+    `postal_diferido_max_intentos`: pasado el tope se descarta con asiento y WARNING y el
+    drenaje SIGUE con la siguiente (una fila envenenada no bloquea la cola del tenant).
+
+    Riesgo aceptado: si tras reactivar entra un callback en vivo antes que uno diferido más
+    viejo, la máquina de estados impide retroceder y el viejo queda `recorded_no_change`.
+    """
+    if not await conn.fetchval(
+        "SELECT pg_try_advisory_lock($1::int, hashtext(current_schema()))", _ESPACIO_LOCK_POSTAL
+    ):
+        return 0
+    cerrados = 0
+    try:
+        repo = PostalRepository(conn)
+        svc = PostalService(conn, redis=redis, tenant_slug=slug)
+        for _ in range(_LOTE_DIFERIDOS):
+            fila = None
+            try:
+                async with conn.transaction():
+                    fila = await repo.siguiente_diferido()
+                    if fila is None:
+                        break
+                    fila_id = fila["id"]
+                    actor = f"postal:{fila['operador']}"
+                    cuerpo = bytes(fila["cuerpo"])
+                    if hashlib.sha256(cuerpo).hexdigest() != fila["cuerpo_sha256"]:
+                        # Defensa en profundidad: lo que se aplicaría ya no es lo que se autenticó.
+                        logger.warning(
+                            "barrido: diferido %s tenant=%s con huella que no casa; descartado",
+                            fila_id,
+                            slug,
+                        )
+                        await _descartar_diferido(
+                            conn, repo, slug, fila, resultado="huella_no_coincide", extra={}
+                        )
+                    else:
+                        try:
+                            payload = PostalCallbackPayload.model_validate_json(cuerpo)
+                            res = await svc.aplicar_autenticado(
+                                payload,
+                                actor=actor,
+                                ocurrido_at=fila["recibido_at"],
+                                diferido_id=fila_id,
+                            )
+                            await repo.cerrar_diferido(fila_id, estado="procesado", resultado=res.status)
+                        except (HTTPException, ValidationError) as exc:
+                            # Determinista: reintentarlo no lo arregla. Queda descartado y asentado.
+                            codigo = exc.status_code if isinstance(exc, HTTPException) else 422
+                            resultado = "envio_no_encontrado" if codigo == 404 else "no_aplicable"
+                            await _descartar_diferido(
+                                conn, repo, slug, fila, resultado=resultado, extra={"http": codigo}
+                            )
+                cerrados += 1
+            except asyncpg.UndefinedTableError:
+                raise
+            except Exception as exc:
+                logger.exception("barrido: drenaje de callback postal falló en tenant=%s", slug)
+                if fila is None:
+                    break
+                try:
+                    intentos = await repo.fallo_diferido(fila["id"], f"{type(exc).__name__}: {exc}")
+                    if intentos >= settings.postal_diferido_max_intentos:
+                        logger.warning(
+                            "barrido: diferido %s tenant=%s descartado tras %d intentos",
+                            fila["id"],
+                            slug,
+                            intentos,
+                        )
+                        async with conn.transaction():
+                            await _descartar_diferido(
+                                conn,
+                                repo,
+                                slug,
+                                fila,
+                                resultado="error_persistente",
+                                extra={"intentos": intentos, "ultimo_error": type(exc).__name__},
+                            )
+                        cerrados += 1
+                        continue  # no bloquea las filas siguientes
+                except Exception:
+                    logger.exception("barrido: no se pudo anotar el fallo del diferido %s", fila["id"])
+                break
+            # La tx de la fila ya confirmó: ahora sí sale su evento por el camino rápido.
+            await svc.enviar_pendientes()
+    finally:
+        await conn.fetchval(
+            "SELECT pg_advisory_unlock($1::int, hashtext(current_schema()))", _ESPACIO_LOCK_POSTAL
+        )
+    return cerrados
+
+
 async def barrer_tenant(slug: str, redis: Any | None = None) -> dict[str, int]:
-    """Las cuatro fases sobre un tenant. Cada una aislada de las otras."""
-    resumen = {"huerfanos": 0, "lotes_reanudados": 0, "lotes_retirados": 0, "eventos_reenviados": 0}
+    """Las cinco fases sobre un tenant. Cada una aislada de las otras."""
+    resumen = {
+        "huerfanos": 0,
+        "lotes_reanudados": 0,
+        "lotes_retirados": 0,
+        "eventos_reenviados": 0,
+        "callbacks_diferidos": 0,
+    }
     async with acquire_tenant(slug) as conn:
         # 1. purga de huérfanos, exclusiva por tenant entre réplicas
         if await conn.fetchval("SELECT pg_try_advisory_lock($1::int, hashtext(current_schema()))", _ESPACIO_LOCK_PURGA):
@@ -96,6 +244,14 @@ async def barrer_tenant(slug: str, redis: Any | None = None) -> dict[str, int]:
                 raise
             except Exception:
                 logger.exception("barrido: relé del outbox falló en tenant=%s", slug)
+        # 5. callbacks postales recibidos con la entidad suspendida (B10, ADR-035 §7).
+        #    Este barrido solo recorre tenants ACTIVOS: reactivarla dispara el drenaje.
+        try:
+            resumen["callbacks_diferidos"] = await drenar_callbacks_diferidos(conn, slug, redis)
+        except asyncpg.UndefinedTableError:
+            raise
+        except Exception:
+            logger.exception("barrido: drenaje de callbacks diferidos falló en tenant=%s", slug)
     return resumen
 
 

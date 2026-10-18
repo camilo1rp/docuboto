@@ -157,6 +157,10 @@ class FirmaResponse(BaseModel):
 
     # --- Campos XAdES-B (Inc.1, E06/ADR-016) — None para firmas 'nativa' ---
     minio_key_firmado: str | None = None
+    # B10 §8: el XML que representa HOY a la firma. Es `minio_key_firmado` (el original, que no
+    # se toca) mientras no haya renovaciones; tras renovar el ATS, el de la última renovación.
+    minio_key_vigente: str | None = None
+    archive_timestamp_ordinal: int = 0
     xades_level: str | None = None
     nivel_conformidad: str | None = None
     tipo_firma: str | None = None
@@ -239,6 +243,9 @@ class VerifyResponse(BaseModel):
     # intencionado al firmar. Ver FirmaResponse para la semántica de cada campo.
     lt_material_present: bool = False
     archive_timestamp_present: bool = False
+    # ¿El último sello de archivo aún prueba (su TSA vigente hoy)? None si no es LTA. False =
+    # el nivel verificado se degrada a XAdES-LT (EN 319 102-1 §5.6.2).
+    lta_vigente: bool | None = None
     revocation_provenance: str | None = None
     crl_next_update: datetime | None = None
 

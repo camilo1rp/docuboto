@@ -31,9 +31,15 @@ Diseño del arquitecto (riesgos citados en los docstrings de cada función):
     BAJARÍA el chunk: «inocuo» solo vale para el mismo evento repetido, no para uno
     reordenado. El cierre vive en el ORIGEN (hallazgo de auditoría, 2026-10): el relé
     de document-service (`outbox._con_nivel_vivo`) publica el `nivel_nuevo` VIGENTE de
-    `radicados.nivel_seguridad`, no el que llevaba la fila al encolarse. Este módulo
-    NO compara `occurred_at` (red adicional NO construida), como tampoco existe aún un
-    barrido de reconciliación nivel-del-chunk vs `radicados.nivel_seguridad`.
+    `radicados.nivel_seguridad`, no el que llevaba la fila al encolarse. Además hay DOS
+    redes en este servicio (B10): (1) la comparación por `occurred_at` —`occurred_at` se
+    guarda como `nivel_evento_at` (migración 014) y `update_nivel_by_source` /
+    `tombstone_by_source` ignoran un evento más antiguo que el último aplicado; el worker
+    y el replay de la DLQ lo pasan—; y (2) la LECTURA no confía en la copia: `search` y
+    `get_pivot_chunk` aplican `GREATEST(nivel del fragmento, nivel vigente del radicado)`
+    en el `WHERE`. El barrido `app/jobs/reconciliacion_nivel.py` solo SUBE el nivel de los
+    fragmentos desactualizados y tombstonea el material de un proveedor externo; bajar
+    sigue siendo cosa exclusiva de un `reclassified`.
 
 Fuga cerrada (hallazgo tenant-security-auditor, ver tombstone_by_source): un
 `created` REDELIVERED tarde (at-least-once) después de un `reclassified` que subió

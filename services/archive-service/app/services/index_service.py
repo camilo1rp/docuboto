@@ -1219,14 +1219,27 @@ class IndexService:
         acreditado = False
         motivo: str | None = None
         advertencias: list[str] = []
+        lta_vigente: bool | None = None
         if firma_presente:
             from app.clients import signature_client, storage_client
 
             signed_xml: str | None = None
             if row["minio_key_firmado"]:
+                # B10 (R2-1, EN 319 102-1 §5.6.3): la prueba vigente es la cadena COMPLETA, que
+                # vive en el XML renovado, no en el original (cuyo último sello caduca). Se
+                # verifica el artefacto VIGENTE, resuelto igual que el AIP; si no se puede
+                # resolver, se cae al original y se AVISA (no se calla la degradación).
+                clave_xml = row["minio_key_firmado"]
+                vigente = await signature_client.artefacto_vigente(
+                    tenant_slug=self._tenant_slug, firma_id=str(row["firma_id"])
+                )
+                if vigente:
+                    clave_xml = vigente
+                else:
+                    advertencias.append("artefacto_vigente_no_resuelto")
                 signed_xml = await storage_client.download_signed_xml(
                     tenant_slug=self._tenant_slug,
-                    minio_key_firmado=row["minio_key_firmado"],
+                    minio_key_firmado=clave_xml,
                 )
             if signed_xml is None:
                 motivo = "signed_xml_unavailable"
@@ -1243,7 +1256,11 @@ class IndexService:
                     nivel_conformidad = resultado.nivel_conformidad
                     acreditado = resultado.acreditado
                     motivo = resultado.motivo
-                    advertencias = list(resultado.advertencias)
+                    advertencias = [
+                        *advertencias,
+                        *(a for a in resultado.advertencias if a not in advertencias),
+                    ]
+                    lta_vigente = resultado.lta_vigente
         firma = IndiceVerifyFirma(
             presente=firma_presente,
             valida=valida_firma,
@@ -1251,6 +1268,7 @@ class IndexService:
             acreditado=acreditado,
             motivo=motivo,
             advertencias=advertencias,
+            lta_vigente=lta_vigente,
         )
         # Fixity del XML del índice en sí (no solo de los documentos que
         # referencia): re-hashea la columna `xml` almacenada y la contrasta

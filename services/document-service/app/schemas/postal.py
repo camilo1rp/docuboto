@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _OPERADOR = Literal["4-72", "servientrega", "otro"]
 _ESTADO = Literal["registrado", "en_transito", "entregado", "devuelto", "fallido"]
@@ -74,7 +74,10 @@ class CredencialRotada(BaseModel):
 class ShipmentEvent(BaseModel):
     estado: str
     descripcion: str | None
+    #: Cuándo el sistema RECIBIÓ el aviso del operador (o el cambio manual).
     ts: datetime
+    #: Fecha del hecho postal según el operador (campo firmado del callback); None si no la mandó.
+    ocurrido_operador_at: datetime | None = None
 
 
 class ShipmentResponse(BaseModel):
@@ -112,14 +115,27 @@ class PostalCallbackPayload(BaseModel):
     event_id: str = Field(min_length=1, max_length=120)
     descripcion: str | None = Field(default=None, max_length=500)
     motivo: str | None = Field(default=None, max_length=500)
+    # Fecha del hecho postal que declara el operador. Va DENTRO del cuerpo firmado, así que
+    # la autentica el HMAC; es opcional porque no todo operador la manda. Con zona horaria
+    # obligatoria: una fecha sin zona no es una fecha de entrega.
+    ocurrido_at: datetime | None = None
+
+    @field_validator("ocurrido_at")
+    @classmethod
+    def _con_zona(cls, v: datetime | None) -> datetime | None:
+        if v is not None and v.tzinfo is None:
+            raise ValueError("ocurrido_at debe llevar zona horaria")
+        return v
 
 
 class CallbackResult(BaseModel):
     """Resultado del callback. `duplicate` = ya procesado (idempotente); `applied`
     = transición aplicada; `recorded_no_change` = notificación registrada sin
-    cambiar el estado (misma etiqueta o transición no válida sobre un terminal)."""
+    cambiar el estado (misma etiqueta o transición no válida sobre un terminal);
+    `deferred` = la entidad está suspendida: la firma es válida y el cuerpo quedó en
+    cola (HTTP 202) para aplicarse al reactivarse (B10, ADR-035 §7)."""
 
-    status: Literal["applied", "duplicate", "recorded_no_change"]
+    status: Literal["applied", "duplicate", "recorded_no_change", "deferred"]
     shipment_id: uuid.UUID | None = None
     estado: str | None = None
 

@@ -100,7 +100,12 @@ MULTI_ARTEFACTO_TIPOS: frozenset[str] = frozenset(
 # retención. El índice electrónico ancla su retención en `closed_at`
 # (co-expira con el contenido), por lo que permanecer en el set bloqueante es
 # dirección segura y NO reintroduce la postergación que el remedio corrige.
-CONTENT_TIPOS: frozenset[str] = frozenset({"indice", "aip"})
+#
+# `firma_lta_renovada` (B10 §8, migración 022): el XML de una firma XAdES-LTA con un
+# ArchiveTimeStamp renovado. Hereda el `retain_until`, el modo y el legal hold del índice al
+# que sustituye, así que co-expira con él; clasificarlo como CONTENIDO (y no como instrumento de
+# control) es la dirección segura: mientras viva, bloquea la disposición igual que el original.
+CONTENT_TIPOS: frozenset[str] = frozenset({"indice", "aip", "firma_lta_renovada"})
 
 # Universo COMPLETO de `tipo` válidos en `preservacion_worm_objeto`. DEBE
 # coincidir con el CHECK `preservacion_worm_objeto_tipo_check` (migración

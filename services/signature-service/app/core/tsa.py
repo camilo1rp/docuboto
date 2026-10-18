@@ -102,6 +102,10 @@ class TimestampVerifyOutcome:
     # Avisos sobre un sello que SÍ es válido (hoy: sin ESSCertID pero anterior a
     # la fecha de corte). `/verify` los publica; no cambian el veredicto.
     advertencias: list[str] = field(default_factory=list)
+    # Fin de vigencia del certificado de la TSA que firmó el token. La cadena de
+    # `ArchiveTimeStamp` (B10 §8) lo necesita: cada sello debe renovarse ANTES de que
+    # caduque el certificado de su TSA.
+    tsa_cert_not_after: datetime | None = None
 
 
 def _assert_timestamping_eku(cert: x509.Certificate) -> None:
@@ -388,6 +392,147 @@ def _build_local_timestamp_token(signature_value_c14n: bytes) -> TimestampToken:
     )
 
 
+def certificados_de_token(token_der: bytes) -> list[x509.Certificate]:
+    """Certificados que el ``TimeStampToken`` lleva embebidos (el primero es el de la TSA).
+
+    Sirve a la renovación del ``ArchiveTimeStamp`` (B10 §8): el ``TimeStampValidationData`` que
+    precede al sello nuevo guarda la cadena de la TSA del sello anterior, de modo que el
+    anterior siga siendo verificable aunque su TSA ya no responda."""
+    content_info = cms.ContentInfo.load(token_der)
+    certificates = content_info["content"]["certificates"]
+    if certificates is None:
+        return []
+    return [x509.load_der_x509_certificate(c.chosen.dump()) for c in certificates]
+
+
+def certificado_tsa_de_token(token_der: bytes) -> x509.Certificate | None:
+    """El certificado de la TSA que FIRMÓ el token (``SignerInfo.sid``), no «el primero».
+
+    ``certificates`` de un CMS ``SignedData`` es un ``SET OF``: su orden no está garantizado
+    (DER lo ordena por codificación) y una TSA remota puede incluir la cadena, con la CA delante.
+    Se busca por emisor + número de serie del ``sid``; si el ``sid`` es un ``SubjectKeyIdentifier``
+    se cae al certificado con EKU ``timeStamping``. ``None`` si el token no trae certificados o
+    ninguno casa (el llamante decide: nunca se adivina)."""
+    certs = certificados_de_token(token_der)
+    if not certs:
+        return None
+    try:
+        content = cms.ContentInfo.load(token_der)["content"]
+        sid = content["signer_infos"][0]["sid"].chosen
+        if isinstance(sid, cms.IssuerAndSerialNumber):
+            serie = sid["serial_number"].native
+            emisor = sid["issuer"].dump()
+            for c in certs:
+                if c.serial_number == serie and c.issuer.public_bytes() == emisor:
+                    return c
+            return None
+    except Exception:  # noqa: BLE001 — token raro: se intenta por EKU
+        pass
+    for c in certs:
+        try:
+            _assert_timestamping_eku(c)
+        except TsaUnavailableError:
+            continue
+        return c
+    return None
+
+
+class RevocacionTsaNoDisponibleError(RuntimeError):
+    """No se pudo obtener, o no se pudo VERIFICAR, la revocación (CRL) de la CA que emitió el
+    certificado de la TSA del sello anterior: ``TimeStampValidationData`` (EN 319 132-1 §5.5.1)
+    no puede completarse y la renovación del sello de archivo NO debe seguir."""
+
+
+class TsaRevocadaError(RuntimeError):
+    """El certificado de la TSA del sello anterior figura REVOCADO en la CRL de su CA: renovar
+    sellaría una cadena que un validador tercero no daría por buena."""
+
+
+_CRL_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _cas_configuradas() -> list[x509.Certificate]:
+    cas: list[x509.Certificate] = []
+    for ruta in (r.strip() for r in settings.tsa_ca_pem_paths.split(",")):
+        if not ruta:
+            continue
+        try:
+            with open(ruta, "rb") as f:
+                cas.extend(x509.load_pem_x509_certificates(f.read()))
+        except (OSError, ValueError) as exc:
+            raise RevocacionTsaNoDisponibleError(f"tsa_ca_ilegible: {ruta}: {exc}") from exc
+    return cas
+
+
+def revocacion_de_tsa(
+    cert: x509.Certificate, cadena: list[x509.Certificate] | None = None
+) -> bytes | None:
+    """CRL (DER) de la CA emisora de ``cert``, o ``None`` si NO HAY revocación aplicable.
+
+    - Certificado AUTOFIRMADO (la TSA local de un despliegue): es su propia ancla de confianza;
+      no existe CA ni CRL. ``None``, y el ADR-034 §5 declara que ese ``TimeStampValidationData``
+      va sin ``RevocationValues``.
+    - Emitido por una CA: se descarga la CRL de su punto de distribución (``http(s)``), se exige
+      que sea del MISMO emisor, que no esté vencida, que su FIRMA verifique contra la CA (la del
+      token o una de ``tsa_ca_pem_paths``; sin CA no se acepta una CRL sin verificar) y que el
+      número de serie de ``cert`` NO figure en ella (``TsaRevocadaError``). Cualquier otro fallo
+      es ``RevocacionTsaNoDisponibleError``: sin ella no se renueva."""
+    if cert.issuer == cert.subject:
+        return None
+    try:
+        dps = cert.extensions.get_extension_for_class(x509.CRLDistributionPoints).value
+    except x509.ExtensionNotFound as exc:
+        raise RevocacionTsaNoDisponibleError("tsa_cert_sin_crl_distribution_point") from exc
+    urls = [
+        n.value
+        for dp in dps
+        for n in (dp.full_name or [])
+        if isinstance(n, x509.UniformResourceIdentifier) and n.value.lower().startswith(("http://", "https://"))
+    ]
+    if not urls:
+        raise RevocacionTsaNoDisponibleError("tsa_cert_sin_crl_http")
+    ca = next((c for c in [*(cadena or []), *_cas_configuradas()] if c.subject == cert.issuer), None)
+    if ca is None:
+        raise RevocacionTsaNoDisponibleError("ca_de_la_tsa_no_disponible")
+    ultimo: Exception | None = None
+    for url in urls:
+        try:
+            with httpx.Client(timeout=settings.tsa_timeout_seconds, follow_redirects=False) as client:
+                resp = client.get(url)
+            resp.raise_for_status()
+            der = resp.content
+            if len(der) > _CRL_MAX_BYTES:
+                raise ValueError("crl_demasiado_grande")
+            crl = x509.load_der_x509_crl(der)
+            if crl.issuer != cert.issuer:
+                raise ValueError("crl_de_otro_emisor")
+            if crl.next_update_utc is not None and crl.next_update_utc < datetime.now(UTC):
+                raise ValueError("crl_vencida")
+            if not crl.is_signature_valid(ca.public_key()):  # type: ignore[arg-type]
+                raise ValueError("crl_firma_invalida")
+        except Exception as exc:  # noqa: BLE001 — cada fallo cuenta como «no disponible»
+            ultimo = exc
+            continue
+        if crl.get_revoked_certificate_by_serial_number(cert.serial_number) is not None:
+            raise TsaRevocadaError(f"tsa_revocada: serie {cert.serial_number:x}")
+        return der
+    raise RevocacionTsaNoDisponibleError(f"crl_tsa_no_obtenida: {ultimo}")
+
+
+def cert_tsa_vigente() -> x509.Certificate | None:
+    """Certificado de la TSA con que se sellaría AHORA, si se puede saber sin pedir un sello.
+
+    La TSA local lo conoce (es el par montado en el despliegue); una TSA remota no: devuelve
+    ``None`` y el llamante comprueba el plazo con el token ya obtenido."""
+    if settings.tsa_url:
+        return None
+    try:
+        tsa_ref = load_tsa_seal()
+    except TsaSealNotFoundError as exc:
+        raise TsaUnavailableError(str(exc)) from exc
+    return x509.load_pem_x509_certificate(tsa_ref.cert_pem)
+
+
 def sello_acreditado() -> bool:
     """¿El sello de tiempo que produce este módulo es de un prestador acreditado?
 
@@ -628,4 +773,10 @@ def _verify_timestamp_token_inner(
     except Exception as exc:  # noqa: BLE001 — cualquier fallo criptográfico == inválido
         return TimestampVerifyOutcome(False, motivo=f"firma_cms_invalida: {exc}")
 
-    return TimestampVerifyOutcome(True, gen_time=gen_time, motivo=None, advertencias=advertencias)
+    return TimestampVerifyOutcome(
+        True,
+        gen_time=gen_time,
+        motivo=None,
+        advertencias=advertencias,
+        tsa_cert_not_after=tsa_cert.not_valid_after_utc,
+    )

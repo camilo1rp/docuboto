@@ -239,7 +239,7 @@ async def test_replay_success(client_with_conn) -> None:
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_reclassification",
+        patch("app.routers.admin_deadletter.apply_event",
               AsyncMock(return_value=1)),
         patch("app.routers.admin_deadletter._audit", mock_audit),
         patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
@@ -261,7 +261,7 @@ async def test_replay_handler_fails_returns_502(client_with_conn) -> None:
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_reclassification",
+        patch("app.routers.admin_deadletter.apply_event",
               AsyncMock(side_effect=RuntimeError("boom"))),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
@@ -282,7 +282,7 @@ async def test_replay_not_pending_returns_409(client_with_conn) -> None:
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_reclassification",
+        patch("app.routers.admin_deadletter.apply_event",
               AsyncMock(return_value=1)),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):
@@ -440,7 +440,7 @@ async def test_replay_passes_own_origin_group_to_get_for_update(client_with_conn
     with (
         patch("app.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_reclassification",
+        patch("app.routers.admin_deadletter.apply_event",
               AsyncMock(return_value=1)),
         patch("app.routers.admin_deadletter._audit", AsyncMock()),
     ):

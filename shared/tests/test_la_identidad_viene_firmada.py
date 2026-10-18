@@ -25,6 +25,7 @@ from orpycamcp_common.identidad import (
 )
 
 _SECRETO = "secreto-de-pruebas"
+OP = {"metodo": "POST", "ruta": "/api/v1/x"}
 
 
 @pytest.fixture(autouse=True)
@@ -46,37 +47,37 @@ def _identidad(**kw):
 
 
 def test_la_identidad_del_gateway_se_verifica():
-    verificar(firmar(_identidad()))
+    verificar(firmar(_identidad(), **OP), **OP)
 
 
 def test_una_identidad_inventada_no_pasa():
     """El ataque: hablarle directo al servicio afirmando ser quien sea."""
     with pytest.raises(IdentidadNoAutentica):
-        verificar(_identidad())
+        verificar(_identidad(), **OP)
 
 
 def test_cambiar_la_entidad_invalida_la_firma():
     """`X-Tenant-Slug` decide sobre QUÉ entidad se actúa: está dentro de lo firmado."""
-    cabeceras = firmar(_identidad(**{"X-Tenant-Slug": "demo"}))
+    cabeceras = firmar(_identidad(**{"X-Tenant-Slug": "demo"}), **OP)
     cabeceras["X-Tenant-Slug"] = "otra-entidad"
 
     with pytest.raises(IdentidadNoAutentica):
-        verificar(cabeceras)
+        verificar(cabeceras, **OP)
 
 
 def test_cambiar_los_roles_invalida_la_firma():
-    cabeceras = firmar(_identidad())
+    cabeceras = firmar(_identidad(), **OP)
     cabeceras["X-User-Roles"] = "admin"
 
     with pytest.raises(IdentidadNoAutentica):
-        verificar(cabeceras)
+        verificar(cabeceras, **OP)
 
 
 def test_las_cabeceras_en_minuscula_tambien_valen():
     """El servidor puede entregarlas en minúscula: los nombres de cabecera no
     distinguen mayúsculas y la verificación tampoco puede hacerlo."""
-    firmadas = firmar(_identidad())
-    verificar({k.lower(): v for k, v in firmadas.items()})
+    firmadas = firmar(_identidad(), **OP)
+    verificar({k.lower(): v for k, v in firmadas.items()}, **OP)
 
 
 def test_sin_secreto_configurado_no_se_verifica(monkeypatch):
@@ -84,5 +85,5 @@ def test_sin_secreto_configurado_no_se_verifica(monkeypatch):
     activar esto de golpe. El interruptor es la propia variable."""
     monkeypatch.delenv("IDENTITY_SIGNING_SECRET", raising=False)
 
-    verificar(_identidad())
-    assert CABECERA_FIRMA not in firmar(_identidad())
+    verificar(_identidad(), **OP)
+    assert CABECERA_FIRMA not in firmar(_identidad(), **OP)

@@ -660,6 +660,39 @@ class RenovarRetencionResponse(BaseModel):
     renovado_at: datetime | None
 
 
+class RenovarArtefactoRequest(BaseModel):
+    """``POST /api/v1/preservacion/renovar-artefacto-internal`` (B10 §8, solo SISTEMA).
+
+    signature-service renovó el ``ArchiveTimeStamp`` de una firma XAdES-LTA: el XML renovado es
+    un objeto NUEVO (``file_id_nuevo``) que contiene todos los sellos anteriores. Storage no
+    decide nada de la firma: hereda la política WORM del objeto anterior (si la tiene) y deja el
+    evento PREMIS de renovación."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_id_anterior: uuid.UUID
+    file_id_nuevo: uuid.UUID
+    sha256_nuevo: str = Field(pattern=r"^[0-9a-f]{64}$")
+    firma_id: uuid.UUID
+    ordinal: int = Field(ge=1, le=10_000)
+
+    @model_validator(mode="after")
+    def _distintos(self) -> RenovarArtefactoRequest:
+        if self.file_id_anterior == self.file_id_nuevo:
+            raise ValueError("file_id_nuevo debe ser distinto de file_id_anterior")
+        return self
+
+
+class RenovarArtefactoResponse(BaseModel):
+    # `True` si el objeto nuevo quedó bajo WORM (el anterior lo estaba). `False` si el anterior
+    # no tenía fila WORM: la renovación se asienta igual (PREMIS), pero no hay retención que heredar.
+    protegido: bool
+    retain_until: datetime | None = None
+    evento_id: uuid.UUID
+    # `True` si la llamada ya estaba aplicada (reintento): no se tocó nada.
+    ya_registrada: bool = False
+
+
 class MigrarFormatoRequest(BaseModel):
     """`POST /api/v1/preservacion/migrar-formato` (E10, RF-PRE-04).
 

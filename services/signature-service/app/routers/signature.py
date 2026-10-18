@@ -52,6 +52,7 @@ from app.core.secret_derivation import KEY_VERSION_HKDF
 from app.providers.local import verify_xades
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.firma_repository import FirmaRepository
+from app.schemas.cadena import InvalidarCircuitosRequest
 from app.schemas.firma import (
     FirmaResponse,
     InternalSignIndiceRequest,
@@ -60,7 +61,7 @@ from app.schemas.firma import (
     VerifyRequest,
     VerifyResponse,
 )
-from app.services import signer, signing_service
+from app.services import invalidacion, signer, signing_service
 from app.services.personal_signing import PersonalSigningService
 
 _SERVICE = "signature-service"
@@ -334,9 +335,15 @@ async def verify(
         # migración — se degrada al comportamiento previo (solo huella de
         # certificado) para no romper la verificación de firmas históricas.
         expected_xml_sha256 = row.get("signed_xml_sha256")
-        if expected_xml_sha256 and hashlib.sha256(
+        # B10 §8: una firma LTA renovada tiene VARIOS XML válidos (el original y cada
+        # renovación) y varias TSA ancladas; ambos salen de `firma_sello_archivo`.
+        sellos = await _sellos_de_la_firma(conn, row["id"])
+        aceptados = {s["xml_sha256"] for s in sellos if s["estado"] in ("vigente", "caducado")}
+        if expected_xml_sha256:
+            aceptados.add(expected_xml_sha256)
+        if aceptados and hashlib.sha256(
             payload.payload_xml.encode()
-        ).hexdigest() != expected_xml_sha256:
+        ).hexdigest() not in aceptados:
             return VerifyResponse(
                 firma_id=row["id"],
                 valida=False,
@@ -359,6 +366,7 @@ async def verify(
             expected_ocsp_responder_fingerprint=row.get("ocsp_responder_fingerprint"),
             expected_user_ca_fingerprint=(row.get("ca_fingerprint") if is_personal else None),
             advertencias=advertencias,
+            tsa_fingerprints_archivo=[s["tsa_cert_fingerprint"] for s in sellos],
         )
 
         # `firma_criptograficamente_valida`: el veredicto de `verify_xades`
@@ -462,6 +470,7 @@ async def verify(
             tsa_timestamp=outcome.tsa_timestamp,
             lt_material_present=outcome.lt_material_present,
             archive_timestamp_present=outcome.archive_timestamp_present,
+            lta_vigente=outcome.lta_vigente,
             revocation_provenance=outcome.revocation_provenance,
             crl_next_update=outcome.crl_next_update,
             ocsp_present=outcome.ocsp_present,
@@ -525,6 +534,14 @@ async def verify(
     )
 
 
+async def _sellos_de_la_firma(conn: asyncpg.Connection, firma_id: uuid.UUID) -> list:
+    """Cadena de sellos de archivo (B10 §8). Un tenant sin la migración 026 no tiene cadena."""
+    try:
+        return list(await FirmaRepository(conn).sellos_de(firma_id))
+    except asyncpg.UndefinedTableError:
+        return []
+
+
 @router.get("/firmas/{firma_id}", response_model=FirmaResponse)
 async def get_firma(
     firma_id: uuid.UUID,
@@ -556,7 +573,13 @@ async def get_firma(
             detail={"error": "firma_not_found", "detail": str(firma_id), "status": 404},
         )
     d = dict(row)
+    try:
+        vigente = await FirmaRepository(conn).artefacto_vigente(firma_id)
+    except asyncpg.UndefinedTableError:
+        vigente = None
     return FirmaResponse(
+        minio_key_vigente=vigente["minio_key"] if vigente else d.get("minio_key_firmado"),
+        archive_timestamp_ordinal=vigente["ordinal"] if vigente else 0,
         firma_id=d["id"],
         objeto_tipo=d["objeto_tipo"],
         objeto_id=d.get("objeto_id"),
@@ -589,13 +612,15 @@ async def get_firma(
     "/internal/circuitos/{objeto_tipo}/{objeto_id}/invalidar",
     dependencies=[Depends(require_internal_token)],
     summary=(
-        "Dejar sin efecto los circuitos de un objeto cuyo texto cambió "
+        "Dejar sin efecto los circuitos de un objeto que ya no recaen sobre su texto vigente "
         "(acto de sistema; lo pide document-service al editar un borrador ya sometido a firma)"
     ),
 )
 async def invalidar_circuitos_internal(
     objeto_tipo: str,
     objeto_id: str,
+    body: InvalidarCircuitosRequest,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, object]:
     """Rehacer un documento firmado es el trámite, no un abuso.
@@ -607,20 +632,31 @@ async def invalidar_circuitos_internal(
     La garantía DURA de eso vive en document-service, que al radicar compara la
     huella firmada con la del texto vigente y se niega si no coinciden. Esto es
     lo que hace humano el trámite: sin ello, los turnos de un circuito superado
-    seguían apareciendo en la bandeja de quien los tenía, pidiéndole firmar un
-    documento que ya no existe, y desaparecían después sin explicación. «Se
-    esfumó» sin motivo es lo que hace que la gente desconfíe de la herramienta.
+    seguían apareciendo en la bandeja de quien los tenía.
 
-    Es **best-effort**, igual que el aviso de aprobación en sentido contrario, y
-    puede serlo sin abrir ninguna ventana: si esta llamada se pierde, la
-    comparación de huellas al radicar sigue impidiendo que salga el documento.
-    La autoridad es la comparación; esto solo mantiene honesta la bandeja.
+    **Cuerpo obligatorio: la huella vigente.** Se invalida lo que NO recae sobre
+    ella (``IS DISTINCT FROM``), no «todo lo del objeto»: un aviso que llega tarde
+    tras h0→h1→h0 no puede tirar el circuito abierto sobre el texto que sí está
+    vigente. Es el mismo núcleo que el consumidor del evento
+    ``documento.contenido_cambiado``, y deja asiento (``firma.circuito_invalidado``)
+    en la misma transacción que el cambio.
 
-    Idempotente: sobre un objeto sin circuitos vivos no hace nada y devuelve 0.
+    Es **best-effort** para el llamante y puede serlo sin abrir ninguna ventana:
+    si esta llamada se pierde, la comparación de huellas al radicar sigue
+    impidiendo que salga el documento, y el evento lo cubre.
+
+    Idempotente: sobre un objeto sin circuitos que invalidar devuelve 0 y no deja
+    asiento.
     """
-    repo = CadenaRepository(conn)
-    invalidadas = await repo.invalidar_por_objeto(
-        objeto_tipo, objeto_id, "el texto del documento cambió después de someterse a firma"
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    invalidadas = await invalidacion.invalidar_por_contenido(
+        conn,
+        tenant_slug=tenant_slug,
+        objeto_tipo=objeto_tipo,
+        objeto_id=objeto_id,
+        vigente=body.cuerpo_sha256_vigente,
+        origen="sincrono",
+        event_id=None,
     )
     return {"objeto_tipo": objeto_tipo, "objeto_id": objeto_id, "invalidadas": invalidadas}
 

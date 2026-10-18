@@ -140,6 +140,11 @@ class InternalSignDigestRequest(BaseModel):
     alg: Literal["RSA-SHA256"] = "RSA-SHA256"
     prehashed: Literal[True] = True
     totp_code: str = Field(...)
+    # SHA-256 (DER, hex minúsculas) del certificado que el llamante va a incrustar en
+    # ``ds:KeyInfo``. OBLIGATORIO (B10 §7): auth lo contrasta con el certificado vigente de la
+    # credencial ANTES de tocar el TOTP; si difieren (rotación/revocación entre el ``/status`` y
+    # la firma) responde 409 ``certificado_cambiado`` sin consumir el factor.
+    cert_fingerprint: str = Field(..., pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("totp_code")
     @classmethod

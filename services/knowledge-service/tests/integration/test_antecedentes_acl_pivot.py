@@ -290,6 +290,12 @@ async def test_radicado_ref_from_other_tenant_is_not_found(
             async with conn_b.transaction():
                 await conn_b.execute(f'SET LOCAL search_path = "{schema_b}", public')
                 await conn_b.execute(path.read_text())
+        # `radicados` (de document-service) que el gate vivo del pivote lee (B10).
+        await conn_b.execute(
+            f'CREATE TABLE "{schema_b}".radicados (id uuid PRIMARY KEY DEFAULT '
+            "gen_random_uuid(), tracking_number varchar(50) NOT NULL UNIQUE, "
+            "nivel_seguridad smallint NOT NULL DEFAULT 1)"
+        )
         await conn_b.execute(f'SET search_path = "{schema_b}", public')
 
         with pytest.raises(HTTPException) as exc:

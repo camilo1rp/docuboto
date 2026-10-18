@@ -87,7 +87,9 @@ async def get_estado_circuito(borrador_id: str, tenant_slug: str) -> dict:
         ) from exc
 
 
-async def invalidar_circuitos(borrador_id: str, tenant_slug: str) -> int:
+async def invalidar_circuitos(
+    borrador_id: str, tenant_slug: str, cuerpo_sha256_vigente: str
+) -> int:
     """Deja sin efecto los circuitos de un borrador cuyo texto acaba de cambiar.
 
     **Best-effort a propósito, y puede serlo sin abrir ninguna ventana.** La
@@ -114,6 +116,9 @@ async def invalidar_circuitos(borrador_id: str, tenant_slug: str) -> int:
             resp = await client.post(
                 f"/api/v1/signature/internal/circuitos/borrador/{borrador_id}/invalidar",
                 headers=headers,
+                # B10: la huella VIGENTE es el predicado (se invalida lo que no recae
+                # sobre ella); signature-service responde 422 sin este cuerpo.
+                json={"cuerpo_sha256_vigente": cuerpo_sha256_vigente},
             )
         if resp.status_code != 200:
             logger.warning(

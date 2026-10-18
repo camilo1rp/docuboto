@@ -253,7 +253,7 @@ async def test_search_excludes_voided() -> None:
     )
 
     sql = conn.fetch.call_args.args[0]
-    assert "NOT voided" in sql
+    assert "NOT k.voided" in sql
 
 
 @pytest.mark.asyncio

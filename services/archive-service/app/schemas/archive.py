@@ -1155,6 +1155,9 @@ class IndiceVerifyFirma(BaseModel):
     # advertencias`, vocabulario cerrado; p. ej. `tsa_sin_esscertid_anterior_al_corte`).
     # Vacío = nada que avisar. Un verificador que los calla da por limpia una firma con reservas.
     advertencias: list[str] = Field(default_factory=list)
+    # ¿El último sello de archivo aún prueba (TSA vigente hoy)? `null` si la firma no es LTA.
+    # `false` = el sello ya no prueba y el nivel verificado bajó a XAdES-LT (B10, EN 319 102-1 §5.6.2).
+    lta_vigente: bool | None = None
 
 
 class IndiceVerifyResponse(BaseModel):

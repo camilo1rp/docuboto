@@ -311,8 +311,11 @@ async def antecedentes(
     clearance = await resolve_caller_clearance(conn, caller_id)
 
     if payload.radicado_ref is not None:
-        pivot = await repo.get_pivot_chunk(payload.source_type, payload.radicado_ref)
-        if pivot is None or pivot["nivel_seguridad"] > clearance:
+        # El gate va en el WHERE de la consulta (regla 5): sobre-clearance == inexistente.
+        pivot = await repo.get_pivot_chunk(
+            payload.source_type, payload.radicado_ref, max_clearance=clearance
+        )
+        if pivot is None:
             raise _antecedentes_source_not_found()
         # top_k + 1: el propio radicado pivote es su vecino más cercano
         # (score=1.0, embedding <=> sí mismo = 0); se pide uno de más para poder

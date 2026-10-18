@@ -59,8 +59,8 @@ from app.schemas.dead_letter import (
 )
 from app.services.buzones import resolver_buzon
 from app.services.event_consumer import (
-    build_document_notifications,
     build_workflow_notifications,
+    construir_envios_documento,
 )
 from app.services.notification_service import send_notification
 from app.workers.stream_worker import DOCUMENT_STREAM, WORKFLOW_STREAM
@@ -101,13 +101,11 @@ async def _construir_envios(conn, origin_stream: str, envelope: dict):
             conn, payload_data.get("to_dept_code"), payload_data.get("to_dept")
         )
         return build_workflow_notifications(envelope, buzon_destino=buzon)
-    # El stream de documentos necesita la misma resolución: reintentar un aviso
-    # muerto de una radicación hecha por NOMBRE lo mandaría otra vez a la
-    # ventanilla genérica, reproduciendo el defecto que se está corrigiendo.
-    buzon = await resolver_buzon(
-        conn, payload_data.get("dest_dept_code"), payload_data.get("dest_dept")
-    )
-    return build_document_notifications(envelope, buzon_destino=buzon)
+    # Stream de documentos: el MISMO núcleo que el consumidor vivo (``construir_envios_documento``),
+    # que resuelve el buzón por código/nombre y, para ``envio.devuelto``, el contexto con el
+    # gate de clearance en el WHERE. Reintentar un aviso muerto no puede divergir del vivo.
+    return await construir_envios_documento(conn, envelope)
+
 
 router = APIRouter(
     prefix="/api/v1/notification/admin/deadletter",

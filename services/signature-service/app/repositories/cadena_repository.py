@@ -282,54 +282,73 @@ class CadenaRepository:
             estado,
         )
 
-    async def invalidar_por_objeto(self, objeto_tipo: str, objeto_id: str, motivo: str) -> int:
-        """Deja sin efecto los circuitos de un objeto cuyo texto cambió.
+    async def invalidar_por_contenido(
+        self,
+        objeto_tipo: str,
+        objeto_id: str,
+        vigente: str | None,
+        motivo: str,
+    ) -> list[asyncpg.Record]:
+        """Deja sin efecto los circuitos de un objeto que NO recaen sobre la huella vigente.
 
-        La migración 018 creó el estado `invalidada` justamente para esto —«la
-        cadena seguía "pendiente" sobre un documento que ya no existe, o peor,
-        "firmado" sobre uno que cambió después»— y **ningún código lo escribía**.
-        El esquema anticipó el trámite y la lógica no lo conectó.
+        La migración 018 creó el estado `invalidada` para esto —«la cadena seguía
+        "pendiente" sobre un documento que ya no existe, o peor, "firmado" sobre
+        uno que cambió después»—.
 
-        Alcanza a las solicitudes vivas (`pendiente`) y a las ya cerradas
-        (`firmado`), porque el problema es el mismo en ambas: las primeras piden
-        a alguien que firme un texto que ya no es, y las segundas atestiguan un
-        texto que dejó de estar. Los turnos aún sin resolver caen con ellas,
-        para que desaparezcan de la bandeja de quien los tenía; los ya resueltos
-        se conservan intactos, porque son el registro de un acto que sí ocurrió.
+        **El predicado es la huella vigente, no el evento.** Invalidar «lo que
+        tenga la huella anterior» o «lo que no tenga la nueva» depende del orden
+        de llegada: con h0→h1→h0, un evento tardío tiraría el circuito recién
+        abierto sobre el texto que SÍ está vigente. Comparando contra la huella de
+        AHORA el resultado no depende de cuándo llegue el aviso y repetirlo no
+        cambia nada (idempotente por construcción).
 
-        No bloquea el rehacer: el índice de unicidad filtra por `pendiente`, así
-        que una solicitud invalidada no impide abrir la que la sustituye — la
-        propia migración lo comprueba para que un cambio futuro no lo rompa.
+        `vigente=None` es «el objeto ya no existe»: cae todo lo vivo, también lo
+        que no tenía huella (un `IS DISTINCT FROM NULL` dejaría a esas fuera).
 
-        Devuelve cuántas solicitudes se invalidaron.
+        Alcanza a `pendiente` (piden firmar un texto que ya no es) y a `firmado`
+        (atestiguan un texto que dejó de estar). Los turnos sin resolver caen con
+        ellas; los ya resueltos se conservan, son el registro de un acto que sí
+        ocurrió. El `FOR UPDATE` serializa contra quien resuelve un turno a la vez.
+
+        No bloquea el rehacer: el índice de unicidad filtra por `pendiente`.
+        Devuelve `(id, estado_previo)` de cada solicitud invalidada.
         """
         filas = await self._conn.fetch(
             """
-            UPDATE firma_solicitud
+            WITH objetivo AS (
+                SELECT id, estado
+                  FROM firma_solicitud
+                 WHERE objeto_tipo = $1
+                   AND objeto_id = $2
+                   AND estado IN ('pendiente', 'firmado')
+                   AND ($3::text IS NULL OR payload_sha256 IS DISTINCT FROM $3::text)
+                   FOR UPDATE
+            )
+            UPDATE firma_solicitud s
                SET estado = 'invalidada',
                    invalidada_at = now(),
-                   invalidada_motivo = $3,
+                   invalidada_motivo = $4,
                    updated_at = now()
-             WHERE objeto_tipo = $1
-               AND objeto_id = $2
-               AND estado IN ('pendiente', 'firmado')
-            RETURNING id
+              FROM objetivo o
+             WHERE s.id = o.id
+            RETURNING s.id, o.estado AS estado_previo
             """,
             objeto_tipo,
             objeto_id,
+            vigente,
             motivo,
         )
-        for fila in filas:
+        if filas:
             await self._conn.execute(
                 """
                 UPDATE firma_cadena
                    SET estado = 'invalidada'
-                 WHERE solicitud_id = $1
+                 WHERE solicitud_id = ANY($1::uuid[])
                    AND estado = 'pendiente'
                 """,
-                fila["id"],
+                [f["id"] for f in filas],
             )
-        return len(filas)
+        return list(filas)
 
     # ------------------------------------------------------------------
     # firma_cadena

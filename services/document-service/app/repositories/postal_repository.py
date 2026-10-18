@@ -112,7 +112,7 @@ class PostalRepository:
     async def events(self, shipment_id: uuid.UUID) -> list[asyncpg.Record]:
         return list(
             await self._conn.fetch(
-                "SELECT estado, descripcion, ts FROM postal_shipment_event "
+                "SELECT estado, descripcion, ts, ocurrido_operador_at FROM postal_shipment_event "
                 "WHERE shipment_id = $1 ORDER BY ts ASC",
                 shipment_id,
             )
@@ -178,6 +178,8 @@ class PostalRepository:
         max_clearance: int | None,
         acuse_file_id: uuid.UUID | None = None,
         acuse_sha256: str | None = None,
+        ts: datetime | None = None,
+        ocurrido_operador_at: datetime | None = None,
     ) -> asyncpg.Record | None:
         """Aplica la transición SOLO si el envío sigue en `estado_previo`.
 
@@ -192,6 +194,11 @@ class PostalRepository:
         autenticado del operador: es un acto de SISTEMA, no una lectura humana
         (ver `find_by_guia`); es explícito y sin valor por defecto para que
         olvidarlo no abra el gate en silencio.
+
+        `ts` (B10): instante en que el evento OCURRIÓ, para el historial. Solo el
+        drenaje de callbacks diferidos lo pasa (la RECEPCIÓN del aviso, no el drenaje);
+        `None` = ahora. `ocurrido_operador_at`: la fecha del hecho postal que declaró el
+        operador (campo firmado del callback), guardada aparte; `None` si no la mandó.
         """
         async with self._conn.transaction():
             # `motivo_devolucion` sólo se fija cuando el llamante lo pasa (el
@@ -218,11 +225,14 @@ class PostalRepository:
             if row is None:
                 return None
             await self._conn.execute(
-                "INSERT INTO postal_shipment_event (shipment_id, estado, descripcion) "
-                "VALUES ($1, $2, $3)",
+                "INSERT INTO postal_shipment_event "
+                "(shipment_id, estado, descripcion, ts, ocurrido_operador_at) "
+                "VALUES ($1, $2, $3, COALESCE($4, now()), $5)",
                 shipment_id,
                 estado,
                 descripcion,
+                ts,
+                ocurrido_operador_at,
             )
         return row
 
@@ -329,14 +339,86 @@ class PostalRepository:
         )
 
     async def add_event(
-        self, shipment_id: uuid.UUID, estado: str, descripcion: str | None
+        self,
+        shipment_id: uuid.UUID,
+        estado: str,
+        descripcion: str | None,
+        ts: datetime | None = None,
+        ocurrido_operador_at: datetime | None = None,
     ) -> None:
         """Registra un evento append-only SIN cambiar el estado del envío (usado
         cuando la notificación del operador no implica una transición válida)."""
         await self._conn.execute(
-            "INSERT INTO postal_shipment_event (shipment_id, estado, descripcion) "
-            "VALUES ($1, $2, $3)",
+            "INSERT INTO postal_shipment_event "
+            "(shipment_id, estado, descripcion, ts, ocurrido_operador_at) "
+            "VALUES ($1, $2, $3, COALESCE($4, now()), $5)",
             shipment_id,
             estado,
             descripcion,
+            ts,
+            ocurrido_operador_at,
+        )
+
+    # ------------------------------------------------------------------
+    # B10 (ADR-035 §7) — cola de callbacks recibidos con la entidad suspendida
+    # ------------------------------------------------------------------
+    async def insert_diferido(
+        self,
+        *,
+        operador: str,
+        event_id: str,
+        guia: str,
+        cuerpo: bytes,
+        cuerpo_sha256: str,
+        firma_hmac: str,
+        estado_interno: str,
+    ) -> uuid.UUID | None:
+        """Encola el cuerpo firmado; None si `(operador, event_id)` ya estaba en cola."""
+        return await self._conn.fetchval(
+            "INSERT INTO postal_callback_diferido "
+            "(operador, event_id, guia, cuerpo, cuerpo_sha256, firma_hmac, estado_interno) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+            "ON CONFLICT (operador, event_id) DO NOTHING RETURNING id",
+            operador,
+            event_id,
+            guia,
+            cuerpo,
+            cuerpo_sha256,
+            firma_hmac,
+            estado_interno,
+        )
+
+    async def contar_diferidos_pendientes(self) -> int:
+        return int(
+            await self._conn.fetchval(
+                "SELECT count(*) FROM postal_callback_diferido WHERE estado = 'pendiente'"
+            )
+        )
+
+    async def siguiente_diferido(self) -> asyncpg.Record | None:
+        """El pendiente más antiguo, bloqueado. El ORDEN importa (una máquina de estados)."""
+        return await self._conn.fetchrow(
+            "SELECT id, operador, event_id, guia, cuerpo, cuerpo_sha256, recibido_at "
+            "FROM postal_callback_diferido "
+            "WHERE estado = 'pendiente' ORDER BY recibido_at, id LIMIT 1 FOR UPDATE SKIP LOCKED"
+        )
+
+    async def cerrar_diferido(self, diferido_id: uuid.UUID, *, estado: str, resultado: str) -> None:
+        await self._conn.execute(
+            "UPDATE postal_callback_diferido SET estado = $2, resultado = $3, "
+            "procesado_at = now(), ultimo_error = NULL WHERE id = $1",
+            diferido_id,
+            estado,
+            resultado,
+        )
+
+    async def fallo_diferido(self, diferido_id: uuid.UUID, error: str) -> int:
+        """Anota un fallo no determinista y devuelve los intentos acumulados."""
+        return int(
+            await self._conn.fetchval(
+                "UPDATE postal_callback_diferido SET intentos = intentos + 1, ultimo_error = $2 "
+                "WHERE id = $1 RETURNING intentos",
+                diferido_id,
+                error[:500],
+            )
         )

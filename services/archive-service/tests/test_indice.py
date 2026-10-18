@@ -2335,3 +2335,59 @@ async def test_el_cliente_lee_advertencias_de_forma_tolerante(monkeypatch, cuerp
     monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
     res = await signature_client.verify(tenant_slug="demo", firma_id="f", payload_xml="<x/>")
     assert res is not None and res.valida is True and res.advertencias == esperado
+
+
+@pytest.mark.asyncio
+async def test_verify_verifica_el_artefacto_vigente_y_no_el_original(client_with_conn) -> None:
+    """R2-1 (EN 319 102-1 §5.6.3): tras renovar el ArchiveTimeStamp, la prueba vigente es el XML
+    renovado. Mutación: descargar siempre `minio_key_firmado` -> cae."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_id, rad_id, firma_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    h = "e" * 64
+    indice = _indice_row_with_firma(firma_id)
+    mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id), indice]
+    mock_conn.fetch.side_effect = [[make_radicado_link_record(radicado_id=rad_id, content_hash=h)], [_item_row(rad_id, h)]]
+    from app.clients.signature_client import VerifyResult
+
+    descargar = AsyncMock(return_value="<renovado/>")
+    with (
+        patch("app.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value="vigente-id/renovado.xml")),
+        patch("app.clients.storage_client.download_signed_xml", new=descargar),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(return_value=VerifyResult(valida=True, nivel_conformidad=None, acreditado=False, motivo=None, lta_vigente=True)),
+        ),
+    ):
+        resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS)
+
+    assert descargar.await_args.kwargs["minio_key_firmado"] == "vigente-id/renovado.xml"
+    assert resp.json()["firma"]["lta_vigente"] is True
+    assert "artefacto_vigente_no_resuelto" not in resp.json()["firma"]["advertencias"]
+
+
+@pytest.mark.asyncio
+async def test_verify_sin_resolver_el_vigente_cae_al_original_y_lo_avisa(client_with_conn) -> None:
+    """Mutación: no añadir el aviso -> cae (la degradación quedaría callada)."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    exp_id, rad_id, firma_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    h = "f" * 64
+    indice = _indice_row_with_firma(firma_id)
+    mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id), indice]
+    mock_conn.fetch.side_effect = [[make_radicado_link_record(radicado_id=rad_id, content_hash=h)], [_item_row(rad_id, h)]]
+    from app.clients.signature_client import VerifyResult
+
+    descargar = AsyncMock(return_value="<original/>")
+    with (
+        patch("app.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value=None)),
+        patch("app.clients.storage_client.download_signed_xml", new=descargar),
+        patch(
+            "app.clients.signature_client.verify",
+            new=AsyncMock(return_value=VerifyResult(valida=True, nivel_conformidad=None, acreditado=False, motivo=None)),
+        ),
+    ):
+        resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS)
+
+    assert descargar.await_args.kwargs["minio_key_firmado"] == indice["minio_key_firmado"]
+    assert "artefacto_vigente_no_resuelto" in resp.json()["firma"]["advertencias"]

@@ -190,6 +190,40 @@ async def test_sello_xades_lta_valida_en_dss(monkeypatch: pytest.MonkeyPatch) ->
     assert veredicto in _INDICACIONES_ADMITIDAS, veredicto
 
 
+@pytest.mark.asyncio
+async def test_dss_lta_renovada(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B10 §8: la firma LTA con el `ArchiveTimeStamp` RENOVADO (TimeStampValidationData + un
+    segundo ATS que cubre al primero) la valida un tercero: todos los sellos íntegros."""
+    from app.core.config import settings
+    from app.providers.local import renovar_archive_timestamp
+    from tests.test_sign_xml_xades import (
+        _build_crl,
+        _ca_cert_pem,
+        _generate_ca,
+        _issue_seal_signed_by_ca,
+        _lt_signer_ref,
+    )
+
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    tsa_key, tsa_cert = _cert("tsa-dss", tsa_eku=True)
+    monkeypatch.setattr(
+        "app.core.tsa.load_tsa_seal",
+        lambda: SignerRef(cert_pem=_pem(tsa_cert), key_pem=_pem_key(tsa_key)),
+    )
+    ca_key, ca_cert = _generate_ca()
+    cert_pem, key_pem, _ = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    doc = await LocalSigner().sign(
+        PreparedDoc(xml_bytes=_DOC, objeto_tipo="indice"),
+        _lt_signer_ref(cert_pem, key_pem, _ca_cert_pem(ca_cert), _build_crl(ca_key, ca_cert)),
+    )
+    renovada = renovar_archive_timestamp(renovar_archive_timestamp(doc.signed_xml).signed_xml)
+    informe = validar_en_dss(renovada.signed_xml)
+    tipos = [t["Type"] for t in informe["DiagnosticData"]["Timestamp"]]
+    assert tipos.count("ARCHIVE_TIMESTAMP") == 3, tipos
+    veredicto = exigir_criptografia_integra(informe)
+    assert veredicto in _INDICACIONES_ADMITIDAS, veredicto
+
+
 def test_control_negativo_firma_anterior_a_adr034_falla_en_dss() -> None:
     """Calibra el detector: la firma vieja del corpus debe dar HASH_FAILURE;
     si DSS la aceptara, el humo de arriba no probaría nada."""

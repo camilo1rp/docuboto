@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     # Cadencia (segundos) del barrido diario de retención dentro del worker.
     retention_interval_seconds: int = 86400  # 24 h
 
+    # Barrido de reconciliación nivel-del-fragmento vs `radicados.nivel_seguridad` (B10,
+    # ítem 3). Solo SUBE el nivel y tombstonea el material de un proveedor externo que
+    # ya no puede estar en el índice; la lectura ya es segura por el gate vivo.
+    reconciliacion_nivel_intervalo_s: int = Field(default=3600, ge=1)
+
     # Proveedor de embeddings (ADR-006/E21 Inc.1: pluggable). Default REAL de
     # despliegue: `local_st` (sentence-transformers en el propio contenedor —
     # soberano, no envía texto a ningún tercero). `stub` (determinista, sin

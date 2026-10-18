@@ -15,6 +15,7 @@ from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
+from app.core.conservacion import admitir_conservacion
 
 _pool: asyncpg.Pool | None = None
 
@@ -85,7 +86,18 @@ async def get_db_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, No
         # las rutas públicas llevan el slug en el path y no esta cabecera, y un slug mal
         # formado conserva el 400 de `tenant_schema`. Fail-closed si el registro no responde.
         slug = request.headers.get("X-Tenant-Slug", "")
-        if slug_valido(slug) and (veto := await veredicto_entidad(conn, slug)) is not None:
+        if (
+            slug_valido(slug)
+            and (veto := await veredicto_entidad(conn, slug)) is not None
+            # Conservación (ADR-035, enmienda B10): una entidad SUSPENDIDA sigue conservando.
+            and not await admitir_conservacion(
+                conn,
+                slug=slug,
+                metodo=request.method,
+                ruta=request.scope["path"],
+                token=request.headers.get("X-Internal-Token"),
+            )
+        ):
             raise HTTPException(
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},

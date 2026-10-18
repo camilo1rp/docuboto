@@ -203,7 +203,7 @@ def test_ip_real_firmada_exige_secreto_y_firma(monkeypatch) -> None:
     assert identidad.ip_real_firmada(base) is None  # sin secreto: no se confía en nada
 
     monkeypatch.setenv("MCP_ORIGIN_SECRET", "s")
-    firmadas = identidad.firmar_ip_real(identidad.firmar(base))
+    firmadas = identidad.firmar_ip_real(identidad.firmar(base, metodo="GET", ruta="/api/v1/x"))
     assert identidad.ip_real_firmada(firmadas) == "198.51.100.9"
     assert identidad.ip_real_firmada({**firmadas, "X-Real-Ip": "6.6.6.6"}) is None
     assert identidad.ip_real_firmada(base) is None  # sin firma
@@ -238,12 +238,15 @@ def test_el_secreto_de_origen_no_sirve_para_firmar_la_identidad(monkeypatch) -> 
     monkeypatch.setenv("MCP_ORIGIN_SECRET", "origen")
     cab = {"X-User-Id": "u", "X-Tenant-Slug": "t", "X-Real-Ip": "198.51.100.9"}
 
-    assert identidad.CABECERA_FIRMA not in identidad.firmar(cab)
+    assert identidad.CABECERA_FIRMA not in identidad.firmar(cab, metodo="GET", ruta="/x")
 
     monkeypatch.setenv("IDENTITY_SIGNING_SECRET", "maestro")
-    forjada = {**cab, identidad.CABECERA_FIRMA: identidad._firma(cab, "origen")}
+    forjada = {
+        **cab,
+        identidad.CABECERA_FIRMA: identidad._firma(cab, "origen", metodo="GET", ruta="/x"),
+    }
     with pytest.raises(identidad.IdentidadNoAutentica):
-        identidad.verificar(forjada)
+        identidad.verificar(forjada, metodo="GET", ruta="/x")
 
 
 def test_la_firma_de_la_ip_va_ligada_a_la_persona_y_la_entidad(monkeypatch) -> None:

@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     purga_huerfanos_max_intentos: int = 20
     # Un lote 'pending'/'processing' más joven que esto no se reanuda: lo está
     # arrancando su propia petición.
+    # B10: tope de callbacks postales en cola por tenant mientras la entidad está suspendida;
+    # pasado el tope se vuelve al 503 + Retry-After (contrapresión hacia el operador).
+    postal_diferidos_max: int = 10000
+    # B10: intentos del drenaje antes de descartar (con asiento) una fila que no se puede
+    # aplicar por un error no HTTP que se repite; sin tope bloqueaba la cola entera del tenant.
+    postal_diferido_max_intentos: int = 10
     batch_reanudar_despues_segundos: int = 120
     # Retención de lotes COMPLETADOS sin errores (0 = no se purgan). Los que
     # terminaron con errores se conservan: alguien tiene que revisarlos.

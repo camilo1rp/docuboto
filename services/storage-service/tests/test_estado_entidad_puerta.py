@@ -66,9 +66,12 @@ def _fila(status: str = "active", prov: str = "active", schema: bool = True) -> 
     return {"status": status, "provisioning_status": prov, "hay_schema": schema}
 
 
-def _request(conn: _Conn, cabeceras: dict[str, str]) -> SimpleNamespace:
+def _request(
+    conn: _Conn, cabeceras: dict[str, str], *, metodo: str = "GET", ruta: str = "/api/v1/storage/files"
+) -> SimpleNamespace:
     return SimpleNamespace(
-        headers=cabeceras, app=SimpleNamespace(state=SimpleNamespace(db_pool=_Pool(conn)))
+        headers=cabeceras, method=metodo, scope={"path": ruta},
+        app=SimpleNamespace(state=SimpleNamespace(db_pool=_Pool(conn))),
     )
 
 

@@ -48,6 +48,9 @@ _COLS = (
     "renovado_at, renovaciones"
 )
 
+# Las mismas columnas calificadas con el alias ``p`` (parte recursiva de ``cadena_descendiente``).
+_COLS_P = ", ".join("p." + c.strip() for c in _COLS.split(","))
+
 
 class PreservacionWormRepository:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
@@ -72,14 +75,15 @@ class PreservacionWormRepository:
         legal_hold: bool,
         file_id: uuid.UUID | None = None,
         objeto_tipo: str = "expediente",
+        renueva_a: uuid.UUID | None = None,
     ) -> asyncpg.Record:
         await self._sp()
         row = await self._conn.fetchrow(
             f"""
             INSERT INTO preservacion_worm_objeto
                 (expediente_id, tipo, bucket, object_key, version_id, sha256,
-                 retain_until, retention_mode, legal_hold, file_id, objeto_tipo)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                 retain_until, retention_mode, legal_hold, file_id, objeto_tipo, renueva_a)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING {_COLS}
             """,
             expediente_id,
@@ -93,9 +97,58 @@ class PreservacionWormRepository:
             legal_hold,
             file_id,
             objeto_tipo,
+            renueva_a,
         )
         assert row is not None
         return row
+
+    async def get_by_file_id(self, file_id: uuid.UUID) -> asyncpg.Record | None:
+        """La fila WORM más reciente de un objeto, sea cual sea su ``tipo`` (B10 §8: la
+        renovación de una firma LTA parte del ``file_id`` del XML anterior, no de un expediente)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_COLS} FROM preservacion_worm_objeto "
+            "WHERE file_id = $1 ORDER BY created_at DESC LIMIT 1",
+            file_id,
+        )
+
+    async def cadena_descendiente(self, worm_id: uuid.UUID) -> list[asyncpg.Record]:
+        """Las filas que RENUEVAN a ``worm_id`` (``renueva_a``), directa o transitivamente (B10
+        §8): los XML de una firma LTA con el sello de archivo renovado. Del más cercano al más
+        lejano; la propia fila ``worm_id`` no se incluye."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                f"""
+                WITH RECURSIVE cadena AS (
+                    SELECT {_COLS}, 1 AS nivel FROM preservacion_worm_objeto WHERE renueva_a = $1
+                    UNION ALL
+                    SELECT {_COLS_P}, c.nivel + 1
+                      FROM preservacion_worm_objeto p JOIN cadena c ON p.renueva_a = c.id
+                )
+                SELECT {_COLS} FROM cadena ORDER BY nivel, created_at
+                """,
+                worm_id,
+            )
+        )
+
+    async def retain_until_de_la_raiz(self, worm_id: uuid.UUID) -> datetime | None:
+        """``retain_until`` de la RAÍZ de la cadena ``renueva_a`` de ``worm_id`` (la fila que no
+        renueva a nadie). Una renovación hereda el MAYOR entre el anterior y la raíz: el
+        anterior puede haberse quedado atrás si la raíz se extendió después (series CT)."""
+        await self._sp()
+        return await self._conn.fetchval(
+            """
+            WITH RECURSIVE subida AS (
+                SELECT id, renueva_a, retain_until FROM preservacion_worm_objeto WHERE id = $1
+                UNION ALL
+                SELECT p.id, p.renueva_a, p.retain_until
+                  FROM preservacion_worm_objeto p JOIN subida s ON p.id = s.renueva_a
+            )
+            SELECT max(retain_until) FROM subida
+            """,
+            worm_id,
+        )
 
     async def get_by_expediente_and_tipo(
         self, expediente_id: str, tipo: str, file_id: uuid.UUID | None = None

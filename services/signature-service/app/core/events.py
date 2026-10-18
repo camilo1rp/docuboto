@@ -96,3 +96,36 @@ async def publish_indice_firmado(
             "xades_level": xades_level,
         },
     )
+
+
+async def publish_lta_renovada(
+    redis: Any,
+    *,
+    tenant_slug: str,
+    firma_id: str,
+    ordinal: int,
+    minio_key: str,
+    xml_sha256: str,
+    gen_time: str,
+) -> None:
+    """Emite ``firma.lta_renovada`` (B10 §8) cuando un ``ArchiveTimeStamp`` renovado queda
+    ``vigente`` (storage ya registró la herencia WORM). Idempotente por ``firma:ordinal``.
+
+    Best-effort: el eslabón ya está comprometido; un fallo de Redis no lo deshace. Quien
+    necesite el XML vigente (p. ej. archive-service al empaquetar un AIP) lo consulta en
+    ``GET /firmas/{id}`` (``minio_key_vigente``): el evento solo avisa."""
+    await events.emit(
+        redis,
+        STREAM,
+        "firma.lta_renovada",
+        tenant_slug=tenant_slug,
+        actor=None,
+        dedup_key=f"{firma_id}:{ordinal}",
+        payload={
+            "firma_id": firma_id,
+            "ordinal": ordinal,
+            "minio_key": minio_key,
+            "xml_sha256": xml_sha256,
+            "gen_time": gen_time,
+        },
+    )

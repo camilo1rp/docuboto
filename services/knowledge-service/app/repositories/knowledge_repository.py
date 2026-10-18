@@ -16,8 +16,27 @@ import uuid
 from datetime import datetime
 
 import asyncpg
+from orpycamcp_common.deadletter import RadicadosAusenteError
 
 from app.core.clearance import CLASIFICADA
+
+# Nivel VIVO de un fragmento (B10, ítem 3): el mayor entre el que el fragmento guardó al
+# indexarse y el vigente de su radicado. `GREATEST` ignora los NULL, así que un fragmento
+# cuya fuente no es un radicado (o cuyo radicado no se encuentra) conserva el suyo: un
+# `LEFT JOIN` que no casa nunca BAJA el nivel. `radicados.tracking_number` es UNIQUE
+# (001_create_documents.sql), el JOIN no multiplica filas y no necesita índice nuevo.
+_NIVEL_VIVO = "GREATEST(k.nivel_seguridad, r.nivel_seguridad)"
+_JOIN_RADICADO_VIVO = (
+    "LEFT JOIN radicados r ON k.source_type = 'radicado' AND r.tracking_number = k.source_ref"
+)
+
+
+def _radicados_ausente(exc: asyncpg.UndefinedTableError) -> Exception:
+    """Sin la tabla `radicados` el gate vivo no se puede evaluar: 503, no «0 resultados»
+    ni un 500 crudo (manejador `instalar_manejador_radicados_ausente` en `main.py`)."""
+    if "radicados" in str(exc):
+        return RadicadosAusenteError(str(exc))
+    return exc
 
 
 class KnowledgeRepository:
@@ -425,8 +444,60 @@ class KnowledgeRepository:
             chunk_id,
         )
 
+    async def lote_niveles_desactualizados(
+        self, after_id: uuid.UUID, limit: int
+    ) -> list[asyncpg.Record]:
+        """Fragmentos de radicado cuyo nivel guardado es MENOR que el vigente (B10).
+
+        Paginación keyset por ``k.id`` (``after_id`` exclusivo): converge aunque el lote
+        se vaya corrigiendo mientras se recorre. ``vivo`` es el nivel del radicado.
+        """
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT k.id, k.source_ref, k.nivel_seguridad, r.nivel_seguridad AS vivo
+                  FROM knowledge_chunk k
+                  JOIN radicados r ON r.tracking_number = k.source_ref
+                 WHERE k.source_type = 'radicado' AND NOT k.voided
+                   AND r.nivel_seguridad > k.nivel_seguridad
+                   AND k.id > $1
+                 ORDER BY k.id
+                 LIMIT $2
+                """,
+                after_id,
+                limit,
+            )
+        )
+
+    async def subir_nivel(self, chunk_id: uuid.UUID, nivel: int) -> None:
+        """Sube (``GREATEST``, nunca baja) el nivel de un fragmento SIN tocar
+        ``nivel_evento_at``: el barrido no es un evento y, si marcara ese instante, una
+        reclasificación legítima con un ``occurred_at`` anterior quedaría ignorada."""
+        await self._conn.execute(
+            "UPDATE knowledge_chunk SET nivel_seguridad = GREATEST(nivel_seguridad, $2), "
+            "updated_at = now() WHERE id = $1",
+            chunk_id,
+            nivel,
+        )
+
+    async def contar_sobreclasificados(self) -> int:
+        """Fragmentos con MÁS nivel que su radicado: solo cuestan disponibilidad (no son
+        fuga) y el barrido no los baja; se cuentan para que alguien lo vea."""
+        return int(
+            await self._conn.fetchval(
+                """
+                SELECT count(*)
+                  FROM knowledge_chunk k
+                  JOIN radicados r ON r.tracking_number = k.source_ref
+                 WHERE k.source_type = 'radicado' AND NOT k.voided
+                   AND k.nivel_seguridad > r.nivel_seguridad
+                """
+            )
+            or 0
+        )
+
     async def get_pivot_chunk(
-        self, source_type: str, source_ref: str
+        self, source_type: str, source_ref: str, *, max_clearance: int
     ) -> asyncpg.Record | None:
         """Lee el embedding YA indexado de una fuente (E21 Inc.2, búsqueda "por
         radicado" de ``/antecedentes``), para usarlo como PIVOTE de
@@ -441,17 +512,29 @@ class KnowledgeRepository:
         Misma condición que ``search`` (``embedding IS NOT NULL AND NOT
         voided``): un radicado tombstoneado (reclasificado a un nivel para el
         que no hay embedding aún) o anulado nunca sirve de pivote.
+
+        El gate de clearance (RF-SEG-08) va en el ``WHERE``: un pivote por encima del
+        ``max_clearance`` del llamante es indistinguible de uno inexistente (``None``), y su
+        embedding ni siquiera sale de la base. ``max_clearance`` es obligatorio y sin valor
+        por defecto para que olvidarlo falle al escribirse y no abra el gate en silencio.
         """
-        return await self._conn.fetchrow(
-            """
-            SELECT embedding::text AS embedding_literal, nivel_seguridad
-              FROM knowledge_chunk
-             WHERE source_type = $1 AND source_ref = $2
-               AND embedding IS NOT NULL AND NOT voided
-            """,
-            source_type,
-            source_ref,
-        )
+        try:
+            return await self._conn.fetchrow(
+                f"""
+                SELECT k.embedding::text AS embedding_literal,
+                       {_NIVEL_VIVO} AS nivel_seguridad
+                  FROM knowledge_chunk k
+                  {_JOIN_RADICADO_VIVO}
+                 WHERE k.source_type = $1 AND k.source_ref = $2
+                   AND k.embedding IS NOT NULL AND NOT k.voided
+                   AND {_NIVEL_VIVO} <= $3
+                """,
+                source_type,
+                source_ref,
+                max_clearance,
+            )
+        except asyncpg.UndefinedTableError as exc:
+            raise _radicados_ausente(exc) from exc
 
     async def search(
         self,
@@ -473,6 +556,13 @@ class KnowledgeRepository:
         una fila-centinela sin material derivado nunca es un resultado de búsqueda,
         sea cual sea su `nivel_seguridad`/clearance del llamante.
 
+        **Gate VIVO (B10).** El nivel que decide es ``GREATEST(k.nivel_seguridad,
+        r.nivel_seguridad)`` —el del fragmento y el vigente de su radicado—, evaluado en
+        el ``WHERE``. Si un ``reclassified`` se perdió, llegó tarde o espera en la DLQ, el
+        fragmento sigue diciendo el nivel viejo y el radicado ya dice el nuevo: leer solo
+        la copia dejaba una ventana de fuga. Solo SUBE; bajar un nivel sigue siendo cosa
+        de un ``reclassified`` explícito. Sin la tabla ``radicados`` falla con 503.
+
         ``NOT voided`` excluye además los chunks purgados PERMANENTEMENTE por
         anulación (`void_by_source`) — defensa en profundidad: un chunk voided ya
         queda sin `embedding` (lo excluye la condición anterior), pero esta
@@ -489,28 +579,36 @@ class KnowledgeRepository:
         (Pydantic descarta kwargs no declarados por defecto).
         """
         params: list[object] = [embedding_literal]
-        conds: list[str] = ["embedding IS NOT NULL", "NOT voided"]
+        conds: list[str] = ["k.embedding IS NOT NULL", "NOT k.voided"]
 
-        # D-02: filtro sobre la columna de primera clase, no sobre JSONB.
+        # D-02 + B10: el gate lee el nivel VIVO —max(nivel del fragmento, nivel
+        # vigente del radicado)— en el WHERE, no el que el fragmento guardó al
+        # indexarse. Un `reclassified` perdido, tardío o en la DLQ deja el fragmento
+        # con un nivel viejo; el radicado es la fuente de verdad.
         params.append(max_clearance)
-        conds.append(f"nivel_seguridad <= ${len(params)}")
+        conds.append(f"{_NIVEL_VIVO} <= ${len(params)}")
 
         if acl_filter:
             params.append(json.dumps(acl_filter))
-            conds.append(f"acl @> ${len(params)}::jsonb")
+            conds.append(f"k.acl @> ${len(params)}::jsonb")
 
         where = "WHERE " + " AND ".join(conds)
         params.append(top_k)
-        return list(
-            await self._conn.fetch(
-                f"""
-                SELECT id, source_type, source_ref, texto, metadata, nivel_seguridad,
-                       1 - (embedding <=> $1::vector) AS score
-                  FROM knowledge_chunk
-                  {where}
-                 ORDER BY embedding <=> $1::vector
-                 LIMIT ${len(params)}
-                """,
-                *params,
+        try:
+            return list(
+                await self._conn.fetch(
+                    f"""
+                    SELECT k.id, k.source_type, k.source_ref, k.texto, k.metadata,
+                           {_NIVEL_VIVO} AS nivel_seguridad,
+                           1 - (k.embedding <=> $1::vector) AS score
+                      FROM knowledge_chunk k
+                      {_JOIN_RADICADO_VIVO}
+                      {where}
+                     ORDER BY k.embedding <=> $1::vector
+                     LIMIT ${len(params)}
+                    """,
+                    *params,
+                )
             )
-        )
+        except asyncpg.UndefinedTableError as exc:
+            raise _radicados_ausente(exc) from exc

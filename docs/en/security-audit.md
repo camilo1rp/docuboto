@@ -228,7 +228,8 @@ without the guard forwarded without a token and the gateway answered 401. **Resi
   down right then, the level stayed raised while the semantic index kept serving the fragment at the old level. The
   event is now written in the **same transaction** as the change and its audit entry (outbox) and a relay re-sends
   it; likewise for creation and annulment. **Pending (product decision)**: double control for declassification.
-  **Residual**: there is no fragment-level reconciliation sweep in knowledge yet.
+  **Closed in B10**: knowledge gates `search`/`get_pivot_chunk` with `GREATEST(fragment level, current radicado level)` in the
+  `WHERE`, and an hourly sweep (`reconciliacion_nivel`, raise-only) reconciles the fragment level.
 - **Publishing ex officio disclosed the first attachment and did not distinguish what came from outside (AREA-07-12,
   medium, downgraded from high: it required classification authority).** CMIS now only serves attachments marked by
   the publication act, and anything that came through the public window or is typed as admitted there (third-party

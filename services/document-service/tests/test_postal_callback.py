@@ -335,23 +335,24 @@ async def test_tracking_sin_permiso_403(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_callback_de_entidad_suspendida_con_firma_valida_es_503_con_retry_after(
+async def test_callback_de_entidad_suspendida_con_firma_valida_se_difiere_con_202(
     callback_ctx,
 ) -> None:
+    """B10 (ADR-035 §7): ya no es 503 — el evento no se pierde, queda en cola."""
     from orpycamcp_common.tenant import AtencionPublica
 
     client, conn, redis = callback_ctx
     body = _body(event_id="evt-susp")
-    conn.fetchrow.side_effect = [_cred()]
+    conn.fetchrow.side_effect = [_cred(), _ship_row(estado="registrado")]
+    conn.fetchval.side_effect = [uuid.uuid4(), 1, None]  # id en cola, pendientes, prev_hash
     with patch(
         "app.core.database.atencion_publica",
         new=AsyncMock(return_value=AtencionPublica.SOLO_LECTURA),
     ):
         resp = await client.post(_url(), content=body, headers=_hdr(body))
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["error"] == "canal_no_disponible"
-    assert resp.headers["retry-after"]
-    redis.xadd.assert_not_awaited()  # no se aplicó nada: el operador reintenta
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "deferred"
+    redis.xadd.assert_not_awaited()  # no se aplicó nada todavía
 
 
 @pytest.mark.asyncio
@@ -373,3 +374,17 @@ async def test_callback_de_entidad_suspendida_con_firma_invalida_es_el_404_neutr
     for resp in (mala, sin_firma, ilegible):
         assert resp.status_code == 404
         assert resp.json()["detail"] == {"error": "not_found", "detail": "No encontrado", "status": 404}
+
+
+def test_ocurrido_at_sin_zona_horaria_se_rechaza() -> None:
+    """B10 H6: la fecha del operador sin zona no es una fecha de entrega."""
+    import pytest as _pytest
+    from pydantic import ValidationError
+
+    from app.schemas.postal import PostalCallbackPayload
+
+    base = {"operador": "4-72", "guia": "G", "estado_operador": "ENTREGADO", "event_id": "e"}
+    assert PostalCallbackPayload(**base).ocurrido_at is None
+    assert PostalCallbackPayload(**base, ocurrido_at="2026-10-01T15:30:00Z").ocurrido_at is not None
+    with _pytest.raises(ValidationError):
+        PostalCallbackPayload(**base, ocurrido_at="2026-10-01T15:30:00")

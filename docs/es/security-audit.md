@@ -226,7 +226,8 @@ llamada. **Sin escalada previa**: un proxy sin guarda reenviaba sin token y el g
   Si Redis caía justo ahí, el nivel quedaba subido y el índice semántico seguía sirviendo el fragmento al nivel
   anterior. Ahora el evento se escribe en la **misma transacción** que el cambio y su asiento (outbox) y un relé lo
   reenvía; lo mismo para el alta y la anulación. **Pendiente (decisión de producto)**: el doble control para
-  desclasificar. **Residual**: aún no hay un barrido de reconciliación nivel-del-fragmento en knowledge.
+  desclasificar. **Cerrado en B10**: knowledge gatea `search`/`get_pivot_chunk` con `GREATEST(nivel del fragmento, nivel vigente del
+  radicado)` en el `WHERE` y un barrido horario (`reconciliacion_nivel`, solo sube) reconcilia el nivel del fragmento.
 - **Publicar de oficio difundía el primer anexo y no distinguía lo recibido de fuera (AREA-07-12, media, rebajada de
   alta: exigía competencia de clasificación).** CMIS solo sirve ahora anexos marcados por el acto de publicación, y
   no se publica de oficio lo que entró por la ventanilla pública ni lo tipificado como admitido en ella (datos de

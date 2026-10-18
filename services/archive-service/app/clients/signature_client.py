@@ -37,6 +37,13 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+# La ruta que se FIRMA con la identidad (ADR-036) es la misma que se LLAMA: una sola
+# constante en los dos sitios, y un guardián AST (`shared/tests/
+# test_la_identidad_propagada_va_firmada.py`) lo comprueba.
+_RUTA_SIGN_XML = "/api/v1/signature/sign-xml"
+_RUTA_SIGN_PERSONAL = "/api/v1/signature/sign-personal"
+
+
 @dataclass(slots=True)
 class SignedIndice:
     """Resultado de sellar el índice electrónico con XAdES-B (E06 Inc.1).
@@ -101,6 +108,10 @@ class VerifyResult:
     # `tsa_sin_esscertid_anterior_al_corte`). ADITIVO y leído de forma TOLERANTE: un
     # signature-service que aún no lo emite (o lo emite con otra forma) deja la lista vacía.
     advertencias: list[str] = field(default_factory=list)
+    # ¿El ÚLTIMO sello de archivo aún prueba (su TSA vigente hoy)? `None` si la firma no es LTA o
+    # signature-service es anterior a B10; `False` = el nivel verificado ya bajó a XAdES-LT
+    # (EN 319 102-1 §5.6.2). ADITIVO y tolerante.
+    lta_vigente: bool | None = None
 
 
 def _advertencias_de(data: object) -> list[str]:
@@ -146,7 +157,11 @@ async def sign_xml(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    headers = identidad.firmar(
+        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
+        metodo="POST",
+        ruta=_RUTA_SIGN_XML,
+    )
     # El sello institucional de `/sign-xml` es de la ENTIDAD y exige además el
     # token interno (D-02, AREA-04-07): la identidad firmada atribuye el acto al
     # humano, el token prueba que la llamada la hace archive-service y no un JWT
@@ -156,7 +171,7 @@ async def sign_xml(
         async with httpx.AsyncClient(
             base_url=settings.signature_service_url, timeout=10.0
         ) as client:
-            resp = await client.post("/api/v1/signature/sign-xml", json=body, headers=headers)
+            resp = await client.post(_RUTA_SIGN_XML, json=body, headers=headers)
             if resp.status_code in (200, 201):
                 data = resp.json()
                 return SignedIndice(
@@ -275,7 +290,11 @@ async def sign_xml_outcome(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    headers = identidad.firmar(
+        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
+        metodo="POST",
+        ruta=_RUTA_SIGN_XML,
+    )
     # El sello institucional de `/sign-xml` es de la ENTIDAD y exige además el
     # token interno (D-02, AREA-04-07): la identidad firmada atribuye el acto al
     # humano, el token prueba que la llamada la hace archive-service y no un JWT
@@ -285,7 +304,7 @@ async def sign_xml_outcome(
         async with httpx.AsyncClient(
             base_url=settings.signature_service_url, timeout=10.0
         ) as client:
-            resp = await client.post("/api/v1/signature/sign-xml", json=body, headers=headers)
+            resp = await client.post(_RUTA_SIGN_XML, json=body, headers=headers)
             return _outcome_from_response(resp, contexto=f"sign-xml ({objeto_tipo})")
     except httpx.RequestError as exc:
         logger.warning(
@@ -384,10 +403,33 @@ async def verify(
                     motivo=data.get("motivo"),
                     revocacion_status=data.get("revocacion_status"),
                     advertencias=_advertencias_de(data),
+                    lta_vigente=data.get("lta_vigente")
+                    if isinstance(data.get("lta_vigente"), bool)
+                    else None,
                 )
             logger.warning("signature-service → HTTP %s al verificar índice", resp.status_code)
     except httpx.RequestError as exc:
         logger.warning("signature-service inalcanzable al verificar índice: %s", exc)
+    return None
+
+
+async def artefacto_vigente(*, tenant_slug: str, firma_id: str) -> str | None:
+    """``minio_key`` del XML que representa HOY a la firma (B10 §8).
+
+    Una firma XAdES-LTA cuyo ``ArchiveTimeStamp`` se renovó tiene un XML nuevo en el almacén; el
+    original (``minio_key_firmado``) sigue siendo evidencia pero ya no es el vigente. Lee
+    ``GET /firmas/{id}`` (``minio_key_vigente``). Best-effort: ``None`` ante cualquier fallo, y
+    el llamador conserva el original (nunca se bloquea un empaquetado por esta consulta).
+    """
+    headers = {"X-Tenant-Slug": tenant_slug}
+    try:
+        async with httpx.AsyncClient(base_url=settings.signature_service_url, timeout=5.0) as client:
+            resp = await client.get(f"/api/v1/signature/firmas/{firma_id}", headers=headers)
+            if resp.status_code == 200:
+                return resp.json().get("minio_key_vigente") or None
+            logger.warning("signature-service → HTTP %s al leer el artefacto vigente", resp.status_code)
+    except (httpx.RequestError, ValueError) as exc:
+        logger.warning("signature-service inalcanzable al leer el artefacto vigente: %s", exc)
     return None
 
 
@@ -503,7 +545,11 @@ async def sign_personal(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar({"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id})
+    headers = identidad.firmar(
+        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
+        metodo="POST",
+        ruta=_RUTA_SIGN_PERSONAL,
+    )
     if authorization:
         headers["Authorization"] = authorization
     try:
@@ -511,7 +557,7 @@ async def sign_personal(
             base_url=settings.signature_service_url, timeout=15.0
         ) as client:
             resp = await client.post(
-                "/api/v1/signature/sign-personal", json=body, headers=headers
+                _RUTA_SIGN_PERSONAL, json=body, headers=headers
             )
     except httpx.RequestError as exc:
         logger.warning(

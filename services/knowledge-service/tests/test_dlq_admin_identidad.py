@@ -60,6 +60,8 @@ async def test_una_identidad_firmada_por_el_gateway_pasa_al_gate_de_permiso(
 ) -> None:
     client, conn = client_with_conn
     conn.fetchval.return_value = False  # sin PERM_DLQ_ADMIN: 403 prueba que cruzó el middleware
-    cabeceras = identidad.firmar({"X-Tenant-Slug": "demo", "X-User-Id": USER})
+    cabeceras = identidad.firmar(
+        {"X-Tenant-Slug": "demo", "X-User-Id": USER}, metodo=metodo, ruta=ruta
+    )
     r = await client.request(metodo, ruta, json=cuerpo, headers=cabeceras)
     assert r.status_code == 403

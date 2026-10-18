@@ -116,6 +116,15 @@ class Settings(BaseSettings):
     # Vacío (default) = sin efecto mientras `/upload` no lo exija.
     storage_internal_token: str = ""
 
+    # --- Renovación del ArchiveTimeStamp de las firmas XAdES-LTA (B10 §8, app/jobs/renovacion_lta.py)
+    # Un sello de archivo vale mientras viva el certificado de su TSA: se renueva ANTES de que
+    # caduque. `margen_dias` es la antelación con que se renueva Y el plazo adicional que la TSA
+    # nueva debe ofrecer sobre la anterior (sin él se renovaría a diario con la misma TSA).
+    lta_renovacion_margen_dias: int = Field(default=90, ge=1)
+    # Cadencia del bucle (s). 0 = el job no se arranca (kill-switch).
+    lta_renovacion_intervalo_s: int = Field(default=86400, ge=0)
+    lta_renovacion_retraso_inicial_s: int = Field(default=120, ge=0)
+
     # DLQ buffer retention (ADR-021 Fase 4 — MVP-2).
     # How many days to keep Redis DLQ entries before XTRIM MINID pruning.
     # The authoritative copy lives in Postgres (evento_dead_letter + audit_log),
@@ -227,6 +236,10 @@ class Settings(BaseSettings):
     # durante este tiempo. No se hizo asíncrono porque el firmador ya hace
     # criptografía bloqueante en línea (signxml, RSA); lo que sí se hace es
     # acotar la espera para que el bloqueo tenga un techo conocido.
+    # Certificados PEM de las CA que emiten el certificado de la TSA (B10 R2-3), separados por
+    # coma. Sirven para VERIFICAR la firma de la CRL de la TSA anterior cuando el token no trae la
+    # CA. Vacío = solo se usa la que viaje en el token; sin CA no se acepta la CRL.
+    tsa_ca_pem_paths: str = ""
     tsa_timeout_seconds: float = 10.0
     # Declara que la TSA remota configurada en `tsa_url` es de un prestador
     # ACREDITADO (ONAC). Solo tiene efecto con `tsa_url` puesto: la TSA LOCAL

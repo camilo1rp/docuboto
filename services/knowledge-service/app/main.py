@@ -21,6 +21,7 @@ from app.core.clearance import url_es_local
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.core.redis_client import close_redis, init_redis
+from app.jobs.reconciliacion_nivel import bucle_de_reconciliacion
 from app.routers.admin_deadletter import router as admin_deadletter_router
 from app.routers.health import router as health_router
 from app.routers.knowledge import router as knowledge_router
@@ -98,13 +99,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     consumer_task = events.spawn_supervised(
         document_consumer.run, name="knowledge", logger=logger
     )
+    # B10: barrido que sube el nivel de los fragmentos desactualizados (la lectura ya usa
+    # el nivel vivo; esto purga el material de proveedor externo que no puede seguir).
+    reconcile_task = events.spawn_supervised(
+        bucle_de_reconciliacion, name="knowledge-nivel", logger=logger
+    )
     yield
     logger.info("knowledge-service shutting down")
-    consumer_task.cancel()
-    try:
-        await consumer_task
-    except asyncio.CancelledError:
-        pass
+    for tarea in (consumer_task, reconcile_task):
+        tarea.cancel()
+    for tarea in (consumer_task, reconcile_task):
+        try:
+            await tarea
+        except asyncio.CancelledError:
+            pass
     await close_pool()
     await close_redis()
 

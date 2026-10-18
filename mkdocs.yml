@@ -102,6 +102,7 @@ plugins:
             ADR-033 Entrada de producción (nginx en contenedor): ADR-033 Production entry (containerised nginx)
             ADR-034 XMLDSig conforme (firma verificable por terceros): ADR-034 Conformant XMLDSig (third-party verifiable signature)
             ADR-035 Estado de la entidad (cumplimiento en el borde): ADR-035 Entity state (enforcement at the edge)
+            ADR-036 Identidad atada a método y ruta: ADR-036 Identity bound to method and path
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -164,6 +165,7 @@ nav:
     - ADR-033 Entrada de producción (nginx en contenedor): adr/ADR-033-entrada-de-produccion-nginx-en-contenedor.md
     - ADR-034 XMLDSig conforme (firma verificable por terceros): adr/ADR-034-xmldsig-conforme-firma-verificable-por-terceros.md
     - ADR-035 Estado de la entidad (cumplimiento en el borde): adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md
+    - ADR-036 Identidad atada a método y ruta: adr/ADR-036-identidad-atada-a-metodo-y-ruta.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

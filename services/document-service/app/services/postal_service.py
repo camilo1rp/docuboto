@@ -16,6 +16,7 @@ gestiona el estado de entrega con una máquina de estados, conservando el histor
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -24,7 +25,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
-from orpycamcp_common import audit, events
+from orpycamcp_common import audit
 from pydantic import ValidationError
 
 from app.clients import storage_client
@@ -46,12 +47,17 @@ from app.schemas.postal import (
     ShipmentStatusUpdate,
     TrackingResponse,
 )
+from app.services import outbox
 from app.services.postal_provider import consultar_estado, generar_guia, mapear_estado
 
 logger = logging.getLogger(__name__)
 
 _SERVICE = "document-service"
 _STREAM = "orpycamcp.document.events"
+#: Tope del cuerpo que se guarda en la cola de diferidos (CHECK de la migración 048).
+_MAX_CUERPO_DIFERIDO = 65536
+#: Espacio del advisory lock que serializa el conteo del tope de la cola por tenant.
+_ESPACIO_LOCK_COLA_POSTAL = 0x50434351  # "PCCQ"
 
 _VALID = {
     "registrado": {"en_transito", "fallido"},
@@ -68,6 +74,29 @@ _STREAM_EVENT = {
     "devuelto": "document.envio.devuelto",
     "fallido": "document.envio.fallido",
 }
+
+
+#: Tolerancia de reloj entre el operador y nosotros para aceptar un `ocurrido_at` «futuro».
+_TOLERANCIA_RELOJ = timedelta(minutes=5)
+
+
+def _validar_ocurrido(
+    ocurrido: datetime | None, shipment: asyncpg.Record, recibido: datetime
+) -> None:
+    """La fecha del hecho que declara el operador debe ser verosímil (B10 R2-5): no posterior a
+    la recepción más la tolerancia de reloj, ni anterior a la creación del envío."""
+    if ocurrido is None:
+        return
+    creado = shipment["created_at"]
+    if ocurrido > recibido + _TOLERANCIA_RELOJ or ocurrido < creado:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "ocurrido_at_inverosimil",
+                "detail": "ocurrido_at es futura o anterior a la creación del envío",
+                "status": 422,
+            },
+        )
 
 
 def _acuse_invalido() -> HTTPException:
@@ -114,13 +143,20 @@ class PostalService:
         self._repo = PostalRepository(conn)
         self._redis = redis
         self._slug = tenant_slug
+        # Eventos encolados en el outbox a la espera del commit para su camino rápido.
+        self._por_enviar: list[dict[str, Any]] = []
 
     async def _response(self, row) -> ShipmentResponse:
         events = await self._repo.events(row["id"])
         return ShipmentResponse(
             **dict(row),
             eventos=[
-                ShipmentEvent(estado=e["estado"], descripcion=e["descripcion"], ts=e["ts"])
+                ShipmentEvent(
+                    estado=e["estado"],
+                    descripcion=e["descripcion"],
+                    ts=e["ts"],
+                    ocurrido_operador_at=e.get("ocurrido_operador_at"),
+                )
                 for e in events
             ],
         )
@@ -289,10 +325,14 @@ class PostalService:
                     },
                     canal=audit.CANAL_PETICION,
                 )
+                # B10: la devolución MANUAL avisa igual que la del operador, y el
+                # evento sale del mismo acto (outbox), no de un best-effort aparte.
+                await self._encolar_estado(row, payload.estado, str(actor) if actor else None)
         except asyncpg.UniqueViolationError as exc:
             # Carrera: otro envío tomó el mismo acuse entre el cotejo y el UPDATE.
             # La guarda definitiva la da el índice único parcial (migración 045).
             raise _acuse_ya_referenciado() from exc
+        await self.enviar_pendientes()
         return await self._response(row)
 
     async def _verificar_acuse(
@@ -495,28 +535,19 @@ class PostalService:
             operador=operador, rotada_at=rotada_at, anterior_vigente_hasta=caduca
         )
 
-    async def apply_operator_callback(
+    async def _autenticar(
         self,
         raw_body: bytes,
         signature_header: str | None,
         tenant_slug: str,
         *,
-        suspendida: bool = False,
-    ) -> CallbackResult:
-        """Webhook ENTRANTE del operador (E20 F5): autentica por HMAC, deduplica y
-        aplica la transición como acto de SISTEMA (nunca un usuario).
+        suspendida: bool,
+    ) -> PostalCallbackPayload:
+        """Pasos 1-3 del callback: parseo estructural, HMAC fail-closed y esquema.
 
-        Fail-closed en cada puerta: sin credencial del operador o firma inválida →
-        401; estado del operador no mapeable → 422; guía desconocida → 404. La
-        idempotencia (dedup por `(operador, event_id)`) + la transición + el
-        asiento son atómicos; el evento Redis se emite tras confirmar la tx.
-
-        `suspendida` (ADR-035): la entidad existe pero está suspendida. La firma se
-        verifica igual y ANTES de cualquier efecto: válida => 503 `canal_no_disponible`
-        con `Retry-After`; cualquier otra cosa (cuerpo ilegible, firma mala, operador
-        sin credencial) => el 404 neutro, para que un anónimo no averigüe el estado.
+        Con la entidad suspendida lo no autenticado (cuerpo ilegible, operador sin
+        credencial, firma mala) es el 404 neutro: un anónimo no averigua el estado.
         """
-        self._slug = tenant_slug
         # 1) Parseo estructural (para enrutar al secreto del operador). NO se
         #    confía en el cuerpo hasta verificar el HMAC sobre los bytes crudos.
         try:
@@ -542,31 +573,26 @@ class PostalService:
         #    provisionados en el tenant (remediación de auditoría, Baja). Con dos
         #    ranuras (rotación, AREA-09-10) se prueban las vigentes sin cortocircuito.
         valid = verify_any(secretos or ["\x00unconfigured"], raw_body, signature_header)
-        if suspendida:
-            if secretos and valid:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    headers={"Retry-After": "3600"},
-                    detail={
-                        "error": "canal_no_disponible",
-                        "detail": "La entidad está suspendida; reintente más tarde.",
-                        "status": 503,
-                    },
-                )
-            raise _no_encontrado_neutro()
         if not secretos or not valid:
+            if suspendida:
+                raise _no_encontrado_neutro()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"error": "firma_invalida", "detail": "HMAC inválido", "status": 401},
             )
-        # 3) Validación de esquema (ya autenticado).
+        # 3) Validación de esquema (ya autenticado: el emisor no es un anónimo).
         try:
-            payload = PostalCallbackPayload.model_validate(data)
+            return PostalCallbackPayload.model_validate(data)
         except ValidationError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={"error": "payload_invalido", "detail": exc.errors(), "status": 422},
             )
+
+    async def _resolver(
+        self, payload: PostalCallbackPayload
+    ) -> tuple[str, asyncpg.Record]:
+        """Pasos 4-5: estado interno mapeado y envío por guía (lecturas, 422/404 honestos)."""
         # 4) Mapeo honesto del estado del operador (no se adivina).
         interno = mapear_estado(payload.operador, payload.estado_operador)
         if interno is None:
@@ -589,10 +615,131 @@ class PostalService:
                     "status": 404,
                 },
             )
+        return interno, shipment
 
-        actor = f"postal:{payload.operador}"
+    async def apply_operator_callback(
+        self,
+        raw_body: bytes,
+        signature_header: str | None,
+        tenant_slug: str,
+        *,
+        suspendida: bool = False,
+    ) -> CallbackResult:
+        """Webhook ENTRANTE del operador (E20 F5): autentica por HMAC, deduplica y
+        aplica la transición como acto de SISTEMA (nunca un usuario).
+
+        Fail-closed en cada puerta: sin credencial del operador o firma inválida →
+        401; estado del operador no mapeable → 422; guía desconocida → 404. La
+        idempotencia (dedup por `(operador, event_id)`) + la transición + el
+        asiento + el evento (outbox) son atómicos; el envío a Redis va tras el commit.
+
+        `suspendida` (ADR-035, B10): la entidad existe pero está suspendida. La firma se
+        verifica igual y ANTES de cualquier efecto: cuerpo ilegible, operador sin
+        credencial o firma mala => el 404 neutro (un anónimo no averigua el estado);
+        firma válida => el cuerpo se ENCOLA (`diferir`) y se responde `deferred`
+        (202); el barrido lo aplica al reactivarse la entidad.
+        """
+        self._slug = tenant_slug
+        payload = await self._autenticar(raw_body, signature_header, tenant_slug, suspendida=suspendida)
+        # Mismo tope con la entidad activa y con la suspendida (B10 SEG #8): lo que se acepta
+        # hoy no puede perderse mañana por ser demasiado grande para la cola. Va DESPUÉS del
+        # HMAC, así que un anónimo no lo usa de oráculo.
+        if len(raw_body) > _MAX_CUERPO_DIFERIDO:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={"error": "cuerpo_demasiado_grande", "detail": "Cuerpo excesivo", "status": 413},
+            )
+        if suspendida:
+            return await self.diferir(payload, raw_body, signature_header or "")
+        result = await self.aplicar_autenticado(
+            payload, actor=f"postal:{payload.operador}", ocurrido_at=None, diferido_id=None
+        )
+        # 7) Evento de dominio para E16 — tras confirmar la tx (la fila ya está en el outbox).
+        await self.enviar_pendientes()
+        return result
+
+    async def diferir(
+        self, payload: PostalCallbackPayload, raw_body: bytes, signature_header: str
+    ) -> CallbackResult:
+        """Encola un callback AUTENTICADO recibido con la entidad suspendida.
+
+        Se guarda el cuerpo tal como llegó y se asienta la recepción en la misma tx
+        (la verificación del HMAC queda como evidencia: al drenar no se repite). Un
+        `event_id` ya encolado recibe el mismo 202 sin segundo asiento.
+        """
+        interno, shipment = await self._resolver(payload)
+        _validar_ocurrido(payload.ocurrido_at, shipment, datetime.now(UTC))
+        sha = hashlib.sha256(raw_body).hexdigest()
+        async with self._conn.transaction():
+            # El tope se cuenta bajo un lock por tenant (liberado al cerrar la tx): sin él,
+            # inserciones concurrentes en READ COMMITTED lo superaban en tantas como hubiera
+            # en vuelo (B10 SEG #8).
+            await self._conn.execute(
+                "SELECT pg_advisory_xact_lock($1::int, hashtext(current_schema()))",
+                _ESPACIO_LOCK_COLA_POSTAL,
+            )
+            diferido_id = await self._repo.insert_diferido(
+                operador=payload.operador,
+                event_id=payload.event_id,
+                guia=payload.guia,
+                cuerpo=raw_body,
+                cuerpo_sha256=sha,
+                firma_hmac=signature_header,
+                estado_interno=interno,
+            )
+            if diferido_id is not None:
+                if await self._repo.contar_diferidos_pendientes() > settings.postal_diferidos_max:
+                    # Contrapresión: la cola de este tenant está llena. El rollback
+                    # deshace la inserción; el operador reintenta más tarde.
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        headers={"Retry-After": "3600"},
+                        detail={
+                            "error": "canal_no_disponible",
+                            "detail": "La entidad está suspendida; reintente más tarde.",
+                            "status": 503,
+                        },
+                    )
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._slug or "",
+                    service=_SERVICE,
+                    action="document.envio_callback_diferido",
+                    object_type="postal_shipment",
+                    object_ref=payload.guia,
+                    actor=f"postal:{payload.operador}",
+                    payload={
+                        "event_id": payload.event_id,
+                        "estado_operador": payload.estado_operador,
+                        "cuerpo_sha256": sha,
+                        "recibido_at": datetime.now(UTC).isoformat(),
+                    },
+                    canal=audit.CANAL_PETICION,
+                )
+        return CallbackResult(status="deferred", shipment_id=shipment["id"], estado=shipment["estado"])
+
+    async def aplicar_autenticado(
+        self,
+        payload: PostalCallbackPayload,
+        *,
+        actor: str,
+        ocurrido_at: datetime | None,
+        diferido_id: uuid.UUID | None,
+    ) -> CallbackResult:
+        """Pasos 4-7 del callback sobre un payload YA autenticado.
+
+        `ocurrido_at` es el instante en que SE RECIBIÓ el aviso del operador (para un
+        diferido, la recepción y no el drenaje): llega al historial del envío como `ts`.
+        No es la fecha del hecho postal: esa, si el operador la manda (`payload.ocurrido_at`,
+        dentro del cuerpo firmado), se guarda aparte como `ocurrido_operador_at`. El evento
+        de dominio queda en el outbox dentro de la tx; quien llama hace
+        `enviar_pendientes()` DESPUÉS de confirmarla.
+        """
+        interno, shipment = await self._resolver(payload)
+        recibido = ocurrido_at or datetime.now(UTC)
+        _validar_ocurrido(payload.ocurrido_at, shipment, recibido)
         current = shipment["estado"]
-        emit_estado: str | None = None
+        extra = {"diferido_id": str(diferido_id)} if diferido_id is not None else {}
         async with self._conn.transaction():
             # 6) COMPUERTA de idempotencia: si ya se procesó este event_id, no-op.
             delivery_id = await self._repo.try_insert_delivery(
@@ -622,6 +769,8 @@ class PostalService:
                     motivo,
                     estado_previo=current,
                     max_clearance=None,  # acto de sistema autenticado por HMAC
+                    ts=ocurrido_at,
+                    ocurrido_operador_at=payload.ocurrido_at,
                 )
                 if aplicado is None:
                     fresco = await self._repo.find_by_guia(payload.operador, payload.guia)
@@ -642,10 +791,15 @@ class PostalService:
                         "a": interno,
                         "operador": payload.operador,
                         "event_id": payload.event_id,
+                        **extra,
+                        # La fecha del hecho según el operador (CPACA 67-69) y la de recepción del
+                        # aviso: en el camino vivo el cuerpo crudo no se conserva, esto sí es inmutable.
+                        "ocurrido_operador_at": payload.ocurrido_at.isoformat() if payload.ocurrido_at else None,
+                        "recibido_at": recibido.isoformat(),
                     },
                     canal=audit.CANAL_PETICION,
                 )
-                emit_estado = interno
+                await self._encolar_estado(aplicado, interno, actor)
                 result = CallbackResult(
                     status="applied", shipment_id=shipment["id"], estado=interno
                 )
@@ -656,7 +810,9 @@ class PostalService:
                 nota = f"[{payload.operador}:{payload.estado_operador}] no aplicada"
                 if payload.descripcion:
                     nota += f" — {payload.descripcion}"
-                await self._repo.add_event(shipment["id"], current, nota)
+                await self._repo.add_event(
+                    shipment["id"], current, nota, ocurrido_at, payload.ocurrido_at
+                )
                 await audit.append(
                     self._conn,
                     tenant_slug=self._slug,
@@ -670,38 +826,47 @@ class PostalService:
                         "estado_operador": payload.estado_operador,
                         "mapeado_a": interno,
                         "event_id": payload.event_id,
+                        **extra,
+                        "ocurrido_operador_at": payload.ocurrido_at.isoformat() if payload.ocurrido_at else None,
+                        "recibido_at": recibido.isoformat(),
                     },
                     canal=audit.CANAL_PETICION,
                 )
                 result = CallbackResult(
                     status="recorded_no_change", shipment_id=shipment["id"], estado=current
                 )
-
-        # 7) Evento de dominio para E16 — tras confirmar la tx, best-effort.
-        if emit_estado is not None:
-            await self._emit_estado(shipment, emit_estado, actor)
         return result
 
-    async def _emit_estado(self, shipment: asyncpg.Record, estado: str, actor: str) -> None:
-        if self._redis is None or estado not in _STREAM_EVENT:
+    async def _encolar_estado(self, shipment: asyncpg.Record, estado: str, actor: str | None) -> None:
+        """Deja el evento `document.envio.<estado>` en el OUTBOX, en la tx en curso.
+
+        Antes se publicaba a Redis tras el commit tragándose el fallo: con Redis caído la
+        devolución se perdía y nadie avisaba a la dependencia. Con el outbox el evento
+        existe si y solo si el cambio existe; el relé del barrido reenvía lo que no salió.
+        """
+        if estado not in _STREAM_EVENT:
             return
-        try:
-            await events.emit(
-                self._redis,
-                _STREAM,
-                _STREAM_EVENT[estado],
-                tenant_slug=self._slug or "",
-                actor=actor,
-                # dedup_key con tenant: el stream es global; evita cualquier
-                # colisión cross-tenant (remediación de auditoría, Baja).
-                dedup_key=f"{self._slug or ''}:{shipment['guia']}:{estado}",
-                payload={
-                    "shipment_id": str(shipment["id"]),
-                    "radicado_id": str(shipment["radicado_id"]),
-                    "operador": shipment["operador"],
-                    "guia": shipment["guia"],
-                    "estado": estado,
-                },
-            )
-        except Exception:  # noqa: BLE001 — best-effort; la BD es la fuente de verdad
-            logger.warning("emit envio estado (%s) failed", estado, exc_info=True)
+        pendiente = await outbox.encolar(
+            self._conn,
+            stream=_STREAM,
+            event_type=_STREAM_EVENT[estado],
+            tenant_slug=self._slug or "",
+            actor=actor,
+            # dedup_key con tenant: el stream es global; evita cualquier
+            # colisión cross-tenant (remediación de auditoría, Baja).
+            dedup_key=f"{self._slug or ''}:{shipment['guia']}:{estado}",
+            payload={
+                "shipment_id": str(shipment["id"]),
+                "radicado_id": str(shipment["radicado_id"]),
+                "operador": shipment["operador"],
+                "guia": shipment["guia"],
+                "estado": estado,
+            },
+        )
+        self._por_enviar.append(pendiente)
+
+    async def enviar_pendientes(self) -> None:
+        """Camino rápido tras el commit. Nunca lanza: lo no enviado lo reenvía el relé."""
+        pendientes, self._por_enviar = self._por_enviar, []
+        for p in pendientes:
+            await outbox.enviar(self._conn, self._redis, p)

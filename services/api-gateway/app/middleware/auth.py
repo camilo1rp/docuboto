@@ -377,7 +377,29 @@ async def _continuar_con_identidad(request: Request, call_next, payload: dict) -
     # forjar, pero dentro de la red cualquiera que alcance el puerto de un
     # servicio podía hablarle diciendo ser quien quisiera y de la entidad que
     # quisiera. Es el mismo cierre que el sobre de eventos, en la otra dirección.
-    request.state.auth_headers = identidad.firmar(request.state.auth_headers)
+    #
+    # Atada al MÉTODO y a la RUTA de esta petición (ADR-036): el proxy reenvía
+    # `upstream_base + "/" + path` con `path` = `scope["path"]`, así que la ruta que
+    # firma el gateway es la que verifica el destino. Si un día el gateway reescribiera
+    # prefijos, la firma tendría que moverse a `_handle_proxy` con la ruta del upstream.
+    try:
+        request.state.auth_headers = identidad.firmar(
+            request.state.auth_headers,
+            metodo=request.method,
+            ruta=request.scope["path"],
+        )
+    except identidad.IdentidadNoAutentica:
+        # Una ruta que no estabiliza al decodificar no es una ruta: el proxy la
+        # rechaza con este mismo 404 (`_normalize_path`); sin esto era un 500 con
+        # traceback por petición (B10 SEG #1).
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "route_not_found",
+                "detail": "Ninguna ruta del sistema corresponde a la solicitud",
+                "status": 404,
+            },
+        )
     # La IP real, además, con el secreto de ORIGEN: la verifica el mcp-server, que
     # no posee el secreto maestro de identidad (AREA-11-08).
     request.state.auth_headers = identidad.firmar_ip_real(request.state.auth_headers)

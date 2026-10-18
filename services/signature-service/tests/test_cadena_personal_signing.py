@@ -179,7 +179,7 @@ def _patch_sign_digest_remote(
     else:
         assert private_key is not None
 
-        async def _fake_sign(authorization, digest, totp_code):
+        async def _fake_sign(authorization, digest, totp_code, **_kw):
             signature = private_key.sign(
                 digest, padding.PKCS1v15(), Prehashed(hashes.SHA256())
             )
@@ -788,3 +788,56 @@ async def test_verify_native_hmac_unchanged_by_this_increment(client_with_conn) 
     assert resp.status_code == 200
     assert resp.json()["valida"] is True
     assert resp.json()["provider"] == "nativa"
+
+
+@pytest.mark.asyncio
+async def test_autoverificacion_fallida_tras_el_totp_deja_asiento_en_la_cadena(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B10 §7 (residuo): si el ensayo previo pasa, `remote_sign` consume el TOTP y la
+    autoverificación FINAL falla, el 503 lleva `totp_posiblemente_consumido` y la cadena deja el
+    asiento `firma.autoverificacion_fallida_tras_totp` (antes solo lo dejaba /sign-personal).
+
+    Mutación: quitar el `_audit.append` de `cadena_service` (cae la última aserción)."""
+    from app.core.config import settings as signature_settings
+    from app.providers import local
+
+    audit_mock = _patch_audit(monkeypatch)
+    user_key, user_cert = _issue_user_cert()
+    cert_pem = user_cert.public_bytes(serialization.Encoding.PEM).decode()
+    _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
+    _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
+    monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
+
+    real = local._autoverificar
+    llamadas = {"n": 0}
+
+    def _falla_la_final(*a, **k):
+        llamadas["n"] += 1
+        if llamadas["n"] == 2:  # la 1.ª es el ensayo previo, la 2.ª la de después del TOTP
+            raise local.XmldsigNoConformeError("simulada")
+        return real(*a, **k)
+
+    monkeypatch.setattr(local, "_autoverificar", _falla_la_final)
+
+    conn = _make_conn()
+    sol = _sol_row()
+    turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+    conn.fetchval.side_effect = [True, 1]
+    conn.fetchrow.side_effect = [sol, {}, turno, turno]
+    conn.execute.side_effect = _exec_sig
+
+    _override(conn)
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                f"/api/v1/signature/requests/{SOL_ID}/sign",
+                json={"totp_code": "123456"},
+                headers={**TENANT_HEADERS, "Authorization": "Bearer faketoken"},
+            )
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["detail"]["totp_posiblemente_consumido"] is True
+        acciones = [c.kwargs.get("action") for c in audit_mock.await_args_list]
+        assert "firma.autoverificacion_fallida_tras_totp" in acciones
+    finally:
+        _clear()

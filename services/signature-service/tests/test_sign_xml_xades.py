@@ -341,7 +341,7 @@ class _FakeFirmaTable:
 
     async def fetchrow(self, query: str, *args):
         q = query.strip()
-        if q.startswith("INSERT INTO firma"):
+        if q.startswith("INSERT INTO firma ("):
             (
                 firma_id_param,
                 objeto_tipo,
@@ -446,6 +446,18 @@ class _FakeFirmaTable:
         if "FROM auth_users" in q and "is_root" in q:
             # resolve_caller_clearance: usuario normal, clearance PUBLICA.
             return {"is_root": False, "max_level": None}
+        if "FROM firma_artefacto_vigente" in q:
+            # B10 §8: `GET /firmas/{id}` pregunta por el XML vigente; sin renovaciones es el original.
+            row = self.rows.get(str(args[0]))
+            return None if row is None else {
+                "firma_id": args[0], "minio_key": row["minio_key_firmado"],
+                "xml_sha256": row["signed_xml_sha256"], "ordinal": 0,
+            }
+        if q.startswith("INSERT INTO firma_sello_archivo"):
+            # B10 §8: el eslabón 0 de la cadena de sellos de archivo se inserta en la MISMA tx
+            # que la firma LTA (sin él, la firma no sería renovable). Esta tabla falsa solo
+            # tiene que aceptarlo: lo que contiene lo prueba `tests/integration/`.
+            return {"firma_id": args[0], "ordinal": args[1]}
         raise AssertionError(f"Unexpected fetchrow query in _FakeFirmaTable: {query!r}")
 
 

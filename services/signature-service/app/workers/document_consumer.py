@@ -7,7 +7,13 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Worker: consumes ``orpycamcp.document.events`` and re-syncs firma_solicitud.nivel_seguridad.
+"""Worker: consumes ``orpycamcp.document.events``.
+
+Two event types are handled:
+
+* ``document.radicado.reclassified`` — re-syncs firma_solicitud.nivel_seguridad (below).
+* ``documento.contenido_cambiado`` (B10) — invalidates the circuits of a borrador
+  that no longer rest on its CURRENT text hash; see ``app.services.invalidacion``.
 
 On each ``document.radicado.reclassified`` event, updates firma_solicitud rows
 whose objeto_tipo='radicado' and objeto_id matches the reclassified radicado
@@ -34,6 +40,7 @@ from app.core.redis_client import get_redis
 from app.jobs import deadletter_retention
 from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.dead_letter_repository import DeadLetterRepository
+from app.services import invalidacion
 
 try:
     from orpycamcp_common import audit as _audit
@@ -124,16 +131,93 @@ async def apply_reclassification(
     return n
 
 
+EVENT_RECLASSIFIED = "document.radicado.reclassified"
+EVENT_CONTENIDO_CAMBIADO = "documento.contenido_cambiado"
+HANDLED_EVENT_TYPES = frozenset({EVENT_RECLASSIFIED, EVENT_CONTENIDO_CAMBIADO})
+
+
+async def apply_contenido_cambiado(
+    conn,
+    tenant_slug: str,
+    payload: dict,
+    *,
+    event_id: str | None,
+    actor: str = "system",
+    replayed: bool = False,
+) -> int:
+    """Core de ``documento.contenido_cambiado`` (B10, ítem 2).
+
+    El evento solo es el DISPARADOR: la huella vigente se pregunta a document-service
+    en este momento y se invalida lo que no recae sobre ella, así que ni el orden de
+    llegada ni una reentrega cambian el resultado. ``HuellaNoVerificableError`` se
+    propaga a propósito (sin ack → PEL → DLQ).
+
+    Reutilizado por el worker y por el replay de la DLQ (mismo núcleo, igual que
+    ``apply_reclassification``). Devuelve las solicitudes invalidadas.
+    """
+    borrador_id = payload.get("borrador_id")
+    if not borrador_id:
+        logger.warning("Evento contenido_cambiado sin borrador_id — ignorado")
+        return 0
+    vigente = await invalidacion.resolver_huella_vigente(str(borrador_id), tenant_slug)
+    return await invalidacion.invalidar_por_contenido(
+        conn,
+        tenant_slug=tenant_slug,
+        objeto_id=str(borrador_id),
+        vigente=vigente,
+        origen="replay" if replayed else "evento",
+        event_id=event_id,
+        actor=actor,
+    )
+
+
+async def apply_event(
+    conn,
+    tenant_slug: str,
+    event_type: str | None,
+    payload: dict,
+    *,
+    event_id: str | None,
+    actor: str | None = None,
+    replayed: bool = False,
+) -> int:
+    """Despacha un evento al núcleo que le corresponde (worker y replay comparten esto)."""
+    if event_type == EVENT_RECLASSIFIED:
+        return await apply_reclassification(
+            conn, tenant_slug, payload, actor=actor, replayed=replayed
+        )
+    if event_type == EVENT_CONTENIDO_CAMBIADO:
+        return await apply_contenido_cambiado(
+            conn,
+            tenant_slug,
+            payload,
+            event_id=event_id,
+            actor=actor or "system",
+            replayed=replayed,
+        )
+    return 0
+
+
 async def _handle(data: dict) -> None:
     envelope = events.parse_fields(data)
-    if envelope.get("event_type") != "document.radicado.reclassified":
+    event_type = envelope.get("event_type")
+    if event_type not in HANDLED_EVENT_TYPES:
         return
 
     tenant_slug = envelope.get("tenant_slug")
     payload = envelope.get("payload") or {}
 
     if not tenant_slug:
-        logger.warning("Evento reclassified sin tenant_slug — ignorado")
+        logger.warning("Evento %s sin tenant_slug — ignorado", event_type)
+        return
+
+    if event_type == EVENT_CONTENIDO_CAMBIADO:
+        # Sin tx externa: la huella se pregunta por red y la invalidación abre la
+        # suya (UPDATE + asiento atómicos). Un error aquí NO se traga.
+        async with acquire_tenant(tenant_slug) as conn:
+            await apply_contenido_cambiado(
+                conn, tenant_slug, payload, event_id=envelope.get("event_id")
+            )
         return
 
     if payload.get("nivel_nuevo") is None:

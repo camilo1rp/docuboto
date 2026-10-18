@@ -126,6 +126,7 @@ async def test_radicado_ref_path_uses_pivot_embedding_and_excludes_self(client_w
     pivot_call = conn.fetchrow.call_args.args
     assert pivot_call[1] == "radicado"
     assert pivot_call[2] == "2024-DEMO-E-000001"
+    assert pivot_call[3] == 1, "el clearance del llamante viaja al WHERE del pivote ($3)"
 
     # search() recibió el embedding DEL PIVOTE (no uno recién embebido) y pidió
     # top_k + 1 (uno de más para poder excluir el pivote y aun así completar top_k).
@@ -241,7 +242,8 @@ async def test_radicado_ref_over_clearance_is_the_same_404(client_with_conn) -> 
         URL, json={"radicado_ref": "no-existe"}, headers=TENANT_HEADERS
     )
 
-    conn.fetchrow.return_value = {"embedding_literal": "[0.9]", "nivel_seguridad": 3}  # CLASIFICADA
+    # El gate vive en el WHERE: la base no devuelve fila para un pivote sobre el clearance.
+    conn.fetchrow.return_value = None
     resp_over_clearance = await client.post(
         URL, json={"radicado_ref": "clasificado-existente"}, headers=TENANT_HEADERS
     )

@@ -41,6 +41,8 @@ from base64 import b64decode
 from datetime import UTC, datetime
 
 import asyncpg
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 from fastapi import HTTPException, status
 
 from app.clients import storage_client
@@ -96,9 +98,21 @@ async def sign_personal_xml(
     hay transacción ambiente que proteger en ese camino).
     """
 
+    # B10 §7: huella del certificado que se va a incrustar; auth la contrasta con el vigente
+    # ANTES de consumir el TOTP (409 `certificado_cambiado`, factor intacto).
+    cert_fingerprint = hashlib.sha256(
+        x509.load_pem_x509_certificate(cert_pem.encode()).public_bytes(Encoding.DER)
+    ).hexdigest()
+    # `True` cuando `remote_sign` llegó a invocarse: a partir de ahí el TOTP puede estar gastado.
+    factor_en_uso = False
+
     async def _remote_sign(digest: bytes) -> bytes:
+        nonlocal factor_en_uso
+        factor_en_uso = True
         try:
-            result = await sign_digest_remote(authorization, digest, totp_code)
+            result = await sign_digest_remote(
+                authorization, digest, totp_code, cert_fingerprint=cert_fingerprint
+            )
         except SignDigestRemoteUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -146,13 +160,16 @@ async def sign_personal_xml(
             detail={"error": "certificado_personal_vencido", "detail": str(exc), "status": 422},
         ) from exc
     except XmldsigNoConformeError as exc:
-        # SEG-B2/ARC-B1 (ADR-034): la autoverificación va tras `remote_sign` (necesita el
-        # SignatureValue, que solo produce auth-service al consumir el TOTP), así que en esta
-        # ruta el factor ya está consumido cuando esto ocurre: se declara, ver ADR-034. Nada
-        # se sella ni se persiste, y el llamante recibe un 503 limpio, no un 500.
+        # SEG-B2/ARC-B1 (ADR-034 §7, B10): el ensayo con clave efímera ya validó, ANTES de
+        # `remote_sign`, la parte del XMLDSig que depende del documento; auth verificó su firma
+        # DENTRO de la tx del TOTP. Lo que aún puede fallar aquí (con `factor_en_uso`) es solo un
+        # defecto al incrustar el `SignatureValue` real: el residuo declarado. Nada se sella ni
+        # se persiste, y el llamante recibe un 503 limpio, no un 500.
+        detail: dict[str, object] = {"error": "firma_no_conforme_xmldsig", "detail": str(exc), "status": 503}
+        if factor_en_uso:
+            detail["totp_posiblemente_consumido"] = True
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "firma_no_conforme_xmldsig", "detail": str(exc), "status": 503},
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail
         ) from exc
 
 
@@ -173,6 +190,31 @@ class PersonalSigningService:
         self._conn = conn
         self._tenant_slug = tenant_slug
         self._cadena_repo = CadenaRepository(conn)
+
+    async def _asentar_totp_gastado(
+        self, exc: HTTPException, payload: SignPersonalRequest, actor: uuid.UUID
+    ) -> None:
+        """B10 §7 (residuo declarado, ADR-034): si la autoverificación final falla DESPUÉS de
+        que auth consumió el TOTP, la persona tiene que poder saber que su código se gastó.
+        Best-effort y en su propia tx: nunca tapa el 503 que ya viaja."""
+        detail: dict[str, object] = exc.detail if isinstance(exc.detail, dict) else {}
+        if not (_AUDIT_AVAILABLE and detail.get("totp_posiblemente_consumido")):
+            return
+        try:
+            async with self._conn.transaction():
+                await _audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="firma.autoverificacion_fallida_tras_totp",
+                    object_type=payload.objeto_tipo,
+                    object_ref=payload.objeto_id,
+                    actor=str(actor),
+                    payload={"ruta": "sign-personal", "error": detail.get("error")},
+                    canal=_audit.CANAL_PETICION,
+                )
+        except Exception:  # noqa: BLE001 — el 503 original es lo que importa
+            logger.warning("asiento autoverificacion_fallida_tras_totp no escrito", exc_info=True)
 
     async def sign(
         self,
@@ -294,14 +336,18 @@ class PersonalSigningService:
 
         # --- 4. Firma (propaga HTTPException tal cual en cualquier fallo) ---
         xml_bytes = payload.payload_xml.encode()
-        signed = await sign_personal_xml(
-            xml_bytes=xml_bytes,
-            objeto_tipo=payload.objeto_tipo,
-            objeto_id=payload.objeto_id,
-            authorization=authorization,
-            totp_code=payload.totp_code,
-            cert_pem=cert_pem,
-        )
+        try:
+            signed = await sign_personal_xml(
+                xml_bytes=xml_bytes,
+                objeto_tipo=payload.objeto_tipo,
+                objeto_id=payload.objeto_id,
+                authorization=authorization,
+                totp_code=payload.totp_code,
+                cert_pem=cert_pem,
+            )
+        except HTTPException as exc:
+            await self._asentar_totp_gastado(exc, payload, actor)
+            raise
 
         # --- 5. Subida a MinIO (firma_id pre-minteado, patrón H-H) ---
         firma_id = uuid.uuid4()

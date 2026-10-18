@@ -39,6 +39,10 @@ from orpycamcp_common import identidad
 
 from app.core.config import settings
 
+# La ruta que se FIRMA con la identidad (ADR-036) es la misma que se LLAMA: una sola
+# constante en los dos sitios, y un guardián AST lo comprueba.
+_RUTA_UPLOAD = "/api/v1/storage/upload"
+
 _CHUNK_SIZE = 65536
 
 
@@ -130,11 +134,11 @@ async def upload_bytes(
     # Firmada por el mismo motivo que en los demás clientes internos: el
     # middleware de identidad se dispara por la presencia de `X-User-Id`, venga
     # la llamada del gateway o de otro servicio (ver `orpycamcp_common.identidad`).
-    headers = identidad.firmar(headers)
+    headers = identidad.firmar(headers, metodo="POST", ruta=_RUTA_UPLOAD)
     files = {"file": (filename, data, mime_type or "application/octet-stream")}
     async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=60.0) as client:
         try:
-            resp = await client.post("/api/v1/storage/upload", headers=headers, files=files)
+            resp = await client.post(_RUTA_UPLOAD, headers=headers, files=files)
         except httpx.RequestError as exc:
             raise StorageContentError(f"storage-service inalcanzable: {exc}") from exc
     if resp.status_code not in (200, 201):

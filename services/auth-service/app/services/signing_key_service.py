@@ -33,6 +33,8 @@ from typing import Any
 import asyncpg
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from fastapi import HTTPException, status
 
 from app.core.config import settings
@@ -99,6 +101,12 @@ def _require_audit_available() -> None:
                 "status": 500,
             },
         )
+
+
+class FirmaDigestNoVerificaError(Exception):
+    """La firma que produjo ``sign_digest`` no verifica contra la clave pública del certificado
+    vigente (B10 §7). Se lanza DENTRO de la transacción del TOTP para que el rollback también
+    deshaga su consumo: no se entregó ninguna firma, así que el factor no se gastó en vano."""
 
 
 class SigningKeyService:
@@ -429,6 +437,8 @@ class SigningKeyService:
         tenant_slug: str,
         digest: bytes,
         totp_code: str,
+        *,
+        cert_fingerprint: str,
     ) -> tuple[bytes, str, str, str | None, datetime | None, str | None, str | None]:
         """Verifica-y-consume ``totp_code`` (TOTP, RFC 6238) y, si válido,
         descifra la clave privada EN MEMORIA y firma ``digest`` (ya
@@ -461,95 +471,41 @@ class SigningKeyService:
         La comprobación de existencia de una clave ``activo`` ocurre ANTES
         de verificar el TOTP: sin clave activa no hay nada que firmar, así
         que no tiene sentido consumir un código TOTP en ese caso.
+
+        B10 §7 — no quemar el TOTP con una firma que no sirve: (1) la huella del certificado que
+        el llamante va a incrustar (``cert_fingerprint``) se contrasta con la del certificado
+        vigente ANTES del TOTP (409 ``certificado_cambiado``); (2) la firma producida se verifica
+        con la clave pública del certificado DENTRO de la transacción del TOTP, de modo que una
+        firma que no verifica (503 ``firma_digest_no_verifica``) revierte también el consumo
+        del código.
         """
         sign_fail: HTTPException | None = None
         result: tuple[bytes, str, str, str | None, datetime | None, str | None, str | None] | None = None
+        no_verifica = False
 
-        async with self._conn.transaction():
-            row = await self._repo.get_by_user_for_update(user_id)
-            if row is None or row["estado"] != "activo":
-                sign_fail = HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "error": "signing_key_no_activa",
-                        "detail": "No tiene una credencial de firma personal activa",
-                        "status": 422,
-                    },
+        try:
+            async with self._conn.transaction():
+                result, sign_fail = await self._firmar_digest_en_tx(
+                    user_id, tenant_slug, digest, totp_code, cert_fingerprint
                 )
-            elif row["private_key_cifrado"] is None:
-                # Defensa en profundidad: una fila con material purgado es
-                # SIEMPRE 'revocado' (CHECK chk_auth_user_signing_key_purga) y
-                # ya la filtra el `estado != 'activo'` de arriba — este guard es
-                # inalcanzable por diseño, pero nunca se intenta descifrar `None`.
-                sign_fail = HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail={
-                        "error": "signing_key_no_activa",
-                        "detail": "No tiene una credencial de firma personal activa",
-                        "status": 422,
-                    },
-                )
-            else:
-                totp_result = await TotpService(self._conn).verify(
-                    user_id, tenant_slug, totp_code, contexto="signing-key-sign-digest"
-                )
-                if not totp_result.valido:
-                    sign_fail = _map_totp_failure(totp_result)
-                else:
-                    aad = build_aad(tenant_slug=tenant_slug, user_id=str(user_id))
-                    # Selecciona la KEK por la VERSIÓN de la fila (llavero de
-                    # rotación) — fail-closed si esa versión no está cargada
-                    # (un retiro prematuro aborta la firma, nunca firma con
-                    # otra KEK). Sin rotación, key_version=1 = la KEK legacy.
-                    # El RuntimeError aquí propaga fuera de la tx → rollback que
-                    # también revierte el TOTP recién consumido (asimétrico con
-                    # la ruta de fallo-TOTP, que lo preserva). Aceptable: no hay
-                    # nada que firmar (KEK ausente) y solo ocurre si el operador
-                    # violó el invariante de retirada — una ventana de replay
-                    # sobre un acto imposible, no un bypass.
-                    private_key_pem = decrypt_private_key(
-                        row["private_key_cifrado"],
-                        nonce=row["private_key_nonce"],
-                        key=settings.signing_key_for_version(row["key_version"]),
-                        aad=aad,
-                    )
-                    private_key = load_private_key_pem(private_key_pem)
-                    signature_der = sign_digest(private_key, digest)
-                    # Descarte explícito de las referencias locales — salen
-                    # de scope al terminar el bloque `with` en cualquier
-                    # caso, pero se sueltan aquí mismo apenas se usaron
-                    # (REGLA no-fuga: nada de esto debe sobrevivir más de lo
-                    # estrictamente necesario).
-                    del private_key_pem, private_key
+        except FirmaDigestNoVerificaError:
+            no_verifica = True
 
-                    cert = x509.load_pem_x509_certificate(row["cert_pem"].encode())
-
-                    ca_cert_pem: str | None = None
-                    ca_fingerprint: str | None = None
-                    stored_user_ca_fingerprint = row.get("user_ca_fingerprint")
-                    if stored_user_ca_fingerprint:
-                        try:
-                            sub_ca = load_user_ca_certificate()
-                        except UserCaNotConfiguredError:
-                            sub_ca = None
-                        if sub_ca is not None:
-                            current_fp = _cert_fingerprint(sub_ca)
-                            if current_fp == stored_user_ca_fingerprint:
-                                ca_cert_pem = sub_ca.public_bytes(
-                                    serialization.Encoding.PEM
-                                ).decode()
-                                ca_fingerprint = current_fp
-
-                    result = (
-                        signature_der,
-                        row["cert_pem"],
-                        _cert_fingerprint(cert),
-                        row.get("serial"),
-                        row.get("not_after"),
-                        ca_cert_pem,
-                        ca_fingerprint,
-                    )
-
+        if no_verifica:
+            await self._audit_event(
+                user_id=user_id,
+                tenant_slug=tenant_slug,
+                action="signing_key.digest_no_verifica",
+                payload={"certificado_fingerprint": cert_fingerprint},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "error": "firma_digest_no_verifica",
+                    "detail": "La firma producida no verifica con el certificado; el código TOTP no se consumió",
+                    "status": 503,
+                },
+            )
         if sign_fail is not None:
             raise sign_fail
         assert result is not None
@@ -561,6 +517,136 @@ class SigningKeyService:
             payload={"certificado_fingerprint": result[2]},
         )
         return result
+
+    async def _firmar_digest_en_tx(
+        self,
+        user_id: uuid.UUID,
+        tenant_slug: str,
+        digest: bytes,
+        totp_code: str,
+        cert_fingerprint: str,
+    ) -> tuple[
+        tuple[bytes, str, str, str | None, datetime | None, str | None, str | None] | None,
+        HTTPException | None,
+    ]:
+        """Cuerpo de :meth:`load_and_sign_digest`; el llamante lo envuelve en la transacción."""
+        sign_fail: HTTPException | None = None
+        result: tuple[bytes, str, str, str | None, datetime | None, str | None, str | None] | None = None
+
+        row = await self._repo.get_by_user_for_update(user_id)
+        if row is None or row["estado"] != "activo":
+            sign_fail = HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "signing_key_no_activa",
+                    "detail": "No tiene una credencial de firma personal activa",
+                    "status": 422,
+                },
+            )
+        elif row["private_key_cifrado"] is None:
+            # Defensa en profundidad: una fila con material purgado es
+            # SIEMPRE 'revocado' (CHECK chk_auth_user_signing_key_purga) y
+            # ya la filtra el `estado != 'activo'` de arriba — este guard es
+            # inalcanzable por diseño, pero nunca se intenta descifrar `None`.
+            sign_fail = HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "signing_key_no_activa",
+                    "detail": "No tiene una credencial de firma personal activa",
+                    "status": 422,
+                },
+            )
+        elif (
+            _cert_fingerprint(x509.load_pem_x509_certificate(row["cert_pem"].encode()))
+            != cert_fingerprint
+        ):
+            # B10 §7: el llamante armó la firma con OTRO certificado (rotación o re-emisión entre
+            # su consulta de estado y ahora). Se rechaza ANTES del TOTP: el factor no se toca.
+            sign_fail = HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "certificado_cambiado",
+                    "detail": "El certificado de firma cambió; reintente la firma",
+                    "status": 409,
+                },
+            )
+        else:
+            totp_result = await TotpService(self._conn).verify(
+                user_id, tenant_slug, totp_code, contexto="signing-key-sign-digest"
+            )
+            if not totp_result.valido:
+                sign_fail = _map_totp_failure(totp_result)
+            else:
+                aad = build_aad(tenant_slug=tenant_slug, user_id=str(user_id))
+                # Selecciona la KEK por la VERSIÓN de la fila (llavero de
+                # rotación) — fail-closed si esa versión no está cargada
+                # (un retiro prematuro aborta la firma, nunca firma con
+                # otra KEK). Sin rotación, key_version=1 = la KEK legacy.
+                # El RuntimeError aquí propaga fuera de la tx → rollback que
+                # también revierte el TOTP recién consumido (asimétrico con
+                # la ruta de fallo-TOTP, que lo preserva). Aceptable: no hay
+                # nada que firmar (KEK ausente) y solo ocurre si el operador
+                # violó el invariante de retirada — una ventana de replay
+                # sobre un acto imposible, no un bypass.
+                private_key_pem = decrypt_private_key(
+                    row["private_key_cifrado"],
+                    nonce=row["private_key_nonce"],
+                    key=settings.signing_key_for_version(row["key_version"]),
+                    aad=aad,
+                )
+                private_key = load_private_key_pem(private_key_pem)
+                signature_der = sign_digest(private_key, digest)
+                # Descarte explícito de las referencias locales — salen
+                # de scope al terminar el bloque `with` en cualquier
+                # caso, pero se sueltan aquí mismo apenas se usaron
+                # (REGLA no-fuga: nada de esto debe sobrevivir más de lo
+                # estrictamente necesario).
+                del private_key_pem, private_key
+
+                cert = x509.load_pem_x509_certificate(row["cert_pem"].encode())
+                # B10 §7: la firma se verifica con la clave pública del certificado DENTRO de la
+                # tx del TOTP. Si no verifica, la excepción sale del ``async with`` y el rollback
+                # devuelve también el código: no se entregó ninguna firma que lo justifique.
+                public_key = cert.public_key()
+                try:
+                    if not isinstance(public_key, rsa.RSAPublicKey):
+                        raise TypeError("el certificado de firma personal no es RSA")
+                    public_key.verify(
+                        signature_der,
+                        digest,
+                        padding.PKCS1v15(),
+                        Prehashed(hashes.SHA256()),
+                    )
+                except Exception as exc:  # noqa: BLE001 — cualquier fallo == firma no verifica
+                    raise FirmaDigestNoVerificaError(str(exc)) from exc
+
+                ca_cert_pem: str | None = None
+                ca_fingerprint: str | None = None
+                stored_user_ca_fingerprint = row.get("user_ca_fingerprint")
+                if stored_user_ca_fingerprint:
+                    try:
+                        sub_ca = load_user_ca_certificate()
+                    except UserCaNotConfiguredError:
+                        sub_ca = None
+                    if sub_ca is not None:
+                        current_fp = _cert_fingerprint(sub_ca)
+                        if current_fp == stored_user_ca_fingerprint:
+                            ca_cert_pem = sub_ca.public_bytes(
+                                serialization.Encoding.PEM
+                            ).decode()
+                            ca_fingerprint = current_fp
+
+                result = (
+                    signature_der,
+                    row["cert_pem"],
+                    _cert_fingerprint(cert),
+                    row.get("serial"),
+                    row.get("not_after"),
+                    ca_cert_pem,
+                    ca_fingerprint,
+                )
+
+        return result, sign_fail
 
     # ------------------------------------------------------------------
     # Revocación (E17/F4, Incremento 2 — A2: estado en BD + chequeo en

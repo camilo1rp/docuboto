@@ -54,13 +54,32 @@ Alternativa B (elegida), en `services/signature-service/app/providers/local.py`:
 TSA, `CertificateValues`, `RevocationValues`, OCSP y `ArchiveTimeStamp` son propiedades **no firmadas** (fuera de `SignedInfo`) y
 se añaden después, como antes.
 
-**Dónde cae la autoverificación en la ruta personal (SEG-B2/ARC-B1).** `XmldsigNoConformeError` se traduce a `503
-firma_no_conforme_xmldsig` también en `sign_personal_xml` (la comparten `/sign-personal` y la cadena), no solo en `/sign-xml`: antes
-era un 500. **Limitación declarada**: la autoverificación necesita el `SignatureValue`, que solo produce auth-service al verificar y
-consumir el TOTP (`remote_sign`); por eso en esa ruta el factor ya está consumido cuando la autoverificación falla. No se adelantó
-(verificar antes con una clave efímera exigiría fabricar un certificado equivalente: más superficie que el riesgo que cubre, porque
-tras exigir la vigencia antes de firmar, solo una regresión del propio código puede producir una firma no conforme). El firmante
-reintenta con un código nuevo.
+**Dónde cae la autoverificación en la ruta personal (SEG-B2/ARC-B1) y cómo no se quema el TOTP (B10 §7).**
+`XmldsigNoConformeError` se traduce a `503 firma_no_conforme_xmldsig` también en `sign_personal_xml` (la comparten `/sign-personal` y
+la cadena), no solo en `/sign-xml`: antes era un 500. La autoverificación necesita el `SignatureValue`, que solo produce auth-service
+al verificar y consumir el TOTP (`remote_sign`). La versión anterior de este ADR declaraba la consecuencia («el factor ya está
+consumido») y descartaba adelantarla. B10 la reduce con **tres barreras**, dos antes del TOTP y una dentro de su transacción:
+
+1. **Ensayo previo, sin TOTP** (`_ensayar_xmldsig`, solo cuando hay `remote_sign`): la MISMA ruta de `sign` (`XAdESSigner.sign` →
+   `_declarar_transforms` → firma del `SignedInfo` final → `_autoverificar`) con un par **y un certificado efímeros**. Valida la parte de
+   la conformidad que depende del DOCUMENTO (c14n, `Transforms`, digests de las `Reference`: la familia del `HASH_FAILURE`) antes de
+   llamar a `remote_sign`. Si falla, `503 firma_no_conforme_xmldsig` con el TOTP intacto.
+2. **Huella del certificado, antes del TOTP.** `InternalSignDigestRequest` lleva `cert_fingerprint` (obligatorio, SHA-256 del DER); auth
+   lo contrasta con el certificado vigente y responde `409 certificado_cambiado` sin tocar el factor (rotación o re-emisión entre el
+   `/status` y la firma).
+3. **Auth verifica su propia firma DENTRO de la transacción del TOTP.** Tras `sign_digest`, verifica con la clave pública del
+   certificado; si no verifica, `FirmaDigestNoVerificaError` sale del `async with conn.transaction()` y el rollback devuelve también el
+   consumo del código (`503 firma_digest_no_verifica`, asiento best-effort `signing_key.digest_no_verifica` en su propia tx). Es seguro:
+   no se entregó ninguna firma. La alternativa de reservar el TOTP y confirmarlo después (dos fases) se descartó: abre una ventana de
+   replay y rompe «TOTP verificado-y-consumido atómicamente»; mover el XMLDSig a auth se descartó porque auth no debe cargar con
+   `signxml` ni ver documentos.
+
+**Residuo declarado.** El `_autoverificar` final se mantiene: lo único que aún puede fallar tras `remote_sign` es un defecto al
+incrustar el `SignatureValue` REAL, determinista y que ya pasó por el ensayo. Si ocurre, el 503 lleva `totp_posiblemente_consumido` y
+`PersonalSigningService` deja el asiento `firma.autoverificacion_fallida_tras_totp` para que la persona sepa que su código se usó. Costo
+real: esperar el siguiente intervalo de 30 s; no suma intentos fallidos ni bloquea. La ruta de la cadena (`CadenaFirmaService`) lleva la
+misma marca en el 503 y deja el MISMO asiento `firma.autoverificacion_fallida_tras_totp` (`cadena_service.py`, fuera de la transacción
+ambiente): no queda deuda de traza en ninguna de las dos rutas.
 
 ### 4. No se firma con un certificado fuera de vigencia (ARC-M2, SEG-B3)
 
@@ -84,8 +103,45 @@ Mecánica: una segunda pasada de `verify_xades` (`_vigencia_diferida`) que solo 
 
 - **Sin LTA válido** (B, T, LT, o un `ArchiveTimeStamp` que no valida) se mantiene `certificado_fuera_de_vigencia`.
 - Un documento alterado sigue siendo inválido: la comprobación criptográfica corre igual.
-- Qué NO es: no renueva nada. **El `ArchiveTimeStamp` no se renueva** (EN 319 132-1 §5.5.3, `ArchiveTimeStamp` encadenado antes de que
-  caduquen el algoritmo o la TSA): la prueba descansa en el primero. Deuda declarada.
+- **El `ArchiveTimeStamp` se renueva (B10 §8).** Antes de que caduque el certificado de su TSA, el job `app/jobs/renovacion_lta.py`
+  verifica la firma entera y, si verifica, añade un `xadesv141:TimeStampValidationData` (la cadena de la TSA del sello anterior) y un
+  `ArchiveTimeStamp` nuevo cuya entrada incluye TODO lo previo (referencias, `SignedInfo`, `SignatureValue`, `KeyInfo`, propiedades no
+  firmadas, ATS y TSVD anteriores; EN 319 132-1 §5.5.2 y §5.5.3). El XML renovado es un objeto NUEVO en storage (el original está bajo
+  COMPLIANCE y es evidencia; `version_id` es el ancla de su fila WORM): hereda `retain_until`/modo/legal hold por
+  `POST /api/v1/preservacion/renovar-artefacto-internal`, que deja el evento PREMIS `RENOVACION`. La cadena se registra en
+  `firma_sello_archivo` (migración 026; ordinal 0 = el original). `verify_xades` valida **cada** ATS sobre sus propios hermanos previos:
+  el primero se ancla a la TSA de la firma, los renovados a la de la firma o a una registrada al renovar, y cada sello debe haberse
+  renovado **antes** de que caducara el certificado de su TSA (`archive_timestamp_cadena_rota`). `_vigencia_diferida` sigue juzgando
+  con el `genTime` del `SignatureTimeStamp`, condicionado a que **toda** la cadena valide. No se renueva una firma que no verifica ni
+  con una TSA que no dé más plazo que la anterior (+ `lta_renovacion_margen_dias`).
+  Correcciones de la auditoría de B10:
+  - **El último sello se juzga a la fecha ACTUAL** (EN 319 102-1 §5.6.2). Si el certificado de su TSA ya caducó y no hay un sello
+    posterior, la cadena ya no prueba nada: `/verify` devuelve `lta_vigente=false`, baja el nivel verificado a `XAdES-LT`, añade la
+    advertencia `archive_timestamp_caducado` y **no aplica `_vigencia_diferida`** (un firmante caducado no se rescata con un sello que
+    ya no prueba; vuelve `certificado_fuera_de_vigencia`). El veredicto criptográfico no cambia.
+  - **No se renueva sobre una TSA caducada.** Un sello nuevo con `genTime` posterior al vencimiento de la TSA anterior rompería la
+    cadena (`archive_timestamp_cadena_rota`) y el artefacto, ya bajo COMPLIANCE, se invalidaría a sí mismo. Si `now() >= tsa_cert_not_after`
+    del último eslabón, el job no renueva: el eslabón pasa a `caducado` (sigue siendo el artefacto que se sirve) y se asienta
+    `firma.lta_cadena_caducada`. Es una pérdida de prueba que solo se evita renovando antes: por eso el job recorre también las
+    entidades **suspendidas** (la conservación no depende de la suspensión) y el margen es de 90 días.
+  - **`TimeStampValidationData` con la revocación de la TSA anterior** (EN 319 132-1 §5.5.1): si la CA que emitió el certificado de la
+    TSA publica una CRL (punto de distribución `http(s)`), se incrusta como `RevocationValues`; si no se puede obtener (red, CRL vencida o
+    de otro emisor, sin punto de distribución) **no se renueva** y se asienta `firma.lta_renovacion_sin_revocacion_tsa`. **Limitación
+    declarada:** un certificado de TSA **autofirmado** (la TSA local de un despliegue) es su propia ancla de confianza, no tiene CA ni
+    CRL, y su TSVD va sin `RevocationValues`; no se ha probado contra una TSA con OCSP únicamente (solo CRL).
+  - **La CRL se evalúa, no solo se incrusta (R2-3).** `tsa.revocacion_de_tsa` verifica la firma de la CRL contra la CA de la TSA (la del
+    token o una de `TSA_CA_PEM_PATHS`; sin CA no se acepta una CRL sin verificar) y consulta el número de serie de la TSA anterior: si
+    figura revocada no se renueva (`firma.lta_renovacion_tsa_revocada`); si la CA no está o la CRL no se obtiene o no verifica, tampoco
+    (`firma.lta_renovacion_sin_revocacion_tsa`). **`/verify` NO evalúa el `TimeStampValidationData`**: lo valida un tercero (p. ej. EU DSS);
+    nosotros solo lo construimos con la revocación disponible.
+  - `POST /expedientes/{id}/indice/verify` (archive) verifica el artefacto **vigente** del índice (el XML renovado), resuelto igual que
+    el AIP; si signature no lo resuelve cae al original y avisa `artefacto_vigente_no_resuelto`.
+  - Los asientos de rechazo, TSA por vencer y sin revocación se escriben **una vez por motivo y eslabón** (`ultimo_aviso`); las pasadas
+    siguientes dejan un WARNING en el log. El paso a `vigente` deja el asiento `firma.lta_sello_vigente`.
+  - El vencimiento del eslabón 0 sale del certificado elegido por **huella** (`archive_tsa_cert_fingerprint`), no de `certificates[0]`
+    (un `SET OF` no tiene orden); un token sin certificados no tumba la firma (no hay eslabón y queda `firma.lta_sin_eslabon`).
+  - La retención se extiende **en cascada**: renovar la retención de un artefacto de conservación total (storage, `renueva_a`) extiende
+    también los XML renovados, y una renovación nueva hereda el mayor `retain_until` de la cadena.
 
 ### 6. La verificación aplica la canonicalización que el XML declara (ARC-B2)
 
@@ -141,8 +197,9 @@ firma al emitirla, no al verificarla meses después.
   instalación (ver «Decisiones descartadas»).
 - ADR-016 y ADR-030 afirmaban que la firma era verificable por terceros. Hasta este ADR **no lo era**; ambos llevan ahora la nota.
 - El humo contra DSS (`tests/test_dss_smoke.py`) no forma parte del gate: requiere `DSS_URL`.
-- El `ArchiveTimeStamp` no se renueva (ver punto 5), y en la ruta personal el TOTP ya está consumido cuando la autoverificación
-  falla (ver punto 1).
+- El export no incluye el XML renovado (no lleva el XML firmado; sin cambio). El AIP sí embebe el XML vigente del índice, pero un
+  AIP empaquetado antes de una renovación no se rehace: reempaquetarlo queda abierto (ver punto 5). Y en la ruta personal queda el residuo del punto 1: un defecto al
+  incrustar el `SignatureValue` real aún puede gastar un TOTP (se asienta y se avisa).
 - La confianza (cadena hasta una raíz de una lista de confianza, ONAC) sigue siendo un asunto aparte.
 
 ### Decisiones descartadas

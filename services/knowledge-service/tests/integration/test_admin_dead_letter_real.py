@@ -41,7 +41,7 @@ CREATE TABLE auth_permissions (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), no
 CREATE TABLE auth_memberships (user_id UUID NOT NULL, group_id UUID NOT NULL);
 CREATE TABLE auth_group_permissions (group_id UUID NOT NULL, permission_id UUID NOT NULL, crud INT NOT NULL);
 CREATE TABLE role_clearance (group_id UUID NOT NULL, max_level INT NOT NULL);
-CREATE TABLE radicados (
+CREATE TABLE IF NOT EXISTS radicados (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tracking_number TEXT NOT NULL,
     nivel_seguridad SMALLINT NOT NULL DEFAULT 1

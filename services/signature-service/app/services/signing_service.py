@@ -32,12 +32,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from base64 import b64decode
 from datetime import UTC, datetime
 
 import asyncpg
+from cryptography.hazmat.primitives import hashes
 from fastapi import HTTPException, status
 
 from app.clients import storage_client
+from app.core import tsa as tsa_module
 from app.core.config import settings
 from app.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
 from app.core.events import publish_indice_firmado
@@ -387,6 +390,66 @@ async def sign_payload(
                 "key_version": signed.extra.get("key_version", KEY_VERSION_SIN_HMAC),
             }
         )
+
+        # B10 §8: el ATS de la firma original es el eslabón 0 de la cadena de renovación. Va en la
+        # MISMA tx que la fila `firma`: una firma LTA sin su eslabón 0 no sería renovable.
+        if (
+            signed.extra.get("archive_timestamp_present")
+            and minio_key_firmado
+            and signed_xml_sha256
+            and archive_timestamp_at_dt is not None
+        ):
+            # El vencimiento del eslabón 0 es el del certificado de la TSA que FIRMÓ el sello, que
+            # se identifica por la huella registrada al sellar. `certificates` de un CMS es un
+            # SET OF sin orden garantizado: tomar el primero puede dar la CA y renovar tarde.
+            token_ats = b64decode(signed.extra["archive_timestamp_token"])
+            huella_ats = signed.extra["archive_tsa_cert_fingerprint"]
+            certs_ats = tsa_module.certificados_de_token(token_ats)
+            cert_tsa_ats = next(
+                (c for c in certs_ats if c.fingerprint(hashes.SHA256()).hex() == huella_ats), None
+            )
+            if cert_tsa_ats is not None:
+                not_after_ats = cert_tsa_ats.not_valid_after_utc
+            elif certs_ats:
+                # El token no trae el certificado de su TSA por huella: se asume el vencimiento
+                # MÁS cercano de los presentes (renovar pronto es el error seguro).
+                not_after_ats = min(c.not_valid_after_utc for c in certs_ats)
+                logger.warning(
+                    "firma %s: ningún certificado del token de archivo coincide con la huella %s; "
+                    "se toma el vencimiento más cercano",
+                    row["id"], huella_ats,
+                )
+            else:
+                not_after_ats = None
+            if not_after_ats is None:
+                # Sin certificado no hay vencimiento que vigilar: no se crea el eslabón (la firma
+                # NO es renovable) y se deja constancia; la firma en sí no se tumba por esto.
+                logger.error(
+                    "firma %s: el token de sello de archivo no trae certificados; "
+                    "sin eslabón 0 no será renovable", row["id"],
+                )
+                if _AUDIT_AVAILABLE:
+                    await _audit.append(
+                        conn,
+                        tenant_slug=tenant_slug,
+                        service=_SERVICE,
+                        action="firma.lta_sin_eslabon",
+                        object_type="firma",
+                        object_ref=str(row["id"]),
+                        actor=str(firmante_id),
+                        payload={"motivo": "token_sin_certificados", "tsa_cert_fingerprint": huella_ats},
+                        canal=_audit.CANAL_PETICION,
+                    )
+            else:
+                await FirmaRepository(conn).insert_sello_archivo(
+                    firma_id=row["id"],
+                    ordinal=0,
+                    minio_key=minio_key_firmado,
+                    xml_sha256=signed_xml_sha256,
+                    gen_time=archive_timestamp_at_dt,
+                    tsa_cert_fingerprint=huella_ats,
+                    tsa_cert_not_after=not_after_ats,
+                )
 
         # Immutable audit record — RF-FIR-14, ADR-008.
         if _AUDIT_AVAILABLE:

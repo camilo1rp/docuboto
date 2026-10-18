@@ -30,6 +30,11 @@ import hashlib
 import hmac
 import os
 import time
+from urllib.parse import unquote
+
+#: Versión de la base firmada. v2 ata la firma al método y a la ruta (ADR-036):
+#: una identidad capturada ya no sirve en otra operación del mismo servicio.
+VERSION_FIRMA = "v2"
 
 #: Cabeceras que se firman, en orden fijo. Son las que deciden QUIÉN hace algo y
 #: SOBRE QUÉ entidad: si alguna quedara fuera, se podría cambiar sin romper la
@@ -72,10 +77,42 @@ def _secreto() -> str | None:
     return os.environ.get("IDENTITY_SIGNING_SECRET") or None
 
 
-def _firma(cabeceras: dict[str, str], secreto: str) -> str:
+def ruta_canonica(path: str) -> str:
+    """Forma de la ruta que firman y verifican los DOS extremos.
+
+    Sin query ni fragmento (no deciden qué operación es) y decodificada hasta
+    estabilizar: el gateway firma la ruta que Starlette ya decodificó una vez, httpx
+    la reenvía tal cual y el destino la decodifica otra vez, así que ``/x/%2541``
+    llega como ``/x/A`` y no como ``/x/%41``. Aplicar esta función en ambos lados
+    hace que coincidan. Si no estabiliza (decodificación anidada sin fin) o no
+    empieza por ``/``, no es una ruta: ``IdentidadNoAutentica``.
+    """
+    decodificada = path.split("#", 1)[0].split("?", 1)[0]
+    for _ in range(8):
+        siguiente = unquote(decodificada)
+        if siguiente == decodificada:
+            break
+        decodificada = siguiente
+    else:
+        raise IdentidadNoAutentica("La ruta de la identidad no es canónica.")
+    if not decodificada.startswith("/"):
+        raise IdentidadNoAutentica("La ruta de la identidad no es canónica.")
+    return decodificada
+
+
+def _firma(cabeceras: dict[str, str], secreto: str, *, metodo: str, ruta: str) -> str:
     # Concatenación canónica en orden fijo, con un separador que no puede
-    # aparecer en el valor de una cabecera HTTP.
-    base = "\x1e".join((cabeceras.get(c) or "") for c in CAMPOS_FIRMADOS)
+    # aparecer en el valor de una cabecera HTTP. Método y ruta NO viajan: el
+    # emisor los conoce porque es la petición que va a hacer y el verificador los
+    # toma de la suya. Si viajaran como cabecera, alguien acabaría confiando en ella.
+    base = "\x1e".join(
+        (
+            VERSION_FIRMA,
+            metodo.upper(),
+            ruta_canonica(ruta),
+            *((cabeceras.get(c) or "") for c in CAMPOS_FIRMADOS),
+        )
+    )
     return hmac.new(secreto.encode(), base.encode(), hashlib.sha256).hexdigest()
 
 
@@ -87,8 +124,14 @@ def _entero_env(nombre: str, defecto: int) -> int:
     return valor if valor >= 0 else defecto
 
 
-def firmar(cabeceras: dict[str, str], *, ahora: float | None = None) -> dict[str, str]:
-    """Devuelve las cabeceras con su instante y su firma, si hay secreto configurado."""
+def firmar(
+    cabeceras: dict[str, str], *, metodo: str, ruta: str, ahora: float | None = None
+) -> dict[str, str]:
+    """Devuelve las cabeceras con su instante y su firma, si hay secreto configurado.
+
+    ``metodo`` y ``ruta`` son los de la petición que se va a hacer (obligatorios y
+    sin valor por defecto: quien olvide atarlos falla al escribirlo).
+    """
     secreto = _secreto()
     if secreto is None:
         return cabeceras
@@ -96,10 +139,12 @@ def firmar(cabeceras: dict[str, str], *, ahora: float | None = None) -> dict[str
         **{k: v for k, v in cabeceras.items() if k.lower() != CABECERA_TS.lower()},
         CABECERA_TS: str(int(time.time() if ahora is None else ahora)),
     }
-    return {**con_ts, CABECERA_FIRMA: _firma(con_ts, secreto)}
+    return {**con_ts, CABECERA_FIRMA: _firma(con_ts, secreto, metodo=metodo, ruta=ruta)}
 
 
-def verificar(cabeceras: dict[str, str], *, ahora: float | None = None) -> None:
+def verificar(
+    cabeceras: dict[str, str], *, metodo: str, ruta: str, ahora: float | None = None
+) -> None:
     """Lanza `IdentidadNoAutentica` si la identidad no viene del gateway o caducó.
 
     Las claves se comparan sin distinguir mayúsculas, porque los nombres de
@@ -107,14 +152,15 @@ def verificar(cabeceras: dict[str, str], *, ahora: float | None = None) -> None:
 
     Además de la firma, el instante firmado tiene que estar dentro de la ventana
     (`IDENTITY_MAX_AGE_SECONDS`, 120 s) y no más de `IDENTITY_MAX_SKEW_SECONDS`
-    (30 s) en el futuro: una identidad capturada deja de servir.
+    (30 s) en el futuro: una identidad capturada deja de servir. Y solo vale para
+    el ``metodo`` y la ``ruta`` de ESTA petición (los toma el llamante de su scope).
     """
     secreto = _secreto()
     if secreto is None:
         return
     normalizadas = {k.lower(): v for k, v in cabeceras.items()}
     recibidas = {c: normalizadas.get(c.lower(), "") for c in CAMPOS_FIRMADOS}
-    esperada = _firma(recibidas, secreto)
+    esperada = _firma(recibidas, secreto, metodo=metodo, ruta=ruta)
     if not hmac.compare_digest(normalizadas.get(CABECERA_FIRMA.lower(), ""), esperada):
         raise IdentidadNoAutentica(
             "Las cabeceras de identidad no vienen firmadas por el gateway."
@@ -352,6 +398,10 @@ class IdentidadFirmadaMiddleware:
     (`firmar`), igual que hace el gateway; el guardián que lo censa vive en
     `shared/tests/test_la_identidad_propagada_va_firmada.py`.
 
+    La firma va atada al MÉTODO y a la RUTA de esta petición (ADR-036): se verifica
+    con `scope["method"]` y `scope["path"]`, de modo que una identidad capturada no
+    sirve para otra operación del mismo servicio.
+
     Es ASGI puro y no `BaseHTTPMiddleware` para poder ir el primero sin
     interferir con el cuerpo en streaming de las subidas.
     """
@@ -369,7 +419,7 @@ class IdentidadFirmadaMiddleware:
         }
         if cabeceras.get("x-user-id"):
             try:
-                verificar(cabeceras)
+                verificar(cabeceras, metodo=scope["method"], ruta=scope["path"])
             except IdentidadNoAutentica:
                 cuerpo = (
                     b'{"error":"identidad_no_autentica","detail":"La identidad de la '

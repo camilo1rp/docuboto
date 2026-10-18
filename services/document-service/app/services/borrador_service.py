@@ -487,7 +487,9 @@ class BorradorService:
         # verdad. Disparar por «vino el campo» invalidaría circuitos vivos al
         # guardar un cambio de asunto.
         if antes["cuerpo_sha256"] != row["cuerpo_sha256"]:
-            await self._signature_client.invalidar_circuitos(str(borrador_id), self._slug)
+            await self._signature_client.invalidar_circuitos(
+                str(borrador_id), self._slug, row["cuerpo_sha256"]
+            )
             if pendiente is not None:
                 await outbox.enviar(self._conn, self._redis, pendiente)
 

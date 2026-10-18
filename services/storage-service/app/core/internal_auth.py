@@ -54,7 +54,7 @@ def require_internal_token(x_internal_token: str | None = Header(default=None)) 
     # respuesta. `hmac.compare_digest` no lo hace — mismo criterio ya aplicado en
     # `auth-service/app/core/internal_auth.py`. El fail-closed de arriba (token no
     # configurado / ausente) queda intacto, solo cambia ESTA comparación final.
-    if not hmac.compare_digest(x_internal_token, configured):
+    if not hmac.compare_digest(x_internal_token.encode(), configured.encode()):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={

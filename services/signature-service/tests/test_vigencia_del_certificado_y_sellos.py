@@ -36,7 +36,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi import HTTPException
 from lxml import etree
 from signxml import CanonicalizationMethod
@@ -85,6 +85,23 @@ def _cert_con_vigencia(cn: str, desde: timedelta, hasta: timedelta):
         .sign(key, hashes.SHA256())
     )
     return key, cert
+
+
+def _tsa_larga(monkeypatch: pytest.MonkeyPatch, dias: int) -> None:
+    """TSA de pruebas con un certificado de ``dias`` días de vigencia."""
+    key, base = _cert_con_vigencia("tsa-larga", timedelta(days=-1), timedelta(days=dias))
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(base.subject).issuer_name(base.issuer).public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(base.not_valid_before_utc).not_valid_after(base.not_valid_after_utc)
+        .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.TIME_STAMPING]), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    monkeypatch.setattr(
+        "app.core.tsa.load_tsa_seal",
+        lambda: SignerRef(cert_pem=_pem_cert(cert), key_pem=_pem_key(key), key_password=None),
+    )
 
 
 def _reloj_adelantado(monkeypatch: pytest.MonkeyPatch, dias: int) -> None:
@@ -217,6 +234,9 @@ def _verificar(doc, **extra):  # noqa: ANN001, ANN003, ANN202
 async def test_lta_con_certificado_caducado_despues_de_firmar_es_valida_con_aviso(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # B10 (ARCH H2): el último sello se juzga a «ahora», así que para que el firmante caduque y la
+    # cadena SIGA probando hace falta una TSA más duradera que el sello (la de pruebas dura 365 d).
+    _tsa_larga(monkeypatch, 5 * 365)
     doc, _cert_sello, _ca = await _firmar_lta(monkeypatch)
     salida, avisos = _verificar(doc)
     assert salida.valida and _AVISO not in avisos, "vigente: se juzga a ahora, sin aviso"

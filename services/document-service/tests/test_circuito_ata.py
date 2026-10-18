@@ -313,8 +313,8 @@ async def test_editar_el_texto_invalida_los_circuitos_anteriores(client_with_con
     bid = uuid.uuid4()
     llamadas = []
 
-    async def _invalidar(borrador_id, tenant_slug):
-        llamadas.append((borrador_id, tenant_slug))
+    async def _invalidar(borrador_id, tenant_slug, cuerpo_sha256_vigente):
+        llamadas.append((borrador_id, tenant_slug, cuerpo_sha256_vigente))
         return 1
 
     monkeypatch.setattr(sc, "invalidar_circuitos", _invalidar)
@@ -333,6 +333,8 @@ async def test_editar_el_texto_invalida_los_circuitos_anteriores(client_with_con
 
     assert resp.status_code == 200, "editar un borrador firmado NO se bloquea: es el trámite"
     assert [c[0] for c in llamadas] == [str(bid)], "no se invalidó el circuito anterior"
+    # B10: se manda la huella VIGENTE (la nueva), que es el predicado de signature.
+    assert [c[2] for c in llamadas] == ["huella-nueva"]
 
 
 @pytest.mark.asyncio
@@ -351,7 +353,7 @@ async def test_guardar_sin_cambiar_el_texto_no_tira_un_circuito_vivo(
     bid = uuid.uuid4()
     llamadas = []
 
-    async def _invalidar(borrador_id, tenant_slug):
+    async def _invalidar(borrador_id, tenant_slug, cuerpo_sha256_vigente):
         llamadas.append(borrador_id)
         return 1
 

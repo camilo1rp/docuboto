@@ -33,6 +33,10 @@ from orpycamcp_common import identidad
 
 from app.core.config import settings
 
+# La ruta que se FIRMA con la identidad (ADR-036) es la misma que se LLAMA: una sola
+# constante en los dos sitios, y un guardián AST lo comprueba.
+_RUTA_ARTEFACTO = "/api/v1/storage/internal/artefacto"
+
 
 class StorageUploadError(RuntimeError):
     """El storage-service no aceptó (o no respondió a) la subida del XML firmado."""
@@ -75,7 +79,7 @@ async def upload_signed_xml(
     # Firmada por el mismo motivo que en los demás clientes internos: el
     # middleware de identidad se dispara por la presencia de `X-User-Id`, venga
     # la llamada del gateway o de otro servicio (ver `orpycamcp_common.identidad`).
-    headers = identidad.firmar(headers)
+    headers = identidad.firmar(headers, metodo="POST", ruta=_RUTA_ARTEFACTO)
     files = {"file": (filename, content, "application/xml")}
     try:
         async with httpx.AsyncClient(
@@ -86,7 +90,7 @@ async def upload_signed_xml(
             # RF-DIG-04, que no lo admite: la firma se producía y se perdía al
             # guardarla, con el índice en `pendiente_firma` para siempre.
             resp = await client.post(
-                "/api/v1/storage/internal/artefacto", files=files, headers=headers
+                _RUTA_ARTEFACTO, files=files, headers=headers
             )
     except httpx.RequestError as exc:
         raise StorageUploadError(f"storage-service inalcanzable: {exc}") from exc

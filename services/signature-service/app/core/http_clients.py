@@ -358,7 +358,7 @@ async def get_signing_key_status_remote(authorization: str | None) -> dict:
 
 
 async def sign_digest_remote(
-    authorization: str | None, digest: bytes, totp_code: str
+    authorization: str | None, digest: bytes, totp_code: str, *, cert_fingerprint: str
 ) -> dict:
     """Firma remota (E17/F4, Incremento 1) — ``POST
     /internal/signing-key/sign-digest`` (auth-service). ``digest`` es el
@@ -379,6 +379,10 @@ async def sign_digest_remote(
     un paso de verificación separado en signature-service — el factor y el
     uso de la clave se unen del lado de auth-service.
 
+    ``cert_fingerprint`` (B10 §7, obligatorio) es el SHA-256 (hex) del certificado que el
+    llamante incrustó en ``ds:KeyInfo``: auth lo contrasta con el vigente ANTES de consumir
+    el TOTP y responde 409 ``certificado_cambiado`` si difiere (el factor queda intacto).
+
     Devuelve el body JSON de auth-service en éxito (``signature_value_b64``,
     ``certificado_pem``, ``certificado_fingerprint``, ``serial``,
     ``not_after``). Lanza :class:`SignDigestRemoteUnavailableError`
@@ -397,6 +401,7 @@ async def sign_digest_remote(
         "alg": "RSA-SHA256",
         "prehashed": True,
         "totp_code": totp_code,
+        "cert_fingerprint": cert_fingerprint,
     }
     try:
         async with httpx.AsyncClient(
@@ -578,6 +583,20 @@ async def get_huella_indice_expediente(expediente_ref: str, tenant_slug: str) ->
     )
 
 
+def _es_borrador_desaparecido(resp: httpx.Response) -> bool:
+    """¿El 404 lo emitió document-service diciendo `borrador_not_found`? Admite el cuerpo
+    `{"detail": {"error": ...}}` (HTTPException) y `{"error": ...}`."""
+    try:
+        cuerpo = resp.json()
+    except ValueError:
+        return False
+    if not isinstance(cuerpo, dict):
+        return False
+    detalle = cuerpo.get("detail")
+    error = detalle.get("error") if isinstance(detalle, dict) else cuerpo.get("error")
+    return error == "borrador_not_found"
+
+
 async def get_huella_borrador(borrador_id: str, tenant_slug: str) -> dict:
     """Huella VIGENTE del cuerpo y del documento de un borrador.
 
@@ -611,7 +630,17 @@ async def get_huella_borrador(borrador_id: str, tenant_slug: str) -> dict:
         raise HuellaNoVerificableError("document-service inalcanzable") from exc
 
     if resp.status_code == 404:
-        raise BorradorDesaparecidoError(f"el borrador {borrador_id} ya no existe")
+        if _es_borrador_desaparecido(resp):
+            raise BorradorDesaparecidoError(f"el borrador {borrador_id} ya no existe")
+        # Un 404 GENÉRICO (ruta retirada/renombrada, un proxy, un `Mount`) no dice que el borrador
+        # haya desaparecido. Tomarlo por tal resolvía `vigente=None`, que significa «invalidar
+        # todo lo vivo, también lo ya firmado»: solo el 404 que document-service emite A
+        # PROPÓSITO (`borrador_not_found`) lo autoriza. Cualquier otro va a la DLQ.
+        logger.warning(
+            "document-service -> 404 SIN borrador_not_found al consultar la huella: %s",
+            resp.text[:200],
+        )
+        raise HuellaNoVerificableError("document-service respondió un 404 que no es borrador_not_found")
     if resp.status_code != 200:
         logger.warning(
             "document-service -> HTTP %s al consultar la huella: %s",

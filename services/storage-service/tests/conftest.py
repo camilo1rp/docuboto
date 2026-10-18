@@ -14,6 +14,7 @@ DB dependency (get_db_conn) and MinIO client (get_minio) are both mocked
 so tests run without real infrastructure.
 """
 
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
@@ -26,6 +27,13 @@ from httpx import ASGITransport, AsyncClient
 from app.core import config as cfg_module
 from app.core.database import get_db_conn
 from app.main import app
+
+# Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway, con `X-User-Id` sin
+# firmar: justo lo que el servicio rechaza cuando hay secreto de identidad (docker-compose lo
+# define por defecto desde B9). Se corre en el modo «firma no activada», que es una configuración
+# legítima, y no en un atajo: la firma la cubren las pruebas de `shared/` y la pila levantada.
+# Igual que signature-service. Se hace AQUÍ, antes de importar la app, y no en el compose.
+os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
 TENANT_SLUG = "demo"
 TENANT_HEADERS = {

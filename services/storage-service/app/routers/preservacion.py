@@ -43,6 +43,8 @@ from app.schemas.preservacion import (
     PlanResponse,
     ProtegerIndiceRequest,
     ProtegerIndiceResponse,
+    RenovarArtefactoRequest,
+    RenovarArtefactoResponse,
     RenovarRetencionRequest,
     RenovarRetencionResponse,
 )
@@ -60,6 +62,7 @@ from app.services.format_migration_service import (
     FixityMismatchError as MigracionFixityMismatchError,
 )
 from app.services.preservation_worm_service import (
+    ArtefactoNoEsDeFirmaError,
     FileNotFoundForPreservationError,
     FixityMismatchError,
     InvalidRetentionError,
@@ -478,6 +481,11 @@ def _map_proteger_indice_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_409_CONFLICT,
             detail={"error": "worm_singleton_conflict", "detail": str(exc), "status": 409},
         )
+    if isinstance(exc, ArtefactoNoEsDeFirmaError):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "artefacto_no_es_de_firma", "detail": str(exc), "status": 422},
+        )
     if isinstance(exc, ObjectLockNotEnabledError):
         return HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -692,6 +700,36 @@ async def renovar_retencion_internal(
         InvalidRetentionError,
     ) as exc:
         raise _map_renovar_retencion_error(exc) from exc
+
+
+@router.post(
+    "/renovar-artefacto-internal",
+    response_model=RenovarArtefactoResponse,
+    summary=(
+        "Registra la renovación del ArchiveTimeStamp de una firma XAdES-LTA: el XML renovado "
+        "(objeto nuevo) hereda la política WORM del anterior y deja el evento PREMIS "
+        "RENOVACION (B10 §8). Disparo SISTEMA únicamente (D-02, X-Internal-Token)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def renovar_artefacto_internal(
+    payload: RenovarArtefactoRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> RenovarArtefactoResponse:
+    """Solo signature-service (dueño de la firma y del job de renovación) la llama. Sin gemela
+    pública: decide QUÉ objeto sustituye a cuál, y eso hereda una retención COMPLIANCE
+    irreversible. Actor fijo ``SYSTEM_RECONCILER_ID``, nunca derivado de cabeceras."""
+    service = PreservationWormService(conn, tenant_slug)
+    try:
+        return await service.renovar_artefacto(payload, actor=str(SYSTEM_RECONCILER_ID))
+    except (
+        ArtefactoNoEsDeFirmaError,
+        FileNotFoundForPreservationError,
+        FixityMismatchError,
+        ObjectLockNotEnabledError,
+    ) as exc:
+        raise _map_proteger_indice_error(exc) from exc
 
 
 @router.post(

@@ -136,12 +136,14 @@ import copy
 import hashlib
 import uuid
 from base64 import b64decode, b64encode
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import dsa, ec, ed448, ed25519, padding, rsa
+from cryptography.x509.oid import NameOID
 from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
@@ -280,6 +282,14 @@ class VerifyOutcome:
     xades_level: str | None = None
     lt_material_present: bool = False
     archive_timestamp_present: bool = False
+    # Cuántos ArchiveTimeStamp validó la cadena (1 = el de la firma original; >1 = renovada,
+    # B10 §8) y el instante del último.
+    archive_timestamp_count: int = 0
+    archive_timestamp_ultimo_at: datetime | None = None
+    # ¿El ÚLTIMO sello de archivo aún prueba? Su TSA tiene que seguir vigente HOY (EN 319 102-1
+    # §5.6.2: sin un sello posterior, un último ATS con la TSA caducada no da POE). None si la
+    # firma no es LTA. False degrada el nivel verificado a XAdES-LT.
+    lta_vigente: bool | None = None
     revocation_provenance: str | None = None
     crl_next_update: datetime | None = None
     # --- OCSP stapled en XAdES-LT (RF-FIR-15) — False/None cuando la firma no
@@ -397,6 +407,59 @@ def _autoverificar(signed_root: etree._Element, cert_pem: bytes) -> None:
         raise XmldsigNoConformeError(f"autoverificacion_xmldsig_fallida: {exc}") from exc
 
 
+def _certificado_efimero(key: rsa.RSAPrivateKey) -> x509.Certificate:
+    """Certificado autofirmado y desechable para el ensayo de XMLDSig (B10 §7)."""
+    ahora = datetime.now(UTC)
+    nombre = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ensayo-xmldsig")])
+    return (
+        x509.CertificateBuilder()
+        .subject_name(nombre)
+        .issuer_name(nombre)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(ahora - timedelta(minutes=5))
+        .not_valid_after(ahora + timedelta(hours=1))
+        .sign(key, hashes.SHA256())
+    )
+
+
+async def _ensayar_xmldsig(prepared: PreparedDoc) -> None:
+    """Ensayo de la firma PERSONAL con un par y un certificado EFÍMEROS (B10 §7).
+
+    Recorre la MISMA ruta que :meth:`LocalSigner.sign` (``XAdESSigner.sign`` ->
+    :func:`_declarar_transforms` -> firma del ``SignedInfo`` FINAL -> :func:`_autoverificar`),
+    pero con una clave que no es de nadie. Así la parte de la conformidad que depende del
+    DOCUMENTO (c14n, Transforms, digests de las ``Reference``: la familia del ``HASH_FAILURE``) se
+    comprueba ANTES de llamar a ``remote_sign``, es decir, antes de que auth-service consuma el
+    TOTP. Lo que no cubre —la incrustación del ``SignatureValue`` REAL— es el residuo declarado
+    en el ADR-034 y lo sigue cubriendo la autoverificación final.
+
+    Los errores de parseo del documento propagan igual que en la ruta real.
+    """
+    root = _parse_no_doctype(prepared.xml_bytes)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    cert = _certificado_efimero(key)
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM)
+    key_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    signed_root = XAdESSigner(
+        signature_algorithm=_SIGN_ALG,
+        digest_algorithm=_DIGEST_ALG,
+        c14n_algorithm=_C14N_ALG,
+    ).sign(root, key=key_pem, cert=cert_pem.decode("ascii"), always_add_key_value=False)
+    del key_pem
+    _declarar_transforms(signed_root)
+    firma = key.sign(_signed_info_c14n(signed_root), padding.PKCS1v15(), hashes.SHA256())
+    sig_value_el = signed_root.find(".//ds:Signature/ds:SignatureValue", namespaces=_DS_NS)
+    if sig_value_el is None:  # pragma: no cover — signxml siempre produce SignatureValue
+        raise ValueError("signature_value_no_encontrado")
+    sig_value_el.text = b64encode(firma).decode("ascii")
+    _autoverificar(signed_root, cert_pem)
+
+
 def _get_or_create_unsigned_sig_props(signed_root: etree._Element) -> etree._Element:
     """Localiza (o crea, la PRIMERA vez) ``xades:UnsignedProperties/
     xades:UnsignedSignatureProperties`` dentro de la ``xades:QualifyingProperties``
@@ -452,18 +515,21 @@ def _insert_signature_timestamp(signed_root: etree._Element, token: tsa.Timestam
     encapsulated_ts.text = b64encode(token.token_der).decode("ascii")
 
 
-def _insert_certificate_values(unsigned_sig_props: etree._Element, ca_cert_der: bytes) -> None:
+def _insert_certificate_values(unsigned_sig_props: etree._Element, *certs_der: bytes) -> None:
     """Incrusta ``xades:CertificateValues`` (XAdES-LT, Pieza 4).
 
     SOLO el certificado de la CA — el del sello institucional ya viaja en
     ``ds:KeyInfo/ds:X509Data/ds:X509Certificate`` y EN 319 132 §5.2.9 exige NO
-    duplicar certificados ya presentes en ``KeyInfo``.
+    duplicar certificados ya presentes en ``KeyInfo``. ``unsigned_sig_props`` es también el
+    padre válido en un ``xadesv141:TimeStampValidationData`` (renovación, B10 §8), donde se
+    pasan los certificados de la TSA del sello anterior.
     """
     cert_values = etree.SubElement(unsigned_sig_props, f"{{{_XADES_NS_URI}}}CertificateValues")
-    encapsulated_cert = etree.SubElement(
-        cert_values, f"{{{_XADES_NS_URI}}}EncapsulatedX509Certificate"
-    )
-    encapsulated_cert.text = b64encode(ca_cert_der).decode("ascii")
+    for ca_cert_der in certs_der:
+        encapsulated_cert = etree.SubElement(
+            cert_values, f"{{{_XADES_NS_URI}}}EncapsulatedX509Certificate"
+        )
+        encapsulated_cert.text = b64encode(ca_cert_der).decode("ascii")
 
 
 def _insert_revocation_values(unsigned_sig_props: etree._Element, crl_der: bytes) -> etree._Element:
@@ -533,7 +599,10 @@ def _octetos_de_referencia(ref: etree._Element, root: etree._Element) -> bytes:
 
 
 def _archive_ts_covered_bytes(
-    signed_root: etree._Element, algoritmo: str = _C14N_ALG.value
+    signed_root: etree._Element,
+    algoritmo: str = _C14N_ALG.value,
+    *,
+    objetivo: etree._Element | None = None,
 ) -> bytes:
     """Entrada del ``xadesv141:ArchiveTimeStamp`` según ETSI EN 319 132-1
     §5.5.2, concatenada en este orden:
@@ -546,7 +615,14 @@ def _archive_ts_covered_bytes(
       3. C14N de cada propiedad no firmada de ``UnsignedSignatureProperties``
          que PRECEDE al ``ArchiveTimeStamp`` (en construcción, todas las
          presentes), en orden de documento: ``SignatureTimeStamp``,
-         ``CertificateValues``, ``RevocationValues`` (con ``OCSPValues`` dentro).
+         ``CertificateValues``, ``RevocationValues`` (con ``OCSPValues`` dentro) y, tras una
+         renovación (B10 §8), los ``ArchiveTimeStamp`` y ``TimeStampValidationData`` anteriores.
+
+    ``objetivo``: el ``ArchiveTimeStamp`` cuya entrada se calcula. Sus «previas» son TODOS los
+    hermanos que lo anteceden (incluidos los ATS y los TSVD anteriores); así cada sello de una
+    cadena de renovación se valida sobre lo que realmente tenía delante. Con ``None`` las
+    previas son las que anteceden al PRIMER ``ArchiveTimeStamp`` (o todas, si aún no hay
+    ninguno): el comportamiento de siempre para una firma de un solo sello.
 
     Antes de B7 la entrada omitía los octetos de las referencias y metía
     ``SignedProperties`` entre ``KeyInfo`` y los sellos: no era la de la norma
@@ -586,9 +662,15 @@ def _archive_ts_covered_bytes(
 
     previas: list[etree._Element] = []
     for hijo in usp:
-        if hijo.tag == f"{{{_XADESV141_NS_URI}}}ArchiveTimeStamp":
+        if objetivo is None:
+            if hijo.tag == f"{{{_XADESV141_NS_URI}}}ArchiveTimeStamp":
+                break
+        elif hijo is objetivo:
             break
         previas.append(hijo)
+    else:
+        if objetivo is not None:
+            raise ValueError("archive_timestamp_objetivo_no_esta_en_unsigned_signature_properties")
     presentes = {etree.QName(h).localname for h in previas}
     faltan = [
         n for n in ("SignatureTimeStamp", "CertificateValues", "RevocationValues") if n not in presentes
@@ -627,17 +709,84 @@ def _insert_archive_timestamp(
     ``EncapsulatedTimeStamp``) van en el namespace v1.3.2 de siempre — usar
     v1.4.1 también para los hijos rompe la validación XSD de ``signxml``.
     """
-    covered = _archive_ts_covered_bytes(signed_root)
-    token = tsa.build_timestamp_token(covered)
-
     ts_id = f"SignXMLArchiveTimeStamp{uuid.uuid4().hex[:8].upper()}"
     archive_ts = etree.SubElement(unsigned_sig_props, f"{{{_XADESV141_NS_URI}}}ArchiveTimeStamp")
     archive_ts.set("Id", ts_id)
     c14n_method = etree.SubElement(archive_ts, f"{{{_DS_NS['ds']}}}CanonicalizationMethod")
     c14n_method.set("Algorithm", _C14N_ALG.value)
     encapsulated_ts = etree.SubElement(archive_ts, f"{{{_XADES_NS_URI}}}EncapsulatedTimeStamp")
+    # El elemento existe ANTES de calcular lo que cubre: sus «previas» son sus hermanos
+    # anteriores (con renovaciones, también los ATS y TSVD anteriores).
+    covered = _archive_ts_covered_bytes(signed_root, _C14N_ALG.value, objetivo=archive_ts)
+    token = tsa.build_timestamp_token(covered)
     encapsulated_ts.text = b64encode(token.token_der).decode("ascii")
     return token
+
+
+@dataclass(slots=True)
+class ArchiveRenewal:
+    """Resultado de :func:`renovar_archive_timestamp`."""
+
+    signed_xml: bytes
+    token: tsa.TimestampToken
+    # Fin de vigencia del certificado de la TSA que firmó el sello NUEVO: la fecha antes de
+    # la cual habrá que volver a renovar.
+    tsa_cert_not_after: datetime
+    # Ordinal del sello nuevo (0 = el de la firma original).
+    ordinal: int
+
+
+def renovar_archive_timestamp(signed_xml: bytes) -> ArchiveRenewal:
+    """Añade un ``ArchiveTimeStamp`` nuevo a una firma XAdES-LTA (B10 §8; ETSI EN 319 132-1
+    §5.5.2 y ``xadesv141:TimeStampValidationData``).
+
+    Detrás del último ATS inserta un ``xadesv141:TimeStampValidationData`` con el certificado de
+    la TSA del sello anterior (para que éste siga siendo verificable cuando su TSA ya no
+    responda) y, a continuación, el ``ArchiveTimeStamp`` nuevo, cuya entrada incluye TODO lo
+    anterior (los ATS y TSVD previos) además de las referencias, ``SignedInfo``,
+    ``SignatureValue`` y ``KeyInfo``. NO verifica nada: el llamante verifica antes de renovar
+    (renovar sellaría algo inválido).
+
+    Raises:
+        ValueError: la firma no lleva ``ArchiveTimeStamp`` (no es LTA) o está incompleta.
+        app.core.tsa.TsaUnavailableError: ninguna TSA pudo sellar.
+    """
+    root = _parse_no_doctype(signed_xml)
+    usp = root.find(
+        ".//xades:QualifyingProperties/xades:UnsignedProperties/xades:UnsignedSignatureProperties",
+        namespaces=_XADES_NS,
+    )
+    if usp is None:
+        raise ValueError("sin_unsigned_signature_properties")
+    anteriores = usp.findall("xadesv141:ArchiveTimeStamp", namespaces=_LT_NS)
+    if not anteriores:
+        raise ValueError("sin_archive_timestamp")
+    ultimo_ts = anteriores[-1].find("xades:EncapsulatedTimeStamp", namespaces=_XADES_NS)
+    if ultimo_ts is None or not (ultimo_ts.text or "").strip():
+        raise ValueError("archive_timestamp_vacio")
+    token_previo = b64decode(ultimo_ts.text.strip())
+    certs_tsa = tsa.certificados_de_token(token_previo)
+    # EN 319 132-1 §5.5.1: el TSVD lleva los datos de validación del sello anterior —certificados
+    # Y revocación—. Se resuelve ANTES de tocar el árbol: si no se puede, no se renueva.
+    cert_tsa_previo = tsa.certificado_tsa_de_token(token_previo)
+    crl_tsa = tsa.revocacion_de_tsa(cert_tsa_previo, certs_tsa) if cert_tsa_previo is not None else None
+
+    tsvd = etree.SubElement(usp, f"{{{_XADESV141_NS_URI}}}TimeStampValidationData")
+    tsvd.set("Id", f"SignXMLTsvd{uuid.uuid4().hex[:8].upper()}")
+    if certs_tsa:
+        _insert_certificate_values(tsvd, *[c.public_bytes(serialization.Encoding.DER) for c in certs_tsa])
+    if crl_tsa is not None:
+        _insert_revocation_values(tsvd, crl_tsa)
+    token = _insert_archive_timestamp(root, usp)
+    tsa_cert = tsa.certificado_tsa_de_token(token.token_der)
+    if tsa_cert is None:
+        raise tsa.TsaUnavailableError("tsa_token_sin_certificado_firmante")
+    return ArchiveRenewal(
+        signed_xml=etree.tostring(root, xml_declaration=False, encoding="UTF-8"),
+        token=token,
+        tsa_cert_not_after=tsa_cert.not_valid_after_utc,
+        ordinal=len(anteriores),
+    )
 
 
 class LocalSigner:
@@ -680,6 +829,11 @@ class LocalSigner:
         # Fail-closed ANTES de firmar (ARC-M2/SEG-B3): certificado caducado => ni firma, ni
         # llamada a `remote_sign` (que consumiría el TOTP), ni archivo de algo inverificable.
         _exigir_certificado_vigente(signer)
+
+        # B10 §7: el ensayo de XMLDSig va ANTES de `remote_sign` (que consume el TOTP en
+        # auth-service). Un documento que no firmaría conforme falla aquí, con el factor intacto.
+        if signer.remote_sign is not None:
+            await _ensayar_xmldsig(prepared)
 
         # Huella de EXHIBICIÓN pre-firma — ver nota de canonicalización arriba.
         payload_sha256 = hashlib.sha256(prepared.xml_bytes).hexdigest()
@@ -976,6 +1130,7 @@ def verify_xades(
     expected_user_ca_fingerprint: str | None = None,
     advertencias: list[str] | None = None,
     _vigencia_diferida: bool = False,
+    tsa_fingerprints_archivo: Sequence[str] = (),
 ) -> VerifyOutcome:
     """Verifica una firma XAdES-B/-T/-LT/-LTA enveloped (E06, RF-FIR-15).
 
@@ -1133,6 +1288,7 @@ def verify_xades(
                 expected_user_ca_fingerprint,
                 avisos,
                 _vigencia_diferida=True,
+                tsa_fingerprints_archivo=tsa_fingerprints_archivo,
             )
             if segunda.valida and segunda.xades_level == SignatureFormat.XADES_LTA.value:
                 if advertencias is not None:
@@ -1383,37 +1539,94 @@ def verify_xades(
 
     xades_level = SignatureFormat.XADES_LT.value
 
-    # (ArchiveTimeStamp, XAdES-LTA) — Pieza 5/6.3.
-    archive_ts_el = root.find(
+    # (ArchiveTimeStamp, XAdES-LTA) — Pieza 5/6.3, y su cadena de renovación (B10 §8).
+    # Cada ArchiveTimeStamp se valida sobre SUS propios hermanos previos (incluidos los ATS y los
+    # TimeStampValidationData anteriores). El primero se ancla a la TSA de la firma; los
+    # renovados, a la TSA de la firma o a una de las que quedaron registradas al renovar
+    # (`tsa_fingerprints_archivo`, de la tabla `firma_sello_archivo`): una cadena de sellos
+    # cuyas TSA no estén ancladas no prueba nada. Y cada sello tiene que haberse renovado ANTES
+    # de que caducara el certificado de su TSA: es lo que hace de la cadena una prueba continua.
+    archive_els = root.findall(
         ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties"
-        # SOLO el contenedor es v1.4.1 — su hijo EncapsulatedTimeStamp sigue
-        # en v1.3.2 (ver docstring de _insert_archive_timestamp).
-        "/xadesv141:ArchiveTimeStamp/xades:EncapsulatedTimeStamp",
+        "/xadesv141:ArchiveTimeStamp",
         namespaces=_LT_NS,
     )
-    archive_timestamp_present = bool(archive_ts_el is not None and (archive_ts_el.text or "").strip())
-    if archive_timestamp_present:
-        try:
-            archive_token_der = b64decode(archive_ts_el.text.strip())
-            archive_metodo = archive_ts_el.getparent().find(
-                "ds:CanonicalizationMethod", namespaces=_DS_NS
-            )
-            if archive_metodo is None or not archive_metodo.get("Algorithm"):
-                raise ValueError("canonicalization_method_ausente_en_archive_timestamp")
-            covered = _archive_ts_covered_bytes(root, archive_metodo.get("Algorithm", ""))
-        except Exception as exc:  # noqa: BLE001 — fail-closed
-            return VerifyOutcome(False, f"archive_timestamp_ilegible: {exc}")
+    archive_timestamp_present = False
+    archive_count = 0
+    archive_ultimo_at: datetime | None = None
+    prev_at: datetime | None = None
+    prev_not_after: datetime | None = None
+    if archive_els:
+        for i, ats_el in enumerate(archive_els):
+            enc = ats_el.find("xades:EncapsulatedTimeStamp", namespaces=_XADES_NS)
+            if enc is None or not (enc.text or "").strip():
+                if i == 0:
+                    break  # un primer ATS vacío == sin ATS (como siempre)
+                return VerifyOutcome(False, f"archive_timestamp_vacio[{i}]")
+            try:
+                archive_token_der = b64decode(enc.text.strip())
+                archive_metodo = ats_el.find("ds:CanonicalizationMethod", namespaces=_DS_NS)
+                if archive_metodo is None or not archive_metodo.get("Algorithm"):
+                    raise ValueError("canonicalization_method_ausente_en_archive_timestamp")
+                covered = _archive_ts_covered_bytes(
+                    root, archive_metodo.get("Algorithm", ""), objetivo=ats_el
+                )
+                # El pin de esta pieza: el de la firma para el primero; para los renovados, el
+                # de la firma o uno registrado al renovar.
+                pin = expected_tsa_fingerprint
+                if i > 0:
+                    huella_token = tsa.certificados_de_token(archive_token_der)[0].fingerprint(
+                        hashes.SHA256()
+                    ).hex()
+                    permitidas = {expected_tsa_fingerprint, *tsa_fingerprints_archivo} - {None}
+                    if huella_token not in permitidas:
+                        return VerifyOutcome(False, f"archive_timestamp_tsa_no_anclada[{i}]")
+                    pin = huella_token
+            except Exception as exc:  # noqa: BLE001 — fail-closed
+                return VerifyOutcome(False, f"archive_timestamp_ilegible: {exc}")
 
-        archive_outcome = tsa.verify_timestamp_token(
-            archive_token_der, covered, expected_tsa_fingerprint=expected_tsa_fingerprint
-        )
-        if not archive_outcome.valido:
-            return VerifyOutcome(
-                False, f"archive_timestamp_invalido: {archive_outcome.motivo}"
+            archive_outcome = tsa.verify_timestamp_token(
+                archive_token_der, covered, expected_tsa_fingerprint=pin
             )
-        if advertencias is not None:
-            advertencias.extend(a for a in archive_outcome.advertencias if a not in advertencias)
-        xades_level = SignatureFormat.XADES_LTA.value
+            if not archive_outcome.valido:
+                return VerifyOutcome(
+                    False, f"archive_timestamp_invalido[{i}]: {archive_outcome.motivo}"
+                )
+            if (
+                prev_at is not None
+                and archive_outcome.gen_time is not None
+                and archive_outcome.gen_time < prev_at
+            ):
+                return VerifyOutcome(False, f"archive_timestamp_cadena_desordenada[{i}]")
+            if (
+                prev_not_after is not None
+                and archive_outcome.gen_time is not None
+                and archive_outcome.gen_time > prev_not_after
+            ):
+                # El sello anterior se renovó cuando el certificado de SU TSA ya había caducado:
+                # entre medias no hubo prueba vigente.
+                return VerifyOutcome(False, f"archive_timestamp_cadena_rota[{i}]")
+            prev_at = archive_outcome.gen_time
+            prev_not_after = archive_outcome.tsa_cert_not_after
+            archive_ultimo_at = archive_outcome.gen_time
+            archive_count += 1
+            archive_timestamp_present = True
+            if advertencias is not None:
+                advertencias.extend(a for a in archive_outcome.advertencias if a not in advertencias)
+        if archive_timestamp_present:
+            xades_level = SignatureFormat.XADES_LTA.value
+
+    lta_vigente: bool | None = None
+    if archive_timestamp_present:
+        lta_vigente = prev_not_after is None or prev_not_after >= now
+        if not lta_vigente:
+            # El último sello se juzga a la fecha ACTUAL: su TSA caducó y nadie lo renovó, así que
+            # la cadena ya no prueba nada. Se declara LT (no LTA) y, como el nivel LTA es lo que
+            # habilita juzgar un firmante caducado a la fecha de su sello (`_vigencia_diferida`),
+            # esa excepción tampoco se aplica.
+            xades_level = SignatureFormat.XADES_LT.value
+            if advertencias is not None and "archive_timestamp_caducado" not in advertencias:
+                advertencias.append("archive_timestamp_caducado")
 
     return VerifyOutcome(
         True, None,
@@ -1422,6 +1635,9 @@ def verify_xades(
         xades_level=xades_level,
         lt_material_present=True,
         archive_timestamp_present=archive_timestamp_present,
+        archive_timestamp_count=archive_count,
+        archive_timestamp_ultimo_at=archive_ultimo_at,
+        lta_vigente=lta_vigente,
         # Procedencia SIEMPRE "dev" en este incremento — no hay integración
         # con una CA acreditada ONAC (RF-FIR-15, Pieza 7).
         revocation_provenance="dev",
