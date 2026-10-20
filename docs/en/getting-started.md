@@ -262,6 +262,10 @@ activity) are still available, but in a secondary collapsible section, closed by
 default, and **only if the user holds the `SGD_PERM_ESTADISTICA` permission** — the same
 one that enables the `/reportes` view.
 
+### Suspended or not-ready institution
+
+If the institution is suspended, not yet provisioned, or its status could not be checked, the session shows a dedicated screen («La entidad está suspendida», «La entidad aún no está lista», «No se pudo comprobar el estado de la entidad») with **Reintentar** (when the status may change) and **Cerrar sesión**. On the public counter (`/radicacion`, `/eliminacion`) those same cases appear as «Esta entidad no tiene ventanilla disponible».
+
 ### 3. Global search from any screen
 
 The top bar carries a **global search** field available on every authenticated screen.

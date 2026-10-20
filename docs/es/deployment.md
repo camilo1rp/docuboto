@@ -32,7 +32,7 @@ Para una institución pequeña a mediana (< 5000 usuarios):
 
 - Docker 24.0+
 - Docker Compose 2.20+
-- Linux (RHEL, Ubuntu, Debian) o Kubernetes
+- Linux (RHEL, Ubuntu, Debian). Kubernetes no está soportado todavía (ver [Opción 2](#opcion-2-kubernetes-no-soportado-todavia))
 - Certificado TLS válido (Let's Encrypt gratuito o CA corporativa)
 - Dominio DNS resuelto
 

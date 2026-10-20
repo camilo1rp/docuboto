@@ -76,7 +76,15 @@ graph TB
 `mcp-server` is a **thin facade** (ADR-019): it has no database of its own and no
 business logic — it translates MCP protocol calls (or the conversational assistant)
 into requests to the `api-gateway`, exactly like any other authenticated client
-would.
+would. The assistant is the exception as far as inference goes: it calls **Anthropic’s API
+directly** (`ANTHROPIC_API_KEY`) and, before sending anything, replaces the content of every
+object with `nivel_seguridad >= 2` (residency barrier, ADR-006); without a key it answers 503.
+
+The gateway signs the identity it forwards to each service (HMAC with timestamp, method and
+canonical route, [ADR-036](adr/ADR-036-identidad-atada-a-metodo-y-ruta.md)) and enforces the
+institution's status at the edge: a `suspended` institution loses the authenticated API and keeps
+its public portal read-only and the preservation of its records
+([ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md)).
 
 ## Services and ports
 
@@ -90,7 +98,7 @@ would.
 | `storage-service` | 8005 | **19005** | Upload/download of files in the object store, preservation (WORM/Object-Lock) |
 | `workflow-service` | 8006 | **19006** | Distribution flows, approvals (vistos buenos), rules, dead-letter |
 | `notification-service` | 8007 | **19007** | Email/alerts, outgoing webhooks, dead-letter |
-| `signature-service` | 8008 | **19008** | Electronic signature (personal XAdES-B/T and institutional seal of the index/transfer minutes) |
+| `signature-service` | 8008 | **19008** | XAdES-B/T/LT/LTA electronic signature verifiable by third parties (ADR-034): personal, institutional seal of the index/transfer minutes, and LTA archive time-stamp renewal |
 | `mcp-server` | 8009 | **19009** | Model Context Protocol layer + conversational assistant (E18, ADR-019) |
 | `knowledge-service` | 8011 | **19011** | pgvector, RAG with ACL, semantic retrieval with citations (E21) |
 | `whisper-service` | 8012 | _not published_ | Speech transcription **inside the installation** (`faster-whisper` on CPU). Profile `assistant`: starts **off** and is **not routed through the gateway** — only mcp-server talks to it (ADR-020) |

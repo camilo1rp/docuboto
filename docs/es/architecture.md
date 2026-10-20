@@ -75,7 +75,15 @@ graph TB
 `mcp-server` es una **fachada fina** (ADR-019): no tiene base de datos propia ni lógica
 de negocio — traduce llamadas del protocolo MCP (o del asistente conversacional) en
 peticiones al `api-gateway`, exactamente como lo haría cualquier otro cliente
-autenticado.
+autenticado. El asistente es la excepción en cuanto a inferencia: llama **directo a la API de
+Anthropic** (`ANTHROPIC_API_KEY`) y, antes de enviar nada, sustituye el contenido de todo objeto
+con `nivel_seguridad >= 2` (barrera de residencia, ADR-006); sin clave responde 503.
+
+El gateway firma la identidad que reenvía a cada servicio (HMAC con instante, método y ruta
+canónica, [ADR-036](adr/ADR-036-identidad-atada-a-metodo-y-ruta.md)) y aplica el estado de la
+entidad en el borde: una entidad `suspended` pierde la API autenticada y conserva en solo lectura
+su portal público y la conservación de sus documentos
+([ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md)).
 
 ## Servicios y puertos
 
@@ -89,7 +97,7 @@ autenticado.
 | `storage-service` | 8005 | **19005** | Subida/descarga de archivos en el almacén de objetos, preservación (WORM/Object-Lock) |
 | `workflow-service` | 8006 | **19006** | Flujos de distribución, vistos buenos, reglas, dead-letter |
 | `notification-service` | 8007 | **19007** | Correo/alertas, webhooks salientes, dead-letter |
-| `signature-service` | 8008 | **19008** | Firma electrónica (personal XAdES-B/T y sello institucional del índice/acta) |
+| `signature-service` | 8008 | **19008** | Firma electrónica XAdES-B/T/LT/LTA verificable por terceros (ADR-034): personal, sello institucional del índice/acta y renovación del sello de archivo LTA |
 | `mcp-server` | 8009 | **19009** | Capa Model Context Protocol + asistente conversacional (E18, ADR-019) |
 | `knowledge-service` | 8011 | **19011** | pgvector, RAG con ACL, recuperación semántica con citas (E21) |
 | `whisper-service` | 8012 | _no se publica_ | Transcripción de voz **dentro de la instalación** (`faster-whisper` en CPU). Perfil `assistant`: arranca **apagado** y **no se enruta por el gateway** — solo le habla el mcp-server (ADR-020) |
