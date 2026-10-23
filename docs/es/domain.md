@@ -114,7 +114,13 @@ Ejemplo: 2024-ICETEX-E-001234
 
 El paso guarda el **código** de la dependencia (`to_dept_code`, ADR-032) y el nombre de ese momento como instantánea: la ubicación sale del código del paso, así que renombrar la dependencia no la mueve. (Antes el paso guardaba solo el nombre y el código se adivinaba si el nombre casaba con **una** dependencia activa.) La ubicación **no es pública**: ni la verificación por código, ni OAI-PMH, ni CMIS la exponen, y quién posee el trámite (`flujo_usuario`) solo sale en el detalle autenticado. Se puede filtrar y contar por ella (`?ubicacion_dept_code=`; reporte «Ubicación actual», que excluye cerrados y anulados). Ver [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
 
-**Reclasificación de seguridad (E08).** El `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) se fija al radicar pero puede **reclasificarse** después vía `PATCH /documents/{id}/security-level` (paridad con el *Cambio Nivel de Seguridad* de Orfeo). Es un cambio del **control de acceso**, no del contenido ni del número: la inmutabilidad del radicado queda intacta. Exige permiso `PERM_RECLASIFICAR`, respeta *no-read-up* (no se puede reclasificar lo que no se puede leer → `404` neutro) y *no-write-up* (no se puede fijar por encima del propio *clearance* → `403`), y **el acto debe motivarse** (motivo obligatorio + fundamento jurídico opcional), registrándose en el `audit_log` inmutable. El cambio se propaga por evento al `signature-service`, que re-sincroniza el nivel de las cadenas de firma del objeto.
+**Reclasificación de seguridad (E08).** El `nivel_seguridad` (1=PUBLICA, 2=RESERVADA, 3=CLASIFICADA) se fija al radicar pero puede **reclasificarse** después vía `PATCH /documents/{id}/security-level` (paridad con el *Cambio Nivel de Seguridad* de Orfeo). Es un cambio del **control de acceso**, no del contenido ni del número: la inmutabilidad del radicado queda intacta. Exige `PERM_RECLASIFICAR` (crud 3), respeta *no-read-up* (el gate de *clearance* va en el `WHERE` de la lectura bloqueante: lo que no se puede leer no se puede reclasificar → `404` neutro) y *no-write-up* (no se fija por encima del propio *clearance* → `403`), y **el acto debe motivarse** (motivo + causal + fundamento), registrándose en el `audit_log` inmutable. El cambio se propaga por evento (outbox) al `signature-service`, que re-sincroniza el nivel de las cadenas de firma del objeto. **Nivel del expediente**: hoy no se reclasifica tras crearse (lo vigila `shared/tests/test_el_nivel_del_expediente_no_cambia_en_silencio.py`); si algún día se permite, cada radicado queda con el **mayor** de los dos niveles —el suyo y el del expediente— y nunca baja por heredar (decisión del triage C5, 2026-10-20).
+
+**Causales de reserva: un catálogo cerrado (C12, [ADR-039](adr/ADR-039-desclasificacion-segunda-persona-y-catalogo-de-reserva.md)).** La Ley 1712/2014 enumera las únicas excepciones al acceso: art. 18 (información **clasificada**, nivel 3: intimidad, vida/salud/seguridad, secretos) y art. 19 (información **reservada**, nivel 2: defensa, seguridad pública, relaciones internacionales, investigación de delitos, debido proceso, administración de justicia, infancia, estabilidad macroeconómica, salud pública, proceso deliberativo). Son trece causales y no las edita la entidad: viven en una constante, en un `CHECK` de la base y en el `enum` de la tool MCP, y un guardián exige que digan lo mismo. Una causal art. 19 lleva un **plazo de 1 a 180 meses** (15 años, art. 22) contado desde `clasificado_at`, que **no se reinicia** al re-motivar (si no, una reserva se perpetuaría); una art. 18 no lleva plazo (se mantiene mientras subsista el derecho). `fundamento_juridico` es la norma *especial* concreta (p. ej. la Ley 1581) y es interno. Lo que quedó clasificado sin causal (filas anteriores, paquetes importados con texto libre) es `por_clasificar`: se publica así, «pendiente de motivar», y se resuelve **re-motivando** (`PATCH` al mismo nivel con la causal correcta, sin evento: el acceso no cambia). El vencimiento automático del plazo (desclasificación de oficio) está declarado como pendiente.
+
+**Desclasificar lo clasificado exige una segunda persona (C4, ADR-039).** Bajar el nivel de un radicado desde el **3** no lo decide una sola persona: una **solicita** (`POST /documents/{id}/desclasificacion`, con motivo y, si el destino es reservada, causal art. 19, fundamento y plazo) y **otra aprueba** (`POST /desclasificaciones/{id}/aprobar`, `PERM_RECLASIFICAR` crud 4, con *clearance* suficiente), y aprobar **ejecuta**: el nivel baja, se asientan dos entradas y se emite `reclassified`, todo en una transacción. La solicitud caduca a los 15 días; solo quien la pidió puede retirarla; una resuelta no se reescribe. El `PATCH` directo desde el 3 responde `409 desclasificacion_requiere_aprobacion` y un trigger de la base cierra cualquier otra vía. **Bajar de 2 a 1 (reservada, art. 19) sigue siendo directo**: el umbral es la constante `NIVEL_DOBLE_FIRMA = 3` y, para cambiarlo, hay que tocar la constante, el `CHECK` de la tabla de solicitudes y el trigger (el guardián los compara).
+
+**Índice público por serie (C12).** El art. 20 pide publicar el índice de información clasificada y reservada **por serie documental**. archive-service, dueño del cuadro de clasificación, lo compone con lo que document-service entrega sin número, asunto ni fundamento, y lo publica sin autenticar en `GET /api/v1/public/archive/indice-clasificados/{tenant}`: serie, subserie, causal (artículo y literal), fecha de calificación, plazo y dependencia productora de la serie. No lleva conteos ni identificadores: la existencia de un documento concreto no se deduce de él.
 
 ---
 
@@ -155,6 +161,12 @@ Entidad
             └── Subserie (ej: Contratos de prestación de servicios)
                 └── Tipo documental (ej: Contrato, Acta de inicio, Informe)
 ```
+
+**El cuadro de clasificación se deriva, no se captura dos veces (C-4, [ADR-040](adr/ADR-040-cuadro-de-clasificacion-derivado-y-fases-de-la-trd.md)).** Fondo = la entidad; sección y subsección = el **organigrama** (E14, las dependencias); serie y subserie = la **TRD vigente**. Lo único que las une es la **dependencia productora** que declara cada versión de la serie (una o varias, por `dependencias.codigo`): es contenido de la versión —se escribe en `borrador`, y aprobar o convalidar sin ella responde `409 trd_serie_sin_productora`—, y al convalidar se **congela la ruta** del organigrama (raíz → productora) que el Consejo aprobó. `GET /api/v1/trd/cuadro` arma el cuadro y **dice** lo que cambió desde entonces (productora inactiva, organigrama reorganizado tras convalidar, series que no se pueden ubicar) en vez de reescribir la versión convalidada. El organigrama es un **árbol**: no admite ciclos (409 `dependencia_ciclo`). La jerarquía serie > subserie se limita a **dos niveles** en el motor.
+
+**La retención tiene una sola fuente: las dos fases.** `archivo_gestion_years` y `archivo_central_years` son obligatorias al crear una serie (0 es válido, ausente no); el total de retención (gestión + central) lo **deriva** la respuesta y no se escribe. Una TVD no tiene fase de gestión: su total es su fase central, también obligatoria.
+
+**Publicar de oficio y recibir por la ventanilla son decisiones distintas.** El tipo documental lleva dos marcas independientes y opt-in: `admite_ventanilla_publica` («se recibe del público», Ley 1755) y `publicable` («entra en el esquema de publicación», Ley 1712 art. 12). Un radicado solo se publica de oficio si su tipo es `publicable` (un radicado sin tipo no se publica) y no entró por la ventanilla (información de terceros, Ley 1581).
 
 **Disposición final:**
 | Código | Nombre | Descripción |
@@ -277,6 +289,17 @@ Persona o entidad que recibe un radicado de salida.
 
 ---
 
+### Remitente anónimo y ficha provisional (C17, [ADR-038](adr/ADR-038-antirrobots-altcha-y-ficha-provisional.md))
+
+La ventanilla pública es anónima: nadie ha comprobado que quien escribe la cédula sea el dueño de esa cédula. Por eso **el sistema nunca asocia por número** al remitente de la ventanilla con la ficha que ya exista para ese documento (habría atado el radicado a los datos de contacto de otra persona, y la respuesta delataría qué cédulas están en el directorio).
+
+- Cuando el remitente aporta documento nace **siempre** una ficha **provisional** nueva (`identidad = provisional`), atómica con el radicado y atada como su remitente. Lo declarado queda en `documento_declarado_*` —**inmutable**, es evidencia— y **no ocupa** el documento: no choca con la unicidad de `(tipo, número)` ni aparece en la búsqueda, en el correo de la ingesta ni en los duplicados.
+- Sin documento no hay ficha (denuncia anónima, Ley 1755/2015 art. 16).
+- Un funcionario con `PERM_RADI` nivel 3 **concilia** cada ficha desde `/admin/terceros`: **vincular** a la ficha existente (el radicado y su número no se tocan; la existente hereda el historial al leer), **confirmar** como ficha nueva (el documento declarado pasa a ser su identidad) o **descartar** (queda como copia del remitente, con motivo). Cada acto deja asiento atómico con el autor (`auth_users.id`); estados terminales no se rehacen.
+- La cola respeta el _clearance_ (RF-SEG-08): una provisional atada a un radicado reservado no se ve ni se cuenta para quien no puede leerlo.
+
+---
+
 ## Entidades de conformidad y ciclo de vida (F3–F6)
 
 ### Índice electrónico (E15)
@@ -293,11 +316,20 @@ Constancia verificable de quién suscribió un radicado/anexo y cuándo: identid
 
 **Renovación del sello de archivo (B10, ADR-034).** Una firma XAdES-LTA lleva un sello de tiempo de archivo (`ArchiveTimeStamp`) que solo prueba mientras el certificado de su TSA esté vigente. Antes de que caduque, el sistema añade el material de validación y un sello nuevo que cubre todo lo anterior (EN 319 132-1 §5.5.2); cada renovación es un objeto nuevo bajo WORM que hereda la retención del anterior y deja el evento PREMIS `RENOVACION`. La firma original no se toca: la verificación acepta cualquier versión de la cadena de sellos, y la cadena se rompe si un sello se renovó después de caducar el anterior. **Sello caducado**: el último sello se juzga a la fecha actual; si el certificado de su TSA ya caducó sin un sello posterior, la cadena deja de probar (`lta_vigente=false`, el nivel baja a XAdES-LT) y ya no se puede renovar —renovar tarde rompería la cadena—, así que es una pérdida de prueba que solo se evita renovando a tiempo. Por eso la renovación **no se detiene con la entidad suspendida**: la suspensión detiene la operación, no la obligación de conservar (Ley 594/2000 art. 46; ADR-035 §8), y la retención WORM y la fixity siguen corriendo. El empaquetado de un AIP **nuevo** sí espera a la reactivación (necesita los anexos y document-service los veta a una entidad suspendida).
 
+**El AIP se versiona (C-6, [ADR-042](adr/ADR-042-el-aip-se-versiona-no-se-reescribe.md)).** Un AIP embebe el XML vigente del índice al empaquetarse; si después se renueva el sello, el AIP queda con el sello viejo. No se reescribe (está bajo COMPLIANCE y es evidencia): una fase diaria de archive compara la huella del XML embebido con la del vigente y, si difieren, storage construye una **versión nueva** a partir del bag anterior —mismo contenido, solo cambia el índice— con PREMIS que declara `derivation / has source` y el evento `packing`. Cada versión conserva su objeto; la retención de la cadena entera se extiende desde la **raíz** (la primera versión) y la nueva nunca queda con menos que la anterior. Es conservación, no operación: corre también con la entidad suspendida (no pide nada a document-service). La renovación del sello necesita además la revocación del certificado de la TSA anterior —CRL u OCSP de su CA— y `/verify` la evalúa; un administrador ve los sellos por vencer, vencidos o sin revocación en `/admin/preservacion` (`GET /signature/admin/sellos-archivo`).
+
 ### Archivo físico: Ubicación, Unidad de conservación, Signatura (E17)
 Patrón ArchivesSpace (ADR-017): la **Ubicación** (dirección física, jerarquía recursiva sede→…→gaveta) se separa de la **Unidad de conservación** (contenedor móvil: caja/carpeta/legajo…). La **signatura topográfica** (`DEP01-E05-C0124`) localiza la unidad y es el puente intelectual↔físico. Un expediente híbrido se vincula a sus unidades con rango de folios. Las unidades se **prestan** (`prestado→devuelto→vencido`) con historial de movimientos append-only.
 
 ### FUID — Formato Único de Inventario Documental (E17/E12)
 Inventario canónico (Acuerdo 042/2002) derivado de expediente↔unidad↔signatura↔serie; entregable de toda transferencia.
+
+#### Custodia, retención legal y soporte (C-5, [ADR-043](adr/ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md))
+
+- **Préstamo**: la unidad se presta a un **prestatario identificado**, interno (`auth_users.id`) o externo (nombre y documento, instantánea en la fila). Una unidad, su ancestro o su descendiente no se prestan dos veces; el prestatario necesita el clearance del contenido (un externo, solo contenido público); no se presta lo que sale por transferencia o lote de eliminación, y no se transfiere, elimina ni se vincula nada a lo que está prestado. Quién entrega lo resuelve el servidor y la traza no se borra.
+- **Retención legal por motivo**: judicial, disciplinaria, fiscal o administrativa (con fundamento y acta), más la de sistema `valoracion_pendiente`. Levantar una no libera las demás; exige repetir el motivo. Un expediente con retención activa no entra a un lote de eliminación.
+- **Fondo acumulado vencido**: no recibe retención WORM irreversible; queda bajo el hold `valoracion_pendiente` hasta que el Comité registre la valoración de la TVD (CT fija la retención y luego libera; E/S/M solo libera).
+- **Soporte de una constancia de firma inobtenible**: el anexo que cita una constancia vigente no se destruye. Al llegar la disposición TRD, el Comité avala la **baja de soporte** al aprobar el lote; la constancia firmada no se toca.
 
 ### Transferencia documental (E12)
 Paso del expediente entre los tres archivos del ciclo vital: **primaria** (gestión→central) y **secundaria** (central→histórico). Ciclo `preparada→enviada→recibida|rechazada`. Al **recibir**, el expediente pasa a `transferred` y queda **congelado** (no admite documentos). Lleva el FUID como entregable.
@@ -314,6 +346,10 @@ Despacho de un radicado de salida por un **operador postal** (4-72/Servientrega)
 Suscripción por tenant a eventos de dominio: OrpycaMCP entrega el evento a sistemas externos por **POST firmado HMAC-SHA256** (ADR-018).
 
 ---
+
+### Asistente y búsqueda semántica (E18/E21, [ADR-037](adr/ADR-037-asistente-activable-por-entidad.md))
+
+El asistente conversacional y la búsqueda semántica sobre la base de conocimiento son una **decisión de la entidad** (atributo `asistente_habilitado` de `public.tenants`; las entidades nuevas nacen apagadas, la cambia su administrador y el cambio queda asentado) y, dentro de ella, un **permiso de la persona**: `PERM_CONOCIMIENTO` (nivel 1 consulta y usa el asistente; nivel 2 acepta una sugerencia propia). Las dos condiciones se suman al clearance (no-read-up), que sigue en la consulta. Apagarlo cierra la consulta, no la indexación (los embeddings son locales y no hay egreso).
 
 ## Reglas de negocio críticas (resumen)
 

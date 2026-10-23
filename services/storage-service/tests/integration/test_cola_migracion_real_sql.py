@@ -51,7 +51,7 @@ async def _en_el_tenant(conn: asyncpg.Connection, slug: str) -> None:
     transacción, así que la conexión vuelve a `public` al cederla. Los tests que
     escriben con SQL directo —no a través del repositorio, que lo fija solo—
     tienen que posicionarse."""
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
 
 
 async def _fichero(conn: asyncpg.Connection, *, mime: str = _EN_RIESGO) -> uuid.UUID:

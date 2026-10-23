@@ -23,6 +23,10 @@ mientras parece cerrar un riesgo. Este guardián deja la premisa FALSABLE: el d�
 que alguien añada la reclasificación de expedientes, falla y obliga a hacer la
 propagación al índice derivado (evento del archivo + consumidor con la misma
 monotonía GREATEST que ya tiene `reclassified`).
+
+Regla decidida para ese día (triage C5, 2026-10-20): cada radicado del expediente queda con
+el MAYOR de los dos niveles, el suyo y el nuevo del expediente (no-read-up). Nunca baja por
+heredar: bajar la reserva de un documento sigue siendo su propio acto, con su aprobación.
 """
 
 import re

@@ -157,7 +157,7 @@ class WorkflowRulesService:
     async def _set_search_path(self) -> None:
         # Las tablas de reglas viven en tenant_{slug} (ADR-012).
         schema = tenant_schema(self.tenant_slug)  # valida + normaliza (fail-closed)
-        await self.conn.execute(f'SET search_path TO "{schema}", public')
+        await self.conn.execute(f'SET search_path TO "{schema}"')
 
     async def _resolver_dependencia(
         self, codigo: int | None, nombre: str | None, *, field: str, activa: bool

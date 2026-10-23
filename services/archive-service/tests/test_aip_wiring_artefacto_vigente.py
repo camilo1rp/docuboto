@@ -9,7 +9,7 @@
 
 """B10 §8: el AIP embebe el XML VIGENTE del índice (el del ArchiveTimeStamp renovado), no el original.
 
-Mutaciones: quitar la consulta a `signature_client.artefacto_vigente` del cableado (cae
+Mutaciones: quitar la consulta a `signature_client.resolver_artefacto_vigente` del cableado (cae
 `test_el_aip_embebe_el_xml_renovado`); usar el vigente aunque la consulta no responda (cae
 `test_sin_respuesta_se_conserva_el_original`)."""
 
@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.clients.signature_client import SIN_RENOVACION, ArtefactoVigente
 from app.clients.storage_client import AipPackagingOutcome
 from tests.test_aip_wiring_service_indice_only import (
     _expediente,
@@ -32,6 +33,16 @@ from tests.test_aip_wiring_service_indice_only import (
 pytestmark = pytest.mark.asyncio
 
 
+def _vig(minio_key: str) -> ArtefactoVigente:
+    return ArtefactoVigente(
+        firma_id=str(uuid.uuid4()),
+        file_id=uuid.UUID(minio_key.split("/", 1)[0]),
+        minio_key=minio_key,
+        xml_sha256="b" * 64,
+        ordinal=1,
+    )
+
+
 async def _empaquetar(vigente: str | None, original: str, firma_id: uuid.UUID | None):
     service = _service(_mock_conn())
     exp = _expediente(radicados=[])
@@ -41,7 +52,10 @@ async def _empaquetar(vigente: str | None, original: str, firma_id: uuid.UUID | 
     service._resolve_aip_retention = AsyncMock(return_value=(5, __import__("datetime").date(2026, 1, 1)))
     service._aip.mark_empaquetado = AsyncMock(return_value=1)
     with (
-        patch("app.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value=vigente)) as consulta,
+        patch(
+            "app.clients.signature_client.resolver_artefacto_vigente",
+            new=AsyncMock(return_value=_vig(vigente) if vigente else SIN_RENOVACION),
+        ) as consulta,
         patch(
             "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(return_value={}),
@@ -64,7 +78,7 @@ async def test_el_aip_embebe_el_xml_renovado() -> None:
     assert consulta.await_args.kwargs["firma_id"] == str(firma)
 
 
-async def test_sin_respuesta_se_conserva_el_original() -> None:
+async def test_sin_renovacion_se_conserva_el_original() -> None:
     original = uuid.uuid4()
     file_id, _ = await _empaquetar(None, f"{original}/ind.xml", uuid.uuid4())
     assert file_id == original

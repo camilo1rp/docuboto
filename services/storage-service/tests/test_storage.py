@@ -28,11 +28,11 @@ Repository call sequence for GET metadata / presigned URL:
   1. execute  — SET search_path (get_by_id)
   2. fetchrow — SELECT file
 
-Repository call sequence for DELETE (soft-delete D-04 — NO MinIO call):
-  1. execute  — SET search_path (get_by_id)
-  2. fetchrow — SELECT file
-  3. execute  — SET search_path (soft_delete)
-  4. execute  — UPDATE files SET deleted_at ... → "UPDATE 1"
+Repository call sequence for DELETE (soft-delete D-04 — NO MinIO call; C-5/C14):
+  1. execute  — SET search_path (lock_any_state)
+  2. fetchrow — SELECT file ... FOR UPDATE
+  3. execute/fetchval/fetch — SET search_path + to_regclass + SELECT FROM v_anexo_citado_vigente
+  4. execute  — SET search_path (soft_delete) + UPDATE files SET deleted_at ... → "UPDATE 1"
   5. [audit]  conn.transaction + advisory lock + fetchval + INSERT
 """
 
@@ -50,6 +50,7 @@ from tests.conftest import (
     conceder_permisos,
     make_file_record,
     minio_get_object_stream,
+    vista_de_citas,
 )
 
 _FILE_CONTENT = b"PDF content here"
@@ -389,6 +390,13 @@ async def test_get_file_content_not_found(
 # ---------------------------------------------------------------------------
 
 
+async def _execute_con_update_1(sql, *args, **kwargs):
+    """`execute` que contesta «UPDATE 1» al UPDATE de soft-delete y None al resto (SET
+    search_path, advisory lock y INSERT del audit): el borrado ahora toma `FOR UPDATE` y consulta la
+    vista de citas (C-5/C14), así que el número de `execute` ya no es una lista fija."""
+    return "UPDATE 1" if sql.lstrip().upper().startswith("UPDATE FILES SET DELETED_AT") else None
+
+
 @pytest.mark.asyncio
 async def test_delete_file_soft_deletes_not_purges(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
@@ -396,19 +404,17 @@ async def test_delete_file_soft_deletes_not_purges(
     """DELETE marks the row as logically deleted — does NOT remove the MinIO object.
 
     execute call order:
-      #1 SET search_path (get_by_id)
-      #2 SET search_path (soft_delete)
-      #3 UPDATE files SET deleted_at ... → "UPDATE 1"
-      #4 advisory lock inside audit.append transaction
-      #5 INSERT INTO public.audit_log inside audit.append transaction
+      (el número y el orden de los `execute` dejaron de ser fijos con C-5/C14: el borrado toma
+      `FOR UPDATE` y consulta la vista de citas; basta con que el UPDATE conteste «UPDATE 1»)
     """
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
+    vista_de_citas(mock_conn)  # C-5/C14: la vista contrato existe y nadie cita el anexo
     record = make_file_record(file_id=FILE_ID)
 
     mock_conn.fetchrow.return_value = record
     # audit.append also calls fetchval for prev_hash → already returns None by default.
-    mock_conn.execute.side_effect = [None, None, "UPDATE 1", None, None]
+    mock_conn.execute.side_effect = _execute_con_update_1
 
     response = await client.delete(
         f"/api/v1/storage/files/{FILE_ID}",
@@ -428,10 +434,11 @@ async def test_delete_file(
     """Alias kept for backward compatibility; delegates to the canonical test above."""
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
+    vista_de_citas(mock_conn)
     record = make_file_record(file_id=FILE_ID)
 
     mock_conn.fetchrow.return_value = record
-    mock_conn.execute.side_effect = [None, None, "UPDATE 1", None, None]
+    mock_conn.execute.side_effect = _execute_con_update_1
 
     response = await client.delete(
         f"/api/v1/storage/files/{FILE_ID}",
@@ -880,3 +887,86 @@ async def test_artefacto_del_sistema_no_es_puerta_franca(
 
     assert response.status_code == 415
     mock_minio.put_object.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/storage/files/{file_id} — anexo citado por una constancia (C-5/C14)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_de_anexo_citado_es_409_nombra_la_constancia_y_no_borra(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Un anexo que sostiene una constancia de firma inobtenible VIGENTE no se da de baja: 409
+    `anexo_citado_por_constancia` con la(s) constancia(s), asiento del rechazo, y el UPDATE de
+    soft-delete NUNCA se emite.
+
+    Mutación que debe caer: quitar la consulta a la vista (o su `if citas`) -> 204 y el UPDATE
+    aparece en los `execute`."""
+    client, mock_conn, _ = client_with_conn
+    excepcion, transferencia = uuid.uuid4(), uuid.uuid4()
+    vista_de_citas(
+        mock_conn,
+        citas=(
+            {
+                "excepcion_id": excepcion,
+                "transferencia_id": transferencia,
+                "rol": "recibe",
+                "ordinal": 1,
+            },
+        ),
+    )
+    mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID)
+    mock_conn.execute.side_effect = _execute_con_update_1
+
+    response = await client.delete(f"/api/v1/storage/files/{FILE_ID}", headers=INTERNAL_HEADERS)
+
+    assert response.status_code == 409
+    detalle = response.json()["detail"]
+    assert detalle["error"] == "anexo_citado_por_constancia"
+    assert detalle["constancias"] == [
+        {
+            "excepcion_id": str(excepcion),
+            "transferencia_id": str(transferencia),
+            "rol": "recibe",
+            "ordinal": 1,
+        }
+    ]
+    sqls = [c.args[0] for c in mock_conn.execute.call_args_list if c.args]
+    assert not any(q.lstrip().upper().startswith("UPDATE FILES SET DELETED_AT") for q in sqls)
+    acciones = [c.args[5] for c in mock_conn.execute.call_args_list if c.args and "INSERT INTO public.audit_log" in c.args[0]]
+    assert acciones == ["file.purga_bloqueada_constancia"]
+
+
+@pytest.mark.asyncio
+async def test_delete_con_la_vista_ausente_es_409_fail_closed(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """Control del fail-closed: sin `v_anexo_citado_vigente` no se puede afirmar que el anexo no
+    esté citado, y «no sé» no es «nadie». Mutación: tratar `to_regclass` NULL como vacío -> 204."""
+    client, mock_conn, _ = client_with_conn
+    mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID)
+    mock_conn.execute.side_effect = _execute_con_update_1  # fetchval -> None (vista ausente)
+
+    response = await client.delete(f"/api/v1/storage/files/{FILE_ID}", headers=INTERNAL_HEADERS)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "anexo_citado_por_constancia"
+
+
+@pytest.mark.asyncio
+async def test_delete_de_un_archivo_ya_dado_de_baja_sigue_siendo_404(
+    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
+) -> None:
+    """`lock_any_state` ve también los dados de baja (a diferencia de `get_by_id`): el servicio
+    tiene que seguir contestando 404, no volver a darlo de baja ni consultar la vista."""
+    from datetime import UTC, datetime
+
+    client, mock_conn, _ = client_with_conn
+    vista_de_citas(mock_conn)
+    mock_conn.fetchrow.return_value = make_file_record(
+        file_id=FILE_ID, deleted_at=datetime.now(tz=UTC)
+    )
+    response = await client.delete(f"/api/v1/storage/files/{FILE_ID}", headers=INTERNAL_HEADERS)
+    assert response.status_code == 404

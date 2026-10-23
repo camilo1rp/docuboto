@@ -34,7 +34,7 @@ class MetadataRepository:
 
     async def _set_search_path(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
-        await self._conn.execute(f'SET search_path TO "{schema}", public')
+        await self._conn.execute(f'SET search_path TO "{schema}"')
 
     async def get_active_template(self, trd_serie_id: uuid.UUID) -> asyncpg.Record | None:
         await self._set_search_path()

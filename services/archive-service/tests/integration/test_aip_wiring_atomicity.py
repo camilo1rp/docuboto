@@ -55,16 +55,14 @@ async def _seed_expediente(
     slug: str,
     name: str,
     *,
-    archivo_gestion_years: int | None = 5,
-    archivo_central_years: int | None = 5,
+    archivo_gestion_years: int = 5,
+    archivo_central_years: int = 5,
 ) -> uuid.UUID:
     archive = ArchiveService(conn, slug)
     serie = await archive.create_trd_serie(
         TrdSerieCreate(
             code=f"AIP{uuid.uuid4().hex[:6]}",
             name="itest serie AIP",
-            retention_years=0,
-            total_retention=0,
             archivo_gestion_years=archivo_gestion_years,
             archivo_central_years=archivo_central_years,
         ),
@@ -109,8 +107,8 @@ async def _seed_ready(
     name: str,
     *,
     con_radicado: bool = True,
-    archivo_gestion_years: int | None = 5,
-    archivo_central_years: int | None = 5,
+    archivo_gestion_years: int = 5,
+    archivo_central_years: int = 5,
 ) -> tuple[uuid.UUID, uuid.UUID | None]:
     """Expediente `closed`, con índice VIGENTE `firmado` + protegido bajo
     WORM (precondición dura de `intentar_empaquetar`) y, opcionalmente, UN
@@ -324,7 +322,7 @@ async def test_concurrent_intentar_empaquetar_does_not_double_mark(
     async def _attempt() -> str:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             return await AipWiringService(own_conn, slug).intentar_empaquetar(expediente_id)
         finally:
             await own_conn.close()

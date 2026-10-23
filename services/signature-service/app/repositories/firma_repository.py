@@ -35,9 +35,17 @@ _COLS = (
 
 _SELLO_COLS = (
     "id, firma_id, ordinal, minio_key, xml_sha256, gen_time, tsa_cert_fingerprint, "
-    "tsa_cert_not_after, estado, ultimo_aviso, created_at"
+    "tsa_cert_not_after, tsa_cadena_not_after, tsa_revocacion_fuente, revocacion_tsa_previa, "
+    "estado, ultimo_aviso, created_at"
 )
 _SELLO_COLS_S = ", ".join(f"s.{c.strip()}" for c in _SELLO_COLS.split(","))
+
+#: Cuándo hay que haber renovado un eslabón: lo primero que caduque de la TSA y de su CA (C-6, H7).
+#: Sin CA conocida (autofirmada, o no localizada al sellar) manda el certificado de la TSA.
+_VENCE_AT_S = "LEAST(s.tsa_cert_not_after, COALESCE(s.tsa_cadena_not_after, s.tsa_cert_not_after))"
+
+#: Situaciones que la consulta de administración sabe distinguir (``GET /admin/sellos-archivo``).
+SITUACIONES_SELLO = ("por_vencer", "vencido", "sin_revocacion", "pendiente_worm", "rechazado")
 
 
 class FirmaRepository:
@@ -302,14 +310,24 @@ class FirmaRepository:
         gen_time: datetime,
         tsa_cert_fingerprint: str,
         tsa_cert_not_after: datetime,
+        tsa_cadena_not_after: datetime | None,
+        tsa_revocacion_fuente: str,
+        revocacion_tsa_previa: str | None,
         estado: str = "vigente",
     ) -> asyncpg.Record:
-        """Un eslabón de la cadena de ``ArchiveTimeStamp`` de una firma LTA (0 = el original)."""
+        """Un eslabón de la cadena de ``ArchiveTimeStamp`` de una firma LTA (0 = el original).
+
+        Las tres columnas de C-6 (``tsa_cadena_not_after``, ``tsa_revocacion_fuente``,
+        ``revocacion_tsa_previa``) NO tienen valor por omisión a propósito: un NULL explícito ignora el
+        DEFAULT de la base y un productor que las omitiera dejaría una fila que la consulta de
+        administración no sabe clasificar. ``revocacion_tsa_previa`` es ``None`` solo en el ordinal 0
+        (lo exige el CHECK ``fsa_previa_solo_renovados``)."""
         row = await self._conn.fetchrow(
             f"""INSERT INTO firma_sello_archivo
                     (firma_id, ordinal, minio_key, xml_sha256, gen_time,
-                     tsa_cert_fingerprint, tsa_cert_not_after, estado)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     tsa_cert_fingerprint, tsa_cert_not_after, tsa_cadena_not_after,
+                     tsa_revocacion_fuente, revocacion_tsa_previa, estado)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 RETURNING {_SELLO_COLS}""",
             firma_id,
             ordinal,
@@ -318,6 +336,9 @@ class FirmaRepository:
             gen_time,
             tsa_cert_fingerprint,
             tsa_cert_not_after,
+            tsa_cadena_not_after,
+            tsa_revocacion_fuente,
+            revocacion_tsa_previa,
             estado,
         )
         assert row is not None
@@ -333,7 +354,8 @@ class FirmaRepository:
         )
 
     async def firmas_a_renovar(self, margen_dias: int) -> list[asyncpg.Record]:
-        """Firmas cuyo ÚLTIMO sello vigente tiene el certificado de su TSA a punto de caducar.
+        """Firmas cuyo ÚLTIMO sello vigente tiene el certificado de su TSA —o el de la CA de esa TSA, lo
+        primero que caduque (``vence_at``, C-6)— a punto de caducar.
 
         Una firma con un eslabón ``pendiente_worm`` NO sale aquí: ya tiene una renovación en
         curso y lo que falta es el paso de storage (:meth:`renovaciones_pendientes_worm`)."""
@@ -342,7 +364,7 @@ class FirmaRepository:
                 f"""SELECT t.*, f.certificado_fingerprint, f.tsa_cert_fingerprint AS firma_tsa_fp,
                            f.ca_fingerprint, f.ocsp_responder_fingerprint, f.provider
                       FROM (
-                        SELECT DISTINCT ON (s.firma_id) {_SELLO_COLS_S}
+                        SELECT DISTINCT ON (s.firma_id) {_SELLO_COLS_S}, {_VENCE_AT_S} AS vence_at
                           FROM firma_sello_archivo s
                          ORDER BY s.firma_id, s.ordinal DESC
                       ) t
@@ -351,11 +373,11 @@ class FirmaRepository:
                      -- filtrara antes, un `caducado` dejaría al anterior (también vencido) como
                      -- candidato y se asentaría `lta_cadena_caducada` uno a uno hasta el 0.
                      WHERE t.estado = 'vigente'
-                       AND t.tsa_cert_not_after < now() + make_interval(days => $1)
+                       AND t.vence_at < now() + make_interval(days => $1)
                        AND NOT EXISTS (
                              SELECT 1 FROM firma_sello_archivo p
                               WHERE p.firma_id = t.firma_id AND p.estado = 'pendiente_worm')
-                     ORDER BY t.tsa_cert_not_after""",
+                     ORDER BY t.vence_at""",
                 margen_dias,
             )
         )
@@ -406,3 +428,104 @@ class FirmaRepository:
             " WHERE firma_id = $1",
             firma_id,
         )
+
+    async def artefactos_vigentes(self, firma_ids: list[uuid.UUID]) -> list[asyncpg.Record]:
+        """El XML vigente de cada firma pedida (vista ``firma_artefacto_vigente``), en lote. Solo las
+        que existen: una firma sin fila no aparece. Un eslabón ``pendiente_worm`` NO cuenta como
+        vigente (la vista lo excluye): aún no hereda la política WORM y storage no lo reempaquetaría."""
+        return list(
+            await self._conn.fetch(
+                "SELECT firma_id, minio_key, xml_sha256, ordinal FROM firma_artefacto_vigente"
+                " WHERE firma_id = ANY($1::uuid[])",
+                firma_ids,
+            )
+        )
+
+    # --- Consulta de administración de los sellos de archivo (C-6) ---------------------------
+
+    @staticmethod
+    def _cte_sellos(reservado_sql: str) -> str:
+        """CTE común de la lista, el total y el resumen: así el recuento y las filas salen del MISMO
+        ``WHERE`` (lección «el recuento no es la lista»). El ÚLTIMO eslabón de cada firma, clasificado.
+        ``$1`` = días de margen. ``reservado_sql`` = condición SQL «el objeto supera el clearance»."""
+        return f"""
+            ultimo AS (
+                SELECT DISTINCT ON (s.firma_id) {_SELLO_COLS_S}, {_VENCE_AT_S} AS vence_at
+                  FROM firma_sello_archivo s
+                 ORDER BY s.firma_id, s.ordinal DESC
+            ),
+            clasif AS (
+                SELECT u.*, f.objeto_tipo AS f_objeto_tipo, f.objeto_id AS f_objeto_id,
+                       ({reservado_sql}) AS objeto_reservado,
+                       ARRAY_REMOVE(ARRAY[
+                         CASE WHEN u.estado = 'caducado' OR u.vence_at < now()
+                              THEN 'vencido' END,
+                         CASE WHEN u.estado = 'vigente' AND u.vence_at >= now()
+                                   AND u.vence_at < now() + make_interval(days => $1)
+                              THEN 'por_vencer' END,
+                         CASE WHEN u.estado = 'pendiente_worm' THEN 'pendiente_worm' END,
+                         CASE WHEN u.tsa_revocacion_fuente IN ('ninguna', 'autofirmada')
+                                   OR u.ultimo_aviso IN ('sin_revocacion_tsa', 'tsa_revocada')
+                              THEN 'sin_revocacion' END,
+                         CASE WHEN u.ultimo_aviso LIKE 'rechazada:%' THEN 'rechazado' END
+                       ]::text[], NULL) AS situaciones
+                  FROM ultimo u
+                  JOIN firma f ON f.id = u.firma_id
+            )"""
+
+    async def _reservado_sql(self, clearance: int) -> str:
+        """Condición SQL «el objeto de esta firma está por encima del clearance del llamante», sobre
+        ``f.objeto_id``, con el mismo criterio de identidad que :meth:`_gate_nivel` (identidad natural y
+        UUID) y solo las tablas dueñas del nivel que existen en este schema. ``clearance`` es un entero ya
+        resuelto por el servidor (nunca del request): se interpola como literal."""
+        presentes = await self._tablas_presentes([t for t, _ in CADENA_NIVEL_AUTORITATIVO.values()])
+        partes = []
+        for tabla, id_cols in CADENA_NIVEL_AUTORITATIVO.values():
+            if tabla not in presentes:
+                continue
+            on = " OR ".join(f"o.{c} = f.objeto_id" for c in id_cols)
+            partes.append(f"EXISTS (SELECT 1 FROM {tabla} o WHERE ({on}) AND o.nivel_seguridad > {int(clearance)})")
+        return " OR ".join(partes) if partes else "FALSE"
+
+    async def listar_sellos_archivo(
+        self, *, situaciones: list[str] | None, dias: int, clearance: int, limit: int, offset: int
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Último eslabón de cada firma con alguna de ``situaciones`` (omitido = cualquier anomalía),
+        del más urgente al menos (``vence_at ASC, firma_id``, orden DECLARADO en el contrato).
+
+        No se OCULTAN filas por clearance (el administrador sin nivel no vería que un sello reservado
+        va a caducar: pérdida de prueba invisible): se ACOTA el campo —``objeto_tipo``/``objeto_id`` en
+        ``NULL`` y ``objeto_reservado`` verdadero— decidido en esta misma consulta. Content-free: ni
+        asunto ni XML. Devuelve ``(filas, total)`` con el total del MISMO filtro."""
+        cte = self._cte_sellos(await self._reservado_sql(clearance))
+        filtro = "cardinality(situaciones) > 0 AND ($2::text[] IS NULL OR situaciones && $2::text[])"
+        filas = await self._conn.fetch(
+            f"""WITH {cte}
+                SELECT firma_id, ordinal, estado, situaciones, gen_time, vence_at,
+                       FLOOR(EXTRACT(EPOCH FROM (vence_at - now())) / 86400)::int AS dias_restantes,
+                       tsa_cert_fingerprint, tsa_revocacion_fuente, revocacion_tsa_previa, ultimo_aviso,
+                       CASE WHEN objeto_reservado THEN NULL ELSE f_objeto_tipo END AS objeto_tipo,
+                       CASE WHEN objeto_reservado THEN NULL ELSE f_objeto_id END AS objeto_id,
+                       objeto_reservado
+                  FROM clasif
+                 WHERE {filtro}
+                 ORDER BY vence_at ASC, firma_id
+                 LIMIT $3 OFFSET $4""",
+            dias, situaciones, limit, offset,
+        )
+        total = await self._conn.fetchval(
+            f"WITH {cte} SELECT COUNT(*) FROM clasif WHERE {filtro}", dias, situaciones
+        )
+        return list(filas), int(total or 0)
+
+    async def resumen_sellos_archivo(self, *, dias: int) -> dict[str, int]:
+        """Cuántos últimos eslabones hay en cada situación (una fila puede contar en varias).
+        Sin clearance: son solo recuentos, sin identificar objeto alguno."""
+        cte = self._cte_sellos("FALSE")
+        filas = await self._conn.fetch(
+            f"""WITH {cte}
+                SELECT sit, COUNT(*) AS n FROM clasif, unnest(situaciones) AS sit GROUP BY sit""",
+            dias,
+        )
+        cuentas = {r["sit"]: int(r["n"]) for r in filas}
+        return {sit: cuentas.get(sit, 0) for sit in SITUACIONES_SELLO}

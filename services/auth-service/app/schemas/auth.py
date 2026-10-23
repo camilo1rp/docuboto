@@ -66,6 +66,13 @@ class UserInfoResponse(BaseModel):
     backwards compatibility with existing consumers (frontend store, other
     services) — see ``permission_levels`` for the CRUD level of each.
     """
+    asistente_habilitado: bool = False
+    """¿La entidad del token tiene activado el asistente y la búsqueda semántica? (ADR-037)
+
+    Se lee de ``public.tenants.asistente_habilitado``. Es para MOSTRAR u ocultar (UI,
+    catálogo del MCP): knowledge-service vuelve a leerlo de la base en cada consulta.
+    Fail-closed: ``False`` sin contexto de tenant o si el registro no responde.
+    """
     permission_levels: dict[str, int] = Field(default_factory=dict)
     """CRUD level (0-5) per permission name — same keys as ``permissions``, added
     so consumers can distinguish read from write access (RF-SEG-03) instead of

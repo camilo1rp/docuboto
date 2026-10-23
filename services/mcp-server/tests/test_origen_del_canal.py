@@ -154,6 +154,11 @@ async def test_sin_ip_entrante_no_se_inventa_una(con_secreto) -> None:
     assert "x-forwarded-for" not in (await _enviar()).headers
 
 
+# ADR-036: la identidad firmada va atada al método y la ruta de la petición.
+_METODO = "GET"
+_RUTA = "/api/v1/mcp/tools"
+
+
 async def _correr_middleware(cabeceras: dict[str, str]) -> str | None:
     """Pasa una petición por el middleware y devuelve la IP que vio el manejador."""
     visto: dict[str, str | None] = {}
@@ -164,6 +169,8 @@ async def _correr_middleware(cabeceras: dict[str, str]) -> str | None:
     mw = ContextoEntranteMiddleware(app)
     scope = {
         "type": "http",
+        "method": _METODO,
+        "path": _RUTA,
         "headers": [(k.lower().encode(), v.encode()) for k, v in cabeceras.items()],
     }
     await mw(scope, None, None)
@@ -179,7 +186,7 @@ def _identidad_firmada(ip: str) -> dict[str, str]:
         "X-Canal": "api",
         "X-Real-Ip": ip,
     }
-    return identidad.firmar_ip_real(identidad.firmar(base))
+    return identidad.firmar_ip_real(identidad.firmar(base, metodo=_METODO, ruta=_RUTA))
 
 
 @pytest.mark.asyncio

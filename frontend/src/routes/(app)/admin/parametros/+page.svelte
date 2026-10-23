@@ -41,6 +41,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
+  import AsistenteEntidadCard from "$lib/components/features/admin/AsistenteEntidadCard.svelte";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import {
     CLAVE_POLITICA_XADES,
@@ -581,6 +582,13 @@
         borrar). Puede consultarlos.
       </p>
     {/if}
+
+    <AsistenteEntidadCard
+      habilitado={data.asistenteHabilitado ?? null}
+      loadError={data.asistenteError ?? null}
+      proveedores={data.asistenteProveedores ?? null}
+      canEdit={canWriteParams}
+    />
 
     {#if canWriteParams}
       <form class="param-form" on:submit|preventDefault={crearParam} novalidate>

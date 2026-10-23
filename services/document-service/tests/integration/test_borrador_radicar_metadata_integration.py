@@ -48,7 +48,7 @@ class _SinCircuito:
 
 async def _preparar(tenant_flujo):
     slug, conn = tenant_flujo
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(
         "INSERT INTO metadata_templates (tipo_documental, json_schema) VALUES ('TPLM', $1::jsonb)",
         _SCHEMA,

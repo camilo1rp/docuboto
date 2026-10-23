@@ -62,8 +62,8 @@ async def _seed_acta_firmada(
     slug: str,
     name: str,
     *,
-    archivo_gestion_years: int | None = 5,
-    archivo_central_years: int | None = 5,
+    archivo_gestion_years: int = 5,
+    archivo_central_years: int = 5,
 ) -> tuple[uuid.UUID, asyncpg.Record]:
     """Recibe una transferencia REAL (sin mocks de BD) sobre un expediente con
     una serie TRD real (retención declarada por parámetro) y promueve su acta
@@ -75,11 +75,8 @@ async def _seed_acta_firmada(
         TrdSerieCreate(
             code=f"WRM{uuid.uuid4().hex[:6]}",
             name="itest serie worm acta",
-            # Mismo motivo que `test_indice_worm_atomicity.py`: anula también
-            # el fallback retention_years/total_retention para el escenario
-            # "TRD sin retención declarada" (total derivado real = 0).
-            retention_years=0,
-            total_retention=0,
+            # Mismo motivo que `test_indice_worm_atomicity.py`: el escenario fail-closed
+            # es retención TOTAL 0 (0 + 0); NULL ya no es representable (C-4/C6).
             archivo_gestion_years=archivo_gestion_years,
             archivo_central_years=archivo_central_years,
         ),
@@ -300,7 +297,7 @@ async def test_concurrent_proteger_worm_acta_does_not_double_mark(
     async def _attempt() -> str:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             return await TransferenciaService(own_conn, slug).proteger_worm_acta(
                 transferencia_id, actor_id=None, origen="reconciliation"
             )
@@ -356,8 +353,8 @@ async def test_concurrent_proteger_worm_acta_does_not_double_mark(
 async def test_proteger_worm_acta_fail_closed_without_trd_retention_years(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """Serie TRD real SIN `archivo_gestion_years`/`archivo_central_years`
-    declarados (ambos NULL) -- el cableado WORM del acta NUNCA se dispara con
+    """Serie TRD real con retención TOTAL FUERA DE RANGO (60 + 50 = 110 años, el techo es 100;
+    0 + 0 y NULL ya no son representables: CHECK de la 069) -- el cableado WORM del acta NUNCA se dispara con
     una retención inventada; queda 'pendiente' con el motivo correcto,
     elegible para que `run_once_actas_worm` reintente si un archivista
     corrige la TRD."""
@@ -367,8 +364,8 @@ async def test_proteger_worm_acta_fail_closed_without_trd_retention_years(
         conn,
         slug,
         "itest acta worm sin retencion TRD",
-        archivo_gestion_years=None,
-        archivo_central_years=None,
+        archivo_gestion_years=60,
+        archivo_central_years=50,
     )
 
     resultado = await TransferenciaService(conn, slug).proteger_worm_acta(
@@ -462,7 +459,7 @@ async def test_migration_030_is_idempotent_on_real_postgres(
     # Re-ejecuta la migración completa una SEGUNDA vez sobre el schema ya
     # migrado por `tenant_ctx` -- no debe lanzar ninguna excepción.
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(sql)
 
     # El cableado sigue funcionando con normalidad tras la re-ejecución: se

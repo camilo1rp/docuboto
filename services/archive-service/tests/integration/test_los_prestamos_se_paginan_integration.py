@@ -23,13 +23,15 @@ igual estando mal.
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import asyncpg
 import pytest
 
 from app.core.database import tenant_schema
 from app.repositories.fisico_repository import FisicoRepository
+
+from ._auth_minimo import crear_tablas_auth
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +41,8 @@ async def _en_tenant(tenant_ctx) -> tuple[str, asyncpg.Connection]:
     a partir del slug, así que hay que pasarle el REAL del fixture y no uno
     inventado — con un slug cualquiera apunta a un schema que no existe."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
+    await crear_tablas_auth(conn, slug)  # `list_prestamos` une `auth_users` (la crea auth-service)
     return slug, conn
 
 
@@ -59,12 +62,27 @@ async def _prestamo(
     estado: str = "prestado",
     vence: date | None = None,
 ) -> uuid.UUID:
+    """Siembra un préstamo respetando el esquema 072.
+
+    Un préstamo VIVO por unidad (índice parcial `ux_prestamo_unidad_activo`): los
+    `prestado` sembrados van cada uno en su unidad nueva (se ignora `unidad_id`);
+    el histórico `devuelto` sí se acumula en la unidad indicada."""
+    if estado == "prestado":
+        unidad_id = await _unidad(conn)
+        devolucion = (None, None)
+    else:
+        devolucion = (datetime.now(tz=UTC), uuid.uuid4())
     return await conn.fetchval(
-        "INSERT INTO prestamo (unidad_id, prestado_a, fecha_devolucion_esperada, estado) "
-        "VALUES ($1, 'ANA', $2, $3) RETURNING id",
+        "INSERT INTO prestamo (unidad_id, prestatario_tipo, tercero_nombre, "
+        "tercero_documento_tipo, tercero_documento_numero, prestado_por, "
+        "fecha_devolucion_esperada, estado, fecha_devolucion_real, devuelto_recibido_por) "
+        "VALUES ($1, 'externo', 'ANA PEREZ', 'CC', '1234567', $2, $3, $4, $5, $6) RETURNING id",
         unidad_id,
+        uuid.uuid4(),
         vence or (date.today() + timedelta(days=10)),
         estado,
+        devolucion[0],
+        devolucion[1],
     )
 
 
@@ -149,7 +167,7 @@ async def test_sin_paginacion_se_traen_todos(tenant_ctx) -> None:
     slug, conn = await _en_tenant(tenant_ctx)
     unidad = await _unidad(conn)
     for _ in range(5):
-        await _prestamo(conn, unidad)
+        await _prestamo(conn, unidad, estado="devuelto")
 
     items, total = await FisicoRepository(conn, slug).list_prestamos(
         estado=None, unidad_id=unidad
@@ -191,9 +209,9 @@ async def test_los_prestamos_de_una_unidad_paginan_y_cuentan_solo_los_suyos(tena
     a = await _unidad(conn)
     b = await _unidad(conn)
     for _ in range(25):
-        await _prestamo(conn, a)
+        await _prestamo(conn, a, estado="devuelto")
     for _ in range(4):
-        await _prestamo(conn, b)
+        await _prestamo(conn, b, estado="devuelto")
 
     repo = FisicoRepository(conn, slug)
     p1, total = await repo.list_prestamos(estado=None, unidad_id=a, page=1, size=20)

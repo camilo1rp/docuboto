@@ -79,7 +79,7 @@ async def other_tenant(db_conn: asyncpg.Connection, request: pytest.FixtureReque
     try:
         for path in runner._sql_files(runner.TENANT_DIR):
             async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await db_conn.execute(path.read_text())
         yield slug
     finally:
@@ -93,7 +93,7 @@ async def _seed_file(
     conn: asyncpg.Connection, slug: str, *, file_id: uuid.UUID, pdfa_status: str | None = None
 ) -> None:
     schema = tenant_schema(slug)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     await conn.execute(
         """
         INSERT INTO files (id, filename, mime_type, file_size, sha256, bucket, object_key, pdfa_status)
@@ -113,7 +113,7 @@ async def _seed_file(
 
 async def _fetch_file_pdfa(conn: asyncpg.Connection, slug: str, file_id: uuid.UUID):
     schema = tenant_schema(slug)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     row = await conn.fetchrow(
         "SELECT pdfa_status, pdfa_profile, pdfa_checked_at FROM files WHERE id = $1", file_id
     )
@@ -123,7 +123,7 @@ async def _fetch_file_pdfa(conn: asyncpg.Connection, slug: str, file_id: uuid.UU
 
 async def _count_pdfa_eventos(conn: asyncpg.Connection, slug: str, file_id: uuid.UUID) -> int:
     schema = tenant_schema(slug)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     count = await conn.fetchval(
         "SELECT count(*) FROM preservacion_evento WHERE tipo = 'VALIDACION_PDFA' AND object_ref = $1",
         str(file_id),
@@ -293,7 +293,7 @@ async def test_migration_013_reapplies_idempotently_on_real_postgres(
     path = runner.TENANT_DIR / "013_files_pdfa_ingest.sql"
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(path.read_text())  # segunda pasada
 
 
@@ -305,7 +305,7 @@ async def test_migration_013_check_constraint_rejects_invalid_pdfa_status(
     schema = tenant_schema(slug)
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             await conn.execute(
                 """

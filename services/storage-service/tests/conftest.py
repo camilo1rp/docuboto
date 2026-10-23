@@ -124,7 +124,14 @@ def make_worm_row(
     # declararlos explícitamente.
     renovaciones: int = 0,
     renovado_at: datetime | None = None,
+    # C-5/C7 (migración 024): `calendario` por defecto. `diferida=True` modela una fila escrita
+    # solo con legal hold (retain_until/retention_mode NULL, exige legal_hold).
+    retencion_origen: str = "calendario",
+    diferida: bool = False,
 ) -> dict:
+    if diferida:
+        retencion_origen = "valoracion_pendiente"
+        legal_hold = True
     return {
         "id": worm_id or uuid.uuid4(),
         "expediente_id": expediente_id,
@@ -138,9 +145,12 @@ def make_worm_row(
         "object_key": object_key or f"{uuid.uuid4()}/indice.xml",
         "version_id": version_id,
         "sha256": sha256,
-        "retain_until": retain_until or (NOW + timedelta(days=1825)),
-        "retention_mode": retention_mode,
+        "retain_until": (
+            None if retencion_origen != "calendario" else (retain_until or (NOW + timedelta(days=1825)))
+        ),
+        "retention_mode": None if retencion_origen != "calendario" else retention_mode,
         "legal_hold": legal_hold,
+        "retencion_origen": retencion_origen,
         "created_at": created_at or NOW,
         # E10 Inc.1 (migración 009): `file_id` NULLABLE (filas anteriores a
         # esa migración quedan NULL) — el default `None` aquí cubre AMBOS
@@ -224,6 +234,38 @@ def conceder_permisos(conn: AsyncMock, *, conceder: bool = True) -> None:
     conn.fetchval.side_effect = _fetchval
 
 
+def vista_de_citas(conn: AsyncMock, citas: tuple[dict, ...] = ()) -> None:
+    """Hace que la vista contrato `v_anexo_citado_vigente` (archive, C-5/C14) EXISTA y devuelva
+    `citas`, sin tocar el resto de `fetchval`/`fetch`.
+
+    **No se aplica por defecto, a propósito** (mismo criterio que `conceder_permisos`): el sistema
+    es fail-closed con la vista ausente, así que un doble que la diera por presente siempre dejaría
+    sin control negativo al test que prueba justo la ausencia. Cada cita es un dict con
+    `excepcion_id`, `transferencia_id`, `rol`, `ordinal`."""
+    original_fv = conn.fetchval.side_effect
+
+    async def _fetchval(*args, **kwargs):
+        sql = args[0] if args and isinstance(args[0], str) else ""
+        if "to_regclass" in sql and len(args) > 1 and args[1] == "v_anexo_citado_vigente":
+            return "v_anexo_citado_vigente"
+        if original_fv is not None:
+            return await original_fv(*args, **kwargs)
+        return conn.fetchval.return_value
+
+    conn.fetchval.side_effect = _fetchval
+    original_f = conn.fetch.side_effect
+
+    async def _fetch(*args, **kwargs):
+        sql = args[0] if args and isinstance(args[0], str) else ""
+        if "FROM v_anexo_citado_vigente" in sql:
+            return list(citas)
+        if original_f is not None:
+            return await original_f(*args, **kwargs)
+        return conn.fetch.return_value
+
+    conn.fetch.side_effect = _fetch
+
+
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.execute.return_value = None
@@ -300,6 +342,11 @@ def _make_mock_minio() -> MagicMock:
         return getattr(minio, "_ultima_retencion", None)
 
     minio.get_object_retention = AsyncMock(side_effect=_leer_retencion)
+    # C-5/C7: el legal hold también se relee (objeto de retención diferida: es lo único que lo
+    # protege). Doble de un almacén que CUMPLE; los tests del caso negativo lo pisan.
+    minio.is_object_legal_hold_enabled = AsyncMock(return_value=True)
+    minio.enable_object_legal_hold = AsyncMock()
+    minio.disable_object_legal_hold = AsyncMock()
     return minio
 
 
@@ -354,6 +401,8 @@ def _minio_patches(mock_minio: MagicMock):
         patch("app.services.aip_service.get_minio", return_value=mock_minio),
         patch("app.services.export_service.get_minio", return_value=mock_minio),
         patch("app.routers.health.get_minio", return_value=mock_minio),
+        # C-5/C7: el servicio de holds por motivo importa `get_minio` por su cuenta.
+        patch("app.services.legal_hold_service.get_minio", return_value=mock_minio),
     )
 
 
@@ -377,8 +426,8 @@ async def client_with_conn(
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4, p5, p6 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4, p5, p6:
+    p1, p2, p3, p4, p5, p6, p7 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4, p5, p6, p7:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, mock_minio
 
@@ -397,8 +446,8 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4, p5, p6 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4, p5, p6:
+    p1, p2, p3, p4, p5, p6, p7 = _minio_patches(mock_minio)
+    with p1, p2, p3, p4, p5, p6, p7:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
 

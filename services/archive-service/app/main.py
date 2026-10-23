@@ -19,6 +19,7 @@ Responsibilities:
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -39,6 +40,9 @@ from app.jobs.indice_reconciliation import (
 )
 from app.jobs.indice_reconciliation import run_once_aip as _reconcile_aip_once
 from app.jobs.indice_reconciliation import (
+    run_once_aip_reempaquetado as _reconcile_aip_reempaquetado_once,
+)
+from app.jobs.indice_reconciliation import (
     run_once_firmas_personales_worm as _reconcile_firmas_personales_worm_once,
 )
 from app.jobs.indice_reconciliation import (
@@ -46,6 +50,9 @@ from app.jobs.indice_reconciliation import (
 )
 from app.jobs.indice_reconciliation import (
     run_once_origen_legado as _completar_origen_legado_once,
+)
+from app.jobs.indice_reconciliation import (
+    run_once_valoracion_holds as _reconcile_valoracion_holds_once,
 )
 from app.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
 from app.jobs.indice_reconciliation import (
@@ -59,8 +66,10 @@ from app.routers.health import router as health_router
 from app.routers.indice import router as indice_router
 from app.routers.internal_firma import router as internal_firma_router
 from app.routers.metadata import router as metadata_router
+from app.routers.metrics import router as metrics_router
 from app.routers.oai import router as oai_router
 from app.routers.public_eliminacion import router as public_eliminacion_router
+from app.routers.public_indice import router as public_indice_router
 from app.routers.tipos_documentales import router as tipos_documentales_router
 from app.routers.transferencias import router as transferencias_router
 from app.routers.trd import router as trd_router
@@ -100,6 +109,7 @@ async def _indice_reconciliation_loop() -> None:
     criterio: reactiva a "el índice ya quedó firmado+protegido bajo WORM",
     sin kill-switch/intervalo propio."""
     request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
+    ultimo_reempaque: float | None = None
     while True:
         try:
             await _reconcile_indices_once()
@@ -129,6 +139,22 @@ async def _indice_reconciliation_loop() -> None:
                 "Fallo en la barrida de cableado del AIP",
                 exc_info=True,
             )
+        # Fase 11 (C-6): cadencia PROPIA (`aip_reempaquetado_intervalo_s`, 0 = apagada).
+        ahora = time.monotonic()
+        if settings.aip_reempaquetado_intervalo_s > 0 and (
+            ultimo_reempaque is None
+            or ahora - ultimo_reempaque >= settings.aip_reempaquetado_intervalo_s
+        ):
+            ultimo_reempaque = ahora
+            try:
+                await _reconcile_aip_reempaquetado_once()
+            except Exception:
+                logger.warning("Fallo en la barrida de reempaquetado del AIP", exc_info=True)
+        # Fase 12 (C-5, ADR-043): aplica la valoración de la TVD a los holds del fondo vencido.
+        try:
+            await _reconcile_valoracion_holds_once()
+        except Exception:
+            logger.warning("Fallo en la barrida de valoración de holds", exc_info=True)
         try:
             await _completar_origen_legado_once()
         except Exception:
@@ -275,6 +301,7 @@ app.add_middleware(request_log.RequestLogMiddleware, servicio="archive-service")
 app.include_router(batch_router)
 app.include_router(eliminacion_router)
 app.include_router(public_eliminacion_router)
+app.include_router(public_indice_router)
 app.include_router(expedientes_router)
 app.include_router(indice_router)
 app.include_router(internal_firma_router)
@@ -289,6 +316,7 @@ app.include_router(tipos_documentales_router)
 app.include_router(trd_router)
 app.include_router(tvd_router)
 app.include_router(health_router)
+app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 
 
 @app.exception_handler(Exception)

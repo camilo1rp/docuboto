@@ -95,7 +95,7 @@ async def _acciones(conn, slug) -> list[str]:
 @pytest_asyncio.fixture
 async def ctx(tenant_ctx):
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return slug, conn
 
 

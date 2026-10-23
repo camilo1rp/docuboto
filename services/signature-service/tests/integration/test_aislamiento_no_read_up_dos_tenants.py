@@ -37,7 +37,7 @@ pytestmark = pytest.mark.asyncio
 async def _poblar(conn: asyncpg.Connection, slug: str, nivel: int) -> uuid.UUID:
     """Crea las tablas dueñas del nivel en el schema del tenant y una firma
     sobre el radicado ``R-COMUN`` con el ``nivel`` dado. Devuelve el id de firma."""
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(
         "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
         "tracking_number text, nivel_seguridad int NOT NULL)"
@@ -60,7 +60,7 @@ async def _poblar(conn: asyncpg.Connection, slug: str, nivel: int) -> uuid.UUID:
 
 
 async def _desde(conn: asyncpg.Connection, slug: str) -> FirmaRepository:
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return FirmaRepository(conn)
 
 

@@ -111,9 +111,12 @@ async def publish_lta_renovada(
     """Emite ``firma.lta_renovada`` (B10 §8) cuando un ``ArchiveTimeStamp`` renovado queda
     ``vigente`` (storage ya registró la herencia WORM). Idempotente por ``firma:ordinal``.
 
-    Best-effort: el eslabón ya está comprometido; un fallo de Redis no lo deshace. Quien
-    necesite el XML vigente (p. ej. archive-service al empaquetar un AIP) lo consulta en
-    ``GET /firmas/{id}`` (``minio_key_vigente``): el evento solo avisa."""
+    SEÑAL INFORMATIVA, SIN CONSUMIDOR POR DISEÑO (C-6, ADR-042): se emite best-effort y sin outbox, así
+    que un Redis caído la pierde para siempre; por eso nada depende de ella. archive-service concilia
+    por BARRIDO —compara el XML vigente de cada firma (``POST /internal/artefactos-vigentes``) con el
+    que embebe su AIP y reempaqueta la diferencia—, lo que además cubre el AIP empaquetado con el
+    original por un fallo transitorio, que ningún evento avisaría. El eslabón ya está comprometido; un
+    fallo de Redis no lo deshace."""
     await events.emit(
         redis,
         STREAM,

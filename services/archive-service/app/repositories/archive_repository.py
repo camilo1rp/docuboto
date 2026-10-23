@@ -49,7 +49,7 @@ class ArchiveRepository:
 
     async def _set_search_path(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
-        await self._conn.execute(f'SET search_path TO "{schema}", public')
+        await self._conn.execute(f'SET search_path TO "{schema}"')
 
     # ------------------------------------------------------------------
     # Expediente sequences
@@ -728,41 +728,32 @@ class ArchiveRepository:
         code: str,
         name: str,
         description: str | None,
-        retention_years: int,
-        total_retention: int,
         disposition: str,
+        archivo_gestion_years: int,
+        archivo_central_years: int,
         parent_id: uuid.UUID | None = None,
-        archivo_gestion_years: int | None = None,
-        archivo_central_years: int | None = None,
         pdfa_profile: str | None = None,
     ) -> TrdSerie:
         await self._set_search_path()
-        # Si no se indican las dos fases, se derivan de los campos previos.
-        agest = archivo_gestion_years if archivo_gestion_years is not None else retention_years
-        acentral = (
-            archivo_central_years
-            if archivo_central_years is not None
-            else max(total_retention - retention_years, 0)
-        )
+        # C-4/C6: las dos fases son la ÚNICA fuente de la retención (el CHECK
+        # `trd_series_fases_check` las exige); no hay valor por omisión.
         row = await self._conn.fetchrow(
             """
             INSERT INTO trd_series (
-                code, name, description, retention_years, total_retention,
+                code, name, description,
                 disposition, parent_id, archivo_gestion_years, archivo_central_years,
                 pdfa_profile
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             RETURNING *
             """,
             code,
             name,
             description,
-            retention_years,
-            total_retention,
             disposition,
             parent_id,
-            agest,
-            acentral,
+            archivo_gestion_years,
+            archivo_central_years,
             pdfa_profile,
         )
         return _row_to_trd_serie(row)
@@ -773,6 +764,7 @@ class ArchiveRepository:
         is_active: bool | None,
         offset: int,
         limit: int,
+        estados: tuple[str, ...] | None = None,
     ) -> tuple[list[TrdSerie], int]:
         """ADR-026 (Increment 1, Capa 2): lee `v_trd_series`, NUNCA la tabla
         base -- es LA consulta de la clase "filtro olvidado" que motivó el
@@ -780,7 +772,9 @@ class ArchiveRepository:
         ningún filtro de tipo). El aislamiento entre TRD y TVD deja de
         depender de acordarse de un `WHERE`: es el nombre del objeto
         consultado."""
-        return await self._list_instrumento_series("v_trd_series", is_active=is_active, offset=offset, limit=limit)
+        return await self._list_instrumento_series(
+            "v_trd_series", is_active=is_active, offset=offset, limit=limit, estados=estados
+        )
 
     async def list_tvd_agrupaciones(
         self,
@@ -801,6 +795,7 @@ class ArchiveRepository:
         is_active: bool | None,
         offset: int,
         limit: int,
+        estados: tuple[str, ...] | None = None,
     ) -> tuple[list[TrdSerie], int]:
         # `view` NUNCA viene del cliente -- es una constante elegida en este
         # mismo módulo (`"v_trd_series"` / `"v_tvd_agrupaciones"`), así que
@@ -815,6 +810,10 @@ class ArchiveRepository:
         if is_active is not None:
             conditions.append(f"is_active = ${idx}")
             params.append(is_active)
+            idx += 1
+        if estados is not None:
+            conditions.append(f"estado = ANY(${idx}::text[])")
+            params.append(list(estados))
             idx += 1
 
         where = " AND ".join(conditions)
@@ -925,14 +924,13 @@ class ArchiveRepository:
         code: str,
         name: str,
         description: str | None,
-        total_retention: int,
         disposition: str,
         parent_id: uuid.UUID | None,
         fondo_nombre: str,
         fecha_extrema_inicial: date,
         fecha_extrema_final: date,
         justificacion_valoracion: str,
-        archivo_central_years: int | None,
+        archivo_central_years: int,
         pdfa_profile: str | None,
     ) -> TrdSerie:
         """`POST /api/v1/tvd` (ADR-026, Increment 1). `tipo_instrumento='TVD'`
@@ -945,18 +943,17 @@ class ArchiveRepository:
         row = await self._conn.fetchrow(
             """
             INSERT INTO trd_series (
-                tipo_instrumento, code, name, description, retention_years,
-                total_retention, disposition, parent_id, archivo_central_years,
+                tipo_instrumento, code, name, description,
+                disposition, parent_id, archivo_central_years,
                 pdfa_profile, fondo_nombre, fecha_extrema_inicial,
                 fecha_extrema_final, justificacion_valoracion
             )
-            VALUES ('TVD', $1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            VALUES ('TVD', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             """,
             code,
             name,
             description,
-            total_retention,
             disposition,
             parent_id,
             archivo_central_years,
@@ -977,35 +974,33 @@ class ArchiveRepository:
         created_by: uuid.UUID | None,
         name: str,
         description: str | None,
-        total_retention: int,
         disposition: str,
         parent_id: uuid.UUID | None,
         fondo_nombre: str,
         fecha_extrema_inicial: date,
         fecha_extrema_final: date,
         justificacion_valoracion: str,
-        archivo_central_years: int | None,
+        archivo_central_years: int,
         pdfa_profile: str | None,
     ) -> TrdSerie:
         """Gemela de `create_trd_serie_version` (D1: fila NUEVA, nunca
-        `UPDATE` de la vigente). `retention_years=0`/`archivo_gestion_years`
-        NULL, mismo motivo que `create_tvd_agrupacion`."""
+        `UPDATE` de la vigente). `archivo_gestion_years` NULL, mismo motivo
+        que `create_tvd_agrupacion`."""
         await self._set_search_path()
         row = await self._conn.fetchrow(
             """
             INSERT INTO trd_series (
-                tipo_instrumento, code, name, description, retention_years,
-                total_retention, disposition, parent_id, archivo_central_years,
+                tipo_instrumento, code, name, description,
+                disposition, parent_id, archivo_central_years,
                 pdfa_profile, version, supersede_a, created_by, fondo_nombre,
                 fecha_extrema_inicial, fecha_extrema_final, justificacion_valoracion
             )
-            VALUES ('TVD', $1, $2, $3, 0, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+            VALUES ('TVD', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING *
             """,
             code,
             name,
             description,
-            total_retention,
             disposition,
             parent_id,
             archivo_central_years,
@@ -1026,7 +1021,7 @@ class ArchiveRepository:
         *,
         name: str | None,
         description: str | None,
-        total_retention: int | None,
+        archivo_central_years: int | None,
         disposition: str | None,
         pdfa_profile: str | None,
         fondo_nombre: str | None,
@@ -1055,8 +1050,8 @@ class ArchiveRepository:
             _add("name", name)
         if description is not None:
             _add("description", description)
-        if total_retention is not None:
-            _add("total_retention", total_retention)
+        if archivo_central_years is not None:
+            _add("archivo_central_years", archivo_central_years)
         if disposition is not None:
             _add("disposition", disposition)
         if pdfa_profile is not None:
@@ -1151,12 +1146,10 @@ class ArchiveRepository:
         created_by: uuid.UUID | None,
         name: str,
         description: str | None,
-        retention_years: int,
-        total_retention: int,
         disposition: str,
         parent_id: uuid.UUID | None,
-        archivo_gestion_years: int | None,
-        archivo_central_years: int | None,
+        archivo_gestion_years: int,
+        archivo_central_years: int,
         pdfa_profile: str | None,
     ) -> TrdSerie:
         """Inserta la versión N+1 como fila NUEVA (ADR-025 D1): nunca un
@@ -1166,18 +1159,16 @@ class ArchiveRepository:
         row = await self._conn.fetchrow(
             """
             INSERT INTO trd_series (
-                code, name, description, retention_years, total_retention,
+                code, name, description,
                 disposition, parent_id, archivo_gestion_years, archivo_central_years,
                 pdfa_profile, version, supersede_a, created_by
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
             """,
             code,
             name,
             description,
-            retention_years,
-            total_retention,
             disposition,
             parent_id,
             archivo_gestion_years,
@@ -1195,8 +1186,6 @@ class ArchiveRepository:
         *,
         name: str | None,
         description: str | None,
-        retention_years: int | None,
-        total_retention: int | None,
         disposition: str | None,
         pdfa_profile: str | None = None,
         archivo_gestion_years: int | None = None,
@@ -1223,14 +1212,6 @@ class ArchiveRepository:
         if description is not None:
             assignments.append(f"description = ${idx}")
             params.append(description)
-            idx += 1
-        if retention_years is not None:
-            assignments.append(f"retention_years = ${idx}")
-            params.append(retention_years)
-            idx += 1
-        if total_retention is not None:
-            assignments.append(f"total_retention = ${idx}")
-            params.append(total_retention)
             idx += 1
         if archivo_gestion_years is not None:
             assignments.append(f"archivo_gestion_years = ${idx}")
@@ -1265,6 +1246,194 @@ class ArchiveRepository:
             *params,
         )
         return _row_to_trd_serie(row) if row is not None else None
+
+    async def code_tiene_subseries(self, code: str) -> bool:
+        """¿Alguna versión de la serie `code` tiene subseries colgando? (C-4/C6)
+
+        Las subseries apuntan a la FILA-versión del padre, no al código, así que la
+        pregunta correcta para el tope de dos niveles es por código: una serie con
+        subseries no puede pasar a ser, ella misma, subserie."""
+        await self._set_search_path()
+        return bool(
+            await self._conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM trd_series h JOIN trd_series p ON p.id = h.parent_id
+                     WHERE p.code = $1
+                )
+                """,
+                code,
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Dependencias productoras de la serie TRD (C-4/C8, ADR-040, migración 070)
+    # ------------------------------------------------------------------
+
+    async def lookup_dependencias(self, codigos: list[int]) -> list[asyncpg.Record]:
+        """`codigo, nombre, activo` de las dependencias citadas. La tabla es de
+        tenant-service (mismo schema, sin FK): si no existe, `UndefinedTableError`
+        sube al servicio, que responde 503 -- escribir una productora sin poder
+        comprobarla sería una afirmación no verificada.
+
+        `FOR SHARE`: debe llamarse DENTRO de la transacción del acto. Bloquea las filas leídas
+        hasta el commit, así que tenant-service no puede desactivar la dependencia (su `PATCH`
+        la toma `FOR UPDATE`) entre esta comprobación y la escritura de la productora."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                "SELECT codigo, nombre, activo FROM dependencias WHERE codigo = ANY($1::int[]) FOR SHARE",
+                codigos,
+            )
+        )
+
+    async def set_productoras(
+        self, serie_id: uuid.UUID, items: list[tuple[int, str]]
+    ) -> None:
+        """REEMPLAZA la lista de productoras de una versión (solo `borrador`: el trigger
+        de la 070 es el cinturón de motor). `items` = `(codigo, nombre vigente)`."""
+        await self._set_search_path()
+        await self._conn.execute(
+            "DELETE FROM trd_serie_dependencia_productora WHERE trd_serie_id = $1", serie_id
+        )
+        if items:
+            await self._conn.executemany(
+                "INSERT INTO trd_serie_dependencia_productora "
+                "(trd_serie_id, dependencia_codigo, dependencia_nombre) VALUES ($1, $2, $3)",
+                [(serie_id, codigo, nombre[:100]) for codigo, nombre in items],
+            )
+
+    async def get_productoras(
+        self, serie_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[dict[str, Any]]]:
+        """Productoras por versión de serie, ordenadas por código. Una versión sin
+        filas no aparece en el diccionario."""
+        if not serie_ids:
+            return {}
+        await self._set_search_path()
+        rows = await self._conn.fetch(
+            """
+            SELECT trd_serie_id, dependencia_codigo, dependencia_nombre, ruta_convalidada
+              FROM trd_serie_dependencia_productora
+             WHERE trd_serie_id = ANY($1::uuid[])
+             ORDER BY trd_serie_id, dependencia_codigo
+            """,
+            serie_ids,
+        )
+        out: dict[uuid.UUID, list[dict[str, Any]]] = {}
+        for r in rows:
+            ruta = r["ruta_convalidada"]
+            if isinstance(ruta, (str, bytes)):
+                ruta = json.loads(ruta)
+            out.setdefault(r["trd_serie_id"], []).append(
+                {
+                    "dependencia_codigo": r["dependencia_codigo"],
+                    "dependencia_nombre": r["dependencia_nombre"],
+                    "ruta_convalidada": ruta,
+                }
+            )
+        return out
+
+    async def count_productoras(self, serie_id: uuid.UUID) -> int:
+        await self._set_search_path()
+        return int(
+            await self._conn.fetchval(
+                "SELECT count(*) FROM trd_serie_dependencia_productora WHERE trd_serie_id = $1",
+                serie_id,
+            )
+            or 0
+        )
+
+    async def fill_ruta_convalidada(
+        self, serie_id: uuid.UUID, rutas: dict[int, list[dict[str, Any]]]
+    ) -> int:
+        """Fija UNA vez la ruta del organigrama vigente al convalidar (el trigger de la
+        070 impide reescribirla; el `IS NULL` hace el UPDATE idempotente)."""
+        await self._set_search_path()
+        n = 0
+        for codigo, ruta in rutas.items():
+            res = await self._conn.execute(
+                "UPDATE trd_serie_dependencia_productora SET ruta_convalidada = $3::jsonb "
+                "WHERE trd_serie_id = $1 AND dependencia_codigo = $2 AND ruta_convalidada IS NULL",
+                serie_id,
+                codigo,
+                json.dumps(ruta),
+            )
+            n += int(res.rsplit(" ", 1)[-1]) if isinstance(res, str) else 0
+        return n
+
+    #: Tope de profundidad al subir por el organigrama. El de una entidad real son
+    #: pocos niveles; esto solo acota la recursión ante un dato corrupto.
+    ORGANIGRAMA_PROFUNDIDAD_MAX = 32
+
+    async def organigrama_hacia_arriba(
+        self, codigos: list[int] | None = None
+    ) -> list[asyncpg.Record]:
+        """Para cada dependencia (o solo las de `codigos`), su cadena hasta la raíz.
+
+        Se SUBE desde cada nodo en vez de bajar desde las raíces: bajando, los nodos de
+        un ciclo (ninguno es raíz) no se alcanzan jamás y el cuadro saldría incompleto
+        sin avisar -- el mismo defecto de `/dependencias/tree`. `CYCLE` marca el nodo
+        repetido; nunca se omite en silencio (el servicio responde 409)."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                WITH RECURSIVE sube AS (
+                    SELECT d.id AS origen, d.id, d.parent_id, d.codigo, d.sigla,
+                           d.nombre, d.activo, 1 AS prof
+                      FROM dependencias d
+                     WHERE $1::int[] IS NULL OR d.codigo = ANY($1::int[])
+                    UNION ALL
+                    SELECT s.origen, p.id, p.parent_id, p.codigo, p.sigla,
+                           p.nombre, p.activo, s.prof + 1
+                      FROM sube s JOIN dependencias p ON p.id = s.parent_id
+                     WHERE s.prof < $2
+                ) CYCLE id SET es_ciclo USING ruta
+                SELECT o.codigo AS origen_codigo, s.codigo, s.sigla, s.nombre, s.activo,
+                       s.prof, s.es_ciclo, (s.parent_id IS NOT NULL) AS tiene_padre
+                  FROM sube s JOIN dependencias o ON o.id = s.origen
+                 ORDER BY o.codigo, s.prof
+                """,
+                codigos,
+                self.ORGANIGRAMA_PROFUNDIDAD_MAX,
+            )
+        )
+
+    async def cuadro_series(
+        self, *, incluir_borradores: bool
+    ) -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
+        """`(series, subseries)` TRD que entran al cuadro: la versión VIGENTE por código
+        (mismo criterio que `get_trd_serie_vigente_by_code`) y, con `incluir_borradores`,
+        también la que está en trámite. Las subseries traen `parent_code`: se agrupan
+        por el CÓDIGO del padre porque `parent_id` apunta a la versión que era vigente
+        cuando se crearon."""
+        await self._set_search_path()
+        filtro = (
+            "((s.estado IN ('convalidada','migrada') AND s.valid_to IS NULL) "
+            "OR ($1::bool AND s.estado IN ('borrador','aprobada')))"
+        )
+        series = await self._conn.fetch(
+            f"""
+            SELECT s.id, s.code, s.name, s.version, s.estado, s.disposition,
+                   s.archivo_gestion_years, s.archivo_central_years
+              FROM v_trd_series s
+             WHERE s.parent_id IS NULL AND {filtro}
+             ORDER BY s.code, s.version
+            """,
+            incluir_borradores,
+        )
+        subseries = await self._conn.fetch(
+            f"""
+            SELECT s.id, s.code, s.name, s.version, s.estado, s.disposition,
+                   s.archivo_gestion_years, s.archivo_central_years, p.code AS parent_code
+              FROM v_trd_series s JOIN v_trd_series p ON p.id = s.parent_id
+             WHERE {filtro}
+             ORDER BY s.code, s.version
+            """,
+            incluir_borradores,
+        )
+        return list(series), list(subseries)
 
     # ------------------------------------------------------------------
     # Circuito de convalidación (ADR-025, Increment 2): aprobar/convalidar/
@@ -1718,11 +1887,31 @@ class ArchiveRepository:
         `radicados_incluidos` cuenta los vínculos vivos: es el volumen que se
         publica en el inventario, no el detalle (que no se publica nunca)."""
         await self._set_search_path()
+        # Condición 6 (C-5 / C7, ADR-043): motivos de las retenciones legales ACTIVAS, en la MISMA
+        # consulta (no en una comprobación previa). El registro es de storage-service (mismo
+        # schema de tenant); si no existe, fail-closed: el centinela hace que el servicio rechace
+        # con `estado_retencion_desconocido` en vez de admitir lo que no puede comprobar.
+        hay_registro = await self._conn.fetchval(
+            "SELECT to_regclass('preservacion_legal_hold') IS NOT NULL"
+        )
+        holds_expr = (
+            "(SELECT string_agg(DISTINCT h.motivo_tipo, ',' ORDER BY h.motivo_tipo) "
+            "   FROM preservacion_legal_hold h "
+            "  WHERE h.expediente_id = e.id::text AND h.levantado_at IS NULL)"
+            if hay_registro
+            else "'__desconocido__'"
+        )
         return list(
             await self._conn.fetch(
-                """
+                f"""
                 SELECT e.id, e.code, e.name, e.status, e.nivel_seguridad,
                        e.trd_serie_code, e.disposition,
+                       {holds_expr} AS holds_activos,
+                       -- Selección (S) con `conservar`: entra a la muestra que se conserva y
+                       -- NUNCA entra a un lote de destrucción (migración 076).
+                       EXISTS (SELECT 1 FROM expediente_valoracion_hold hv
+                                WHERE hv.expediente_id = e.id AND hv.seleccion = 'conservar')
+                           AS seleccionado_conservar,
                        e.fecha_extrema_inicial, e.fecha_extrema_final,
                        (e.disposition->>'fin_archivo_central')::date AS fecha_vencimiento,
                        d.decision,
@@ -1813,6 +2002,132 @@ class ArchiveRepository:
             item["nivel_seguridad"],
             item["radicados_incluidos"],
             item["worm_retain_until"],
+        )
+
+    # -- C-5 / C14 (ADR-043): soporte documental de las constancias de firma inobtenible ---------
+
+    async def soportes_citados_sin_huella(
+        self, expediente_ids: list[uuid.UUID]
+    ) -> list[uuid.UUID]:
+        """Transferencias de las constancias vigentes que citan un anexo de los expedientes
+        pero NO traen su huella SHA-256: la baja de soporte las rechaza (migración 076)."""
+        await self._set_search_path()
+        rows = await self._conn.fetch(
+            """
+            SELECT DISTINCT e.transferencia_id
+              FROM transferencia_acta_firma_excepcion e
+              JOIN expediente_radicados er ON er.radicado_id = e.referencia_radicado_id
+             WHERE er.expediente_id = ANY($1::uuid[])
+               AND e.referencia_anexo_id IS NOT NULL
+               AND (e.referencia_anexo_sha256 IS NULL OR btrim(e.referencia_anexo_sha256) = '')
+               AND NOT EXISTS (SELECT 1 FROM transferencia_acta_firma_excepcion_revocacion r
+                                WHERE r.excepcion_id = e.id)
+            """,
+            expediente_ids,
+        )
+        return [r["transferencia_id"] for r in rows]
+
+    async def congelar_soportes_citados(
+        self, lote_id: uuid.UUID, expediente_ids: list[uuid.UUID]
+    ) -> list[asyncpg.Record]:
+        """Congela, al proponer, las constancias de firma inobtenible VIGENTES (no revocadas) cuyo
+        radicado de soporte está en alguno de los expedientes admitidos. Es la BAJA DE SOPORTE que
+        el Comité avala con el lote: hasta ese aval `v_anexo_citado_vigente` sigue bloqueando la
+        purga del anexo. No rechaza nada: informa. Una constancia con varios expedientes del lote
+        se congela UNA vez (PK `(lote_id, excepcion_id)`)."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                INSERT INTO eliminacion_lote_soporte_citado
+                    (lote_id, expediente_id, excepcion_id, transferencia_id, rol, ordinal,
+                     file_id, anexo_sha256)
+                SELECT DISTINCT ON (e.id)
+                       $1, er.expediente_id, e.id, e.transferencia_id, e.rol, e.ordinal,
+                       e.referencia_anexo_id, e.referencia_anexo_sha256
+                  FROM transferencia_acta_firma_excepcion e
+                  JOIN expediente_radicados er ON er.radicado_id = e.referencia_radicado_id
+                 WHERE er.expediente_id = ANY($2::uuid[])
+                   AND e.referencia_anexo_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM transferencia_acta_firma_excepcion_revocacion r
+                                    WHERE r.excepcion_id = e.id)
+                 ORDER BY e.id, er.expediente_id
+                ON CONFLICT (lote_id, excepcion_id) DO NOTHING
+                RETURNING expediente_id, excepcion_id, transferencia_id, rol, ordinal
+                """,
+                lote_id,
+                expediente_ids,
+            )
+        )
+
+    async def list_soportes_lote(
+        self, lote_id: uuid.UUID, *, max_clearance: int | None = None
+    ) -> list[asyncpg.Record]:
+        """Las bajas de soporte del lote con el código del expediente del inventario. Con
+        `max_clearance` se recorta por el nivel del ítem (no-read-up, como el inventario)."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT s.expediente_id, li.expediente_code, s.excepcion_id, s.transferencia_id,
+                       s.rol, s.ordinal, s.soporte_eliminado_at
+                  FROM eliminacion_lote_soporte_citado s
+                  JOIN eliminacion_lote_items li
+                    ON li.lote_id = s.lote_id AND li.expediente_id = s.expediente_id
+                 WHERE s.lote_id = $1 AND ($2::int IS NULL OR li.nivel_seguridad <= $2)
+                 ORDER BY li.expediente_code, s.transferencia_id, s.rol, s.ordinal
+                """,
+                lote_id,
+                max_clearance,
+            )
+        )
+
+    async def count_soportes_lote(self, lote_id: uuid.UUID) -> int:
+        await self._set_search_path()
+        return int(
+            await self._conn.fetchval(
+                "SELECT COUNT(*) FROM eliminacion_lote_soporte_citado WHERE lote_id = $1", lote_id
+            )
+        )
+
+    async def soportes_bloqueantes_de_expediente(
+        self, expediente_id: uuid.UUID
+    ) -> list[asyncpg.Record]:
+        """Constancias cuyo anexo sigue CITADO (vista contrato `v_anexo_citado_vigente`: ni
+        revocadas ni con baja avalada) y cuyo radicado de soporte está en este expediente. Es la
+        comprobación previa a la purga: evita el borrado PARCIAL que dejaría storage al negarse a
+        mitad (la red final sigue siendo el gate de storage)."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT v.excepcion_id, v.transferencia_id, v.rol, v.ordinal
+                  FROM v_anexo_citado_vigente v
+                  JOIN transferencia_acta_firma_excepcion e ON e.id = v.excepcion_id
+                  JOIN expediente_radicados er ON er.radicado_id = e.referencia_radicado_id
+                 WHERE er.expediente_id = $1
+                 ORDER BY v.transferencia_id, v.rol, v.ordinal
+                """,
+                expediente_id,
+            )
+        )
+
+    async def marcar_soportes_eliminados(
+        self, lote_id: uuid.UUID, expediente_id: uuid.UUID
+    ) -> list[asyncpg.Record]:
+        """Fija `soporte_eliminado_at` (único UPDATE admitido por el trigger de la 075)."""
+        await self._set_search_path()
+        return list(
+            await self._conn.fetch(
+                """
+                UPDATE eliminacion_lote_soporte_citado
+                   SET soporte_eliminado_at = now()
+                 WHERE lote_id = $1 AND expediente_id = $2 AND soporte_eliminado_at IS NULL
+                RETURNING excepcion_id, transferencia_id, rol, ordinal, file_id
+                """,
+                lote_id,
+                expediente_id,
+            )
         )
 
     async def get_lote_eliminacion(
@@ -2787,7 +3102,7 @@ class ArchiveRepository:
 
     _TD_COLS = (
         "id, trd_serie_id, code, nombre, obligatorio, metadata_template, "
-        "activo, admite_ventanilla_publica, created_at"
+        "activo, admite_ventanilla_publica, publicable, created_at"
     )
 
     async def create_tipo_documental(self, data: dict) -> asyncpg.Record:
@@ -2825,10 +3140,14 @@ class ArchiveRepository:
             )
         )
 
-    async def get_tipo_documental(self, tipo_id: uuid.UUID) -> asyncpg.Record | None:
+    async def get_tipo_documental(
+        self, tipo_id: uuid.UUID, *, for_update: bool = False
+    ) -> asyncpg.Record | None:
         await self._set_search_path()
         return await self._conn.fetchrow(
-            f"SELECT {self._TD_COLS} FROM tipos_documentales WHERE id = $1", tipo_id
+            f"SELECT {self._TD_COLS} FROM tipos_documentales WHERE id = $1"
+            + (" FOR UPDATE" if for_update else ""),
+            tipo_id,
         )
 
     async def update_tipo_documental(self, tipo_id: uuid.UUID, data: dict) -> asyncpg.Record | None:
@@ -2842,6 +3161,30 @@ class ArchiveRepository:
             f"WHERE id = ${idx} RETURNING {self._TD_COLS}",
             *data.values(),
             tipo_id,
+        )
+
+    async def contar_publicados_del_tipo(self, code: str) -> int | None:
+        """Radicados de este tipo que siguen publicados (C-4/C10), para avisar al quitar la
+        marca `publicable`: despublicar el tipo no despublica en silencio lo ya difundido
+        (habría `radicados.publicable=true` sin servirse: dos verdades), así que se
+        INFORMA cuántos quedan y el retiro es un acto explícito por radicado.
+
+        `radicados` es de document-service (mismo schema, sin FK): `None` si no se puede
+        contar (tabla o columna ausentes) -- se dice «no sé», no «cero»."""
+        await self._set_search_path()
+        hay = await self._conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            " WHERE table_schema = current_schema() AND table_name = 'radicados' "
+            "   AND column_name IN ('publicable', 'doc_class') "
+            " GROUP BY table_name HAVING count(*) = 2)"
+        )
+        if not hay:
+            return None
+        return int(
+            await self._conn.fetchval(
+                "SELECT count(*) FROM radicados WHERE doc_class = $1 AND publicable", code
+            )
+            or 0
         )
 
     async def delete_tipo_documental(self, tipo_id: uuid.UUID) -> bool:
@@ -3006,28 +3349,15 @@ def _row_to_radicado(row: asyncpg.Record) -> ExpedienteRadicado:
     )
 
 
-def _legacy_retention(row: asyncpg.Record) -> tuple[int, int]:
-    """`(retention_years, total_retention)` que ve cualquier consumidor del juego legado
-    (AREA-06-07). Con las dos fases pobladas se DERIVAN de ellas, que son las que usa el
-    cálculo del calendario: `retention_years` = gestión, `total_retention` = gestión +
-    central. La columna legada solo se devuelve tal cual cuando falta alguna fase (filas
-    sin migrar): un PATCH de `archivo_*` ya no deja dos números en desacuerdo."""
-    gestion = row["archivo_gestion_years"]
-    central = row["archivo_central_years"]
-    if gestion is not None and central is not None:
-        return gestion, gestion + central
-    return row["retention_years"], row["total_retention"]
-
-
 def _row_to_trd_serie(row: asyncpg.Record) -> TrdSerie:
-    retention_years, total_retention = _legacy_retention(row)
+    # C-4/C6: `retention_years`/`total_retention` ya no son columnas; `TrdSerie` los
+    # DERIVA de las dos fases (propiedades de solo lectura), así que no hay forma de
+    # pasarlos al repositorio ni de que queden en desacuerdo.
     return TrdSerie(
         id=row["id"],
         code=row["code"],
         name=row["name"],
         description=row["description"],
-        retention_years=retention_years,
-        total_retention=total_retention,
         disposition=row["disposition"],
         is_active=row["is_active"],
         created_at=row["created_at"],

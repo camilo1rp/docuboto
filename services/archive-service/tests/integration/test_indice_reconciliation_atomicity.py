@@ -207,7 +207,7 @@ async def test_concurrent_reconciliar_indice_does_not_double_sign(
     async def _attempt() -> str:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             return await _reconciliar_indice(own_conn, slug, row)
         finally:
             await own_conn.close()
@@ -274,7 +274,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
     async def _manual_attempt() -> object:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             with patch(
                 "app.clients.signature_client.sign_xml",
                 new=AsyncMock(return_value=_fake_signed()),
@@ -289,7 +289,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
     async def _job_attempt() -> str:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             return await _reconciliar_indice(own_conn, slug, row)
         finally:
             await own_conn.close()

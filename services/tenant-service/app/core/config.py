@@ -49,5 +49,13 @@ class Settings(BaseSettings):
     # `app/core/internal_auth.py` para el razonamiento completo.
     internal_service_token: str = ""
 
+    # Proveedores EFECTIVOS del asistente, para mostrarlos en la tarjeta de encendido
+    # (ADR-037: quien enciende debe saber a quién se transmite). Espejo de los ajustes
+    # de knowledge-service y mcp-server; mismas variables y mismos defaults (lo vigila
+    # `shared/tests/test_proveedores_del_asistente_coinciden.py`).
+    embedding_provider: str = "local_st"
+    ai_provider: str = "ollama_local"
+    assistant_model: str = "claude-opus-4-8"
+
 
 settings = Settings()

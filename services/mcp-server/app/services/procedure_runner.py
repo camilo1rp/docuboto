@@ -53,6 +53,7 @@ async def ejecutar(
     permissions: set[str],
     is_root: bool,
     levels: dict[str, int] | None = None,
+    asistente_habilitado: bool = False,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Ejecuta el procedimiento y devuelve el parte de lo ocurrido.
@@ -86,7 +87,11 @@ async def ejecutar(
         # cuenta tampoco se ejecuta desde aquí.
         try:
             authorize(
-                herramienta, permissions=permissions, is_root=is_root, levels=levels
+                herramienta,
+                permissions=permissions,
+                is_root=is_root,
+                levels=levels,
+                asistente_habilitado=asistente_habilitado,
             )
         except DispatchError:
             # Se devuelve un PARTE, no una excepción en bruto: quien pidió el

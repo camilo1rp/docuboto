@@ -92,7 +92,7 @@ async def test_file_repository_accepts_hyphenated_slug_and_writes_normalized_sch
         schema = tenant_schema(slug)
         assert schema == f"tenant_{slug.replace('-', '_')}"
         assert "-" not in schema, "el schema normalizado no debe conservar guiones"
-        await verify_conn.execute(f'SET search_path = "{schema}", public')
+        await verify_conn.execute(f'SET search_path = "{schema}"')
         row = await verify_conn.fetchrow(
             "SELECT sha256, bucket FROM files WHERE id = $1", file_id
         )
@@ -145,7 +145,7 @@ async def test_storage_service_upload_end_to_end_with_hyphenated_tenant(
     verify_conn = await asyncpg.connect(dsn=DSN)
     try:
         schema = tenant_schema(slug)
-        await verify_conn.execute(f'SET search_path = "{schema}", public')
+        await verify_conn.execute(f'SET search_path = "{schema}"')
         row = await verify_conn.fetchrow(
             "SELECT sha256 FROM files WHERE id = $1", response.id
         )

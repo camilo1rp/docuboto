@@ -42,7 +42,7 @@ SIN_RESTRICCION = 3
 
 async def _en_tenant(tenant_ctx) -> tuple[str, asyncpg.Connection]:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     return slug, conn
 
 
@@ -63,9 +63,10 @@ async def _seed(
     return await conn.fetchval(
         "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, "
         "tenant_code, nivel_seguridad, status, due_date, registered_at, "
-        "clasificacion_fundamento) "
+        "clasificacion_fundamento, clasificacion_causal) "
         "VALUES ($1, 'E', 2026, 1, $2, 'DEMO', $3, $4, $5, $6, "
-        "CASE WHEN $3::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) RETURNING id",
+        "CASE WHEN $3::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END, "
+        "CASE WHEN $3::smallint >= 2 THEN 'por_clasificar' END) RETURNING id",
         f"2026-DEMO-E-{uuid.uuid4().hex[:6]}",
         asunto,
         nivel,

@@ -460,7 +460,7 @@ async def tenant_ctx(
     try:
         for path in runner._sql_files(runner.TENANT_DIR):
             async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await db_conn.execute(path.read_text())
         yield slug, db_conn
     finally:
@@ -478,6 +478,47 @@ async def tenant_ctx(
         # que este test deje ahí quedan inertes porque el `tenant_slug` (=slug) es
         # único por test — no colisiona con ningún otro run.
         await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+# C-4/C8 (ADR-040): `dependencias` es de tenant-service y su DDL no viaja en esta imagen.
+# Forma mínima pero FIEL (misma clave `codigo`, mismo `parent_id` con FK, mismos nombres de
+# columna que `tenant-service/migrations/tenant/001_dependencias.sql`) y, a propósito, SIN el
+# trigger anticiclos de la 015: los tests de archive necesitan poder inyectar un ciclo para
+# probar que el cuadro lo DETECTA aunque la prevención se hubiera saltado.
+ORGANIGRAMA_DDL = """
+CREATE TABLE IF NOT EXISTS dependencias (
+    id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    parent_id UUID REFERENCES dependencias(id) ON DELETE RESTRICT,
+    codigo    INT  NOT NULL UNIQUE,
+    sigla     VARCHAR(20) NOT NULL,
+    nombre    TEXT NOT NULL,
+    activo    BOOLEAN NOT NULL DEFAULT true
+);
+CREATE TABLE IF NOT EXISTS sgd_param_admin (key TEXT PRIMARY KEY, value JSONB);
+INSERT INTO dependencias (codigo, sigla, nombre) VALUES (100, 'DG', 'Dirección General');
+INSERT INTO dependencias (parent_id, codigo, sigla, nombre)
+    SELECT id, 110, 'SA', 'Subdirección Administrativa' FROM dependencias WHERE codigo = 100;
+INSERT INTO dependencias (parent_id, codigo, sigla, nombre)
+    SELECT id, 120, 'SF', 'Subdirección Financiera' FROM dependencias WHERE codigo = 100;
+INSERT INTO dependencias (parent_id, codigo, sigla, nombre)
+    SELECT id, 111, 'TH', 'Talento Humano' FROM dependencias WHERE codigo = 110;
+INSERT INTO sgd_param_admin (key, value) VALUES
+    ('entidad_nombre', '"Fondo de Desarrollo de Cundinamarca"'), ('entidad_sigla', '"FDC"');
+"""
+
+
+@pytest_asyncio.fixture
+async def tenant_con_organigrama(
+    tenant_ctx: tuple[str, asyncpg.Connection],
+) -> tuple[str, asyncpg.Connection]:
+    """`tenant_ctx` + el organigrama de prueba: 100 Dirección General > {110 Subdirección
+    Administrativa > 111 Talento Humano, 120 Subdirección Financiera}. Lo que necesita todo
+    test que declare dependencia productora o derive el cuadro."""
+    slug, conn = tenant_ctx
+    async with conn.transaction():
+        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
+        await conn.execute(ORGANIGRAMA_DDL)
+    return slug, conn
 
 
 async def convalidate_for_test(conn: asyncpg.Connection, serie_id: uuid.UUID) -> None:

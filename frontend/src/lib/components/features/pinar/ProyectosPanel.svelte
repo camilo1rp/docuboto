@@ -62,7 +62,6 @@
     cancelado: "Cancelado",
   };
 
-  $: objetivoPorId = new Map(objetivos.map((o) => [o.id, o]));
   $: sinObjetivo = proyectos.filter((p) => !p.objetivo_id);
   // Agrupación calculada arriba y no con `{@const}` dentro del `{#each}`:
   // Svelte solo admite `{@const}` como hijo inmediato de un bloque, y un

@@ -47,6 +47,7 @@ transición/seguro operacional.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import uuid
@@ -64,7 +65,7 @@ from app.repositories.aip_repository import AipRepository
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.index_repository import IndexRepository
 from app.services.backoff import next_backoff_seconds
-from app.services.retention_math import base_worm, total_trd_years
+from app.services.retention_math import RetencionDiferida, base_worm, total_trd_years
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,15 @@ def _safe_nombre(radicado_id: uuid.UUID, idx: int, filename: str) -> str:
     return nombre[:_MAX_NOMBRE_LEN]
 
 
+async def _huella_indice_original(tenant_slug: str, minio_key_firmado: str) -> str | None:
+    """SHA-256 (hex) de los bytes del XML firmado ORIGINAL del índice, o ``None`` si no se pudo
+    descargar. Es la identidad de la versión 1 del AIP cuando la firma no tiene renovaciones."""
+    data = await storage_client.download_signed_bytes(
+        tenant_slug=tenant_slug, minio_key_firmado=minio_key_firmado
+    )
+    return hashlib.sha256(data).hexdigest() if data else None
+
+
 class AipWiringService:
     def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
         self._conn = conn
@@ -101,7 +111,9 @@ class AipWiringService:
         self._archive = ArchiveRepository(conn, tenant_slug)
         self._index = IndexRepository(conn)
 
-    async def _resolve_aip_retention(self, exp) -> tuple[int, date] | None:
+    async def _resolve_aip_retention(
+        self, exp
+    ) -> tuple[int, date] | RetencionDiferida | None:
         """`(retencion_anios_total, fecha_inicio=fecha_cierre)` — MISMA
         derivación que `IndexService._resolve_worm_retention` (TRD total,
         `fecha_inicio=closed_at`), replicada aquí (self-contained, no importa
@@ -109,8 +121,9 @@ class AipWiringService:
         otro. Fail-closed (``None``) en cualquier caso dudoso.
 
         ADR-026 (Increment 3, D4, AREA-06-04): para `exp.origen == 'fondo_acumulado'`
-        la base es `fecha_extrema_final` con clamp (`retention_math.base_worm`), no
-        `closed_at`. Antes devolvía `None` y el AIP del fondo no tenía WORM nunca."""
+        la base es `fecha_extrema_final` (`retention_math.base_worm`), no `closed_at`; con
+        el calendario ya vencido devuelve `RetencionDiferida` tras asegurar el hold
+        `valoracion_pendiente` (ADR-043) y lanza `ValoracionHoldError` si no se pudo."""
         if exp.closed_at is None or exp.trd_serie_id is None:
             return None
         serie = await self._archive.get_trd_serie_by_id(exp.trd_serie_id)
@@ -124,10 +137,16 @@ class AipWiringService:
             closed_at=exp.closed_at,
             fecha_extrema_final=exp.fecha_extrema_final,
             total_years=total,
-            margen_dias=settings.worm_fondo_acumulado_margen_dias,
+            margen_dias=settings.worm_piso_margen_dias,
         )
         if inicio is None:
             return None
+        if isinstance(inicio, RetencionDiferida):
+            from app.services.valoracion_service import ValoracionService
+
+            return await ValoracionService(self._conn, self._tenant_slug).resolver_diferida(
+                exp, serie
+            )
         return total, inicio
 
     async def _resolve_aip_pdfa_profile(self, exp) -> str | None:
@@ -236,18 +255,35 @@ class AipWiringService:
                     motivo="indice_no_worm_protegido",
                 )
             indice_file_id = uuid.UUID(indice_row["minio_key_firmado"].split("/", 1)[0])
-            # B10 §8: si el ArchiveTimeStamp del índice se renovó, el AIP embebe el XML VIGENTE
-            # (que contiene todos los sellos), no el original. El renovado hereda la política
-            # WORM del original. Best-effort: sin respuesta se conserva el original.
+            # B10 §8 / C-6: si el ArchiveTimeStamp del índice se renovó, el AIP embebe el XML
+            # VIGENTE (que contiene todos los sellos), no el original. Tri-estado: un ERROR de
+            # signature-service NO es «sin renovación» -- antes se empaquetaba el original en
+            # silencio y el AIP nacía con una prueba que caduca (H2). Ahora se reintenta.
+            indice_xml_sha256: str | None = None
             if indice_row.get("firma_id"):
-                vigente = await signature_client.artefacto_vigente(
+                vigente = await signature_client.resolver_artefacto_vigente(
                     tenant_slug=self._tenant_slug, firma_id=str(indice_row["firma_id"])
                 )
-                if vigente:
-                    try:
-                        indice_file_id = uuid.UUID(vigente.split("/", 1)[0])
-                    except ValueError:
-                        logger.warning("Cableado AIP: artefacto vigente ilegible (%r)", vigente)
+                if isinstance(vigente, signature_client.ErrorArtefacto):
+                    return await self._bump_backoff(
+                        expediente_id,
+                        intentos_previos=int(row["intentos"]),
+                        motivo="artefacto_vigente_no_resuelto",
+                    )
+                if isinstance(vigente, signature_client.ArtefactoVigente):
+                    indice_file_id = vigente.file_id
+                    indice_xml_sha256 = vigente.xml_sha256
+            if indice_xml_sha256 is None:
+                # Sin renovación: la huella del AIP v1 es la del XML firmado original.
+                indice_xml_sha256 = await _huella_indice_original(
+                    self._tenant_slug, indice_row["minio_key_firmado"]
+                )
+                if indice_xml_sha256 is None:
+                    return await self._bump_backoff(
+                        expediente_id,
+                        intentos_previos=int(row["intentos"]),
+                        motivo="indice_xml_no_resuelto",
+                    )
 
             # Solo radicados VIGENTES (`estado='vinculado'`) aportan
             # contenido al AIP — un radicado EXCLUIDO (soft-delete) ya quedó
@@ -322,14 +358,33 @@ class AipWiringService:
             # storage-service). `omitido` NO se produce por esta vía nueva
             # -- solo lo produce el kill-switch OFF (arriba) o filas
             # históricas anteriores a este follow-up.
-            retention = await self._resolve_aip_retention(exp)
+            from app.services.valoracion_service import ValoracionHoldError
+
+            try:
+                retention = await self._resolve_aip_retention(exp)
+            except ValoracionHoldError:
+                logger.warning(
+                    "Cableado AIP: no se pudo fijar el hold de valoración (expediente_id=%s)",
+                    expediente_id,
+                    exc_info=True,
+                )
+                return await self._bump_backoff(
+                    expediente_id,
+                    intentos_previos=int(row["intentos"]),
+                    motivo="hold_valoracion_no_fijado",
+                )
             if retention is None:
                 return await self._bump_backoff(
                     expediente_id,
                     intentos_previos=int(row["intentos"]),
                     motivo="trd_sin_retencion",
                 )
-            retencion_anios, fecha_inicio = retention
+            # Fondo vencido: sin retencion_anios/fecha_inicio, solo el hold (ADR-043).
+            if isinstance(retention, RetencionDiferida):
+                retencion_anios, fecha_inicio, diferida = None, None, retention.motivo
+            else:
+                retencion_anios, fecha_inicio = retention
+                diferida = None
             pdfa_profile = await self._resolve_aip_pdfa_profile(exp)
 
             outcome = await storage_client.empaquetar_aip_internal(
@@ -339,15 +394,26 @@ class AipWiringService:
                 indice_file_id=indice_file_id,
                 retencion_anios=retencion_anios,
                 fecha_inicio=fecha_inicio,
+                retencion_diferida=diferida,
                 pdfa_profile=pdfa_profile,
             )
 
+            reconciliado = False
+            if outcome.ya_existe:
+                # 409 `aip_ya_existe` NO es fixity: storage ya tiene el AIP (un empaquetado cuya
+                # respuesta se perdió). Se reconcilia con el GET interno ANTES de registrar: solo
+                # se da por empaquetado si lo vigente es el AIP que storage informó.
+                outcome = await self._reconciliar_aip_existente(expediente_id, outcome)
+                reconciliado = outcome.ok
             if outcome.ok:
                 assert outcome.aip_id is not None
                 async with self._conn.transaction():
                     affected = await self._aip.mark_empaquetado(
                         expediente_id,
                         outcome.aip_id,
+                        indice_file_id=indice_file_id,
+                        indice_xml_sha256=indice_xml_sha256,
+                        firma_id=indice_row.get("firma_id"),
                         worm_retain_until=outcome.retain_until,
                     )
                     # Idempotencia real (mismo patrón S1 que `mark_worm_protegido`):
@@ -369,11 +435,15 @@ class AipWiringService:
                                 "aip_id": str(outcome.aip_id),
                                 "num_documentos": len(documentos),
                                 "retencion_anios": retencion_anios,
+                                "retencion_diferida": diferida,
                                 # E10 AIP wiring follow-up: marca honesta para
                                 # los auditores -- distingue el AIP índice-only
                                 # (sin anexos digitales, el índice ES el
                                 # payload) del AIP con contenido real.
                                 "indice_only": not documentos,
+                                # El AIP ya existía en storage (409 `aip_ya_existe`): se
+                                # registró lo que storage tiene, no un paquete recién armado.
+                                "reconciliado_con_storage": reconciliado,
                             },
                         )
                 return "empaquetado" if affected else "omitido"
@@ -383,6 +453,8 @@ class AipWiringService:
                 if outcome.fixity_mismatch
                 else "worm_disabled"
                 if outcome.disabled
+                else "aip_ya_existe_sin_reconciliar"
+                if outcome.ya_existe
                 else "aip_no_confirmado"
             )
             return await self._bump_backoff(
@@ -395,6 +467,36 @@ class AipWiringService:
                 exc_info=True,
             )
             return "pendiente"
+
+    async def _reconciliar_aip_existente(
+        self, expediente_id: uuid.UUID, outcome: storage_client.AipPackagingOutcome
+    ) -> storage_client.AipPackagingOutcome:
+        """Resuelve un 409 `aip_ya_existe` contra `GET /preservacion/aip/{id}` (interno).
+
+        `ok=True` solo si storage confirma un AIP vigente y, cuando el 409 informó su id, es ese
+        mismo. Cualquier otra cosa (404, id distinto, storage caído) deja `ya_existe=True`: el
+        llamador lo trata como reintentable, nunca como una mutación de anexo."""
+        try:
+            vigente = await storage_client.get_aip(
+                tenant_slug=self._tenant_slug, expediente_id=str(expediente_id)
+            )
+        except storage_client.StorageAipError:
+            return outcome
+        if vigente is None or not vigente.get("id"):
+            return outcome
+        try:
+            aip_id = uuid.UUID(str(vigente["id"]))
+        except ValueError:
+            return outcome
+        if outcome.aip_id is not None and outcome.aip_id != aip_id:
+            return outcome
+        retain_until: datetime | None = None
+        try:
+            if vigente.get("retain_until"):
+                retain_until = datetime.fromisoformat(str(vigente["retain_until"]))
+        except (TypeError, ValueError):
+            retain_until = None
+        return storage_client.AipPackagingOutcome(ok=True, aip_id=aip_id, retain_until=retain_until)
 
     # -- E10 debt: renovación de retención WORM para series CT -------------
     # (extensión del AIP a la 5ª fase de reconciliación -- espejo EXACTO de
@@ -540,3 +642,249 @@ class AipWiringService:
                 exc_info=True,
             )
             return "pendiente"
+
+    # -- C-6 (ADR-042): reempaquetado del AIP al renovar el sello de archivo ---------------
+    # Fase `run_once_aip_reempaquetado`: BARRIDO contra `firma_artefacto_vigente` en vez de un
+    # consumidor de `firma.lta_renovada` (el evento es best-effort y sin outbox: perderlo dejaba
+    # el AIP desfasado para siempre). Conservación: corre también en entidades suspendidas.
+
+    async def _bump_reempaque_backoff(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        intentos_previos: int,
+        motivo: str,
+        puede_agotar: bool = True,
+    ) -> Literal["pendiente", "agotado"]:
+        """Backoff PROPIO del reempaquetado (columnas `reempaque_*`); no toca `estado`. Un fallo
+        de LECTURA de signature (`puede_agotar=False`) solo espacia el reintento: no es un
+        defecto del expediente y agotarlo lo dejaría sordo a futuras renovaciones. Al agotar,
+        el estado y su asiento son UN acto (misma transacción)."""
+        intentos_tras_este = intentos_previos + 1
+        agotado = puede_agotar and intentos_tras_este >= settings.indice_reconciliation_max_intentos
+        proximo_at = (
+            None
+            if agotado
+            else datetime.now(tz=UTC)
+            + timedelta(
+                seconds=next_backoff_seconds(
+                    intentos_tras_este,
+                    base=settings.indice_reconciliation_backoff_base_seconds,
+                    cap=settings.indice_reconciliation_backoff_cap_seconds,
+                )
+            )
+        )
+        async with self._conn.transaction():
+            await self._aip.bump_reempaque_intento(
+                expediente_id, proximo_at=proximo_at, ultimo_error=motivo, agotado=agotado
+            )
+            if agotado:
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.aip_reempaque_agotado",
+                    object_type="expediente_aip",
+                    object_ref=str(expediente_id),
+                    actor=str(SYSTEM_RECONCILER_ID),
+                    canal="system",
+                    payload={"intentos": intentos_tras_este, "motivo": motivo},
+                )
+        return "agotado" if agotado else "pendiente"
+
+    async def reempaquetar_por_renovacion(
+        self, expediente_id: uuid.UUID, vigente: signature_client.ArtefactoVigente
+    ) -> Literal["reempaquetado", "omitido", "pendiente", "agotado"]:
+        """Crea la versión N+1 del AIP con el índice renovado. Best-effort, NUNCA lanza.
+
+        Idempotente: bajo el advisory lock del expediente se RELEE la huella embebida; si ya
+        coincide con la vigente no hay trabajo (otra pasada/réplica ganó). El contenido lo
+        reconstruye storage-service desde el bag anterior (no se vuelve a pedir nada a
+        document-service), de modo que NO depende de que la entidad esté activa."""
+        got_lock = False
+        try:
+            got_lock = bool(
+                await self._conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:aip_reemp'), "
+                    "hashtext($1))",
+                    str(expediente_id),
+                )
+            )
+            if not got_lock:
+                return "omitido"
+            fila = await self._aip.get_para_reempaque(expediente_id)
+            if fila is None or fila["estado"] != "empaquetado" or fila["reempaque_agotado"]:
+                return "omitido"
+            if fila["indice_xml_sha256"] == vigente.xml_sha256:
+                return "omitido"
+            anterior = fila["aip_vigente_id"] or fila["aip_worm_object_id"]
+            if anterior is None:
+                return await self._bump_reempaque_backoff(
+                    expediente_id,
+                    intentos_previos=int(fila["reempaque_intentos"]),
+                    motivo="aip_anterior_desconocido",
+                )
+            outcome = await storage_client.reempaquetar_aip_internal(
+                tenant_slug=self._tenant_slug,
+                expediente_id=str(expediente_id),
+                aip_anterior_id=anterior,
+                indice_file_id=vigente.file_id,
+                indice_xml_sha256=vigente.xml_sha256,
+                firma_id=vigente.firma_id,
+                ordinal=vigente.ordinal,
+            )
+            if outcome.ya_sustituido:
+                # El AIP «vigente» que archive conocía ya tiene sucesor (un corte entre storage y
+                # archive, o una renovación posterior): se resincroniza con la CABEZA real de
+                # storage y se reintenta UNA vez sobre ella.
+                cabeza = await self._cabeza_en_storage(expediente_id)
+                if cabeza is not None and cabeza != anterior:
+                    outcome = await storage_client.reempaquetar_aip_internal(
+                        tenant_slug=self._tenant_slug,
+                        expediente_id=str(expediente_id),
+                        aip_anterior_id=cabeza,
+                        indice_file_id=vigente.file_id,
+                        indice_xml_sha256=vigente.xml_sha256,
+                        firma_id=vigente.firma_id,
+                        ordinal=vigente.ordinal,
+                    )
+            if outcome.ok:
+                assert outcome.aip_id is not None and outcome.version is not None
+                try:
+                    async with self._conn.transaction():
+                        await self._aip.insert_version(
+                            expediente_id,
+                            version=outcome.version,
+                            aip_id=outcome.aip_id,
+                            indice_file_id=vigente.file_id,
+                            indice_xml_sha256=vigente.xml_sha256,
+                            firma_id=uuid.UUID(vigente.firma_id),
+                            firma_ordinal=vigente.ordinal,
+                            motivo="renovacion_lta",
+                            sustituye_a_aip_id=outcome.sustituye_a,
+                        )
+                        await self._aip.mark_reempaquetado(
+                            expediente_id,
+                            aip_vigente_id=outcome.aip_id,
+                            indice_xml_sha256=vigente.xml_sha256,
+                            proximo_at=datetime.now(tz=UTC)
+                            + timedelta(seconds=settings.aip_reempaquetado_intervalo_s),
+                            worm_retain_until=outcome.retain_until,
+                        )
+                        await audit.append(
+                            self._conn,
+                            tenant_slug=self._tenant_slug,
+                            service=_SERVICE,
+                            action="archive.aip_reempaquetado",
+                            object_type="expediente_aip",
+                            object_ref=str(expediente_id),
+                            actor=str(SYSTEM_RECONCILER_ID),
+                            canal="system",
+                            payload={
+                                "expediente_id": str(expediente_id),
+                                "aip_id": str(outcome.aip_id),
+                                "sustituye_a": str(outcome.sustituye_a),
+                                "version": outcome.version,
+                                "firma_id": vigente.firma_id,
+                                "ordinal": vigente.ordinal,
+                                "indice_xml_sha256": vigente.xml_sha256,
+                            },
+                        )
+                except asyncpg.UniqueViolationError:
+                    # Otra pasada ya registró esta huella/versión: nada que hacer.
+                    logger.info("Reempaquetado AIP: versión ya registrada (expediente_id=%s)", expediente_id)
+                    return "omitido"
+                return "reempaquetado"
+
+            motivo = (
+                "aip_ya_sustituido"
+                if outcome.ya_sustituido
+                else "aip_anterior_fixity_mismatch"
+                if outcome.fixity_mismatch
+                else "indice_no_es_renovacion_del_embebido"
+                if outcome.indice_invalido
+                else "aip_not_found"
+                if outcome.not_found
+                else "worm_disabled"
+                if outcome.disabled
+                else "reempaque_no_confirmado"
+            )
+            return await self._bump_reempaque_backoff(
+                expediente_id, intentos_previos=int(fila["reempaque_intentos"]), motivo=motivo
+            )
+        except Exception:
+            logger.warning(
+                "Reempaquetado del AIP falló (best-effort), expediente_id=%s",
+                expediente_id,
+                exc_info=True,
+            )
+            return "pendiente"
+        finally:
+            if got_lock:
+                try:
+                    await self._conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:aip_reemp'), "
+                        "hashtext($1))",
+                        str(expediente_id),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("No se pudo liberar el lock de reempaquetado", exc_info=True)
+
+    async def _cabeza_en_storage(self, expediente_id: uuid.UUID) -> uuid.UUID | None:
+        try:
+            aip = await storage_client.get_aip(
+                tenant_slug=self._tenant_slug, expediente_id=str(expediente_id)
+            )
+            return uuid.UUID(str(aip["id"])) if aip else None
+        except (storage_client.StorageAipError, KeyError, ValueError):
+            return None
+
+    async def barrer_reempaquetado(self, batch: int) -> dict[str, int]:
+        """Una pasada para este tenant: compara el XML vigente de cada AIP empaquetado con la
+        huella embebida y reempaqueta las que difieren. Un fallo de LECTURA en signature NO se
+        interpreta como «sin renovación» (backoff, nunca se asume el original)."""
+        res = {"revisados": 0, "reempaquetados": 0, "sin_cambio": 0, "fallidos": 0, "agotados": 0}
+        intervalo = timedelta(seconds=settings.aip_reempaquetado_intervalo_s)
+        vistos: set[uuid.UUID] = set()
+        while True:
+            filas = [
+                f
+                for f in await self._aip.candidatos_reempaque(batch)
+                if f["expediente_id"] not in vistos
+            ]
+            if not filas:
+                break
+            vistos.update(f["expediente_id"] for f in filas)
+            res["revisados"] += len(filas)
+            lote = await signature_client.artefactos_vigentes(
+                tenant_slug=self._tenant_slug,
+                firma_ids=sorted({str(f["firma_id"]) for f in filas}),
+            )
+            if lote is None:
+                for f in filas:
+                    r = await self._bump_reempaque_backoff(
+                        f["expediente_id"],
+                        intentos_previos=int(f["reempaque_intentos"]),
+                        motivo="artefacto_vigente_no_resuelto",
+                        puede_agotar=False,
+                    )
+                    res["fallidos"] += 1 if r == "pendiente" else 0
+                continue
+            sin_cambio: list[uuid.UUID] = []
+            for f in filas:
+                v = lote.get(str(f["firma_id"]))
+                if v is None or v.xml_sha256 == f["indice_xml_sha256"]:
+                    sin_cambio.append(f["expediente_id"])
+                    res["sin_cambio"] += 1
+                    continue
+                resultado = await self.reempaquetar_por_renovacion(f["expediente_id"], v)
+                if resultado == "reempaquetado":
+                    res["reempaquetados"] += 1
+                elif resultado == "agotado":
+                    res["agotados"] += 1
+                elif resultado == "pendiente":
+                    res["fallidos"] += 1
+                else:
+                    sin_cambio.append(f["expediente_id"])
+            await self._aip.marcar_revisados(sin_cambio, proximo_at=datetime.now(tz=UTC) + intervalo)
+        return res

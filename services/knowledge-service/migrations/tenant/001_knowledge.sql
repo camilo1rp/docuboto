@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS knowledge_chunk (
     source_type VARCHAR(40) NOT NULL,        -- radicado | expediente | ...
     source_ref  TEXT NOT NULL,               -- id/tracking del objeto de dominio
     texto       TEXT NOT NULL,
-    embedding   vector(64) NOT NULL,
+    embedding   public.vector(64) NOT NULL,
     metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
     acl         JSONB NOT NULL DEFAULT '{}'::jsonb,  -- pre-filtrado de acceso
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -29,4 +29,4 @@ CREATE INDEX IF NOT EXISTS ix_knowledge_source
     ON knowledge_chunk (source_type, source_ref);
 -- Índice ANN (ivfflat, distancia coseno); requiere ANALYZE con datos para rendir.
 CREATE INDEX IF NOT EXISTS ix_knowledge_embedding
-    ON knowledge_chunk USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    ON knowledge_chunk USING ivfflat (embedding public.vector_cosine_ops) WITH (lists = 100);

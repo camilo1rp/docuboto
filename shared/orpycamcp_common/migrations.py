@@ -52,6 +52,12 @@ cuadra.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import asyncpg
 
 # Nombre nuevo, no reutilizado: `_migrations` sigue existiendo con el contenido
@@ -82,6 +88,89 @@ NOMBRES_AMBIGUOS = frozenset(
     }
 )
 
+
+
+# ---------------------------------------------------------------------------
+# Cerrojo global de migraciones (C19, ADR-041)
+# ---------------------------------------------------------------------------
+#
+# Antes de este cerrojo el manifiesto de producción y la documentación decían
+# que los `migrate-*` se «serializaban por pg_advisory_lock»; el código NO tenía
+# ninguno. Nueve migradores en paralelo se pisaban en `CREATE TABLE IF NOT EXISTS
+# public.schema_migrations`, en la `evento_dead_letter` que crean cuatro
+# servicios y en los asientos-ancla (comprobar-y-luego-escribir).
+#
+# UN solo cerrojo para todos los servicios, no uno por servicio: comparten el
+# libro, `public` y tablas del esquema tenant. Constante fija y legible (los
+# ocho bytes ASCII de «ORPYCAM1») en vez de `hashtext(...)`, para reconocerla
+# en `pg_locks` sin tener que recalcular nada. Nivel de SESIÓN: sobrevive a las
+# transacciones por archivo y se libera sola si la conexión muere.
+CERROJO_MIGRACIONES = 0x4F52505943414D31
+
+PLAZO_CERROJO_POR_DEFECTO_S = 600.0
+_ESPERA_ENTRE_INTENTOS_S = 0.5
+
+
+def plazo_cerrojo_s() -> float:
+    """`MIGRATIONS_LOCK_TIMEOUT_S` (segundos); 600 si no está. Valor inválido ⇒ error."""
+    crudo = os.environ.get("MIGRATIONS_LOCK_TIMEOUT_S", "").strip()
+    if not crudo:
+        return PLAZO_CERROJO_POR_DEFECTO_S
+    try:
+        valor = float(crudo)
+    except ValueError:
+        raise RuntimeError(
+            f"MIGRATIONS_LOCK_TIMEOUT_S={crudo!r} no es un número de segundos"
+        ) from None
+    if valor <= 0:
+        raise RuntimeError("MIGRATIONS_LOCK_TIMEOUT_S debe ser mayor que 0")
+    return valor
+
+
+async def _quien_tiene_el_cerrojo(conn: asyncpg.Connection) -> str:
+    """Pid que lo retiene, para el mensaje de error; best-effort."""
+    try:
+        pid = await conn.fetchval(
+            "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
+            "AND objsubid = 1 AND ((classid::bigint << 32) | objid::bigint) = $1 "
+            "LIMIT 1",
+            CERROJO_MIGRACIONES,
+        )
+    except Exception:  # noqa: BLE001 - diagnóstico; nunca debe tapar el error real
+        return "desconocido"
+    return str(pid) if pid is not None else "desconocido"
+
+
+@asynccontextmanager
+async def cerrojo(
+    conn: asyncpg.Connection, *, timeout_s: float | None = None
+) -> AsyncIterator[None]:
+    """Serializa todo ejecutor de migraciones del sistema (runners e init_tenant).
+
+    Intenta ``pg_try_advisory_lock`` cada medio segundo hasta ``timeout_s``
+    (por defecto ``MIGRATIONS_LOCK_TIMEOUT_S``). Si vence, ``RuntimeError``
+    legible: el proceso sale con código 1 y ``service_completed_successfully``
+    no se cumple, así que el servicio NO arranca (fail-closed). Se libera en
+    ``finally``.
+    """
+    plazo = plazo_cerrojo_s() if timeout_s is None else timeout_s
+    inicio = time.monotonic()
+    while not await conn.fetchval("SELECT pg_try_advisory_lock($1)", CERROJO_MIGRACIONES):
+        espera = time.monotonic() - inicio
+        if espera >= plazo:
+            raise RuntimeError(
+                f"otra migración tiene el cerrojo desde hace {espera:.0f} s "
+                f"(pid {await _quien_tiene_el_cerrojo(conn)}); plazo "
+                f"MIGRATIONS_LOCK_TIMEOUT_S={plazo:g} s agotado"
+            )
+        await asyncio.sleep(min(_ESPERA_ENTRE_INTENTOS_S, max(plazo - espera, 0.01)))
+    try:
+        yield
+    finally:
+        try:
+            await conn.execute("SELECT pg_advisory_unlock($1)", CERROJO_MIGRACIONES)
+        except Exception:  # noqa: BLE001 - conexión ya caída: el servidor lo libera al cerrar la sesión
+            pass
 
 
 # Valor de `schema_name` para las migraciones del esquema `public`. Se guarda

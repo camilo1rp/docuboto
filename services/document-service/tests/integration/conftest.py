@@ -338,7 +338,9 @@ $$;
 CREATE TABLE IF NOT EXISTS tipos_documentales (
     code TEXT PRIMARY KEY, nombre TEXT NOT NULL,
     activo BOOLEAN NOT NULL DEFAULT true,
-    admite_ventanilla_publica BOOLEAN NOT NULL DEFAULT false
+    admite_ventanilla_publica BOOLEAN NOT NULL DEFAULT false,
+    -- C-4/C10 (archive 071): marca PROPIA del tipo para publicar de oficio. Opt-in.
+    publicable BOOLEAN NOT NULL DEFAULT false
 );
 CREATE TABLE IF NOT EXISTS urd_usuaroldep (
     user_id UUID NOT NULL, depe_id INTEGER NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE
@@ -368,11 +370,11 @@ async def _provision_tenant_schema(conn: asyncpg.Connection, slug: str) -> str:
     # (AREA-09-02). VAN ANTES de las migraciones: la 046 exige la función
     # `resolver_codigo_dependencia` de tenant-service (mismo orden que `init_tenant`).
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(_OTROS_SERVICIOS_DDL)
     for path in runner._sql_files(runner.TENANT_DIR):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             await conn.execute(path.read_text())
     return schema
 
@@ -451,7 +453,7 @@ async def tenant_flujo(
     de auth y `dependencias` de tenant-service). Su DDL no viaja en esta imagen;
     se declaran con las columnas que el predicado usa."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(_FLUJO_MINIMO_DDL)
     return slug, conn
 

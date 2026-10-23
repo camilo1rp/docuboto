@@ -25,7 +25,7 @@ from urllib.parse import quote
 import httpx
 
 from app.services import origen
-from app.tools.catalog import ArgError, Invocable, Tool, coerce_args
+from app.tools.catalog import ArgError, Invocable, Tool, coerce_args, es_de_conocimiento
 
 _SIN_CUERPO = ("GET", "DELETE", "HEAD")
 
@@ -57,8 +57,13 @@ def authorize(
     permissions: set[str],
     is_root: bool,
     levels: dict[str, int] | None = None,
+    asistente_habilitado: bool = False,
 ) -> None:
     """Aplica el scope por permiso **y nivel** antes de invocar.
+
+    `asistente_habilitado` (ADR-037): las tools de conocimiento se niegan con
+    `asistente_deshabilitado` (403) si la entidad no activó el asistente, antes de mirar
+    permisos y aunque el llamante sea ROOT. Default `False`: fail-closed.
 
     Ya NO recibe `confirm_write`. Ese booleano era el gate de escritura entero, y
     cualquier cliente podía ponerlo: confirmaba «algo», no «esto». El binding MCP
@@ -69,6 +74,8 @@ def authorize(
     Quitar el parámetro es deliberado: mientras existiera, alguien podría volver a
     pasar `True` y saltarse el mecanismo sin que nada lo delatara.
     """
+    if es_de_conocimiento(tool) and not asistente_habilitado:
+        raise DispatchError("asistente_deshabilitado", 403)
     if tool.permission and not is_root:
         if tool.permission not in permissions:
             raise DispatchError("permiso_insuficiente", 403)

@@ -2027,11 +2027,11 @@ async def test_contexto_series_resolves_parent_as_serie_and_own_as_subserie() ->
         code="100",
         name="Contratos",
         description=None,
-        retention_years=5,
-        total_retention=10,
         disposition="CT",
         is_active=True,
         created_at=NOW,
+        archivo_gestion_years=5,
+        archivo_central_years=5,
         parent_id=None,
     )
     child = TrdSerie(
@@ -2039,11 +2039,11 @@ async def test_contexto_series_resolves_parent_as_serie_and_own_as_subserie() ->
         code="100.1",
         name="Prestación de servicios",
         description=None,
-        retention_years=5,
-        total_retention=10,
         disposition="CT",
         is_active=True,
         created_at=NOW,
+        archivo_gestion_years=5,
+        archivo_central_years=5,
         parent_id=parent.id,
     )
     svc = IndexService.__new__(IndexService)
@@ -2069,11 +2069,11 @@ async def test_contexto_series_top_level_has_no_subserie() -> None:
         code="100",
         name="Contratos",
         description=None,
-        retention_years=5,
-        total_retention=10,
         disposition="CT",
         is_active=True,
         created_at=NOW,
+        archivo_gestion_years=5,
+        archivo_central_years=5,
         parent_id=None,
     )
     svc = IndexService.__new__(IndexService)

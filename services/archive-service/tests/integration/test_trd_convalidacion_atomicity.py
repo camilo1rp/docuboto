@@ -45,24 +45,24 @@ from .conftest import convalidate_for_test
 
 @pytest.mark.integration
 async def test_full_circuit_derogates_previa_and_repoints_fks(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """El circuito REAL (`aprobar` -> `convalidar`), no el atajo de test: v1
     `migrada` con hijos (`tipos_documentales`/`expediente_metadata_templates`)
     -> v2 `borrador` -> `aprobada` -> `convalidada`. Al final: v1 `derogada`,
     v2 es la única fila vigente, y los dos hijos quedan re-apuntados a v2."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     schema = tenant_schema(slug)
     code = f"CIRC{uuid.uuid4().hex[:6]}"
 
     v1 = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest circuito v1", disposition="CT"), actor=None
+        TrdSerieCreate(code=code, name="itest circuito v1", disposition="CT", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, v1.id)  # atajo SOLO para v1 (backfill D6)
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         tipo_id = await conn.fetchval(
             "INSERT INTO tipos_documentales (trd_serie_id, code, nombre) "
             "VALUES ($1, 'T1', 'Oficio') RETURNING id",
@@ -75,7 +75,7 @@ async def test_full_circuit_derogates_previa_and_repoints_fks(
         )
 
     v2 = await archive.create_trd_serie_version(
-        code, TrdSerieVersionCreate(retention_years=9), actor=None
+        code, TrdSerieVersionCreate(archivo_gestion_years=9), actor=None
     )
     assert v2.version == 2
     assert v2.estado == "borrador"
@@ -130,18 +130,18 @@ async def test_full_circuit_derogates_previa_and_repoints_fks(
 
 @pytest.mark.integration
 async def test_convalidar_illegal_transition_rejected_before_any_mutation(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """`borrador -> convalidada` directo: la máquina de estados del SERVICE
     corta con 409 antes de tocar la fila (fail-fast, no depende del CHECK)."""
     from fastapi import HTTPException
 
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"ILL{uuid.uuid4().hex[:6]}"
 
     v1 = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest ilegal", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest ilegal", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     assert v1.estado == "borrador"
 
@@ -169,14 +169,14 @@ async def test_convalidar_illegal_transition_rejected_before_any_mutation(
 
 @pytest.mark.integration
 async def test_ratificacion_migrada_no_new_row_and_clears_only_matching_motivo(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """D6: ratificar una serie `migrada` es la MISMA fila (sin `version+1`) y
     limpia SOLO los expedientes con motivo `cerrado_bajo_serie_migrada` --
     uno con otro motivo (`serie_no_resoluble`, simulado por SQL crudo, mismo
     criterio que usan los tests de Increment 1 para casos que el flujo normal
     del servicio no produce) queda intacto."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     schema = tenant_schema(slug)
     code = f"RATF{uuid.uuid4().hex[:6]}"
@@ -188,6 +188,7 @@ async def test_ratificacion_migrada_no_new_row_and_clears_only_matching_motivo(
             disposition="CT",
             archivo_gestion_years=2,
             archivo_central_years=8,
+            dependencias_productoras=[110],
         ),
         actor=None,
     )
@@ -215,7 +216,7 @@ async def test_ratificacion_migrada_no_new_row_and_clears_only_matching_motivo(
     # serie resoluble; se inserta para probar la SELECTIVIDAD del filtro).
     otro_id = uuid.uuid4()
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(
             """
             INSERT INTO expedientes
@@ -267,18 +268,18 @@ async def test_ratificacion_migrada_no_new_row_and_clears_only_matching_motivo(
 
 @pytest.mark.integration
 async def test_derogar_then_reconvalidar_not_possible_without_new_version(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """`derogada` es terminal para esa fila (D1 append-only): ni `convalidar`
     ni `aprobar` la reviven."""
     from fastapi import HTTPException
 
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"TERM{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest terminal", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest terminal", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, serie.id)
 
@@ -310,17 +311,17 @@ async def test_derogar_then_reconvalidar_not_possible_without_new_version(
 
 @pytest.mark.integration
 async def test_list_expedientes_revision_pendiente_paginated_and_tenant_scoped(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """`GET /trd/revision-pendiente` (vía el service): paginación + aislamiento
     de tenant -- un expediente marcado en OTRO tenant_slug no debe aparecer,
     porque `ArchiveRepository` fija `search_path` al schema de ESTE tenant."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"PEND{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest pendiente", disposition="CT"), actor=None
+        TrdSerieCreate(code=code, name="itest pendiente", disposition="CT", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, serie.id)
 

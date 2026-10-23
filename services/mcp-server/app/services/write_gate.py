@@ -141,6 +141,7 @@ async def ejecutar(
             permissions=identidad.permissions,
             is_root=identidad.is_root,
             levels=identidad.levels,
+            asistente_habilitado=identidad.asistente_habilitado,
         )
     except dispatcher.DispatchError as exc:
         raise proposals.ProposalError(
@@ -174,6 +175,7 @@ async def ejecutar(
             permissions=identidad.permissions,
             is_root=identidad.is_root,
             levels=identidad.levels,
+            asistente_habilitado=identidad.asistente_habilitado,
         )
         return {
             "kind": "result",

@@ -80,7 +80,7 @@ def require_permission(perm_name: str, min_crud: int = 1):
         # MISMO slug que luego usa el servicio para nombrar el bucket WORM, nunca
         # el del body de la petición.
         schema = tenant_schema(x_tenant_slug)
-        await conn.execute(f'SET search_path TO "{schema}", public')
+        await conn.execute(f'SET search_path TO "{schema}"')
         if not await check_permission(conn, user_id, perm_name, min_crud):
             # Traza best-effort del acceso denegado, solo para llamador IDENTIFICADO
             # (evita contaminar la cadena de hash con ruido de escaneo anónimo).

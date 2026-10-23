@@ -37,6 +37,7 @@
   import { tick, onMount } from "svelte";
 
   import Card from "$lib/components/ui/Card.svelte";
+  import AipVersiones from "$lib/components/features/preservacion/AipVersiones.svelte";
   import SchemaValue from "$lib/components/ui/SchemaValue.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -50,6 +51,7 @@
   import EditarMetadatosModal from "$lib/components/features/expedientes/EditarMetadatosModal.svelte";
   import DisposicionExpedienteDrawer from "$lib/components/features/disposicion/DisposicionExpedienteDrawer.svelte";
   import PublicacionExpedienteDrawer from "$lib/components/features/publicacion/PublicacionExpedienteDrawer.svelte";
+  import RetencionesLegalesPanel from "$lib/components/features/expedientes/RetencionesLegalesPanel.svelte";
   import AdvertenciasVerificacion from "$lib/components/features/firmas/AdvertenciasVerificacion.svelte";
 
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
@@ -217,7 +219,10 @@
   // ---------------------------------------------------------------------------
   // Pestañas (tablist ARIA)
   // ---------------------------------------------------------------------------
-  const TABS = [
+  // «Retenciones legales» solo para quien las administra (USUA_PERM_ADMIN, espejo del backend).
+  $: verRetenciones = can("USUA_PERM_ADMIN", 1);
+  $: puedeRetener = can("USUA_PERM_ADMIN", 3);
+  $: TABS = [
     { id: "resumen", label: "Contenido", icon: "fa-folder-open" },
     { id: "indice", label: "Índice electrónico", icon: "fa-list-ol" },
     { id: "foliado", label: "Foliado", icon: "fa-hashtag" },
@@ -226,6 +231,9 @@
     { id: "preservacion", label: "Preservación", icon: "fa-box-archive" },
     { id: "acceso", label: "Acceso", icon: "fa-user-shield" },
     { id: "fisico", label: "Ubicación física", icon: "fa-archive" },
+    ...(verRetenciones
+      ? [{ id: "retenciones", label: "Retenciones legales", icon: "fa-lock" }]
+      : []),
   ];
   let activeTab = "resumen";
 
@@ -1920,7 +1928,7 @@
               <EmptyState
                 icon="fas fa-box-archive"
                 title="Sin AIP empaquetado"
-                description="Este expediente no tiene un paquete de preservación generado, o usted no tiene visibilidad sobre él."
+                description="Este expediente no tiene un paquete de preservación generado, o usted no tiene visibilidad sobre él. Si el almacén ya lo empaquetó y la respuesta se perdió, el sistema lo reconoce y lo registra solo en la siguiente pasada de conciliación (no es un error del documento)."
               />
             {:else}
               {@const aip = preservacionState.aip.data}
@@ -1953,6 +1961,7 @@
                   </div>
                 {/if}
               </dl>
+              <AipVersiones versiones={aip.versiones} />
             {/if}
           </Card>
 
@@ -2011,6 +2020,23 @@
         </div>
       {/if}
     </div>
+
+    <!-- -----------------------------------------------------------------------
+         Panel — Retenciones legales (C-5 / C7): por motivo; la de valoración es del sistema
+         ----------------------------------------------------------------------- -->
+    {#if verRetenciones}
+      <div
+        id="panel-retenciones"
+        role="tabpanel"
+        aria-labelledby="tab-retenciones"
+        hidden={activeTab !== "retenciones"}
+        class="exp-panel"
+      >
+        {#if activeTab === "retenciones"}
+          <RetencionesLegalesPanel expedienteId={expediente.id} puedeEscribir={puedeRetener} />
+        {/if}
+      </div>
+    {/if}
 
     <!-- -----------------------------------------------------------------------
          Panel — Acceso (E15 perfil v4 R3-b/R4-b: historial + roles autorizados)

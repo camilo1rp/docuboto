@@ -78,6 +78,7 @@ from datetime import UTC, datetime
 
 import asyncpg
 from orpycamcp_common import audit
+from orpycamcp_common.tenant import asistente_habilitado
 
 from app.core.clearance import (
     CLASIFICADA,
@@ -93,6 +94,21 @@ logger = logging.getLogger(__name__)
 
 _SERVICE = "knowledge-service"
 _SOURCE_TYPE = "radicado"
+
+
+async def egreso_con_bandera_apagada(conn: asyncpg.Connection, tenant_slug: str) -> bool:
+    """¿Indexar ahora enviaría texto fuera de la entidad que apagó el asistente? (ADR-037)
+
+    La ingesta NO depende de la bandera mientras el proveedor de embeddings sea local
+    (`stub`/`local_st`): no hay egreso y el índice sigue al día. Con un proveedor NO local
+    (p. ej. un Ollama remoto) indexar es transmitir texto de radicados a un tercero, y una
+    entidad que apagó el asistente no lo autorizó: se salta. Con proveedor local ni siquiera
+    se lee la bandera. No captura excepciones: si el registro no responde, el evento falla
+    y se reintenta (fail-closed), en vez de egresar a ciegas.
+    """
+    if is_local_embedding_provider(settings.embedding_provider):
+        return False
+    return not await asistente_habilitado(conn, tenant_slug)
 
 
 async def ingest_radicado_created(
@@ -198,6 +214,24 @@ async def ingest_radicado_created(
                 "nivel_efectivo": nivel_efectivo,
                 "embedding_provider": settings.embedding_provider,
                 "motivo": "material_reservado_o_clasificado_proveedor_externo",
+            },
+        )
+        return
+
+    if await egreso_con_bandera_apagada(conn, tenant_slug):
+        await audit.append(
+            conn,
+            tenant_slug=tenant_slug,
+            service=_SERVICE,
+            action="knowledge.ingest_skipped_asistente_apagado",
+            object_type=_SOURCE_TYPE,
+            object_ref=tracking_number,
+            actor="system",
+            canal="system",
+            payload={
+                "nivel_seguridad": nivel_efectivo,
+                "embedding_provider": settings.embedding_provider,
+                "motivo": "asistente_apagado_proveedor_de_embeddings_no_local",
             },
         )
         return

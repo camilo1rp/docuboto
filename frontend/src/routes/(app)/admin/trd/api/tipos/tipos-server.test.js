@@ -95,6 +95,8 @@ describe("POST /admin/trd/api/tipos", () => {
       // Opt-in explícito: si el cuerpo no la pide, el tipo NO se ofrece en la
       // ventanilla pública. El silencio no significa «todo».
       admite_ventanilla_publica: false,
+      // Opt-in de la Ley 1712 (C-4), independiente de la ventanilla.
+      publicable: false,
     });
   });
 });
@@ -195,5 +197,70 @@ describe("la marca de ventanilla pública LLEGA al gateway", () => {
       request: { json: async () => ({ nombre: "Otro nombre" }) },
     });
     expect("admite_ventanilla_publica" in enviado).toBe(false);
+  });
+});
+
+describe("`publicable` (Ley 1712) es una marca PROPIA, distinta de la ventanilla (C-4)", () => {
+  it("al CREAR llega al gateway y no se confunde con admite_ventanilla_publica", async () => {
+    let enviado;
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviado = JSON.parse(init.body);
+      return new Response(JSON.stringify({ id: TIPO_ID }), { status: 201 });
+    });
+    await createTipo({
+      locals: SESSION_LOCALS,
+      request: {
+        json: async () => ({ code: "A", nombre: "A", publicable: true }),
+      },
+    });
+    expect(enviado.publicable).toBe(true);
+    expect(enviado.admite_ventanilla_publica).toBe(false);
+
+    await createTipo({
+      locals: SESSION_LOCALS,
+      request: {
+        json: async () => ({ code: "B", nombre: "B", admite_ventanilla_publica: true }),
+      },
+    });
+    expect(enviado.publicable).toBe(false);
+    expect(enviado.admite_ventanilla_publica).toBe(true);
+  });
+
+  it("al EDITAR viaja solo si viene explícita (true y false) y no se inventa", async () => {
+    const enviados = [];
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviados.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ id: TIPO_ID }), { status: 200 });
+    });
+    const llamar = (body) =>
+      updateTipo({
+        locals: SESSION_LOCALS,
+        params: { id: TIPO_ID },
+        request: { json: async () => body },
+      });
+    await llamar({ publicable: true });
+    await llamar({ publicable: false });
+    await llamar({ nombre: "Otro" });
+    await llamar({ publicable: "true" });
+    expect(enviados[0].publicable).toBe(true);
+    expect(enviados[1].publicable).toBe(false);
+    expect("publicable" in enviados[2]).toBe(false);
+    expect("publicable" in enviados[3]).toBe(false);
+  });
+
+  it("propaga el 403 de nivel insuficiente y el publicados_vigentes del 200 al despublicar", async () => {
+    for (const [status, cuerpo] of [
+      [403, { error: "forbidden", status: 403 }],
+      [200, { id: TIPO_ID, publicable: false, publicados_vigentes: 3 }],
+    ]) {
+      globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(cuerpo), { status }));
+      const res = await updateTipo({
+        locals: SESSION_LOCALS,
+        params: { id: TIPO_ID },
+        request: { json: async () => ({ publicable: false }) },
+      });
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual(cuerpo);
+    }
   });
 });

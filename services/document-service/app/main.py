@@ -30,6 +30,7 @@ from fastapi.responses import JSONResponse
 from orpycamcp_common import identidad, request_log
 from orpycamcp_common import secrets as common_secrets
 
+from app.core import altcha
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.routers.anulacion import cola_router as anulacion_cola_router
@@ -37,6 +38,8 @@ from app.routers.anulacion import router as anulacion_router
 from app.routers.batch import router as batch_router
 from app.routers.borradores import router as borradores_router
 from app.routers.cmis import router as cmis_router
+from app.routers.desclasificacion import cola_router as desclasificacion_cola_router
+from app.routers.desclasificacion import router as desclasificacion_router
 from app.routers.documents import router as documents_router
 from app.routers.export import router as export_router
 from app.routers.health import router as health_router
@@ -73,8 +76,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Una lista de admisión que crece aparte del sistema que vigila acaba
     # cubriendo lo que alguien recordó, no lo que hace falta.
     common_secrets.require_secrets(
-        {"DOCUMENT_INTERNAL_TOKEN": settings.internal_service_token}, servicio="document-service"
+        {
+            "DOCUMENT_INTERNAL_TOKEN": settings.internal_service_token,
+            # C16: sin clave no se pueden autenticar los retos ALTCHA y la ventanilla
+            # pública quedaría cerrada (503) o, peor, mal firmada.
+            "ALTCHA_HMAC_KEY": settings.altcha_hmac_key,
+        },
+        servicio="document-service",
     )
+    if len(settings.altcha_hmac_key.encode()) < altcha.HMAC_MIN_BYTES:
+        raise common_secrets.SecretoNoConfigurado(
+            f"document-service: ALTCHA_HMAC_KEY debe tener al menos "
+            f"{altcha.HMAC_MIN_BYTES} bytes (openssl rand -hex 32)"
+        )
 
     logger.info("document-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
@@ -148,6 +162,9 @@ app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="document-service")
 
 app.include_router(batch_router)
+# Antes que `documents_router`: el literal `/causales-reserva` no lo captura `/{document_id}`.
+app.include_router(desclasificacion_router)
+app.include_router(desclasificacion_cola_router)
 app.include_router(documents_router)
 app.include_router(metadata_router)
 app.include_router(metadata_elements_router)

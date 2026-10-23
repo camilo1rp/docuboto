@@ -27,37 +27,78 @@ El censo se hace cruzando dos fuentes **mecánicamente**, nunca a ojo:
 1. el OpenAPI agregado del gateway (`GET /api/v1/openapi.json`), normalizando el
    doble prefijo que introduce el agregador (`/api/v1/archive/api/v1/…`);
 2. el catálogo declarativo del MCP (`services/mcp-server/app/tools/catalog.py`),
-   con las plantillas de ruta normalizadas (`{id}` → `{x}`).
+   con las plantillas de ruta normalizadas (`{id}` → `{x}`). El lector tolera
+   comentarios entre `method=` y `path=`: sin eso, `consultar_aip` y
+   `eventos_preservacion` (que explican ahí por qué apuntan a la ruta mediada)
+   contaban como hueco siendo herramientas.
 
 Un recuento a mano sobre este volumen se equivoca, y peor: se equivoca de forma
 tranquilizadora. Ya ocurrió en este proyecto con un catálogo de 1.135 municipios
 verificado contra cuatro casos conocidos.
 
 **Límite declarado del censo**: el agregador del gateway compone la documentación
-de **siete** de los once servicios. `knowledge-service`, `signature-service` y el
-propio `mcp-server` no aparecen, así que **367 es un suelo, no el total**. Se
-dice aquí en vez de dejar que alguien lo descubra buscando una herramienta que
-el censo nunca vio.
+de **siete** de los once servicios, así que el censo ya no lo usa: lee el esquema
+de **cada** servicio (`scripts/censo-esquemas.sh`) y el que no responda se dice en
+voz alta. La cifra de 367 operaciones de antes era un suelo; con los once
+esquemas son **470**.
 
 ## El reparto
 
-| Flujo | Operaciones | Herramientas | Cobertura |
-|---|---:|---:|---:|
-| **SISTEMA** (sellado, no expuesto) | 63 | 0 | — *por diseño* |
-| **F1** Ventanilla y radicación | 37 | 27 | 73 % |
-| **F2** Trámite y reparto | 28 | 15 | 54 % |
-| **F3** Respuesta y despacho | 21 | 15 | 71 % |
-| **F4** Expediente | 31 | 21 | 68 % |
-| **F5** Archivo físico | 14 | 11 | 79 % |
-| **F6** Transferencias | 11 | 9 | 82 % |
-| **F7** Disposición y eliminación | 11 | 10 | 91 % |
-| **F8** Preservación y firma | 28 | 11 | 39 % |
-| **F9** Instrumentos archivísticos | 69 | 38 | 55 % |
-| **F10** Correo institucional | 14 | 8 | 57 % |
-| **F11** Consulta y reportes | 9 | 5 | 56 % |
-| **F12** Administración y seguridad | 59 | 26 | 44 % |
-| **F13** Notificaciones e integración | 10 | 7 | 70 % |
-| **TOTAL** | **405** | **203** | |
+> **Cifras del censo (C22, 2026-10-22).** Generadas con la pila levantada y pegadas
+> tal cual las imprime el script; se regeneran, nunca se editan a mano.
+>
+> ```bash
+> ./scripts/censo-esquemas.sh                      # los once esquemas, en /tmp/oa/
+> python3 scripts/censo_mcp.py --openapi /tmp/oa   # esta tabla
+> python3 scripts/censo_mcp.py --openapi /tmp/oa --huecos F4   # solo los huecos reales de un flujo
+> ```
+
+| Flujo | Operaciones | Con herramienta | Excluidas a propósito | Huecos reales | Cobertura |
+|---|---:|---:|---:|---:|---:|
+| **SISTEMA** (sellado, no expuesto) | 80 | 0 | 80 | 0 | — |
+| **F1** Ventanilla y radicación | 48 | 34 | 2 | 12 | 74 % |
+| **F2** Trámite y reparto | 29 | 16 | 0 | 13 | 55 % |
+| **F3** Respuesta y despacho | 22 | 15 | 5 | 2 | 88 % |
+| **F4** Expediente | 35 | 24 | 3 | 8 | 75 % |
+| **F5** Archivo físico | 15 | 12 | 0 | 3 | 80 % |
+| **F6** Transferencias | 19 | 9 | 1 | 9 | 50 % |
+| **F7** Disposición y eliminación | 11 | 10 | 1 | 0 | 100 % |
+| **F8** Preservación y firma | 34 | 11 | 15 | 8 | 58 % |
+| **F9** Instrumentos archivísticos | 74 | 40 | 17 | 17 | 70 % |
+| **F10** Correo institucional | 14 | 8 | 6 | 0 | 100 % |
+| **F11** Consulta y reportes | 14 | 5 | 1 | 8 | 38 % |
+| **F12** Administración y seguridad | 64 | 26 | 34 | 4 | 87 % |
+| **F13** Notificaciones e integración | 11 | 7 | 3 | 1 | 88 % |
+| **TOTAL** | 470 | 217 | 168 | 85 | 72 % |
+
+**Cómo se calcula.** Una sola columna «cobertura» mezclaba dos cosas que piden
+respuestas opuestas, y por eso se separan:
+
+- **Con herramienta**: operaciones del API que alguna herramienta del catálogo
+  invoca (por método y ruta normalizada). Cuenta *operaciones*, no herramientas:
+  dos herramientas sobre el mismo `PATCH` son una operación cubierta.
+- **Excluidas a propósito**: operaciones que se **decidió** no ofrecer. Es una lista
+  declarada, `EXCLUIDAS_A_PROPOSITO` en `scripts/censo_mcp.py`, con el motivo y la
+  referencia donde la decisión está escrita: una entrada de `NO_OFRECIDAS`
+  (`services/mcp-server/app/services/scope.py`, lo que el asistente le dice a la
+  persona), una ruta **sellada** con `X-Internal-Token`, o esta misma página. En
+  `SISTEMA` lo están todas, por construcción.
+- **Huecos reales**: lo que no tiene herramienta **ni** exclusión declarada. Es lo
+  único que se puede decidir construir; se listan con `--huecos`.
+- **Cobertura** = con herramienta ÷ (operaciones − excluidas). Descontar lo
+  decidido evita que un acto que se dejó fuera a propósito —ejecutar el borrado,
+  conceder permisos, firmar con segundo factor— baje el porcentaje como si fuera
+  deuda.
+
+**Lo que impide que la lista sea una opinión.** Una operación excluida que **sí**
+tenga herramienta es un error: el script termina con código `2` y la nombra.
+`shared/tests/test_las_exclusiones_del_mcp_casan_con_rutas_reales.py` comprueba
+además, leyendo los routers, que cada entrada casa con rutas reales, que las
+selladas llevan `require_internal_token` en todas sus rutas y que `NO_OFRECIDAS` y
+la lista no se contradicen en ninguno de los dos sentidos. Lo que *parece* de la
+misma familia pero nadie declaró (el reto del segundo factor, la firma en lote,
+firmar el acta institucional, aprobar o cerrar un plan PINAR) es hueco hasta que
+alguien lo decida: declararlo es una decisión, no una deducción del censo.
 
 > **Esta tabla cambió el 2026-09-17, y varios números EMPEORARON porque se
 > volvieron ciertos.** El censo se alimentaba del OpenAPI agregado del gateway,
@@ -71,7 +112,11 @@ el censo nunca vio.
 
 ## Qué queda FUERA, y por qué
 
-Un censo que contara los 367 como deuda mentiría: hay operaciones que **no deben
+> Desde C22 lo que sigue no es solo prosa: cada grupo de operaciones decidido
+> fuera figura en `EXCLUIDAS_A_PROPOSITO` y se descuenta del denominador. La prosa
+> explica el porqué; la lista, vigilada por un guardián, dice cuáles son.
+
+Un censo que contara las 470 como deuda mentiría: hay operaciones que **no deben
 ser herramientas**, y decir cuáles es parte del trabajo.
 
 - **`/internal/*`** — endpoints sellados con `X-Internal-Token` para tráfico
@@ -99,7 +144,7 @@ ser herramientas**, y decir cuáles es parte del trabajo.
 
 ## Flujo por flujo
 
-### F1 · Ventanilla y radicación — 70 %
+### F1 · Ventanilla y radicación — 74 %
 
 El trámite de entrada: recibir, identificar al ciudadano, radicar, clasificar y,
 si procede, anular o publicar.
@@ -118,7 +163,7 @@ seguimiento de `job`, no una llamada—.
 sistema responde `409`, no `403`. No es una restricción de permisos: no se puede
 negar haber recibido algo.
 
-### F2 · Trámite y reparto — 54 %
+### F2 · Trámite y reparto — 55 %
 
 **Cubierto**: bandeja, pendientes, asignar, trasladar, devolver con causal,
 completar paso, ejecutar transacción, revertir la última asignación, cadena de
@@ -133,7 +178,7 @@ de turno—. El catálogo declara `PERM_VOBO` marcándolo como permiso resuelto 
 tiempo de ejecución: una escritura sin permiso declarado sería visible para toda
 la entidad.
 
-### F3 · Respuesta y despacho — 60 %
+### F3 · Respuesta y despacho — 88 %
 
 **Cubierto**: plantillas, borradores (crear · editar · consultar · aprobar ·
 radicar), respuesta vinculada, bandeja de envíos, despacho postal, actualización
@@ -143,7 +188,7 @@ manual del estado y envíos por radicado.
 declarado, no un defecto), alta y baja de plantillas (administración) y el FUID
 (pertenece a F5/F6).
 
-### F4 · Expediente — 68 %
+### F4 · Expediente — 75 %
 
 **Cubierto**: crear, listar, buscar, consultar, actualizar, vincular, excluir con
 causal, cerrar, foliado, índice (JSON y XML), verificación de integridad,
@@ -158,7 +203,7 @@ y la transferencia del expediente, que pertenece a F6.
 conserva su lugar como hueco trazable con la causal a la vista; un expediente del
 que desaparecen documentos sin dejar rastro no sirve como prueba.
 
-### F5 · Archivo físico — 79 % · F6 · Transferencias — 82 %
+### F5 · Archivo físico — 80 % · F6 · Transferencias — 50 %
 
 Eran los dos flujos que **no se podían llevar desde el MCP**, y eran los
 siguientes por valor: un archivista no puede trabajar con el asistente si no
@@ -166,8 +211,16 @@ puede ubicar una caja ni cerrar una transferencia.
 
 **F5 cubierto**: ubicaciones (listar, crear, consultar), unidades de conservación
 (listar, crear, contenido, movimientos), colocación de expedientes con su rango
-de folios, y préstamos (registrar y devolver). Falta el `PATCH` de una ubicación
-y el listado de préstamos de una unidad concreta.
+de folios, y préstamos (registrar y devolver, más `listar_prestatarios_elegibles`:
+el préstamo ya no es texto libre, el prestatario es un usuario identificado o un
+tercero con documento, y quien entrega lo fija el servidor — C-5/C11). Falta el
+`PATCH` de una ubicación y el listado de préstamos de una unidad concreta.
+
+**Retención legal y valoración (C-5/C7)**: se ofrece **leer** —`listar_retenciones_legales`
+y `consultar_valoracion_tvd`—, no ejecutar. Fijar o levantar un *legal hold* y
+registrar la valoración del Comité son actos con acta y responsable: están
+declarados en `NO_OFRECIDAS` (`services/mcp-server/app/services/scope.py`) con su
+vía alternativa.
 
 **F6 cubierto**: el ciclo de custodia entero — crear, enviar, recibir, rechazar,
 consultar, el acta congelada y su verificación de firmas. Falta la firma personal
@@ -176,7 +229,7 @@ del acta, que exige un segundo factor (TOTP) y no debe pedirse por un chat.
 **Los tres actos que cambian la custodia** —enviar, recibir, rechazar— se declaran
 irreversibles: cambian quién responde del acervo, y eso no se «deshace».
 
-### F7 · Disposición y eliminación — 91 % (10 de 11)
+### F7 · Disposición y eliminación — 100 % (10 de 10)
 
 El único procedimiento del sistema que termina **destruyendo documentos de
 archivo**, en cinco fases: proponer → publicar → avalar → acta firmada →
@@ -224,7 +277,7 @@ firmada. Lo que cambia es qué se le pone delante a quien decide.
 
 **Lo que falta de F7**: solo `ejecutar`, y por decisión.
 
-### F8 · Preservación y firma — 39 % (11 de 28)
+### F8 · Preservación y firma — 58 % (11 de 19)
 
 > Dos de las herramientas de este flujo —el AIP empaquetado y los eventos PREMIS
 > de un expediente— apuntan a las rutas **mediadas** de archive-service, porque
@@ -305,7 +358,7 @@ rechazarlo.
 circuito de firma, nada que se deba ofrecer — lo que queda fuera está declarado
 en el marco de alcance, no omitido.
 
-### F9 · Instrumentos archivísticos — 55 %
+### F9 · Instrumentos archivísticos — 71 %
 
 El bloque más grande (69 operaciones): TRD, TVD, tipos documentales, elementos de
 metadatos y PINAR. La TRD es lo que fija cuánto se conserva cada cosa y qué se
@@ -347,7 +400,7 @@ donde el mediador resuelve el clearance del llamante contra el nivel vigente del
 expediente. Lo cazó el guardián compartido al cruzar el permiso declarado con el
 real — el mismo que antes estaba medio ciego.
 
-### F10 · Correo institucional — 57 % (8 de 14)
+### F10 · Correo institucional — 100 % (8 de 8)
 
 Este flujo se parte en dos mitades que no se parecen en nada, y **el reparto es la
 decisión**:
@@ -396,7 +449,7 @@ en WORM. La tarjeta enseña el asunto y el remitente, que sí se contrastan.
 >    serie de la TRD, que es la que gobierna cuánto se conserva. `/radicar` siempre
 >    ofreció selectores para los dos. Ahora esta pantalla también.
 
-### F13 · Notificaciones e integración — 70 % (7 de 10)
+### F13 · Notificaciones e integración — 88 % (7 de 8)
 
 Se ofrece **observar** y **desatascar**; no se ofrece **configurar**.
 
@@ -419,14 +472,14 @@ por eso se dice en la descripción de la herramienta.
 —lo llama signature-service para los códigos de segundo factor— y sin ese sello
 cualquier token válido podría enviar correo con la identidad de la institución.
 
-### F11 · Consulta y reportes — 40 %
+### F11 · Consulta y reportes — 38 %
 
 **Cubierto**: búsqueda, reporte de radicación y las tres herramientas de
 conocimiento (búsqueda semántica, antecedentes, redacción con citas).
 
 **Pendiente**: los reportes de tiempos de respuesta e inventario.
 
-### F12 · Administración y seguridad — 44 % (26 de 59)
+### F12 · Administración y seguridad — 87 % (26 de 30)
 
 Este flujo se resuelve casi entero **declarando lo que no se ofrece**, y las 26
 herramientas son todas de lectura. No hay ni una escritura, y no es una omisión

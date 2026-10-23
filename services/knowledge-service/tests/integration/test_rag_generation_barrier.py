@@ -293,9 +293,9 @@ async def test_kb_suggestions_isolated_by_tenant(
         await conn_b.execute(f'CREATE SCHEMA "{schema_b}"')
         for path in runner._sql_files(runner.TENANT_DIR):
             async with conn_b.transaction():
-                await conn_b.execute(f'SET LOCAL search_path = "{schema_b}", public')
+                await conn_b.execute(f'SET LOCAL search_path = "{schema_b}"')
                 await conn_b.execute(path.read_text())
-        await conn_b.execute(f'SET search_path = "{schema_b}", public')
+        await conn_b.execute(f'SET search_path = "{schema_b}"')
 
         row_from_b = await conn_b.fetchrow(
             "SELECT id FROM kb_suggestions WHERE id = $1", resp_a.suggestion_id
@@ -360,7 +360,7 @@ async def test_migration_008_kb_suggestions_is_idempotent(
     )
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(path_008.read_text())
 
     constraint_count = await conn.fetchval(

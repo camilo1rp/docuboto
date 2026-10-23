@@ -96,7 +96,9 @@ class DocumentRepository:
                 pages, observations,
                 registered_by, tenant_code, due_date,
                 metadata, metadata_template_id,
-                nivel_seguridad, clasificacion_fundamento
+                nivel_seguridad, clasificacion_fundamento,
+                clasificacion_causal, clasificacion_plazo_meses,
+                clasificacion_norma
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6,
@@ -106,7 +108,9 @@ class DocumentRepository:
                 $13, $14,
                 $15, $16, $17,
                 $18::jsonb, $19,
-                $20, $21
+                $20, $21,
+                $22, $23,
+                $24
             )
             RETURNING
                 id, tracking_number, doc_type, year, sequence,
@@ -141,6 +145,11 @@ class DocumentRepository:
             # El CHECK `radicados_clasificado_con_fundamento` (041) no es diferible:
             # el radicado nace YA motivado; `set_classification` completa el resto.
             payload.clasificacion_fundamento if payload.nivel_seguridad >= 2 else None,
+            # Igual el CHECK `radicados_causal_catalogo` (050): causal y plazo viajan en
+            # el INSERT, no después. En nivel 1 el CHECK exige NULL.
+            payload.clasificacion_causal if payload.nivel_seguridad >= 2 else None,
+            payload.clasificacion_plazo_meses if payload.nivel_seguridad >= 2 else None,
+            payload.clasificacion_norma if payload.nivel_seguridad >= 2 else None,
         )
         radicado = _row_to_radicado(row)
 
@@ -601,16 +610,23 @@ class DocumentRepository:
             # AREA-07-12: defensa en profundidad frente a la Ley 1581. Lo que
             # llegó por la ventanilla pública es información de TERCEROS (datos
             # personales de quien radica) y nace en nivel 1 por el DEFAULT de la
-            # columna, así que «nivel 1» no dice «difundible». Se excluye por
-            # dos vías que no dependen una de otra: el canal con el que entró
-            # (queda en `metadata.canal`, sin importar cómo se tipificó después)
-            # y el tipo documental que la entidad declara admitido en ventanilla
-            # (lo leído EN VIVO, así que sigue la configuración de la entidad).
-            # Va en el WHERE: 404 neutro, sin asiento, como el resto de motivos.
+            # columna, así que «nivel 1» no dice «difundible». Dos condiciones que
+            # no dependen una de otra, ambas en el WHERE (404 neutro, sin asiento):
+            #
+            # 1. el canal con el que entró (`metadata.canal`, sin importar cómo se
+            #    tipificó después): lo recibido por la ventanilla pública NUNCA se
+            #    publica de oficio;
+            # 2. C-4/C10: el TIPO debe estar marcado `publicable` por la entidad
+            #    (`tipos_documentales.publicable`, archive 071, leído EN VIVO). Es
+            #    opt-in, ortogonal a `admite_ventanilla_publica` («se recibe del
+            #    público», Ley 1755): que un tipo entre por la ventanilla no dice que
+            #    se difunda, ni al revés. `EXISTS` y no `NOT EXISTS`: un radicado sin
+            #    tipo (`doc_class` NULL) o con un tipo desconocido NO se publica
+            #    (fail-closed; antes un radicado sin tipo sí se podía publicar).
             gate_nivel += (
                 " AND COALESCE(metadata->>'canal', '') <> 'ventanilla_publica'"
-                " AND NOT EXISTS (SELECT 1 FROM tipos_documentales t"
-                " WHERE t.code = radicados.doc_class AND t.admite_ventanilla_publica)"
+                " AND EXISTS (SELECT 1 FROM tipos_documentales t"
+                " WHERE t.code = radicados.doc_class AND t.activo AND t.publicable)"
             )
         return await self._conn.fetchrow(
             "UPDATE radicados SET publicable = $2, "
@@ -623,6 +639,30 @@ class DocumentRepository:
             publicable,
             max_clearance,
             actor,
+        )
+
+    async def publicacion_bloqueada_solo_por_tipo(
+        self, document_id: uuid.UUID, max_clearance: int
+    ) -> bool:
+        """Tras un `set_publicable(True)` sin filas: ¿la ÚNICA condición que falló es el
+        tipo documental? (C-4/C10)
+
+        Un 404 cuando el motivo es la configuración del tipo es el mensaje que miente: el
+        actor ve el radicado y no sabe por qué no puede publicarlo. Se reevalúa con el
+        MISMO gate de clearance, nivel público, no anulado y canal que el UPDATE, y SIN la
+        condición del tipo: si así el radicado aparece, el tipo es lo único que falta. No
+        es un oráculo: el actor ya puede leer ese radicado y su nivel 1 es público. En
+        cualquier otro caso (no existe, te supera, reservado, anulado, canal ventanilla)
+        el llamante conserva el 404 neutro."""
+        return bool(
+            await self._conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM radicados "
+                " WHERE id = $1 AND nivel_seguridad <= $2 AND nivel_seguridad = 1 "
+                "   AND status <> 'anulado' "
+                "   AND COALESCE(metadata->>'canal', '') <> 'ventanilla_publica')",
+                document_id,
+                max_clearance,
+            )
         )
 
     async def set_anexos_publicables(
@@ -652,15 +692,30 @@ class DocumentRepository:
             )
         )
 
-    async def get_security_context(self, document_id: uuid.UUID) -> asyncpg.Record | None:
-        """Returns id, tracking_number and nivel_seguridad for a radicado by UUID.
+    async def get_security_context_for_update(
+        self, document_id: uuid.UUID, max_clearance: int
+    ) -> asyncpg.Record | None:
+        """Radicado y su clasificación vigente, BLOQUEADO para el acto, con el gate
+        de clearance (no-read-up, RF-SEG-08) en el `WHERE`.
 
-        Does NOT apply a clearance filter — clearance enforcement is the caller's
-        responsibility (the service layer checks no-read-up before acting).
+        `None` = no existe O supera el clearance del llamante: el mismo 404 neutro,
+        sin oráculo. `FOR UPDATE` cierra la carrera «leer nivel 2, otro lo sube a 3,
+        este lo baja a 1»: quien reclasifica decide sobre el nivel que la fila TIENE,
+        no sobre el que tenía al leerla. Debe correr dentro de la transacción del acto.
         """
         return await self._conn.fetchrow(
-            "SELECT id, tracking_number, nivel_seguridad FROM radicados WHERE id = $1",
+            "SELECT id, tracking_number, nivel_seguridad, clasificacion_fundamento, "
+            "clasificacion_causal, clasificacion_plazo_meses, clasificacion_norma, "
+            "registered_at, clasificado_at, "
+            # Meses completos desde la GENERACIÓN: hasta hoy (si el nivel cambia,
+            # `clasificado_at` pasa a ser hoy) y hasta la clasificación vigente (si no
+            # cambia, el reloj no se reinicia). La cuenta es la del CHECK (migración 051).
+            "reserva_meses_entre(registered_at, now()) AS meses_desde_generacion, "
+            "reserva_meses_entre(registered_at, COALESCE(clasificado_at, registered_at)) "
+            "AS meses_hasta_clasificacion "
+            "FROM radicados WHERE id = $1 AND nivel_seguridad <= $2 FOR UPDATE",
             document_id,
+            max_clearance,
         )
 
     async def set_classification(
@@ -668,17 +723,28 @@ class DocumentRepository:
         document_id: uuid.UUID,
         nivel: int,
         *,
+        nivel_esperado: int,
         fundamento: str | None = None,
         causal: str | None = None,
         plazo_meses: int | None = None,
-    ) -> None:
+        norma: str | None = None,
+    ) -> bool:
         """Fija el nivel y la metadata de clasificación VIGENTE (E08, índice Ley 1712).
 
         Al desclasificar (`nivel <= 1`) se LIMPIA la metadata — el radicado deja de
         estar en el índice y no debe conservar un fundamento de reserva obsoleto.
-        Al clasificar (`nivel >= 2`) se sella `clasificado_at = now()` y se guardan
-        fundamento/causal/plazo. El `audit_log` conserva el histórico inmutable; esto
-        es solo la proyección del estado vigente.
+        Al clasificar (`nivel >= 2`) se guardan fundamento/causal/plazo. El
+        `audit_log` conserva el histórico inmutable; esto es solo la proyección del
+        estado vigente.
+
+        **`nivel_esperado` va en el `WHERE`**: el UPDATE solo aplica si la fila sigue
+        en el nivel sobre el que se decidió. Devuelve `False` si no (el llamante
+        revierte con 409), en vez de pisar un cambio concurrente.
+
+        **`clasificado_at` NO se reinicia si el nivel no cambia.** El plazo de una
+        reserva se cuenta desde que se clasificó; reiniciar el reloj en cada
+        re-motivación permitiría perpetuar una reserva más allá de los 15 años del
+        art. 22. Solo cambia al cambiar de nivel (o si nunca se había fijado).
 
         **Clasificar RETIRA la publicación** (`publicable = FALSE`), y no como
         limpieza cosmética: sin esto la marca quedaba latente —inofensiva mientras
@@ -692,31 +758,92 @@ class DocumentRepository:
         consecuencia legal y va en la misma transacción que su asiento.
         """
         if nivel <= 1:
-            await self._conn.execute(
+            resultado = await self._conn.execute(
                 "UPDATE radicados SET nivel_seguridad = $2, updated_at = now(), "
                 "clasificacion_fundamento = NULL, clasificacion_causal = NULL, "
-                "clasificacion_plazo_meses = NULL, clasificado_at = NULL WHERE id = $1",
+                "clasificacion_plazo_meses = NULL, clasificacion_norma = NULL, "
+                "clasificado_at = NULL "
+                "WHERE id = $1 AND nivel_seguridad = $3",
                 document_id,
                 nivel,
+                nivel_esperado,
             )
-        else:
-            await self._conn.execute(
-                "UPDATE radicados SET nivel_seguridad = $2, updated_at = now(), "
-                "clasificacion_fundamento = $3, clasificacion_causal = $4, "
-                "clasificacion_plazo_meses = $5, clasificado_at = now(), "
-                "publicable = FALSE, publicado_at = NULL, publicado_por = NULL "
-                "WHERE id = $1",
-                document_id,
-                nivel,
-                fundamento,
-                causal,
-                plazo_meses,
+            return _filas(resultado) > 0
+        resultado = await self._conn.execute(
+            "UPDATE radicados SET nivel_seguridad = $2, updated_at = now(), "
+            "clasificacion_fundamento = $3, clasificacion_causal = $4, "
+            "clasificacion_plazo_meses = $5, clasificacion_norma = $7, "
+            "clasificado_at = CASE WHEN nivel_seguridad = $2 "
+            "THEN COALESCE(clasificado_at, now()) ELSE now() END, "
+            "publicable = FALSE, publicado_at = NULL, publicado_por = NULL "
+            "WHERE id = $1 AND nivel_seguridad = $6",
+            document_id,
+            nivel,
+            fundamento,
+            causal,
+            plazo_meses,
+            nivel_esperado,
+            norma,
+        )
+        if _filas(resultado) == 0:
+            return False
+        # La reserva prevalece también sobre los anexos marcados.
+        await self._conn.execute(
+            "UPDATE anexos SET publicable = FALSE WHERE radicado_id = $1 AND publicable",
+            document_id,
+        )
+        return True
+
+    async def set_motivacion(
+        self,
+        document_id: uuid.UUID,
+        *,
+        nivel: int,
+        fundamento: str | None,
+        causal: str | None,
+        plazo_meses: int | None,
+        norma: str | None = None,
+    ) -> bool:
+        """RE-MOTIVA una clasificación SIN cambiar de nivel (C4/C12).
+
+        Corrige causal, fundamento y plazo de un radicado que ya está en `nivel`
+        —lo imprescindible para sacar una fila `por_clasificar` de su limbo—. No
+        toca `nivel_seguridad` NI `clasificado_at` (el reloj del plazo sigue donde
+        estaba) ni la publicación (el acceso no cambia). `nivel` en el `WHERE`:
+        si cambió entre la lectura y este UPDATE, devuelve `False`.
+        """
+        resultado = await self._conn.execute(
+            "UPDATE radicados SET clasificacion_fundamento = $3, clasificacion_causal = $4, "
+            "clasificacion_plazo_meses = $5, clasificacion_norma = $6, updated_at = now() "
+            "WHERE id = $1 AND nivel_seguridad = $2 AND nivel_seguridad >= 2",
+            document_id,
+            nivel,
+            fundamento,
+            causal,
+            plazo_meses,
+            norma,
+        )
+        return _filas(resultado) > 0
+
+    async def clasificados_internal(self) -> list[asyncpg.Record]:
+        """Radicados nivel >= 2 para el índice público POR SERIE (acto de sistema).
+
+        Lo consume archive-service, que lo cruza con la TRD. **Content-free por
+        construcción**: el SELECT no trae `tracking_number`, `subject` ni
+        `clasificacion_fundamento`; son las únicas columnas que el índice necesita
+        (ni siquiera el id sale en el índice público: archive lo usa solo para unir).
+        `clasificacion_norma` SÍ viaja: es la cita normativa controlada y publicable
+        (Decreto 103/2015 art. 40), a diferencia del fundamento libre. `fecha_generacion`
+        es la del documento (`registered_at`) para el rango por grupo.
+        """
+        return list(
+            await self._conn.fetch(
+                "SELECT id AS radicado_id, nivel_seguridad, clasificacion_causal, "
+                "clasificacion_plazo_meses, clasificado_at, clasificacion_norma, "
+                "registered_at AS fecha_generacion "
+                "FROM radicados WHERE nivel_seguridad >= 2"
             )
-            # La reserva prevalece también sobre los anexos marcados.
-            await self._conn.execute(
-                "UPDATE anexos SET publicable = FALSE WHERE radicado_id = $1 AND publicable",
-                document_id,
-            )
+        )
 
     async def indice_clasificados(self) -> list[asyncpg.Record]:
         """Registro de información clasificada y reservada (Ley 1712/2014 art. 20).
@@ -1044,6 +1171,14 @@ class DocumentRepository:
 # ---------------------------------------------------------------------------
 # Row → dataclass helpers
 # ---------------------------------------------------------------------------
+
+
+def _filas(resultado: str) -> int:
+    """Filas afectadas según el tag de comando de asyncpg (`'UPDATE 1'` -> 1)."""
+    try:
+        return int(resultado.rsplit(" ", 1)[-1])
+    except (ValueError, AttributeError):
+        return 0
 
 
 def _row_to_radicado(row: asyncpg.Record) -> Radicado:

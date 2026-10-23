@@ -50,7 +50,7 @@ CREATE TABLE flow_events (
 
 
 async def _preparar(conn: asyncpg.Connection, slug: str, *, con_flujo: bool = True) -> AnulacionRepository:
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     if con_flujo:
         await conn.execute(_FLUJO_DDL)
     return AnulacionRepository(conn)
@@ -150,13 +150,13 @@ async def test_rechazar_no_cancela_el_paso(tenant_ctx) -> None:
 async def _correr_034(conn: asyncpg.Connection, slug: str) -> None:
     sql = next(p for p in runner._sql_files(runner.TENANT_DIR) if "radicado_status_check" in p.name)
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}", public')
+        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
         await conn.execute(sql.read_text())
 
 
 async def test_el_check_rechaza_un_estado_fuera_del_conjunto_y_acepta_los_cinco(tenant_ctx) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     for estado in ("registered", "distributed", "in_progress", "closed", "anulado"):
         await _radicado(conn, estado)
     with pytest.raises(asyncpg.CheckViolationError, match="radicados_status_check"):
@@ -170,7 +170,7 @@ async def test_el_check_rechaza_un_estado_fuera_del_conjunto_y_acepta_los_cinco(
 
 async def test_034_con_datos_heredados_no_falla_deja_el_aviso_y_sigue_protegiendo_lo_nuevo(tenant_ctx) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_status_check")
     heredado, _ = await _radicado(conn, "recibido")  # un valor que ninguna máquina de estados conoce
 

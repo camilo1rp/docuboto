@@ -275,7 +275,7 @@ async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str) -> None:
                 # en los 63 bytes de PostgreSQL y no lleva nada raro; esta línea
                 # la esquivaba, así que el sondeo era el único camino del sistema
                 # que armaba un schema sin pasar por la comprobación.
-                await conn.execute(f'SET search_path = "{tenant_schema(tenant_slug)}", public')
+                await conn.execute(f'SET search_path = "{tenant_schema(tenant_slug)}"')
                 resultado = await sondeo.una_vuelta(
                     conn, ahora=asyncio.get_running_loop().time()
                 )

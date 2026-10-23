@@ -45,7 +45,10 @@ _COLS = (
     # de protección (`get_by_expediente_and_tipo`, idempotencia) como el de
     # renovación (`renovar`) necesitan ver/actualizar el mismo par de
     # columnas -- no ameritan una constante separada.
-    "renovado_at, renovaciones"
+    "renovado_at, renovaciones, "
+    # C-5/C7 (migración 024): por qué `retain_until` es o no NULL
+    # (calendario | valoracion_pendiente | valorada_sin_retencion).
+    "retencion_origen"
 )
 
 # Las mismas columnas calificadas con el alias ``p`` (parte recursiva de ``cadena_descendiente``).
@@ -59,7 +62,7 @@ class PreservacionWormRepository:
         self._schema = tenant_schema(tenant_slug)
 
     async def _sp(self) -> None:
-        await self._conn.execute(f'SET search_path = "{self._schema}", public')
+        await self._conn.execute(f'SET search_path = "{self._schema}"')
 
     async def insert(
         self,
@@ -70,20 +73,24 @@ class PreservacionWormRepository:
         object_key: str,
         version_id: str | None,
         sha256: str,
-        retain_until: datetime,
-        retention_mode: str,
+        retain_until: datetime | None,
+        retention_mode: str | None,
         legal_hold: bool,
         file_id: uuid.UUID | None = None,
         objeto_tipo: str = "expediente",
         renueva_a: uuid.UUID | None = None,
+        retencion_origen: str = "calendario",
     ) -> asyncpg.Record:
+        """`retain_until`/`retention_mode` solo son None con `retencion_origen` distinto de
+        `calendario` (CHECK `ck_pwo_retencion_coherente`, migración 024)."""
         await self._sp()
         row = await self._conn.fetchrow(
             f"""
             INSERT INTO preservacion_worm_objeto
                 (expediente_id, tipo, bucket, object_key, version_id, sha256,
-                 retain_until, retention_mode, legal_hold, file_id, objeto_tipo, renueva_a)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                 retain_until, retention_mode, legal_hold, file_id, objeto_tipo, renueva_a,
+                 retencion_origen)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             RETURNING {_COLS}
             """,
             expediente_id,
@@ -98,6 +105,7 @@ class PreservacionWormRepository:
             file_id,
             objeto_tipo,
             renueva_a,
+            retencion_origen,
         )
         assert row is not None
         return row
@@ -180,12 +188,67 @@ class PreservacionWormRepository:
                 tipo,
                 file_id,
             )
+        if tipo == "aip":
+            # C-6 (H4): el AIP se VERSIONA (cada versión es una fila `aip` que `renueva_a` la
+            # anterior), así que «la más reciente» ya no es la identidad de retención: la
+            # renovación extendería la nueva y la cascada (`cadena_descendiente`, que DESCIENDE
+            # por `renueva_a`) nunca alcanzaría a la anterior, que vencería. La identidad es la
+            # RAÍZ de la cadena (`ux_pwo_aip_raiz` garantiza que hay una sola por expediente).
+            return await self._conn.fetchrow(
+                f"SELECT {_COLS} FROM preservacion_worm_objeto "
+                "WHERE expediente_id = $1 AND tipo = $2 AND renueva_a IS NULL "
+                "ORDER BY created_at ASC LIMIT 1",
+                expediente_id,
+                tipo,
+            )
         return await self._conn.fetchrow(
             f"SELECT {_COLS} FROM preservacion_worm_objeto "
             "WHERE expediente_id = $1 AND tipo = $2 "
             "ORDER BY created_at DESC LIMIT 1",
             expediente_id,
             tipo,
+        )
+
+    async def get_aip_por_sha256(
+        self, expediente_id: str, sha256: str
+    ) -> asyncpg.Record | None:
+        """La fila WORM de UNA versión concreta del AIP (identificada por la huella de su ZIP,
+        `ux_preservacion_worm_objeto_expediente_aip_sha256`, migración 012)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_COLS} FROM preservacion_worm_objeto "
+            "WHERE expediente_id = $1 AND tipo = 'aip' AND sha256 = $2 LIMIT 1",
+            expediente_id,
+            sha256,
+        )
+
+    async def retain_until_maximo_aip(self, expediente_id: str) -> datetime | None:
+        """El MAYOR `retain_until` de toda la cadena de AIP de un expediente (C-6): una versión
+        nueva nunca puede vencer antes que ninguna de las anteriores."""
+        await self._sp()
+        return await self._conn.fetchval(
+            "SELECT max(retain_until) FROM preservacion_worm_objeto "
+            "WHERE expediente_id = $1 AND tipo = 'aip'",
+            expediente_id,
+        )
+
+    async def cadena_ascendente(self, worm_id: uuid.UUID) -> list[asyncpg.Record]:
+        """La fila ``worm_id`` y todas las que renueva (``renueva_a``), de la más cercana a la
+        RAÍZ (la que no renueva a nadie, última de la lista)."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                f"""
+                WITH RECURSIVE subida AS (
+                    SELECT {_COLS}, renueva_a, 1 AS nivel FROM preservacion_worm_objeto WHERE id = $1
+                    UNION ALL
+                    SELECT {_COLS_P}, p.renueva_a, s.nivel + 1
+                      FROM preservacion_worm_objeto p JOIN subida s ON p.id = s.renueva_a
+                )
+                SELECT {_COLS} FROM subida ORDER BY nivel
+                """,
+                worm_id,
+            )
         )
 
     async def active_lock_for_expediente(
@@ -209,6 +272,10 @@ class PreservacionWormRepository:
         solo que ya expiró (o nunca se protegió) para los tipos considerados.
         """
         await self._sp()
+        # C-5/C7: `retain_until` puede ser NULL (retención diferida). `NULL > now()` es NULL, no
+        # verdadero, así que esa condición sola NO bloquea; lo que bloquea una fila diferida es su
+        # `legal_hold` (CHECK `ck_pwo_diferida_exige_hold`). Los holds SIN objetos los ve
+        # :meth:`hold_activo_del_expediente`.
         return await self._conn.fetchrow(
             f"""
             SELECT {_COLS} FROM preservacion_worm_objeto
@@ -247,26 +314,14 @@ class PreservacionWormRepository:
             f"""
             UPDATE preservacion_worm_objeto
             SET retain_until = $2, renovado_at = now(), renovaciones = renovaciones + 1
-            WHERE id = $1 AND retain_until < $2
+            -- `retain_until IS NOT NULL` explícito (C-5/C7): una fila de retención diferida NO se
+            -- «renueva» (no hay fecha que extender); su primera retención la fija
+            -- `fijar_retencion_primera_vez`. `NULL < $2` ya es NULL, pero no se deja a la lógica ternaria.
+            WHERE id = $1 AND retain_until IS NOT NULL AND retain_until < $2
             RETURNING {_COLS}
             """,
             worm_id,
             retain_until,
-        )
-
-    async def set_legal_hold(self, worm_id: uuid.UUID, *, activo: bool) -> asyncpg.Record | None:
-        """Fija el `legal_hold` de una fila (AREA-08-07). Único escritor de la
-        columna después del INSERT: el acto interno `fijar_legal_hold`."""
-        await self._sp()
-        return await self._conn.fetchrow(
-            f"""
-            UPDATE preservacion_worm_objeto
-            SET legal_hold = $2
-            WHERE id = $1
-            RETURNING {_COLS}
-            """,
-            worm_id,
-            activo,
         )
 
     async def list_for_expediente(self, expediente_id: str) -> list[asyncpg.Record]:
@@ -278,4 +333,99 @@ class PreservacionWormRepository:
                 "ORDER BY created_at DESC",
                 expediente_id,
             )
+        )
+
+
+    # -- C-5/C7: retención diferida y registro de holds por motivo -----------
+
+    async def hold_activo_del_expediente(self, expediente_id: str) -> asyncpg.Record | None:
+        """Un hold ACTIVO del registro (`preservacion_legal_hold`) del expediente, si hay. Cubre el
+        caso de un hold fijado sobre un expediente que aún no tiene objetos WORM (H2): el gate de
+        purga no puede depender de que exista una fila en `preservacion_worm_objeto`."""
+        await self._sp()
+        rows = await self._conn.fetch(
+            "SELECT id, motivo_tipo FROM preservacion_legal_hold "
+            "WHERE expediente_id = $1 AND levantado_at IS NULL LIMIT 1",
+            expediente_id,
+        )
+        return rows[0] if rows else None
+
+    async def holds_activos(self, expediente_id: str) -> list[str]:
+        """`motivo_tipo` de cada hold activo del expediente."""
+        await self._sp()
+        rows = await self._conn.fetch(
+            "SELECT motivo_tipo FROM preservacion_legal_hold "
+            "WHERE expediente_id = $1 AND levantado_at IS NULL",
+            expediente_id,
+        )
+        return [r["motivo_tipo"] for r in rows]
+
+    async def pendientes_de_valoracion(self, expediente_id: str) -> list[asyncpg.Record]:
+        """Filas de contenido con retención diferida (retain_until NULL, `valoracion_pendiente`)."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                f"SELECT {_COLS} FROM preservacion_worm_objeto "
+                "WHERE expediente_id = $1 AND objeto_tipo = 'expediente' "
+                "AND retencion_origen = 'valoracion_pendiente' AND retain_until IS NULL "
+                "ORDER BY created_at",
+                expediente_id,
+            )
+        )
+
+    async def fijar_retencion_primera_vez(
+        self, worm_id: uuid.UUID, *, retain_until: datetime, retention_mode: str
+    ) -> asyncpg.Record | None:
+        """`valoracion_pendiente -> calendario`: fija la retención POR PRIMERA VEZ.
+
+        El `WHERE retain_until IS NULL AND retencion_origen='valoracion_pendiente'` es lo que impide
+        tocar una fila `calendario` (cuya retención solo se EXTIENDE por `renovar`, nunca se
+        reasigna). `None` si no casó (otra llamada ya la fijó)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"""
+            UPDATE preservacion_worm_objeto
+            SET retain_until = $2, retention_mode = $3, retencion_origen = 'calendario'
+            WHERE id = $1 AND retain_until IS NULL AND retencion_origen = 'valoracion_pendiente'
+            RETURNING {_COLS}
+            """,
+            worm_id,
+            retain_until,
+            retention_mode,
+        )
+
+    async def sincronizar_aip_retencion(
+        self, *, bucket: str, object_key: str, retain_until: datetime, retention_mode: str
+    ) -> None:
+        """Refleja en la tabla `aip` (espejo de lectura) la retención recién fijada."""
+        await self._sp()
+        await self._conn.execute(
+            "UPDATE aip SET retain_until = $3, retention_mode = $4 "
+            "WHERE bucket = $1 AND object_key = $2 AND retain_until IS NULL",
+            bucket,
+            object_key,
+            retain_until,
+            retention_mode,
+        )
+
+    async def aplicar_estado_hold(
+        self, worm_id: uuid.UUID, *, legal_hold: bool, valorada: bool
+    ) -> asyncpg.Record | None:
+        """Escribe `legal_hold` de la fila y, si `valorada`, la pasa de `valoracion_pendiente` a
+        `valorada_sin_retencion` en el MISMO UPDATE (el CHECK `ck_pwo_diferida_exige_hold` exige
+        que no exista una fila diferida sin hold). Único escritor de `legal_hold` después del INSERT."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"""
+            UPDATE preservacion_worm_objeto
+            SET legal_hold = $2,
+                retencion_origen = CASE
+                    WHEN $3 AND retencion_origen = 'valoracion_pendiente'
+                    THEN 'valorada_sin_retencion' ELSE retencion_origen END
+            WHERE id = $1
+            RETURNING {_COLS}
+            """,
+            worm_id,
+            legal_hold,
+            valorada,
         )

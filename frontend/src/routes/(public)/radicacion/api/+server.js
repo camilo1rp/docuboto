@@ -24,6 +24,7 @@
 import { json } from "@sveltejs/kit";
 import { API_V1, PUBLIC_TENANT } from "$lib/utils/config.server.js";
 import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+import { normalizarContacto } from "$lib/utils/contactoEntidad.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ request, fetch }) {
@@ -84,6 +85,10 @@ export async function POST({ request, fetch }) {
         {
           error: codigoError(datos) ?? "upstream_error",
           detail: mensajeError(datos, `Error ${res.status}`),
+          // El 503 antirrobots trae el contacto declarado de la entidad (allowlist de claves).
+          ...(codigoError(datos) === "antirrobots_no_disponible"
+            ? { contacto: normalizarContacto(datos?.contacto ?? datos?.detail?.contacto) }
+            : {}),
         },
         { status: res.status },
       );

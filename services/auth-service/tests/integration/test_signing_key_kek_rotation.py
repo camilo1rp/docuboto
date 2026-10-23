@@ -200,7 +200,7 @@ async def test_rewrap_all_derives_hyphenated_slug_for_aad(
 
     # `_rewrap_all` resetea search_path a public al terminar — restaurar el del
     # schema desechable para las aserciones directas.
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     after = await conn.fetchrow(
         "SELECT key_version, private_key_cifrado, private_key_nonce "
         "FROM auth_user_signing_key WHERE id = $1",

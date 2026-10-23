@@ -65,7 +65,7 @@ async def test_search_devuelve_metadata_como_dict(tenant_ctx) -> None:
     pool = await create_pool(DSN)
     try:
         async with pool.acquire() as conn:
-            await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+            await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
 
             # (a) round-trip crudo: metadata se lee como dict, no como str, y NO
             #     está doble-encodeada (la escritura json.dumps sigue intacta).

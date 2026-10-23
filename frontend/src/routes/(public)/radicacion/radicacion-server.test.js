@@ -53,6 +53,30 @@ describe("/radicacion/api", () => {
     expect(ev.fetch.mock.calls[0][1].body).toBe(cuerpo);
   });
 
+  it("reenvía el campo `altcha` de `datos` íntegro, sin tocarlo", async () => {
+    // El reto viaja DENTRO del JSON de `datos`: si el proxy reconstruyera el cuerpo
+    // lo perdería, y el backend rechazaría toda radicación con 422.
+    const cuerpo = new FormData();
+    const datos = JSON.stringify({ asunto: "x", altcha: "eyJhbGdvcml0aG0iOiJTSEEtMjU2In0=" });
+    cuerpo.append("datos", datos);
+    const ev = eventoPost({ ok: true, status: 201, json: async () => ({}) }, cuerpo);
+
+    await POST(ev);
+
+    expect(ev.fetch.mock.calls[0][1].body.get("datos")).toBe(datos);
+  });
+
+  it("devuelve el código `antirrobots_usado` del backend con su estado", async () => {
+    const ev = eventoPost({
+      ok: false,
+      status: 409,
+      json: async () => ({ detail: { error: "antirrobots_usado", detail: "x", status: 409 } }),
+    });
+    const res = await POST(ev);
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("antirrobots_usado");
+  });
+
   it("reenvía la Idempotency-Key del navegador y no inventa una si no viene", async () => {
     // AREA-02-07: la clave la genera el cliente; el proxy solo la deja pasar. Sin ella
     // no se añade cabecera alguna (el comportamiento previo se conserva).

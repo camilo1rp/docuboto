@@ -119,3 +119,9 @@ Validación **PDF/A con veraPDF** (dependencia Java externa) + evento `VALIDACIO
 
 - ISO 14721 (OAIS); RFC 8493 (BagIt); PREMIS v3; Ley 594/2000; Acuerdo AGN 060/2001.
 - [ADR-022](ADR-022-indice-electronico-v2-metadatos.md) (índice electrónico), [ADR-016](ADR-016-firma-electronica.md) (firma del índice), [ADR-015](ADR-015-trd-ccd-modelo.md) (TRD/retención).
+
+---
+
+## Enmienda C-5 (2026-10-21, [ADR-043](ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md) §1)
+
+El legal hold deja de ser un booleano por objeto: storage lleva un registro `preservacion_legal_hold` (una fila por acto, con motivo). El hold S3 de un objeto es «existe al menos un hold activo del expediente»; levantar uno solo libera S3 si no queda ninguno, y exige repetir el motivo. Un hold ya no exige objetos WORM y todo objeto protegido nace con el hold vigente. `retain_until` y `retention_mode` pasan a ser opcionales (`retencion_origen = 'valoracion_pendiente'`, siempre con hold). Se retiran sin compatibilidad `POST /expedientes/{id}/legal-hold` y `POST /preservacion/legal-hold-internal`.

@@ -48,6 +48,12 @@ async def test_created_tardio_tras_reclassify_externo_no_reencarna_ni_reenvia(
 ) -> None:
     slug, conn = tenant_ctx
     monkeypatch.setattr(settings, "embedding_provider", "openai")  # proveedor EXTERNO
+    # ADR-037: con proveedor externo y el asistente apagado (los slugs de prueba no están en
+    # `public.tenants`) la ingesta no embebe nada; aquí se prueba la tumba, no esa bandera.
+    async def _bandera_abierta(*_a, **_k) -> bool:
+        return False
+
+    monkeypatch.setattr(ingestion, "egreso_con_bandera_apagada", _bandera_abierta)
 
     created_payload = {
         "tracking_number": TRACKING,
@@ -194,7 +200,7 @@ async def test_second_connection_sees_tombstone_durably(
     schema = tenant_schema(slug)
     second_conn = await asyncpg.connect(dsn=DSN)
     try:
-        await second_conn.execute(f'SET search_path = "{schema}", public')
+        await second_conn.execute(f'SET search_path = "{schema}"')
         row = await second_conn.fetchrow(
             "SELECT nivel_seguridad, embedding IS NULL AS tombstoned "
             "FROM knowledge_chunk WHERE source_type = 'radicado' AND source_ref = $1",

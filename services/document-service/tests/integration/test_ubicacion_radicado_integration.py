@@ -38,7 +38,7 @@ PUBLICA, CLASIFICADA = 1, 3
 
 async def _en_tenant(tenant_ctx) -> tuple[str, asyncpg.Connection]:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     return slug, conn
 
 
@@ -54,9 +54,10 @@ async def _rad(
     rid = await conn.fetchval(
         "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, tenant_code, "
         "nivel_seguridad, status, dest_dept, dest_dept_code, origin_dept, origin_dept_code, "
-        "clasificacion_fundamento) "
+        "clasificacion_fundamento, clasificacion_causal) "
         "VALUES ($1, 'E', 2026, 1, 'ASUNTO', 'DEMO', $2, $3, $4, $5, $6, $7, "
-        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) RETURNING id",
+        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END, "
+        "CASE WHEN $2::smallint >= 2 THEN 'por_clasificar' END) RETURNING id",
         f"2026-DEMO-E-{uuid.uuid4().hex[:6]}",
         nivel, status,
         dest[0] if dest else None, dest[1] if dest else None,
@@ -113,7 +114,7 @@ async def test_la_migracion_037_es_idempotente(tenant_ctx) -> None:
     sql = next(p for p in runner._sql_files(runner.TENANT_DIR) if "037_radicado_ubicacion" in p.name)
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}", public')
+        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
         await conn.execute(sql.read_text())
 
     assert await _ubic(conn, rid) == ("Tecnología", 300)

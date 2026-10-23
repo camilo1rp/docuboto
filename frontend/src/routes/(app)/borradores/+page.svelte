@@ -30,7 +30,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions, sessionUser } from "$lib/stores/auth.js";
+  import { permissions, sessionUser, puedeConsultarConocimiento } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import Drawer from "$lib/components/ui/Drawer.svelte";
@@ -1097,12 +1097,14 @@
 
     <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper crear/editar
          el borrador si el servicio de conocimiento no responde. -->
-    <RagSuggestButton
-      endpoint="/borradores/api/rag/suggest"
-      query={fSubject}
-      disabled={!hasPerm || (editingBorrador !== null && !canEdit)}
-      on:insert={(e) => (fCuerpo = appendGeneratedHtml(fCuerpo, e.detail.html))}
-    />
+    {#if $puedeConsultarConocimiento}
+      <RagSuggestButton
+        endpoint="/borradores/api/rag/suggest"
+        query={fSubject}
+        disabled={!hasPerm || (editingBorrador !== null && !canEdit)}
+        on:insert={(e) => (fCuerpo = appendGeneratedHtml(fCuerpo, e.detail.html))}
+      />
+    {/if}
 
     <!-- Aviso persistente de campos sin dato (E23, RF-PRO-01).
          Se enseña SIEMPRE que el borrador los tenga guardados, no solo en el

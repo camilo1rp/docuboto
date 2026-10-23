@@ -61,8 +61,31 @@ _CAMPOS = (
     # negarse a encadenar fusiones, y la pantalla para no ofrecer como
     # superviviente algo que ya se consolidó en otra cosa.
     "fusionado_en",
+    # C17: una ficha provisional no tiene identidad verificada (ADR-038).
+    "identidad",
 )
 _COLS = ", ".join(_CAMPOS)
+
+#: Fichas que se resuelven hacia `$1` por `fusionado_en`, a cualquier profundidad y
+#: con `CYCLE` (un ciclo no cuelga la consulta). Incluye a `$1`. Las fusiones solo
+#: añaden conocimiento posterior; el gate de nivel va aparte, en el WHERE de quien lo usa.
+_ARBOL_DE_FUSIONES = """
+WITH RECURSIVE arbol(id) AS (
+    SELECT $1::uuid
+    UNION ALL
+    SELECT t.id FROM tercero t JOIN arbol a ON t.fusionado_en = a.id
+) CYCLE id SET es_ciclo USING camino
+"""
+
+#: Predicado NO-READ-UP de la cola de conciliación (RF-SEG-08), SIEMPRE en el
+#: `WHERE` —de las filas, del conteo y del UPDATE—, nunca en una comprobación
+#: previa. Una provisional se ve y se concilia solo si NINGUNO de los radicados a
+#: los que está atada supera el clearance del llamante. `{p}` es el número del
+#: placeholder del clearance; `t` es el alias de `tercero`.
+_SIN_RADICADOS_FUERA_DE_ALCANCE = (
+    "NOT EXISTS (SELECT 1 FROM radicado_actor ra JOIN radicados r ON r.id = ra.radicado_id "
+    "WHERE ra.tercero_id = t.id AND r.nivel_seguridad > ${p})"
+)
 
 
 class TerceroRepository:
@@ -81,7 +104,10 @@ class TerceroRepository:
         # `fusionado_en IS NULL`: una ficha ya consolidada en otra no puede
         # volver a elegirse al radicar, o el duplicado que alguien acaba de
         # resolver reaparecería en el siguiente radicado.
-        condiciones = ["activo", "fusionado_en IS NULL"]
+        # `identidad = 'confirmada'`: una ficha provisional (la declaró un anónimo)
+        # nunca se ofrece como destinatario ni se reutiliza: contaminaría el directorio
+        # con identidades sin verificar (C17, ADR-038).
+        condiciones = ["activo", "fusionado_en IS NULL", "identidad = 'confirmada'"]
         params: list[object] = []
         if texto and texto.strip():
             params.append(texto.strip())
@@ -124,7 +150,8 @@ class TerceroRepository:
         return list(
             await self._conn.fetch(
                 f"SELECT {_COLS} FROM tercero "
-                "WHERE activo AND fusionado_en IS NULL AND lower(email) = lower($1) LIMIT 2",
+                "WHERE activo AND fusionado_en IS NULL AND identidad = 'confirmada' "
+                "AND lower(email) = lower($1) LIMIT 2",
                 email,
             )
         )
@@ -175,6 +202,223 @@ class TerceroRepository:
         )
         assert row is not None
         return row
+
+    async def crear_provisional(self, datos: dict) -> asyncpg.Record:
+        """Ficha PROVISIONAL del remitente anónimo (C17, ADR-038).
+
+        INSERT directo, **sin consulta previa por documento**: un solo camino de
+        código, para que ni la respuesta ni el tiempo delaten si el número ya
+        existe. El documento declarado va en `documento_declarado_*` y NO en
+        `tipo/numero_documento`, así que no ocupa el documento ni choca con
+        `ux_tercero_documento`. `creado_por` es NULL: no hay usuario detrás.
+        """
+        row = await self._conn.fetchrow(
+            f"""
+            INSERT INTO tercero (
+                tipo, nombre, entidad, email, telefono, direccion, pais,
+                identidad, documento_declarado_tipo, documento_declarado_numero,
+                conciliacion, creado_por
+            ) VALUES ($1,$2,$3,$4,$5,$6,'CO','provisional',$7,$8,'pendiente',NULL)
+            RETURNING {_COLS}
+            """,
+            datos["tipo"],
+            datos["nombre"],
+            datos.get("entidad"),
+            datos.get("email"),
+            datos.get("telefono"),
+            datos.get("direccion"),
+            datos.get("documento_declarado_tipo"),
+            datos["documento_declarado_numero"],
+        )
+        assert row is not None
+        return row
+
+    # ── Cola de conciliación (C17) ──────────────────────────────────────────
+
+    async def listar_por_conciliar(
+        self, *, max_clearance: int, limit: int, offset: int
+    ) -> list[asyncpg.Record]:
+        """Provisionales pendientes con sus radicados y la ficha candidata.
+
+        `candidata` se CALCULA aquí, nunca se guarda: es la ficha confirmada viva
+        con el documento declarado, si existe. El clearance va en el `WHERE`
+        (mismo predicado que `contar_por_conciliar`).
+        """
+        return list(
+            await self._conn.fetch(
+                f"""
+                SELECT t.id, t.nombre, t.entidad, t.email, t.telefono, t.direccion,
+                       t.documento_declarado_tipo, t.documento_declarado_numero,
+                       t.creado_at,
+                       COALESCE((
+                           SELECT jsonb_agg(jsonb_build_object(
+                                      'tracking_number', r.tracking_number,
+                                      'creado_at', ra.creado_at) ORDER BY ra.creado_at)
+                             FROM radicado_actor ra JOIN radicados r ON r.id = ra.radicado_id
+                            WHERE ra.tercero_id = t.id), '[]'::jsonb) AS radicados,
+                       (SELECT jsonb_build_object('id', c.id, 'nombre', c.nombre,
+                                                  'email', c.email, 'municipio', c.municipio)
+                          FROM tercero c
+                         WHERE c.identidad = 'confirmada' AND c.activo
+                           AND c.fusionado_en IS NULL
+                           AND c.tipo_documento = t.documento_declarado_tipo
+                           AND c.numero_documento = t.documento_declarado_numero
+                         LIMIT 1) AS candidata
+                  FROM tercero t
+                 WHERE t.conciliacion = 'pendiente'
+                   AND {_SIN_RADICADOS_FUERA_DE_ALCANCE.format(p=1)}
+                 ORDER BY t.creado_at ASC, t.id ASC
+                 LIMIT $2 OFFSET $3
+                """,
+                max_clearance,
+                limit,
+                offset,
+            )
+        )
+
+    async def contar_por_conciliar(self, *, max_clearance: int) -> int:
+        """El total de la cola, con el MISMO predicado que las filas: si el conteo
+        no filtrara, `X-Total-Count` confirmaría cuántas provisionales hay por
+        encima del clearance del llamante."""
+        return int(
+            await self._conn.fetchval(
+                f"""
+                SELECT count(*) FROM tercero t
+                 WHERE t.conciliacion = 'pendiente'
+                   AND {_SIN_RADICADOS_FUERA_DE_ALCANCE.format(p=1)}
+                """,
+                max_clearance,
+            )
+            or 0
+        )
+
+    async def bloquear_fichas(self, ids: list[uuid.UUID]) -> None:
+        """`FOR UPDATE` de varias fichas en ORDEN DE ID. Quien bloquee varias (fusionar,
+        conciliar-vincular) lo hace por aquí: un orden único entre actos concurrentes
+        impide el deadlock. Lo inexistente simplemente no se bloquea."""
+        await self._conn.fetch(
+            "SELECT id FROM tercero WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+            sorted(set(ids)),
+        )
+
+    async def bloquear_para_conciliar(
+        self, tercero_id: uuid.UUID, *, max_clearance: int
+    ) -> asyncpg.Record | None:
+        """La ficha, bloqueada, SI es visible para el llamante (clearance en el WHERE).
+
+        Devuelve la ficha en cualquier estado de conciliación: quien llama decide
+        entre «ya conciliada» (409) y «no existe o no la ve» (404, indistinguibles).
+        """
+        return await self._conn.fetchrow(
+            f"""
+            SELECT t.id, t.nombre, t.identidad, t.conciliacion, t.fusionado_en,
+                   t.documento_declarado_tipo, t.documento_declarado_numero
+              FROM tercero t
+             WHERE t.id = $1
+               AND {_SIN_RADICADOS_FUERA_DE_ALCANCE.format(p=2)}
+               FOR UPDATE OF t
+            """,
+            tercero_id,
+            max_clearance,
+        )
+
+    async def radicados_de_provisional(self, tercero_id: uuid.UUID) -> list[str]:
+        """Números de radicado atados a la ficha (para el asiento). Solo se llama
+        tras `bloquear_para_conciliar`, que ya filtró por clearance."""
+        filas = await self._conn.fetch(
+            "SELECT r.tracking_number FROM radicado_actor ra "
+            "JOIN radicados r ON r.id = ra.radicado_id "
+            "WHERE ra.tercero_id = $1 ORDER BY ra.creado_at",
+            tercero_id,
+        )
+        return [f["tracking_number"] for f in filas]
+
+    async def conciliar_vincular(
+        self,
+        tercero_id: uuid.UUID,
+        destino_id: uuid.UUID,
+        *,
+        actor: uuid.UUID,
+        motivo: str | None,
+        medio: str,
+        max_clearance: int,
+    ) -> asyncpg.Record | None:
+        """`fusionado_en = destino` (reutiliza la fusión: el radicado no se toca).
+
+        El `WHERE` repite el estado pendiente y el clearance: aunque alguien
+        quitara el bloqueo previo, el UPDATE no afecta lo que el llamante no ve.
+        """
+        return await self._conn.fetchrow(
+            f"""
+            UPDATE tercero t
+               SET fusionado_en = $2, fusionado_at = now(), fusionado_por = $3,
+                   conciliacion = 'vinculada', conciliada_at = now(), conciliada_por = $3,
+                   conciliacion_motivo = $4, conciliacion_medio = $6, actualizado_at = now()
+             WHERE t.id = $1 AND t.conciliacion = 'pendiente'
+               AND {_SIN_RADICADOS_FUERA_DE_ALCANCE.format(p=5)}
+               -- El destino sigue siendo una ficha confirmada, viva y sin fusionar EN
+               -- ESTE UPDATE, no solo cuando se validó: sin esto, una fusión o baja
+               -- entre la validación y el UPDATE dejaba la cadena apuntando a una ficha
+               -- que ya no es superviviente.
+               AND EXISTS (SELECT 1 FROM tercero d WHERE d.id = $2
+                           AND d.identidad = 'confirmada' AND d.fusionado_en IS NULL AND d.activo)
+            RETURNING t.id, t.nombre
+            """,
+            tercero_id,
+            destino_id,
+            actor,
+            motivo,
+            max_clearance,
+            medio,
+        )
+
+    async def conciliar_confirmar(
+        self,
+        tercero_id: uuid.UUID,
+        *,
+        actor: uuid.UUID,
+        motivo: str | None,
+        medio: str,
+        max_clearance: int,
+    ) -> asyncpg.Record | None:
+        """La provisional pasa a ficha definitiva: el documento declarado se vuelve
+        su identidad. `UniqueViolationError` si el documento ya es de otra ficha."""
+        return await self._conn.fetchrow(
+            f"""
+            UPDATE tercero t
+               SET tipo_documento = t.documento_declarado_tipo,
+                   numero_documento = t.documento_declarado_numero,
+                   identidad = 'confirmada', conciliacion = 'confirmada',
+                   conciliada_at = now(), conciliada_por = $2,
+                   conciliacion_motivo = $3, conciliacion_medio = $5, actualizado_at = now()
+             WHERE t.id = $1 AND t.conciliacion = 'pendiente'
+               AND {_SIN_RADICADOS_FUERA_DE_ALCANCE.format(p=4)}
+            RETURNING t.id, t.nombre
+            """,
+            tercero_id,
+            actor,
+            motivo,
+            max_clearance,
+            medio,
+        )
+
+    async def conciliar_descartar(
+        self, tercero_id: uuid.UUID, *, actor: uuid.UUID, motivo: str, max_clearance: int
+    ) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(
+            f"""
+            UPDATE tercero t
+               SET conciliacion = 'descartada', conciliada_at = now(), conciliada_por = $2,
+                   conciliacion_motivo = $3, actualizado_at = now()
+             WHERE t.id = $1 AND t.conciliacion = 'pendiente'
+               AND {_SIN_RADICADOS_FUERA_DE_ALCANCE.format(p=4)}
+            RETURNING t.id, t.nombre
+            """,
+            tercero_id,
+            actor,
+            motivo,
+            max_clearance,
+        )
 
     # ── Actores de un radicado ──────────────────────────────────────────────
 
@@ -349,7 +593,7 @@ class TerceroRepository:
                     SELECT id, nombre, entidad, tipo_documento, numero_documento,
                            email, municipio, creado_at
                     FROM tercero
-                    WHERE activo AND fusionado_en IS NULL
+                    WHERE activo AND fusionado_en IS NULL AND identidad = 'confirmada'
                 ),
                 por_documento AS (
                     SELECT 'documento' AS eje,
@@ -361,7 +605,7 @@ class TerceroRepository:
                 ),
                 por_nombre AS (
                     SELECT 'nombre' AS eje,
-                           lower(unaccent(nombre)) AS clave,
+                           lower(public.unaccent(nombre)) AS clave,
                            count(*) AS cuantos
                     FROM vivos
                     GROUP BY 1, 2 HAVING count(*) > 1
@@ -383,7 +627,7 @@ class TerceroRepository:
                 JOIN vivos v ON (
                     (g.eje = 'documento'
                      AND v.tipo_documento || ':' || v.numero_documento = g.clave)
-                 OR (g.eje = 'nombre' AND lower(unaccent(v.nombre)) = g.clave)
+                 OR (g.eje = 'nombre' AND lower(public.unaccent(v.nombre)) = g.clave)
                 )
                 GROUP BY g.eje, g.clave, g.cuantos
                 -- El documento primero: es certeza, no sospecha.
@@ -411,19 +655,19 @@ class TerceroRepository:
         """
         return list(
             await self._conn.fetch(
-                """
+                f"""
+                {_ARBOL_DE_FUSIONES}
                 SELECT ra.rol, ra.creado_at, r.tracking_number, r.subject, r.doc_type,
                        r.nivel_seguridad
                 FROM radicado_actor ra
                 JOIN radicados r ON r.id = ra.radicado_id
-                -- Incluye los vínculos de las fichas ya FUSIONADAS en esta: el
-                -- pasado sigue apuntando a la ficha que se usó ese día —el
-                -- trigger de inmutabilidad lo impone—, y la fusión es
-                -- conocimiento posterior que se resuelve al leer, no
-                -- reescribiendo. Sin este OR, consolidar dos fichas haría
-                -- DESAPARECER de la vista los radicados de la absorbida.
-                WHERE (ra.tercero_id = $1
-                       OR ra.tercero_id IN (SELECT id FROM tercero WHERE fusionado_en = $1))
+                -- Incluye los vínculos de TODAS las fichas fusionadas en esta, a
+                -- cualquier profundidad (provisional -> D -> X): el pasado sigue
+                -- apuntando a la ficha que se usó ese día —el trigger de
+                -- inmutabilidad lo impone—, y la fusión es conocimiento posterior
+                -- que se resuelve al leer. Resolver un solo nivel hacía DESAPARECER
+                -- de X los radicados de lo vinculado antes a D.
+                WHERE ra.tercero_id IN (SELECT id FROM arbol)
                   AND r.nivel_seguridad <= $3
                 ORDER BY ra.creado_at DESC
                 LIMIT $2
@@ -461,7 +705,9 @@ class TerceroRepository:
         —informativo, para que quien fusiona sepa el alcance de lo que hace—.
         """
         heredados: int = await self._conn.fetchval(
-            "SELECT count(*) FROM radicado_actor WHERE tercero_id = $1", absorbido_id
+            f"{_ARBOL_DE_FUSIONES} "
+            "SELECT count(*) FROM radicado_actor WHERE tercero_id IN (SELECT id FROM arbol)",
+            absorbido_id,
         )
         await self._conn.execute(
             "UPDATE tercero SET fusionado_en = $1, fusionado_at = now(), "

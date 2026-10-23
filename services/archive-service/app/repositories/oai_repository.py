@@ -27,10 +27,14 @@ reservados uno a uno. Por eso NUNCA se seleccionan `tracking_number` de
 que no delata identidades individuales.
 """
 
+import json
 import uuid
 from datetime import datetime
+from typing import Any
 
 import asyncpg
+
+from app.core.params_entidad import leer_param
 
 # Un expediente es cosechable SOLO si la entidad lo publicó Y no está reservado
 # (migración 042, Ley 1712/2014 art. 12). Las dos condiciones se exigen a la vez:
@@ -160,3 +164,59 @@ class OaiRepository:
             """,
             serie_id,
         )
+
+    async def get_entidad_nombre(self) -> str | None:
+        """Nombre de la entidad (`sgd_param_admin.entidad_nombre`) para titular el fondo
+        del EAD (C-4/C8). `None` si no está configurado o no se puede leer: el fondo
+        conserva entonces su título por omisión, no se inventa uno."""
+        valor = await leer_param(self._conn, "entidad_nombre")
+        return valor.strip() if isinstance(valor, str) and valor.strip() else None
+
+    async def get_ruta_subfonds(self, serie_id: uuid.UUID) -> list[dict[str, Any]]:
+        """Ruta raíz > productora del organigrama de la SERIE `serie_id`, o `[]`.
+
+        Solo cuando la versión declara EXACTAMENTE una dependencia productora: con cero o
+        con varias no hay columna de dependencia en el expediente que desempate, y elegir
+        una sería inventar (fallback honesto, como el de «sin serie»). Se usa la ruta que
+        fijó la convalidación (lo aprobado) y, si no la hay, la viva. Un ciclo o un
+        catálogo ilegible degrada a `[]`: el endpoint es público y no debe fallar por eso."""
+        try:
+            prods = await self._conn.fetch(
+                "SELECT dependencia_codigo, ruta_convalidada "
+                "FROM trd_serie_dependencia_productora WHERE trd_serie_id = $1",
+                serie_id,
+            )
+        except asyncpg.UndefinedTableError:
+            return []
+        if len(prods) != 1:
+            return []
+        ruta = prods[0]["ruta_convalidada"]
+        if isinstance(ruta, (str, bytes)):
+            ruta = json.loads(ruta)
+        if ruta:
+            return list(ruta)
+        try:
+            filas = await self._conn.fetch(
+                """
+                WITH RECURSIVE sube AS (
+                    SELECT d.id, d.parent_id, d.codigo, d.sigla, d.nombre, 1 AS prof
+                      FROM dependencias d WHERE d.codigo = $1
+                    UNION ALL
+                    SELECT p.id, p.parent_id, p.codigo, p.sigla, p.nombre, s.prof + 1
+                      FROM sube s JOIN dependencias p ON p.id = s.parent_id
+                     WHERE s.prof < 32
+                ) CYCLE id SET es_ciclo USING camino
+                SELECT codigo, sigla, nombre, es_ciclo, prof, (parent_id IS NOT NULL) AS tiene_padre
+                  FROM sube ORDER BY prof DESC
+                """,
+                prods[0]["dependencia_codigo"],
+            )
+        except asyncpg.UndefinedTableError:
+            return []
+        if any(f["es_ciclo"] for f in filas):
+            return []
+        # Cortada por el tope de profundidad sin llegar a la raíz: una ruta truncada mostraría
+        # una sección que no es la raíz. Se degrada, no se emite a medias.
+        if filas and max(filas, key=lambda f: f["prof"]).get("tiene_padre"):
+            return []
+        return [{"codigo": f["codigo"], "sigla": f["sigla"], "nombre": f["nombre"]} for f in filas]

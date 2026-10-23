@@ -52,7 +52,14 @@ INVARIANTES (fail-closed):
  - Código de salida 0 = todo bien; 1 = rotura, retroceso o ancla ilegible; 2 = uso.
    Si algo falla NO se emite ancla: sellar una cadena rota como extremo de
    confianza es justo lo que esto impide.
- - Solo LEE la base. No hay escritura de ninguna clase.
+ - Solo LEE `audit_log`. Al terminar ANOTA el resultado agregado en
+   `public.audit_chain_runs` (C18, ADR-041), que NO es un asiento de la cadena: no
+   mueve el extremo que `backup.sh` ancla en la misma corrida. La anotación es
+   best-effort: si falla, aviso a stderr y el código de salida NO cambia (un
+   respaldo no se rompe por una métrica; la ausencia la delata la alarma de
+   antigüedad). Una corrida con `--slug` o `--excluir-prefijo` se anota `parcial`
+   y `/metrics` NO la cuenta como verificación. `--origen` dice quién corrió
+   (`backup`, `restore`, `cron`, `manual`).
 
 `--excluir-prefijo` existe para DESARROLLO (los tests de integración históricos
 dejaron en `audit_log`, que es append-only, filas `itest-*` con hash de juguete que
@@ -66,6 +73,7 @@ import argparse
 import asyncio
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import asyncpg
 
@@ -160,11 +168,16 @@ async def verificar(
     fecha_ancla: str | None = None,
     roturas_declaradas: dict[str, frozenset[int]] | None = None,
     permitir_objetivo_vacio: bool = False,
+    estadisticas: dict[str, int] | None = None,
 ) -> tuple[int, list[str], list[str]]:
     """(código de salida, mensajes, líneas del ancla nuevo).
 
     Las líneas del ancla solo se devuelven si el código es 0.
     `roturas_declaradas` es la línea base aprobada: solo se tolera lo que está en ella.
+    `estadisticas`, si se pasa, se rellena con los agregados de la corrida
+    (`tenants`, `asientos`, `roturas_nuevas`, `roturas_declaradas`, `retrocesos`,
+    `anclas_alteradas`) SOLO cuando se llegó a verificar cadenas; en las salidas
+    tempranas queda vacío y no hay nada que anotar.
     """
     declaradas = roturas_declaradas or {}
     if _audit is None:
@@ -187,10 +200,21 @@ async def verificar(
     mensajes: list[str] = []
     nuevas: list[str] = []
     fallo = False
+    est = estadisticas if estadisticas is not None else {}
+    est.update(
+        tenants=len(objetivo),
+        asientos=0,
+        roturas_nuevas=0,
+        roturas_declaradas=0,
+        retrocesos=0,
+        anclas_alteradas=0,
+    )
     for slug in objetivo:
         res = await _audit.verify_chain(conn, slug)
         conocidas = declaradas.get(slug, frozenset())
         nuevas_roturas = [r.id for r in res.roturas if r.id not in conocidas]
+        est["roturas_nuevas"] += len(nuevas_roturas) + res.roturas_omitidas
+        est["roturas_declaradas"] += len(res.roturas) - len(nuevas_roturas)
         if nuevas_roturas or res.roturas_omitidas:
             mensajes.append(
                 f"   ✗ {slug}: CADENA ROTA — {res.total_roturas} roturas, "
@@ -201,6 +225,7 @@ async def verificar(
             continue
         declaradas_vistas = len(res.roturas)
         asientos, ultimo_id, ultimo_hash = await _extremo(conn, slug)
+        est["asientos"] += asientos
         previo = anclas.get(slug)
         if previo is not None:
             if asientos < previo.asientos:
@@ -208,6 +233,7 @@ async def verificar(
                     f"   ✗ {slug}: la traza RETROCEDIÓ — {asientos} asientos; el último ancla "
                     f"({previo.fecha}) decía {previo.asientos}"
                 )
+                est["retrocesos"] += 1
                 fallo = True
                 continue
             hash_anclado = await conn.fetchval(
@@ -220,6 +246,7 @@ async def verificar(
                     f"   ✗ {slug}: el asiento anclado id={previo.ultimo_id} "
                     f"{'cambió de hash' if hash_anclado else 'ya no existe'} desde {previo.fecha}"
                 )
+                est["anclas_alteradas"] += 1
                 fallo = True
                 continue
         if declaradas_vistas:
@@ -247,7 +274,60 @@ def _argumentos(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--permitir-objetivo-vacio", action="store_true",
                    help="acepta salir en 0 cuando no hay tenants (instalación nueva); backup/restore no lo pasan")
     p.add_argument("--excluir-prefijo", action="append", default=[], help="SOLO desarrollo")
+    p.add_argument("--origen", choices=ORIGENES, default="manual",
+                   help="quién corre; se anota en audit_chain_runs (backup.sh/restore.sh lo pasan)")
     return p.parse_args(argv)
+
+
+ORIGENES = ("backup", "restore", "cron", "manual")
+
+_INSERT_CORRIDA = (
+    "INSERT INTO public.audit_chain_runs (started_at, finished_at, alcance, origen, tenants, "
+    "asientos, roturas_nuevas, roturas_declaradas, retrocesos, anclas_alteradas, codigo_salida) "
+    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+)
+
+
+async def registrar_corrida(
+    conn: asyncpg.Connection,
+    *,
+    inicio: datetime,
+    alcance: str,
+    origen: str,
+    estadisticas: dict[str, int],
+    codigo_salida: int,
+) -> bool:
+    """Anota UNA fila en `audit_chain_runs`. Best-effort: nunca cambia el código de salida.
+
+    `alcance` es `parcial` cuando se acotó el objetivo (`--slug`/`--excluir-prefijo`):
+    una verificación parcial no es «la» verificación y `/metrics` no la cuenta. Sin
+    estadísticas (salida temprana: objetivo vacío, ancla ilegible) no hay nada que anotar.
+    """
+    if not estadisticas:
+        return False
+    try:
+        await conn.execute(
+            _INSERT_CORRIDA,
+            inicio,
+            datetime.now(UTC),
+            alcance,
+            origen,
+            estadisticas["tenants"],
+            estadisticas["asientos"],
+            estadisticas["roturas_nuevas"],
+            estadisticas["roturas_declaradas"],
+            estadisticas["retrocesos"],
+            estadisticas["anclas_alteradas"],
+            codigo_salida,
+        )
+    except Exception as exc:  # noqa: BLE001 - la métrica no rompe el respaldo
+        print(
+            f"! no se pudo anotar la corrida en audit_chain_runs ({type(exc).__name__}); "
+            "la alarma de antigüedad lo delatará",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 async def _main(args: argparse.Namespace) -> int:
@@ -272,6 +352,9 @@ async def _main(args: argparse.Namespace) -> int:
         print(f"✗ ancla ilegible: {exc}", file=sys.stderr)
         return 1
 
+    inicio = datetime.now(UTC)
+    estadisticas: dict[str, int] = {}
+    alcance = "parcial" if (args.slug or args.excluir_prefijo) else "completo"
     conn = await asyncpg.connect(settings.database_url_asyncpg)
     try:
         codigo, mensajes, nuevas = await verificar(
@@ -282,6 +365,15 @@ async def _main(args: argparse.Namespace) -> int:
             fecha_ancla=args.emitir_ancla,
             roturas_declaradas=declaradas,
             permitir_objetivo_vacio=args.permitir_objetivo_vacio,
+            estadisticas=estadisticas,
+        )
+        await registrar_corrida(
+            conn,
+            inicio=inicio,
+            alcance=alcance,
+            origen=args.origen,
+            estadisticas=estadisticas,
+            codigo_salida=codigo,
         )
     finally:
         await conn.close()

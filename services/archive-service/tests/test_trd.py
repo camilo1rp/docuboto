@@ -23,14 +23,19 @@ async def test_create_subserie_with_two_phase_retention(client_with_conn) -> Non
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # USUA_PERM_TRD granted (gate)
     parent = uuid.uuid4()
-    mock_conn.fetchrow.return_value = make_trd_serie_record(
-        code="100.1",
-        name="Contratos de obra",
-        disposition="CT",
-        parent_id=parent,
-        archivo_gestion_years=3,
-        archivo_central_years=7,
-    )
+    # 1.ª lectura: el padre (una SERIE: el tope de dos niveles se comprueba ANTES de
+    # insertar); 2.ª: el `RETURNING *` del alta.
+    mock_conn.fetchrow.side_effect = [
+        make_trd_serie_record(serie_id=parent, code="100"),
+        make_trd_serie_record(
+            code="100.1",
+            name="Contratos de obra",
+            disposition="CT",
+            parent_id=parent,
+            archivo_gestion_years=3,
+            archivo_central_years=7,
+        ),
+    ]
 
     resp = await client.post(
         "/api/v1/trd",
@@ -175,7 +180,13 @@ async def test_create_trd_serie_writes_audit_entry(client_with_conn) -> None:
 
     resp = await client.post(
         "/api/v1/trd",
-        json={"code": "100.1", "name": "Contratos de obra", "disposition": "CT"},
+        json={
+            "code": "100.1",
+            "name": "Contratos de obra",
+            "disposition": "CT",
+            "archivo_gestion_years": 5,
+            "archivo_central_years": 5,
+        },
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 201
@@ -260,7 +271,7 @@ async def test_list_trd_series_open_read_no_user_id_needed(client_with_conn) -> 
 async def test_patch_trd_serie_non_borrador_substantive_change_rejected(
     client_with_conn,
 ) -> None:
-    """D1: una modificación SUSTANTIVA (`retention_years`) sobre una versión
+    """D1: una modificación SUSTANTIVA (la fase central) sobre una versión
     que no está en `borrador` es rechazada -- es el `UPDATE` retroactivo que
     causó el hallazgo Crítico. `migrada` (backfill) es el estado por defecto
     de `make_trd_serie_record`, así que esto también cubre el caso más común
@@ -274,7 +285,7 @@ async def test_patch_trd_serie_non_borrador_substantive_change_rejected(
 
     resp = await client.patch(
         f"/api/v1/trd/{serie_id}",
-        json={"retention_years": 99},
+        json={"archivo_central_years": 99},
         headers=TENANT_HEADERS,
     )
 
@@ -321,30 +332,29 @@ async def test_patch_trd_serie_borrador_substantive_change_edits_in_place(
     mock_conn.fetchval.return_value = True
     serie_id = uuid.uuid4()
     existing = make_trd_serie_record(
-        serie_id=serie_id, code="100", retention_years=5, estado="borrador"
+        serie_id=serie_id, code="100", archivo_gestion_years=5, estado="borrador"
     )
-    # AREA-06-07: el juego legado se DERIVA de las dos fases. PATCH {retention_years: 99}
-    # se traduce a gestión=99 y central=max(total-99, 0)=0 (total vigente 10), y la fila
-    # que devuelve el UPDATE ya viene coherente con eso.
+    # C-4/C6: las dos fases son la ÚNICA fuente; lo que devuelve el UPDATE trae las fases
+    # nuevas y la respuesta DERIVA el legado (gestión, gestión + central).
     updated = make_trd_serie_record(
         serie_id=serie_id,
         code="100",
-        retention_years=99,
-        total_retention=99,
         archivo_gestion_years=99,
-        archivo_central_years=0,
+        archivo_central_years=5,
         estado="borrador",
     )
     mock_conn.fetchrow.side_effect = [existing, updated]
 
     resp = await client.patch(
         f"/api/v1/trd/{serie_id}",
-        json={"retention_years": 99},
+        json={"archivo_gestion_years": 99},
         headers=TENANT_HEADERS,
     )
 
     assert resp.status_code == 200, resp.text
-    assert resp.json()["retention_years"] == 99
+    assert resp.json()["archivo_gestion_years"] == 99
+    assert resp.json()["retention_years"] == 99  # derivado, solo lectura
+    assert resp.json()["total_retention"] == 104
     assert resp.json()["estado"] == "borrador"
     # Dos fetchrow: lectura de `existing` + `RETURNING *` del UPDATE real --
     # confirma que SÍ llegó a escribir (a diferencia del caso rechazado).
@@ -352,11 +362,11 @@ async def test_patch_trd_serie_borrador_substantive_change_edits_in_place(
     update_call = next(
         c for c in mock_conn.fetchrow.call_args_list if "UPDATE trd_series" in c.args[0]
     )
-    assert "retention_years" in update_call.args[0]
-    # y traducido a las fases que usa el calendario (antes el PATCH cambiaba números que
-    # ningún cálculo leía): gestión, central, y el legado derivado de ambas.
     assert "archivo_gestion_years" in update_call.args[0]
-    assert 99 in update_call.args and 0 in update_call.args
+    # el juego legado ya no es columna: nada que escribir
+    assert "retention_years" not in update_call.args[0]
+    assert "total_retention" not in update_call.args[0]
+    assert 99 in update_call.args
 
 
 @pytest.mark.asyncio
@@ -413,17 +423,15 @@ async def test_create_trd_serie_version_clones_vigente_as_new_borrador(
         code="100",
         version=2,
         estado="borrador",
-        retention_years=8,
-        total_retention=10,
         archivo_gestion_years=8,
-        archivo_central_years=2,
+        archivo_central_years=5,
         supersede_a=vigente["id"],
     )
     mock_conn.fetchrow.side_effect = [vigente, nueva]
 
     resp = await client.post(
         "/api/v1/trd/100/versiones",
-        json={"retention_years": 8},
+        json={"archivo_gestion_years": 8},
         headers=TENANT_HEADERS,
     )
 
@@ -431,12 +439,14 @@ async def test_create_trd_serie_version_clones_vigente_as_new_borrador(
     body = resp.json()
     assert body["version"] == 2
     assert body["estado"] == "borrador"
-    assert body["retention_years"] == 8
+    assert body["retention_years"] == 8  # derivado de la fase de gestión
     assert body["supersede_a"] == str(vigente["id"])
     insert_call = next(
         c for c in mock_conn.fetchrow.call_args_list if "INSERT INTO trd_series" in c.args[0]
     )
     assert insert_call.args[0].count("$") >= 11  # incluye version/supersede_a/created_by
+    # la fase central NO enviada se CLONA de la vigente (5), no se inventa
+    assert insert_call.args[1:].count(5) >= 1 and 8 in insert_call.args
 
 
 @pytest.mark.asyncio
@@ -485,7 +495,7 @@ async def test_create_trd_serie_version_conflict_when_already_en_tramite(
 
     resp = await client.post(
         "/api/v1/trd/100/versiones",
-        json={"retention_years": 8},
+        json={"archivo_gestion_years": 8},
         headers=TENANT_HEADERS,
     )
 
@@ -531,7 +541,12 @@ async def test_serie_con_codigo_duplicado_es_409_y_no_500(client_with_conn) -> N
 
     resp = await client.post(
         "/api/v1/trd",
-        json={"code": "DEM-100", "name": "Serie repetida"},
+        json={
+            "code": "DEM-100",
+            "name": "Serie repetida",
+            "archivo_gestion_years": 2,
+            "archivo_central_years": 8,
+        },
         headers={**TENANT_HEADERS, "X-User-Id": str(uuid.uuid4())},
     )
 

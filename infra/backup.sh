@@ -396,7 +396,7 @@ if [ "$VERIFICACION_AUDITORIA" = "OK" ]; then
     if ! NUEVAS="$("${COMPOSE[@]}" run --rm --no-deps -T \
             -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
             auth-service python -m app.ops.verify_audit_chains \
-            --anclas - --emitir-ancla "$FECHA" ${EXCLUIR[@]+"${EXCLUIR[@]}"} < "$ENTRADA_VERIF")"; then
+            --anclas - --origen backup --emitir-ancla "$FECHA" ${EXCLUIR[@]+"${EXCLUIR[@]}"} < "$ENTRADA_VERIF")"; then
         VERIFICACION_AUDITORIA="FALLIDA"
     fi
 fi

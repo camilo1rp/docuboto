@@ -54,7 +54,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     c = await asyncpg.connect(_OWNER_DSN)
     try:
         await c.execute(f'CREATE SCHEMA "{schema}"')
-        await c.execute(f'SET search_path = "{schema}", public')
+        await c.execute(f'SET search_path = "{schema}"')
         for ruta in runner._sql_files(runner.TENANT_DIR):
             if ruta.name < "010":
                 await c.execute(ruta.read_text())

@@ -103,7 +103,7 @@ async def _tenant_schemas(conn: asyncpg.Connection) -> list[str]:
 
 async def resolver_operador(conn: asyncpg.Connection, *, schema: str, username: str) -> uuid.UUID | None:
     """``auth_users.id`` del operador ACTIVO en ``schema``; ``None`` si no existe."""
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     if await conn.fetchval("SELECT to_regclass('auth_users')") is None:
         return None
     return await conn.fetchval(
@@ -153,7 +153,7 @@ async def invalidar_en_tenant(
     operador: str,
 ) -> tuple[int, int]:
     """Devuelve (invalidadas, fallidas) de UN tenant."""
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     if await conn.fetchval("SELECT to_regclass('firma_solicitud')") is None:
         return (0, 0)  # el tenant aún no migró signature-service
     corrida_id = uuid.uuid4()
@@ -182,7 +182,7 @@ async def invalidar_en_tenant(
     for fila in ids:
         try:
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 sol = await conn.fetchrow(
                     """
                     UPDATE firma_solicitud
@@ -261,7 +261,7 @@ async def run(argv: list[str] | None = None) -> int:
         operadores: dict[str, uuid.UUID] = {}
         faltan: list[str] = []
         for schema, slug in objetivo:
-            await conn.execute(f'SET search_path = "{schema}", public')
+            await conn.execute(f'SET search_path = "{schema}"')
             if await conn.fetchval("SELECT to_regclass('firma_solicitud')") is None:
                 continue  # sin signature-service migrado: nada que procesar
             oid = await resolver_operador(conn, schema=schema, username=args.operador)

@@ -110,6 +110,7 @@
              tiene que estar donde alguien la encuentre sin buscarla, o el plazo
              para oponerse se agota sin que nadie sepa que existía. -->
         <a href="/eliminacion">Eliminación documental</a>
+        <a href="/indice-clasificados">Información clasificada y reservada</a>
         <a href="#caracteristicas">Características</a>
         <a href="#normativa">Normativa</a>
         <a href="#evolucion">Evolución</a>

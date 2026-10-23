@@ -216,10 +216,19 @@ def _servir_crl(monkeypatch: pytest.MonkeyPatch, resultado: bytes | Exception) -
 async def test_el_tsvd_lleva_la_crl_de_la_ca_de_la_tsa_anterior(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
-    ca, crl_der = _ca_con_crl()
+    ca, _ = _ca_con_crl()
     _declarar_ca(monkeypatch, tmp_path, ca)
     _tsa_de_dias(monkeypatch, 365, ca=ca, cdp="http://crl.test/tsa.crl")
     doc, _c, _ca = await _firmar_lta(monkeypatch)  # su ATS 0 lo sella la TSA emitida por `ca`
+    # C-6: la CRL tiene que ser POSTERIOR al sello que cubre (a segundos); se emite ahora.
+    crl_der = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(ca[1].subject)
+        .last_update(datetime.now(UTC))
+        .next_update(datetime.now(UTC) + timedelta(days=7))
+        .sign(ca[0], hashes.SHA256())
+        .public_bytes(serialization.Encoding.DER)
+    )
     pedidas = _servir_crl(monkeypatch, crl_der)
     _tsa_de_dias(monkeypatch, 5 * 365)  # el sello nuevo lo da otra TSA
 

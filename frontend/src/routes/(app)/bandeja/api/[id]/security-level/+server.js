@@ -16,6 +16,9 @@
  *   → { id, tracking_number, nivel_seguridad }
  *
  * Allowlist explícita: solo los cinco campos del contrato (anti mass-assignment).
+ * Desde el nivel 3 (clasificada), BAJAR el nivel responde 409
+ * `desclasificacion_requiere_aprobacion` (ADR-039): el 409 pasa tal cual y la
+ * pantalla ofrece la solicitud (`../desclasificacion`).
  * No-read-up: el 404 del backend es opaco — no distingue "no existe" de "clearance
  * insuficiente para leer", preservando la política del document-service (RF-SEG-08).
  * X-User-Id: trazabilidad del actor (D-05).
@@ -84,8 +87,10 @@ export async function POST({ locals, params, request }) {
     motivo: motivo.trim(),
   };
 
+  // La causal es del catálogo CERRADO (Ley 1712 arts. 18-19, ADR-039): se envía su
+  // código tal cual y es el backend quien lo valida contra el catálogo (422).
   if (typeof causal_reserva === "string" && causal_reserva.trim()) {
-    payload.causal_reserva = causal_reserva.trim().slice(0, 200);
+    payload.causal_reserva = causal_reserva.trim().slice(0, 100);
   }
   if (typeof fundamento_juridico === "string" && fundamento_juridico.trim()) {
     payload.fundamento_juridico = fundamento_juridico.trim().slice(0, 300);
@@ -95,26 +100,19 @@ export async function POST({ locals, params, request }) {
     plazo_reserva_meses !== null &&
     plazo_reserva_meses !== ""
   ) {
-    const plazoInt = parseInt(String(plazo_reserva_meses), 10);
-    if (isNaN(plazoInt) || plazoInt < 0) {
+    // Art. 19: 1..180 meses (15 años, Ley 1712 art. 22). El art. 18 no lleva plazo y
+    // el backend rechaza uno con 422; aquí solo se acota la forma.
+    const plazo = Number(plazo_reserva_meses);
+    if (!Number.isInteger(plazo) || plazo < 1 || plazo > 180) {
       return json(
         {
           error: "validation_error",
-          detail: "El plazo de reserva debe ser un número entero mayor o igual a 0.",
+          detail: "El plazo de reserva debe ser un número entero de 1 a 180 meses.",
         },
         { status: 422 },
       );
     }
-    if (plazoInt > 600) {
-      return json(
-        {
-          error: "validation_error",
-          detail: "El plazo de reserva no puede superar los 600 meses.",
-        },
-        { status: 422 },
-      );
-    }
-    payload.plazo_reserva_meses = plazoInt;
+    payload.plazo_reserva_meses = plazo;
   }
 
   /** @type {Record<string, string>} */

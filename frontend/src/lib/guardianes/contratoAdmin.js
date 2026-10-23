@@ -44,6 +44,7 @@ import { buscarRuta } from "./gatesFastapi.js";
  *   rutas: import("./gatesFastapi.js").RutaBackend[],
  *   endpoints: EndpointArea[],
  *   excepciones: Record<string, string>,
+ *   niveles?: Record<string, Record<string, number>>,
  * }} datos
  * @returns {{ regla: string, clave: string, detalle: string }[]}
  */
@@ -55,6 +56,7 @@ export function evaluarContrato({
   rutas,
   endpoints,
   excepciones,
+  niveles = {},
 }) {
   /** @type {{ regla: string, clave: string, detalle: string }[]} */
   const hallazgos = [];
@@ -129,8 +131,12 @@ export function evaluarContrato({
     for (const g of ruta.gates) for (const p of g.anyOf) set.add(p);
 
     if (e.tipo === "entrada") {
+      // Una entrada entra con el nivel mínimo que el área fija para ese permiso (1 por defecto):
+      // `preservacion` abre con USUA_PERM_ADMIN solo desde el nivel 3, el de los sellos de archivo.
       const ok = lista.some((p) =>
-        ruta.gates.every((g) => g.anyOf.includes(p) && (g.minCrud ?? 99) <= 1),
+        ruta.gates.every(
+          (g) => g.anyOf.includes(p) && (g.minCrud ?? 99) <= (niveles[e.area]?.[p] ?? 1),
+        ),
       );
       if (!ok)
         reportar(

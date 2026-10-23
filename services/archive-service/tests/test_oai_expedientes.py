@@ -26,6 +26,7 @@ from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.tenant import AtencionPublica
 
 from app.main import app
+from tests.oai_fakes import fetch_oai
 
 OAI = "{http://www.openarchives.org/OAI/2.0/}"
 DC = "{http://purl.org/dc/elements/1.1/}"
@@ -328,7 +329,7 @@ async def test_get_record_ead_isadg_hierarchy(oai_ctx: tuple[AsyncClient, AsyncM
     obligatorios."""
     client, conn = oai_ctx
     conn.fetchrow.return_value = _exp(name="Convenio marco")
-    conn.fetch.return_value = _serie_chain()  # get_serie_chain
+    conn.fetch.side_effect = fetch_oai(_serie_chain())  # get_serie_chain
     root = ET.fromstring(
         (
             await client.get(
@@ -446,7 +447,7 @@ async def test_no_tracking_number_leaks_in_ead_or_dc(
     solo el CONTEO agregado (`physdesc`)."""
     client, conn = oai_ctx
     conn.fetchrow.return_value = _exp()
-    conn.fetch.return_value = _serie_chain()
+    conn.fetch.side_effect = fetch_oai(_serie_chain())
     for prefix in ("oai_dc", "ead"):
         resp = await client.get(
             _url(

@@ -102,7 +102,7 @@ async def _verify(conn: asyncpg.Connection) -> int:
     print(f"KEK activa: v{active_v}; versiones cargadas: {sorted(keyring)}")
     totales: dict[int, int] = {}
     for schema in await _tenant_schemas(conn):
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         repo = SigningKeyRepository(conn)
         for row in await repo.count_by_key_version():
             totales[row["key_version"]] = totales.get(row["key_version"], 0) + row["n"]
@@ -135,7 +135,7 @@ async def _rewrap_tenant(
     dry_run: bool,
 ) -> tuple[int, int]:
     """Re-envuelve las credenciales de un tenant. Devuelve (hechas, fallidas)."""
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = SigningKeyRepository(conn)
     pendientes = await repo.fetch_ids_to_rewrap(active_v)
     if not pendientes:
@@ -149,7 +149,7 @@ async def _rewrap_tenant(
     for p in pendientes:
         try:
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 repo_tx = SigningKeyRepository(conn)
                 row = await repo_tx.get_for_rewrap(p["id"])
                 if (

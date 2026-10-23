@@ -53,7 +53,7 @@ async def _cuantos(conn: asyncpg.Connection, consulta: str) -> int:
 @pytest.mark.asyncio
 async def test_sin_tilde_encuentra_lo_escrito_con_tilde(tenant_ctx) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
     await _seed(conn, "Solicitud de certificación laboral", 1)
 
@@ -73,7 +73,7 @@ async def test_y_con_tilde_encuentra_lo_escrito_sin_ella(tenant_ctx) -> None:
     movieron es el test de arriba.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
     await _seed(conn, "Solicitud de certificacion de residencia", 2)
 
@@ -88,7 +88,7 @@ async def test_no_confunde_palabras_distintas(tenant_ctx) -> None:
     devolviera parecidos; sobre un archivo, eso es peor que no encontrar.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
     await _seed(conn, "Solicitud de certificación laboral", 3)
 

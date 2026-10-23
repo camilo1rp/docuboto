@@ -20,19 +20,24 @@ from datetime import date, timedelta
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.tenant import LOCAL_EMBEDDING_PROVIDERS
 
 from app.core import audit as audit_core
 from app.core.authz import require_permission
 from app.core.calendar import add_business_days, colombian_holidays
+from app.core.config import settings
 from app.core.database import get_tenant_conn
 from app.repositories.config_repository import ConfigRepository
 from app.schemas.config import (
+    AsistenteResponse,
+    AsistenteUpdate,
     BusinessDaysResult,
     HolidayCreate,
     HolidayResponse,
     HolidaySeedRequest,
     ParamResponse,
     ParamUpdate,
+    ProveedoresAsistente,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["config"])
@@ -381,3 +386,117 @@ async def set_param(
             canal=audit_core.CANAL_PETICION,
         )
     return ParamResponse(key=key, value=payload.value)
+
+
+def _proveedores() -> ProveedoresAsistente:
+    """Proveedores efectivos del asistente (los mismos ajustes que usan los servicios)."""
+    return ProveedoresAsistente(
+        asistente="anthropic",
+        modelo=settings.assistant_model,
+        rag=settings.ai_provider,
+        embeddings=settings.embedding_provider,
+        embeddings_local=settings.embedding_provider in LOCAL_EMBEDDING_PROVIDERS,
+    )
+
+
+@router.get("/config/asistente", response_model=AsistenteResponse)
+async def get_asistente(
+    request: Request, conn: asyncpg.Connection = Depends(get_tenant_conn)
+) -> AsistenteResponse:
+    """¿Tiene la entidad activado el asistente y la búsqueda semántica? (ADR-037)
+
+    Devuelve además los proveedores efectivos (a quién se transmitiría), para que la tarjeta
+    de ``/admin/parametros`` pueda pintarlos antes de encender.
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    habilitado = await ConfigRepository(conn).get_asistente(slug)
+    return AsistenteResponse(habilitado=habilitado, proveedores=_proveedores())
+
+
+@router.put(
+    "/config/asistente",
+    response_model=AsistenteResponse,
+    # Nivel 3, como el resto de parámetros de la entidad: encenderlo es una decisión
+    # de tratamiento de datos de la entidad (Ley 1581 art. 4 lit. b y art. 17), no de
+    # cualquier administrador en modo lectura.
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def set_asistente(
+    payload: AsistenteUpdate,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> AsistenteResponse:
+    """Enciende o apaga el asistente de LA entidad del request (ADR-037).
+
+    El slug sale de la cabecera ya validada por ``get_tenant_conn``, nunca del cuerpo:
+    una entidad no puede tocar la bandera de otra. Lectura con bloqueo, escritura y
+    asiento Canal A en UNA transacción; pedir el valor vigente no es un acto (200 sin
+    asiento).
+
+    **Encender** es una transmisión de datos a un encargado (DUR 1074/2015 [confirmar
+    numeral]; no una transferencia del art. 26): exige ``declaracion_transmision: true``
+    (``422 declaracion_requerida``) y que la entidad tenga publicada su política de
+    tratamiento (``409 politica_no_publicada``, el mismo código de la ventanilla). El
+    asiento deja la versión de la política, los proveedores y la declaración. **Apagar** no
+    pide nada.
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    repo = ConfigRepository(conn)
+    proveedores = _proveedores()
+    motivo = (payload.motivo or "").strip() or None
+    async with conn.transaction():
+        antes = await repo.lock_asistente(slug)
+        if antes is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "tenant_not_found", "detail": "La entidad no existe", "status": 404},
+            )
+        if antes == payload.habilitado:
+            return AsistenteResponse(habilitado=antes, cambiado=False, proveedores=proveedores)
+        version: str | None = None
+        if payload.habilitado:
+            if not payload.declaracion_transmision:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "declaracion_requerida",
+                        "detail": (
+                            "Encender el asistente transmite datos a los proveedores indicados: "
+                            "envíe declaracion_transmision: true"
+                        ),
+                        "status": 422,
+                    },
+                )
+            valor = await repo.get_param("politica_tratamiento_version")
+            version = valor.strip() if isinstance(valor, str) and valor.strip() else None
+            if version is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "politica_no_publicada",
+                        "detail": (
+                            "La entidad no ha publicado su política de tratamiento de datos "
+                            "(Ley 1581, art. 17); publíquela antes de encender el asistente"
+                        ),
+                        "status": 409,
+                    },
+                )
+        await repo.set_asistente(slug, payload.habilitado)
+        asiento: dict[str, object] = {"antes": antes, "despues": payload.habilitado, "motivo": motivo}
+        if payload.habilitado:
+            asiento |= {
+                "politica_tratamiento_version": version,
+                "proveedores": proveedores.model_dump(),
+                "declaracion_transmision": True,
+            }
+        await audit_core.append(
+            conn,
+            tenant_slug=slug,
+            action="tenant.asistente_cambiado",
+            object_type="tenant",
+            object_ref=slug,
+            actor=audit_core.actor_from(request),
+            payload=asiento,
+            canal=audit_core.CANAL_PETICION,
+        )
+    return AsistenteResponse(habilitado=payload.habilitado, cambiado=True, proveedores=proveedores)

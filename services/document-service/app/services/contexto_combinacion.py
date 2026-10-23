@@ -189,9 +189,23 @@ class ContextoCombinacion:
         # cambia con la mudanza; el contacto es copia y sí. Son los dos ejes que
         # el modelo de terceros separó a propósito.
         actor = await self._conn.fetchrow(
+            # El documento sale de la ficha a la que el vínculo SE RESUELVE hoy: tras una
+            # conciliación `vincular` (o una fusión) el vínculo congelado sigue nombrando
+            # la ficha de aquel día, pero la persona verificada es la superviviente. Se
+            # sigue `fusionado_en` hasta el final (con CYCLE); una provisional sin vincular
+            # no tiene documento y `DOC_R` queda vacío a propósito.
             "SELECT a.nombre, a.entidad, a.email, a.telefono, a.direccion, "
-            "       a.municipio, a.departamento, t.numero_documento "
-            "FROM radicado_actor a LEFT JOIN tercero t ON t.id = a.tercero_id "
+            "       a.municipio, a.departamento, "
+            "       (WITH RECURSIVE sube(id, fusionado_en) AS ("
+            "            SELECT id, fusionado_en FROM tercero WHERE id = a.tercero_id "
+            "            UNION ALL "
+            "            SELECT p.id, p.fusionado_en FROM tercero p "
+            "              JOIN sube s ON p.id = s.fusionado_en"
+            "        ) CYCLE id SET es_ciclo USING camino "
+            "        SELECT r.numero_documento FROM sube s JOIN tercero r ON r.id = s.id "
+            "         WHERE s.fusionado_en IS NULL AND NOT s.es_ciclo LIMIT 1"
+            "       ) AS numero_documento "
+            "FROM radicado_actor a "
             "WHERE a.radicado_id = $1 AND a.rol = 'remitente' "
             "ORDER BY a.principal DESC, a.orden ASC LIMIT 1",
             row["id"],

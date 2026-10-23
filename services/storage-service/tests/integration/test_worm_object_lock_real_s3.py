@@ -387,3 +387,55 @@ async def test_se_puede_escribir_una_version_nueva_sobre_una_clave_bloqueada(cli
     # Y la primera sigue intacta, que es el punto del versionado.
     respuesta = await cliente.get_object(bucket, clave, version_id=primera)
     assert await respuesta.read() == b"indice v1"
+
+
+# ---------------------------------------------------------------------------
+# 8. C-5/C7 (ADR-043): hold primero, retención DESPUÉS — el régimen (c) del fondo vencido
+# ---------------------------------------------------------------------------
+
+
+async def test_un_objeto_solo_con_hold_acepta_una_retencion_posterior_y_sigue_retenido(cliente):
+    """El supuesto del que depende `fijar-retencion-internal`: un objeto escrito SOLO con legal
+    hold (sin retención) admite que se le fije COMPLIANCE por primera vez más tarde, y al quitar el
+    hold sigue siendo imborrable por la retención.
+
+    Si el motor rechazara fijar retención sobre una versión que ya tiene hold, la valoración CT de
+    un fondo acumulado vencido no podría proteger nada: el hold se levantaría y el objeto quedaría
+    sin ninguna garantía (el caso catastrófico «acepta y no cumple» en su variante más sutil)."""
+    bucket = await _bucket_worm(cliente)
+    clave, version = await _poner(cliente, bucket, b"fondo acumulado vencido", legal_hold=True)
+    try:
+        previa = await cliente.get_object_retention(bucket, clave, version_id=version)
+    except (S3Error, ValueError):
+        # algunos motores responden NoSuchObjectLockConfiguration en vez de vacío; RustFS
+        # contesta 200 sin <Mode> y el cliente lo levanta como ValueError
+        previa = None
+    assert previa is None, "el objeto no debería tener retención: solo se escribió con hold"
+
+    hasta = datetime.now(tz=UTC) + timedelta(days=3)
+    await cliente.set_object_retention(
+        bucket, clave, Retention(COMPLIANCE, hasta), version_id=version
+    )
+    leida = await cliente.get_object_retention(bucket, clave, version_id=version)
+    assert leida is not None and leida.mode == COMPLIANCE
+    assert leida.retain_until_date.date() == hasta.date()
+
+    # Se quita el hold (levantar la valoración): la retención sola tiene que bastar.
+    await cliente.disable_object_legal_hold(bucket, clave, version_id=version)
+    with pytest.raises(S3Error):
+        await cliente.remove_object(bucket, clave, version_id=version)
+
+
+async def test_sin_retencion_y_sin_hold_el_objeto_se_borra_control_negativo(cliente):
+    """CONTROL NEGATIVO del anterior (régimen (c), valoración E/S/M): un objeto escrito solo con
+    hold y al que NUNCA se le fijó retención queda borrable en cuanto se levanta el hold. Sin esta
+    prueba, un motor que no borra nada pasaría la anterior sin tener ninguna garantía; con ella se
+    ve que lo que protege al objeto entre medias es SOLO el hold."""
+    bucket = await _bucket_worm(cliente)
+    clave, version = await _poner(cliente, bucket, b"valoracion E", legal_hold=True)
+
+    with pytest.raises(S3Error):
+        await cliente.remove_object(bucket, clave, version_id=version)  # el hold lo protege
+
+    await cliente.disable_object_legal_hold(bucket, clave, version_id=version)
+    await cliente.remove_object(bucket, clave, version_id=version)  # ya sin nada: se borra

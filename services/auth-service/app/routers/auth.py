@@ -12,7 +12,11 @@ import logging
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from orpycamcp_common.tenant import ERROR_ESTADO_NO_DISPONIBLE, ERRORES_ENTIDAD
+from orpycamcp_common.tenant import (
+    ERROR_ESTADO_NO_DISPONIBLE,
+    ERRORES_ENTIDAD,
+    asistente_habilitado,
+)
 
 from app.core.database import get_db_conn, get_optional_tenant_conn
 from app.repositories.audit_repository import AuditRepository
@@ -284,6 +288,20 @@ async def me(
             permissions = list(perms.keys())
             permission_levels = perms
 
+    # ADR-037: la bandera por entidad viaja con la identidad (UI y mcp-server no
+    # consultan tenant-service). Falla cerrado: sin tenant o con el registro caído,
+    # apagado — `/me` no se rompe por esto.
+    asistente = False
+    if conn is not None and user_info.tenant_slug:
+        try:
+            asistente = await asistente_habilitado(conn, user_info.tenant_slug)
+        except Exception:  # noqa: BLE001 — no poder saberlo se responde como «apagado»
+            logger.warning("no se pudo leer asistente_habilitado en /me", exc_info=True)
+
     return user_info.model_copy(
-        update={"permissions": permissions, "permission_levels": permission_levels}
+        update={
+            "permissions": permissions,
+            "permission_levels": permission_levels,
+            "asistente_habilitado": asistente,
+        }
     )

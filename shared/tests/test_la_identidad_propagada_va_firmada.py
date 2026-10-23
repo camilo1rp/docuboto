@@ -148,6 +148,49 @@ def _llamadas_http(nodo: ast.AST) -> list[tuple[str, ast.expr]]:
     return hallazgos
 
 
+def _es_ayudante_de_cabeceras(nodo: ast.AST, metodo: ast.expr, ruta: ast.expr) -> bool:
+    """`firmar(..., metodo=<param>, ruta=<param>)` en una función sin llamada HTTP propia."""
+    if not isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    params = {a.arg for a in (*nodo.args.args, *nodo.args.kwonlyargs)}
+    return (
+        isinstance(metodo, ast.Name) and metodo.id in params
+        and isinstance(ruta, ast.Name) and ruta.id in params
+    )
+
+
+def _incoherencias_de_llamadores(archivo: Path, ayudante: str) -> list[str]:
+    """Cada `ayudante(..., metodo=M, ruta=R)` debe vivir dentro de una llamada HTTP del mismo
+    archivo cuyo verbo es M y cuya ruta es R: `X(M, R, headers=ayudante(...))`."""
+    arbol = ast.parse(archivo.read_text(encoding="utf-8"))
+    padres = {h: p for p in ast.walk(arbol) for h in ast.iter_child_nodes(p)}
+    problemas: list[str] = []
+    llamadores = 0
+    for n in ast.walk(arbol):
+        if not (isinstance(n, ast.Call) and getattr(n.func, "id", None) == ayudante):
+            continue
+        llamadores += 1
+        donde = f"{archivo.relative_to(RAIZ)}:{n.lineno} ({ayudante})"
+        m, r = _kw(n, "metodo"), _kw(n, "ruta")
+        envolvente = padres.get(n)
+        while envolvente is not None and not (
+            isinstance(envolvente, ast.Call) and len(envolvente.args) >= 2
+            and any(k.arg == "headers" for k in envolvente.keywords)
+        ):
+            envolvente = padres.get(envolvente)
+        if m is None or r is None or envolvente is None:
+            problemas.append(f"{donde}: sin metodo=/ruta= o fuera de una llamada con headers=")
+            continue
+        if ast.dump(envolvente.args[0]) != ast.dump(m) or ast.dump(envolvente.args[1]) != ast.dump(r):
+            problemas.append(
+                f"{donde}: firma {ast.unparse(m)} {ast.unparse(r)} y llama "
+                f"{ast.unparse(envolvente.args[0])} {ast.unparse(envolvente.args[1])}"
+            )
+    if not llamadores:
+        problemas.append(f"{archivo.relative_to(RAIZ)}::{ayudante}: nadie lo invoca")
+    return problemas
+
+
 def _incoherencias() -> list[str]:
     problemas: list[str] = []
     for archivo, funcion, _ in _funciones_que_emiten():
@@ -169,6 +212,11 @@ def _incoherencias() -> list[str]:
                 problemas.append(f"{donde}: el gateway debe firmar request.method y request.scope['path']")
             continue
         llamadas = _llamadas_http(nodo)
+        if not llamadas and _es_ayudante_de_cabeceras(nodo, metodo, ruta):
+            # El ayudante solo FIRMA; la llamada HTTP la hace otra función. La coherencia se
+            # comprueba en cada sitio que lo invoca (mismo `metodo`/`ruta` que el HTTP).
+            problemas.extend(_incoherencias_de_llamadores(archivo, funcion))
+            continue
         if not llamadas:
             problemas.append(f"{donde}: no hay llamada HTTP de la que comparar la ruta")
         for verbo, ruta_llamada in llamadas:
@@ -201,3 +249,115 @@ def test_el_guardian_ve_una_ruta_firmada_distinta_de_la_llamada():
     (verbo, llamada), = _llamadas_http(nodo)
     assert ast.dump(_kw(firma, "ruta")) != ast.dump(llamada)
     assert verbo == "POST"
+
+
+# ---------------------------------------------------------------------------
+# Un solo uso (ADR-036, addendum C-7): cada intento es una identidad NUEVA
+# ---------------------------------------------------------------------------
+#
+# El nonce de la identidad se consume en el destino la primera vez que llega. Quien
+# reintente con las cabeceras de la vuelta anterior recibe 401 en la segunda, y el fallo
+# aparece lejos de aquí. `firmar` genera un nonce nuevo en cada llamada, así que la
+# regla es estructural: en un bucle, el `firmar` va DENTRO del mismo cuerpo de bucle que
+# la llamada HTTP.
+
+_BUCLES = (ast.For, ast.AsyncFor, ast.While)
+
+
+def _padres(raiz: ast.AST) -> dict[ast.AST, ast.AST]:
+    return {hijo: padre for padre in ast.walk(raiz) for hijo in ast.iter_child_nodes(padre)}
+
+
+def _llamadas_http_nodos(nodo: ast.AST) -> list[ast.Call]:
+    """Cada `<cliente>.<verbo>(ruta, headers=...)` / `.request/.stream(...)` del emisor."""
+    hallazgos: list[ast.Call] = []
+    for n in ast.walk(nodo):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+            continue
+        if not any(k.arg == "headers" for k in n.keywords):
+            continue
+        verbo = n.func.attr
+        if (verbo in _VERBOS and n.args) or (verbo in ("request", "stream") and len(n.args) >= 2):
+            hallazgos.append(n)
+    return hallazgos
+
+
+def _bucle_mas_cercano(nodo: ast.AST, padres: dict[ast.AST, ast.AST]) -> ast.AST | None:
+    actual = padres.get(nodo)
+    while actual is not None:
+        if isinstance(actual, _BUCLES):
+            return actual
+        actual = padres.get(actual)
+    return None
+
+
+def _firmar_fuera_de_su_bucle(fuente: str, funcion: str | None = None) -> list[str]:
+    """Funciones donde una llamada HTTP está en un bucle cuyo cuerpo NO contiene `firmar`."""
+    arbol = ast.parse(fuente)
+    padres = _padres(arbol)
+    problemas: list[str] = []
+    for fn in ast.walk(arbol):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if funcion is not None and fn.name != funcion:
+            continue
+        for llamada in _llamadas_http_nodos(fn):
+            bucle = _bucle_mas_cercano(llamada, padres)
+            if bucle is not None and _llamada_firmar(bucle) is None:
+                problemas.append(f"{fn.name}: la llamada HTTP de la línea {llamada.lineno} está en un bucle sin `firmar` dentro")
+    return problemas
+
+
+def test_en_un_bucle_el_firmar_va_dentro_del_mismo_bucle():
+    problemas: list[str] = []
+    for archivo, funcion, _ in _funciones_que_emiten():
+        for p in _firmar_fuera_de_su_bucle(archivo.read_text(encoding="utf-8"), funcion):
+            problemas.append(f"{archivo.relative_to(RAIZ)}::{p}")
+    assert not problemas, (
+        "Un reintento con las cabeceras de la vuelta anterior reutiliza el nonce y el "
+        "destino responde 401 (ADR-036, addendum C-7). Firmar dentro del bucle: "
+        + " | ".join(problemas)
+    )
+
+
+def test_el_guardian_de_bucles_acusa_un_firmar_fuera_del_bucle():
+    """Control positivo: el nonce se reutiliza si `firmar` queda antes del bucle."""
+    mal = (
+        "async def f(client, actor):\n"
+        "    h = identidad.firmar({'X-User-Id': actor}, metodo='POST', ruta=_A)\n"
+        "    for _ in range(3):\n"
+        "        await client.post(_A, headers=h)\n"
+    )
+    bien = (
+        "async def f(client, actor):\n"
+        "    for _ in range(3):\n"
+        "        h = identidad.firmar({'X-User-Id': actor}, metodo='POST', ruta=_A)\n"
+        "        await client.post(_A, headers=h)\n"
+    )
+    assert _firmar_fuera_de_su_bucle(mal)
+    assert not _firmar_fuera_de_su_bucle(bien)
+
+
+_LEE_CABECERA_DE_NONCE = re.compile(r"X-Identity-(Signature|Ts|Nonce)", re.IGNORECASE)
+
+
+def _lecturas_de_cabeceras_de_identidad() -> list[str]:
+    hallazgos: list[str] = []
+    for archivo in sorted(SERVICIOS.glob("*/app/**/*.py")):
+        for n, linea in enumerate(archivo.read_text(encoding="utf-8").splitlines(), 1):
+            if linea.lstrip().startswith("#"):
+                continue
+            if _LEE_CABECERA_DE_NONCE.search(linea):
+                hallazgos.append(f"{archivo.relative_to(RAIZ)}:{n}")
+    return hallazgos
+
+
+def test_solo_el_middleware_compartido_lee_las_cabeceras_de_la_firma():
+    """Nadie copia `X-Identity-(Signature|Ts|Nonce)` de la petición entrante a la saliente
+    (ni las lee para decidir nada): reenviarlas reutilizaría el nonce."""
+    assert not _lecturas_de_cabeceras_de_identidad(), _lecturas_de_cabeceras_de_identidad()
+
+
+def test_el_guardian_de_lecturas_acusa_la_cabecera():
+    assert _LEE_CABECERA_DE_NONCE.search('h = request.headers.get("x-identity-nonce")')
+    assert _LEE_CABECERA_DE_NONCE.search("copiar = {'X-Identity-Signature': s}")

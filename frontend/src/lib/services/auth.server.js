@@ -352,6 +352,8 @@ export function clearPkceCookies(cookies) {
  * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
  *   Contexto de dependencia activa (E08/ADR-013) — poblado por
  *   `(app)/+layout.server.js`, best-effort (puede quedar `null`).
+ * @property {boolean} [asistente_habilitado]
+ *   La entidad activó el asistente (ADR-037, `GET /auth/me`); `false` si no se pudo comprobar.
  * @property {boolean} [permisosDegradados]
  *   `true` cuando `GET /auth/me` no respondió: la sesión sigue viva pero sin
  *   permisos granulares. Sin este campo, el menú vacío que resulta es

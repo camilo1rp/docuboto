@@ -127,6 +127,19 @@ docker compose exec postgres psql -U orpycamcp -d orpycamcp_db \
   -f services/archive-service/migrations/003_trd_mi_entidad.sql
 ```
 
+**Retención y dependencia productora (C-4).** El script exige `retencion_gestion` **y** `retencion_central` en el JSON de origen (se detiene nombrando la serie que no los traiga: no inventa tiempos de retención). Una serie sembrada así queda `migrada` o `borrador` y **sin dependencia productora**; para que gobierne y aparezca en el cuadro de clasificación, abra una versión nueva con `dependencias_productoras` (`POST /api/v1/trd/{code}/versiones`), apruébela y conválidela.
+
+## El cuadro de clasificación documental (C-4)
+
+El cuadro **no se captura**: se deriva del organigrama y de la TRD. Pasos para tenerlo:
+
+1. **Organigrama** (`/admin/dependencias`): cree las dependencias con su jerarquía (la raíz es una *sección*, cada nivel inferior una *subsección*). El organigrama no admite ciclos (`409 dependencia_ciclo`).
+2. **Nombre de la entidad** (`/admin/parametros`, `entidad_nombre`): es el *fondo*. Si está vacío el cuadro lo avisa en vez de inventarlo.
+3. **TRD** (`/admin/trd`): al crear una serie declare sus **dos fases de retención** (obligatorias; el total lo calcula el sistema) y su(s) **dependencia(s) productora(s)**. Sin productora la serie no se puede aprobar ni convalidar (`409 trd_serie_sin_productora`). Para añadir o cambiar la productora de una serie ya convalidada hay que abrir una versión nueva.
+4. **Consulta**: la pestaña «Cuadro de clasificación» de `/admin/trd` (o `GET /api/v1/trd/cuadro`) muestra fondo > sección > subsección > serie > subserie, los **avisos** (productora inactiva, organigrama reorganizado desde que se convalidó) y las series que no se pueden ubicar.
+
+**Publicar de oficio** (Ley 1712, art. 12) exige ahora que el *tipo documental* del radicado esté marcado **«Publicable»** en `/admin/trd` → Tipos documentales (requiere TRD nivel 3). Es una marca distinta de «Admite ventanilla pública»: recibir por la ventanilla no implica difundir.
+
 ## Más ejemplos de uso end-to-end
 
 Estos ejemplos asumen que ya tienes `$TOKEN` del paso anterior. El contrato completo
@@ -213,12 +226,54 @@ muestra y no deja abrir otra: hay que resolverla o rechazarla antes.
 
 ### Consultar al asistente conversacional
 
+> **El asistente y la búsqueda semántica son opt-in por entidad (ADR-037).** Las entidades nuevas nacen con el asistente **apagado**: el administrador de la entidad (`USUA_PERM_ADMIN` nivel 3) lo enciende en **/admin/parametros** (o con `PUT /api/v1/config/asistente {"habilitado": true}`); sin eso, todo lo de abajo responde `403 asistente_deshabilitado`. Además, cada persona necesita el permiso **`PERM_CONOCIMIENTO`** (nivel 1 consulta; nivel 2 también acepta una sugerencia), que se reparte por grupo en **/admin/grupos**. Las entidades que ya existían al migrar quedaron encendidas y sus grupos con el permiso. Apagarlo no detiene la indexación: lo radicado mientras estuvo apagado ya está indexado al reactivar.
+
 ```bash
 curl -X POST 'http://localhost:19080/api/v1/assistant/chat' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"message": "¿Qué radicados de entrada tengo pendientes esta semana?"}'
 # Respuesta: texto en lenguaje natural con citas a los radicados consultados (RAG, solo lectura)
 ```
+
+### Radicar por la ventanilla pública (verificación automática, C16)
+
+La radicación sin autenticar (`POST /api/v1/public/{tenant}/ventanilla` y la ruta heredada `/pqrs`) exige una **prueba de trabajo ALTCHA** además del honeypot y del límite de tasa: el navegador resuelve solo, en unos segundos, un reto que entrega el servidor; la persona no resuelve nada. Desde un script:
+
+```bash
+RETO=$(curl -s http://localhost:19080/api/v1/public/demo/ventanilla/reto)
+ALTCHA=$(printf '%s' "$RETO" | python3 scripts/lib/altcha_solver.py)   # un reto vale UNA vez
+# `altcha` va dentro del JSON de la parte `datos` del multipart, junto a sitio_web
+```
+
+Un reto usado, vencido o de otra entidad se rechaza (`409 antirrobots_usado`, `422 antirrobots_vencido|antirrobots_invalido`): pida otro. `ALTCHA_HMAC_KEY` (≥ 32 bytes, `openssl rand -hex 32`) es obligatoria; en desarrollo `docker-compose.yml` trae una de ejemplo. `scripts/verificar-ventanilla.sh` comprueba también que el reto se emita.
+
+Quien se identifica con documento deja una **ficha provisional**, no se asocia a una ficha existente por número. En **/admin/terceros → «Fichas por conciliar»** (permiso `PERM_RADI` nivel 3) se vincula a la ficha existente, se confirma como ficha nueva o se descarta con motivo (ver [Dominio](domain.md)).
+
+### Desclasificar un radicado clasificado (segunda persona) y publicar el índice
+
+Un radicado **clasificado** (nivel 3, Ley 1712 art. 18) no se baja con un `PATCH`: responde `409 desclasificacion_requiere_aprobacion`. Una persona **solicita**, otra con `PERM_RECLASIFICAR` nivel 4 **aprueba**, y al aprobar el nivel baja en el acto:
+
+```bash
+# 1) Quien solicita (PERM_RECLASIFICAR nivel 3)
+curl -X POST "$API/api/v1/documents/$ID/desclasificacion" -H "Authorization: Bearer $TOKEN_A" \
+  -H 'Content-Type: application/json' \
+  -d '{"nivel_seguridad": 1, "motivo": "Cesó la causa de la clasificación"}'
+# 2) Quien aprueba (otra persona, PERM_RECLASIFICAR nivel 4): ve la cola, abre el radicado y decide
+curl "$API/api/v1/desclasificaciones" -H "Authorization: Bearer $TOKEN_B"
+curl -X POST "$API/api/v1/desclasificaciones/$SOLICITUD/aprobar" -H "Authorization: Bearer $TOKEN_B"
+```
+
+Si quien aprueba es quien solicitó, `409 separacion_de_funciones`; la solicitud caduca a los 15 días. En el demo, `scripts/seed_demo.py` concede `PERM_RECLASIFICAR` nivel 4 a los grupos de gestión: sin ningún perfil con nivel 4 nadie podría aprobar. Al reservar o clasificar hay que elegir una **causal del catálogo cerrado** (`GET /api/v1/documents/causales-reserva`); la reservada (art. 19) lleva además un plazo de 1 a 180 meses.
+
+El **índice público de información clasificada y reservada por serie** (obligación del art. 20) se consulta sin autenticar: `curl http://localhost:19080/api/v1/public/archive/indice-clasificados/demo` (o `….csv`). No lleva números de radicado ni conteos.
+
+### Prestar una unidad de archivo físico, fijar una retención legal y registrar la valoración de una TVD (C-5)
+
+1. **Préstamo**: en `/archivo-fisico`, «Registrar préstamo» pide el **solicitante**: *Interno* (se busca entre los usuarios que pueden recibir esa unidad) o *Externo* (nombre y documento obligatorios). La pantalla nombra la unidad cuando el préstamo se rechaza (ya prestada, en una transferencia o lote de eliminación, sin acceso del solicitante).
+2. **Retención legal**: en el expediente, pestaña «Retenciones legales» (administración): fijar con motivo, fundamento y acta; levantar repitiendo el motivo. La `valoracion_pendiente` se ve pero no se opera.
+3. **Valoración**: en `/admin/tvd`, con la TVD aprobada o convalidada, «Valoración del Comité» registra el acta y libera los expedientes del fondo vencido (pendientes, aplicadas y agotadas se ven ahí).
+4. **Lote de eliminación**: al proponerlo, la pantalla lista las constancias que perderían su soporte; un anexo citado por una constancia vigente no se puede borrar (`anexo_citado_por_constancia`).
+
 
 ## La interfaz web: primeros pasos
 

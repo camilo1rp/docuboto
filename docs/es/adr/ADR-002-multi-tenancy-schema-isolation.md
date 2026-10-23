@@ -37,7 +37,7 @@ CREATE SCHEMA tenant_icetex;
 # On each request: validate the slug (fail-closed), derive the schema, quote it
 schema = tenant_schema(request.headers.get("X-Tenant-Slug", ""))  # ^[a-z0-9-]+$ -> tenant_{slug}
 async with pool.acquire() as conn:                                  # asyncpg, no ORM
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')   # SOLO el tenant (addendum C-7)
 ```
 
 ### Object-store Bucket Pattern (originally "MinIO"; now RustFS, ADR-027)
@@ -65,3 +65,12 @@ orpycamcp-{slug}-templates     # Document templates
 **Row-level isolation** (tenant_id column): Simpler schema management, but risk of data leaks if WHERE clause is forgotten. Not suitable for government data.
 
 **Separate databases per tenant**: Strongest isolation, but exponentially higher operational cost for large numbers of tenants.
+
+## Addendum (2026-10-22, C-7 / SEG #12): the `search_path` is only the tenant
+
+The path used to be `"tenant_x", public`. A missing tenant table then resolved **silently** against its namesake in `public` (14 tenant tables had in fact landed there, with data, because a tenant migration ran with a path whose first schema did not exist: `CREATE TABLE` falls into the first schema that does). Now:
+
+- `SET search_path = "{schema}"` — nothing else. A missing table is `UndefinedTable`; a runner against a missing schema fails with `3F000` instead of creating a table in `public`. `SET search_path = public` alone (a connection without a tenant) stays.
+- **Everything global is qualified `public.`** (`public.audit_log`, `public.tenants`, `public.schema_migrations`, `public.divipola_*`). Extensions live in `public` and are named qualified: `$1::public.vector`, `OPERATOR(public.<=>)`, `public.gin_trgm_ops`, `public.vector_cosine_ops`, `public.unaccent`, `'public.spanish_unaccent'::regconfig`; `CREATE EXTENSION ... WITH SCHEMA public`.
+- The 14 orphan tenant tables were dropped from `public` (tenant-service global migration 005); the functions whose `proconfig` named `public` were re-fixed (tenant-service tenant 016).
+- A static guardian (`shared/tests/test_el_search_path_es_solo_el_tenant.py`) and a real-Postgres check enforce it. Rejected: a dedicated `extensions` schema (needs superuser `ALTER EXTENSION` on every deploy) and keeping `, public` while emptying `public` (no verifiable invariant). See [ADR-044](ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md).

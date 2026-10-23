@@ -95,6 +95,7 @@ async def test_pqrs_tambien_tiene_honeypot(client_with_conn) -> None:
             "acepta_tratamiento": True,
             "politica_version": "v1",
             "sitio_web": "x",
+            "altcha": "altcha-de-prueba-0000",
         },
     )
     assert resp.status_code == 422
@@ -153,7 +154,7 @@ async def test_un_reintento_con_la_misma_clave_devuelve_el_mismo_radicado(client
     conn.fetchrow.side_effect = _fetchrow
 
     # 1.er envío: crea, y «guarda» la huella con la que se reclamó.
-    async def _crear(self, doc, registered_by=None, *, submission_key=None, procedencia=None):
+    async def _crear(self, doc, registered_by=None, *, submission_key=None, procedencia=None, remitente_provisional=None):
         huella_guardada["h"] = submission_key[1]
         return SimpleNamespace(id=rid, tracking_number="2026-DEMO-E-000007")
 
@@ -214,7 +215,7 @@ async def test_si_la_carrera_la_gana_otra_peticion_se_devuelve_su_radicado(clien
     conn.fetchval.side_effect = _fetchval_por_consulta("Derecho de petición", "cod")
     conn.fetchrow.side_effect = _fetchrow
 
-    async def _crear(self, doc, registered_by=None, *, submission_key=None, procedencia=None):
+    async def _crear(self, doc, registered_by=None, *, submission_key=None, procedencia=None, remitente_provisional=None):
         estado["ya"] = True
         estado["h"] = submission_key[1]
         raise DuplicateSubmissionError(submission_key[0])
@@ -235,6 +236,7 @@ def test_sin_autorizacion_de_tratamiento_no_se_radica() -> None:
         "asunto": "a",
         "descripcion": "d",
         "politica_version": "v1",
+        "altcha": "altcha-de-prueba-0000",
     }
     with pytest.raises(ValueError):
         VentanillaRadicacion(**base)  # falta
@@ -360,6 +362,8 @@ async def test_el_estado_de_la_ventanilla_dice_si_esta_habilitada(
         "dependencia_receptora": receptora,
         "tipos_admitidos": tipos,
         "politica_publicada": True,  # el doble de tenant-service la trae vigente
+        "antirrobots_disponible": True,  # clave de pruebas + el doble de Redis responde al PING
+        "contacto": None,  # la entidad de prueba no declaró ningún parámetro `entidad_*`
     }
 
 

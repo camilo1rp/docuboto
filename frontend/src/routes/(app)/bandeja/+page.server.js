@@ -121,6 +121,23 @@ export async function load({ cookies, parent, url, fetch }) {
     causales = [];
   }
 
+  // Catálogo CERRADO de causales de reserva (Ley 1712 arts. 18-19, ADR-039) con el
+  // umbral de segunda persona y el plazo máximo. Es la ley, no un dato de la
+  // entidad: el modal de reclasificar ofrece SOLO estas causales (el texto libre lo
+  // rechaza el backend con 422). Un fallo degrada a `null` y el modal lo dice:
+  // sin catálogo no se puede clasificar ni reservar, y no se finge lo contrario.
+  /** @type {{nivel_doble_firma: number, plazo_max_meses: number, causales: any[]} | null} */
+  let catalogoReserva = null;
+  try {
+    const resRes = await fetch(`${API_V1}/documents/causales-reserva`, { headers });
+    if (resRes.ok) {
+      const c = await resRes.json().catch(() => null);
+      if (c && Array.isArray(c.causales)) catalogoReserva = c;
+    }
+  } catch {
+    catalogoReserva = null;
+  }
+
   return {
     documents,
     total,
@@ -129,6 +146,7 @@ export async function load({ cookies, parent, url, fetch }) {
     dependencias,
     dependenciasTodas,
     causales,
+    catalogoReserva,
     // Filtros activos al cargar (para deep-link)
     initialFilters: { docType, status, page },
     // token y tenant NO se exponen: las llamadas cliente usan /bandeja/api (D-05)

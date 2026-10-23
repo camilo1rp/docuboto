@@ -138,7 +138,7 @@ async def _resolve_bearer_user(
         )
 
     schema = tenant_schema(tenant_slug)  # 400 si el claim está mal formado
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     rbac = RBACRepository(conn)
     user = await rbac.get_user_by_keycloak_sub(claims["user_id"])
     if user is None:
@@ -364,7 +364,7 @@ async def internal_activate_signing_key(
     """
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
     schema = tenant_schema(tenant_slug)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     try:
         return await SigningKeyService(conn).activar_certificado(
             payload.user_id, payload.cert_pem, tenant_slug
@@ -399,7 +399,7 @@ async def internal_signing_key_revocation_status(
     """
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
     schema = tenant_schema(tenant_slug)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     try:
         return await SigningKeyService(conn).revocation_status(certificado_fingerprint)
     finally:

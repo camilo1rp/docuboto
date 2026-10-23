@@ -38,7 +38,7 @@ pytestmark = pytest.mark.integration
 
 async def _en(tenant_ctx) -> asyncpg.Connection:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return conn
 
 

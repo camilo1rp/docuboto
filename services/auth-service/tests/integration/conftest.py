@@ -119,7 +119,7 @@ async def tenant_ctx(
     try:
         for path in runner._sql_files(runner.TENANT_DIR):
             async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await db_conn.execute(path.read_text())
         # `SET LOCAL` (arriba) solo dura la transacción de cada archivo — sin
         # esto, al terminar el loop el `search_path` de la CONEXIÓN vuelve al
@@ -127,7 +127,7 @@ async def tenant_ctx(
         # (fuera de una tx propia) no verían las tablas del schema recién
         # provisionado. `SET` (sin LOCAL) persiste para el resto de la sesión
         # de esta conexión dedicada.
-        await db_conn.execute(f'SET search_path = "{schema}", public')
+        await db_conn.execute(f'SET search_path = "{schema}"')
         yield slug, db_conn
     finally:
         assert schema.startswith("tenant_itest_"), (

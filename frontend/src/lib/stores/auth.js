@@ -28,6 +28,7 @@
  */
 
 import { writable, derived, get } from "svelte/store";
+import { asistenteActivo, puedeUsarConocimiento } from "$lib/utils/asistenteAcceso.js";
 
 // ---------------------------------------------------------------------------
 // Estado de sesión
@@ -74,6 +75,16 @@ export const tenantSlug = derived(sessionUser, ($u) => $u?.tenant_slug ?? null);
  * Para preguntar «¿esto lo hice yo?», este es el valor.
  */
 export const userId = derived(sessionUser, ($u) => $u?.user_id ?? null);
+
+/**
+ * La entidad activó el asistente (`GET /auth/me` → `asistente_habilitado`, ADR-037).
+ * Solo `true` estricto; ausente o falso = apagado. Es para MOSTRAR: knowledge y
+ * mcp-server vuelven a comprobarlo en cada petición.
+ */
+export const asistenteHabilitado = derived(sessionUser, ($u) => asistenteActivo($u));
+
+/** Entidad con asistente activo Y `PERM_CONOCIMIENTO` ≥ 1 (consultar conocimiento). */
+export const puedeConsultarConocimiento = derived(sessionUser, ($u) => puedeUsarConocimiento($u));
 
 /** true si hay sesión activa */
 export const isAuthenticated = derived(sessionUser, ($u) => $u !== null);
@@ -183,6 +194,9 @@ export function clearSession() {
  * @property {Record<string, number>} [permission_levels]
  *   Nivel CRUD por permiso (`GET /auth/me`, aditivo a `permissions[]`).
  *   Fail-closed: `{}` si el backend no lo trae (sesión vieja, /auth/me caído).
+ * @property {boolean} [asistente_habilitado]
+ *   La entidad activó el asistente (ADR-037). `false` si el backend no pudo
+ *   comprobarlo o no lo trae.
  * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
  *   Contexto de dependencia activa (E08/ADR-013) — cargado por
  *   `(app)/+layout.server.js`, consumido por `DependencySwitcher.svelte`.

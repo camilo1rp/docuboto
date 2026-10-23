@@ -36,7 +36,7 @@ def _sql(prefijo: str) -> str:
 @pytest.mark.asyncio
 async def test_038_y_039_son_idempotentes_y_conservan_los_datos(tenant_ctx) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     job = await conn.fetchval(
         "INSERT INTO batch_jobs (job_type, status, created_by, total_items) "
         "VALUES ('documents', 'completado_con_errores', $1, 1) RETURNING id", uuid.uuid4())
@@ -53,7 +53,7 @@ async def test_038_y_039_son_idempotentes_y_conservan_los_datos(tenant_ctx) -> N
 @pytest.mark.asyncio
 async def test_la_cola_de_huerfanos_rechaza_estado_invalido_y_duplicados(tenant_ctx) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     imp, fid = uuid.uuid4(), uuid.uuid4()
     await conn.execute(
         "INSERT INTO import_binario_huerfano (import_uuid, file_id, subido_desde) VALUES ($1, $2, now())",

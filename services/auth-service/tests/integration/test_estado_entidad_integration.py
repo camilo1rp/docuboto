@@ -119,7 +119,7 @@ async def test_validate_de_una_entidad_suspendida_no_aprovisiona_usuarios(
     schema = tenant_schema(slug)
     for path in runner._sql_files(runner.TENANT_DIR):
         async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
             await db_conn.execute(path.read_text())
 
     claims, resp = await _validar(db_conn, slug)
@@ -139,7 +139,7 @@ async def test_validate_de_una_entidad_operativa_dice_operativa(
     schema = tenant_schema(slug)
     for path in runner._sql_files(runner.TENANT_DIR):
         async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
             await db_conn.execute(path.read_text())
 
     _, resp = await _validar(db_conn, slug)

@@ -174,7 +174,7 @@ docker compose run --rm --no-deps document-service pytest -q
 
 ### Before every change
 
-- Update `docs/es/` (and `docs/en/`) when endpoints, schemas, or behavior change
+- Update `docs/es/` (and `docs/en/` when the page is part of the English selection) when endpoints, schemas, or behavior change
 - Add a `CHANGELOG.md` / `docs/es/changelog.md` entry (Keep a Changelog)
 - Mark completed items in `docs/es/roadmap.md`
 - Pass `ruff check`, `mypy`, and `pytest`

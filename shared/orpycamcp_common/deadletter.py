@@ -27,6 +27,10 @@ codificado o que es una lista cuenta como duda (3).
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
+from datetime import datetime
+
 import asyncpg
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -42,7 +46,7 @@ _UUID_RE = "^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$"
 def _from(schema: str) -> str:
     """FROM con ``radicados`` CALIFICADA con el schema del tenant.
 
-    Sin calificar, el nombre se resolvería por el ``search_path`` (``"tenant_x", public``):
+    Sin calificar, el nombre se resolvería por el ``search_path`` (``"tenant_x"``):
     si el tenant no tuviera ``radicados``, caería a otra del ``public`` y el gate leería
     niveles de un lugar equivocado. Calificada, la ausencia es ``UndefinedTable`` (503).
     ``schema`` sale de ``tenant_schema`` (slug validado); se entrecomilla.
@@ -179,6 +183,43 @@ async def get_visible(
         if "radicados" in str(exc):
             raise RadicadosAusenteError(str(exc)) from exc
         raise
+
+
+async def contar_pendientes(
+    conn: asyncpg.Connection, schemas: Sequence[str], grupos: Sequence[str]
+) -> tuple[int, datetime | None]:
+    """``(n, más_antiguo)`` de las filas ``pending`` de los *grupos* sumadas sobre *schemas*.
+
+    Es para MÉTRICAS (C18, ADR-041): un entero agregado y un instante, sin contenido
+    de ningún evento. Por eso NO aplica clearance y NO reutiliza
+    :func:`visible_deadletter_sql`, que gatea por la persona que consulta: aquí no hay
+    persona, y un número agregado no revela el nivel de ningún radicado. Que nadie lo
+    «arregle» metiéndole el gate: dejaría la métrica en 0 para siempre.
+
+    UNA consulta ``UNION ALL`` con la tabla calificada por schema (el ``search_path``
+    no interviene); usa ``ix_edl_pending`` (índice parcial). Sin schemas no consulta.
+    Si la tabla falta en alguno, la excepción sube: el llamador lo trata como «no
+    verificado», nunca como una suma parcial.
+    """
+    if not schemas:
+        return 0, None
+    ramas = " UNION ALL ".join(
+        f'SELECT count(*) AS n, min(dead_lettered_at) AS m FROM "{_schema_valido(s)}".evento_dead_letter '
+        "WHERE status = 'pending' AND origin_group = ANY($1::text[])"
+        for s in schemas
+    )
+    fila = await conn.fetchrow(
+        f"SELECT COALESCE(sum(n), 0)::bigint AS n, min(m) AS m FROM ({ramas}) u", list(grupos)
+    )
+    assert fila is not None
+    return int(fila["n"]), fila["m"]
+
+
+def _schema_valido(schema: str) -> str:
+    """Un nombre de schema que no sale de ``tenant_schema`` no se interpola jamás."""
+    if not re.fullmatch(r"tenant_[a-z0-9_]+", schema):
+        raise ValueError(f"schema de tenant inválido: {schema!r}")
+    return schema
 
 
 def instalar_manejador_radicados_ausente(app: Starlette) -> None:

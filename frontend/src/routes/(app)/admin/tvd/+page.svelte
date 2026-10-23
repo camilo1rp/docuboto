@@ -49,6 +49,8 @@
 
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
   import InstrumentLifecycleActions from "$lib/components/features/admin/InstrumentLifecycleActions.svelte";
+  import ValoracionTvdModal from "$lib/components/features/admin/ValoracionTvdModal.svelte";
+  import { admiteValoracion } from "$lib/utils/valoracion.js";
   import FormField from "$lib/components/ui/FormField.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
@@ -68,6 +70,9 @@
   $: canWriteLevel3 = ($permissionLevels["USUA_PERM_TRD"] ?? 0) >= 3;
 
   let agrupaciones = data.agrupaciones ?? [];
+
+  // Valoración del Comité (C-5 / C7): solo con la TVD aprobada o convalidada.
+  let valoracionItem = null;
 
   // ---------------------------------------------------------------------------
   // Árbol de agrupaciones: mismo algoritmo que /admin/trd (parent_id).
@@ -154,7 +159,6 @@
   let cFechaFinal = "";
   let cJustificacion = "";
   let cArchivoCentral = "";
-  let cTotalRetention = "10";
   let cDisposition = "CT";
   let cPdfaProfile = "";
 
@@ -162,6 +166,7 @@
   let cNameError = "";
   let cFondoError = "";
   let cFechasError = "";
+  let cArchivoCentralError = "";
   let cJustificacionError = "";
 
   function openCreate() {
@@ -174,13 +179,13 @@
     cFechaFinal = "";
     cJustificacion = "";
     cArchivoCentral = "";
-    cTotalRetention = "10";
     cDisposition = "CT";
     cPdfaProfile = "";
     cCodeError = "";
     cNameError = "";
     cFondoError = "";
     cFechasError = "";
+    cArchivoCentralError = "";
     cJustificacionError = "";
     createOpen = true;
   }
@@ -199,7 +204,19 @@
     } else {
       cFechasError = "";
     }
-    return !cCodeError && !cNameError && !cFondoError && !cJustificacionError && !cFechasError;
+    const central = cArchivoCentral === "" ? NaN : Number(cArchivoCentral);
+    cArchivoCentralError =
+      Number.isInteger(central) && central >= 0
+        ? ""
+        : "Los años de archivo central son obligatorios (0 es válido).";
+    return (
+      !cCodeError &&
+      !cNameError &&
+      !cFondoError &&
+      !cJustificacionError &&
+      !cFechasError &&
+      !cArchivoCentralError
+    );
   }
 
   async function crearAgrupacion() {
@@ -218,8 +235,7 @@
           fecha_extrema_inicial: cFechaInicial,
           fecha_extrema_final: cFechaFinal,
           justificacion_valoracion: cJustificacion.trim(),
-          archivo_central_years: cArchivoCentral ? Number(cArchivoCentral) : null,
-          total_retention: Number(cTotalRetention),
+          archivo_central_years: Number(cArchivoCentral),
           disposition: cDisposition,
           pdfa_profile: cPdfaProfile || null,
         }),
@@ -254,7 +270,6 @@
   let eFechaFinal = "";
   let eJustificacion = "";
   let eArchivoCentral = "";
-  let eTotalRetention = "";
   let eDisposition = "";
   let ePdfaProfile = "";
 
@@ -267,7 +282,6 @@
     eFechaFinal = item.fecha_extrema_final ?? "";
     eJustificacion = item.justificacion_valoracion ?? "";
     eArchivoCentral = item.archivo_central_years != null ? String(item.archivo_central_years) : "";
-    eTotalRetention = String(item.total_retention ?? "");
     eDisposition = item.disposition ?? "";
     ePdfaProfile = item.pdfa_profile ?? "";
     editOpen = true;
@@ -286,8 +300,7 @@
         fecha_extrema_inicial: eFechaInicial,
         fecha_extrema_final: eFechaFinal,
         justificacion_valoracion: eJustificacion.trim(),
-        archivo_central_years: eArchivoCentral ? Number(eArchivoCentral) : null,
-        total_retention: Number(eTotalRetention),
+        ...(eArchivoCentral !== "" ? { archivo_central_years: Number(eArchivoCentral) } : {}),
         disposition: eDisposition,
       });
     }
@@ -419,6 +432,14 @@
           >Editar</Button
         >
       {/if}
+      {#if admiteValoracion(item)}
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="fas fa-gavel"
+          on:click={() => (valoracionItem = item)}>Valoración del Comité</Button
+        >
+      {/if}
       <InstrumentLifecycleActions
         {item}
         canWrite={canWriteLevel3}
@@ -487,14 +508,10 @@
             id="tvd-archivo-central"
             label="Archivo central (años)"
             type="number"
+            required
             bind:value={cArchivoCentral}
-            hint="Sin fase de archivo de gestión: la TVD ya está en central/histórico."
-          />
-          <FormField
-            id="tvd-total-retention"
-            label="Retención total (años)"
-            type="number"
-            bind:value={cTotalRetention}
+            error={cArchivoCentralError}
+            hint="Obligatorio (0 es válido). Sin fase de archivo de gestión: la TVD ya está en central/histórico; la retención total es esa misma fase."
           />
         </div>
         <FormField
@@ -586,13 +603,6 @@
             bind:value={eArchivoCentral}
             disabled={item.estado !== "borrador"}
           />
-          <FormField
-            id="tvd-edit-total-retention"
-            label="Retención total (años)"
-            type="number"
-            bind:value={eTotalRetention}
-            disabled={item.estado !== "borrador"}
-          />
         </div>
         <FormField
           id="tvd-edit-disposition"
@@ -619,6 +629,14 @@
       >
     </svelte:fragment>
   </CatalogCrudPanel>
+
+  <ValoracionTvdModal
+    open={valoracionItem !== null}
+    item={valoracionItem}
+    canWrite={canWriteLevel3}
+    on:close={() => (valoracionItem = null)}
+    on:registrada={() => {}}
+  />
 </div>
 
 <style lang="scss">

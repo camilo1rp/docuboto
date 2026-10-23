@@ -78,8 +78,6 @@ async def _seed_expediente_indice_firmado(
         TrdSerieCreate(
             code=f"CTF{uuid.uuid4().hex[:6]}",
             name="itest serie renovacion CT filter",
-            retention_years=0,
-            total_retention=0,
             disposition=disposition,
             archivo_gestion_years=archivo_gestion_years,
             archivo_central_years=archivo_central_years,
@@ -151,8 +149,6 @@ async def _seed_acta_firmada(
         TrdSerieCreate(
             code=f"CTA{uuid.uuid4().hex[:6]}",
             name="itest serie acta renovacion CT filter",
-            retention_years=0,
-            total_retention=0,
             disposition=disposition,
             archivo_gestion_years=archivo_gestion_years,
             archivo_central_years=archivo_central_years,
@@ -243,8 +239,6 @@ async def _seed_expediente_aip_empaquetado(
         TrdSerieCreate(
             code=f"CTP{uuid.uuid4().hex[:6]}",
             name="itest serie AIP renovacion CT filter",
-            retention_years=0,
-            total_retention=0,
             disposition=disposition,
             archivo_gestion_years=archivo_gestion_years,
             archivo_central_years=archivo_central_years,
@@ -262,7 +256,9 @@ async def _seed_expediente_aip_empaquetado(
 
     aip_repo = AipRepository(conn)
     await aip_repo.get_or_create(created.id)
-    affected = await aip_repo.mark_empaquetado(created.id, uuid.uuid4())
+    affected = await aip_repo.mark_empaquetado(
+        created.id, uuid.uuid4(), indice_file_id=uuid.uuid4(), indice_xml_sha256="c" * 64
+    )
     assert affected == 1
     return created.id
 
@@ -631,7 +627,7 @@ async def test_migration_031_is_idempotent_on_real_postgres(
     sql = _MIGRATION_031_PATH.read_text(encoding="utf-8")
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(sql)  # re-ejecución sobre el schema YA migrado por tenant_ctx
 
     # El cableado sigue funcionando con normalidad tras la re-ejecución.
@@ -651,7 +647,7 @@ async def test_migration_032_is_idempotent_on_real_postgres(
     sql = _MIGRATION_032_PATH.read_text(encoding="utf-8")
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(sql)
 
     repo = TransferenciaRepository(conn, slug)
@@ -675,7 +671,7 @@ async def test_migration_034_is_idempotent_on_real_postgres(
     sql = _MIGRATION_034_PATH.read_text(encoding="utf-8")
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(sql)  # re-ejecución sobre el schema YA migrado por tenant_ctx
 
     repo = AipRepository(conn)

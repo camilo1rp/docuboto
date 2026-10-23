@@ -31,6 +31,7 @@ from app.core.database import close_pool, create_pool
 from app.core.redis_client import close_redis, init_redis
 from app.routers.admin_deadletter import router as admin_dlq_router
 from app.routers.health import router as health_router
+from app.routers.metrics import router as metrics_router
 from app.routers.rules import router as rules_router
 from app.routers.visto_bueno import router as visto_bueno_router
 from app.routers.workflow import router as workflow_router
@@ -92,6 +93,7 @@ app.include_router(visto_bueno_router)
 app.include_router(admin_dlq_router)
 deadletter.instalar_manejador_radicados_ausente(app)
 app.include_router(health_router)
+app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 
 
 @app.exception_handler(Exception)

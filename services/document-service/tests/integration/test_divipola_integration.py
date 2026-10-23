@@ -42,7 +42,7 @@ BOGOTA_DC = "11"
 
 
 async def _en_el_tenant(conn: asyncpg.Connection, schema: str) -> None:
-    await conn.execute(f"SET search_path TO {tenant_schema(schema)}, public")
+    await conn.execute(f"SET search_path TO {tenant_schema(schema)}")
 
 
 async def _preparar(conn: asyncpg.Connection, schema: str) -> uuid.UUID:

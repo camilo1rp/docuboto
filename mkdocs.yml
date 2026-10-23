@@ -103,6 +103,14 @@ plugins:
             ADR-034 XMLDSig conforme (firma verificable por terceros): ADR-034 Conformant XMLDSig (third-party verifiable signature)
             ADR-035 Estado de la entidad (cumplimiento en el borde): ADR-035 Entity state (enforcement at the edge)
             ADR-036 Identidad atada a método y ruta: ADR-036 Identity bound to method and path
+            ADR-037 Asistente activable por entidad: ADR-037 Assistant enabled per entity
+            ADR-038 Antirrobots ALTCHA y ficha provisional: ADR-038 ALTCHA anti-bot and provisional sender record
+            ADR-039 Desclasificación con segunda persona y catálogo de reserva: ADR-039 Declassification by a second person and the closed reserve catalogue
+            ADR-040 El cuadro de clasificación se deriva del organigrama (y fases de la TRD): ADR-040 The classification scheme is derived from the organigram (and TRD phases)
+            ADR-041 Métricas operativas sin tenant y migraciones con cerrojo: ADR-041 Operational metrics without tenant and migrations with a real lock
+            ADR-042 El AIP se versiona, no se reescribe: ADR-042 The AIP is versioned, not rewritten
+            ADR-043 Retención legal por motivo, préstamo identificado y soporte citado: ADR-043 Legal retention by reason, identified loan and cited support
+            ADR-044 Identidad de un solo uso y search_path sin public: ADR-044 Single-use identity and a public-free search_path
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -166,6 +174,14 @@ nav:
     - ADR-034 XMLDSig conforme (firma verificable por terceros): adr/ADR-034-xmldsig-conforme-firma-verificable-por-terceros.md
     - ADR-035 Estado de la entidad (cumplimiento en el borde): adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md
     - ADR-036 Identidad atada a método y ruta: adr/ADR-036-identidad-atada-a-metodo-y-ruta.md
+    - ADR-037 Asistente activable por entidad: adr/ADR-037-asistente-activable-por-entidad.md
+    - ADR-038 Antirrobots ALTCHA y ficha provisional: adr/ADR-038-antirrobots-altcha-y-ficha-provisional.md
+    - ADR-039 Desclasificación con segunda persona y catálogo de reserva: adr/ADR-039-desclasificacion-segunda-persona-y-catalogo-de-reserva.md
+    - ADR-040 El cuadro de clasificación se deriva del organigrama (y fases de la TRD): adr/ADR-040-cuadro-de-clasificacion-derivado-y-fases-de-la-trd.md
+    - ADR-041 Métricas operativas sin tenant y migraciones con cerrojo: adr/ADR-041-metricas-operativas-sin-tenant-y-migraciones-con-cerrojo.md
+    - ADR-042 El AIP se versiona, no se reescribe: adr/ADR-042-el-aip-se-versiona-no-se-reescribe.md
+    - ADR-043 Retención legal por motivo, préstamo identificado y soporte citado: adr/ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md
+    - ADR-044 Identidad de un solo uso y search_path sin public: adr/ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

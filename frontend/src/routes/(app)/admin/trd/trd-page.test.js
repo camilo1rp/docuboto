@@ -49,8 +49,12 @@ const SERIE_1 = {
   name: "Serie de prueba",
   parent_id: null,
   disposition: "CT",
-  retention_years: 2,
-  total_retention: 10,
+  archivo_gestion_years: 2,
+  archivo_central_years: 8,
+  total_retention: 10, // derivado de solo lectura
+  dependencias_productoras: [
+    { dependencia_codigo: 12, dependencia_nombre: "Secretaría General", ruta_convalidada: null },
+  ],
   estado: "borrador",
 };
 

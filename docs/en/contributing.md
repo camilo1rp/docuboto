@@ -11,7 +11,7 @@ Thank you for your interest in improving OrpycaMCP!
 ## Contribution Rules
 
 1. **Code in English** — identifiers, comments, commit messages
-2. **Bilingual documentation** — Spanish in `docs/es/`, English in `docs/en/`
+2. **Documentation** — complete in Spanish in `docs/es/`; `docs/en/` is a translated selection. ADRs, the test plan, the MCP flows and the data-processing policy template are Spanish only (list in `shared/tests/test_la_documentacion_dice_lo_que_hay.py`)
 3. **Tests required** — at least one test per new endpoint
 4. **Annotated types** — Python 3.11+ type hints in all functions
 5. **AGPL v3** — do not include code with incompatible licenses

@@ -81,7 +81,7 @@ async def test_radicado_id_from_other_tenant_never_appears_in_result(
     # Consulta con el search_path del tenant A, pidiendo AMBOS radicado_id
     # (incluido el del tenant B) — mismo batch que enviaría archive-service
     # si (por error/ataque) mezclara IDs de tenants distintos.
-    await conn.execute(f'SET search_path = "{schema_a}", public')
+    await conn.execute(f'SET search_path = "{schema_a}"')
     repo_a = DocumentRepository(conn, slug_a)
     result_a = await repo_a.list_anexos_for_radicados_internal([radicado_a, radicado_b])
 
@@ -95,7 +95,7 @@ async def test_radicado_id_from_other_tenant_never_appears_in_result(
     assert radicado_b not in result_a
 
     # Simétrico: search_path del tenant B ve SOLO su propio radicado.
-    await conn.execute(f'SET search_path = "{schema_b}", public')
+    await conn.execute(f'SET search_path = "{schema_b}"')
     repo_b = DocumentRepository(conn, slug_b)
     result_b = await repo_b.list_anexos_for_radicados_internal([radicado_a, radicado_b])
 
@@ -116,7 +116,7 @@ async def test_radicado_metadata_internal_filters_by_clearance(
     pub = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000020", nivel=1, con_anexo=False)
     clasif = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000021", nivel=3, con_anexo=False)
 
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = DocumentRepository(conn, slug)
     meta = await repo.list_radicado_metadata_internal([pub, clasif], max_clearance=1)
     assert set(meta.keys()) == {pub}  # el clasificado (nivel 3) se omite
@@ -131,9 +131,10 @@ async def _seed_radicado_nivel(
     rid = await conn.fetchval(
         f'INSERT INTO "{schema}".radicados '
         "(tracking_number, doc_type, year, sequence, subject, tenant_code, nivel_seguridad, "
-        "clasificacion_fundamento) "
+        "clasificacion_fundamento, clasificacion_causal) "
         "VALUES ($1, 'E', 2026, 1, 'itest export clearance', 'ITEST', $2, "
-        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) RETURNING id",
+        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END, "
+        "CASE WHEN $2::smallint >= 2 THEN 'por_clasificar' END) RETURNING id",
         tracking,
         nivel,
     )
@@ -160,7 +161,7 @@ async def test_clearance_aware_omits_over_clearance_includes_empty_visible(
     pub_vacio = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000011", nivel=1, con_anexo=False)
     clasif = await _seed_radicado_nivel(conn, schema, tracking="2026-ITEST-E-000012", nivel=3, con_anexo=True)
 
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = DocumentRepository(conn, slug)
 
     # Clearance 1: el clasificado (nivel 3) NO aparece; el visible sin anexos SÍ (lista vacía).
@@ -197,7 +198,7 @@ async def test_radicado_without_anexos_is_absent_key_across_tenants(
         """
     )
 
-    await conn.execute(f'SET search_path = "{schema_a}", public')
+    await conn.execute(f'SET search_path = "{schema_a}"')
     repo_a = DocumentRepository(conn, slug_a)
     result = await repo_a.list_anexos_for_radicados_internal([radicado_sin_anexos["id"]])
 

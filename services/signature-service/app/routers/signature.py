@@ -54,6 +54,10 @@ from app.repositories.cadena_repository import CadenaRepository
 from app.repositories.firma_repository import FirmaRepository
 from app.schemas.cadena import InvalidarCircuitosRequest
 from app.schemas.firma import (
+    ArchiveTimestampInfo,
+    ArtefactosVigentesRequest,
+    ArtefactosVigentesResponse,
+    ArtefactoVigenteItem,
     FirmaResponse,
     InternalSignIndiceRequest,
     SignPersonalRequest,
@@ -481,6 +485,10 @@ async def verify(
             # Solo se declaran sobre una firma que VALIDA: un aviso sobre un
             # veredicto negativo sería ruido encima del motivo real.
             advertencias=advertencias if valida else [],
+            archive_timestamps=(
+                [ArchiveTimestampInfo.model_validate(a) for a in outcome.archive_timestamps]
+                if valida else []
+            ),
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""
@@ -531,6 +539,45 @@ async def verify(
         # exclusivo de xades_personal) — firma_criptograficamente_valida
         # coincide SIEMPRE con valida, revocacion_status no aplica (None).
         firma_criptograficamente_valida=valida,
+    )
+
+
+@router.post(
+    "/internal/artefactos-vigentes",
+    response_model=ArtefactosVigentesResponse,
+    dependencies=[Depends(require_internal_token)],
+    summary=(
+        "XML vigente de cada firma de un lote (acto de sistema; lo consulta archive-service para "
+        "conciliar el XML que embebe cada AIP con el que representa HOY a la firma)"
+    ),
+)
+async def artefactos_vigentes_internal(
+    payload: ArtefactosVigentesRequest,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> ArtefactosVigentesResponse:
+    """Lote de hasta 200 ``firma_id``. Devuelve solo las firmas que existen, con el ``file_id`` del XML
+    vigente, su huella y el ordinal del último sello (0 = el original, sin renovar). Un eslabón
+    ``pendiente_worm`` aún NO es el vigente. Sin ``X-User-Id``: es un acto de servicio a servicio, y
+    por eso mismo es content-free (identificadores y huellas, ningún dato del documento).
+
+    Está en la lista de CONSERVACIÓN de la entidad suspendida (``app/core/conservacion.py``): el
+    reempaquetado del AIP al renovar el sello no se detiene porque la entidad esté suspendida
+    (ADR-035 §8)."""
+    try:
+        filas = await FirmaRepository(conn).artefactos_vigentes(payload.firma_ids)
+    except asyncpg.UndefinedTableError:
+        filas = []  # tenant sin la migración 026: no hay cadena, ninguna firma se renovó
+    return ArtefactosVigentesResponse(
+        items=[
+            ArtefactoVigenteItem(
+                firma_id=f["firma_id"],
+                file_id=uuid.UUID(f["minio_key"].split("/", 1)[0]),
+                minio_key=f["minio_key"],
+                xml_sha256=f["xml_sha256"],
+                ordinal=f["ordinal"],
+            )
+            for f in filas
+        ]
     )
 
 

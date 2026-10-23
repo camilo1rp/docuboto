@@ -281,7 +281,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
     async def _manual_attempt() -> object:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             # Restaura la implementación REAL de `_sellar_acta_post_commit`
             # (el autouse `_no_real_http_acta_sign` la no-opea por defecto en
             # todo este tier) -- este test SÍ necesita ejercitar el UPDATE
@@ -305,7 +305,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
     async def _job_attempt() -> str:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             row = {
                 "transferencia_id": tid,
                 "acta_fuid_xml": acta["acta_fuid_xml"],

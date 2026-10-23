@@ -87,7 +87,7 @@ async def two_bare_tenant_schemas(
             await conn.execute(f'CREATE SCHEMA "{schema}"')
             for path in files:
                 async with conn.transaction():
-                    await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                    await conn.execute(f'SET LOCAL search_path = "{schema}"')
                     await conn.execute(path.read_text())
         yield schema_a, schema_b, conn
     finally:
@@ -240,26 +240,26 @@ async def test_migration_037_backfill_leaves_preexisting_rows_migrada_without_ac
             await conn.execute(f'CREATE SCHEMA "{schema}"')
             for path in files_before:
                 async with conn.transaction():
-                    await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                    await conn.execute(f'SET LOCAL search_path = "{schema}"')
                     await conn.execute(path.read_text())
 
             # Fila PRE-037: sin `estado` (la columna ni siquiera existe todavía).
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await conn.execute(
-                    "INSERT INTO trd_series (code, name) VALUES ($1, 'itest pre-037')",
+                    "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest pre-037', 5, 5)",
                     "PRE037",
                 )
 
             # Ahora corre 037 (el guard `current_schema()` debe verla, per-schema).
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await conn.execute(_MIGRATION_037_PATH.read_text())
 
             # Y el resto de la cadena, que ya puede apoyarse en lo que 037 creó.
             for path in files_after:
                 async with conn.transaction():
-                    await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                    await conn.execute(f'SET LOCAL search_path = "{schema}"')
                     await conn.execute(path.read_text())
 
             row = await conn.fetchrow(
@@ -291,7 +291,7 @@ async def test_migration_037_is_idempotent_in_both_schemas(
 
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             await conn.execute(sql)  # no debe lanzar
 
         trd_constraints = await _constraint_names(conn, schema, "trd_series")
@@ -304,9 +304,9 @@ async def test_migration_037_is_idempotent_in_both_schemas(
         # El motor sigue operativo tras la re-ejecución: por mutación.
         code = f"IDEM{uuid.uuid4().hex[:6]}"
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             row = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name) VALUES ($1, 'itest post-idempotencia') "
+                "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest post-idempotencia', 5, 5) "
                 "RETURNING estado",
                 code,
             )
@@ -326,12 +326,12 @@ async def test_check_constraint_active_by_mutation_in_both_schemas(
     for schema in (schema_a, schema_b):
         code = f"CKM{uuid.uuid4().hex[:6]}"
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(asyncpg.exceptions.CheckViolationError):
                 await conn.execute(
                     """
-                    INSERT INTO trd_series (code, name, estado, acto_administrativo)
-                    VALUES ($1, 'itest CHECK activo', 'migrada', 'no deberia poder')
+                    INSERT INTO trd_series (code, name, estado, acto_administrativo, archivo_gestion_years, archivo_central_years)
+                    VALUES ($1, 'itest CHECK activo', 'migrada', 'no deberia poder', 5, 5)
                     """,
                     code,
                 )
@@ -340,34 +340,34 @@ async def test_check_constraint_active_by_mutation_in_both_schemas(
         # mismo UPDATE de contenido SÍ pasa -- confirma que el trigger no es
         # sobre-ancho (falso positivo bloqueando lo legítimo).
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             serie = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name) VALUES ($1, 'itest borrador editable') "
+                "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest borrador editable', 5, 5) "
                 "RETURNING id, estado",
                 f"OKB{uuid.uuid4().hex[:6]}",
             )
             assert serie["estado"] == "borrador"
             updated = await conn.fetchrow(
-                "UPDATE trd_series SET retention_years = 99 WHERE id = $1 RETURNING retention_years",
+                "UPDATE trd_series SET archivo_gestion_years = 99 WHERE id = $1 RETURNING archivo_gestion_years",
                 serie["id"],
             )
-            assert updated["retention_years"] == 99
+            assert updated["archivo_gestion_years"] == 99
 
         # ... pero la MISMA mutación sobre una fila `migrada` (backfill,
         # DEFAULT NO aplica -- se fuerza el estado explícito) SÍ la rechaza
         # el trigger append-only (`trg_trd_series_append_only`).
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             migrada = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name, estado) VALUES ($1, 'itest migrada', 'migrada') "
+                "INSERT INTO trd_series (code, name, estado, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest migrada', 'migrada', 5, 5) "
                 "RETURNING id",
                 f"MGB{uuid.uuid4().hex[:6]}",
             )
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(
                 asyncpg.exceptions.PostgresError, match=r"contenido inmutable en estado"
             ):
                 await conn.execute(
-                    "UPDATE trd_series SET retention_years = 99 WHERE id = $1", migrada["id"]
+                    "UPDATE trd_series SET archivo_gestion_years = 99 WHERE id = $1", migrada["id"]
                 )

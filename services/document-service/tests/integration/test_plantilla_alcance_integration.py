@@ -32,7 +32,7 @@ CONTRATACION = 200
 
 
 async def _repo(conn: asyncpg.Connection, slug: str) -> BorradorRepository:
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     return BorradorRepository(conn)
 
 

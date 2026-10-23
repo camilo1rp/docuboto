@@ -26,7 +26,7 @@ class VistoBuenoRepository:
 
     async def _sp(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
-        await self._conn.execute(f'SET search_path TO "{schema}", public')
+        await self._conn.execute(f'SET search_path TO "{schema}"')
 
     async def caller_clearance(self, user_id: uuid.UUID | None) -> int:
         """Clearance del llamante (fail-closed a PUBLICA sin identidad)."""

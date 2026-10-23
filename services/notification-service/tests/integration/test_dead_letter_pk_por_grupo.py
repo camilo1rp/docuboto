@@ -64,7 +64,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
     await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        await c.execute(f'SET search_path TO "{schema}", public')
+        await c.execute(f'SET search_path TO "{schema}"')
         yield c
     finally:
         assert schema.startswith("tenant_itest_")

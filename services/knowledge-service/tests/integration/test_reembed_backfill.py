@@ -156,6 +156,13 @@ async def test_reembed_respects_is_embeddable_blocks_classified_with_external_pr
     slug, conn = tenant_ctx
     monkeypatch.setattr(settings, "embedding_provider", "ollama")
 
+    # ADR-037: con la bandera apagada el tenant se salta ANTES de llegar a `is_embeddable`;
+    # esta prueba es del bloqueo por residencia, así que se abre esa puerta.
+    async def _bandera_abierta(*_a, **_k) -> bool:
+        return False
+
+    monkeypatch.setattr(reembed, "egreso_con_bandera_apagada", _bandera_abierta)
+
     await _seed_pending_sentinel(
         conn, source_ref="RE-2", nivel=CLASIFICADA, texto="contenido clasificado pendiente"
     )
@@ -293,18 +300,18 @@ async def test_reembed_tenant_isolation_scoped_call_never_touches_other_schema(
 
         for path in runner._sql_files(runner.TENANT_DIR):
             async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema_b}", public')
+                await db_conn.execute(f'SET LOCAL search_path = "{schema_b}"')
                 await db_conn.execute(path.read_text())
 
         # Sembrar el centinela de B con el search_path puesto en B.
-        await db_conn.execute(f'SET search_path = "{schema_b}", public')
+        await db_conn.execute(f'SET search_path = "{schema_b}"')
         await _seed_pending_sentinel(
             db_conn, source_ref="RE-B-1", nivel=PUBLICA, texto="contenido del tenant B"
         )
 
         # Volver el search_path activo a A (estado que `tenant_ctx` dejó) y
         # sembrar el centinela de A.
-        await db_conn.execute(f'SET search_path = "{schema_a}", public')
+        await db_conn.execute(f'SET search_path = "{schema_a}"')
         await _seed_pending_sentinel(
             db_conn, source_ref="RE-A-1", nivel=PUBLICA, texto="contenido del tenant A"
         )
@@ -338,4 +345,4 @@ async def test_reembed_tenant_isolation_scoped_call_never_touches_other_schema(
             f"guardarraíl: me niego a hacer DROP SCHEMA CASCADE de {schema_b!r}"
         )
         await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema_b}" CASCADE')
-        await db_conn.execute(f'SET search_path = "{schema_a}", public')
+        await db_conn.execute(f'SET search_path = "{schema_a}"')

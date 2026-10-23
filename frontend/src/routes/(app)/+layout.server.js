@@ -98,6 +98,8 @@ export async function load({ cookies, url, fetch }) {
   // franquea—, pero hay que DECIRLO. `permisosDegradados` es lo que permite al
   // layout mostrar el aviso.
   user.permisosDegradados = false;
+  // Asistente por entidad (ADR-037): apagado salvo que /auth/me diga `true`.
+  user.asistente_habilitado = false;
   try {
     const meData = await fetch(`${API_V1}/auth/me`, {
       headers: {
@@ -127,6 +129,8 @@ export async function load({ cookies, url, fetch }) {
       // mostraba jamás. Fail-closed al `sub` solo si el backend no lo trae:
       // preferimos no reconocer un rol a atribuir uno ajeno.
       user.user_id = me.user_id ?? user.sub;
+      // Solo `true` estricto: el backend ya entrega `false` si no pudo leerla.
+      user.asistente_habilitado = me.asistente_habilitado === true;
       // Si el backend enriquece el nombre/email, actualizar
       if (me.name) user.name = me.name;
       if (me.email) user.email = me.email;

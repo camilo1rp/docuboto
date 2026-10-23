@@ -37,8 +37,10 @@
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
-  import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
+  import { notifyError, notifySuccess, notifyWarning } from "$lib/stores/notifications.js";
 
+  import ProductorasSelect from "$lib/components/features/trd/ProductorasSelect.svelte";
+  import CuadroClasificacion from "$lib/components/features/trd/CuadroClasificacion.svelte";
   import CatalogCrudPanel from "$lib/components/features/admin/CatalogCrudPanel.svelte";
   import InstrumentLifecycleActions from "$lib/components/features/admin/InstrumentLifecycleActions.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -46,6 +48,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
+  import SoportesCitados from "$lib/components/features/admin/SoportesCitados.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
 
   // Circuito de convalidación (ADR-025/ADR-026): mismos estados/chips que
@@ -145,6 +148,7 @@
   // ---------------------------------------------------------------------------
   const TABS = [
     { id: "series", label: "Series TRD/CCD", icon: "fa-folder-tree" },
+    { id: "cuadro", label: "Cuadro", icon: "fa-sitemap" },
     { id: "tipos", label: "Tipos documentales", icon: "fa-file-lines" },
     { id: "revision", label: "Revisión pendiente", icon: "fa-triangle-exclamation" },
     { id: "vencidos", label: "Disposición vencida", icon: "fa-hourglass-end" },
@@ -351,34 +355,57 @@
   let sName = "";
   let sDescription = "";
   let sParentId = "";
-  let sRetentionYears = "5";
-  let sTotalRetention = "10";
   let sDisposition = "E";
   let sArchivoGestion = "";
   let sArchivoCentral = "";
+  /** @type {number[]} */
+  let sProductoras = [];
   let sPdfaProfile = "";
   let sCodeError = "";
   let sNameError = "";
+  let sFasesError = "";
+
+  /** Dependencias activas para el selector de productoras (por `codigo`). */
+  $: dependencias = data.dependencias ?? [];
+
+  /** Retención total en vivo: SOLO lectura, es la suma de las dos fases (C-4). */
+  function totalFases(g, c) {
+    return (Number(g) || 0) + (Number(c) || 0);
+  }
+  /** Valida las fases como el backend: enteros >= 0, ambas presentes, suma >= 1. */
+  function errorFases(g, c) {
+    if (g === "" || c === "" || g == null || c == null) {
+      return "Indique los años de archivo de gestión y de archivo central (0 es válido).";
+    }
+    const a = Number(g);
+    const b = Number(c);
+    if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) {
+      return "Los años deben ser enteros mayores o iguales a 0.";
+    }
+    if (a + b < 1) return "La retención debe sumar al menos 1 año entre gestión y central.";
+    return "";
+  }
 
   function openSerieCreate() {
     sCode = "";
     sName = "";
     sDescription = "";
     sParentId = "";
-    sRetentionYears = "5";
-    sTotalRetention = "10";
     sDisposition = "E";
     sArchivoGestion = "";
     sArchivoCentral = "";
+    sProductoras = [];
     sPdfaProfile = "";
     sCodeError = "";
     sNameError = "";
+    sFasesError = "";
     serieCreateOpen = true;
   }
 
   async function crearSerie() {
     sCodeError = "";
     sNameError = "";
+    sFasesError = "";
     if (!sCode.trim()) {
       sCodeError = "El código es obligatorio.";
       return;
@@ -387,6 +414,8 @@
       sNameError = "El nombre es obligatorio.";
       return;
     }
+    sFasesError = errorFases(sArchivoGestion, sArchivoCentral);
+    if (sFasesError) return;
     actionLoading = true;
     try {
       const res = await fetch("/admin/trd/api", {
@@ -397,11 +426,11 @@
           name: sName.trim(),
           description: sDescription.trim() || null,
           parent_id: sParentId || null,
-          retention_years: Number(sRetentionYears),
-          total_retention: Number(sTotalRetention),
           disposition: sDisposition,
-          archivo_gestion_years: sArchivoGestion ? Number(sArchivoGestion) : null,
-          archivo_central_years: sArchivoCentral ? Number(sArchivoCentral) : null,
+          archivo_gestion_years: Number(sArchivoGestion),
+          archivo_central_years: Number(sArchivoCentral),
+          // Solo series raíz: una subserie hereda la productora de su serie.
+          ...(sParentId ? {} : { dependencias_productoras: sProductoras }),
           pdfa_profile: sPdfaProfile || null,
         }),
       });
@@ -422,8 +451,11 @@
 
   let eName = "";
   let eDescription = "";
-  let eRetentionYears = "";
-  let eTotalRetention = "";
+  let eArchivoGestion = "";
+  let eArchivoCentral = "";
+  /** @type {number[]} */
+  let eProductoras = [];
+  let eFasesError = "";
   let eDisposition = "";
   let ePdfaProfile = "";
   let eIsActive = true;
@@ -432,8 +464,12 @@
     serieEditTarget = serie;
     eName = serie.name ?? "";
     eDescription = serie.description ?? "";
-    eRetentionYears = String(serie.retention_years ?? "");
-    eTotalRetention = String(serie.total_retention ?? "");
+    eArchivoGestion =
+      serie.archivo_gestion_years != null ? String(serie.archivo_gestion_years) : "";
+    eArchivoCentral =
+      serie.archivo_central_years != null ? String(serie.archivo_central_years) : "";
+    eProductoras = (serie.dependencias_productoras ?? []).map((d) => Number(d.dependencia_codigo));
+    eFasesError = "";
     eDisposition = serie.disposition ?? "E";
     ePdfaProfile = serie.pdfa_profile ?? "";
     eIsActive = serie.is_active !== false;
@@ -442,6 +478,8 @@
 
   async function guardarSerie() {
     if (!serieEditTarget) return;
+    eFasesError = errorFases(eArchivoGestion, eArchivoCentral);
+    if (eFasesError) return;
     actionLoading = true;
     try {
       const res = await fetch(`/admin/trd/api/${serieEditTarget.id}`, {
@@ -450,8 +488,9 @@
         body: JSON.stringify({
           name: eName.trim(),
           description: eDescription.trim() || null,
-          retention_years: Number(eRetentionYears),
-          total_retention: Number(eTotalRetention),
+          archivo_gestion_years: Number(eArchivoGestion),
+          archivo_central_years: Number(eArchivoCentral),
+          ...(serieEditTarget.parent_id ? {} : { dependencias_productoras: eProductoras }),
           disposition: eDisposition,
           pdfa_profile: ePdfaProfile || null,
           is_active: eIsActive,
@@ -490,6 +529,7 @@
   let tSerieId = "";
   let tObligatorio = false;
   let tVentanilla = false;
+  let tPublicable = false;
   let tMetadataTemplate = "";
   let tCodeError = "";
   let tNombreError = "";
@@ -500,6 +540,7 @@
     tSerieId = filtroSerie || "";
     tObligatorio = false;
     tVentanilla = false;
+    tPublicable = false;
     tMetadataTemplate = "";
     tCodeError = "";
     tNombreError = "";
@@ -528,6 +569,8 @@
           trd_serie_id: tSerieId || null,
           obligatorio: tObligatorio,
           admite_ventanilla_publica: tVentanilla,
+          // Marca propia (Ley 1712), solo nivel 3: sin él ni se envía.
+          ...(canWriteLevel3 && tPublicable ? { publicable: true } : {}),
           metadata_template: tMetadataTemplate.trim() || null,
           activo: true,
         }),
@@ -551,6 +594,8 @@
   let etSerieId = "";
   let etObligatorio = false;
   let etVentanilla = false;
+  let etPublicable = false;
+  let etPublicableOriginal = false;
   let etMetadataTemplate = "";
   let etActivo = true;
 
@@ -560,6 +605,8 @@
     etSerieId = tipo.trd_serie_id ?? "";
     etObligatorio = !!tipo.obligatorio;
     etVentanilla = !!tipo.admite_ventanilla_publica;
+    etPublicable = !!tipo.publicable;
+    etPublicableOriginal = !!tipo.publicable;
     etMetadataTemplate = tipo.metadata_template ?? "";
     etActivo = tipo.activo !== false;
     tipoEditOpen = true;
@@ -577,6 +624,8 @@
           trd_serie_id: etSerieId || null,
           obligatorio: etObligatorio,
           admite_ventanilla_publica: etVentanilla,
+          // Solo si cambió: cambiarla (o reactivar un tipo publicable) exige nivel 3.
+          ...(etPublicable !== etPublicableOriginal ? { publicable: etPublicable } : {}),
           metadata_template: etMetadataTemplate.trim() || null,
           activo: etActivo,
         }),
@@ -590,6 +639,14 @@
       tipoEditOpen = false;
       tipoEditTarget = null;
       notifySuccess("Tipo documental actualizado.");
+      // Al quitar «publicable» los radicados ya publicados NO se despublican
+      // solos: el retiro es un acto explícito por radicado.
+      if (typeof resData.publicados_vigentes === "number" && resData.publicados_vigentes > 0) {
+        notifyWarning(
+          `Atención: ${resData.publicados_vigentes} radicado(s) de este tipo siguen publicados. Quitar la marca no los retira: despublíquelos uno a uno.`,
+          10000,
+        );
+      }
     } catch {
       notifyError("No se pudo conectar al servidor.");
     } finally {
@@ -709,6 +766,7 @@
         <th scope="col">Nombre</th>
         <th scope="col">Disposición</th>
         <th scope="col">Retención (gest./cent.)</th>
+        <th scope="col">Productora(s)</th>
         <th scope="col">Estado del instrumento</th>
       </svelte:fragment>
 
@@ -722,7 +780,17 @@
           </span>
         </td>
         <td>{item.disposition}</td>
-        <td>{item.retention_years}a / {item.total_retention}a</td>
+        <td>
+          {item.archivo_gestion_years ?? "—"}a / {item.archivo_central_years ?? "—"}a
+          <span class="trd-page__version">(total {item.total_retention ?? "—"}a)</span>
+        </td>
+        <td>
+          {#if item.dependencias_productoras?.length}
+            {item.dependencias_productoras.map((d) => d.dependencia_nombre).join(", ")}
+          {:else}
+            <span class="trd-page__version">—</span>
+          {/if}
+        </td>
         <td>
           <StatusChip
             status={ESTADO_CHIP_MAP[item.estado] ?? "neutral"}
@@ -757,6 +825,7 @@
           canWrite={canWriteLevel3}
           basePath="/admin/trd/api"
           instrumentLabel="TRD"
+          {dependencias}
           on:changed={onLifecycleChanged}
         />
       </svelte:fragment>
@@ -793,18 +862,25 @@
           />
           <div class="trd-form__row">
             <FormField
-              id="serie-retention"
-              label="Años archivo de gestión (retención)"
+              id="serie-ag"
+              label="Archivo de gestión (años)"
               type="number"
-              bind:value={sRetentionYears}
+              required
+              bind:value={sArchivoGestion}
+              error={sFasesError}
             />
             <FormField
-              id="serie-total"
-              label="Años retención total"
+              id="serie-ac"
+              label="Archivo central (años)"
               type="number"
-              bind:value={sTotalRetention}
+              required
+              bind:value={sArchivoCentral}
             />
           </div>
+          <p class="trd-form__hint" aria-live="polite">
+            Retención total: <strong>{totalFases(sArchivoGestion, sArchivoCentral)} años</strong>
+            (suma de las dos fases; solo lectura).
+          </p>
           <FormField
             id="serie-disposition"
             label="Disposición final"
@@ -812,20 +888,17 @@
             bind:value={sDisposition}
             options={DISPOSICIONES}
           />
-          <div class="trd-form__row">
-            <FormField
-              id="serie-ag"
-              label="Archivo de gestión (años, opcional)"
-              type="number"
-              bind:value={sArchivoGestion}
+          {#if !sParentId}
+            <ProductorasSelect
+              id="serie-productoras"
+              options={dependencias}
+              bind:selected={sProductoras}
+              error={data.dependenciasError ?? ""}
+              hint="Quién produce la serie fija dónde queda en el cuadro de clasificación. Obligatoria para aprobar y convalidar."
             />
-            <FormField
-              id="serie-ac"
-              label="Archivo central (años, opcional)"
-              type="number"
-              bind:value={sArchivoCentral}
-            />
-          </div>
+          {:else}
+            <p class="trd-form__hint">Una subserie hereda la dependencia productora de su serie.</p>
+          {/if}
           <FormField
             id="serie-pdfa"
             label="Perfil PDF/A (opcional)"
@@ -857,18 +930,33 @@
           />
           <div class="trd-form__row">
             <FormField
-              id="serie-edit-retention"
-              label="Años archivo de gestión"
+              id="serie-edit-ag"
+              label="Archivo de gestión (años)"
               type="number"
-              bind:value={eRetentionYears}
+              required
+              bind:value={eArchivoGestion}
+              error={eFasesError}
             />
             <FormField
-              id="serie-edit-total"
-              label="Años retención total"
+              id="serie-edit-ac"
+              label="Archivo central (años)"
               type="number"
-              bind:value={eTotalRetention}
+              required
+              bind:value={eArchivoCentral}
             />
           </div>
+          <p class="trd-form__hint" aria-live="polite">
+            Retención total: <strong>{totalFases(eArchivoGestion, eArchivoCentral)} años</strong>
+            (suma de las dos fases; solo lectura).
+          </p>
+          {#if !item.parent_id}
+            <ProductorasSelect
+              id="serie-edit-productoras"
+              options={dependencias}
+              bind:selected={eProductoras}
+              hint="Solo se puede cambiar mientras la versión es borrador."
+            />
+          {/if}
           <FormField
             id="serie-edit-disposition"
             label="Disposición final"
@@ -895,6 +983,21 @@
         <Button icon="fas fa-save" loading={actionLoading} on:click={guardarSerie}>Guardar</Button>
       </svelte:fragment>
     </CatalogCrudPanel>
+  </div>
+
+  <!-- ===================================================================
+       Panel: Cuadro de clasificación (derivado del organigrama, solo lectura)
+       =================================================================== -->
+  <div
+    id="panel-cuadro"
+    role="tabpanel"
+    aria-labelledby="tab-cuadro"
+    hidden={activeTab !== "cuadro"}
+    tabindex="0"
+  >
+    {#if activeTab === "cuadro"}
+      <CuadroClasificacion canBorradores={canWrite} />
+    {/if}
   </div>
 
   <!-- ===================================================================
@@ -945,6 +1048,7 @@
         <th scope="col">Serie TRD</th>
         <th scope="col">Obligatorio</th>
         <th scope="col">Ventanilla pública</th>
+        <th scope="col">Publicable (Ley 1712)</th>
         <th scope="col">Estado</th>
       </svelte:fragment>
 
@@ -954,6 +1058,7 @@
         <td>{serieNombre(item.trd_serie_id) ?? "—"}</td>
         <td>{item.obligatorio ? "Sí" : "No"}</td>
         <td>{item.admite_ventanilla_publica ? "Sí" : "No"}</td>
+        <td>{item.publicable ? "Sí" : "No"}</td>
         <td>
           <StatusChip
             status={item.activo ? "success" : "neutral"}
@@ -1015,6 +1120,15 @@
             puede presentarlo sin identificarse en el sistema. Sin marcar no se ofrece: el silencio
             no significa «todo».
           </p>
+          <label class="trd-form__check">
+            <input type="checkbox" bind:checked={tPublicable} disabled={!canWriteLevel3} />
+            Publicable (Ley 1712)
+          </label>
+          <p class="trd-form__hint">
+            Distinto de la ventanilla: autoriza publicar de oficio en el portal los radicados de
+            este tipo. Es una marca deliberada (por defecto, no){#if !canWriteLevel3}; cambiarla
+              exige nivel 3 del permiso de TRD{/if}.
+          </p>
           <FormField
             id="tipo-metadata-template"
             label="Plantilla de metadatos asociada (opcional)"
@@ -1053,15 +1167,33 @@
             puede presentarlo sin identificarse en el sistema. Sin marcar no se ofrece: el silencio
             no significa «todo».
           </p>
+          <label class="trd-form__check">
+            <input type="checkbox" bind:checked={etPublicable} disabled={!canWriteLevel3} />
+            Publicable (Ley 1712)
+          </label>
+          <p class="trd-form__hint">
+            Distinto de la ventanilla: autoriza publicar de oficio en el portal los radicados de
+            este tipo. Es una marca deliberada (por defecto, no){#if !canWriteLevel3}; cambiarla
+              exige nivel 3 del permiso de TRD{/if}.
+          </p>
           <FormField
             id="tipo-edit-metadata-template"
             label="Plantilla de metadatos asociada"
             bind:value={etMetadataTemplate}
           />
           <label class="trd-form__check">
-            <input type="checkbox" bind:checked={etActivo} />
+            <input
+              type="checkbox"
+              bind:checked={etActivo}
+              disabled={!canWriteLevel3 && !!item.publicable && item.activo === false}
+            />
             Activo
           </label>
+          {#if !canWriteLevel3 && item.publicable && item.activo === false}
+            <p class="trd-form__hint">
+              Reactivar un tipo publicable exige nivel 3 del permiso de TRD.
+            </p>
+          {/if}
         </form>
       </svelte:fragment>
       <svelte:fragment slot="edit-footer">
@@ -1357,6 +1489,7 @@
       El lote y sus cuatro pasos siguientes se siguen desde
       <a href="/admin/eliminacion?lote={resultadoLote.id}">Eliminación documental</a>.
     </p>
+    <SoportesCitados soportes={resultadoLote.soportes_citados ?? []} />
     {#if resultadoLote.rechazados?.length}
       <p>No entraron {resultadoLote.rechazados.length}, y por estos motivos:</p>
       <ul class="trd-vencidos__rechazos">

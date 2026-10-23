@@ -33,6 +33,12 @@ from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás 
     nivel_efectivo,
     resolve_caller_clearance,
 )
+from orpycamcp_common.tenant import (
+    ERROR_ASISTENTE_DESHABILITADO,
+    ERROR_ASISTENTE_NO_DISPONIBLE,
+    LOCAL_EMBEDDING_PROVIDERS,  # noqa: F401 — re-exportado: única definición en common
+    asistente_habilitado,
+)
 
 from app.core.config import settings
 from app.core.database import get_tenant_conn
@@ -58,7 +64,6 @@ RESERVADA = 2
 # ser remota (`ollama_url` es configurable), así que hasta que exista una
 # reconciliación explícita de residencia para ese proveedor (CC-03, diferido a
 # Inc.3) se trata como externo.
-LOCAL_EMBEDDING_PROVIDERS = frozenset({"stub", "local_st"})
 
 
 def is_local_embedding_provider(provider: str) -> bool:
@@ -171,6 +176,34 @@ def is_generatable(nivel_seguridad: int, provider: str, ollama_url: str | None =
 # Gemelo de signature-service/app/core/clearance.py: RBAC fail-closed resuelto en
 # la BD del tenant (ADR-013) y no-read-up sobre el radicado referenciado por el
 # dead-letter, con 404 neutro.
+
+
+async def require_asistente_habilitado(
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> None:
+    """Gate de la bandera por entidad (ADR-037): 403 si la entidad no activó el asistente.
+
+    Va ANTES de ``require_permission`` (el 403 honesto «la entidad no lo tiene» gana
+    al «usted no tiene el permiso»). Aplica también a ROOT: la bandera es una decisión
+    de la entidad, no un permiso de la persona. Sin caché (apagar debe ser inmediato) y
+    fail-closed: si el registro no responde, 503, no se sirve.
+    """
+    try:
+        activado = await asistente_habilitado(conn, request.headers.get("X-Tenant-Slug", ""))
+    except Exception:  # noqa: BLE001 — no poder saberlo se responde como «no»
+        logger.warning("no se pudo leer asistente_habilitado", exc_info=True)
+        status_code, error, detail = ERROR_ASISTENTE_NO_DISPONIBLE
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": error, "detail": detail, "status": status_code},
+        ) from None
+    if not activado:
+        status_code, error, detail = ERROR_ASISTENTE_DESHABILITADO
+        raise HTTPException(
+            status_code=status_code,
+            detail={"error": error, "detail": detail, "status": status_code},
+        )
 
 
 def require_permission(perm_name: str, min_crud: int = 1):

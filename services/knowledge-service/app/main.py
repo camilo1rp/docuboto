@@ -25,6 +25,7 @@ from app.jobs.reconciliacion_nivel import bucle_de_reconciliacion
 from app.routers.admin_deadletter import router as admin_deadletter_router
 from app.routers.health import router as health_router
 from app.routers.knowledge import router as knowledge_router
+from app.routers.metrics import router as metrics_router
 from app.services.embeddings import get_provider
 from app.workers import document_consumer
 
@@ -143,3 +144,4 @@ app.include_router(knowledge_router)
 app.include_router(admin_deadletter_router)
 deadletter.instalar_manejador_radicados_ausente(app)
 app.include_router(health_router)
+app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)

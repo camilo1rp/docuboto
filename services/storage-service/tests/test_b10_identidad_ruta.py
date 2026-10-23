@@ -25,12 +25,16 @@ from app.main import app
 SECRETO = "secreto-de-prueba-b10-ruta"
 USER = "11111111-1111-1111-1111-111111111111"
 INDICE = "/api/v1/preservacion/proteger-indice"
-HOLD = "/api/v1/preservacion/legal-hold-internal"
+HOLD = "/api/v1/preservacion/legal-hold-internal/fijar"
 
 
 @pytest.fixture(autouse=True)
-def _secreto(monkeypatch: pytest.MonkeyPatch) -> None:
+def _secreto(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("IDENTITY_SIGNING_SECRET", SECRETO)
+    # El middleware reclama el nonce en Redis (ADR-036, addendum C-7): en unidad, en memoria.
+    identidad.fijar_registro(identidad.RegistroNoncesMemoria())
+    yield
+    identidad.fijar_registro(None)
 
 
 async def _post(ruta: str, cabeceras: dict[str, str], metodo: str = "POST"):

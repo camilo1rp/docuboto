@@ -28,7 +28,11 @@
  * import (ver `error-de-carga-leido.test.js`).
  */
 import { describe, it, expect } from "vitest";
-import { ADMIN_AREA_PERMISSIONS, ADMIN_DEFAULT_PERMISSION } from "$lib/utils/adminGate.js";
+import {
+  ADMIN_AREA_MIN_LEVEL,
+  ADMIN_AREA_PERMISSIONS,
+  ADMIN_DEFAULT_PERMISSION,
+} from "$lib/utils/adminGate.js";
 import { extraerRutasFastapi } from "$lib/guardianes/gatesFastapi.js";
 import { extraerEndpointsFront } from "$lib/guardianes/frontAdminEndpoints.js";
 import { evaluarContrato, controlPositivo } from "$lib/guardianes/contratoAdmin.js";
@@ -75,6 +79,8 @@ const EXCEPCIONES = /** @type {Record<string, string>} */ ({
     "Niveles de seguridad: auth-service/clearance.py los sirve a todo autenticado (catálogo estático del selector); asignar nivel a un grupo sí exige USUA_PERM_ADMIN.",
   "parametros GET /config/params":
     "Parámetros del tenant: tenant-service/config.py lectura abierta (la UI de radicación consulta límites y plazos); PUT/PATCH sí exigen USUA_PERM_ADMIN.",
+  "parametros GET /config/asistente":
+    "Bandera del asistente por entidad (ADR-037): tenant-service/config.py lectura abierta a todo el tenant (el diseño la clasifica como catálogo; la UI de cada persona ya la recibe por /auth/me); el PUT exige USUA_PERM_ADMIN>=3.",
   "parametros GET /config/params/{}":
     "Un parámetro del tenant: misma lectura abierta que la lista, tenant-service/config.py.",
   "parametros GET /config/holidays":
@@ -87,6 +93,9 @@ const EXCEPCIONES = /** @type {Record<string, string>} */ ({
   // {PERM_RADI, USUA_PERM_ADMIN} en el backend y el guardián lo lee; ya no son desajustes.)
   "preservacion POST /expedientes/{}/indice/firmar":
     "Firmar el índice exige PERM_FIRMA (archive-service/indice.py), no USUA_PERM_EXPEDIENTE (el permiso del área). No es un hallazgo abierto: la UI de preservación ya oculta el botón a quien no tiene AMBOS permisos (admin/preservacion/+page.svelte:89-93); el backend re-valida PERM_FIRMA.",
+
+  "trd GET /trd/cuadro":
+    "Cuadro de clasificación: archive-service/trd.py no gatea la lectura, igual que GET /trd (la escritura de la TRD sí exige USUA_PERM_TRD); lo consumen los selectores de clasificación. Cerrarlo es decisión del backend.",
 
   // ── C. Permiso decidido DENTRO del código (no verificable estáticamente) ──
   "plantillas GET /plantillas":
@@ -169,6 +178,7 @@ const datos = () => ({
   rutas,
   endpoints,
   excepciones: EXCEPCIONES,
+  niveles: ADMIN_AREA_MIN_LEVEL,
 });
 const texto = (h) => h.map((x) => `[${x.regla}] ${x.clave}: ${x.detalle}`).join("\n");
 

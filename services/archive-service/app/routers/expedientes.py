@@ -44,15 +44,21 @@ from app.schemas.archive import (
     ExpedienteSearchResponse,
     ExpedienteUpdate,
     HistorialAccesoEntry,
-    LegalHoldRequest,
-    LegalHoldResponse,
     PublicacionRequest,
     PublicacionResponse,
     RadicadoLink,
     RolAutorizado,
 )
+from app.schemas.retencion_legal import (
+    LegalHoldFijado,
+    LegalHoldFijarRequest,
+    LegalHoldItem,
+    LegalHoldLevantado,
+    LegalHoldLevantarRequest,
+)
 from app.services.archive_service import ArchiveService
 from app.services.metadata_service import MetadataValidationError
+from app.services.retencion_legal_service import RetencionLegalService
 
 router = APIRouter(prefix="/api/v1/expedientes", tags=["expedientes"])
 
@@ -307,31 +313,74 @@ async def set_publicacion_expediente(
     return PublicacionResponse(**resultado)
 
 
+@router.get(
+    "/{expediente_id}/legal-holds",
+    response_model=list[LegalHoldItem],
+    summary="Listar las retenciones legales (holds) del expediente, activas y levantadas",
+    # Misma potestad que fijarlas/levantarlas (acto de custodia, no de operación diaria),
+    # en lectura: USUA_PERM_ADMIN crud>=1. El clearance va en el WHERE de la lectura del
+    # expediente (404 neutro).
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=1))],
+)
+async def list_legal_holds_expediente(
+    expediente_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[LegalHoldItem]:
+    clearance = await resolve_caller_clearance(conn, actor.id)
+    return await RetencionLegalService(conn, tenant_slug).listar(expediente_id, clearance)
+
+
 @router.post(
-    "/{expediente_id}/legal-hold",
-    response_model=LegalHoldResponse,
-    summary="Declarar o levantar el legal hold (freeze de litigio) del expediente",
+    "/{expediente_id}/legal-holds",
+    response_model=LegalHoldFijado,
+    status_code=status.HTTP_201_CREATED,
+    summary="Fijar una retención legal (hold) POR MOTIVO sobre el expediente",
     # Acto administrativo de custodia, no de operación diaria: nivel de ADMIN con
     # escritura. El permiso de operar expedientes (USUA_PERM_EXPEDIENTE) es el que
     # hoy tiene cualquier tramitador y NO basta para congelar la disposición.
     dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
 )
-async def set_legal_hold_expediente(
+async def fijar_legal_hold_expediente(
     expediente_id: uuid.UUID,
-    payload: LegalHoldRequest,
+    payload: LegalHoldFijarRequest,
     tenant_slug: str = Depends(_require_tenant),
     actor: Actor = Depends(require_actor),
     canal: str = Depends(_optional_canal),
     conn: asyncpg.Connection = Depends(get_db_conn),
-) -> LegalHoldResponse:
-    """Congela (o libera) la disposición final de los objetos WORM del expediente.
-
-    Motivo y acta son obligatorios en ambos sentidos. `404` neutro si el
-    expediente no existe o supera el clearance del llamante.
-    """
+) -> LegalHoldFijado:
+    """Congela la disposición final del expediente por un motivo (`judicial`, `disciplinario`,
+    `fiscal`, `administrativo`). Existe aunque el expediente aún no tenga objetos WORM: los que
+    nazcan después lo heredan. `valoracion_pendiente` es del sistema (422 `hold_de_sistema`).
+    `404` neutro si el expediente no existe o supera el clearance del llamante."""
     clearance = await resolve_caller_clearance(conn, actor.id)
-    return await ArchiveService(conn, tenant_slug).set_legal_hold(
+    return await RetencionLegalService(conn, tenant_slug).fijar(
         expediente_id, payload, clearance, actor=actor.audit_actor, canal=canal
+    )
+
+
+@router.post(
+    "/{expediente_id}/legal-holds/{hold_id}/levantar",
+    response_model=LegalHoldLevantado,
+    summary="Levantar UNA retención legal del expediente (confirmando su motivo)",
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def levantar_legal_hold_expediente(
+    expediente_id: uuid.UUID,
+    hold_id: uuid.UUID,
+    payload: LegalHoldLevantarRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    canal: str = Depends(_optional_canal),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> LegalHoldLevantado:
+    """Levanta UN hold por su `hold_id`. `motivo_tipo` es la confirmación del motivo (409
+    `motivo_no_coincide`). Los objetos se liberan en S3 solo si no queda otro hold activo
+    (`holds_restantes`). `valoracion_pendiente` no se levanta a mano (409 `hold_de_sistema`)."""
+    clearance = await resolve_caller_clearance(conn, actor.id)
+    return await RetencionLegalService(conn, tenant_slug).levantar(
+        expediente_id, hold_id, payload, clearance, actor=actor.audit_actor, canal=canal
     )
 
 

@@ -41,6 +41,7 @@ import pytest
 from app.core.database import tenant_schema
 from app.schemas.archive import ExpedienteCreate, TrdSerieCreate, TvdAgrupacionCreate
 from app.services.archive_service import ArchiveService
+from app.services.retention_math import RetencionDiferida
 
 from .conftest import convalidate_for_test
 
@@ -186,7 +187,7 @@ async def test_capa4_relajada_rechaza_cruce_origen_tipo_instrumento(
 
     async def _insert_expediente(*, origen: str, trd_serie_id: uuid.UUID, extra: dict) -> None:
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             cols = ["code", "name", "trd_serie_id", "origen", *extra.keys()]
             placeholders = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
             await conn.execute(
@@ -233,7 +234,7 @@ async def test_expedientes_fondo_acumulado_forma_check(
 
     async def _insert(*, origen: str, fecha_extrema_final: date | None) -> None:
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             await conn.execute(
                 "INSERT INTO expedientes (code, name, origen, fecha_extrema_final) "
                 "VALUES ($1, $2, $3, $4)",
@@ -255,20 +256,24 @@ async def test_expedientes_fondo_acumulado_forma_check(
 
 
 @pytest.mark.integration
-async def test_worm_resolvers_cablean_el_fondo_acumulado_con_la_fecha_extrema_y_el_clamp(
+async def test_worm_resolvers_difieren_el_contenido_del_fondo_vencido_a_la_valoracion(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """ADR-026 D4 + AREA-06-04 (Increment 3), contra Postgres REAL con fechas históricas
-    (lo que el ADR exige antes de habilitar cualquier ruta WORM para un fondo).
+    """ADR-026 D4 + AREA-06-04, enmendado por ADR-043 (C-5 / C7), contra Postgres REAL con fechas
+    históricas.
 
-    Antes los resolutores devolvían `None` (fail-closed) y el índice, el acta y el AIP de
-    un fondo acumulado quedaban SIN Object-Lock para siempre. Ahora la base es
-    `fecha_extrema_final` con clamp: un fondo de 1985 con 5 años de retención (venció en
-    1990) acaba con `retain_until == hoy + margen`; si la base fuera `closed_at` (hoy)
-    saldría hoy + 5 años, y si no hubiera clamp saldría 1990 (storage lo rechaza)."""
-    from datetime import timedelta
+    Un fondo de 1985 con 5 años de retención (venció en 1990) YA NO recibe un COMPLIANCE de
+    `hoy + margen` (irreversible sobre contenido vencido): el índice y el AIP devuelven
+    `RetencionDiferida` tras asegurar el hold `valoracion_pendiente` (storage mockeado en el
+    borde HTTP) y la fila de amarre queda en `expediente_valoracion_hold`. El ACTA, en cambio,
+    sigue con retención por calendario cuya base es el acto, no la fecha extrema (ver
+    `test_worm_fondo_acumulado.py`).
 
-    from app.core.config import settings
+    Mutación que debe caer: restituir el clamp (`return _restar_anios(minimo, total_years)`) hace
+    que `retention` sea una tupla y el `isinstance(..., RetencionDiferida)` falle; devolver
+    `RetencionDiferida` sin llamar a `fijar_legal_hold` deja la fila de amarre vacía."""
+    from unittest.mock import AsyncMock, patch
+
     from app.services.aip_wiring_service import AipWiringService
     from app.services.index_service import IndexService
 
@@ -302,25 +307,27 @@ async def test_worm_resolvers_cablean_el_fondo_acumulado_con_la_fecha_extrema_y_
     )
     assert cerrado is not None and cerrado.closed_at is not None
 
-    hoy = date.today()
-    minimo = hoy + timedelta(days=settings.worm_fondo_acumulado_margen_dias)
-
-    def _retain_until(total: int, inicio: date) -> date:
-        try:
-            return inicio.replace(year=inicio.year + total)
-        except ValueError:
-            return inicio.replace(month=2, day=28, year=inicio.year + total)
-
     index = IndexService(conn, slug)
-    retention = await index._resolve_worm_retention(expediente.id)
-    assert retention is not None, "el índice de un fondo acumulado quedó sin WORM"
-    total, inicio = retention
-    assert total == 5
-    assert abs((_retain_until(total, inicio) - minimo).days) <= 1
-    # y no es la base equivocada: closed_at + 5 años estaría ~5 años más lejos
-    assert _retain_until(total, inicio) < _retain_until(5, cerrado.closed_at.date())
+    hold_id = uuid.uuid4()
+    fijar = AsyncMock(return_value={"hold_id": str(hold_id), "creado": True, "objetos_afectados": 0})
+    with patch("app.clients.storage_client.fijar_legal_hold", new=fijar):
+        retention = await index._resolve_worm_retention(expediente.id)
+        assert isinstance(retention, RetencionDiferida), "el fondo vencido debe diferirse"
+        # El AIP con el mismo expediente: el hold ya existe, no se vuelve a fijar.
+        aip = AipWiringService(conn, slug)
+        retention_aip = await aip._resolve_aip_retention(cerrado)
+    assert isinstance(retention_aip, RetencionDiferida)
+    assert fijar.await_count == 1, "el hold se fija UNA vez por expediente"
+    assert fijar.await_args.kwargs["motivo_tipo"] == "valoracion_pendiente"
+    assert fijar.await_args.kwargs["actor_id"] is None  # acto de sistema
 
-    aip = AipWiringService(conn, slug)
-    retention_aip = await aip._resolve_aip_retention(cerrado)
-    assert retention_aip == retention
+    fila = await conn.fetchrow(
+        f'SELECT hold_id, trd_serie_id, valoracion_id, aplicada_at FROM "{tenant_schema(slug)}".'
+        "expediente_valoracion_hold WHERE expediente_id = $1",
+        expediente.id,
+    )
+    assert fila is not None and fila["hold_id"] == hold_id
+    assert fila["trd_serie_id"] == tvd.id
+    assert fila["valoracion_id"] is None and fila["aplicada_at"] is None
+    # La renovación (ventana desde hoy) tampoco excluye al fondo.
     assert await index._resolve_ct_retencion_anios(expediente.id) == 5

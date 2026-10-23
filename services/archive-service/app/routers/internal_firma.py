@@ -62,7 +62,7 @@ async def huella_indice_vigente(
             },
         )
     schema = tenant_schema(x_tenant_slug)  # 400 si el slug no es válido
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     expediente = await conn.fetchrow(
         "SELECT id, code FROM expedientes WHERE code = $1 OR id::text = $1 LIMIT 1", ref
     )

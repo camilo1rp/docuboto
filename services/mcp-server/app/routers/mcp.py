@@ -59,14 +59,20 @@ async def list_tools(
             detail={"error": exc.code, "detail": exc.code, "status": exc.status},
         )
     tools = visible_tools(
-        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+        identidad.permissions,
+        is_root=identidad.is_root,
+        levels=identidad.levels,
+        asistente_habilitado=identidad.asistente_habilitado,
     )
     # Los procedimientos se listan JUNTO a las tools y no en un endpoint aparte:
     # para quien consume esto, «radicar un documento» y «tramitar una petición»
     # son dos cosas que puede pedir, y separarlas en dos catálogos obligaría a
     # conocer la distinción interna para encontrar la segunda.
     procs = procedimientos_visibles(
-        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+        identidad.permissions,
+        is_root=identidad.is_root,
+        levels=identidad.levels,
+        asistente_habilitado=identidad.asistente_habilitado,
     )
     return {"tools": [t.to_schema() for t in tools] + [p.to_schema() for p in procs]}
 
@@ -169,6 +175,7 @@ async def invoke_tool(
             permissions=identidad.permissions,
             is_root=identidad.is_root,
             levels=identidad.levels,
+            asistente_habilitado=identidad.asistente_habilitado,
         )
         if tool.write:
             # No se despacha: se propone. La ejecución vive en
@@ -192,6 +199,7 @@ async def invoke_tool(
                 permissions=identidad.permissions,
                 is_root=identidad.is_root,
                 levels=identidad.levels,
+                asistente_habilitado=identidad.asistente_habilitado,
             )
             return {
                 "tool": name,

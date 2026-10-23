@@ -118,7 +118,7 @@ async def test_una_entidad_operativa_recibe_su_conexion(monkeypatch: pytest.Monk
     gen, entregada = await _abrir(conn, monkeypatch)
 
     assert entregada is conn
-    assert conn.ejecutados == ['SET search_path = "tenant_demo", public']
+    assert conn.ejecutados == ['SET search_path = "tenant_demo"']
     with pytest.raises(StopAsyncIteration):
         await gen.__anext__()
     assert conn.ejecutados[-1] == "SET search_path = public"

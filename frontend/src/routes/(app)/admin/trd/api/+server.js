@@ -15,12 +15,16 @@
  *   (services/archive-service/app/routers/trd.py).
  *
  * Body permitido (allowlist, anti mass-assignment): code, name, description,
- * retention_years, total_retention, disposition, parent_id,
- * archivo_gestion_years, archivo_central_years, pdfa_profile.
+ * disposition, parent_id, archivo_gestion_years, archivo_central_years
+ * (ambas obligatorias, sin valor por omisión; 0 es válido), pdfa_profile y
+ * dependencias_productoras (int[] de `dependencias.codigo`). NUNCA
+ * retention_years ni total_retention: son derivados de solo lectura y el
+ * backend los rechaza con 422 (C-4, ADR-040).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { leerFases, leerProductoras } from "$lib/server/trdFases.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DISPOSITIONS = new Set(["CT", "E", "S", "M", "eliminate", "conserve", "digitize", "select"]);
@@ -45,6 +49,10 @@ export async function GET({ locals, url }) {
   const params = new URLSearchParams();
   const isActive = url.searchParams.get("is_active");
   if (isActive === "true" || isActive === "false") params.set("is_active", isActive);
+  // Borradores, aprobadas y derogadas (con acta y autor): el backend lo exige
+  // con USUA_PERM_TRD y responde 403 sin él (frontera de lectura, C-4).
+  if (url.searchParams.get("incluir_en_tramite") === "true")
+    params.set("incluir_en_tramite", "true");
   const size = url.searchParams.get("size");
   params.set("size", size && /^\d+$/.test(size) ? size : "200");
   const page = url.searchParams.get("page");
@@ -84,13 +92,10 @@ export async function POST({ locals, request }) {
     code,
     name,
     description,
-    retention_years,
-    total_retention,
     disposition,
     parent_id,
-    archivo_gestion_years,
-    archivo_central_years,
     pdfa_profile,
+    dependencias_productoras,
   } = body ?? {};
 
   if (typeof code !== "string" || !code.trim()) {
@@ -123,21 +128,25 @@ export async function POST({ locals, request }) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
 
+  const fases = leerFases(body ?? {}, true);
+  if (fases.error) return fases.error;
+  /** @type {number[]|undefined} */
+  let productoras;
+  if (dependencias_productoras !== undefined && dependencias_productoras !== null) {
+    const p = leerProductoras(dependencias_productoras);
+    if (p.error) return p.error;
+    productoras = p.value;
+  }
+
   const payload = {
     code: code.trim(),
     name: name.trim(),
     description: typeof description === "string" && description.trim() ? description.trim() : null,
-    retention_years: Number.isFinite(Number(retention_years)) ? Number(retention_years) : 5,
-    total_retention: Number.isFinite(Number(total_retention)) ? Number(total_retention) : 10,
     disposition: DISPOSITIONS.has(disposition) ? disposition : "E",
     parent_id: parent_id && UUID_RE.test(parent_id) ? parent_id : null,
-    archivo_gestion_years: Number.isFinite(Number(archivo_gestion_years))
-      ? Number(archivo_gestion_years)
-      : null,
-    archivo_central_years: Number.isFinite(Number(archivo_central_years))
-      ? Number(archivo_central_years)
-      : null,
+    ...fases.payload,
     pdfa_profile: PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null,
+    ...(productoras !== undefined ? { dependencias_productoras: productoras } : {}),
   };
 
   try {

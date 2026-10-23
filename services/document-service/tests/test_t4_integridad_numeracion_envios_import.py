@@ -129,7 +129,7 @@ def _conn_lote(item: dict, plantilla: dict | None) -> tuple[AsyncMock, list[str]
             return "Dirección General"
         if "FROM tipos_documentales" in query:  # catálogo de tipos (B6)
             return "Tipo"
-        if "SELECT code FROM tenants" in query:
+        if "SELECT code FROM public.tenants" in query:
             return "DEMO"
         if "INSERT INTO tracking_sequences" in query:
             estados.append(f"seq_year={a[0]}")

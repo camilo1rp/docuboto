@@ -12,11 +12,14 @@
  *
  * PATCH → el código (`code`) es inmutable (services/archive-service/app/
  *   routers/trd.py); solo se reenvían los campos editables de
- *   TrdSerieUpdate. USUA_PERM_TRD (min_crud=3) en el backend.
+ *   TrdSerieUpdate. USUA_PERM_TRD (min_crud=3) en el backend. Las fases y las
+ *   dependencias productoras solo se editan en borrador (el backend lo
+ *   decide); NUNCA retention_years/total_retention (422, C-4).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { leerFases, leerProductoras } from "$lib/server/trdFases.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DISPOSITIONS = new Set(["CT", "E", "S", "M", "eliminate", "conserve", "digitize", "select"]);
@@ -42,15 +45,8 @@ export async function PATCH({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const {
-    name,
-    description,
-    retention_years,
-    total_retention,
-    disposition,
-    is_active,
-    pdfa_profile,
-  } = body ?? {};
+  const { name, description, disposition, is_active, pdfa_profile, dependencias_productoras } =
+    body ?? {};
   if (disposition !== undefined && disposition !== null && !DISPOSITIONS.has(disposition)) {
     return json(
       { error: "validation_error", detail: "Disposición final inválida." },
@@ -72,10 +68,14 @@ export async function PATCH({ locals, params, request }) {
   if (description !== undefined)
     payload.description =
       typeof description === "string" && description.trim() ? description.trim() : null;
-  if (retention_years !== undefined && Number.isFinite(Number(retention_years)))
-    payload.retention_years = Number(retention_years);
-  if (total_retention !== undefined && Number.isFinite(Number(total_retention)))
-    payload.total_retention = Number(total_retention);
+  const fases = leerFases(body ?? {}, false);
+  if (fases.error) return fases.error;
+  Object.assign(payload, fases.payload);
+  if (dependencias_productoras !== undefined) {
+    const p = leerProductoras(dependencias_productoras);
+    if (p.error) return p.error;
+    payload.dependencias_productoras = p.value;
+  }
   if (disposition !== undefined && DISPOSITIONS.has(disposition)) payload.disposition = disposition;
   if (typeof is_active === "boolean") payload.is_active = is_active;
   if (pdfa_profile !== undefined)

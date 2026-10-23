@@ -113,7 +113,7 @@ async def test_publicar_sin_fallo_avanza_y_deja_su_asiento(tenant_ctx) -> None:
 async def test_avalar_con_el_asiento_roto_NO_deja_el_lote_avalado(tenant_ctx) -> None:
     slug, conn = tenant_ctx
     lote_id, _ = await _sembrar_lote(conn, slug)
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await _publicar(conn, lote_id, AYER)
 
     with _audit_que_falla(), pytest.raises(_Boom):
@@ -131,7 +131,7 @@ async def test_avalar_con_el_asiento_roto_NO_deja_el_lote_avalado(tenant_ctx) ->
 async def test_avalar_sin_fallo_avanza_y_deja_su_asiento(tenant_ctx) -> None:
     slug, conn = tenant_ctx
     lote_id, _ = await _sembrar_lote(conn, slug)
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await _publicar(conn, lote_id, AYER)
 
     await ArchiveService(conn, slug).avalar_lote_eliminacion(
@@ -169,7 +169,7 @@ async def _sembrar_lote_avalado_con_acta_protegida(
 ) -> uuid.UUID:
     """Un lote avalado SIN expedientes (la destrucción no es lo que se mide aquí)
     con su acta firmada y protegida bajo WORM, que son las precondiciones."""
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     lote_id = await conn.fetchval(
         "INSERT INTO eliminacion_lotes (codigo, creado_por) "
         "VALUES ($1, gen_random_uuid()) RETURNING id",

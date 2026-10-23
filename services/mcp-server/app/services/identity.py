@@ -58,6 +58,10 @@ class Identity:
     permissions: set[str] = field(default_factory=set)
     levels: dict[str, int] = field(default_factory=dict)
     is_root: bool = False
+    #: ¿La entidad activó el asistente? (ADR-037). Viene de `/auth/me`; ausente = `False`.
+    #: Sirve para MOSTRAR u ocultar y para negar temprano: knowledge-service vuelve a
+    #: leerlo de la base en cada consulta, así que un dato viejo aquí no abre nada.
+    asistente_habilitado: bool = False
 
 
 # **Sin caché, a propósito.** El plan contemplaba cachear la identidad por hash del
@@ -144,5 +148,9 @@ async def resolve_identity(
         tenant_slug=str(data.get("tenant_slug") or tenant_slug),
         permissions=set(data.get("permissions") or []),
         levels=levels,
-        is_root="ROOT" in set(data.get("roles") or []),
+        # ROOT = `USUA_PERM_ROOT` con nivel > 0 en `permission_levels` (así lo emite
+        # auth-service, con 5). El rol JWT «ROOT» no existe en el realm.
+        is_root=levels.get("USUA_PERM_ROOT", 0) > 0,
+        # Solo un `true` literal enciende: «1», «sí» o un objeto no cuentan.
+        asistente_habilitado=data.get("asistente_habilitado") is True,
     )

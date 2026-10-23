@@ -47,7 +47,7 @@ _ACTA = {
 async def _sp(conn: asyncpg.Connection, slug: str) -> None:
     """El repositorio pone el `search_path` por su cuenta (`_sp`); el SQL crudo
     de este test, no."""
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
 async def _crear_auth_users(conn: asyncpg.Connection, slug: str, columnas: str) -> None:

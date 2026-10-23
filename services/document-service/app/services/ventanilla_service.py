@@ -63,14 +63,15 @@ from app.core.politica import PARAM_TEXTO, PARAM_URL, PARAM_VERSION, Politica, p
 from app.core.tipos import nombre_tipo_documental
 from app.schemas.document import AnexoInput, DocumentCreate
 from app.schemas.public import (
+    ContactoEntidad,
     PoliticaTratamiento,
     TipoVentanilla,
     VentanillaEstado,
     VentanillaRadicacion,
     VentanillaRespuesta,
 )
+from app.services import antirrobots
 from app.services.document_service import DuplicateSubmissionError
-from app.services.tercero_service import TerceroService
 
 #: Canal con el que queda marcado lo que entra por aquí. Distingue en los
 #: metadatos —y en los informes— lo presentado desde fuera de lo radicado en
@@ -80,11 +81,66 @@ CANAL = "ventanilla_publica"
 
 class VentanillaService:
     def __init__(
-        self, conn: asyncpg.Connection, tenant_slug: str, tenant_client: Any = None
+        self,
+        conn: asyncpg.Connection,
+        tenant_slug: str,
+        tenant_client: Any = None,
+        redis: Any = None,
     ) -> None:
         self._conn = conn
         self._tenant = tenant_slug
         self._tenant_client = tenant_client
+        # Antirreplay del reto ALTCHA (C16). Sin Redis no se radica: fail-closed.
+        self._redis = redis
+
+    async def _exigir_antirrobots(self, payload: VentanillaRadicacion) -> None:
+        """Verifica y CONSUME el reto ALTCHA. Único punto de la puerta pública (C16).
+
+        Ventanilla y PQRS pasan por `radicar`, así que no pueden divergir. Si el
+        antirrobots no está disponible, el 503 lleva el contacto REAL de la entidad.
+        """
+        try:
+            await antirrobots.exigir_reto(self._redis, payload.altcha, self._tenant)
+        except HTTPException as exc:
+            detalle: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+            if exc.status_code == 503 and detalle.get("error") == "antirrobots_no_disponible":
+                contacto = await self._contacto_entidad()
+                raise antirrobots.error(
+                    "antirrobots_no_disponible",
+                    {k: v for k, v in (contacto.model_dump() if contacto else {}).items() if v},
+                ) from None
+            raise
+
+    async def _contacto_entidad(self) -> ContactoEntidad | None:
+        """Contacto de radicación de la entidad, leído DIRECTO de `sgd_param_admin`.
+
+        Mismos parámetros que el membrete de los oficios (`entidad_*`). Mejor esfuerzo:
+        es información de apoyo de un error, no una decisión, y un fallo aquí no debe
+        convertir el 503 en otro 500. Sin ningún dato declarado devuelve `None`.
+        """
+        claves = {
+            "nombre": "entidad_nombre", "direccion": "entidad_direccion",
+            "telefono": "entidad_telefono", "email": "entidad_email", "web": "entidad_web",
+        }
+        try:
+            filas = await self._conn.fetch(
+                "SELECT key, value FROM sgd_param_admin WHERE key = ANY($1::text[])",
+                list(claves.values()),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        por_clave: dict[str, str] = {}
+        for fila in filas:
+            valor = fila["value"]
+            if isinstance(valor, (str, bytes)):
+                try:
+                    valor = json.loads(valor)
+                except ValueError:
+                    pass
+            if isinstance(valor, str) and valor.strip():
+                por_clave[fila["key"]] = valor.strip()
+        datos = {campo: por_clave.get(clave) for campo, clave in claves.items()}
+        return ContactoEntidad(**datos) if any(datos.values()) else None
 
     # -- Política de tratamiento (Ley 1581/2012, ADR-031) -------------------
 
@@ -236,6 +292,8 @@ class VentanillaService:
             dependencia_receptora=receptora,
             tipos_admitidos=tipos,
             politica_publicada=(await self._politica()).publicada,
+            antirrobots_disponible=await antirrobots.disponible(self._redis),
+            contacto=await self._contacto_entidad(),
         )
 
     async def _validar_tipo(self, code: str) -> str:
@@ -389,7 +447,9 @@ class VentanillaService:
         submission_key: tuple[str, str] | None = None
         if idempotency_key:
             huella = hashlib.sha256(
-                payload.model_dump_json(exclude={"sitio_web"}).encode()
+                # El reto ALTCHA NO entra en la huella: un reintento legítimo reenvía
+                # el mismo reto, ya consumido, y debe recibir el radicado ya hecho.
+                payload.model_dump_json(exclude={"sitio_web", "altcha"}).encode()
             ).hexdigest()
             # Camino barato ANTES de subir anexos: un reintento no vuelve a pasar
             # por storage. La garantía real (carrera) la da la reclamación dentro
@@ -398,6 +458,13 @@ class VentanillaService:
             if previo is not None:
                 return previo
             submission_key = (idempotency_key, huella)
+
+        # Antirrobots (C16, ADR-038): verificar y consumir el reto ANTES de política,
+        # anexos y consecutivo, para que el costo caro (subida a storage) solo lo
+        # pague quien resolvió un reto vigente y no usado. Va DESPUÉS del camino de
+        # reintento. Un 409 de política o un 422 de anexo QUEMA el reto: el cliente
+        # pide otro (cuesta milisegundos).
+        await self._exigir_antirrobots(payload)
 
         # Política vigente (Ley 1581, ADR-031): el servidor la relee y contrasta
         # la versión que el cliente mostró. Va ANTES de subir anexos, de reclamar
@@ -416,41 +483,36 @@ class VentanillaService:
                 detail={"error": "anexo_rechazado", "detail": str(exc), "status": 422},
             ) from exc
 
-        # ── El remitente entra al DIRECTORIO, si se identificó ──────────────
+        # ── El remitente identificado entra al directorio como ficha PROVISIONAL ──
         #
-        # Hasta ahora sus datos se guardaban como JSON suelto en
-        # `metadata.remitente` y no producían ninguna ficha: la ventanilla
-        # ciudadana, que es la puerta de más volumen, no alimentaba el catálogo.
-        # El mismo ciudadano que escribe tres veces era tres textos distintos.
+        # Antes se asociaba POR NÚMERO (`crear_o_recuperar`): quien escribía el
+        # documento de otra persona quedaba atado a SU ficha, con su dirección y
+        # teléfono vigentes, sin que nadie verificara nada — un oráculo de
+        # enumeración y una suplantación gratuita (C17, ADR-038).
         #
-        # **Solo con identificación.** El alta es idempotente POR DOCUMENTO
-        # (`crear_o_recuperar`), así que quien se identifica converge siempre a
-        # la misma ficha. Sin documento no hay nada que reconocer, y crear una
-        # ficha por cada petición anónima sería una fábrica de duplicados —
-        # exactamente lo contrario de lo que esto persigue— además de construir
-        # un directorio de «anónimos» que no sirve a nadie. La petición anónima
-        # es legítima (Ley 1755/2015 art. 16, denuncia anónima) y se queda como
-        # está: con su `metadata.remitente` y sin ficha.
-        actores: list[dict[str, Any]] = []
+        # Ahora, SIEMPRE que un anónimo aporta documento, nace una ficha
+        # provisional nueva (sin tipo/número de documento: el declarado va en
+        # `documento_declarado_*`) y un funcionario la concilia después con la
+        # existente. Un solo camino de código, sin consulta previa por documento:
+        # ni oráculo de tiempo ni de respuesta, y nadie puede «reservar» la cédula
+        # de otro creando primero la ficha definitiva. Sin documento no hay ficha
+        # (denuncia anónima legítima, Ley 1755/2015 art. 16): se queda en
+        # `metadata.remitente`.
+        #
+        # La ficha se crea DENTRO de la transacción del radicado (la pasa
+        # `document_service.create`): si el radicado falla, no queda huérfana.
+        remitente_provisional: dict[str, Any] | None = None
         if payload.identificacion and payload.identificacion.strip():
-            tercero, _ = await TerceroService(
-                self._conn, self._tenant
-            ).crear_o_recuperar(
-                {
-                    "tipo": "entidad_publica" if payload.entidad else "ciudadano",
-                    "nombre": payload.nombre,
-                    "entidad": payload.entidad,
-                    "tipo_documento": payload.tipo_identificacion,
-                    "numero_documento": payload.identificacion.strip(),
-                    "email": payload.email,
-                    "telefono": payload.telefono,
-                    "direccion": payload.direccion,
-                },
-                actor=None,
-            )
-            actores = [
-                {"tercero_id": tercero["id"], "rol": "remitente", "principal": True}
-            ]
+            remitente_provisional = {
+                "tipo": "entidad_publica" if payload.entidad else "ciudadano",
+                "nombre": payload.nombre,
+                "entidad": payload.entidad,
+                "documento_declarado_tipo": payload.tipo_identificacion,
+                "documento_declarado_numero": payload.identificacion.strip(),
+                "email": payload.email,
+                "telefono": payload.telefono,
+                "direccion": payload.direccion,
+            }
 
         # Claves RESERVADAS (`CLAVES_RESERVADAS`): las pone el sistema por
         # `procedencia`, nunca el cuerpo de un cliente.
@@ -483,7 +545,6 @@ class VentanillaService:
             sender_entity=payload.entidad,
             observations=payload.descripcion,
             anexos=anexos,
-            actores=actores,
             metadata={
                 "remitente": {
                     "nombre": payload.nombre,
@@ -502,6 +563,7 @@ class VentanillaService:
                 registered_by=None,
                 submission_key=submission_key,
                 procedencia=procedencia,
+                remitente_provisional=remitente_provisional,
             )
         except DuplicateSubmissionError:
             # Carrera: otra petición con la misma clave ganó mientras esta preparaba

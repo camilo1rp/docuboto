@@ -105,12 +105,18 @@ class Settings(BaseSettings):
     # Backoff exponencial: `min(cap, base * 2**intentos)`.
     indice_reconciliation_backoff_base_seconds: int = 60
     indice_reconciliation_backoff_cap_seconds: int = 86400
-    # Margen mínimo (días desde hoy) del `retain_until` COMPLIANCE de un FONDO
-    # ACUMULADO (ADR-026 D4.4, AREA-06-04): su calendario suele estar vencido y
-    # storage-service rechaza un `retain_until` por debajo de su piso
-    # (`PRESERVATION_MIN_RETENTION_DAYS`, 365). Debe SUPERARLO: con exactamente el
-    # piso, un día de bisiesto en la aritmética de años lo dejaría por debajo.
-    worm_fondo_acumulado_margen_dias: int = 400
+    # Umbral (días desde hoy) bajo el cual el calendario de un FONDO ACUMULADO se
+    # considera vencido (ADR-043, enmienda de ADR-026 D4.4): si `fecha_extrema_final +
+    # total < hoy + margen` el contenido NO recibe COMPLIANCE sino el hold
+    # `valoracion_pendiente`. Ya no es un clamp de `retain_until`. Debe SUPERAR el piso
+    # de storage (`PRESERVATION_MIN_RETENTION_DAYS`, 365): con exactamente el piso, un
+    # día de bisiesto en la aritmética de años dejaría una retención natural por debajo.
+    worm_piso_margen_dias: int = 400
+    # Valoración de la TVD (ADR-043): expedientes cuyo hold `valoracion_pendiente` se
+    # levanta de forma síncrona al registrar el acto; el resto lo aplica la fase
+    # `run_once_valoracion_holds` en lotes de `valoracion_hold_batch_size` por barrida.
+    valoracion_sync_apply_max: int = 25
+    valoracion_hold_batch_size: int = 50
     # Intento síncrono ACOTADO en el cierre (`IndexService.firmar_indice_close`)
     # antes de degradar a 'pendiente_firma' por fallo transitorio — un `seal_absent`
     # degrada de inmediato SIN consumir estos reintentos (ver el docstring del
@@ -190,6 +196,11 @@ class Settings(BaseSettings):
     # (`estado='omitido'`, TERMINAL, sin AIP) -- ventana de transición/seguro
     # operacional para un consumidor que trate `omitido` como "sin AIP".
     aip_indice_only_enabled: bool = True
+
+    # --- C-6 (ADR-042): reempaquetado del AIP al renovar el sello de archivo ---
+    # Cadencia de la fase `run_once_aip_reempaquetado` (barrido contra el XML vigente de
+    # signature-service) y del repaso de cada AIP sin cambios. `0` apaga la fase.
+    aip_reempaquetado_intervalo_s: int = 86400
 
     @property
     def database_url_asyncpg(self) -> str:

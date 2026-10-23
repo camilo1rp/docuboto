@@ -188,7 +188,7 @@
   /** @type {Record<string, any>|null} */
   export let deleteTarget = null;
   /** @type {(item: Record<string, any>) => string} */
-  export let deleteConfirmText = (item) =>
+  export let deleteConfirmText = (_item) =>
     `¿Eliminar este registro? Esta acción no puede deshacerse.`;
   export let deleteLoading = false;
 

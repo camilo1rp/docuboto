@@ -158,8 +158,26 @@ _ACTA_FIRMA_EXCEPCION_SELECT = (
        CASE WHEN sw.excepcion_id IS NULL THEN NULL
             ELSE sw.worm_protegido_at IS NOT NULL END AS worm_sobre_protegido,
        CASE WHEN rsw.revocacion_id IS NULL THEN NULL
-            ELSE rsw.worm_protegido_at IS NOT NULL END AS revocacion_worm_sobre_protegido
+            ELSE rsw.worm_protegido_at IS NOT NULL END AS revocacion_worm_sobre_protegido,
+       -- C14 (ADR-043): estado DERIVADO del soporte documental citado.
+       CASE WHEN e.referencia_anexo_id IS NULL THEN NULL
+            WHEN sb.lote_id IS NULL THEN 'vigente'
+            WHEN sb.soporte_eliminado_at IS NULL THEN 'baja_avalada'
+            ELSE 'eliminado_por_trd' END AS soporte_estado,
+       sb.codigo AS soporte_lote_codigo,
+       sb.acta_sha256 AS soporte_acta_sha256,
+       sb.soporte_eliminado_at AS soporte_eliminado_at
   FROM transferencia_acta_firma_excepcion e
+  LEFT JOIN LATERAL (
+        SELECT s.lote_id, l.codigo, s.soporte_eliminado_at,
+               (SELECT a.acta_sha256 FROM eliminacion_acta a WHERE a.lote_id = s.lote_id)
+                   AS acta_sha256
+          FROM eliminacion_lote_soporte_citado s
+          JOIN eliminacion_lotes l ON l.id = s.lote_id
+         WHERE s.excepcion_id = e.id AND l.estado IN ('avalado', 'ejecutado')
+         ORDER BY s.soporte_eliminado_at NULLS LAST
+         LIMIT 1
+  ) sb ON TRUE
   LEFT JOIN transferencia_acta_firma_excepcion_revocacion r ON r.excepcion_id = e.id
   LEFT JOIN transferencia_acta_firma_excepcion_worm ws
          ON ws.excepcion_id = e.id AND ws.artefacto = 'sello'
@@ -210,7 +228,7 @@ class TransferenciaRepository:
 
     async def _sp(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
-        await self._conn.execute(f'SET search_path TO "{schema}", public')
+        await self._conn.execute(f'SET search_path TO "{schema}"')
 
     async def insert(self, data: dict) -> asyncpg.Record:
         await self._sp()
@@ -941,6 +959,41 @@ class TransferenciaRepository:
             user_ids,
         )
         return {r["id"]: r for r in rows}
+
+    async def asegurar_soporte_citable(
+        self, radicado_id: uuid.UUID, anexo_id: uuid.UUID
+    ) -> str | None:
+        """Dentro de la transacción de la constancia (C14, ADR-043): `None` si el anexo se puede
+        citar, o el motivo de la negativa.
+
+        - `FOR SHARE` sobre la fila de `files` (storage, mismo schema de tenant): choca con el
+          `FOR UPDATE` con que storage bloquea la fila antes de purgar. Una de las dos espera a la
+          otra: o la constancia ve el archivo ya borrado (`anexo_no_disponible`) o la purga espera,
+          y en su comprobación posterior ve la constancia. Sin tabla `files` (esquema sin
+          storage) no hay purga posible: se omite.
+        - Un radicado de soporte que ya está en un lote de eliminación vivo no admite constancias
+          nuevas: no tendrían baja de soporte congelada y bloquearían la ejecución
+          (`radicado_en_lote_de_eliminacion`).
+        """
+        await self._sp()
+        if await self._conn.fetchval("SELECT to_regclass('files') IS NOT NULL"):
+            fila = await self._conn.fetchval(
+                "SELECT 1 FROM files WHERE id = $1 AND deleted_at IS NULL FOR SHARE", anexo_id
+            )
+            if fila is None:
+                return "anexo_no_disponible"
+        lote = await self._conn.fetchval(
+            """
+            SELECT l.codigo
+              FROM eliminacion_lote_items li
+              JOIN eliminacion_lotes l ON l.id = li.lote_id
+              JOIN expediente_radicados er ON er.expediente_id = li.expediente_id
+             WHERE er.radicado_id = $1 AND l.estado IN ('borrador', 'publicado', 'avalado')
+             LIMIT 1
+            """,
+            radicado_id,
+        )
+        return f"lote:{lote}" if lote is not None else None
 
     async def insert_acta_firma_excepcion(self, data: dict) -> asyncpg.Record | None:
         """Inserta la constancia. `ON CONFLICT DO NOTHING`: `None` para la perdedora de una

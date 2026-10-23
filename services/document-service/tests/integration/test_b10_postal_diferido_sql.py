@@ -107,7 +107,7 @@ async def _encolar_a_mano(
 
 async def _en(tenant_ctx: tuple[str, asyncpg.Connection]) -> tuple[str, asyncpg.Connection]:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     return slug, conn
 
 

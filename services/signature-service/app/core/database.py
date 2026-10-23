@@ -18,6 +18,7 @@ from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
+from app.core.conservacion import admitir_conservacion
 
 _pool: asyncpg.Pool | None = None
 
@@ -87,12 +88,22 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
         ) from exc
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
-        if (veto := await veredicto_entidad(conn, slug)) is not None:
+        if (veto := await veredicto_entidad(conn, slug)) is not None and not (
+            # Conservación (ADR-035 §8, C-6): una entidad SUSPENDIDA sigue conservando; solo la ruta
+            # interna de la lista, con el token de servicio.
+            await admitir_conservacion(
+                conn,
+                slug=slug,
+                metodo=request.method,
+                ruta=request.scope["path"],
+                token=request.headers.get("X-Internal-Token"),
+            )
+        ):
             raise HTTPException(
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
             )
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:
@@ -113,7 +124,7 @@ async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection,
     """
     schema = _schema(tenant_slug)  # raises ValueError on invalid slug
     async with get_pool().acquire() as conn:
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:

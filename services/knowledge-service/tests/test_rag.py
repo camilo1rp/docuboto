@@ -49,7 +49,7 @@ from app.core import config as cfg_module
 from app.core.clearance import CLASIFICADA, PUBLICA, RESERVADA
 from app.routers.knowledge import RAG_ADVISORY
 from app.services.llm import Citation, GeneratedAnswer, RAGUnavailableError, RetrievedChunk
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, consultas_a
 
 NOW = datetime.now(tz=UTC)
 
@@ -138,7 +138,7 @@ async def test_disabled_provider_falls_back_to_patron_a_without_generating(clien
     ]
     assert body["advisory"] == RAG_ADVISORY
     # Patrón A: ni se registra sugerencia (fetchrow no se invoca para eso) ni se audita.
-    assert conn.fetchrow.call_count == 0
+    assert consultas_a(conn, "kb_suggestions") == []
 
 
 @pytest.mark.asyncio
@@ -288,7 +288,7 @@ async def test_hard_barrier_no_context_left_falls_back_to_patron_a_with_all_visi
         "ACL) — el límite es únicamente sobre qué sale al proveedor externo"
     )
     get_provider_spy.assert_not_called()
-    assert conn.fetchrow.call_count == 0, "sin generación real, no se registra kb_suggestions"
+    assert consultas_a(conn, "kb_suggestions") == [], "sin generación real, no se registra kb_suggestions"
 
 
 # --- 3. Degradación HONESTA (RF-FIR-15) ---------------------------------------------
@@ -319,7 +319,7 @@ async def test_provider_failure_is_always_503_never_a_simulated_answer(
     assert resp.json()["detail"]["error"] == "rag_unavailable"
     assert failure_reason in resp.json()["detail"]["detail"]
     # Ningún efecto secundario parcial: ni sugerencia ni auditoría.
-    assert conn.fetchrow.call_count == 0
+    assert consultas_a(conn, "kb_suggestions") == []
 
 
 @pytest.mark.asyncio

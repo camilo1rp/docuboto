@@ -150,12 +150,29 @@ async def create_dependencia(
         # Defensa en profundidad: el trigger de la 014 cubre cualquier otra vía.
         if "dependencia_codigo_retirado" in str(exc):
             raise _codigo_retirado(payload.codigo) from exc
+        if "dependencia_ciclo" in str(exc):
+            raise _ciclo() from exc
         raise
     except asyncpg.UniqueViolationError:
         raise _conflict(f"Ya existe una dependencia con el código «{payload.codigo}»")
     except asyncpg.ForeignKeyViolationError:
         raise _bad_parent()
     return DependenciaResponse(**dict(row))
+
+
+def _ciclo() -> HTTPException:
+    """El trigger de la 015 cerró el paso: el nuevo padre es descendiente de la dependencia."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "error": "dependencia_ciclo",
+            "detail": (
+                "Ese padre es descendiente de la dependencia: moverla ahí cerraría un ciclo "
+                "en el organigrama. Elija un padre que no cuelgue de ella"
+            ),
+            "status": 409,
+        },
+    )
 
 
 def _codigo_retirado(codigo: int) -> HTTPException:
@@ -296,6 +313,8 @@ async def update_dependencia(
         # Defensa en profundidad: el trigger de la 013 cubre cualquier otra vía.
         if "dependencia_codigo_inmutable" in str(exc):
             raise _codigo_inmutable() from exc
+        if "dependencia_ciclo" in str(exc):
+            raise _ciclo() from exc
         raise
     except asyncpg.UniqueViolationError:
         raise _conflict("Ya existe un registro con ese código")

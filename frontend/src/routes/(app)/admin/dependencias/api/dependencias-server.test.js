@@ -346,3 +346,33 @@ describe("dependencias/api/[id] PATCH", () => {
     expect(capturedBody).toEqual({ nombre: "Nueva Tesorería" });
   });
 });
+
+describe("dependencias/api — ciclos del organigrama (C-4)", () => {
+  it("PATCH propaga 409 dependencia_ciclo tal cual (la pantalla lo muestra)", async () => {
+    const cuerpo = {
+      error: "dependencia_ciclo",
+      detail: "La dependencia 5 descendería de sí misma",
+      status: 409,
+    };
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify(cuerpo), { status: 409 }));
+    const res = await patchOne({
+      locals: SESSION_LOCALS,
+      params: { id: DEP_ID },
+      request: { json: async () => ({ parent_id: PARENT_ID }) },
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(cuerpo);
+  });
+
+  it("el árbol propaga 409 organigrama_con_ciclo", async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "organigrama_con_ciclo", status: 409 }), {
+          status: 409,
+        }),
+    );
+    const res = await treeGet({ locals: SESSION_LOCALS, url: new URL("http://x/") });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("organigrama_con_ciclo");
+  });
+});

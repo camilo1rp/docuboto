@@ -14,7 +14,8 @@
  * Cuatro facetas INDEPENDIENTES (`Promise.allSettled`, nunca un error
  * global): plan vigente, historial de versiones del plan, índices
  * pendientes de sellado XAdES, y artefactos WORM pendientes de renovación
- * de retención (Conservación Total).
+ * de retención (Conservación Total). Quinta, solo USUA_PERM_ADMIN >= 3: sellos de
+ * archivo (C-6).
  *
  * Endpoints reales verificados en `services/storage-service/app/routers/
  * preservacion.py` y `services/archive-service/app/routers/indice.py` — NO
@@ -125,6 +126,32 @@ export async function load({ cookies, parent, fetch }) {
 
   const pendientesFirma = settle(pendientesFirmaResult);
 
+  // Sellos de archivo (C-6, ADR-042): solo con USUA_PERM_ADMIN >= 3, que es lo
+  // que el backend exige (403 sin él). Sin el nivel NO se pide: la faceta ni
+  // aparece, en vez de pintar un 403 que la persona no puede resolver.
+  const veSellos = (user?.permission_levels?.USUA_PERM_ADMIN ?? 0) >= 3;
+  /** @type {any} */
+  let sellos = null;
+  if (veSellos) {
+    const [resumenR, listaR] = await Promise.allSettled([
+      fetchJson(doFetch, "/signature/admin/sellos-archivo/resumen"),
+      (async () => {
+        const res = await doFetch("/signature/admin/sellos-archivo?page=1&size=20");
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw {
+            code: codigoError(body) ?? "upstream_error",
+            detail: mensajeError(body, `HTTP ${res.status}`),
+            status: res.status,
+          };
+        }
+        const total = Number(res.headers.get("X-Total-Count"));
+        return { items: await res.json(), total: Number.isFinite(total) ? total : null };
+      })(),
+    ]);
+    sellos = { resumen: settle(resumenR), lista: settle(listaR) };
+  }
+
   return {
     plan: settle(planResult),
     versions: settle(versionsResult),
@@ -134,5 +161,7 @@ export async function load({ cookies, parent, fetch }) {
     },
     selladoDiferido: pendientesFirma.data?.selladoDiferido ?? null,
     pendientesRenovacion: settle(pendientesRenovacionResult),
+    // `null` = la persona no tiene el nivel: la faceta no se ofrece.
+    sellos,
   };
 }

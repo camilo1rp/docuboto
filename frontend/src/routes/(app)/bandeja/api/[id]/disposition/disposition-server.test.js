@@ -25,8 +25,6 @@ const SESSION_LOCALS = {
   user: { tenant_slug: "icetex", sub: "33333333-3333-3333-3333-333333333333" },
 };
 
-const url = (path) => new URL(`http://localhost${path}`);
-
 afterEach(() => {
   vi.restoreAllMocks();
 });

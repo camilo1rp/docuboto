@@ -41,7 +41,7 @@ _PLANTILLA = '{"type": "object", "required": ["expediente_ref"]}'
 
 
 async def _preparar(conn: asyncpg.Connection, slug: str) -> None:
-    await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{_schema(slug)}"')
 
 
 async def _plantilla_que_hace_fallar(conn: asyncpg.Connection) -> None:

@@ -50,6 +50,8 @@ async def _radicar(
             sender_name="Quien sea",
             nivel_seguridad=nivel,
             clasificacion_fundamento="Reserva de prueba" if nivel >= 2 else None,
+            clasificacion_causal={2: "art19_i_salud_publica", 3: "art18_a_intimidad"}.get(nivel),
+            clasificacion_plazo_meses=12 if nivel == 2 else None,
         ),
         registered_by=por,
     )
@@ -115,7 +117,7 @@ async def test_leer_un_radicado_aparece_en_su_historial(
 ) -> None:
     """El caso base, que hasta ahora no se podía preguntar."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.document_service import DocumentService
 
     doc_id, _ = await _radicar(conn, slug)
@@ -148,7 +150,7 @@ async def test_el_historial_NO_es_un_oraculo_sobre_lo_reservado(
     403, negar ya sería confirmar.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.document_service import DocumentNotFoundError, DocumentService
 
     archivista = await _clearance(conn, 3)  # puede originar RESERVADA
@@ -177,7 +179,7 @@ async def test_el_historial_solo_trae_ACCESOS_no_todo_lo_ocurrido(
     que es lo que alguien viene a buscar aquí.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.document_service import DocumentService
 
     doc_id, tracking = await _radicar(conn, slug)
@@ -209,7 +211,7 @@ async def test_el_historial_dice_un_NOMBRE_no_un_identificador(
     respondía — el dato estaba guardado y nadie podía leerlo.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.document_service import DocumentService
 
     doc_id, _ = await _radicar(conn, slug)
@@ -237,7 +239,7 @@ async def test_un_actor_que_no_es_un_usuario_no_rompe_el_historial(
     perder el historial no.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from orpycamcp_common import audit
 
     from app.services.document_service import DocumentService

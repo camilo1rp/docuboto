@@ -33,6 +33,8 @@ from app.core.clearance import (
     get_actor,
     is_embeddable,
     is_generatable,
+    require_asistente_habilitado,
+    require_permission,
     resolve_caller_clearance,
 )
 from app.core.config import settings
@@ -40,6 +42,7 @@ from app.core.database import get_tenant_conn
 from app.repositories.kb_suggestion_repository import KbSuggestionRepository
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.services.embeddings import embed, to_pgvector
+from app.services.ingestion import egreso_con_bandera_apagada
 from app.services.llm import (
     GENERATIVE_PROVIDERS,
     RAGUnavailableError,
@@ -48,15 +51,6 @@ from app.services.llm import (
 )
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
-
-
-def _caller_id(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        return None
 
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
@@ -187,10 +181,36 @@ class SearchHit(BaseModel):
 )
 async def ingest(
     payload: IngestRequest,
+    request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> IngestResponse:
     # D-02 (punto 3): bloquea antes de llamar al proveedor de embeddings.
     _guard_external_llm(payload.nivel_seguridad)
+    # ADR-037: con la bandera apagada solo se indexa si el proveedor es LOCAL (sin egreso).
+    if await egreso_con_bandera_apagada(conn, request.headers.get("X-Tenant-Slug", "")):
+        await audit.append(
+            conn,
+            tenant_slug=_tenant_slug(request),
+            service="knowledge-service",
+            action="knowledge.ingest_skipped_asistente_apagado",
+            object_type=payload.source_type,
+            object_ref=payload.source_ref,
+            actor="system",
+            canal="system",
+            payload={
+                "nivel_seguridad": payload.nivel_seguridad,
+                "embedding_provider": settings.embedding_provider,
+                "motivo": "asistente_apagado_proveedor_de_embeddings_no_local",
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "asistente_deshabilitado",
+                "detail": "La entidad tiene el asistente apagado y el proveedor de embeddings no es local: no se indexa.",
+                "status": 403,
+            },
+        )
     # asyncio.to_thread: no bloquear el loop con inferencia CPU (local_st) o
     # HTTP síncrono (ollama) — ver mismo patrón en app/services/ingestion.py.
     literal = to_pgvector(await asyncio.to_thread(embed, payload.texto))
@@ -206,11 +226,18 @@ async def ingest(
     return IngestResponse(**dict(row))
 
 
-@router.post("/search", response_model=list[SearchHit])
+@router.post(
+    "/search",
+    response_model=list[SearchHit],
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_CONOCIMIENTO")),
+    ],
+)
 async def search(
     payload: SearchRequest,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    caller_id: uuid.UUID | None = Depends(_caller_id),
+    caller_id: uuid.UUID = Depends(get_actor),
 ) -> list[SearchHit]:
     literal = to_pgvector(await asyncio.to_thread(embed, payload.query))
     clearance = await resolve_caller_clearance(conn, caller_id)
@@ -292,11 +319,18 @@ def _antecedentes_source_not_found() -> HTTPException:
     )
 
 
-@router.post("/antecedentes", response_model=AntecedentesResponse)
+@router.post(
+    "/antecedentes",
+    response_model=AntecedentesResponse,
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_CONOCIMIENTO")),
+    ],
+)
 async def antecedentes(
     payload: AntecedentesRequest,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    caller_id: uuid.UUID | None = Depends(_caller_id),
+    caller_id: uuid.UUID = Depends(get_actor),
 ) -> AntecedentesResponse:
     """Patrón A (E21 Inc.2): recuperación pura, ANCLADA y CITADA, sin LLM ni egreso
     externo — cada resultado trae su ``source_ref`` (tracking del radicado fuente)
@@ -425,12 +459,19 @@ def _rag_patron_a_fallback(
     )
 
 
-@router.post("/rag", response_model=RagResponse)
+@router.post(
+    "/rag",
+    response_model=RagResponse,
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_CONOCIMIENTO")),
+    ],
+)
 async def rag(
     payload: RagRequest,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    caller_id: uuid.UUID | None = Depends(_caller_id),
+    caller_id: uuid.UUID = Depends(get_actor),
     canal: str = Depends(_optional_canal),
 ) -> RagResponse:
     """Patrón B (E21 Inc.3): RAG generativo ANCLADO y CITADO.
@@ -594,7 +635,14 @@ def _que_se_acepto(fila: asyncpg.Record | dict) -> dict:
     }
 
 
-@router.post("/suggestions/{suggestion_id}/aceptar", response_model=SuggestionAcceptResponse)
+@router.post(
+    "/suggestions/{suggestion_id}/aceptar",
+    response_model=SuggestionAcceptResponse,
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_CONOCIMIENTO", min_crud=2)),
+    ],
+)
 async def aceptar_sugerencia(
     suggestion_id: uuid.UUID,
     request: Request,

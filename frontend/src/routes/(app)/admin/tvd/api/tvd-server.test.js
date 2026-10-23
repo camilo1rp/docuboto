@@ -70,6 +70,28 @@ describe("POST /admin/tvd/api", () => {
     fecha_extrema_inicial: "1985-01-01",
     fecha_extrema_final: "1998-12-31",
     justificacion_valoracion: "Valoración secundaria: sin valor administrativo vigente.",
+    archivo_central_years: 20,
+  });
+
+  it("sin archivo_central_years: 400 sin llamar al gateway; con 0 pasa (control positivo)", async () => {
+    const llamadas = [];
+    globalThis.fetch = vi.fn(async (input, init) => {
+      llamadas.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ id: "tvd-1" }), { status: 201 });
+    });
+    const { archivo_central_years: _archivo_central_years, ...sin } = validBody();
+    const malo = await createAgrupacion({
+      locals: SESSION_LOCALS,
+      request: { json: async () => sin },
+    });
+    expect(malo.status).toBe(400);
+    expect(llamadas).toHaveLength(0);
+    const cero = await createAgrupacion({
+      locals: SESSION_LOCALS,
+      request: { json: async () => ({ ...sin, archivo_central_years: 0 }) },
+    });
+    expect(cero.status).toBe(201);
+    expect(llamadas[0].archivo_central_years).toBe(0);
   });
 
   it("401 sin sesión", async () => {
@@ -84,7 +106,7 @@ describe("POST /admin/tvd/api", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const { code, ...rest } = validBody();
+    const { code: _code, ...rest } = validBody();
     const res = await createAgrupacion({
       locals: SESSION_LOCALS,
       request: { json: async () => rest },
@@ -96,7 +118,7 @@ describe("POST /admin/tvd/api", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const { fondo_nombre, ...rest } = validBody();
+    const { fondo_nombre: _fondo_nombre, ...rest } = validBody();
     const res = await createAgrupacion({
       locals: SESSION_LOCALS,
       request: { json: async () => rest },
@@ -108,7 +130,7 @@ describe("POST /admin/tvd/api", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const { justificacion_valoracion, ...rest } = validBody();
+    const { justificacion_valoracion: _justificacion_valoracion, ...rest } = validBody();
     const res = await createAgrupacion({
       locals: SESSION_LOCALS,
       request: { json: async () => rest },
@@ -120,7 +142,7 @@ describe("POST /admin/tvd/api", () => {
     globalThis.fetch = vi.fn(() => {
       throw new Error("no debió invocarse");
     });
-    const { fecha_extrema_inicial, ...rest } = validBody();
+    const { fecha_extrema_inicial: _fecha_extrema_inicial, ...rest } = validBody();
     const res = await createAgrupacion({
       locals: SESSION_LOCALS,
       request: { json: async () => rest },
@@ -186,7 +208,7 @@ describe("POST /admin/tvd/api", () => {
           description: "  ",
           parent_id: null,
           archivo_central_years: 20,
-          total_retention: 30,
+          total_retention: 30, // legado: debe descartarse (el backend respondería 422)
           disposition: "CT",
           pdfa_profile: "2a",
           // Campos ajenos / prohibidos por ADR-026 que un cliente malicioso
@@ -213,10 +235,10 @@ describe("POST /admin/tvd/api", () => {
       fecha_extrema_final: "1998-12-31",
       justificacion_valoracion: "Valoración secundaria: sin valor administrativo vigente.",
       archivo_central_years: 20,
-      total_retention: 30,
       disposition: "CT",
       pdfa_profile: "2a",
     });
+    expect(capturedBody.total_retention).toBeUndefined();
     expect(capturedBody.archivo_gestion_years).toBeUndefined();
     expect(capturedBody.estado).toBeUndefined();
     expect(capturedBody.tipo_instrumento).toBeUndefined();

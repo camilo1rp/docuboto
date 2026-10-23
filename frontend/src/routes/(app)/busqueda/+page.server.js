@@ -47,8 +47,9 @@ import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { enteroDeLaUrl } from "$lib/utils/urlParams.js";
 import { mensajeError } from "$lib/utils/apiError.js";
+import { mensajeConocimiento, tabsBusquedaPermitidas } from "$lib/utils/asistenteAcceso.js";
 
-const VALID_TABS = new Set(["exacta", "semantica", "antecedentes"]);
+// Las pestañas válidas se calculan por usuario (C-1, ADR-037): ver `tabsBusquedaPermitidas`.
 
 /**
  * Carga SSR de la pestaña Semántica: POST /api/v1/knowledge/search.
@@ -72,7 +73,7 @@ async function loadSemantica({ token, tenant, userId, query, topK }) {
       return { results: Array.isArray(data) ? data : [], error: null };
     }
     const body = await res.json().catch(() => ({}));
-    return { results: null, error: mensajeError(body, `Error ${res.status}`) };
+    return { results: null, error: mensajeConocimiento(body, `Error ${res.status}`) };
   } catch {
     return { results: null, error: "No se pudo conectar al servicio de conocimiento." };
   }
@@ -101,7 +102,7 @@ async function loadAntecedentes({ token, tenant, userId, query, radicadoRef, top
       return { data: await res.json(), error: null };
     }
     const body = await res.json().catch(() => ({}));
-    return { data: null, error: mensajeError(body, `Error ${res.status}`) };
+    return { data: null, error: mensajeConocimiento(body, `Error ${res.status}`) };
   } catch {
     return { data: null, error: "No se pudo conectar al servicio de conocimiento." };
   }
@@ -117,7 +118,10 @@ export async function load({ cookies, parent, url }) {
   const userId = user?.sub ?? "";
 
   const rawTab = url.searchParams.get("tab") ?? "exacta";
-  const tab = VALID_TABS.has(rawTab) ? rawTab : "exacta";
+  // Pestaña no permitida (entidad sin asistente o sin PERM_CONOCIMIENTO) cae a `exacta` y,
+  // al no ser la activa, NO se llama a knowledge. El backend re-valida de todos modos.
+  const tabsPermitidas = tabsBusquedaPermitidas(user);
+  const tab = tabsPermitidas.includes(rawTab) ? rawTab : "exacta";
 
   // ---------------------------------------------------------------------
   // Pestaña Semántica — solo se resuelve si es la pestaña activa.
@@ -232,6 +236,7 @@ export async function load({ cookies, parent, url }) {
 
   return {
     tab,
+    tabsPermitidas,
     results,
     dependencias,
     total,

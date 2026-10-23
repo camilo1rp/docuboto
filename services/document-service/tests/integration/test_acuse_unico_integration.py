@@ -51,7 +51,7 @@ async def test_el_mismo_acuse_no_puede_ser_de_dos_envios(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     repo = PostalRepository(conn)
     a, b = await _envio(conn, 1), await _envio(conn, 2)
     acuse = uuid.uuid4()
@@ -78,7 +78,7 @@ async def test_envios_sin_acuse_no_chocan_entre_si(
 ) -> None:
     """El índice es PARCIAL: NULL no cuenta (los envíos sin acuse son la mayoría)."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await _envio(conn, 1)
     await _envio(conn, 2)
     assert await conn.fetchval(
@@ -94,7 +94,7 @@ async def test_la_045_aborta_si_ya_hay_acuses_repetidos(
     from pathlib import Path
 
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     a, b = await _envio(conn, 1), await _envio(conn, 2)
     acuse = uuid.uuid4()
     await conn.execute("DROP INDEX IF EXISTS postal_shipment_acuse_file_id_uq")

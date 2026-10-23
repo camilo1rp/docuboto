@@ -149,6 +149,8 @@ PERMISOS_DEMO = (
     "USUA_PERM_ADMIN",          # dependencias, usuarios, grupos, auditoría
     "PERM_DLQ_ADMIN",           # colas de eventos fallidos
     "SGD_PERM_ESTADISTICA",     # reportes y tablero
+    # Asistente y búsqueda semántica (ADR-037): además exige que la entidad lo active
+    "PERM_CONOCIMIENTO",        # consultar con IA (1) / aceptar una sugerencia (2)
 )
 
 # El clearance NO se hereda de los permisos: es un eje aparte (RF-SEG-08) y su
@@ -165,7 +167,11 @@ CLEARANCE_DEMO = 3  # 1=Pública 2=Reservada 3=Clasificada
 # firmantes), así que propone una persona, avala otra y ejecuta una tercera: la
 # separación de funciones (quien propone no avala, quien avala no ejecuta) se
 # puede recorrer entera. `consulta` NO lo tiene.
-CRUD_POR_PERMISO_GESTION = {"USUA_PERM_TRD": 4}
+#
+# Igual `PERM_RECLASIFICAR` (C4, ADR-039): solicitar una desclasificación pide crud 3, pero
+# APROBARLA (y con ello bajar el nivel de un radicado clasificado) pide 4. Sin ningún perfil
+# con 4 nadie aprueba y la cola de desclasificaciones queda eternamente pendiente.
+CRUD_POR_PERMISO_GESTION = {"USUA_PERM_TRD": 4, "PERM_RECLASIFICAR": 4}
 
 # Tercer grupo, con el MISMO juego de permisos y nivel CRUD que el demo pero
 # clearance **2**. Existe por una razón concreta: con solo los niveles 1 y 3, el
@@ -188,7 +194,7 @@ CLEARANCE_INTERMEDIO = 2
 # indistinguibles de que no haya control ninguno.
 USUARIO_CONSULTA = "consulta"
 GRUPO_CONSULTA = "Consulta (solo lectura, nivel 1)"
-PERMISOS_CONSULTA = ("PERM_RADI", "USUA_PERM_EXPEDIENTE")
+PERMISOS_CONSULTA = ("PERM_RADI", "USUA_PERM_EXPEDIENTE", "PERM_CONOCIMIENTO")
 CRUD_CONSULTA = 1
 CLEARANCE_CONSULTA = 1
 
@@ -690,7 +696,7 @@ async def aprovisionar(api_base: str) -> None:
     conn = await asyncpg.connect(_dsn())
     try:
         esquema = f"tenant_{TENANT}"
-        await conn.execute(f'SET search_path TO "{esquema}", public')
+        await conn.execute(f'SET search_path TO "{esquema}"')
 
         # `upper(...)` en los dos lados: el auth-service guarda el nombre en
         # MAYÚSCULAS (convención heredada de Orfeo), así que una comparación
@@ -890,6 +896,13 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
         await api.put(f"/api/v1/config/params/{clave}", json={"value": valor})
     ok(f"política «{POLITICA_DEMO['politica_tratamiento_version']}» publicada (aviso de demostración)")
 
+    # ── Asistente: las entidades nuevas nacen APAGADAS (ADR-037) ──
+    # Se enciende por la API, como lo haría su administrador: es el camino de opt-in
+    # que el demo tiene que ejercitar, no un atajo por SQL.
+    paso("Asistente y búsqueda semántica de la entidad demo")
+    await api.put("/api/v1/config/asistente", json={"habilitado": True})
+    ok("asistente activado por la API (PUT /config/asistente)")
+
     # ── URD: quién trabaja DESDE dónde ──
     #
     # `urd_usuaroldep` (usuario–rol–dependencia) es el concepto de Orfeo que
@@ -946,6 +959,9 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
             "archivo_gestion_years": 2,
             "archivo_central_years": 8,
             "disposition": "CT",  # conservación total
+            # C-4/C8: sin dependencia productora la serie no entra al cuadro de
+            # clasificación ni se puede aprobar. La Jurídica recibe las peticiones.
+            "dependencias_productoras": [902],
         },
         buscar_en="/api/v1/trd?size=100",
         clave="code",
@@ -1278,7 +1294,7 @@ async def _circuito_sobre_borrador(
     # Cambiar el texto SIN emitir el evento de invalidación (ver el docstring).
     conn = await asyncpg.connect(_dsn())
     try:
-        await conn.execute(f'SET search_path TO "tenant_{TENANT}", public')
+        await conn.execute(f'SET search_path TO "tenant_{TENANT}"')
         await conn.execute(
             "UPDATE borrador SET cuerpo = $2 WHERE id = $1::uuid", borrador["id"], CUERPO_BORRADOR_V2
         )
@@ -1388,7 +1404,7 @@ async def purgar() -> int:
     conn = await asyncpg.connect(_dsn())
     try:
         esquema = f"tenant_{TENANT}"
-        await conn.execute(f'SET search_path TO "{esquema}", public')
+        await conn.execute(f'SET search_path TO "{esquema}"')
         borrados: list[str] = []
 
         async def borrar(etiqueta: str, sql: str, *args: Any) -> None:

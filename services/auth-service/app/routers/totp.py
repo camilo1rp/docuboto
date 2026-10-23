@@ -290,7 +290,7 @@ async def internal_verify_totp(
         return InternalTotpVerifyResponse(valido=False, motivo="no_activo")
 
     schema = tenant_schema(tenant_slug)  # 400 if the claim itself is malformed
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     try:
         rbac = RBACRepository(conn)
         user = await rbac.get_user_by_keycloak_sub(claims["user_id"])
@@ -358,7 +358,7 @@ async def internal_totp_status(
         return InternalTotpStatusResponse(activo=False)
 
     schema = tenant_schema(tenant_slug)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     try:
         user = await RBACRepository(conn).get_user_by_keycloak_sub(claims["user_id"])
         if user is None:

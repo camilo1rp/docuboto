@@ -11,6 +11,10 @@
  * admin/trd/+page.server.js — Carga SSR de series TRD/CCD y tipos documentales
  * (E04, Fase 5 cierre de desfase API↔UI).
  *
+ * `?incluir_en_tramite=true` (C-4): sin él el backend sirve solo el instrumento
+ * publicado (convalidada/migrada), sin acta del Comité ni autor, y la pantalla
+ * dejaría de ver borradores y aprobadas. Exige USUA_PERM_TRD (403 sin él).
+ *
  * Dos catálogos independientes de archive-service:
  *   - GET /trd (paginado, X-Total-Count) — series jerárquicas (parent_id).
  *     Se traen TODAS las páginas: la vista construye el árbol en cliente y una
@@ -50,7 +54,12 @@ export async function load({ cookies, parent, fetch }) {
   const headers = { Authorization: `Bearer ${token}`, "X-Tenant-Slug": tenant };
   if (userId) headers["X-User-Id"] = userId;
 
-  const seriesCargadas = await traerListaCompleta(fetch, `${API_V1}/trd`, headers, mensajeError);
+  const seriesCargadas = await traerListaCompleta(
+    fetch,
+    `${API_V1}/trd?incluir_en_tramite=true`,
+    headers,
+    mensajeError,
+  );
   const series = seriesCargadas.items;
   const seriesError =
     seriesCargadas.error === "No se pudo conectar al servidor."
@@ -109,7 +118,27 @@ export async function load({ cookies, parent, fetch }) {
     vencidosError = "No se pudo conectar al servidor para consultar los vencimientos.";
   }
 
+  // Dependencias activas: alimentan el selector de productoras (por `codigo`,
+  // ADR-032). Si falla, la pantalla sigue; solo el selector queda vacío y lo
+  // dice (503 catalogo_dependencias_no_disponible o error de red).
+  let dependencias = [];
+  let dependenciasError = null;
+  try {
+    const res = await fetch(`${API_V1}/dependencias?activo=true`, { headers });
+    if (res.ok) {
+      const lista = await res.json().catch(() => []);
+      dependencias = Array.isArray(lista) ? lista : [];
+    } else {
+      const body = await res.json().catch(() => ({}));
+      dependenciasError = mensajeError(body, `Error ${res.status}`);
+    }
+  } catch {
+    dependenciasError = "No se pudo conectar al servidor de dependencias.";
+  }
+
   return {
+    dependencias,
+    dependenciasError,
     series,
     seriesError,
     // La vista lo avisa: una lista corta con cara de completa es peor que un

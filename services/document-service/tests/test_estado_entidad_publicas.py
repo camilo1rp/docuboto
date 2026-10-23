@@ -135,6 +135,7 @@ _PQRS = {
     "descripcion": "Solicito información sobre mi trámite pendiente",
     "acepta_tratamiento": True,
     "politica_version": "1",
+    "altcha": "altcha-de-prueba-0000",
 }
 
 

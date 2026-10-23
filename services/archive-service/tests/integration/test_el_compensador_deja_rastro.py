@@ -46,7 +46,7 @@ _CLEARANCE_TOTAL = 5
 
 
 async def _sp(conn: asyncpg.Connection, slug: str) -> None:
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
 async def _crear_tabla_firma(conn: asyncpg.Connection, slug: str) -> None:

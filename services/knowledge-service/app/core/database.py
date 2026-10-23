@@ -117,7 +117,7 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
             )
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:
@@ -134,7 +134,7 @@ async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection,
     """
     schema = _schema(tenant_slug)
     async with get_pool().acquire() as conn:
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:

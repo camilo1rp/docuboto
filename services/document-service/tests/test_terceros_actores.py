@@ -63,6 +63,8 @@ def _tercero(**kw):
         "activo": True,
         "creado_por": None,
         "creado_at": None,
+        "identidad": "confirmada",
+        "fusionado_en": None,
     }
     base.update(kw)
     return base

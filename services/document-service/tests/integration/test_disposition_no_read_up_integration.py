@@ -43,9 +43,10 @@ async def _seed_radicado(
 ) -> uuid.UUID:
     return await conn.fetchval(
         "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, "
-        "tenant_code, nivel_seguridad, clasificacion_fundamento) VALUES "
+        "tenant_code, nivel_seguridad, clasificacion_fundamento, clasificacion_causal) VALUES "
         "($1, 'E', 2026, 1, $2, 'DEMO', $3, "
-        "CASE WHEN $3::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) "
+        "CASE WHEN $3::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END, "
+        "CASE WHEN $3::smallint >= 2 THEN 'por_clasificar' END) "
         "RETURNING id",
         f"2026-DEMO-E-{uuid.uuid4().hex[:6]}",
         subject,
@@ -55,7 +56,7 @@ async def _seed_radicado(
 
 async def _repo_en_tenant(tenant_ctx) -> tuple[DocumentRepository, asyncpg.Connection]:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     return DocumentRepository(conn, slug), conn
 
 

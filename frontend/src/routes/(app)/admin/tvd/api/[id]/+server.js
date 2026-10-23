@@ -19,6 +19,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { aEnteroNoNegativo } from "$lib/server/trdFases.server.js";
 import { headersFor } from "$lib/server/trdCircuitoProxy.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -54,7 +55,6 @@ export async function PATCH({ locals, params, request }) {
     fecha_extrema_final,
     justificacion_valoracion,
     archivo_central_years,
-    total_retention,
     disposition,
     pdfa_profile,
   } = body ?? {};
@@ -127,11 +127,18 @@ export async function PATCH({ locals, params, request }) {
   if (typeof justificacion_valoracion === "string" && justificacion_valoracion.trim()) {
     payload.justificacion_valoracion = justificacion_valoracion.trim();
   }
-  if (archivo_central_years !== undefined && Number.isFinite(Number(archivo_central_years))) {
-    payload.archivo_central_years = Number(archivo_central_years);
-  }
-  if (total_retention !== undefined && Number.isFinite(Number(total_retention))) {
-    payload.total_retention = Number(total_retention);
+  if (archivo_central_years !== undefined && archivo_central_years !== null) {
+    const n = aEnteroNoNegativo(archivo_central_years);
+    if (n === null) {
+      return json(
+        {
+          error: "validation_error",
+          detail: "Los años de archivo central deben ser un entero mayor o igual a 0.",
+        },
+        { status: 400 },
+      );
+    }
+    payload.archivo_central_years = n;
   }
   if (disposition !== undefined && DISPOSITIONS.has(disposition)) payload.disposition = disposition;
   if (pdfa_profile !== undefined)

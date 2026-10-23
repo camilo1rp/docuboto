@@ -58,7 +58,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     c = await asyncpg.connect(_OWNER_DSN)
     try:
         await c.execute(f'CREATE SCHEMA "{schema}"')
-        await c.execute(f'SET search_path = "{schema}", public')
+        await c.execute(f'SET search_path = "{schema}"')
         for ruta in runner._sql_files(runner.TENANT_DIR):
             await c.execute(ruta.read_text())
         yield c
@@ -213,7 +213,7 @@ async def test_la_013_con_un_nombre_largo_aborta_nombrandolo() -> None:
     c = await asyncpg.connect(_OWNER_DSN)
     try:
         await c.execute(f'CREATE SCHEMA "{schema}"')
-        await c.execute(f'SET search_path = "{schema}", public')
+        await c.execute(f'SET search_path = "{schema}"')
         for ruta in runner._sql_files(runner.TENANT_DIR):
             if ruta.name < "013":
                 await c.execute(ruta.read_text())

@@ -100,7 +100,7 @@ async def ctx(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> AsyncGenerator[tuple[WorkflowService, asyncpg.Connection, str], None]:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     for cod, nombre in (DEP_JUR, DEP_ARC):
         await conn.execute("INSERT INTO dependencias (codigo, nombre) VALUES ($1, $2)", cod, nombre)
     yield _ServicioConRadicador(conn, slug), conn, slug
@@ -528,7 +528,7 @@ async def test_backfill_coincide_con_la_funcion_pura_y_es_idempotente(ctx: Any) 
 
     async def _correr() -> None:
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}", public')
+            await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
             await conn.execute(sql.read_text())
 
     previos = {rid: await _estado(conn, rid) for rid in ids}
@@ -764,7 +764,7 @@ async def test_carrera_anulacion_vs_assign_no_deja_paso_nuevo_sobre_el_anulado(
     svc, conn, slug = ctx
     rid, actor = await _radicado(conn), await _user(conn)
     anuladora = await nueva_conexion()
-    await anuladora.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await anuladora.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     tx = anuladora.transaction()
     await tx.start()
     commiteada = False
@@ -1127,14 +1127,14 @@ async def test_migracion_013_sobre_schema_sin_radicados_no_falla_y_es_idempotent
         sql_013 = next(p for p in archivos if "radicado_estado_desde_flujo" in p.name)
         for path in archivos:
             async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await db_conn.execute(path.read_text())
         assert any("backfill de estado omitido" in a for a in avisos), avisos
 
         # Segunda corrida de 013 sobre el mismo schema vacío: tampoco falla.
         avisos.clear()
         async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
             await db_conn.execute(sql_013.read_text())
         assert any("backfill de estado omitido" in a for a in avisos), avisos
 
@@ -1362,7 +1362,7 @@ async def test_la_cascada_espera_a_los_actos_en_curso_y_los_actos_esperan_a_la_c
     await svc.assign(_assign(rid, DEP_JUR[1], u1), u1)
 
     otra = await nueva_conexion()
-    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     otro_svc = _ServicioConRadicador(otra, slug)
     tx = otra.transaction()
     await tx.start()
@@ -1428,7 +1428,7 @@ def _sql_de(nombre: str) -> str:
 
 async def _correr_sql(conn: asyncpg.Connection, slug: str, nombre: str) -> None:
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}", public')
+        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
         await conn.execute(_sql_de(nombre))
 
 
@@ -1644,7 +1644,7 @@ async def test_el_runner_aplica_013_y_015_y_ancla_en_la_misma_transaccion(
             patch.object(runner, "_tenant_schemas", new=_schemas),
         ):
             await runner._apply_tenant(conn)
-        await conn.execute(f'SET search_path TO "{schema}", public')  # el runner lo deja en `public`
+        await conn.execute(f'SET search_path TO "{schema}"')  # el runner lo deja en `public`
         slug_audit = schema.removeprefix("tenant_")  # sin fila en `public.tenants`: sufijo del schema
         acciones = {
             r["action"]: json.loads(r["payload"])
@@ -1845,7 +1845,7 @@ async def test_d_devolver_relee_el_paso_y_la_tenencia_tras_el_cerrojo(ctx: Any, 
     await svc.assign(_assign(rid, DEP_JUR[1], u1), u1)
 
     otra = await nueva_conexion()
-    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     tx = otra.transaction()
     await tx.start()
     await WorkflowService(otra, slug)._repo.lock_radicado(rid)
@@ -1868,7 +1868,7 @@ async def test_d_rollback_relee_el_paso_y_la_tenencia_tras_el_cerrojo(ctx: Any, 
     u3 = await _user(conn, DEP_JUR[0])
 
     otra = await nueva_conexion()
-    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     tx = otra.transaction()
     await tx.start()
     await WorkflowService(otra, slug)._repo.lock_radicado(rid)
@@ -1935,7 +1935,7 @@ async def test_rn8_dos_repartos_de_sistema_concurrentes_dejan_un_solo_paso(ctx: 
     sistema = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
     otra = await nueva_conexion()
-    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     otro_svc = WorkflowService(otra, slug)
     tx = otra.transaction()
     await tx.start()
@@ -1976,7 +1976,7 @@ async def test_d_rollback_ve_la_tenencia_que_otro_acto_le_da_mientras_espera_el_
     u3 = await _user(conn, DEP_JUR[0])  # no pertenece a ARC ni es el asignado
 
     otra = await nueva_conexion()
-    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     tx = otra.transaction()
     await tx.start()
     await WorkflowService(otra, slug)._repo.lock_radicado(rid)
@@ -2000,7 +2000,7 @@ async def test_d_devolver_ve_la_tenencia_que_otro_acto_le_da_mientras_espera_el_
     paso = await svc.assign(_assign(rid, DEP_JUR[1], u1), u1)
 
     otra = await nueva_conexion()
-    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     tx = otra.transaction()
     await tx.start()
     await WorkflowService(otra, slug)._repo.lock_radicado(rid)

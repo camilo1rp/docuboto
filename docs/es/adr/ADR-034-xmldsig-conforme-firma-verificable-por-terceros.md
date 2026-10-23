@@ -3,7 +3,7 @@
 **Estado**: Aceptado
 **Fecha**: 2026-10-11
 **Autores**: Giampiero (mantenedor principal); triage B7
-**Relacionados**: [ADR-016](ADR-016-firma-electronica.md) (firma electrónica; enmendado por este ADR), [ADR-030](ADR-030-constancia-firma-inobtenible.md) (constancia; sus huellas no cambian), ETSI EN 319 132-1 §5.5.2, W3C XML Signature Syntax and Processing §4.4.3.2
+**Relacionados**: [ADR-042](ADR-042-el-aip-se-versiona-no-se-reescribe.md) (cierra la deuda de §5), [ADR-016](ADR-016-firma-electronica.md) (firma electrónica; enmendado por este ADR), [ADR-030](ADR-030-constancia-firma-inobtenible.md) (constancia; sus huellas no cambian), ETSI EN 319 132-1 §5.5.2, W3C XML Signature Syntax and Processing §4.4.3.2
 
 ---
 
@@ -125,15 +125,23 @@ Mecánica: una segunda pasada de `verify_xades` (`_vigencia_diferida`) que solo 
     `firma.lta_cadena_caducada`. Es una pérdida de prueba que solo se evita renovando antes: por eso el job recorre también las
     entidades **suspendidas** (la conservación no depende de la suspensión) y el margen es de 90 días.
   - **`TimeStampValidationData` con la revocación de la TSA anterior** (EN 319 132-1 §5.5.1): si la CA que emitió el certificado de la
-    TSA publica una CRL (punto de distribución `http(s)`), se incrusta como `RevocationValues`; si no se puede obtener (red, CRL vencida o
-    de otro emisor, sin punto de distribución) **no se renueva** y se asienta `firma.lta_renovacion_sin_revocacion_tsa`. **Limitación
-    declarada:** un certificado de TSA **autofirmado** (la TSA local de un despliegue) es su propia ancla de confianza, no tiene CA ni
-    CRL, y su TSVD va sin `RevocationValues`; no se ha probado contra una TSA con OCSP únicamente (solo CRL).
+    TSA publica una CRL (punto de distribución `http(s)`), se incrusta como `RevocationValues/CRLValues`; si no la publica pero sí un OCSP
+    (AIA), se incrusta la respuesta como `OCSPValues` (C-6, [ADR-042](ADR-042-el-aip-se-versiona-no-se-reescribe.md) §5); si no se puede
+    obtener ninguna (red, CRL vencida o de otro emisor, respuesta OCSP sin firmante válido o no fresca, sin punto de distribución) **no se
+    renueva** y se asienta `firma.lta_renovacion_sin_revocacion_tsa`. **Limitación declarada:** un certificado de TSA **autofirmado** (la
+    TSA local de un despliegue) es su propia ancla de confianza, no tiene CA ni CRL ni OCSP, y su TSVD va sin `RevocationValues`; `/verify`
+    lo acepta con la advertencia `tsvd_tsa_autofirmada_sin_revocacion`.
   - **La CRL se evalúa, no solo se incrusta (R2-3).** `tsa.revocacion_de_tsa` verifica la firma de la CRL contra la CA de la TSA (la del
     token o una de `TSA_CA_PEM_PATHS`; sin CA no se acepta una CRL sin verificar) y consulta el número de serie de la TSA anterior: si
     figura revocada no se renueva (`firma.lta_renovacion_tsa_revocada`); si la CA no está o la CRL no se obtiene o no verifica, tampoco
-    (`firma.lta_renovacion_sin_revocacion_tsa`). **`/verify` NO evalúa el `TimeStampValidationData`**: lo valida un tercero (p. ej. EU DSS);
-    nosotros solo lo construimos con la revocación disponible.
+    (`firma.lta_renovacion_sin_revocacion_tsa`). **`/verify` evalúa el `TimeStampValidationData` (C-6, ADR-042 §6)**: entre cada par de
+    sellos tiene que haber UN TSVD con el certificado de la TSA anterior y el de su CA, y una CRL u OCSP emitida entre los dos
+    sellos (`genTime(i-1) ≤ thisUpdate/producedAt ≤ genTime(i)`) con la firma verificada contra esa CA; una TSA revocada antes de sellar
+    invalida (`tsvd_tsa_revocada`), después solo avisa (`tsa_revocada_despues_del_sello`), y sin revocación (salvo la autofirmada declarada)
+    es `tsvd_sin_revocacion`. Los algoritmos de cada sello y de su evidencia deben figurar en el catálogo de `app/core/algoritmos.py`
+    (SHA-1 nunca en una firma): en el instante del sello siguiente, y los del último, hoy (`algoritmo_no_vigente`; EN 319 102-1 §5.6.2.5).
+    El pin de un ATS renovado sale del certificado que lo FIRMÓ (`sid`), no de `certificates[0]`, y el plazo de cada eslabón es lo primero
+    que caduque de la TSA y de su CA (`archive_timestamp_cadena_rota`, `lta_vigente`). `VerifyResponse.archive_timestamps[]` lo expone.
   - `POST /expedientes/{id}/indice/verify` (archive) verifica el artefacto **vigente** del índice (el XML renovado), resuelto igual que
     el AIP; si signature no lo resuelve cae al original y avisa `artefacto_vigente_no_resuelto`.
   - Los asientos de rechazo, TSA por vencer y sin revocación se escriben **una vez por motivo y eslabón** (`ultimo_aviso`); las pasadas
@@ -197,8 +205,8 @@ firma al emitirla, no al verificarla meses después.
   instalación (ver «Decisiones descartadas»).
 - ADR-016 y ADR-030 afirmaban que la firma era verificable por terceros. Hasta este ADR **no lo era**; ambos llevan ahora la nota.
 - El humo contra DSS (`tests/test_dss_smoke.py`) no forma parte del gate: requiere `DSS_URL`.
-- El export no incluye el XML renovado (no lleva el XML firmado; sin cambio). El AIP sí embebe el XML vigente del índice, pero un
-  AIP empaquetado antes de una renovación no se rehace: reempaquetarlo queda abierto (ver punto 5). Y en la ruta personal queda el residuo del punto 1: un defecto al
+- El export no incluye el XML renovado (no lleva el XML firmado; sin cambio). El AIP sí embebe el XML vigente del índice y, desde C-6,
+  un AIP empaquetado antes de una renovación se **versiona** (ADR-042: barrido de archive, reempaquetado desde el bag anterior). Y en la ruta personal queda el residuo del punto 1: un defecto al
   incrustar el `SignatureValue` real aún puede gastar un TOTP (se asienta y se avisa).
 - La confianza (cadena hasta una raíz de una lista de confianza, ONAC) sigue siendo un asunto aparte.
 

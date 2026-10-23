@@ -25,13 +25,15 @@
  * Body permitido (allowlist, anti mass-assignment, ADR-026 §"Superficie de
  * API"): code, name, description, parent_id, fondo_nombre,
  * fecha_extrema_inicial, fecha_extrema_final, justificacion_valoracion,
- * archivo_central_years, total_retention, disposition, pdfa_profile.
+ * archivo_central_years (OBLIGATORIO, 0 es válido), disposition, pdfa_profile.
+ * NUNCA total_retention (422, C-4: la TVD exige su fase central y el total es derivado).
  * NUNCA archivo_gestion_years, estado ni tipo_instrumento (los fija el
  * router del backend, nunca el cliente).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { aEnteroNoNegativo } from "$lib/server/trdFases.server.js";
 import { headersFor } from "$lib/server/trdCircuitoProxy.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -93,7 +95,6 @@ export async function POST({ locals, request }) {
     fecha_extrema_final,
     justificacion_valoracion,
     archivo_central_years,
-    total_retention,
     disposition,
     pdfa_profile,
   } = body ?? {};
@@ -166,13 +167,12 @@ export async function POST({ locals, request }) {
   ) {
     return json({ error: "validation_error", detail: "Perfil PDF/A inválido." }, { status: 400 });
   }
-  if (
-    archivo_central_years !== undefined &&
-    archivo_central_years !== null &&
-    !Number.isFinite(Number(archivo_central_years))
-  ) {
+  if (aEnteroNoNegativo(archivo_central_years) === null) {
     return json(
-      { error: "validation_error", detail: "Años de archivo central inválidos." },
+      {
+        error: "validation_error",
+        detail: "Los años de archivo central son obligatorios (entero >= 0; 0 es válido).",
+      },
       { status: 400 },
     );
   }
@@ -186,10 +186,7 @@ export async function POST({ locals, request }) {
     fecha_extrema_inicial,
     fecha_extrema_final,
     justificacion_valoracion: justificacion_valoracion.trim(),
-    archivo_central_years: Number.isFinite(Number(archivo_central_years))
-      ? Number(archivo_central_years)
-      : null,
-    total_retention: Number.isFinite(Number(total_retention)) ? Number(total_retention) : 10,
+    archivo_central_years: aEnteroNoNegativo(archivo_central_years),
     disposition: DISPOSITIONS.has(disposition) ? disposition : "E",
     pdfa_profile: PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null,
   };

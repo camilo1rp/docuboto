@@ -11,12 +11,15 @@
  * /archivo-fisico/api/unidades/[id]/prestamos — Proxy SSR de préstamos de unidad (D-05, E17).
  *
  * GET  → reenvía a GET /unidades/{id}/prestamos
- * POST → valida (prestado_a req, fecha_devolucion_esperada req YYYY-MM-DD),
- *         inyecta X-User-Id, reenvía a POST /unidades/{id}/prestamos
+ * POST → valida la unión discriminada `prestatario` (C-5/C11: interno por
+ *         `user_id` = auth_users.id, o externo con nombre + documento), arma el
+ *         payload campo a campo (nunca `prestado_por`: lo resuelve el servidor
+ *         del bearer), reenvía a POST /unidades/{id}/prestamos
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { construirPayloadPrestamo } from "$lib/utils/prestamo.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /**
@@ -85,37 +88,27 @@ export async function POST({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const { prestado_a, prestado_por, fecha_devolucion_esperada } = body ?? {};
+  const { prestatario, fecha_devolucion_esperada, observaciones } = body ?? {};
 
-  if (!prestado_a || typeof prestado_a !== "string" || !prestado_a.trim()) {
-    return json(
-      { error: "validation_error", detail: "El campo 'prestado_a' es obligatorio." },
-      { status: 422 },
-    );
-  }
+  const bad = (/** @type {string} */ detail) =>
+    json({ error: "validation_error", detail }, { status: 422 });
+
   if (
     !fecha_devolucion_esperada ||
     typeof fecha_devolucion_esperada !== "string" ||
     !isValidDate(fecha_devolucion_esperada.trim())
   ) {
-    return json(
-      {
-        error: "validation_error",
-        detail:
-          "El campo 'fecha_devolucion_esperada' es obligatorio y debe tener formato YYYY-MM-DD.",
-      },
-      { status: 422 },
+    return bad(
+      "El campo 'fecha_devolucion_esperada' es obligatorio y debe tener formato YYYY-MM-DD.",
     );
   }
 
-  /** @type {Record<string, unknown>} */
-  const payload = {
-    prestado_a: prestado_a.trim(),
-    fecha_devolucion_esperada: fecha_devolucion_esperada.trim(),
-  };
-  if (prestado_por && typeof prestado_por === "string" && prestado_por.trim()) {
-    payload.prestado_por = prestado_por.trim();
-  }
+  const construido = construirPayloadPrestamo(
+    prestatario,
+    fecha_devolucion_esperada,
+    observaciones,
+  );
+  if ("error" in construido) return bad(construido.error);
 
   /** @type {Record<string, string>} */
   const headers = {
@@ -129,7 +122,7 @@ export async function POST({ locals, params, request }) {
     const res = await fetch(`${API_V1}/unidades/${id}/prestamos`, {
       method: "POST",
       headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify(construido.ok),
     });
     if (res.status === 204) {
       return json({ ok: true }, { status: 200 });

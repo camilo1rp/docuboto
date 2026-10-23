@@ -26,7 +26,7 @@ from fastapi import (
     status,
 )
 
-from app.core.clearance import require_permission
+from app.core.clearance import check_permission, require_permission
 from app.core.database import get_db_conn
 from app.schemas.fisico import (
     ExpedienteEnUnidad,
@@ -35,12 +35,14 @@ from app.schemas.fisico import (
     MovimientoResponse,
     PrestamoCreate,
     PrestamoResponse,
+    PrestatarioElegible,
     UbicacionCreate,
     UbicacionResponse,
     UbicacionUpdate,
     UnidadCreate,
     UnidadDeExpediente,
     UnidadResponse,
+    enmascarar_prestatario,
 )
 from app.services.fisico_service import FisicoService
 
@@ -297,11 +299,24 @@ def _performed_by(actor: uuid.UUID | None) -> str | None:
     return str(actor) if actor is not None else None
 
 
+async def _segun_nivel(
+    conn: asyncpg.Connection, actor: uuid.UUID | None, items: list[PrestamoResponse]
+) -> list[PrestamoResponse]:
+    """Documento, correo y teléfono del prestatario externo completos solo con crud >= 3 (quien
+    presta); con menos, enmascarados. Sin identidad: enmascarado (fail-closed). Mutación: devolver
+    `items` sin pasar por aquí (cae `test_prestamos_enmascaran_al_prestatario_externo`)."""
+    if actor is not None and await check_permission(conn, actor, "USUA_PERM_EXPEDIENTE", 3):
+        return items
+    return [enmascarar_prestatario(p) for p in items]
+
+
 @router.post(
     "/unidades/{unidad_id}/prestamos",
     response_model=PrestamoResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    # Prestar es CREAR un registro de custodia: nivel 3 (como crear un expediente).
+    # Con el `min_crud` por defecto (1) abría la escritura al modo lectura.
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=3))],
 )
 async def create_prestamo(
     unidad_id: uuid.UUID,
@@ -316,6 +331,32 @@ async def create_prestamo(
 
 
 @router.get(
+    "/unidades/{unidad_id}/prestatarios-elegibles",
+    response_model=list[PrestatarioElegible],
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    summary="Usuarios a quienes se puede prestar la unidad (clearance cubre el árbol)",
+)
+async def prestatarios_elegibles(
+    response: Response,
+    unidad_id: uuid.UUID,
+    q: str | None = Query(default=None, max_length=80),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[PrestatarioElegible]:
+    """Espejo del gate de `POST .../prestamos` para la UI: no ofrece a quien el
+    backend rechazará. Devuelve `{user_id, username, nombre}`, nunca el nivel. Si
+    quien consulta no alcanza el contenido de la unidad, la lista sale vacía."""
+    items, total = await FisicoService(conn, tenant_slug).list_prestatarios_elegibles(
+        unidad_id, q=q, page=page, size=size, actor=actor
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items
+
+
+@router.get(
     "/unidades/{unidad_id}/prestamos",
     response_model=list[PrestamoResponse],
     dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
@@ -326,6 +367,7 @@ async def list_prestamos_of_unit(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[PrestamoResponse]:
     """Préstamos de UNA unidad, paginados (`page`/`size` + `X-Total-Count`).
@@ -339,7 +381,7 @@ async def list_prestamos_of_unit(
         estado=None, unidad_id=unidad_id, page=page, size=size
     )
     response.headers["X-Total-Count"] = str(total)
-    return items
+    return await _segun_nivel(conn, actor, items)
 
 
 @router.get(
@@ -353,6 +395,7 @@ async def list_prestamos(
     page: int = Query(default=1, ge=1),
     size: int = Query(default=20, ge=1, le=100),
     tenant_slug: str = Depends(_require_tenant),
+    actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[PrestamoResponse]:
     """Préstamos del tenant, paginados (`page`/`size` + `X-Total-Count`).
@@ -371,13 +414,14 @@ async def list_prestamos(
         estado=estado, unidad_id=None, page=page, size=size
     )
     response.headers["X-Total-Count"] = str(total)
-    return items
+    return await _segun_nivel(conn, actor, items)
 
 
 @router.post(
     "/prestamos/{prestamo_id}/devolver",
     response_model=PrestamoResponse,
-    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE"))],
+    # Devolver cierra un registro de custodia: nivel 2 (editar).
+    dependencies=[Depends(require_permission("USUA_PERM_EXPEDIENTE", min_crud=2))],
 )
 async def devolver_prestamo(
     prestamo_id: uuid.UUID,
@@ -385,9 +429,10 @@ async def devolver_prestamo(
     actor: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> PrestamoResponse:
-    return await FisicoService(conn, tenant_slug).devolver_prestamo(
+    prestamo = await FisicoService(conn, tenant_slug).devolver_prestamo(
         prestamo_id, _performed_by(actor), actor=actor
     )
+    return (await _segun_nivel(conn, actor, [prestamo]))[0]
 
 
 @router.get(

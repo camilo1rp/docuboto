@@ -60,7 +60,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     schema = "tenant_" + TENANT.replace("-", "_")
     await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        await c.execute(f'SET search_path TO "{schema}", public')
+        await c.execute(f'SET search_path TO "{schema}"')
         # `radicados` es de document-service: solo las columnas que el gate lee.
         await c.execute(
             "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
@@ -245,7 +245,7 @@ async def test_otro_grupo_y_otros_estados_no_se_ven(conn) -> None:
 @pytest.mark.asyncio
 async def test_un_radicados_ajeno_en_el_search_path_no_se_lee(conn) -> None:
     """El gate califica `radicados` con el schema del tenant: si éste no la tiene, una
-    homónima de otro schema del `search_path` (p. ej. `public`) NO la sustituye."""
+    homónima de otro schema del `search_path` (p. ej. el de otro tenant) NO la sustituye."""
     repo = DeadLetterRepository(conn)
     ajeno = f"decoy_{uuid.uuid4().hex[:8]}"
     await conn.execute(f'CREATE SCHEMA "{ajeno}"')
@@ -260,7 +260,7 @@ async def test_un_radicados_ajeno_en_el_search_path_no_se_lee(conn) -> None:
         await _aparcar(conn, {"tracking_number": "X-1"})
         await conn.execute("DROP TABLE radicados")
         schema = "tenant_" + TENANT.replace("-", "_")
-        await conn.execute(f'SET search_path TO "{schema}", "{ajeno}", public')
+        await conn.execute(f'SET search_path TO "{schema}", "{ajeno}"')
         with pytest.raises(RadicadosAusenteError):
             await repo.list_visible(TENANT, GRUPO, 1)
     finally:

@@ -46,6 +46,54 @@ def map_disposition(spanish_text: str | None) -> str:
         return "eliminate"
 
 
+def fases_de(
+    item: dict[str, Any], codigo: str, heredadas: tuple[int, int] | None = None
+) -> tuple[int, int]:
+    """`(gestión, central)` de una serie o subserie del JSON de origen.
+
+    C-4/C6: la retención son DOS fases obligatorias (no existe el juego `retention_years`/
+    `total_retention`, ni un valor por omisión: un 0 inventado es «retención cero»). Si el JSON
+    no trae alguna, solo una subserie puede heredarla de su serie; una serie no, y el script se
+    detiene nombrándola en vez de sembrar un dato que nadie declaró."""
+    gestion = item.get("retencion_gestion")
+    central = item.get("retencion_central")
+    if gestion is None and heredadas is not None:
+        gestion = heredadas[0]
+    if central is None and heredadas is not None:
+        central = heredadas[1]
+    if gestion is None or central is None:
+        raise ValueError(
+            f"La serie {codigo} no declara retencion_gestion y retencion_central en el JSON: "
+            "complétela en el origen (el sistema no inventa tiempos de retención)."
+        )
+    if int(gestion) + int(central) < 1:
+        raise ValueError(
+            f"La serie {codigo} declara 0 + 0 años: una TRD suma al menos un año entre las dos "
+            "fases (CHECK trd_series_retencion_minima_check)."
+        )
+    return int(gestion), int(central)
+
+
+def productora_sql(dependencia: dict[str, Any], serie_id: str, serie_code: str) -> list[str]:
+    """INSERT de la dependencia productora de una SERIE (C-4/C8, ADR-040).
+
+    La dependencia se cita por su `codigo` (el de `dependencias.codigo`, inmutable); el nombre es
+    la instantánea. Si el JSON no trae `codigo`, NO se inventa: se deja una línea de comentario
+    que lo dice y la serie quedará `sin_productora` en el cuadro hasta que se declare."""
+    codigo = dependencia.get("codigo")
+    nombre = str(dependencia.get("nombre", "")).strip()[:100]
+    if codigo is None or not nombre:
+        return [
+            f"-- AVISO: la dependencia de la serie {serie_code} no trae `codigo` en el JSON: "
+            "sin dependencia productora (declárela con PATCH/versión nueva)."
+        ]
+    return [
+        "INSERT INTO trd_serie_dependencia_productora "
+        "(trd_serie_id, dependencia_codigo, dependencia_nombre) "
+        f"VALUES ({serie_id}, {int(codigo)}, '{escape_sql(nombre)}');"
+    ]
+
+
 def generate_sql_from_json(
     json_file: Path, tenant_slug: str
 ) -> str:
@@ -78,9 +126,7 @@ def generate_sql_from_json(
         for serie in dependencia.get("series", []):
             serie_code = str(serie.get("codigo", "")).zfill(3)
             serie_name = serie.get("nombre", "UNNAMED").upper()
-            serie_retention = serie.get("retencion_central") or serie.get(
-                "retencion_gestion"
-            ) or 10
+            serie_gestion, serie_central = fases_de(serie, serie_code)
             serie_disposition = map_disposition(serie.get("disposicion_final"))
 
             # If serie has subseries, use series as parent; otherwise, insert it directly
@@ -89,20 +135,20 @@ def generate_sql_from_json(
                 serie_id = f"'{uuid4()}'"
                 lines.append(
                     f"INSERT INTO trd_series "
-                    f"(id, code, name, retention_years, total_retention, disposition, is_active) "
+                    f"(id, code, name, archivo_gestion_years, archivo_central_years, "
+                    f"disposition, is_active) "
                     f"VALUES ({serie_id}, '{serie_code}', '{escape_sql(serie_name)}', "
-                    f"{serie_retention}, {serie_retention * 2}, '{serie_disposition}', true);"
+                    f"{serie_gestion}, {serie_central}, '{serie_disposition}', true);"
                 )
                 series_count += 1
+                lines.extend(productora_sql(dependencia, serie_id, serie_code))
 
                 # Insert subseries
                 for subserie in serie.get("subseries", []):
                     subserie_code = f"{serie_code}.{str(subserie.get('codigo', '')).zfill(2)}"
                     subserie_name = subserie.get("nombre", "UNNAMED").upper()
-                    subserie_retention = (
-                        subserie.get("retencion_central")
-                        or subserie.get("retencion_gestion")
-                        or serie_retention
+                    subserie_gestion, subserie_central = fases_de(
+                        subserie, subserie_code, heredadas=(serie_gestion, serie_central)
                     )
                     subserie_disposition = map_disposition(
                         subserie.get("disposicion_final")
@@ -111,10 +157,11 @@ def generate_sql_from_json(
                     subserie_id = f"'{uuid4()}'"
                     lines.append(
                         f"INSERT INTO trd_series "
-                        f"(id, code, name, retention_years, total_retention, disposition, is_active) "
+                        f"(id, code, name, archivo_gestion_years, archivo_central_years, "
+                        f"disposition, is_active) "
                         f"VALUES ({subserie_id}, '{subserie_code}', "
-                        f"'{escape_sql(subserie_name)}', {subserie_retention}, "
-                        f"{subserie_retention * 2}, '{subserie_disposition}', true);"
+                        f"'{escape_sql(subserie_name)}', {subserie_gestion}, "
+                        f"{subserie_central}, '{subserie_disposition}', true);"
                     )
                     subseries_count += 1
             else:
@@ -122,11 +169,13 @@ def generate_sql_from_json(
                 serie_id = f"'{uuid4()}'"
                 lines.append(
                     f"INSERT INTO trd_series "
-                    f"(id, code, name, retention_years, total_retention, disposition, is_active) "
+                    f"(id, code, name, archivo_gestion_years, archivo_central_years, "
+                    f"disposition, is_active) "
                     f"VALUES ({serie_id}, '{serie_code}', '{escape_sql(serie_name)}', "
-                    f"{serie_retention}, {serie_retention * 2}, '{serie_disposition}', true);"
+                    f"{serie_gestion}, {serie_central}, '{serie_disposition}', true);"
                 )
                 series_count += 1
+                lines.extend(productora_sql(dependencia, serie_id, serie_code))
 
     lines.extend(
         [

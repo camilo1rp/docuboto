@@ -167,7 +167,7 @@ async def test_pqrs_tambien_exige_la_politica_vigente(client_with_conn) -> None:
             "/api/v1/public/demo/pqrs",
             json={
                 "tipo": "peticion", "nombre": "Ana", "asunto": "A", "descripcion": "D",
-                "acepta_tratamiento": True, "politica_version": "vieja",
+                "acepta_tratamiento": True, "politica_version": "vieja", "altcha": "altcha-de-prueba-0000",
             },
         )
     assert resp.status_code == 409

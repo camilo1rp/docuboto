@@ -53,6 +53,12 @@ import { POST as anulacionAprobarPost } from "./(app)/anulaciones/api/[id]/aprob
 import { POST as anulacionRechazarPost } from "./(app)/anulaciones/api/[id]/rechazar/+server.js";
 import { GET as anulacionBuscarGet } from "./(app)/anulaciones/api/buscar/+server.js";
 
+import { GET as desclasificacionColaGet } from "./(app)/desclasificaciones/api/cola/+server.js";
+import { POST as desclasificacionAprobarPost } from "./(app)/desclasificaciones/api/[id]/aprobar/+server.js";
+import { POST as desclasificacionRechazarPost } from "./(app)/desclasificaciones/api/[id]/rechazar/+server.js";
+import { POST as desclasificacionRetirarPost } from "./(app)/desclasificaciones/api/[id]/retirar/+server.js";
+import { POST as desclasificacionSolicitarPost } from "./(app)/bandeja/api/[id]/desclasificacion/+server.js";
+
 const url = (path = "/") => new URL(`http://localhost${path}`);
 
 /** locals sin sesión — simula una cookie ausente/expirada tras el hook. */
@@ -271,6 +277,31 @@ describe("Proxies BFF de ESCRITURA — 401 sin locals.accessToken (D-05)", () =>
       params: { id: "rad-1" },
       request: requestThatMustNotBeRead(),
     });
+    expect(res.status).toBe(401);
+    expect((await res.json()).error).toBe("unauthenticated");
+  });
+});
+
+describe("Proxies BFF de desclasificación (C-2, ADR-039) — 401 sin sesión", () => {
+  const sinBody = {
+    json: () => {
+      throw new Error("request.json() no debió invocarse sin sesión");
+    },
+  };
+  const params = { id: "11111111-1111-1111-1111-111111111111" };
+
+  it("cola GET → 401", async () => {
+    const res = await desclasificacionColaGet({ locals: NO_SESSION_LOCALS, url: url("/x") });
+    expect(res.status).toBe(401);
+  });
+
+  it.each([
+    ["aprobar", desclasificacionAprobarPost],
+    ["rechazar", desclasificacionRechazarPost],
+    ["retirar", desclasificacionRetirarPost],
+    ["solicitar", desclasificacionSolicitarPost],
+  ])("%s POST → 401 antes de leer el body", async (_n, handler) => {
+    const res = await handler({ locals: NO_SESSION_LOCALS, params, request: sinBody });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toBe("unauthenticated");
   });

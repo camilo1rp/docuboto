@@ -128,8 +128,44 @@ def test_la_cabecera_del_roadmap_tiene_fecha_igual_en_los_dos_idiomas() -> None:
 
 # --------------------------------------------------------------------------- AREA-14-04 (roadmap) / OMI-07
 #
-# El changelog EN NO se vigila por paridad: `docs/es/changelog.md` declara que la versión
-# inglesa es una selección deliberada y no una traducción (decisión de proyecto, a confirmar).
+# `docs/en/` es una SELECCIÓN, no una traducción completa (C21, decidido 2026-10-20). Dentro
+# de la selección se exige paridad (roadmap, security-audit); fuera de ella cada página solo
+# en español se declara aquí. Una página nueva tiene que tomar partido: o se traduce, o
+# entra en esta lista. El changelog EN tampoco se vigila por paridad: recoge una selección.
+
+#: Páginas de `docs/es/` que a propósito no tienen versión inglesa, con su motivo.
+_SOLO_EN_ESPANOL: dict[str, str] = {
+    "adr/": "las decisiones de arquitectura se escriben y se razonan en español",
+    "mcp-flujos.md": "censo interno de cobertura del MCP; se regenera con scripts/censo_mcp.py",
+    "plan-pruebas.md": "plan de pruebas del proyecto, de uso interno",
+    "politica-tratamiento-plantilla.md": "plantilla legal colombiana (Ley 1581) que adapta cada entidad",
+}
+
+
+def _paginas(raiz: Path) -> set[str]:
+    return {str(f.relative_to(raiz)) for f in raiz.rglob("*.md")}
+
+
+def test_toda_pagina_solo_en_espanol_esta_declarada() -> None:
+    es, en = _paginas(_DOCS / "es"), _paginas(_DOCS / "en")
+    assert len(es) > 20 and len(en) > 10, "el censo de páginas salió vacío"
+    solo_es = {p for p in es - en if not any(p.startswith(d) for d in _SOLO_EN_ESPANOL if d.endswith("/"))}
+    no_declaradas = solo_es - set(_SOLO_EN_ESPANOL)
+    assert not no_declaradas, (
+        f"páginas solo en español sin declarar: {sorted(no_declaradas)}; tradúcelas a docs/en/ "
+        "o decláralas en _SOLO_EN_ESPANOL con su motivo"
+    )
+
+
+def test_lo_declarado_solo_en_espanol_existe_y_no_esta_traducido() -> None:
+    en = _paginas(_DOCS / "en")
+    for pagina in _SOLO_EN_ESPANOL:
+        ruta = _DOCS / "es" / pagina
+        assert ruta.exists(), f"{pagina} está declarada pero no existe en docs/es/"
+        if pagina.endswith("/"):
+            assert not any(p.startswith(pagina) for p in en), f"{pagina} ya tiene páginas en inglés: sácala de la lista"
+        else:
+            assert pagina not in en, f"{pagina} ya está en docs/en/: sácala de la lista"
 
 
 def _casillas_abiertas(rel: str) -> int:
@@ -200,7 +236,7 @@ def test_la_documentacion_no_receta_lo_prohibido() -> None:
 def test_el_control_de_recetas_caza_la_linea_que_se_retiro() -> None:
     """Control positivo: las líneas que esta tanda sacó de multi-tenancy.md habrían caído."""
     assert any(
-        p.search('await session.execute(text(f"SET search_path TO tenant_{x}, public"))')
+        p.search('await session.execute(text(f"SET search_path TO tenant_{x}"))')
         for p in _RECETAS_PROHIBIDAS
     )
     assert any(p.search("Ejecuta las migraciones Alembic en ese schema") for p in _RECETAS_PROHIBIDAS)
@@ -392,3 +428,53 @@ def test_las_cifras_del_catalogo_mcp_en_api_md_son_las_del_codigo() -> None:
         assert f"**{irreversibles} " in texto and f"**{tecleadas} " in texto, (
             f"{rel}: irreversibles ({irreversibles}) o con valor tecleado ({tecleadas}) desactualizados"
         )
+
+
+# --------------------------------------------------------------------------- C-6 (ADR-042)
+
+
+def test_c6_la_documentacion_no_afirma_la_deuda_lta_que_c6_cerro() -> None:
+    """La deuda LTA de B10 se escribió cuando era cierta y C-6 la cerró: `/verify` evalúa el
+    `TimeStampValidationData`, la revocación de la TSA también sale de un OCSP, `firma.lta_renovada` es una
+    señal SIN consumidor por diseño (archive concilia por barrido) y el AIP se versiona.
+
+    Cada frase se prohíbe MIENTRAS el hecho del código exista. Quedan fuera a propósito los changelogs y el
+    roadmap: son historia (cada línea fue cierta el día que se escribió)."""
+    local = _leer("services/signature-service/app/providers/local.py")
+    tsa = _leer("services/signature-service/app/core/tsa.py")
+    ocsp = _leer("services/signature-service/app/core/ocsp.py")
+    assert "def _evaluar_tsvd(" in local, "el hecho ya no existe: el guardián vigilaría el vacío"
+    assert "def verify_ocsp_tsa(" in ocsp and "FUENTE_OCSP" in tsa
+    # El barrido de archive existe: reempaquetar ya no «queda abierto».
+    reconciliacion = _leer("services/archive-service/app/jobs/indice_reconciliation.py")
+    assert "run_once_aip_reempaquetado" in reconciliacion
+
+    vigiladas = (
+        "docs/es/adr/ADR-034-xmldsig-conforme-firma-verificable-por-terceros.md",
+        "docs/es/api.md",
+        "docs/en/api.md",
+        "docs/es/domain.md",
+        "docs/en/domain.md",
+        "services/signature-service/app/providers/local.py",
+        "services/signature-service/app/core/events.py",
+        "services/signature-service/app/core/ocsp.py",
+        "services/signature-service/app/jobs/renovacion_lta.py",
+    )
+    prohibidas = (
+        "`/verify` NO evalúa el `TimeStampValidationData`",
+        "/verify no evalúa el timestampvalidationdata",
+        "sin consumidor hoy",
+        "NO hay renovación del ``ArchiveTimeStamp``",
+        "**No se renueva** (§5.5.3): deuda",
+        "no se ha probado contra una TSA con OCSP únicamente",
+        "OCSP de la TSA no soportado",
+        "reempaquetarlo queda abierto",
+        "un AIP empaquetado antes de una renovación no se rehace",
+        "`/verify` does NOT evaluate the `TimeStampValidationData`",
+    )
+    for rel in vigiladas:
+        texto = _plano(_leer(rel)).lower()
+        for frase in prohibidas:
+            assert _plano(frase).lower() not in texto, (
+                f"{rel} sigue afirmando «{frase}», y C-6 (ADR-042) lo cerró"
+            )

@@ -12,6 +12,7 @@
 <script>
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
   import { createEventDispatcher } from "svelte";
+  import ProductorasSelect from "$lib/components/features/trd/ProductorasSelect.svelte";
   import Modal from "$lib/components/ui/Modal.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
@@ -21,6 +22,12 @@
   export let basePath;
   export let canWrite = false;
   export let instrumentLabel = "TRD";
+  /**
+   * Catálogo de dependencias activas ([{ codigo, nombre }]) para declarar la
+   * productora al ratificar una serie `migrada` (C-4). Solo TRD lo pasa.
+   * @type {{ codigo: number, nombre: string }[]}
+   */
+  export let dependencias = [];
 
   const dispatch = createEventDispatcher();
 
@@ -36,6 +43,16 @@
   // el vigente está convalidado/derogado/migrado, abrir una versión nueva es
   // seguro; si está borrador/aprobada, ESA es la versión en trámite.
   $: canNuevaVersion = canWrite && ["convalidada", "migrada", "derogada"].includes(estado);
+
+  // Una serie `migrada` nació sin productora: la ratificación es el único momento
+  // en que se declara (una sola vez). Si ya tiene, el backend responde
+  // 422 productora_ya_declarada, así que el selector ni se ofrece.
+  $: pideProductora =
+    instrumentLabel === "TRD" &&
+    estado === "migrada" &&
+    !(item?.dependencias_productoras?.length > 0);
+  /** @type {number[]} */
+  let fProductoras = [];
 
   let actionLoading = false;
   let openModal = null; // 'aprobar' | 'devolver' | 'convalidar' | 'rusd' | 'derogar' | 'nueva-version' | null
@@ -58,6 +75,7 @@
     fInstanciaConvalidante = "";
     fRusdRadicado = "";
     fFechaPublicacion = "";
+    fProductoras = [];
   }
 
   function open(modal) {
@@ -127,6 +145,7 @@
   async function handleConvalidar() {
     if (!fActoAdministrativo.trim() || !fFechaConvalidacion || !fInstanciaConvalidante.trim())
       return;
+    if (pideProductora && fProductoras.length === 0) return;
     try {
       /** @type {Record<string, unknown>} */
       const body = {
@@ -136,6 +155,7 @@
       };
       if (fRusdRadicado.trim()) body.rusd_radicado = fRusdRadicado.trim();
       if (fFechaPublicacion) body.fecha_publicacion = fFechaPublicacion;
+      if (pideProductora) body.dependencias_productoras = fProductoras;
       const updated = await post("convalidar", body);
       notifySuccess(`Versión ${item.version} de "${item.code}" convalidada. Queda vigente.`);
       close();
@@ -385,6 +405,16 @@
     bind:value={fInstanciaConvalidante}
     hint="Consejo Departamental/Distrital de Archivos (Ac. AGN 001/2024)."
   />
+  {#if pideProductora}
+    <ProductorasSelect
+      id="ila-productoras"
+      legend="Dependencia(s) productora(s)"
+      required
+      options={dependencias}
+      bind:selected={fProductoras}
+      hint="Esta serie migrada nació sin productora. Se declara ahora, una sola vez, al ratificarla; sin ella no se puede convalidar."
+    />
+  {/if}
   <FormField
     id="ila-rusd-radicado"
     label="Radicado RUSD (opcional, puede llegar después)"
@@ -405,7 +435,8 @@
       disabled={actionLoading ||
         !fActoAdministrativo.trim() ||
         !fFechaConvalidacion ||
-        !fInstanciaConvalidante.trim()}
+        !fInstanciaConvalidante.trim() ||
+        (pideProductora && fProductoras.length === 0)}
       on:click={handleConvalidar}>Confirmar convalidación</Button
     >
   </svelte:fragment>

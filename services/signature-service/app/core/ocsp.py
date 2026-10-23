@@ -17,8 +17,16 @@ NUNCA en su lugar: XAdES-LT sigue exigiendo la CRL (:func:`app.providers.local
 ._insert_revocation_values`); OCSP es aditivo y opt-in
 (``settings.signer_ocsp_enabled=False`` por defecto).
 
+--- Dos usos distintos de OCSP en este módulo ---
+(1) OCSP *stapled* sobre el sello institucional (``build_ocsp_response`` /
+``verify_ocsp_response``, E06): el responder es nuestro, pineado, y no hay petición.
+(2) OCSP *en línea* sobre el certificado de la TSA anterior (``build_ocsp_request_tsa`` /
+``verify_ocsp_tsa``, C-6, ADR-042): el responder es de un tercero, el ancla es su CA y sí hay
+petición con nonce. Este módulo sigue sin hacer HTTP: la petición la envía ``app.core.tsa``.
+Lo que sigue de la cabecera describe el uso (1).
+
 --- Modelo de confianza: responder DELEGADO, coherente con la CRL ---
-Este módulo NUNCA habla HTTP con un responder OCSP externo — el "responder"
+En el uso (1) este módulo NUNCA habla HTTP con un responder OCSP externo — el "responder"
 es un par de claves propio (``ocsp.crt``/``ocsp.key``) emitido OFFLINE por la
 misma CA local de desarrollo que emite los sellos institucionales
 (``ca.key`` — ``scripts/gen-dev-ca.sh``/``scripts/gen-dev-ocsp-responder.sh``;
@@ -80,7 +88,7 @@ from datetime import UTC, datetime, timedelta
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.x509.ocsp import (
     OCSPCertStatus,
     OCSPRequestBuilder,
@@ -89,8 +97,9 @@ from cryptography.x509.ocsp import (
     OCSPResponseStatus,
     load_der_ocsp_response,
 )
-from cryptography.x509.oid import ExtendedKeyUsageOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, SignatureAlgorithmOID
 
+from app.core.algoritmos import identificador_de_clave
 from app.core.config import settings
 
 
@@ -196,6 +205,43 @@ def build_ocsp_response(
     )
 
 
+def _exigir_delegado(
+    responder: x509.Certificate, ca_cert: x509.Certificate, instante: datetime
+) -> str | None:
+    """Motivo por el que ``responder`` no es un respondedor DELEGADO válido de ``ca_cert`` en
+    ``instante``, o ``None`` si lo es. Lógica común al OCSP stapled del sello (:func:`verify_ocsp_response`)
+    y al OCSP de la TSA (:func:`verify_ocsp_tsa`). Comprueba, en orden: emitido DIRECTAMENTE por la
+    CA; vigente en ``instante`` (un respondedor caducado no atestigua nada aunque la CA lo emitiera);
+    EKU ``id-kp-OCSPSigning`` (sin él, cualquier certificado de la CA firmaría respuestas); y
+    ``id-pkix-ocsp-nocheck`` (RFC 6960 §4.2.2.2)."""
+    try:
+        responder.verify_directly_issued_by(ca_cert)
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        return f"ocsp_responder_no_emitido_por_ca: {exc}"
+
+    # Ventana de vigencia del certificado del RESPONDER — mismo patrón que ya
+    # se aplica al certificado del sello (app.providers.local.verify_xades,
+    # "certificado_fuera_de_vigencia") y al de la CA ("ca_certificado_fuera_
+    # de_vigencia"): un responder cuyo certificado expiró/aún no es válido no
+    # debe poder atestiguar el estado de revocación de nadie, aunque haya
+    # sido emitido legítimamente por la CA en su momento.
+    if not (responder.not_valid_before_utc <= instante <= responder.not_valid_after_utc):
+        return "ocsp_responder_fuera_de_vigencia"
+
+    try:
+        eku_ext = responder.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+    except x509.ExtensionNotFound:
+        return "ocsp_responder_sin_eku_ocsp_signing"
+    if ExtendedKeyUsageOID.OCSP_SIGNING not in eku_ext.value:
+        return "ocsp_responder_sin_eku_ocsp_signing"
+
+    try:
+        responder.extensions.get_extension_for_class(x509.OCSPNoCheck)
+    except x509.ExtensionNotFound:
+        return "ocsp_responder_sin_nocheck"
+    return None
+
+
 def verify_ocsp_response(
     response_der: bytes,
     *,
@@ -263,31 +309,9 @@ def _verify_ocsp_response_inner(
         return OcspVerifyOutcome(False, motivo="ocsp_sin_certificado_responder")
     responder = certificates[0]
 
-    try:
-        responder.verify_directly_issued_by(ca_cert)
-    except Exception as exc:  # noqa: BLE001 — fail-closed
-        return OcspVerifyOutcome(False, motivo=f"ocsp_responder_no_emitido_por_ca: {exc}")
-
-    # Ventana de vigencia del certificado del RESPONDER — mismo patrón que ya
-    # se aplica al certificado del sello (app.providers.local.verify_xades,
-    # "certificado_fuera_de_vigencia") y al de la CA ("ca_certificado_fuera_
-    # de_vigencia"): un responder cuyo certificado expiró/aún no es válido no
-    # debe poder atestiguar el estado de revocación de nadie, aunque haya
-    # sido emitido legítimamente por la CA en su momento.
-    if not (responder.not_valid_before_utc <= datetime.now(UTC) <= responder.not_valid_after_utc):
-        return OcspVerifyOutcome(False, motivo="ocsp_responder_fuera_de_vigencia")
-
-    try:
-        eku_ext = responder.extensions.get_extension_for_class(x509.ExtendedKeyUsage)
-    except x509.ExtensionNotFound:
-        return OcspVerifyOutcome(False, motivo="ocsp_responder_sin_eku_ocsp_signing")
-    if ExtendedKeyUsageOID.OCSP_SIGNING not in eku_ext.value:
-        return OcspVerifyOutcome(False, motivo="ocsp_responder_sin_eku_ocsp_signing")
-
-    try:
-        responder.extensions.get_extension_for_class(x509.OCSPNoCheck)
-    except x509.ExtensionNotFound:
-        return OcspVerifyOutcome(False, motivo="ocsp_responder_sin_nocheck")
+    motivo_delegado = _exigir_delegado(responder, ca_cert, datetime.now(UTC))
+    if motivo_delegado is not None:
+        return OcspVerifyOutcome(False, motivo=motivo_delegado)
 
     # `public_key()` devuelve la unión de todos los tipos de clave soportados;
     # abajo se verifica con `padding.PKCS1v15()`, que solo existe para RSA. Se
@@ -347,3 +371,217 @@ def _verify_ocsp_response_inner(
         return OcspVerifyOutcome(False, motivo="ocsp_responder_fingerprint_no_coincide")
 
     return OcspVerifyOutcome(True, cert_status="good", produced_at=response.produced_at_utc, motivo=None)
+
+
+# ---------------------------------------------------------------------------
+# OCSP EN LÍNEA de la TSA (C-6, ADR-034 §5)
+# ---------------------------------------------------------------------------
+#
+# Lo anterior es OCSP *stapled* sobre el sello institucional: el respondedor es nuestro y está
+# pineado. Lo de aquí es otra cosa: la revocación del certificado de la TSA del sello de archivo
+# ANTERIOR cuando su CA no publica CRL. El respondedor es el de un tercero; el ancla es la CA
+# (el propio respondedor de la CA, o un delegado emitido directamente por ella), no una huella
+# anotada de antemano. Se pregunta con nonce y la respuesta se conserva en el
+# ``TimeStampValidationData`` para que el sello anterior se valide sin consultar a nadie.
+
+_HOLGURA_RELOJ = timedelta(minutes=5)
+OCSP_TSA_MAX_BYTES = 64 * 1024
+_OCSP_TSA_HASH = hashes.SHA256()
+
+
+@dataclass(slots=True)
+class OcspTsaOutcome:
+    """Resultado de :func:`verify_ocsp_tsa` — nunca lanza (fail-closed).
+
+    ``valido`` dice que la respuesta es AUTÉNTICA, del certificado preguntado y está en plazo;
+    no dice que el certificado esté bien: eso es ``estado`` (``good`` | ``revoked``). Quien
+    consume decide qué hacer con un ``revoked`` según CUÁNDO se revocó (``revocation_time``)."""
+
+    valido: bool
+    estado: str | None = None
+    revocation_time: datetime | None = None
+    produced_at: datetime | None = None
+    motivo: str | None = None
+    # Identificadores de catálogo (:mod:`app.core.algoritmos`) de la firma de la respuesta; los
+    # evalúa el llamante en la fecha que corresponda (hoy al renovar; la del sello siguiente al verificar).
+    algoritmos: tuple[str, ...] = ()
+
+
+def urls_ocsp_de(cert: x509.Certificate) -> list[str]:
+    """URL ``http(s)`` del OCSP anunciado en la extensión AIA del certificado (sin red)."""
+    try:
+        aia = cert.extensions.get_extension_for_class(x509.AuthorityInformationAccess).value
+    except x509.ExtensionNotFound:
+        return []
+    return [
+        d.access_location.value
+        for d in aia
+        if d.access_method == x509.AuthorityInformationAccessOID.OCSP
+        and isinstance(d.access_location, x509.UniformResourceIdentifier)
+        and d.access_location.value.lower().startswith(("http://", "https://"))
+    ]
+
+
+def build_ocsp_request_tsa(cert: x509.Certificate, issuer: x509.Certificate) -> tuple[bytes, bytes]:
+    """Petición OCSP (RFC 6960) con CertID SHA-256 y nonce de 32 bytes (RFC 8954).
+    Devuelve ``(petición_der, nonce)``."""
+    import secrets
+
+    nonce = secrets.token_bytes(32)
+    request = (
+        OCSPRequestBuilder()
+        .add_certificate(cert, issuer, _OCSP_TSA_HASH)
+        .add_extension(x509.OCSPNonce(nonce), critical=False)
+        .build()
+    )
+    return request.public_bytes(serialization.Encoding.DER), nonce
+
+
+def _id_de_respondedor_coincide(response: object, candidato: x509.Certificate) -> bool:
+    nombre = getattr(response, "responder_name", None)
+    if nombre is not None:
+        return bool(nombre == candidato.subject)
+    huella = getattr(response, "responder_key_hash", None)
+    if huella is None:
+        return False
+    return bool(huella == x509.SubjectKeyIdentifier.from_public_key(candidato.public_key()).digest)
+
+
+def _verificar_firma_respuesta(response: object, clave: object) -> str | None:
+    """Motivo si la firma de la ``BasicOCSPResponse`` no verifica con ``clave``; ``None`` si sí."""
+    hash_alg = getattr(response, "signature_hash_algorithm", None)
+    if hash_alg is None:
+        return "ocsp_respuesta_sin_hash_algorithm"
+    firma = response.signature  # type: ignore[attr-defined]
+    datos = response.tbs_response_bytes  # type: ignore[attr-defined]
+    try:
+        if isinstance(clave, rsa.RSAPublicKey):
+            # La librería no expone los parámetros de RSASSA-PSS (sal): solo PKCS#1 v1.5 se puede
+            # comprobar aquí; PSS se rechaza en vez de verificarlo mal.
+            if response.signature_algorithm_oid == SignatureAlgorithmOID.RSASSA_PSS:  # type: ignore[attr-defined]
+                return "ocsp_rsa_pss_no_soportado"
+            clave.verify(firma, datos, padding.PKCS1v15(), hash_alg)
+        elif isinstance(clave, ec.EllipticCurvePublicKey):
+            clave.verify(firma, datos, ec.ECDSA(hash_alg))
+        else:
+            return "ocsp_clave_de_firma_no_soportada"
+    except Exception as exc:  # noqa: BLE001 — fail-closed
+        return f"ocsp_firma_invalida: {exc}"
+    return None
+
+
+def verify_ocsp_tsa(
+    response_der: bytes,
+    cert: x509.Certificate,
+    issuer: x509.Certificate,
+    *,
+    nonce: bytes | None = None,
+    ventana: tuple[datetime, datetime] | None = None,
+) -> OcspTsaOutcome:
+    """Verifica la respuesta OCSP sobre el certificado de una TSA. Nunca lanza.
+
+    Comprueba: ``SUCCESSFUL``; una ``SingleResponse`` cuyo CertID coincide con ``cert``/``issuer``
+    (se BUSCA entre todas, no se toma la primera); firmante = la propia CA o un delegado emitido
+    directamente por ella (EKU ``OCSPSigning`` + ``ocsp-nocheck`` + vigente); firma verificada con
+    su clave; estado ``good``/``revoked`` (``unknown`` no vale).
+
+    Dos modos, según ``ventana``:
+
+      * EN LÍNEA (``ventana=None``, al renovar): frescura respecto de AHORA —``thisUpdate`` no está
+        en el futuro, ``nextUpdate`` no venció— y nonce: si la respuesta trae el de ``nonce`` debe
+        coincidir; si no trae ninguno se acepta SOLO si ``producedAt`` está a ±5 min de ahora
+        (muchos respondedores de TSA no devuelven nonce; una respuesta vieja reenviada no pasa).
+      * ARCHIVADA (``ventana=(sello_previo, sello_siguiente)``, al verificar): no hay «ahora»; la
+        respuesta tiene que haberse producido DESPUÉS del sello cuyo certificado cubre y haber
+        existido cuando se selló encima: ``previo <= producedAt <= siguiente``.
+    """
+    try:
+        return _verify_ocsp_tsa_inner(response_der, cert, issuer, nonce=nonce, ventana=ventana)
+    except Exception as exc:  # noqa: BLE001 — cualquier fallo == respuesta inválida
+        return OcspTsaOutcome(False, motivo=f"ocsp_excepcion: {exc}")
+
+
+def _verify_ocsp_tsa_inner(
+    response_der: bytes,
+    cert: x509.Certificate,
+    issuer: x509.Certificate,
+    *,
+    nonce: bytes | None,
+    ventana: tuple[datetime, datetime] | None,
+) -> OcspTsaOutcome:
+    response = load_der_ocsp_response(response_der)
+    if response.response_status != OCSPResponseStatus.SUCCESSFUL:
+        return OcspTsaOutcome(False, motivo="ocsp_response_no_exitosa")
+
+    ahora = datetime.now(UTC)
+    produced_at = response.produced_at_utc
+    # El instante con que se juzga al respondedor: el de la producción de la respuesta.
+    instante = ahora if ventana is None else produced_at
+
+    # --- quién firma -------------------------------------------------------------------------
+    if _id_de_respondedor_coincide(response, issuer):
+        if not (issuer.not_valid_before_utc <= instante <= issuer.not_valid_after_utc):
+            return OcspTsaOutcome(False, motivo="ocsp_ca_fuera_de_vigencia")
+        firmante = issuer
+    else:
+        delegado = next(
+            (c for c in (response.certificates or []) if _id_de_respondedor_coincide(response, c)), None
+        )
+        if delegado is None:
+            return OcspTsaOutcome(False, motivo="ocsp_respondedor_ni_la_ca_ni_delegado")
+        motivo = _exigir_delegado(delegado, issuer, instante)
+        if motivo is not None:
+            return OcspTsaOutcome(False, motivo=motivo)
+        firmante = delegado
+    motivo_firma = _verificar_firma_respuesta(response, firmante.public_key())
+    if motivo_firma is not None:
+        return OcspTsaOutcome(False, motivo=motivo_firma)
+    hash_alg = response.signature_hash_algorithm
+    algoritmos = (
+        hash_alg.name if hash_alg is not None else "sin-digest",
+        identificador_de_clave(firmante.public_key()),
+    )
+
+    # --- sobre qué certificado ---------------------------------------------------------------
+    elegida = None
+    for single in response.responses:
+        if single.serial_number != cert.serial_number:
+            continue
+        esperado = OCSPRequestBuilder().add_certificate(cert, issuer, single.hash_algorithm).build()
+        if (
+            single.issuer_key_hash == esperado.issuer_key_hash
+            and single.issuer_name_hash == esperado.issuer_name_hash
+        ):
+            elegida = single
+            break
+    if elegida is None:
+        return OcspTsaOutcome(False, motivo="ocsp_certid_no_coincide", algoritmos=algoritmos)
+
+    # --- frescura / nonce --------------------------------------------------------------------
+    if ventana is None:
+        if elegida.this_update_utc > ahora + _HOLGURA_RELOJ:
+            return OcspTsaOutcome(False, motivo="ocsp_this_update_en_el_futuro", algoritmos=algoritmos)
+        if elegida.next_update_utc is not None and elegida.next_update_utc < ahora:
+            return OcspTsaOutcome(False, motivo="ocsp_vencida", algoritmos=algoritmos)
+        try:
+            nonce_resp = response.extensions.get_extension_for_class(x509.OCSPNonce).value.nonce
+        except x509.ExtensionNotFound:
+            nonce_resp = None
+        if nonce is not None and nonce_resp is not None:
+            if nonce_resp != nonce:
+                return OcspTsaOutcome(False, motivo="ocsp_nonce_no_coincide", algoritmos=algoritmos)
+        elif abs(produced_at - ahora) > _HOLGURA_RELOJ:
+            return OcspTsaOutcome(False, motivo="ocsp_sin_nonce_y_no_fresca", algoritmos=algoritmos)
+    else:
+        previo, siguiente = ventana
+        if produced_at < previo:
+            return OcspTsaOutcome(False, motivo="ocsp_anterior_al_sello_previo", algoritmos=algoritmos)
+        if produced_at > siguiente or elegida.this_update_utc > siguiente:
+            return OcspTsaOutcome(False, motivo="ocsp_posterior_al_sello_siguiente", algoritmos=algoritmos)
+
+    # --- estado ------------------------------------------------------------------------------
+    if elegida.certificate_status == OCSPCertStatus.GOOD:
+        return OcspTsaOutcome(True, "good", None, produced_at, None, algoritmos)
+    if elegida.certificate_status == OCSPCertStatus.REVOKED:
+        return OcspTsaOutcome(True, "revoked", elegida.revocation_time_utc, produced_at, None, algoritmos)
+    return OcspTsaOutcome(False, motivo="ocsp_status_desconocido", algoritmos=algoritmos)

@@ -58,7 +58,7 @@ class KnowledgeRepository:
             """
             INSERT INTO knowledge_chunk
                 (source_type, source_ref, texto, embedding, metadata, acl, nivel_seguridad)
-            VALUES ($1, $2, $3, $4::vector, $5::jsonb, $6::jsonb, $7)
+            VALUES ($1, $2, $3, $4::public.vector, $5::jsonb, $6::jsonb, $7)
             RETURNING id, source_type, source_ref, created_at
             """,
             source_type,
@@ -110,7 +110,7 @@ class KnowledgeRepository:
             """
             INSERT INTO knowledge_chunk
                 (source_type, source_ref, texto, embedding, metadata, acl, nivel_seguridad)
-            VALUES ($1, $2, $3, $4::vector, $5::jsonb, $6::jsonb, $7)
+            VALUES ($1, $2, $3, $4::public.vector, $5::jsonb, $6::jsonb, $7)
             ON CONFLICT (source_type, source_ref) DO UPDATE
                SET texto          = EXCLUDED.texto,
                    embedding      = EXCLUDED.embedding,
@@ -438,7 +438,7 @@ class KnowledgeRepository:
         y no reclasifica nada; solo produce el vector con el proveedor actual.
         """
         await self._conn.execute(
-            "UPDATE knowledge_chunk SET embedding = $1::vector, updated_at = now() "
+            "UPDATE knowledge_chunk SET embedding = $1::public.vector, updated_at = now() "
             "WHERE id = $2",
             embedding_literal,
             chunk_id,
@@ -507,7 +507,7 @@ class KnowledgeRepository:
 
         ``embedding::text`` produce la MISMA representación textual entre
         corchetes que ``to_pgvector`` (p. ej. ``"[0.1,0.2,...]"``), así el
-        literal es reusable tal cual como ``$1::vector`` en ``search``.
+        literal es reusable tal cual como ``$1::public.vector`` en ``search``.
 
         Misma condición que ``search`` (``embedding IS NOT NULL AND NOT
         voided``): un radicado tombstoneado (reclasificado a un nivel para el
@@ -600,11 +600,11 @@ class KnowledgeRepository:
                     f"""
                     SELECT k.id, k.source_type, k.source_ref, k.texto, k.metadata,
                            {_NIVEL_VIVO} AS nivel_seguridad,
-                           1 - (k.embedding <=> $1::vector) AS score
+                           1 - (k.embedding OPERATOR(public.<=>) $1::public.vector) AS score
                       FROM knowledge_chunk k
                       {_JOIN_RADICADO_VIVO}
                       {where}
-                     ORDER BY k.embedding <=> $1::vector
+                     ORDER BY k.embedding OPERATOR(public.<=>) $1::public.vector
                      LIMIT ${len(params)}
                     """,
                     *params,

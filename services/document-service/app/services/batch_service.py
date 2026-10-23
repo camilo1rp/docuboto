@@ -316,7 +316,7 @@ class BatchService:
 
                     # Get tenant code and next sequence
                     tenant_code = await self.conn.fetchval(
-                        "SELECT code FROM tenants WHERE slug = $1",
+                        "SELECT code FROM public.tenants WHERE slug = $1",
                         self.tenant_slug,
                     )
                     # El año se decide en la zona de radicación, como en

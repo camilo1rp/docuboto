@@ -73,7 +73,7 @@ async def two_bare_tenant_schemas(
             await conn.execute(f'CREATE SCHEMA "{schema}"')
             for path in files:
                 async with conn.transaction():
-                    await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                    await conn.execute(f'SET LOCAL search_path = "{schema}"')
                     await conn.execute(path.read_text())
         yield schema_a, schema_b, conn
     finally:
@@ -184,7 +184,7 @@ async def test_migration_039_is_idempotent_in_both_schemas(
 
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             await conn.execute(sql)  # no debe lanzar
 
         trd_constraints = await _constraint_names(conn, schema, "trd_series")
@@ -193,9 +193,9 @@ async def test_migration_039_is_idempotent_in_both_schemas(
         # El motor sigue operativo tras la re-ejecución: por mutación.
         code = f"IDEM{uuid.uuid4().hex[:6]}"
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             row = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name) VALUES ($1, 'itest post-idempotencia') "
+                "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest post-idempotencia', 5, 5) "
                 "RETURNING tipo_instrumento",
                 code,
             )
@@ -217,15 +217,15 @@ async def test_insert_tvd_sin_justificacion_valoracion_falla(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(asyncpg.exceptions.CheckViolationError):
                 await conn.execute(
                     """
                     INSERT INTO trd_series (
                         code, name, tipo_instrumento, fondo_nombre,
                         fecha_extrema_inicial, fecha_extrema_final
-                    ) VALUES ($1, 'itest sin justificacion', 'TVD', 'Fondo X',
-                              '1980-01-01', '1990-01-01')
+                    , archivo_central_years) VALUES ($1, 'itest sin justificacion', 'TVD', 'Fondo X',
+                              '1980-01-01', '1990-01-01', 5)
                     """,
                     f"CKTVD1{uuid.uuid4().hex[:6]}",
                 )
@@ -238,14 +238,14 @@ async def test_insert_tvd_con_archivo_gestion_years_falla(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(asyncpg.exceptions.CheckViolationError):
                 await conn.execute(
                     f"""
                     INSERT INTO trd_series (
                         code, name, tipo_instrumento, archivo_gestion_years, {_TVD_FONDO_COLS}
-                    ) VALUES ($1, 'itest con archivo gestion', 'TVD', 2,
-                              'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion')
+                    , archivo_central_years) VALUES ($1, 'itest con archivo gestion', 'TVD', 2,
+                              'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion', 5)
                     """,
                     f"CKTVD2{uuid.uuid4().hex[:6]}",
                 )
@@ -258,12 +258,13 @@ async def test_insert_trd_con_fecha_extrema_final_falla(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(asyncpg.exceptions.CheckViolationError):
                 await conn.execute(
                     """
-                    INSERT INTO trd_series (code, name, tipo_instrumento, fecha_extrema_final)
-                    VALUES ($1, 'itest TRD con fecha extrema', 'TRD', '1990-01-01')
+                    INSERT INTO trd_series (code, name, tipo_instrumento, fecha_extrema_final,
+                                            archivo_gestion_years, archivo_central_years)
+                    VALUES ($1, 'itest TRD con fecha extrema', 'TRD', '1990-01-01', 5, 5)
                     """,
                     f"CKTRD1{uuid.uuid4().hex[:6]}",
                 )
@@ -280,19 +281,19 @@ async def test_insert_tvd_con_code_ya_usado_por_trd_vigente_falla(
     for schema in (schema_a, schema_b):
         code = f"SHARED{uuid.uuid4().hex[:6]}"
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             await conn.execute(
-                "INSERT INTO trd_series (code, name) VALUES ($1, 'itest TRD ocupante')",
+                "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest TRD ocupante', 5, 5)",
                 code,
             )
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(asyncpg.exceptions.UniqueViolationError):
                 await conn.execute(
                     f"""
-                    INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS})
+                    INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS}, archivo_central_years)
                     VALUES ($1, 'itest TVD colision', 'TVD',
-                            'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion')
+                            'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion', 5)
                     """,
                     code,
                 )
@@ -308,14 +309,14 @@ async def test_update_tipo_instrumento_sobre_borrador_falla(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             serie = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name) VALUES ($1, 'itest borrador TRD') "
+                "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest borrador TRD', 5, 5) "
                 "RETURNING id",
                 f"MUT{uuid.uuid4().hex[:6]}",
             )
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(
                 asyncpg.exceptions.PostgresError, match=r"tipo_instrumento.*es inmutable"
             ):
@@ -334,7 +335,7 @@ async def test_insert_via_v_tvd_agrupaciones_sin_tipo_instrumento_falla(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(asyncpg.exceptions.PostgresError):
                 await conn.execute(
                     f"""
@@ -355,13 +356,13 @@ async def test_v_trd_series_no_cuenta_tvd_sembradas(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             before = await conn.fetchval("SELECT count(*) FROM v_trd_series")
             await conn.execute(
                 f"""
-                INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS})
+                INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS}, archivo_central_years)
                 VALUES ($1, 'itest TVD sembrada', 'TVD',
-                        'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion')
+                        'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion', 5)
                 """,
                 f"SEED{uuid.uuid4().hex[:6]}",
             )
@@ -393,25 +394,25 @@ async def test_expediente_no_puede_amarrarse_a_tvd(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             tvd = await conn.fetchrow(
                 f"""
-                INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS})
+                INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS}, archivo_central_years)
                 VALUES ($1, 'itest TVD amarre', 'TVD',
-                        'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion')
+                        'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion', 5)
                 RETURNING id
                 """,
                 f"PIN{uuid.uuid4().hex[:6]}",
             )
             trd = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name) VALUES ($1, 'itest TRD amarre') "
+                "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest TRD amarre', 5, 5) "
                 "RETURNING id",
                 f"PINTRD{uuid.uuid4().hex[:6]}",
             )
 
         # INSERT directo a una TVD: rechazado.
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(
                 asyncpg.exceptions.PostgresError, match=r"origen=corriente no puede amarrarse"
             ):
@@ -423,7 +424,7 @@ async def test_expediente_no_puede_amarrarse_a_tvd(
 
         # UPDATE de un expediente EXISTENTE (amarrado a TRD) hacia una TVD: rechazado.
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             expediente = await conn.fetchrow(
                 "INSERT INTO expedientes (code, name, trd_serie_id) VALUES ($1, 'itest exp trd', $2) "
                 "RETURNING id",
@@ -431,7 +432,7 @@ async def test_expediente_no_puede_amarrarse_a_tvd(
                 trd["id"],
             )
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(
                 asyncpg.exceptions.PostgresError, match=r"origen=corriente no puede amarrarse"
             ):
@@ -443,7 +444,7 @@ async def test_expediente_no_puede_amarrarse_a_tvd(
 
         # Contraparte: el mismo INSERT contra una TRD SÍ pasa (no es sobre-ancho).
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             ok = await conn.fetchrow(
                 "INSERT INTO expedientes (code, name, trd_serie_id) VALUES ($1, 'itest exp ok', $2) "
                 "RETURNING id",
@@ -454,7 +455,7 @@ async def test_expediente_no_puede_amarrarse_a_tvd(
 
 
 @pytest.mark.integration
-async def test_update_retention_years_sobre_borrador_no_se_rompio(
+async def test_update_de_la_fase_de_gestion_sobre_borrador_no_se_rompio(
     two_bare_tenant_schemas: tuple[str, str, asyncpg.Connection],
 ) -> None:
     """Última fila de la tabla de validación: la 039 NO rompió el
@@ -463,17 +464,17 @@ async def test_update_retention_years_sobre_borrador_no_se_rompio(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             serie = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name) VALUES ($1, 'itest borrador ok') "
+                "INSERT INTO trd_series (code, name, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest borrador ok', 5, 5) "
                 "RETURNING id",
                 f"OKB{uuid.uuid4().hex[:6]}",
             )
             updated = await conn.fetchrow(
-                "UPDATE trd_series SET retention_years = 99 WHERE id = $1 RETURNING retention_years",
+                "UPDATE trd_series SET archivo_gestion_years = 99 WHERE id = $1 RETURNING archivo_gestion_years",
                 serie["id"],
             )
-            assert updated["retention_years"] == 99
+            assert updated["archivo_gestion_years"] == 99
 
 
 @pytest.mark.integration
@@ -485,23 +486,23 @@ async def test_trd_parent_no_puede_ser_tvd(
     schema_a, schema_b, conn = two_bare_tenant_schemas
     for schema in (schema_a, schema_b):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             tvd = await conn.fetchrow(
                 f"""
-                INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS})
+                INSERT INTO trd_series (code, name, tipo_instrumento, {_TVD_FONDO_COLS}, archivo_central_years)
                 VALUES ($1, 'itest TVD padre', 'TVD',
-                        'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion')
+                        'Fondo X', '1980-01-01', '1990-01-01', 'Justificacion', 5)
                 RETURNING id
                 """,
                 f"PARENT{uuid.uuid4().hex[:6]}",
             )
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             with pytest.raises(
                 asyncpg.exceptions.PostgresError, match=r"la jerarquia no cruza instrumentos"
             ):
                 await conn.execute(
-                    "INSERT INTO trd_series (code, name, parent_id) VALUES ($1, 'itest TRD hija', $2)",
+                    "INSERT INTO trd_series (code, name, parent_id, archivo_gestion_years, archivo_central_years) VALUES ($1, 'itest TRD hija', $2, 5, 5)",
                     f"CHILD{uuid.uuid4().hex[:6]}",
                     tvd["id"],
                 )

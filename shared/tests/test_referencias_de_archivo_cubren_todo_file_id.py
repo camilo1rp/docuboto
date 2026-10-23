@@ -33,6 +33,17 @@ NO_REFERENCIAN: dict[tuple[str, str], str] = {
     ("import_binario_huerfano", "file_id"): (
         "cola de purga: apunta al objeto para BORRARLO, no para conservarlo"
     ),
+    ("eliminacion_lote_soporte_citado", "file_id"): (
+        "baja de soporte (ADR-043): instantánea del anexo que el Comité avala DAR DE BAJA con el "
+        "lote; contarla como referencia bloquearía para siempre la purga que autoriza. Mientras "
+        "el lote no está avalado, el anexo lo protege `v_anexo_citado_vigente` (sí listada)"
+    ),
+}
+
+# Vistas CONTRATO (no tablas): el parser de arriba solo ve `CREATE TABLE`. Se verifica aparte que
+# la vista exista y exponga la columna, para que no sea una excusa caducada.
+VISTAS_CONTRATO: dict[tuple[str, str], str] = {
+    ("v_anexo_citado_vigente", "file_id"): "archive-service/migrations/tenant",
 }
 
 _CREATE = re.compile(
@@ -140,7 +151,18 @@ def test_toda_columna_file_id_esta_en_la_lista_de_referencias() -> None:
         "Añádelas a REFERENCIAS_DE_ARCHIVO (storage-service) o, si no sostienen el objeto, "
         "a NO_REFERENCIAN con el motivo."
     )
-    inexistentes = declaradas - derivadas
+    raiz_servicios = os.path.join(raiz, "services")
+    for (vista, columna), ruta in VISTAS_CONTRATO.items():
+        sql = "".join(
+            open(os.path.join(raiz_servicios, ruta, f), encoding="utf-8").read()
+            for f in sorted(os.listdir(os.path.join(raiz_servicios, ruta)))
+            if f.endswith(".sql")
+        )
+        assert re.search(rf"CREATE\s+(OR\s+REPLACE\s+)?VIEW\s+{vista}\b", sql, re.IGNORECASE), (
+            f"la vista contrato {vista} ya no la crea ninguna migración de {ruta}"
+        )
+        assert columna in sql
+    inexistentes = declaradas - derivadas - set(VISTAS_CONTRATO)
     assert not inexistentes, (
         f"REFERENCIAS_DE_ARCHIVO nombra columnas que ninguna migración crea: {sorted(inexistentes)}"
     )

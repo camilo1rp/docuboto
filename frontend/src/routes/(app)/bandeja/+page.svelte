@@ -42,7 +42,7 @@
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { crearContextoDependencias } from "$lib/stores/dependencias.js";
   import { mapaNombres } from "$lib/utils/dependenciaNombre.js";
-  import { formatearFecha } from "$lib/utils/fecha.js";
+  import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
   import { permissions, permissionLevels, userId, sessionUser } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
@@ -82,6 +82,18 @@
   import { ANULACION_ESTADO_CHIP, ANULACION_ESTADO_LABEL } from "$lib/utils/anulacion.js";
   import { mensajeError } from "$lib/utils/apiError.js";
   import { causalesDe } from "$lib/utils/causal.js";
+  import {
+    CRUD_HISTORIAL,
+    NIVEL_DOBLE_FIRMA_DEFECTO,
+    PLAZO_MAX_MESES_DEFECTO,
+    causalDe,
+    causalesParaNivel,
+    llevaPlazo,
+    puedeSolicitar,
+    requiereSegundaPersona,
+    tieneNivelReclasificar,
+    validarClasificacion,
+  } from "$lib/utils/reserva.js";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -315,7 +327,16 @@
   let reclasificarFundamento = "";
   let reclasificarFundamentoError = "";
   let reclasificarPlazo = "";
+  let reclasificarCausalError = "";
+  let reclasificarPlazoError = "";
   let reclasificarLoading = false;
+
+  // C-2 (ADR-039): solicitud de desclasificación VIVA del radicado abierto en el
+  // drawer (la más reciente con `estado_efectivo` pendiente), o `null`.
+  /** @type {any|null} */
+  let descPendiente = null;
+  let descLoading = false;
+  let descRetirando = false;
   /** @type {HTMLElement | undefined} Título de la página: destino de foco estable. */
   let tituloEl;
 
@@ -516,6 +537,10 @@
       anulacionStatusLoading = false;
     }
 
+    // Solicitud de desclasificación pendiente (solo si el radicado está en el
+    // nivel que exige segunda persona). No bloquea el resto del detalle.
+    void cargarDesclasificacion(doc.id);
+
     // ¿Ya tiene un paso de flujo? Determina si "Asignar a flujo" aplica aquí
     // (T-ASIGNAR). GET /bandeja/api/[id]/current: 200 = tiene paso activo,
     // 404 no_active_step = no tiene (caso normal, no se notifica como error).
@@ -590,9 +615,56 @@
     }
   }
 
+  /**
+   * Carga la solicitud de desclasificación pendiente del radicado del drawer.
+   * Solo aplica con el radicado en el nivel que exige segunda persona y con el
+   * permiso de historial; una lista vacía es el caso normal (no se avisa).
+   * @param {string} id
+   */
+  async function cargarDesclasificacion(id) {
+    descPendiente = null;
+    if (!puedeVerHistorialDesc || Number(selectedDoc?.nivel_seguridad ?? 0) < umbralDobleFirma) {
+      return;
+    }
+    descLoading = true;
+    try {
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(id)}/desclasificacion`);
+      const lista = res.ok ? await res.json() : [];
+      // El drawer pudo cambiar de radicado mientras se esperaba la respuesta.
+      if (selectedDoc?.id !== id) return;
+      descPendiente =
+        (Array.isArray(lista) ? lista : []).find((r) => r?.estado_efectivo === "pendiente") ?? null;
+    } catch {
+      descPendiente = null;
+    } finally {
+      descLoading = false;
+    }
+  }
+
+  /** Retira la propia solicitud pendiente (el backend exige que sea de quien la hizo). */
+  async function retirarDesclasificacion() {
+    if (!descPendiente || descRetirando) return;
+    descRetirando = true;
+    try {
+      const res = await fetch(
+        `/desclasificaciones/api/${encodeURIComponent(descPendiente.id)}/retirar`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      );
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw result;
+      notifySuccess("Solicitud de desclasificación retirada. El nivel del radicado no cambió.");
+      descPendiente = null;
+    } catch (/** @type {any} */ err) {
+      notifyError(mensajeError(err, "No se pudo retirar la solicitud."));
+    } finally {
+      descRetirando = false;
+    }
+  }
+
   function closeDrawer() {
     drawerOpen = false;
     selectedDoc = null;
+    descPendiente = null;
     anulacionStatus = null;
     currentStep = null;
     historialPasos = [];
@@ -955,6 +1027,8 @@
     reclasificarFundamento = "";
     reclasificarFundamentoError = "";
     reclasificarPlazo = "";
+    reclasificarCausalError = "";
+    reclasificarPlazoError = "";
     // Cerrar drawer ANTES de abrir modal — evitar apilar focus traps (A11y)
     drawerOpen = false;
     modalReclasificar = true;
@@ -1031,26 +1105,42 @@
 
     reclasificarMotivoError = "";
     reclasificarFundamentoError = "";
+    reclasificarCausalError = "";
+    reclasificarPlazoError = "";
     const nivelInt = parseInt(reclasificarNivel, 10);
 
     if (!reclasificarNivel || ![1, 2, 3].includes(nivelInt)) {
       notifyError("Seleccione un nivel de seguridad válido.");
       return;
     }
+    // Bajar desde el nivel que exige segunda persona NO es un PATCH: es una
+    // solicitud que otra persona debe aprobar (ADR-039). Cambia el endpoint, el
+    // mínimo del motivo y el aviso final; las reglas de la causal son las mismas.
+    const esSolicitud = esSolicitudDesclasificacion;
     if (!reclasificarMotivo.trim()) {
       reclasificarMotivoError = "El motivo de la reclasificación es obligatorio.";
       return;
     }
-    // El fundamento jurídico NO es opcional a partir de Reservada: el backend
-    // lo rechaza con 422 («fundamento_juridico es obligatorio al reclasificar a
-    // nivel_seguridad >= 2, Ley 1712/2014 art. 19/28») y la etiqueta decía
-    // «(opcional)». Quien seguía la pantalla al pie de la letra no podía
-    // clasificar un solo radicado — y el aviso genérico no dejaba ver por qué.
-    // La regla vive también aquí para que el error llegue antes de gastar una
-    // petición, pero la fuente de verdad sigue siendo el validador del esquema.
-    if (nivelInt >= 2 && !reclasificarFundamento.trim()) {
-      reclasificarFundamentoError =
-        "El fundamento jurídico es obligatorio para reservar o clasificar (Ley 1712/2014, art. 19).";
+    if (esSolicitud && reclasificarMotivo.trim().length < 10) {
+      reclasificarMotivoError = "El motivo debe tener al menos 10 caracteres.";
+      return;
+    }
+    // La causal es del catálogo cerrado (Ley 1712 arts. 18-19) y el plazo solo
+    // aplica al art. 19; el fundamento jurídico es obligatorio desde Reservada.
+    // La fuente de verdad sigue siendo el validador del backend: esto solo ahorra
+    // el viaje y deja el error junto al campo que lo causa.
+    const errores = validarClasificacion({
+      nivel: nivelInt,
+      causal: reclasificarCausal,
+      fundamento: reclasificarFundamento,
+      plazo: reclasificarPlazo,
+      catalogo: catalogoCausales,
+      plazoMax: plazoMaxMeses,
+    });
+    if (errores.causal || errores.fundamento || errores.plazo) {
+      reclasificarCausalError = errores.causal ?? "";
+      reclasificarFundamentoError = errores.fundamento ?? "";
+      reclasificarPlazoError = errores.plazo ?? "";
       return;
     }
 
@@ -1061,25 +1151,30 @@
         nivel_seguridad: nivelInt,
         motivo: reclasificarMotivo.trim(),
       };
-      // Campos opcionales solo cuando nivel >= 2 (reservada/clasificada)
+      // Reservada/clasificada llevan causal y fundamento; el plazo, solo la causal
+      // del art. 19 (la clasificada no tiene plazo y el backend lo rechaza).
       if (nivelInt >= 2) {
-        if (reclasificarCausal.trim()) reqBody.causal_reserva = reclasificarCausal.trim();
-        if (reclasificarFundamento.trim())
-          reqBody.fundamento_juridico = reclasificarFundamento.trim();
-        if (reclasificarPlazo.trim()) {
-          const plazoInt = parseInt(reclasificarPlazo, 10);
-          if (!isNaN(plazoInt) && plazoInt >= 0) reqBody.plazo_reserva_meses = plazoInt;
+        reqBody.causal_reserva = reclasificarCausal;
+        reqBody.fundamento_juridico = reclasificarFundamento.trim();
+        if (llevaPlazo(causalDe(catalogoCausales, reclasificarCausal))) {
+          reqBody.plazo_reserva_meses = parseInt(reclasificarPlazo.trim(), 10);
         }
       }
 
-      const res = await fetch(`/bandeja/api/${encodeURIComponent(selectedDoc.id)}/security-level`, {
+      const ruta = esSolicitud ? "desclasificacion" : "security-level";
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(selectedDoc.id)}/${ruta}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(reqBody),
       });
-      const result = await res.json();
+      const result = await res.json().catch(() => ({}));
 
-      if (res.ok) {
+      if (res.ok && esSolicitud) {
+        notifySuccess(
+          "Solicitud enviada. El nivel del radicado no cambia hasta que otra persona la apruebe.",
+        );
+        cerrarModalReclasificar();
+      } else if (res.ok) {
         notifySuccess("Nivel de seguridad reclasificado correctamente.");
         // Actualizar el nivel en el detalle local para reflejar el cambio inmediato
         selectedDoc = { ...selectedDoc, nivel_seguridad: /** @type {1|2|3} */ (nivelInt) };
@@ -1095,6 +1190,8 @@
         );
         cerrarModalReclasificar();
       } else {
+        // 409 (`desclasificacion_requiere_aprobacion`, `desclasificacion_pendiente`,
+        // `nivel_cambio`…) y 422 llevan su mensaje en español en apiError.js.
         notifyError(
           mensajeError(result, `Error ${res.status} al reclasificar el nivel de seguridad.`),
         );
@@ -1267,7 +1364,15 @@
     }
   }
 
-  $: canReclasificar = $permissions.includes("PERM_RECLASIFICAR");
+  // Reclasificar (PATCH) y solicitar desclasificación exigen PERM_RECLASIFICAR crud>=3;
+  // con solo lectura el botón produciría un 403 (la UI nunca ofrece lo que la API rechaza).
+  $: canReclasificar =
+    $permissions.includes("PERM_RECLASIFICAR") && puedeSolicitar($permissionLevels);
+  $: puedeVerHistorialDesc = tieneNivelReclasificar($permissionLevels, CRUD_HISTORIAL);
+  // Catálogo cerrado de causales (SSR); `null` si no cargó: el modal lo declara.
+  $: catalogoCausales = data.catalogoReserva?.causales ?? null;
+  $: umbralDobleFirma = data.catalogoReserva?.nivel_doble_firma ?? NIVEL_DOBLE_FIRMA_DEFECTO;
+  $: plazoMaxMeses = data.catalogoReserva?.plazo_max_meses ?? PLAZO_MAX_MESES_DEFECTO;
   // Acto de publicación (Ley 1712 art. 12): el backend exige PERM_RECLASIFICAR
   // con nivel de ESCRITURA (min_crud=3) — publicar y clasificar son las dos
   // caras de la misma competencia sobre el régimen de acceso. Se refleja el
@@ -1299,6 +1404,17 @@
     $permissions.includes("USUA_PERM_ADMIN") || $permissions.includes("PERM_TRAMITAR");
   // Nivel seleccionado como entero (para mostrar/ocultar campos opcionales de reserva en template)
   $: nivelReclasificarInt = parseInt(reclasificarNivel, 10) || 0;
+  $: opcionesCausalReserva = causalesParaNivel(catalogoCausales, nivelReclasificarInt);
+  // Al cambiar el nivel de destino, una causal de la otra categoría deja de valer.
+  $: if (reclasificarCausal && !opcionesCausalReserva.some((o) => o.value === reclasificarCausal)) {
+    reclasificarCausal = "";
+  }
+  $: causalElegida = causalDe(catalogoCausales, reclasificarCausal);
+  $: esSolicitudDesclasificacion = requiereSegundaPersona(
+    Number(selectedDoc?.nivel_seguridad ?? 0),
+    nivelReclasificarInt,
+    umbralDobleFirma,
+  );
 </script>
 
 <svelte:head>
@@ -1869,6 +1985,51 @@
         </section>
       {/if}
 
+      <!-- Solicitud de desclasificación pendiente (C-2, ADR-039): bajar un radicado
+           CLASIFICADO lo decide otra persona. -->
+      {#if descLoading}
+        <section class="doc-detail__section" aria-label="Solicitud de desclasificación">
+          <Loader type="skeleton" lines={2} label="Consultando solicitud de desclasificación…" />
+        </section>
+      {:else if descPendiente}
+        <section class="doc-detail__section" aria-labelledby="detail-desclasificacion-heading">
+          <h4 id="detail-desclasificacion-heading" class="doc-detail__section-title">
+            Desclasificación pendiente
+          </h4>
+          <dl class="doc-detail__dl">
+            <dt>Estado</dt>
+            <dd><StatusChip status="pending" label="Pendiente de aprobación" dot /></dd>
+            <dt>Nivel solicitado</dt>
+            <dd>
+              {getNivelChip(descPendiente.nivel_nuevo).label}
+              (desde {getNivelChip(descPendiente.nivel_anterior).label})
+            </dd>
+            <dt>Motivo</dt>
+            <dd>{descPendiente.motivo}</dd>
+            <dt>Solicitada el</dt>
+            <dd>{formatearFechaHora(descPendiente.solicitado_at)}</dd>
+            <dt>Vence el</dt>
+            <dd>{formatearFechaHora(descPendiente.vence_at)}</dd>
+          </dl>
+          <p class="doc-detail__hint">
+            El nivel del radicado no cambia hasta que otra persona con permiso de aprobación la
+            apruebe.
+          </p>
+          {#if canReclasificar}
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={descRetirando}
+              disabled={descRetirando}
+              on:click={retirarDesclasificacion}
+            >
+              <i class="fas fa-undo" aria-hidden="true"></i>
+              Retirar mi solicitud
+            </Button>
+          {/if}
+        </section>
+      {/if}
+
       <!-- Hoja de ruta (T-Fase1): trazabilidad de flujo del radicado abierto en el
            drawer. No navega a otra pantalla — mismo objeto, sin perder la bandeja. -->
       <section class="doc-detail__section" aria-labelledby="detail-hoja-ruta-heading">
@@ -1991,7 +2152,9 @@
         on:click={openModalReclasificar}
       >
         <i class="fas fa-shield-alt" aria-hidden="true"></i>
-        Reclasificar nivel
+        {Number(selectedDoc.nivel_seguridad ?? 0) >= umbralDobleFirma
+          ? "Reclasificar / solicitar desclasificación"
+          : "Reclasificar nivel"}
       </Button>
     {/if}
     {#if selectedDoc && canDisposicion}
@@ -2406,39 +2569,63 @@
     />
     <!--
       aria-live="polite": anuncia a lectores de pantalla la aparición de los campos
-      opcionales de reserva cuando el nivel cambia a Reservada (2) o Clasificada (3).
+      de reserva cuando el nivel cambia a Reservada (2) o Clasificada (3).
       WCAG 4.1.3 — los cambios de contenido dinámico deben ser perceptibles.
     -->
     <div aria-live="polite">
+      {#if esSolicitudDesclasificacion}
+        <p class="modal-desc" role="note">
+          Este radicado está <strong>clasificado</strong>: bajar su nivel no es inmediato. Se
+          enviará una <strong>solicitud</strong> que debe aprobar otra persona con permiso de aprobación;
+          mientras tanto el nivel no cambia.
+        </p>
+      {/if}
       {#if nivelReclasificarInt >= 2}
-        <div class="modal-form">
-          <FormField
-            id="reclasificar-causal"
-            label="Causal de reserva (opcional)"
-            type="text"
-            bind:value={reclasificarCausal}
-            placeholder="Ej. Información de seguridad nacional"
-            hint="Máx. 200 caracteres."
-          />
-          <FormField
-            id="reclasificar-fundamento"
-            label="Fundamento jurídico"
-            type="text"
-            required
-            bind:value={reclasificarFundamento}
-            error={reclasificarFundamentoError}
-            placeholder="Ej. Ley 1712/2014, art. 19"
-            hint="Obligatorio para reservar o clasificar: la reserva es un acto motivado en una norma concreta. Máx. 300 caracteres."
-          />
-          <FormField
-            id="reclasificar-plazo"
-            label="Plazo de reserva en meses (opcional)"
-            type="text"
-            bind:value={reclasificarPlazo}
-            placeholder="Ej. 60"
-            hint="Número entero entre 0 y 600 meses."
-          />
-        </div>
+        {#if !catalogoCausales}
+          <p class="modal-desc" role="alert">
+            No se pudo cargar el catálogo de causales de reserva (Ley 1712 de 2014). Sin él no se
+            puede reservar ni clasificar: recargue la página e intente de nuevo.
+          </p>
+        {:else}
+          <div class="modal-form">
+            <FormField
+              id="reclasificar-causal"
+              label="Causal de reserva"
+              type="select"
+              required
+              bind:value={reclasificarCausal}
+              options={opcionesCausalReserva}
+              placeholder="Seleccione la causal…"
+              error={reclasificarCausalError}
+              hint={nivelReclasificarInt === 3
+                ? "Información clasificada: causales del artículo 18 de la Ley 1712 de 2014."
+                : "Información reservada: causales del artículo 19 de la Ley 1712 de 2014."}
+            />
+            <FormField
+              id="reclasificar-fundamento"
+              label="Fundamento jurídico"
+              type="text"
+              required
+              bind:value={reclasificarFundamento}
+              error={reclasificarFundamentoError}
+              placeholder="Ej. Ley 1581 de 2012, art. 5"
+              hint="Obligatorio: la norma especial concreta que sustenta la reserva. Es interno y no se publica. Máx. 300 caracteres."
+            />
+            {#if llevaPlazo(causalElegida)}
+              <FormField
+                id="reclasificar-plazo"
+                label="Plazo de reserva en meses"
+                type="text"
+                required
+                inputmode="numeric"
+                bind:value={reclasificarPlazo}
+                error={reclasificarPlazoError}
+                placeholder="Ej. 60"
+                hint={`Obligatorio para el artículo 19: número entero de 1 a ${plazoMaxMeses} meses (15 años, art. 22).`}
+              />
+            {/if}
+          </div>
+        {/if}
       {/if}
     </div>
   </div>
@@ -2451,7 +2638,7 @@
       on:click={reclasificar}
     >
       <i class="fas fa-shield-alt" aria-hidden="true"></i>
-      Confirmar reclasificación
+      {esSolicitudDesclasificacion ? "Solicitar desclasificación" : "Confirmar reclasificación"}
     </Button>
     <Button
       variant="ghost"
@@ -2926,6 +3113,12 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin: 0 0 var(--op-space-3);
+  }
+
+  .doc-detail__hint {
+    margin: var(--op-space-2) 0;
+    font-size: var(--op-font-sm);
+    color: var(--op-text-secondary);
   }
 
   .doc-detail__subject {

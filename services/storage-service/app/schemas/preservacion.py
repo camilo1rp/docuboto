@@ -159,10 +159,17 @@ class RetentionMixin(BaseModel):
     `legal_hold` YA NO es un campo del body (AREA-08-07): un freeze de litigio
     fijado al proteger no tiene acto inverso en el contrato de protección y
     bloquea la disposición para siempre. Se declara SOLO por el acto interno
-    `POST /legal-hold-internal` (con motivo y asiento), que también lo levanta.
-    Enviarlo aquí da 422 en vez de ignorarse en silencio (sin `extra="forbid"`
-    general: el resto de campos ajenos, p. ej. un `tenant_slug` hostil, se
-    siguen ignorando como antes).
+    `POST /legal-hold-internal/fijar` (con motivo, acta y asiento), y la protección
+    NACE con `legal_hold = existe algún hold activo del expediente` (C-5/C7: lo resuelve el
+    servidor bajo el advisory lock del hold, no el llamador). Enviarlo aquí da 422 en vez de
+    ignorarse en silencio (sin `extra="forbid"` general: el resto de campos ajenos, p. ej. un
+    `tenant_slug` hostil, se siguen ignorando como antes).
+
+    TERCERA fuente de retención, exclusiva de las otras dos (C-5/C7, ADR-043):
+    `retencion_diferida="valoracion_pendiente"` — fondo acumulado cuyo calendario ya venció. El
+    objeto se escribe con legal hold y SIN retención (nada irreversible) hasta que el Comité valore
+    la TVD. Solo se admite si existe un hold activo `valoracion_pendiente` del expediente
+    (comprobado bajo el advisory lock del hold; si no, 409 `retencion_diferida_sin_hold`).
     """
 
     @model_validator(mode="before")
@@ -171,33 +178,43 @@ class RetentionMixin(BaseModel):
         if isinstance(data, dict) and "legal_hold" in data:
             raise ValueError(
                 "legal_hold no se declara al proteger: use el acto interno "
-                "POST /legal-hold-internal (con motivo y acta_ref)"
+                "POST /legal-hold-internal/fijar (con motivo_tipo, fundamento y acta_ref)"
             )
         return data
 
     retain_until: datetime | None = None
     retencion_anios: int | None = Field(default=None, ge=1, le=100)
     fecha_inicio: date | None = None
-
-    @property
-    def legal_hold(self) -> bool:
-        """Toda protección nace SIN legal hold (ver docstring de la clase)."""
-        return False
+    retencion_diferida: Literal["valoracion_pendiente"] | None = None
 
     @model_validator(mode="after")
     def _check_retention_source(self) -> RetentionMixin:
         directo = self.retain_until is not None
         derivado_anios = self.retencion_anios is not None
         derivado_fecha = self.fecha_inicio is not None
+        if self.retencion_diferida is not None:
+            if directo or derivado_anios or derivado_fecha:
+                raise ValueError(
+                    "retencion_diferida es excluyente: no se combina con retain_until "
+                    "ni con retencion_anios/fecha_inicio"
+                )
+            return self
         if directo and (derivado_anios or derivado_fecha):
             raise ValueError(
                 "Especifique retain_until O (retencion_anios + fecha_inicio), no ambos"
             )
         if not directo and not (derivado_anios and derivado_fecha):
             raise ValueError(
-                "Debe especificar retain_until, o retencion_anios y fecha_inicio juntos"
+                "Debe especificar retain_until, o retencion_anios y fecha_inicio juntos, "
+                "o retencion_diferida"
             )
         return self
+
+    def resolve_retain_until_opcional(self) -> datetime | None:
+        """``None`` si la retención es diferida (sin fecha); si no, la fecha resuelta."""
+        if self.retencion_diferida is not None:
+            return None
+        return self.resolve_retain_until()
 
     def resolve_retain_until(self) -> datetime:
         """Fecha de retención resuelta a un `datetime` UTC-aware.
@@ -206,7 +223,12 @@ class RetentionMixin(BaseModel):
         no `timedelta(days=365*n)`: un plazo TRD de "5 años desde 2026-01-01" debe
         vencer el 2031-01-01, y no un día antes por culpa de un año bisiesto (2028)
         en medio del intervalo.
+
+        Con `retencion_diferida` NO hay fecha: pedirla es un error de programación (los
+        llamadores usan :meth:`resolve_retain_until_opcional`).
         """
+        if self.retencion_diferida is not None:
+            raise ValueError("retencion_diferida no tiene retain_until")
         if self.retain_until is not None:
             dt = self.retain_until
             return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
@@ -421,6 +443,41 @@ class AipResponse(BaseModel):
     replicado: bool = False
     replica_target: Literal["local", "cross-site"] | None = None
     replica_copias_hechas: int | None = 1
+    # C-6 (migración 023): el AIP se versiona. Defaults = versión 1 de ingesta, para que las
+    # filas y mocks anteriores sigan validando.
+    version: int = 1
+    sustituye_a: uuid.UUID | None = None
+    motivo: Literal["ingesta", "renovacion_lta"] = "ingesta"
+
+
+class AipVersionItem(BaseModel):
+    """Una versión de la cadena de AIP de un expediente (sin el PREMIS, que es voluminoso)."""
+
+    id: uuid.UUID
+    version: int
+    sustituye_a: uuid.UUID | None
+    motivo: Literal["ingesta", "renovacion_lta"]
+    aip_sha256: str
+    indice_sha256: str | None
+    aip_bytes: int | None
+    created_at: datetime
+    retain_until: datetime | None
+    retention_mode: str | None
+    legal_hold: bool
+
+
+class AipReempaquetarRequest(BaseModel):
+    """Reempaquetado del AIP al renovarse el sello de archivo de su índice (C-6, ADR-042).
+
+    storage NO recibe contenido: relee su propio bag anterior y solo sustituye el índice por el
+    XML vigente (`indice_file_id`), cuyo SHA-256 declara el llamador y storage VUELVE A VERIFICAR."""
+
+    expediente_id: str = Field(..., min_length=1, max_length=255)
+    aip_anterior_id: uuid.UUID
+    indice_file_id: uuid.UUID
+    indice_xml_sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    firma_id: uuid.UUID
+    ordinal: int = Field(..., ge=1, le=1000)
 
 
 class EventoResponse(BaseModel):
@@ -519,6 +576,15 @@ class ProtegerIndiceRequest(RetentionMixin):
     objeto_tipo: Literal["expediente", "lote"] = "expediente"
 
     @model_validator(mode="after")
+    def _diferida_solo_contenido(self) -> ProtegerIndiceRequest:
+        # Los instrumentos de control (actas, constancias) no son contenido: su base es el
+        # acto, no el calendario del fondo (ADR-043 §C7.2). Un valor aquí sería un acta sin
+        # protección irreversible.
+        if self.retencion_diferida is not None and self.tipo != "indice":
+            raise ValueError("retencion_diferida solo se admite para tipo='indice'")
+        return self
+
+    @model_validator(mode="after")
     def _pareja_tipo_propietario(self) -> ProtegerIndiceRequest:
         if (self.tipo == "acta_eliminacion") != (self.objeto_tipo == "lote"):
             raise ValueError(
@@ -542,9 +608,11 @@ class ProtegerIndiceResponse(BaseModel):
     object_key: str
     version_id: str | None
     sha256: str
-    retain_until: datetime
-    retention_mode: str
+    # C-5/C7: `None` cuando la retención es diferida (`retencion_origen='valoracion_pendiente'`).
+    retain_until: datetime | None
+    retention_mode: str | None
     legal_hold: bool
+    retencion_origen: str = "calendario"
     created_at: datetime
     # `None` solo para filas insertadas ANTES de la migración 009 (Inc.1) —
     # cualquier fila nueva SIEMPRE lo trae (`ProtegerIndiceRequest.file_id` es
@@ -627,6 +695,12 @@ class RenovarRetencionRequest(RetentionMixin):
     # OBLIGATORIO. Sin él, `ORDER BY created_at DESC LIMIT 1` extendería solo la última.
     # Para los demás tipos se ignora (siguen identificándose por (expediente, tipo)).
     file_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _sin_retencion_diferida(self) -> RenovarRetencionRequest:
+        if self.retencion_diferida is not None:
+            raise ValueError("renovar-retencion no admite retencion_diferida: solo extiende fechas")
+        return self
 
     @model_validator(mode="after")
     def _file_id_obligatorio_si_multi_artefacto(self) -> RenovarRetencionRequest:
@@ -726,24 +800,32 @@ class MigracionResponse(BaseModel):
     iniciada_at: datetime
 
 
-# ── Legal hold (freeze de litigio) — acto interno (AREA-08-07) ─────────
+# ── Retenciones legales por motivo — acto interno (AREA-08-07, C-5/C7) ─
+
+MotivoHold = Literal[
+    "judicial",
+    "disciplinario",
+    "fiscal",
+    "administrativo",
+    "ddhh_memoria_historica",
+    "valoracion_pendiente",
+]
 
 
-class LegalHoldRequest(BaseModel):
-    """Fija o levanta el legal hold de TODOS los objetos WORM de un expediente.
+class HoldFijarRequest(BaseModel):
+    """Fija una retención legal sobre un expediente (`POST /legal-hold-internal/fijar`).
 
-    Solo por la ruta interna (`X-Internal-Token`): lo orquesta archive-service,
-    que es quien decide el permiso y comprueba el acto administrativo. `motivo`
-    y `acta_ref` son OBLIGATORIOS y viajan al asiento de auditoría: un freeze
-    que bloquea la disposición final (Ley 594/2000) sin acto que lo respalde es
-    un bloqueo arbitrario.
-    """
+    Solo por la ruta interna (`X-Internal-Token`): lo orquesta archive-service, que es quien decide
+    el permiso y comprueba el acto administrativo. `fundamento` y `acta_ref` son OBLIGATORIOS y
+    viajan al asiento: un freeze que bloquea la disposición final (Ley 594/2000) sin acto que lo
+    respalde es un bloqueo arbitrario. Ya NO exige objetos WORM: se puede congelar lo que todavía no
+    tiene AIP/índice (los objetos que nazcan después heredan el hold)."""
 
     model_config = ConfigDict(extra="forbid")
 
     expediente_id: str = Field(..., min_length=1, max_length=255)
-    activo: bool
-    motivo: str = Field(..., min_length=10, max_length=2000)
+    motivo_tipo: MotivoHold
+    fundamento: str = Field(..., min_length=10, max_length=2000)
     acta_ref: str = Field(..., min_length=1, max_length=255)
 
     @field_validator("expediente_id")
@@ -752,8 +834,88 @@ class LegalHoldRequest(BaseModel):
         return canonicalize_expediente_id(value)
 
 
-class LegalHoldResponse(BaseModel):
-    expediente_id: str
-    activo: bool
+class HoldFijarResponse(BaseModel):
+    hold_id: uuid.UUID
+    # `False` = ya existía un hold `valoracion_pendiente` activo del expediente (idempotente).
+    creado: bool
     objetos_afectados: int
-    objetos_sin_cambio: int
+
+
+class HoldLevantarRequest(BaseModel):
+    """Levanta UN hold (`POST /legal-hold-internal/{hold_id}/levantar`).
+
+    `motivo_tipo_esperado` es la CONFIRMACIÓN del motivo: si no coincide con el del hold, 409
+    `motivo_no_coincide`. Un acto no puede levantar el hold de otro."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    motivo_tipo_esperado: MotivoHold
+    fundamento: str = Field(..., min_length=10, max_length=2000)
+    acta_ref: str = Field(..., min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def _criterio_ddhh(self) -> HoldLevantarRequest:
+        # Mismo criterio que archive-service (`FUNDAMENTO_MIN_LEVANTAR_DDHH`): defensa en
+        # profundidad, la ruta interna también lo exige.
+        if self.motivo_tipo_esperado == "ddhh_memoria_historica" and len(self.fundamento.strip()) < 50:
+            raise ValueError(
+                "levantar una retención por DDHH / memoria histórica exige el acto de la "
+                "autoridad competente explicado en al menos 50 caracteres"
+            )
+        return self
+
+
+class HoldLevantarResponse(BaseModel):
+    hold_id: uuid.UUID
+    # Objetos cuyo legal hold se liberó en el almacén (0 mientras quede otro hold activo).
+    objetos_liberados_s3: int
+    holds_restantes: int
+
+
+class HoldItem(BaseModel):
+    hold_id: uuid.UUID
+    expediente_id: str
+    motivo_tipo: MotivoHold
+    fundamento: str
+    acta_ref: str
+    fijado_por: uuid.UUID | None
+    fijado_at: datetime
+    levantado_por: uuid.UUID | None = None
+    levantado_at: datetime | None = None
+    levantado_fundamento: str | None = None
+    levantado_acta_ref: str | None = None
+
+
+class FijarRetencionRequest(BaseModel):
+    """`POST /fijar-retencion-internal`: fija COMPLIANCE por PRIMERA vez en las filas
+    `valoracion_pendiente` del expediente (valoración CT). Nunca toca filas `calendario`.
+
+    Mismo contrato de fechas que `RenovarRetencionRequest` (años calendario desde `fecha_inicio`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expediente_id: str = Field(..., min_length=1, max_length=255)
+    retencion_anios: int = Field(..., ge=1, le=100)
+    fecha_inicio: date
+
+    @field_validator("expediente_id")
+    @classmethod
+    def _canonicalize_expediente_id(cls, value: str) -> str:
+        return canonicalize_expediente_id(value)
+
+    def resolve_retain_until(self) -> datetime:
+        start = self.fecha_inicio
+        try:
+            end_date = start.replace(year=start.year + self.retencion_anios)
+        except ValueError:
+            end_date = start.replace(month=2, day=28, year=start.year + self.retencion_anios)
+        return datetime.combine(end_date, time.min, tzinfo=UTC)
+
+
+class FijarRetencionResponse(BaseModel):
+    expediente_id: str
+    retain_until: datetime
+    # Filas que pasaron de `valoracion_pendiente` a `calendario` en ESTA llamada.
+    filas_fijadas: int
+    # Filas `valoracion_pendiente` que ya no necesitan nada (idempotencia: 0 si ya se fijó antes).
+    filas_pendientes_restantes: int = 0

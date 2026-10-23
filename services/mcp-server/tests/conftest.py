@@ -30,7 +30,7 @@ from app.main import app
 # `consultar_expediente`/`indice_expediente`/`consultar_fuid`. Los dos tests que
 # se pusieron en rojo lo hicieron por la razón correcta — pasaban sobre la
 # premisa equivocada.
-PERMISOS_POR_DEFECTO = ["PERM_RADI", "USUA_PERM_EXPEDIENTE"]
+PERMISOS_POR_DEFECTO = ["PERM_RADI", "USUA_PERM_EXPEDIENTE", "PERM_CONOCIMIENTO"]
 USER_ID = "11111111-1111-1111-1111-111111111111"
 
 
@@ -44,6 +44,7 @@ def _me(permisos: list[str], roles: list[str] | None = None) -> httpx.Response:
             "roles": roles or [],
             "permissions": permisos,
             "permission_levels": {p: 3 for p in permisos},
+            "asistente_habilitado": True,
         },
     )
 

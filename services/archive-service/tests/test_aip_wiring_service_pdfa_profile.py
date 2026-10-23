@@ -71,11 +71,11 @@ def _trd_serie(*, serie_id: uuid.UUID | None = None, pdfa_profile: str | None = 
         code="100",
         name="itest serie AIP pdfa_profile",
         description=None,
-        retention_years=5,
-        total_retention=10,
         disposition="conserve",
         is_active=True,
         created_at=NOW,
+        archivo_gestion_years=5,
+        archivo_central_years=5,
         pdfa_profile=pdfa_profile,
     )
 

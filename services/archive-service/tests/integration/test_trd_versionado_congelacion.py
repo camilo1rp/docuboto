@@ -69,6 +69,7 @@ async def _seed_closed_expediente(
             disposition="CT",
             archivo_gestion_years=2,
             archivo_central_years=8,
+            dependencias_productoras=[110],
         ),
         actor=None,
     )
@@ -97,9 +98,9 @@ async def _seed_closed_expediente(
 
 @pytest.mark.integration
 async def test_closing_serie_version_after_close_does_not_move_frozen_disposition(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"CONG{uuid.uuid4().hex[:6]}"
 
@@ -138,7 +139,7 @@ async def test_closing_serie_version_after_close_does_not_move_frozen_dispositio
     # no ocurrió: v2 termina en `migrada`, no en `convalidada`.
     schema = tenant_schema(slug)
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(
             "UPDATE trd_series SET estado = 'derogada', valid_to = CURRENT_DATE WHERE id = $1",
             serie_v1_id,
@@ -169,7 +170,7 @@ async def test_closing_serie_version_after_close_does_not_move_frozen_dispositio
     # cache dentro de la misma sesión.
     other_conn = await asyncpg.connect(dsn=DSN)
     try:
-        await other_conn.execute(f'SET search_path = "{schema}", public')
+        await other_conn.execute(f'SET search_path = "{schema}"')
         row = await other_conn.fetchrow(
             "SELECT trd_serie_id, disposition FROM expedientes WHERE id = $1", expediente_id
         )
@@ -192,23 +193,23 @@ async def test_closing_serie_version_after_close_does_not_move_frozen_dispositio
 
 @pytest.mark.integration
 async def test_engine_rejects_moving_trd_serie_id_of_closed_expediente_raw_sql(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"PIN{uuid.uuid4().hex[:6]}"
 
     expediente_id, serie_v1_id = await _seed_closed_expediente(archive, conn, code)
 
     otra_serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=f"OTRA{uuid.uuid4().hex[:6]}", name="itest otra serie"),
+        TrdSerieCreate(code=f"OTRA{uuid.uuid4().hex[:6]}", name="itest otra serie", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]),
         actor=None,
     )
     await convalidate_for_test(conn, otra_serie.id)
 
     schema = tenant_schema(slug)
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(
             asyncpg.exceptions.PostgresError, match=r"es inmutable tras el cierre"
         ):
@@ -234,32 +235,32 @@ async def test_engine_rejects_moving_trd_serie_id_of_closed_expediente_raw_sql(
 
 @pytest.mark.integration
 async def test_unique_index_rejects_second_vigente_row_for_same_code_raw_sql(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Una modificación sustantiva crea una versión nueva (D1) y el índice
     `ux_trd_series_vigente` garantiza que, de las filas resultantes, como
     máximo una queda vigente por código -- este test bypassa el flujo del
     servicio (que ya lo impide con el 409 `trd_version_en_tramite`/al exigir
     derogar antes de convalidar) y ataca el índice directamente."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"UNQ{uuid.uuid4().hex[:6]}"
 
     v1 = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest v1"), actor=None
+        TrdSerieCreate(code=code, name="itest v1", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, v1.id)  # v1 -> migrada (vigente)
 
     schema = tenant_schema(slug)
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(asyncpg.exceptions.UniqueViolationError):
             # Segunda fila del MISMO código, también "vigente"
             # (convalidada/migrada, valid_to NULL) -- sin derogar v1 antes.
             await conn.execute(
                 """
-                INSERT INTO trd_series (code, name, version, estado)
-                VALUES ($1, 'itest v2 bypass', 2, 'migrada')
+                INSERT INTO trd_series (code, name, version, estado, archivo_gestion_years, archivo_central_years)
+                VALUES ($1, 'itest v2 bypass', 2, 'migrada', 5, 5)
                 """,
                 code,
             )
@@ -267,26 +268,26 @@ async def test_unique_index_rejects_second_vigente_row_for_same_code_raw_sql(
 
 @pytest.mark.integration
 async def test_create_trd_serie_version_max_one_vigente_after_ratification(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Camino feliz (no bypass): tras crear v2 y ratificarla (atajo de test,
     Increment 2 real pendiente), sigue habiendo como máximo UNA fila vigente
     para el código -- v1 quedó derogada, v2 es la única `migrada`."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"MAX1{uuid.uuid4().hex[:6]}"
 
-    v1 = await archive.create_trd_serie(TrdSerieCreate(code=code, name="itest v1"), actor=None)
+    v1 = await archive.create_trd_serie(TrdSerieCreate(code=code, name="itest v1", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None)
     await convalidate_for_test(conn, v1.id)
 
     v2 = await archive.create_trd_serie_version(
-        code, TrdSerieVersionCreate(retention_years=9), actor=None
+        code, TrdSerieVersionCreate(archivo_gestion_years=9), actor=None
     )
     assert v2.version == 2
 
     schema = tenant_schema(slug)
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(
             "UPDATE trd_series SET estado = 'derogada', valid_to = CURRENT_DATE WHERE id = $1",
             v1.id,
@@ -308,22 +309,22 @@ async def test_create_trd_serie_version_max_one_vigente_after_ratification(
 
 @pytest.mark.integration
 async def test_check_rejects_migrada_row_with_acto_administrativo_data_raw_sql(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     schema = tenant_schema(slug)
     code = f"MIG{uuid.uuid4().hex[:6]}"
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             await conn.execute(
                 """
                 INSERT INTO trd_series
                     (code, name, estado, acto_administrativo, fecha_convalidacion,
-                     instancia_convalidante)
+                     instancia_convalidante, archivo_gestion_years, archivo_central_years)
                 VALUES ($1, 'itest migrada disfrazada', 'migrada', 'Resolución 001',
-                        CURRENT_DATE, 'Consejo Departamental')
+                        CURRENT_DATE, 'Consejo Departamental', 5, 5)
                 """,
                 code,
             )
@@ -335,23 +336,23 @@ async def test_check_rejects_migrada_row_with_acto_administrativo_data_raw_sql(
     ["acto_administrativo", "fecha_convalidacion", "instancia_convalidante", "rusd_radicado"],
 )
 async def test_check_rejects_migrada_row_with_single_acto_field_raw_sql(
-    tenant_ctx: tuple[str, asyncpg.Connection], acto_field: str
+    tenant_con_organigrama: tuple[str, asyncpg.Connection], acto_field: str
 ) -> None:
     """Gemelo por-campo del test anterior: CADA uno de los cuatro campos del
     acto, por sí solo, ya viola el CHECK sobre una fila `migrada` -- no hace
     falta rellenar los cuatro a la vez para que el motor lo rechace."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     schema = tenant_schema(slug)
     code = f"MIG1{uuid.uuid4().hex[:6]}"
     value: object = date(2026, 1, 1) if acto_field == "fecha_convalidacion" else "algun valor"
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             await conn.execute(
                 f"""
-                INSERT INTO trd_series (code, name, estado, {acto_field})
-                VALUES ($1, 'itest migrada campo suelto', 'migrada', $2)
+                INSERT INTO trd_series (code, name, estado, {acto_field}, archivo_gestion_years, archivo_central_years)
+                VALUES ($1, 'itest migrada campo suelto', 'migrada', $2, 5, 5)
                 """,
                 code,
                 value,
@@ -360,20 +361,20 @@ async def test_check_rejects_migrada_row_with_single_acto_field_raw_sql(
 
 @pytest.mark.integration
 async def test_check_accepts_migrada_row_without_any_acto_data_raw_sql(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Contraparte honesta: `migrada` SIN ningún dato de acto es exactamente
     lo que el backfill produce -- debe insertarse sin problema."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     schema = tenant_schema(slug)
     code = f"MIGOK{uuid.uuid4().hex[:6]}"
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         row = await conn.fetchrow(
             """
-            INSERT INTO trd_series (code, name, estado)
-            VALUES ($1, 'itest migrada honesta', 'migrada')
+            INSERT INTO trd_series (code, name, estado, archivo_gestion_years, archivo_central_years)
+            VALUES ($1, 'itest migrada honesta', 'migrada', 5, 5)
             RETURNING acto_administrativo, fecha_convalidacion, instancia_convalidante,
                       rusd_radicado
             """,
@@ -387,35 +388,35 @@ async def test_check_accepts_migrada_row_without_any_acto_data_raw_sql(
 
 @pytest.mark.integration
 async def test_check_convalidada_requires_acto_administrativo_data_raw_sql(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Espejo del anterior: `convalidada` EXIGE los tres campos centrales del
     acto (`trd_series_convalidada_acto_check`) -- sin ellos, el motor
     tampoco deja pasar una convalidación a medias."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     schema = tenant_schema(slug)
     code = f"CVOK{uuid.uuid4().hex[:6]}"
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             await conn.execute(
                 """
-                INSERT INTO trd_series (code, name, estado)
-                VALUES ($1, 'itest convalidada sin acto', 'convalidada')
+                INSERT INTO trd_series (code, name, estado, archivo_gestion_years, archivo_central_years)
+                VALUES ($1, 'itest convalidada sin acto', 'convalidada', 5, 5)
                 """,
                 code,
             )
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         row = await conn.fetchrow(
             """
             INSERT INTO trd_series
                 (code, name, estado, acto_administrativo, fecha_convalidacion,
-                 instancia_convalidante)
+                 instancia_convalidante, archivo_gestion_years, archivo_central_years)
             VALUES ($1, 'itest convalidada con acto', 'convalidada', 'Resolución 099',
-                    CURRENT_DATE, 'Consejo Departamental de Archivos')
+                    CURRENT_DATE, 'Consejo Departamental de Archivos', 5, 5)
             RETURNING estado
             """,
             code,

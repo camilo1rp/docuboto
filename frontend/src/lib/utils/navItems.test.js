@@ -70,4 +70,15 @@ describe("filterVisibleNavItems — espejo del RBAC", () => {
       ]),
     );
   });
+
+  it("«Resolver desclasificaciones» exige PERM_RECLASIFICAR con crud >= 4 (control positivo y negativos)", () => {
+    const item = NAV_ITEMS.find((i) => i.href === "/desclasificaciones");
+    expect(item).toBeTruthy();
+    const perms = ["PERM_RECLASIFICAR"];
+    expect(filterVisibleNavItems([item], perms, [], { PERM_RECLASIFICAR: 4 })).toEqual([item]);
+    expect(filterVisibleNavItems([item], perms, [], { PERM_RECLASIFICAR: 3 })).toEqual([]);
+    // Sin niveles falla cerrado.
+    expect(filterVisibleNavItems([item], perms, [])).toEqual([]);
+    expect(filterVisibleNavItems([item], [], [], { PERM_RECLASIFICAR: 5 })).toEqual([]);
+  });
 });

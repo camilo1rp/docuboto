@@ -494,6 +494,17 @@ Propiedad que define este incremento: **una TVD todavía no gobierna nada**. El 
 
 ---
 
+## Addendum (2026-10-20) — C-4, [ADR-040](ADR-040-cuadro-de-clasificacion-derivado-y-fases-de-la-trd.md)
+
+- **La TVD exige su fase central** (`TvdAgrupacionCreate.archivo_central_years`, obligatorio y sin valor por
+  omisión; CHECK `trd_series_fases_check`): antes `total_retention` valía 10 por omisión mientras
+  `archivo_central_years` quedaba `NULL`, el calendario se calculaba con 0 y la pantalla mostraba 10 años.
+  `total_retention` sale de la escritura (`422 extra_forbidden`); la respuesta lo deriva (la TVD no tiene gestión,
+  así que su total es su fase central).
+- El cuerpo del trigger de inmutabilidad que este ADR cita pierde las dos líneas del juego legado (ver ADR-025).
+- **Retracción**: este ADR decía «Seeds intactos» (`seeds/fondecund_trd.sql` «no cambia una línea»). Ya no es cierto: los seeds y `scripts/migrate_trd_from_fondecund.py` escriben las dos fases (y el script, la dependencia productora desde `dependencia.codigo`).
+- La TVD **no** lleva dependencia productora (tiene `fondo_nombre`) ni entra en el gate de aprobar/convalidar.
+
 ## Relacionados
 
 - [ADR-025](ADR-025-trd-instrumento-convalidado-versionado.md) — instrumento convalidado y versionado; **este ADR extiende su modelo a un segundo instrumento sin duplicarlo**, y reutiliza su criterio de decisión (D3: radio de impacto sobre el seam, irreversibilidad WORM).
@@ -503,3 +514,9 @@ Propiedad que define este incremento: **una TVD todavía no gobierna nada**. El 
 - [ADR-008](ADR-008-auditoria-inmutable.md) / [ADR-010](ADR-010-libreria-compartida.md) — asientos atómicos con la mutación; nombres `archive.tvd_*` distintos a propósito.
 - [ADR-022](ADR-022-indice-electronico-v2-metadatos.md) — perfil v4 firmado: por qué la TVD **no** toca el XML del índice.
 - [ADR-023](ADR-023-worm-object-lock-preservacion.md) — Object-Lock COMPLIANCE: por qué la fecha base del calendario (D4) es el punto de mayor riesgo de este diseño.
+
+---
+
+## Enmienda C-5 (2026-10-21, [ADR-043](ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md) §2)
+
+Se retira el clamp de D4.4 (`max(hoy + margen, fecha_extrema_final + total)` como COMPLIANCE): dejaba un régimen irreversible de ~400 días sobre contenido cuyo calendario ya había vencido. Para el contenido (`indice`, `aip`) de un fondo acumulado con calendario vencido ahora solo se fija el legal hold `valoracion_pendiente`, sin retención, hasta que el Comité registre la valoración de la TVD (`POST /tvd/{serie_id}/valoracion`). Con calendario futuro, COMPLIANCE natural. Las actas de transferencia toman como base el acto (`firmado_at`). El margen queda solo como umbral del piso de storage (`worm_piso_margen_dias`). Costo declarado: sin red WORM irreversible para contenido vencido, compensada por el hold.

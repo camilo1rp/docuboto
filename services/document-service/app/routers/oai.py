@@ -90,7 +90,7 @@ async def oai_pmh(tenant: str, request: Request) -> Response:
             svc0 = OaiService(None, base_url=base_url, tenant=tenant)  # type: ignore[arg-type]
             body = svc0.error_xml({}, "badArgument", "Tenant inválido")
             return Response(body, media_type="application/xml", status_code=400)
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             svc = OaiService(OaiRepository(conn), base_url=base_url, tenant=tenant)
             try:

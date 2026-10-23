@@ -23,6 +23,7 @@ veredicto admitido es ``TOTAL_PASSED`` o ``INDETERMINATE`` por falta de cadena.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.request
@@ -222,6 +223,100 @@ async def test_dss_lta_renovada(monkeypatch: pytest.MonkeyPatch) -> None:
     assert tipos.count("ARCHIVE_TIMESTAMP") == 3, tipos
     veredicto = exigir_criptografia_integra(informe)
     assert veredicto in _INDICACIONES_ADMITIDAS, veredicto
+
+
+async def _lta_renovada_con_ocsp_de_tsa(monkeypatch: pytest.MonkeyPatch, tmp_path):  # noqa: ANN001, ANN202
+    """Firma LTA cuyo ATS 0 selló una TSA emitida por una CA con AIA OCSP y SIN punto de distribución de
+    CRL; se renueva con la revocación de esa TSA por OCSP (C-6). Devuelve (xml renovado, certificado de la CA de la TSA)."""
+    from app.core.config import settings
+    from app.providers.local import renovar_archive_timestamp
+    from tests import c6_pki as pki
+    from tests.test_sign_xml_xades import (
+        _build_crl,
+        _ca_cert_pem,
+        _generate_ca,
+        _issue_seal_signed_by_ca,
+        _lt_signer_ref,
+    )
+
+    monkeypatch.setattr(settings, "signer_lt_enabled", True)
+    ca_tsa = pki.ca_nueva("ca-tsa-dss")
+    tsa_key, tsa_cert = pki.tsa_emitida(ca_tsa, cn="tsa-dss-ocsp", ocsp_url=pki.URL_OCSP)
+    pki.declarar_ca(monkeypatch, tmp_path, ca_tsa)
+    pki.instalar_tsa(monkeypatch, tsa_key, tsa_cert)
+    ca_key, ca_cert = _generate_ca()
+    cert_pem, key_pem, _ = _issue_seal_signed_by_ca(ca_key, ca_cert)
+    doc = await LocalSigner().sign(
+        PreparedDoc(xml_bytes=_DOC, objeto_tipo="indice"),
+        _lt_signer_ref(cert_pem, key_pem, _ca_cert_pem(ca_cert), _build_crl(ca_key, ca_cert)),
+    )
+    assert doc.xades_level == "XAdES-LTA"
+    pki.servir(
+        monkeypatch,
+        ocsp=lambda pet: pki.respuesta_ocsp(tsa_cert, ca_tsa, nonce=pki.nonce_de(pet)),
+    )
+    renovada = renovar_archive_timestamp(doc.signed_xml)
+    assert renovada.revocacion_tsa_previa == "ocsp"
+    return renovada.signed_xml, ca_tsa[1]
+
+
+def _ocsp_firmado_por(informe: dict, ca_cert: x509.Certificate) -> list[dict]:
+    """Entradas OCSP del informe de DSS con la firma íntegra y firmadas por ``ca_cert``.
+
+    DSS identifica un certificado por ``"C-" + SHA-256(DER)`` en mayúsculas. El OCSP de la TSA anterior
+    lo firma la propia CA de la TSA (responderID por clave), y DSS lo toma del documento (``INPUT_DOCUMENT``,
+    así reporta 6.5 los datos de validación del `TimeStampValidationData`)."""
+    huella = "C-" + hashlib.sha256(ca_cert.public_bytes(serialization.Encoding.DER)).hexdigest().upper()
+    return [
+        r for r in informe["DiagnosticData"].get("Revocation") or ()
+        if r.get("Type") == "OCSP"
+        and r["BasicSignature"]["SignatureIntact"] is True
+        and r["SigningCertificate"]["Certificate"] == huella
+    ]
+
+
+@pytest.mark.asyncio
+async def test_dss_lta_renovada_con_ocsp_de_tsa(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:  # noqa: ANN001
+    """C-6: la renovación cuya revocación de la TSA anterior es una respuesta OCSP (TSA sin CRL) la valida
+    un tercero: firma y los DOS `ArchiveTimeStamp` íntegros, y DSS reconoce el OCSP como dato de validación
+    del `TimeStampValidationData`."""
+    xml, ca_cert = await _lta_renovada_con_ocsp_de_tsa(monkeypatch, tmp_path)
+    informe = validar_en_dss(xml)
+    tipos = [t["Type"] for t in informe["DiagnosticData"]["Timestamp"]]
+    assert tipos.count("ARCHIVE_TIMESTAMP") == 2, tipos
+    veredicto = exigir_criptografia_integra(informe)
+    assert veredicto in _INDICACIONES_ADMITIDAS, veredicto
+    assert _ocsp_firmado_por(informe, ca_cert), (
+        "DSS no reconoce, con la firma íntegra, el OCSP de la TSA anterior firmado por su CA"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dss_control_negativo_ocsp_alterado_rompe_el_sello_que_lo_cubre(
+    monkeypatch: pytest.MonkeyPatch, tmp_path  # noqa: ANN001
+) -> None:
+    """Calibra el detector: el mismo XML con el `EncapsulatedOCSPValue` alterado deja un `DataIntact=false`
+    en el `ArchiveTimeStamp` que cubre el TSVD. Si DSS lo diera por bueno, el caso positivo no probaría nada."""
+    from base64 import b64decode, b64encode
+
+    from lxml import etree
+
+    xml, _ca = await _lta_renovada_con_ocsp_de_tsa(monkeypatch, tmp_path)
+    raiz = etree.fromstring(xml)
+    ns = {"x": "http://uri.etsi.org/01903/v1.3.2#", "v": "http://uri.etsi.org/01903/v1.4.1#"}
+    el = raiz.find(".//v:TimeStampValidationData//x:EncapsulatedOCSPValue", ns)
+    assert el is not None
+    der = bytearray(b64decode(el.text))
+    der[-1] ^= 0xFF  # último byte: la firma de la respuesta
+    el.text = b64encode(bytes(der)).decode()
+    informe = validar_en_dss(etree.tostring(raiz))
+    rotos = [
+        (t["Type"], dm["type"])
+        for t in informe["DiagnosticData"]["Timestamp"]
+        for dm in t["DigestMatcher"]
+        if dm["DataIntact"] is False
+    ]
+    assert rotos, "DSS no detectó la alteración del OCSP cubierto por el ArchiveTimeStamp"
 
 
 def test_control_negativo_firma_anterior_a_adr034_falla_en_dss() -> None:

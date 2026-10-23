@@ -66,7 +66,7 @@ async def _acquire(request: Request, tenant: str):
         if await atencion_publica(conn, tenant) is AtencionPublica.NINGUNA:
             await _release(pool, conn)
             return None
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         return pool, conn
     except BaseException:
         await _release(pool, conn)

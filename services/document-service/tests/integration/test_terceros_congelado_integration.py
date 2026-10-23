@@ -35,7 +35,7 @@ pytestmark = pytest.mark.integration
 
 
 async def _sembrar(conn: asyncpg.Connection, schema: str) -> tuple[uuid.UUID, uuid.UUID]:
-    await conn.execute(f"SET search_path TO {tenant_schema(schema)}, public")
+    await conn.execute(f"SET search_path TO {tenant_schema(schema)}")
     radicado_id = await conn.fetchval(
         """
         INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, tenant_code)
@@ -154,7 +154,7 @@ async def test_dos_terceros_no_comparten_documento_de_identidad(tenant_ctx) -> N
     """La deduplicación DURA. «José Pérez» y «JOSE PEREZ» con la misma cédula
     son la misma persona, por mucho que se escriban distinto."""
     schema, conn = tenant_ctx
-    await conn.execute(f"SET search_path TO {tenant_schema(schema)}, public")
+    await conn.execute(f"SET search_path TO {tenant_schema(schema)}")
     documento = uuid.uuid4().hex[:10]
     await conn.execute(
         "INSERT INTO tercero (tipo, nombre, tipo_documento, numero_documento) "
@@ -177,7 +177,7 @@ async def test_la_busqueda_encuentra_sin_tildes_ni_mayusculas(tenant_ctx) -> Non
     from app.repositories.tercero_repository import TerceroRepository
 
     schema, conn = tenant_ctx
-    await conn.execute(f"SET search_path TO {tenant_schema(schema)}, public")
+    await conn.execute(f"SET search_path TO {tenant_schema(schema)}")
     await conn.execute(
         "INSERT INTO tercero (tipo, nombre) VALUES ('ciudadano', 'José Pérez Gómez')"
     )

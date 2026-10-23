@@ -153,7 +153,7 @@ EXENTOS = {
 
 
 def _fija_schema_de_tenant(n: ast.AST) -> bool:
-    """`SET search_path = "{schema}", public` (interpolado), no el reset a `public`."""
+    """`SET search_path = "{schema}"` (interpolado), no el reset a `public`."""
     if isinstance(n, ast.JoinedStr):
         return _es_set_search_path(n) and any(
             isinstance(v, ast.FormattedValue) for v in n.values

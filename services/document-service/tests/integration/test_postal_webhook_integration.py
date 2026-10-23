@@ -57,7 +57,7 @@ async def _seed_shipment(conn: asyncpg.Connection, *, guia: str = "C472-INT0001"
 async def test_delivery_dedup_unique(tenant_ctx) -> None:
     """try_insert_delivery: mismo (operador, event_id) → una sola fila."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     repo = PostalRepository(conn)
     sid = await _seed_shipment(conn)
 
@@ -86,7 +86,7 @@ async def test_delivery_dedup_unique(tenant_ctx) -> None:
 async def test_motivo_devolucion_only_set_on_devuelto(tenant_ctx) -> None:
     """La columna motivo_devolucion se fija SOLO en 'devuelto' y se preserva."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     repo = PostalRepository(conn)
     sid = await _seed_shipment(conn, guia="C472-DEV001")
 
@@ -114,7 +114,7 @@ async def test_credential_and_delivery_tenant_isolation(two_tenant_ctx) -> None:
     slug_a, slug_b, conn = two_tenant_ctx
 
     # Semilla en A.
-    await conn.execute(f'SET search_path = "{tenant_schema(slug_a)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug_a)}"')
     await conn.execute(
         "INSERT INTO postal_operator_credential (operador, webhook_secret) VALUES ('4-72', 'secret-A')"
     )
@@ -122,7 +122,7 @@ async def test_credential_and_delivery_tenant_isolation(two_tenant_ctx) -> None:
     assert (await repo_a.get_operator_credential("4-72"))["webhook_secret"] == "secret-A"
 
     # Desde B: no existe.
-    await conn.execute(f'SET search_path = "{tenant_schema(slug_b)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug_b)}"')
     repo_b = PostalRepository(conn)
     assert await repo_b.get_operator_credential("4-72") is None
     assert await conn.fetchval("SELECT COUNT(*) FROM postal_operator_credential") == 0
@@ -138,5 +138,5 @@ async def test_migration_017_idempotent(tenant_ctx) -> None:
         Path(__file__).parents[2] / "migrations" / "tenant" / "017_postal_webhook.sql"
     ).read_text()
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}", public')
+        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
         await conn.execute(sql)  # segunda pasada, debe ser no-op sin error

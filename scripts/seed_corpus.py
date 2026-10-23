@@ -104,6 +104,10 @@ SERIES = (
     ("INF-500", "Informes de gestión", 2, 10, "M", "Informes periódicos de gestión."),
 )
 
+# C-4/C8: la dependencia productora de cada serie (códigos de `DEPENDENCIAS_EXTRA`). Sin ella
+# la serie no entra al cuadro de clasificación ni se puede aprobar.
+PRODUCTORAS = {"COR-200": 906, "CON-300": 904, "HIS-400": 905, "INF-500": 906}
+
 TIPOS = (
     ("COR-PET", "COR-200", "Petición"),
     ("COR-QUE", "COR-200", "Queja"),
@@ -252,6 +256,7 @@ async def instrumentos(api: Api) -> dict[str, Any]:
                 "archivo_gestion_years": gestion,
                 "archivo_central_years": central,
                 "disposition": disposicion,
+                "dependencias_productoras": [PRODUCTORAS[code]],
             },
         )
     ok(
@@ -452,10 +457,13 @@ async def radicados(
         sorteo = RNG.random()
         if sorteo < 0.08:
             nivel, causal = 3, "Información clasificada (Ley 1712/2014 art. 18)"
+            codigo_causal, plazo_reserva = "art18_a_intimidad", None
         elif sorteo < 0.22:
             nivel, causal = 2, "Información reservada (Ley 1712/2014 art. 19)"
+            codigo_causal, plazo_reserva = "art19_i_salud_publica", 60
         else:
             nivel, causal = 1, None
+            codigo_causal, plazo_reserva = None, None
 
         cuerpo: dict[str, Any] = {
             "doc_type": tipo,
@@ -489,9 +497,11 @@ async def radicados(
                 }
             ]
         if causal:
+            # C12: la causal es del catálogo cerrado; el fundamento sigue siendo texto.
             cuerpo["clasificacion_fundamento"] = causal
-            cuerpo["clasificacion_causal"] = causal
-            cuerpo["clasificacion_plazo_meses"] = 60
+            cuerpo["clasificacion_causal"] = codigo_causal
+            if plazo_reserva is not None:
+                cuerpo["clasificacion_plazo_meses"] = plazo_reserva
 
         # ~45 % con anexos: el resto queda deliberadamente sin contenido binario.
         if RNG.random() < 0.45:
@@ -746,7 +756,7 @@ async def envios(api: Api, docs: list[dict[str, Any]]) -> int:
     return hechos
 
 
-async def archivo_fisico(api: Api, exps: list[dict[str, Any]]) -> int:
+async def archivo_fisico(api: Api, exps: list[dict[str, Any]], user_id: str) -> int:
     """Ubicaciones, unidades de conservación y un préstamo vivo.
 
     El préstamo sin devolver es el que importa: es el estado que bloquea
@@ -814,11 +824,13 @@ async def archivo_fisico(api: Api, exps: list[dict[str, Any]]) -> int:
         await api.post(
             f"/api/v1/unidades/{unidades[0]['id']}/prestamos",
             json={
-                "prestado_a": "Oficina Jurídica",
-                "prestado_por": "Archivo Central",
-                "fecha_devolucion_esperada": "2026-12-31",
+                # C11: el prestatario es un usuario identificado (`auth_users.id`).
+                "prestatario": {"tipo": "interno", "user_id": user_id},
+                "fecha_devolucion_esperada": "2099-12-31",
             },
-            esperado=(200, 201, 409),
+            # 403 si el contenido de la unidad excede el clearance de quien recibe;
+            # 409 si la unidad ya estaba prestada (re-ejecución del sembrado).
+            esperado=(200, 201, 403, 409),
         )
     ok(
         f"{creadas} ubicaciones, {len(unidades)} unidades, {vinculados} expedientes "
@@ -840,7 +852,7 @@ async def principal(gateway: str, escala: dict[str, int]) -> int:
         exps = await expedientes(api, escala["expedientes"], instr["series"], docs)
         await tramite(api, docs, user_id)
         await envios(api, docs)
-        await archivo_fisico(api, exps)
+        await archivo_fisico(api, exps, user_id)
 
     dur = (_hoy() - inicio).total_seconds()
     paso("Corpus sembrado")

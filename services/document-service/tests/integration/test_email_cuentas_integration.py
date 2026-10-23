@@ -39,7 +39,7 @@ ADMIN = uuid.uuid4()
 
 
 async def _en_tenant(conn: asyncpg.Connection, slug: str) -> EmailCuentaRepository:
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     return EmailCuentaRepository(conn)
 
 

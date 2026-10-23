@@ -80,6 +80,8 @@ export const ROUTES = {
   correo: "/correo",
   firmas: "/firmas",
   anulaciones: "/anulaciones",
+  desclasificaciones: "/desclasificaciones",
+  indiceClasificados: "/indice-clasificados",
   admin: "/admin",
   adminPlantillas: "/admin/plantillas",
   adminFlujosReglas: "/admin/flujos/reglas",

@@ -52,14 +52,15 @@ async def _radicar_con(
         registered_by=None,
     )
     await conn.execute("UPDATE radicados SET nivel_seguridad = $2, clasificacion_fundamento = "
-        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END WHERE id = $1",
+        "CASE WHEN $2::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END, "
+        "clasificacion_causal = CASE WHEN $2::smallint >= 2 THEN 'por_clasificar' END WHERE id = $1",
         doc.id,
         nivel,)
 
 
 async def _sembrar(tenant_ctx: tuple[str, asyncpg.Connection]):
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     t = await _tercero(conn, "Ana Ríos")

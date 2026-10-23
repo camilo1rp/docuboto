@@ -57,14 +57,21 @@ async def test_el_prestamo_guarda_el_uuid_y_no_el_login(client_with_conn) -> Non
     unidad_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),
-        None,
         None,  # resolve_caller_clearance -> PUBLICA
         _prestamo_row(unidad_id=unidad_id),
     ]
 
     resp = await client.post(
         f"/api/v1/unidades/{unidad_id}/prestamos",
-        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        json={
+            "prestatario": {
+                "tipo": "externo",
+                "nombre": "Ana Jurídica",
+                "documento_tipo": "CC",
+                "documento_numero": "1234567890",
+            },
+            "fecha_devolucion_esperada": "2099-01-01",
+        },
         headers={**TENANT_HEADERS, **_LOGIN},
     )
 

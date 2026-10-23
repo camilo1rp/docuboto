@@ -16,13 +16,14 @@
  * GET  → historia completa del código (`GET /api/v1/trd/{code}/versiones`).
  * POST → clona la versión vigente como `borrador` `version+1`. Body
  *   (allowlist, TrdSerieVersionCreate — todos opcionales, "clonar y
- *   sobre-escribir"): name, description, parent_id, retention_years,
- *   total_retention, disposition, archivo_gestion_years,
- *   archivo_central_years, pdfa_profile.
+ *   sobre-escribir", lo no enviado se clona): name, description, parent_id,
+ *   disposition, archivo_gestion_years, archivo_central_years, pdfa_profile,
+ *   dependencias_productoras. NUNCA retention_years/total_retention (422).
  */
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { leerFases, leerProductoras } from "$lib/server/trdFases.server.js";
 import { headersFor, makeVersionesGetHandler } from "$lib/server/trdCircuitoProxy.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -51,17 +52,8 @@ export async function POST({ locals, params, request }) {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
   }
 
-  const {
-    name,
-    description,
-    parent_id,
-    retention_years,
-    total_retention,
-    disposition,
-    archivo_gestion_years,
-    archivo_central_years,
-    pdfa_profile,
-  } = body ?? {};
+  const { name, description, parent_id, disposition, pdfa_profile, dependencias_productoras } =
+    body ?? {};
 
   if (parent_id !== undefined && parent_id !== null && !UUID_RE.test(parent_id)) {
     return json({ error: "validation_error", detail: "Serie padre inválida." }, { status: 400 });
@@ -90,18 +82,14 @@ export async function POST({ locals, params, request }) {
   }
   if (parent_id !== undefined)
     payload.parent_id = parent_id && UUID_RE.test(parent_id) ? parent_id : null;
-  if (retention_years !== undefined && Number.isFinite(Number(retention_years))) {
-    payload.retention_years = Number(retention_years);
-  }
-  if (total_retention !== undefined && Number.isFinite(Number(total_retention))) {
-    payload.total_retention = Number(total_retention);
-  }
   if (disposition !== undefined && DISPOSITIONS.has(disposition)) payload.disposition = disposition;
-  if (archivo_gestion_years !== undefined && Number.isFinite(Number(archivo_gestion_years))) {
-    payload.archivo_gestion_years = Number(archivo_gestion_years);
-  }
-  if (archivo_central_years !== undefined && Number.isFinite(Number(archivo_central_years))) {
-    payload.archivo_central_years = Number(archivo_central_years);
+  const fases = leerFases(body ?? {}, false);
+  if (fases.error) return fases.error;
+  Object.assign(payload, fases.payload);
+  if (dependencias_productoras !== undefined) {
+    const p = leerProductoras(dependencias_productoras);
+    if (p.error) return p.error;
+    payload.dependencias_productoras = p.value;
   }
   if (pdfa_profile !== undefined)
     payload.pdfa_profile = PDFA_PROFILES.has(pdfa_profile) ? pdfa_profile : null;

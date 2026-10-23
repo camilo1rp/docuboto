@@ -379,7 +379,7 @@ async def test_batch_item_failure_does_not_corrupt_sibling_item(
     schema = tenant_schema(slug)
     year = datetime.now(tz=UTC).year
 
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
 
     # Okupa en el SEGUNDO código que la secuencia va a emitir: el ítem 0 (sin
     # secuencia previa sembrada) avanza a 1 -> 'EXP-{year}-0001' (libre, entra
@@ -1614,9 +1614,9 @@ async def test_update_expediente_reclasifica_trd_and_leaves_audit_trail(
         TrdSerieCreate(
             code="ITEST-RCA",
             name="itest serie antes",
-            retention_years=2,
-            total_retention=5,
             disposition="CT",
+            archivo_gestion_years=2,
+            archivo_central_years=3,
         ),
         actor=None,
     )
@@ -1624,9 +1624,9 @@ async def test_update_expediente_reclasifica_trd_and_leaves_audit_trail(
         TrdSerieCreate(
             code="ITEST-RCB",
             name="itest serie despues",
-            retention_years=3,
-            total_retention=8,
             disposition="E",
+            archivo_gestion_years=3,
+            archivo_central_years=5,
         ),
         actor=None,
     )
@@ -1719,9 +1719,9 @@ async def test_update_expediente_reclasificacion_rollback_reverts_trd_and_audit_
         TrdSerieCreate(
             code="ITEST-RBA",
             name="itest rollback serie antes",
-            retention_years=2,
-            total_retention=5,
             disposition="CT",
+            archivo_gestion_years=2,
+            archivo_central_years=3,
         ),
         actor=None,
     )
@@ -1729,9 +1729,9 @@ async def test_update_expediente_reclasificacion_rollback_reverts_trd_and_audit_
         TrdSerieCreate(
             code="ITEST-RBB",
             name="itest rollback serie despues",
-            retention_years=3,
-            total_retention=8,
             disposition="E",
+            archivo_gestion_years=3,
+            archivo_central_years=5,
         ),
         actor=None,
     )

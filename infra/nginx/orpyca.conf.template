@@ -138,6 +138,17 @@ server {
         proxy_pass $gateway;
     }
 
+    # `/metrics` (C18, ADR-041) es de Prometheus, por la red interna, directo al puerto
+    # del servicio. El gateway ya solo reenvía `/api/v1/`; esto es la segunda barrera:
+    # aunque un día se enrutara, desde internet NO existe.
+    location = /metrics {
+        return 404;
+    }
+
+    location /metrics/ {
+        return 404;
+    }
+
     location / {
         set $gateway http://api-gateway:8080;
         proxy_pass $gateway;

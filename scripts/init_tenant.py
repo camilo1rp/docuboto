@@ -132,8 +132,10 @@ async def apply_global_migrations(conn: asyncpg.Connection) -> None:
                 print(f"  [global] skip  {servicio}/{path.name}")
                 continue
             print(f"  [global] apply {servicio}/{path.name}")
-            await conn.execute(path.read_text())
-            await ledger.record(conn, ledger.ESQUEMA_GLOBAL, servicio, path.name)
+            # En transacción, igual que los runners (C19): sin DDL huérfano del libro.
+            async with conn.transaction():
+                await conn.execute(path.read_text())
+                await ledger.record(conn, ledger.ESQUEMA_GLOBAL, servicio, path.name)
             # Alimentar el conjunto en caliente: se leyó UNA vez antes del bucle.
             aplicadas.add((servicio, path.name))
 
@@ -163,7 +165,7 @@ async def provision_schema(conn: asyncpg.Connection, slug: str) -> None:
 
 async def apply_tenant_migrations(conn: asyncpg.Connection, slug: str) -> None:
     schema = f"tenant_{slug.replace('-', '_')}"
-    await conn.execute(f"SET search_path = {schema}, public")
+    await conn.execute(f"SET search_path = \"{schema}\"")
     aplicadas = await ledger.applied(conn, schema)
     for migrations_dir in TENANT_MIGRATIONS:
         servicio = _servicio_de(migrations_dir)
@@ -172,8 +174,9 @@ async def apply_tenant_migrations(conn: asyncpg.Connection, slug: str) -> None:
                 print(f"  [{schema}] skip  {servicio}/{path.name}")
                 continue
             print(f"  [{schema}] apply {servicio}/{path.name}")
-            await conn.execute(path.read_text())
-            await ledger.record(conn, schema, servicio, path.name)
+            async with conn.transaction():
+                await conn.execute(path.read_text())
+                await ledger.record(conn, schema, servicio, path.name)
             aplicadas.add((servicio, path.name))
     # Restaurar search_path al terminar
     await conn.execute("SET search_path = public")
@@ -227,32 +230,35 @@ async def main(slug: str, name: str, code: str) -> None:
     conn = await asyncpg.connect(dsn=dsn)
 
     try:
-        print("\n── Libro de migraciones ──────────────────────────────────────")
-        await ledger.ensure_ledger(conn)
-        # Import único de los tres registros antiguos. Este ejecutor ve los
-        # directorios de todos los servicios, así que puede atribuir cada nombre
-        # desnudo; un nombre que no reconoce es una migración retirada del
-        # código y merece aviso (de ahí `ignorar_desconocidos` por defecto).
-        for aviso in await ledger.importar_libros_antiguos(
-            conn,
-            servicios_por_archivo_global=_mapa_servicios(GLOBAL_MIGRATIONS),
-            servicios_por_archivo_tenant=_mapa_servicios(TENANT_MIGRATIONS),
-        ):
-            print(aviso)
+        # Mismo cerrojo global que los runners (C19, ADR-041): provisionar un tenant
+        # mientras arranca un migrate-<svc> ya no los deja pisarse.
+        async with ledger.cerrojo(conn):
+            print("\n── Libro de migraciones ──────────────────────────────────────")
+            await ledger.ensure_ledger(conn)
+            # Import único de los tres registros antiguos. Este ejecutor ve los
+            # directorios de todos los servicios, así que puede atribuir cada nombre
+            # desnudo; un nombre que no reconoce es una migración retirada del
+            # código y merece aviso (de ahí `ignorar_desconocidos` por defecto).
+            for aviso in await ledger.importar_libros_antiguos(
+                conn,
+                servicios_por_archivo_global=_mapa_servicios(GLOBAL_MIGRATIONS),
+                servicios_por_archivo_tenant=_mapa_servicios(TENANT_MIGRATIONS),
+            ):
+                print(aviso)
 
-        print("\n── Migraciones globales (public schema) ──────────────────────")
-        await apply_global_migrations(conn)
+            print("\n── Migraciones globales (public schema) ──────────────────────")
+            await apply_global_migrations(conn)
 
-        print(f"\n── Schema del tenant: tenant_{slug.replace('-', '_')} ─────")
-        await provision_schema(conn, slug)
+            print(f"\n── Schema del tenant: tenant_{slug.replace('-', '_')} ─────")
+            await provision_schema(conn, slug)
 
-        print("\n── Migraciones por tenant ────────────────────────────────────")
-        await apply_tenant_migrations(conn, slug)
+            print("\n── Migraciones por tenant ────────────────────────────────────")
+            await apply_tenant_migrations(conn, slug)
 
-        print("\n── Registro en public.tenants ────────────────────────────────")
-        await register_tenant(conn, slug, name, code)
+            print("\n── Registro en public.tenants ────────────────────────────────")
+            await register_tenant(conn, slug, name, code)
 
-        print(f"\n✓ Tenant '{slug}' inicializado correctamente.\n")
+            print(f"\n✓ Tenant '{slug}' inicializado correctamente.\n")
     finally:
         await conn.close()
 

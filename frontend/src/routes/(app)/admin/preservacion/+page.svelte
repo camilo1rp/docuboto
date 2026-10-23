@@ -60,6 +60,7 @@
   import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
+  import SellosArchivo from "$lib/components/features/preservacion/SellosArchivo.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
@@ -95,11 +96,18 @@
   // ---------------------------------------------------------------------------
   // Tabs
   // ---------------------------------------------------------------------------
-  const TABS = [
+  // Sellos de archivo (C-6): el backend exige USUA_PERM_ADMIN con nivel >= 3
+  // (403 sin él). La faceta ni se ofrece por debajo de ese nivel; `data.sellos`
+  // llega `null` desde el loader en ese caso, y se comprueban ambos.
+  $: veSellos = ($permissionLevels["USUA_PERM_ADMIN"] ?? 0) >= 3 && data.sellos != null;
+
+  const TABS_BASE = [
     { id: "plan", label: "Plan de preservación", icon: "fa-clipboard-list" },
     { id: "firma", label: "Índices pendientes de firma", icon: "fa-file-signature" },
     { id: "worm", label: "Renovación WORM", icon: "fa-lock" },
   ];
+  const TAB_SELLOS = { id: "sellos", label: "Sellos de archivo", icon: "fa-stamp" };
+  $: TABS = veSellos ? [...TABS_BASE, TAB_SELLOS] : TABS_BASE;
   let activeTab = "plan";
 
   function handleTabKeydown(e, tabId) {
@@ -646,6 +654,22 @@
         {/if}
       </Card>
     </div>
+
+    {#if veSellos}
+      <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+      <div
+        id="prsv-panel-sellos"
+        role="tabpanel"
+        aria-labelledby="prsv-tab-sellos"
+        hidden={activeTab !== "sellos"}
+        tabindex="0"
+        class="prsv-panel"
+      >
+        <Card>
+          <SellosArchivo inicial={data.sellos} />
+        </Card>
+      </div>
+    {/if}
   {/if}
 </div>
 

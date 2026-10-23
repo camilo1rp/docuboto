@@ -35,6 +35,7 @@ from fastapi import HTTPException
 from orpycamcp_common import audit
 
 from app.clients.tenant_client import TenantServiceClient
+from app.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, tope_reserva
 from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
 from app.core.datos_minimos import exigir_o_422
@@ -171,6 +172,15 @@ class ReclassifyForbiddenError(Exception):
     """El llamante intenta asignar un nivel de seguridad superior a su propio clearance."""
 
 
+class TipoDocumentalNoPublicableError(Exception):
+    """El radicado se podría publicar, pero su tipo documental no está marcado
+    `publicable` por la entidad (C-4/C10, `tipos_documentales.publicable`)."""
+
+    def __init__(self, doc_class: str | None = None) -> None:
+        super().__init__("El tipo documental del radicado no está marcado como publicable")
+        self.doc_class = doc_class
+
+
 class AnexoNoDisponibleError(Exception):
     """Se intenta adjuntar un fichero que ya cuelga de un radicado fuera de alcance."""
 
@@ -267,8 +277,13 @@ class DocumentService:
         *,
         submission_key: tuple[str, str] | None = None,
         procedencia: dict[str, Any] | None = None,
+        remitente_provisional: dict[str, Any] | None = None,
     ) -> DocumentResponse:
-        """Radica. `submission_key = (clave, huella)` activa la idempotencia pública
+        """Radica. `remitente_provisional` (solo la ventanilla pública, C17/ADR-038) crea la
+        ficha provisional del remitente anónimo DENTRO de la transacción del radicado y la
+        ata como remitente principal; es argumento interno y NO un campo de `DocumentCreate`
+        (un cliente autenticado no debe poder pedir fichas provisionales).
+        `submission_key = (clave, huella)` activa la idempotencia pública
         (AREA-02-07): la clave se reclama DENTRO de la transacción, antes de pedir el
         consecutivo, y si ya estaba reclamada se levanta `DuplicateSubmissionError`
         sin haber gastado ningún número."""
@@ -452,9 +467,11 @@ class DocumentService:
                 await self._repo.set_classification(
                     radicado.id,
                     payload.nivel_seguridad,
+                    nivel_esperado=payload.nivel_seguridad,
                     fundamento=payload.clasificacion_fundamento,
                     causal=payload.clasificacion_causal,
                     plazo_meses=payload.clasificacion_plazo_meses,
+                    norma=payload.clasificacion_norma,
                 )
                 audit_payload["clasificacion_fundamento"] = payload.clasificacion_fundamento
                 audit_payload["clasificacion_causal"] = payload.clasificacion_causal
@@ -506,11 +523,25 @@ class DocumentService:
             # reimplementa nada. Un `tercero_id` inexistente aborta la
             # radicación entera (404 y rollback): mejor no radicar que radicar
             # sin saber de quién.
-            if payload.actores:
-                await TerceroService(self._conn, self._slug).vincular_actores(
+            actores = [a.model_dump() for a in payload.actores]
+            terceros = TerceroService(self._conn, self._slug)
+            provisionales: frozenset[uuid.UUID] = frozenset()
+            if remitente_provisional is not None:
+                # C17: la ficha nace con el radicado y se ata como su remitente. Va
+                # ANTES de los actores del payload para que sea el principal.
+                provisional = await terceros.crear_provisional(
+                    remitente_provisional, radicado=tracking_number
+                )
+                provisionales = frozenset({provisional["id"]})
+                actores.insert(
+                    0, {"tercero_id": provisional["id"], "rol": "remitente", "principal": True}
+                )
+            if actores:
+                await terceros.vincular_actores(
                     radicado.id,
-                    [a.model_dump() for a in payload.actores],
+                    actores,
                     actor=registered_by,
+                    provisionales_permitidas=provisionales,
                 )
 
             # OUTBOX (AREA-09-05): el evento nace en la MISMA transacción que el
@@ -646,6 +677,13 @@ class DocumentService:
                 document_id, publicar, max_clearance, actor_uuid
             )
             if fila is None:
+                # C-4/C10: si lo único que falla es la marca del TIPO, se dice (409) en vez
+                # de un 404 que miente sobre la causa; cualquier otro motivo conserva el 404
+                # neutro (oráculo cerrado: la comprobación repite el gate de clearance/nivel).
+                if publicar and await self._repo.publicacion_bloqueada_solo_por_tipo(
+                    document_id, max_clearance
+                ):
+                    raise TipoDocumentalNoPublicableError()
                 raise DocumentNotFoundError(str(document_id))
             # Qué soportes se difunden (AREA-07-12): al retirar, ninguno; al
             # publicar, solo los indicados, que han de ser anexos DE ESTE radicado
@@ -1042,39 +1080,51 @@ class DocumentService:
         causal_reserva: str | None = None,
         fundamento_juridico: str | None = None,
         plazo_reserva_meses: int | None = None,
+        fundamento_norma: str | None = None,
     ) -> dict:
         """Reclassifies the security level of a radicado (E08, RF-SEG-08).
 
         Guards (inside a single transaction):
-        - 404 if the radicado does not exist.
-        - 404 (neutral) if the actor's clearance is below the document's current level
-          (no-read-up: existence must not be revealed to under-clearance actors).
-        - 403 if nuevo_nivel exceeds the actor's clearance (no-write-up: cannot
-          classify above own level).
-        - No-op (returns current state, no audit, no event) when nuevo_nivel equals
-          the current level (idempotent for safe retry).
+        - 404 (neutral) if the radicado does not exist OR the actor's clearance is
+          below its level: el gate de no-read-up va en el `WHERE` de la lectura
+          bloqueante (`FOR UPDATE`), no en una comparación posterior (C4).
+        - 409 `desclasificacion_requiere_aprobacion` when it is at or above
+          `NIVEL_DOBLE_FIRMA` and the move goes DOWN: bajar de «clasificada» exige
+          solicitud y aprobación de otra persona (`DesclasificacionService`).
+        - 403 if nuevo_nivel exceeds the actor's clearance (no-write-up).
+        - Mismo nivel: sin cambios de motivación = no-op idempotente (sin asiento ni
+          evento); con causal/fundamento/plazo distintos = RE-MOTIVACIÓN (asiento
+          `document.radicado_remotivado`, sin evento: el acceso no cambia, y
+          `clasificado_at` NO se reinicia).
 
-        The audit entry and the UPDATE are atomic. The Redis event is published
-        best-effort after the transaction commits (BD is the source of truth).
+        El asiento y el UPDATE son atómicos, y el evento `reclassified` entra por
+        outbox en la misma transacción.
         """
         actor_str = str(actor) if actor else None
 
-        # Captured inside the transaction for post-commit use (Record stays valid).
-        result_id: uuid.UUID | None = None
-        result_tracking: str | None = None
-        nivel_anterior: int | None = None
+        # El clearance se resuelve ANTES de la consulta: entra en su `WHERE`.
+        clearance = await resolve_caller_clearance(self._conn, actor)
 
         async with self._conn.transaction():
-            ctx = await self._repo.get_security_context(document_id)
+            ctx = await self._repo.get_security_context_for_update(document_id, clearance)
             if ctx is None:
                 raise DocumentNotFoundError(str(document_id))
+            nivel_actual = int(ctx["nivel_seguridad"])
 
-            clearance = await resolve_caller_clearance(self._conn, actor)
-
-            # No-read-up: actor below the document's level must not learn it exists
-            # (RF-SEG-08, same neutral 404 used by firmar/rechazar in signature-service).
-            if clearance < ctx["nivel_seguridad"]:
-                raise DocumentNotFoundError(str(document_id))
+            # Bajar desde «clasificada» no es un acto de una sola persona.
+            if nivel_actual >= NIVEL_DOBLE_FIRMA and nuevo_nivel < nivel_actual:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "desclasificacion_requiere_aprobacion",
+                        "detail": (
+                            "Bajar el nivel de un radicado clasificado exige solicitud y "
+                            "aprobación de otra persona: use la solicitud de "
+                            f"desclasificación del radicado {document_id}"
+                        ),
+                        "status": 409,
+                    },
+                )
 
             # No-write-up: cannot promote a document above own classification level.
             if nuevo_nivel > clearance:
@@ -1082,25 +1132,60 @@ class DocumentService:
                     f"Cannot reclassify to level {nuevo_nivel}: actor clearance is {clearance}"
                 )
 
-            # Idempotent: no change needed — return current state without audit or event.
-            if nuevo_nivel == ctx["nivel_seguridad"]:
+            if nuevo_nivel == nivel_actual:
+                if nuevo_nivel <= 1 or (
+                    ctx["clasificacion_causal"] == causal_reserva
+                    and ctx["clasificacion_fundamento"] == fundamento_juridico
+                    and ctx["clasificacion_plazo_meses"] == plazo_reserva_meses
+                    and ctx["clasificacion_norma"] == fundamento_norma
+                ):
+                    # Idempotent: no change needed — no audit, no event.
+                    return {
+                        "id": ctx["id"],
+                        "tracking_number": ctx["tracking_number"],
+                        "nivel_seguridad": nivel_actual,
+                    }
+                # El reloj NO se reinicia al re-motivar: el tope se mide hasta la
+                # clasificación vigente.
+                self._verificar_tope(
+                    nuevo_nivel, plazo_reserva_meses, int(ctx["meses_hasta_clasificacion"])
+                )
+                await self._remotivar(ctx, actor_str, motivo, causal_reserva,
+                                      fundamento_juridico, plazo_reserva_meses,
+                                      fundamento_norma)
                 return {
                     "id": ctx["id"],
                     "tracking_number": ctx["tracking_number"],
-                    "nivel_seguridad": ctx["nivel_seguridad"],
+                    "nivel_seguridad": nivel_actual,
                 }
 
             # E08: además del nivel, persiste la metadata de clasificación vigente
             # (fundamento/causal/plazo) para el índice Ley 1712 art. 20; al
             # desclasificar (nivel 1) la limpia. El audit_log guarda el histórico.
-            await self._repo.set_classification(
+            # Cambia el nivel => `clasificado_at` pasa a ser hoy; el plazo se mide aun así
+            # contra la GENERACIÓN (2 -> 3 -> 2 no alarga la reserva).
+            self._verificar_tope(
+                nuevo_nivel, plazo_reserva_meses, int(ctx["meses_desde_generacion"])
+            )
+            cambio = await self._repo.set_classification(
                 document_id,
                 nuevo_nivel,
+                nivel_esperado=nivel_actual,
                 fundamento=fundamento_juridico,
                 causal=causal_reserva,
                 plazo_meses=plazo_reserva_meses,
+                norma=fundamento_norma,
             )
-            await audit.append(
+            if not cambio:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "nivel_cambio",
+                        "detail": "El nivel del radicado cambió mientras se decidía; reintente",
+                        "status": 409,
+                    },
+                )
+            sello = await audit.append(
                 self._conn,
                 tenant_slug=self._slug,
                 service=_SERVICE,
@@ -1109,36 +1194,34 @@ class DocumentService:
                 object_ref=ctx["tracking_number"],
                 actor=actor_str,
                 payload={
-                    "nivel_anterior": ctx["nivel_seguridad"],
+                    "nivel_anterior": nivel_actual,
                     "nivel_nuevo": nuevo_nivel,
                     "motivo": motivo,
                     # Compliance #2 (Ley 1712/2014 art.18-19): fundamento jurídico
                     # de la reserva/clasificación — registro inmutable en audit_log.
                     "causal_reserva": causal_reserva,
                     "fundamento_juridico": fundamento_juridico,
+                    "fundamento_norma": fundamento_norma,
                     "plazo_reserva_meses": plazo_reserva_meses,
                 },
                 canal=audit.CANAL_PETICION,
             )
-            result_id = ctx["id"]
-            result_tracking = ctx["tracking_number"]
-            nivel_anterior = ctx["nivel_seguridad"]
-
             # OUTBOX (AREA-09-05): el evento se inserta en la MISMA transacción que el
             # UPDATE del nivel y el asiento. knowledge-service deriva el nivel de sus
             # fragmentos SOLO de este evento: perderlo dejaba un 1→3 sirviéndose como
-            # nivel 1. Si la tx revierte, el evento tampoco existe.
+            # nivel 1. Si la tx revierte, el evento tampoco existe. `dedup_key` lleva el
+            # sello del asiento: un ciclo 1→3→1→3 no repite clave.
             pendiente = await outbox.encolar(
                 self._conn,
                 stream=_STREAM,
                 event_type=outbox.RECLASIFICADO,
                 tenant_slug=self._slug,
                 actor=actor_str,
-                dedup_key=f"{result_tracking}:{nuevo_nivel}",
+                dedup_key=f"{ctx['tracking_number']}:{nuevo_nivel}:{str(sello)[:16]}",
                 payload={
-                    "id": str(result_id),
-                    "tracking_number": result_tracking,
-                    "nivel_anterior": nivel_anterior,
+                    "id": str(ctx["id"]),
+                    "tracking_number": ctx["tracking_number"],
+                    "nivel_anterior": nivel_actual,
                     "nivel_nuevo": nuevo_nivel,
                     "causal_reserva": causal_reserva,
                     "fundamento_juridico": fundamento_juridico,
@@ -1151,10 +1234,73 @@ class DocumentService:
         await outbox.enviar(self._conn, self._redis, pendiente)
 
         return {
-            "id": result_id,
-            "tracking_number": result_tracking,
+            "id": ctx["id"],
+            "tracking_number": ctx["tracking_number"],
             "nivel_seguridad": nuevo_nivel,
         }
+
+    @staticmethod
+    def _verificar_tope(nivel: int, plazo: int | None, meses_transcurridos: int) -> None:
+        """422 si la reserva excede los 15 años desde la GENERACIÓN (Ley 1712 art. 22)."""
+        tope = tope_reserva(nivel, plazo, meses_transcurridos)
+        if tope is not None:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": tope[0], "detail": tope[1], "status": 422},
+            )
+
+    async def _remotivar(
+        self,
+        ctx: Any,
+        actor_str: str | None,
+        motivo: str,
+        causal: str | None,
+        fundamento: str | None,
+        plazo: int | None,
+        norma: str | None = None,
+    ) -> None:
+        """Re-motivación al MISMO nivel (C4/C12): corrige causal, fundamento y plazo
+        sin tocar el nivel, el reloj del plazo (`clasificado_at`) ni la publicación.
+        Asiento propio y SIN evento: el acceso a nada cambia."""
+        ok = await self._repo.set_motivacion(
+            ctx["id"],
+            nivel=int(ctx["nivel_seguridad"]),
+            fundamento=fundamento,
+            causal=causal,
+            plazo_meses=plazo,
+            norma=norma,
+        )
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "nivel_cambio",
+                    "detail": "El nivel del radicado cambió mientras se decidía; reintente",
+                    "status": 409,
+                },
+            )
+        await audit.append(
+            self._conn,
+            tenant_slug=self._slug,
+            service=_SERVICE,
+            action="document.radicado_remotivado",
+            object_type="radicado",
+            object_ref=ctx["tracking_number"],
+            actor=actor_str,
+            payload={
+                "nivel": int(ctx["nivel_seguridad"]),
+                "motivo": motivo,
+                "causal_anterior": ctx["clasificacion_causal"],
+                "causal_reserva": causal,
+                "fundamento_anterior": ctx["clasificacion_fundamento"],
+                "fundamento_juridico": fundamento,
+                "plazo_anterior": ctx["clasificacion_plazo_meses"],
+                "plazo_reserva_meses": plazo,
+                "norma_anterior": ctx["clasificacion_norma"],
+                "fundamento_norma": norma,
+            },
+            canal=audit.CANAL_PETICION,
+        )
 
     async def indice_clasificados(
         self, actor: uuid.UUID | None
@@ -1179,6 +1325,7 @@ class DocumentService:
             etiqueta, excepcion = clasif.get(
                 r["nivel_seguridad"], ("reservada", "Ley 1712/2014 art. 19")
             )
+            causal = CAUSALES.get(r["clasificacion_causal"] or "")
             items.append(
                 IndiceClasificadoItem(
                     numero_radicado=r["tracking_number"],
@@ -1188,6 +1335,12 @@ class DocumentService:
                     excepcion_ley_1712=excepcion,
                     fundamento_juridico=r["clasificacion_fundamento"],
                     causal_reserva=r["clasificacion_causal"],
+                    # Artículo y descripción del catálogo (C12); `por_clasificar` (o un
+                    # código fuera del catálogo) no los tiene y sale sin ellos.
+                    causal_articulo=(
+                        f"{causal.articulo}, literal {causal.literal}" if causal else None
+                    ),
+                    causal_descripcion=causal.descripcion if causal else None,
                     plazo_reserva_meses=r["clasificacion_plazo_meses"],
                     fecha_clasificacion=r["clasificado_at"],
                     fecha_radicacion=r["registered_at"],

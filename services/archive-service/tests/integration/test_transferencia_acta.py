@@ -116,7 +116,7 @@ async def _grant_clearance(
 ) -> None:
     """Da a `user_id` un `max_level` real vía RBAC (provisiona las tablas
     mínimas la primera vez, `IF NOT EXISTS`)."""
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     await conn.execute(_RBAC_MINIMAL_DDL)
     group_id = uuid.uuid4()
     await conn.execute("INSERT INTO auth_users (id) VALUES ($1)", user_id)

@@ -98,7 +98,7 @@ async def _run(conn: asyncpg.Connection, slug: str) -> job.TenantResult:
         return await job.run_tenant(conn, slug)
     finally:
         schema = tenant_schema(slug)
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
 
 
 async def _prep(tenant_ctx: tuple[str, asyncpg.Connection]) -> tuple[str, asyncpg.Connection]:

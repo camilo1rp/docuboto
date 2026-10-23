@@ -114,34 +114,185 @@ class AipRepository:
         expediente_id: uuid.UUID,
         aip_worm_object_id: uuid.UUID,
         *,
+        indice_file_id: uuid.UUID,
+        indice_xml_sha256: str,
+        firma_id: uuid.UUID | None = None,
         worm_retain_until: datetime | None = None,
     ) -> int:
-        """Marca el AIP como empaquetado (TERMINAL). Defensa en profundidad
-        (mismo patrón que `IndexRepository.mark_worm_protegido`): el `WHERE`
-        excluye filas ya `'empaquetado'` -- devuelve 0 si otra llamada
-        concurrente ya ganó la carrera (no se escribe un asiento de auditoría
-        fantasma en ese caso, ver `AipWiringService`).
+        """Marca el AIP como empaquetado (TERMINAL) e inserta la VERSIÓN 1 en
+        `expediente_aip_version` (C-6, ADR-042) en la misma llamada: el llamador la ejecuta
+        dentro de su `conn.transaction()`, así que estado, huella del índice embebido y versión
+        son un solo acto. Defensa en profundidad (mismo patrón que
+        `IndexRepository.mark_worm_protegido`): el `WHERE` excluye filas ya `'empaquetado'` --
+        devuelve 0 (y NO inserta versión) si otra llamada concurrente ya ganó la carrera.
 
-        `worm_retain_until` (E10 debt, migración 034) puebla el espejo local
-        del `retain_until` que storage-service acaba de confirmar -- mismo
-        patrón `COALESCE` que `IndexRepository.mark_worm_protegido`: opcional
-        (default `None`) para no romper llamadores/tests anteriores a esta
-        columna; `AipWiringService.intentar_empaquetar` SIEMPRE lo pasa desde
-        `AipPackagingOutcome.retain_until`."""
+        `indice_xml_sha256` es obligatoria: es la identidad de la versión y lo que compara el
+        barrido de reempaquetado contra el XML vigente de signature-service.
+        `aip_vigente_id` = el AIP recién creado; `aip_worm_object_id` conserva la PRIMERA versión
+        (identidad de retención) y no vuelve a cambiar.
+
+        `worm_retain_until` (E10 debt, migración 034) puebla el espejo local del `retain_until`
+        que storage-service acaba de confirmar -- patrón `COALESCE`."""
         tag = await self._conn.execute(
             "UPDATE expediente_aip SET estado='empaquetado', aip_worm_object_id=$2, "
+            "aip_vigente_id=$2, indice_xml_sha256=$4, "
             "empaquetado_at=now(), worm_retain_until = COALESCE($3, worm_retain_until) "
             "WHERE expediente_id=$1 AND estado <> 'empaquetado'",
             expediente_id,
             aip_worm_object_id,
             worm_retain_until,
+            indice_xml_sha256,
         )
         try:
-            return int(tag.split()[-1])
+            affected = int(tag.split()[-1])
         except (AttributeError, ValueError, IndexError):
             # Fallback defensivo: solo protege mocks de test cuyo
             # `conn.execute` no configura un valor de retorno realista.
             return 0
+        if affected:
+            await self.insert_version(
+                expediente_id,
+                version=1,
+                aip_id=aip_worm_object_id,
+                indice_file_id=indice_file_id,
+                indice_xml_sha256=indice_xml_sha256,
+                firma_id=firma_id,
+                firma_ordinal=None,
+                motivo="ingesta",
+                sustituye_a_aip_id=None,
+            )
+        return affected
+
+    async def insert_version(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        version: int,
+        aip_id: uuid.UUID,
+        indice_file_id: uuid.UUID,
+        indice_xml_sha256: str,
+        firma_id: uuid.UUID | None,
+        firma_ordinal: int | None,
+        motivo: str,
+        sustituye_a_aip_id: uuid.UUID | None,
+    ) -> None:
+        """Inserta una versión del AIP (append-only; trigger de la migración 074). El UNIQUE
+        (expediente_id, indice_xml_sha256) hace imposible registrar dos veces el mismo índice."""
+        await self._conn.execute(
+            "INSERT INTO expediente_aip_version (expediente_id, version, aip_id, indice_file_id, "
+            "indice_xml_sha256, firma_id, firma_ordinal, motivo, sustituye_a_aip_id) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+            expediente_id,
+            version,
+            aip_id,
+            indice_file_id,
+            indice_xml_sha256,
+            firma_id,
+            firma_ordinal,
+            motivo,
+            sustituye_a_aip_id,
+        )
+
+    async def list_versiones(self, expediente_id: uuid.UUID) -> list[asyncpg.Record]:
+        """Historia de versiones del AIP, de la más reciente a la primera (lectura plana: el
+        llamador ya resolvió la visibilidad del expediente)."""
+        return list(
+            await self._conn.fetch(
+                "SELECT version, aip_id, sustituye_a_aip_id, motivo, firma_ordinal, created_at "
+                "FROM expediente_aip_version WHERE expediente_id = $1 ORDER BY version DESC",
+                expediente_id,
+            )
+        )
+
+    async def get_para_reempaque(self, expediente_id: uuid.UUID) -> asyncpg.Record | None:
+        """Estado vigente de la fila (releído BAJO el lock del expediente)."""
+        return await self._conn.fetchrow(
+            "SELECT expediente_id, estado, aip_worm_object_id, aip_vigente_id, indice_xml_sha256, "
+            "reempaque_intentos, reempaque_agotado FROM expediente_aip WHERE expediente_id = $1",
+            expediente_id,
+        )
+
+    async def candidatos_reempaque(self, limit: int) -> list[asyncpg.Record]:
+        """AIP empaquetados cuyo índice vigente tiene `firma_id` y toca revisar (fase 11,
+        `run_once_aip_reempaquetado`). Orden por `reempaque_proximo_at ASC NULLS FIRST`: cada
+        fila revisada sin cambios avanza su `proximo_at` (`marcar_revisados`), de modo que el
+        barrido recorre TODAS en rotación y las sanas no acaparan el lote."""
+        return list(
+            await self._conn.fetch(
+                """
+                SELECT ea.expediente_id, e.code AS expediente_code, ea.aip_vigente_id,
+                       ea.aip_worm_object_id, ea.indice_xml_sha256, ea.reempaque_intentos,
+                       ei.firma_id
+                FROM expediente_aip ea
+                JOIN expedientes e ON e.id = ea.expediente_id
+                JOIN expediente_indice ei ON ei.expediente_id = ea.expediente_id
+                 AND ei.estado = 'firmado' AND ei.firma_id IS NOT NULL
+                WHERE ea.estado = 'empaquetado'
+                  AND ea.reempaque_agotado = FALSE
+                  AND (ea.reempaque_proximo_at IS NULL OR ea.reempaque_proximo_at <= now())
+                ORDER BY ea.reempaque_proximo_at ASC NULLS FIRST
+                LIMIT $1
+                """,
+                limit,
+            )
+        )
+
+    async def marcar_revisados(
+        self, expediente_ids: list[uuid.UUID], *, proximo_at: datetime
+    ) -> None:
+        """Filas revisadas SIN cambio: la próxima revisión es `proximo_at` (rotación del barrido)."""
+        if not expediente_ids:
+            return
+        await self._conn.execute(
+            "UPDATE expediente_aip SET reempaque_proximo_at = $2 WHERE expediente_id = ANY($1::uuid[])",
+            expediente_ids,
+            proximo_at,
+        )
+
+    async def mark_reempaquetado(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        aip_vigente_id: uuid.UUID,
+        indice_xml_sha256: str,
+        proximo_at: datetime,
+        worm_retain_until: datetime | None,
+    ) -> None:
+        """Apunta la fila a la versión nueva y pone a cero el backoff de reempaquetado. El
+        espejo de retención solo SUBE (`GREATEST`): la retención nunca se acorta."""
+        await self._conn.execute(
+            "UPDATE expediente_aip SET aip_vigente_id = $2, indice_xml_sha256 = $3, "
+            "reempaque_intentos = 0, reempaque_proximo_at = $4, reempaque_ultimo_error = NULL, "
+            "reempaque_agotado = FALSE, "
+            "worm_retain_until = CASE WHEN $5::timestamptz IS NULL THEN worm_retain_until "
+            "ELSE GREATEST(worm_retain_until, $5::timestamptz) END "
+            "WHERE expediente_id = $1",
+            expediente_id,
+            aip_vigente_id,
+            indice_xml_sha256,
+            proximo_at,
+            worm_retain_until,
+        )
+
+    async def bump_reempaque_intento(
+        self,
+        expediente_id: uuid.UUID,
+        *,
+        proximo_at: datetime | None,
+        ultimo_error: str,
+        agotado: bool,
+    ) -> None:
+        """Intento FALLIDO de reempaquetado. ORTOGONAL al backoff del empaquetado inicial y al de
+        renovación WORM: no toca `estado`; el AIP vigente sigue `empaquetado` y conservado."""
+        await self._conn.execute(
+            "UPDATE expediente_aip SET reempaque_intentos = reempaque_intentos + 1, "
+            "reempaque_proximo_at = $2, reempaque_ultimo_error = $3, reempaque_agotado = $4 "
+            "WHERE expediente_id = $1",
+            expediente_id,
+            proximo_at,
+            ultimo_error,
+            agotado,
+        )
 
     async def mark_omitido(self, expediente_id: uuid.UUID) -> int:
         """Marca el AIP como omitido (expediente 100% físico, TERMINAL). Solo

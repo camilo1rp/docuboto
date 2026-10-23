@@ -19,12 +19,21 @@
  *   GET  ?accion=buscar&q=…          → lista del directorio
  *   GET  ?accion=duplicados          → grupos sospechosos
  *   GET  ?accion=radicados&id=…      → dónde aparece una ficha
+ *   GET  ?accion=por_conciliar&page=&size=  → cola de fichas provisionales (C17)
  *   POST ?accion=fusionar&id=…       → consolidar (IRREVERSIBLE)
+ *   POST ?accion=conciliar&id=…      → vincular / confirmar / descartar una provisional
  */
 
 import { json } from "@sveltejs/kit";
 
 import { API_V1 } from "$lib/utils/config.server.js";
+
+const MEDIOS = [
+  "presencial_documento",
+  "respuesta_canal_registrado",
+  "llamada_telefono_registrado",
+  "otro",
+];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -56,6 +65,14 @@ export async function GET({ locals, url, fetch }) {
   let ruta;
   if (accion === "duplicados") {
     ruta = "/terceros/duplicados?limit=50";
+  } else if (accion === "por_conciliar") {
+    // Acotado aquí además de en el backend (size 1-100): un valor basura no viaja.
+    const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
+    const size = Math.min(
+      100,
+      Math.max(1, Number.parseInt(url.searchParams.get("size") ?? "20", 10) || 20),
+    );
+    ruta = `/terceros/por-conciliar?page=${page}&size=${size}`;
   } else if (accion === "radicados") {
     const id = url.searchParams.get("id") ?? "";
     if (!UUID_RE.test(id)) {
@@ -72,7 +89,11 @@ export async function GET({ locals, url, fetch }) {
 
   try {
     const res = await fetch(`${API_V1}${ruta}`, { headers });
-    return json(await res.json().catch(() => null), { status: res.status });
+    const total = res.headers.get("X-Total-Count");
+    return json(await res.json().catch(() => null), {
+      status: res.status,
+      ...(total ? { headers: { "X-Total-Count": total } } : {}),
+    });
   } catch {
     return json(
       { error: "connection_error", detail: "No se pudo consultar el directorio." },
@@ -87,7 +108,8 @@ export async function POST({ locals, url, request, fetch }) {
   if (!headers) {
     return json({ error: "unauthenticated", detail: "Sesión no válida." }, { status: 401 });
   }
-  if ((url.searchParams.get("accion") ?? "") !== "fusionar") {
+  const accion = url.searchParams.get("accion") ?? "";
+  if (accion !== "fusionar" && accion !== "conciliar") {
     return json({ error: "accion_desconocida", detail: "Acción no admitida." }, { status: 400 });
   }
 
@@ -97,6 +119,45 @@ export async function POST({ locals, url, request, fetch }) {
     body = await request.json();
   } catch {
     return json({ error: "invalid_body", detail: "Cuerpo de petición inválido." }, { status: 400 });
+  }
+
+  if (accion === "conciliar") {
+    const acto = body?.accion;
+    const destino = body?.destino_id ?? null;
+    const motivo = typeof body?.motivo === "string" ? body.motivo : null;
+    const medio = body?.medio_verificacion ?? null;
+    if (
+      !UUID_RE.test(id) ||
+      !["vincular", "confirmar", "descartar"].includes(acto) ||
+      (destino !== null && !UUID_RE.test(String(destino))) ||
+      (medio !== null && !MEDIOS.includes(medio))
+    ) {
+      return json(
+        { error: "validation_error", detail: "Solicitud de conciliación inválida." },
+        { status: 400 },
+      );
+    }
+    try {
+      const res = await fetch(`${API_V1}/terceros/${encodeURIComponent(id)}/conciliar`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        // Allowlist campo a campo: nada más del cuerpo del cliente llega al gateway.
+        // `medio_verificacion` solo viaja si el cliente lo manda (vincular/confirmar):
+        // el backend rechaza con 422 que llegue en «descartar».
+        body: JSON.stringify({
+          accion: acto,
+          destino_id: destino,
+          motivo,
+          ...(medio !== null ? { medio_verificacion: medio } : {}),
+        }),
+      });
+      return json(await res.json().catch(() => null), { status: res.status });
+    } catch {
+      return json(
+        { error: "connection_error", detail: "No se pudo completar la conciliación." },
+        { status: 503 },
+      );
+    }
   }
   // Allowlist: la superviviente va en la ruta y la absorbida en el cuerpo, y
   // nada más viaja. Reenviar el body íntegro dejaría que un cliente colara

@@ -29,6 +29,7 @@ from app.core.constants import SYSTEM_RECONCILER_ID
 from app.core.disposition import CT_DISPOSITION_CODES
 from app.core.http_errors import motivo_de
 from app.core.huella_documento import huella_de_documento
+from app.core.params_entidad import leer_param
 from app.core.trd_disposition import (
     assert_disposicion_final_autorizada,
     disposicion_final_autorizada,
@@ -36,11 +37,14 @@ from app.core.trd_disposition import (
 from app.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 from app.repositories.archive_repository import ArchiveRepository
 from app.repositories.audit_read import AuditReadRepository
+from app.repositories.fisico_repository import FisicoRepository
 from app.repositories.index_repository import IndexRepository
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.archive import (
     ActaEliminacionResponse,
     BatchLinkResult,
+    CuadroClasificacionResponse,
+    DependenciaProductoraResponse,
     EjecucionFallo,
     EjecucionLoteResponse,
     ExpedienteCreate,
@@ -56,8 +60,6 @@ from app.schemas.archive import (
     HistorialAccesoEntry,
     IndiceItem,
     LapidaResponse,
-    LegalHoldRequest,
-    LegalHoldResponse,
     LoteEliminacionItem,
     LoteEliminacionItemPublico,
     LoteEliminacionPublico,
@@ -78,7 +80,14 @@ from app.schemas.archive import (
     TvdAgrupacionUpdate,
     TvdAgrupacionVersionCreate,
 )
+from app.schemas.retencion_legal import SoporteCitado
 from app.services.backoff import next_backoff_seconds
+from app.services.cuadro_clasificacion import (
+    OrganigramaConCicloError,
+    OrganigramaDemasiadoProfundoError,
+    armar_cuadro,
+    nodos_desde_arbol,
+)
 from app.services.eliminacion_acta import construir_acta_xml
 from app.services.metadata_service import validate_metadata
 
@@ -96,6 +105,11 @@ logger = logging.getLogger(__name__)
 _ACTA_ELIMINACION_RETENCION_ANIOS = 100
 
 _SERVICE = "archive-service"
+
+
+class SoporteCitadoNoAvaladoError(Exception):
+    """Un expediente del lote tiene una constancia de firma inobtenible vigente que cita uno de sus
+    anexos y el lote no trae la baja de soporte avalada (C14, ADR-043). El expediente no se toca."""
 
 # Canales que representan una consulta real de un usuario (gateway/mcp-server,
 # ADR-019/D-03) — 'system' (jobs/regeneraciones internas, o llamadas internas
@@ -373,88 +387,6 @@ class ArchiveService:
             "publicable": row["publicable"],
             "publicado_at": row["publicado_at"],
         }
-
-    async def set_legal_hold(
-        self,
-        expediente_id: uuid.UUID,
-        payload: LegalHoldRequest,
-        max_clearance: int,
-        *,
-        actor: str,
-        canal: str = "system",
-    ) -> LegalHoldResponse:
-        """Declara o levanta el legal hold del expediente (AREA-08-07).
-
-        Único camino de usuario hacia el freeze de litigio de storage: el hold ya
-        no es un campo del body de ninguna ruta de protección. Archive decide el
-        permiso, comprueba que el expediente es VISIBLE para el llamante (clearance
-        en el `WHERE` de la lectura: `404` neutro si no existe o lo supera) y
-        orquesta el acto en storage con token interno + identidad firmada.
-
-        Storage asienta el acto atómico con sus filas; archive deja además SU
-        asiento (`archive.expediente_legal_hold_fijado/levantado`) con motivo y
-        acta. Si storage falla no hay asiento de archive: el acto no ocurrió.
-        """
-        expediente = await self._repo.get_expediente_by_id(
-            expediente_id, max_clearance=max_clearance
-        )
-        if expediente is None:
-            raise _expediente_not_found(expediente_id)
-
-        from app.clients import storage_client  # perezoso, mismo patrón que arriba
-
-        try:
-            res = await storage_client.fijar_legal_hold_internal(
-                tenant_slug=self._tenant_slug,
-                actor_id=actor,
-                expediente_id=str(expediente.id),
-                activo=payload.activo,
-                motivo=payload.motivo,
-                acta_ref=payload.acta_ref,
-            )
-        except storage_client.StorageLegalHoldError as exc:
-            if exc.status == status.HTTP_404_NOT_FOUND:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail={
-                        "error": "sin_objetos_protegidos",
-                        "detail": str(exc),
-                        "status": 404,
-                    },
-                ) from exc
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={"error": "storage_unavailable", "detail": str(exc), "status": 503},
-            ) from exc
-
-        async with self._conn.transaction():
-            await audit.append(
-                self._conn,
-                tenant_slug=self._tenant_slug,
-                service=_SERVICE,
-                action=(
-                    "archive.expediente_legal_hold_fijado"
-                    if payload.activo
-                    else "archive.expediente_legal_hold_levantado"
-                ),
-                object_type="expediente",
-                object_ref=expediente.code,
-                actor=actor,
-                canal=canal,
-                payload={
-                    "motivo": payload.motivo,
-                    "acta_ref": payload.acta_ref,
-                    "objetos_afectados": res["objetos_afectados"],
-                    "objetos_sin_cambio": res["objetos_sin_cambio"],
-                },
-            )
-        return LegalHoldResponse(
-            expediente_id=expediente.id,
-            code=expediente.code,
-            activo=payload.activo,
-            objetos_afectados=int(res["objetos_afectados"]),
-            objetos_sin_cambio=int(res["objetos_sin_cambio"]),
-        )
 
     async def list_expedientes(
         self,
@@ -954,7 +886,10 @@ class ArchiveService:
         # expediente — se audita como acceso fuerte, gemelo de `_audit_read_access`
         # pero con acción propia para distinguirla de la lectura del metadato.
         await self._audit_aip_access(expediente.code, user_id=user_id, canal=canal)
-        return aip
+        from app.repositories.aip_repository import AipRepository  # perezoso (C-6)
+
+        versiones = await AipRepository(self._conn).list_versiones(expediente.id)
+        return {**aip, "versiones": [dict(v) for v in versiones]}
 
     async def reintentar_aip(
         self, expediente_id: uuid.UUID, *, actor: str, user_id: uuid.UUID | None
@@ -2869,35 +2804,257 @@ class ArchiveService:
             )
 
     # ------------------------------------------------------------------
+    # C-4 (ADR-040): jerarquía de dos niveles y dependencia productora
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _http(code: int, error: str, detail: str, **extra: Any) -> HTTPException:
+        return HTTPException(
+            status_code=code,
+            detail={"error": error, "detail": detail, "status": code, **extra},
+        )
+
+    def _dos_niveles(self, detalle: str) -> HTTPException:
+        return self._http(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "trd_jerarquia_dos_niveles",
+            f"{detalle} La jerarquía admite serie > subserie y nada más (ADR-015).",
+        )
+
+    async def _exigir_jerarquia_dos_niveles(self, code: str | None, parent_id: uuid.UUID) -> None:
+        """El padre debe existir y ser una SERIE (no una subserie); y la fila que gana
+        padre no puede tener ya subseries propias (defensa en profundidad: la 069 lo
+        repite en el motor)."""
+        padre = await self._repo.get_trd_serie_by_id(parent_id)
+        if padre is None:
+            raise self._http(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "trd_padre_no_existe",
+                "El padre indicado no existe.",
+            )
+        if padre.parent_id is not None:
+            raise self._dos_niveles(f"El padre «{padre.code}» es a su vez una subserie.")
+        if code is not None and await self._repo.code_tiene_subseries(code):
+            raise self._dos_niveles(f"La serie «{code}» ya tiene subseries y no puede ser subserie.")
+
+    async def _resolver_productoras(self, codigos: list[int]) -> list[tuple[int, str]]:
+        """Valida las dependencias productoras contra el catálogo VIVO (E14) y devuelve
+        `(codigo, nombre)`. Todas deben existir y estar activas. Si el catálogo no se
+        puede leer, 503: escribir una productora sin poder comprobarla sería una
+        afirmación no verificada (ADR-040)."""
+        if not codigos:
+            return []
+        try:
+            filas = await self._repo.lookup_dependencias(codigos)
+        except asyncpg.UndefinedTableError as exc:
+            raise self._http(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "catalogo_dependencias_no_disponible",
+                "No se puede comprobar la dependencia productora: el catálogo de "
+                "dependencias no está disponible.",
+            ) from exc
+        por_codigo = {int(r["codigo"]): r for r in filas}
+        desconocidas = [c for c in codigos if c not in por_codigo]
+        if desconocidas:
+            raise self._http(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "dependencia_desconocida",
+                f"No existe(n) la(s) dependencia(s) con código {desconocidas}.",
+                codigos=desconocidas,
+            )
+        inactivas = [c for c in codigos if not por_codigo[c]["activo"]]
+        if inactivas:
+            raise self._http(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "dependencia_inactiva",
+                f"La(s) dependencia(s) {inactivas} está(n) inactiva(s): no puede(n) ser productora(s).",
+                codigos=inactivas,
+            )
+        return [(c, str(por_codigo[c]["nombre"])) for c in codigos]
+
+    def _retencion_minima(self) -> HTTPException:
+        return self._http(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "trd_retencion_minima",
+            "La retención total (gestión + central) debe ser de al menos 1 año: 0 + 0 no es "
+            "«sin retención», es un calendario que vence el día del cierre.",
+        )
+
+    @staticmethod
+    def _es_serie_trd_raiz(s: TrdSerie) -> bool:
+        return s.tipo_instrumento == "TRD" and s.parent_id is None
+
+    async def _trd_responses(self, series: list[TrdSerie]) -> list[TrdSerieResponse]:
+        """Respuestas con las dependencias productoras de las series TRD raíz (una sola
+        consulta para todas; las subseries y las TVD no llevan productora)."""
+        ids = [s.id for s in series if self._es_serie_trd_raiz(s)]
+        prods = await self._repo.get_productoras(ids) if ids else {}
+        return [
+            _to_trd_response(s, prods.get(s.id, []) if self._es_serie_trd_raiz(s) else [])
+            for s in series
+        ]
+
+    async def _trd_response(self, serie: TrdSerie) -> TrdSerieResponse:
+        return (await self._trd_responses([serie]))[0]
+
+    async def _exigir_productora(self, serie: TrdSerie) -> list[int]:
+        """Gate de `aprobar`/`convalidar`: una serie TRD raíz sin dependencia productora
+        no entra al cuadro de clasificación, y el Comité no aprueba un CCD que no dice
+        quién produce. Devuelve los códigos declarados (vacío para subseries y TVD, que
+        no los llevan). Se llama DENTRO de la transacción, tras el UPDATE de estado: desde
+        ahí el trigger de la 070 ya no deja tocar la lista."""
+        if not self._es_serie_trd_raiz(serie):
+            return []
+        prods = (await self._repo.get_productoras([serie.id])).get(serie.id, [])
+        if not prods:
+            raise self._http(
+                status.HTTP_409_CONFLICT,
+                "trd_serie_sin_productora",
+                f"La versión {serie.version} de la serie «{serie.code}» no declara dependencia "
+                "productora: el cuadro de clasificación no puede ubicarla (ADR-040). Declárela en "
+                "el borrador (PATCH) o en una versión nueva.",
+            )
+        return [int(p["dependencia_codigo"]) for p in prods]
+
+    async def _fijar_ruta_convalidada(self, serie: TrdSerie, codigos: list[int]) -> dict[int, list[dict[str, Any]]]:
+        """Congela, para cada productora, la ruta raíz > dependencia del organigrama VIVO
+        al convalidar: es lo que el Consejo aprobó, y lo que permite al cuadro decir «el
+        organigrama cambió desde entonces» sin reescribir la versión. Si el árbol no se
+        puede leer o tiene un ciclo, la convalidación entera falla."""
+        try:
+            filas = await self._repo.organigrama_hacia_arriba(codigos)
+        except asyncpg.UndefinedTableError as exc:
+            raise self._http(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "catalogo_dependencias_no_disponible",
+                "No se puede fijar la ruta del organigrama: el catálogo de dependencias no está disponible.",
+            ) from exc
+        nodos = self._nodos_o_409(filas)
+        faltan = [c for c in codigos if c not in nodos]
+        if faltan:
+            raise self._http(
+                status.HTTP_409_CONFLICT,
+                "dependencia_desconocida",
+                f"La(s) productora(s) {faltan} ya no existe(n) en el organigrama.",
+                codigos=faltan,
+            )
+        rutas = {c: nodos[c]["ruta"] for c in codigos}
+        await self._repo.fill_ruta_convalidada(serie.id, rutas)
+        return rutas
+
+    def _nodos_o_409(self, filas: list[Any]) -> dict[int, dict[str, Any]]:
+        try:
+            return nodos_desde_arbol(filas, profundidad_max=ArchiveRepository.ORGANIGRAMA_PROFUNDIDAD_MAX)
+        except OrganigramaConCicloError as exc:
+            raise self._http(
+                status.HTTP_409_CONFLICT,
+                "organigrama_con_ciclo",
+                f"El organigrama tiene un ciclo en las dependencias {exc.codigos}: corríjalo en "
+                "la administración de dependencias antes de continuar.",
+                codigos=exc.codigos,
+            ) from exc
+        except OrganigramaDemasiadoProfundoError as exc:
+            raise self._http(
+                status.HTTP_409_CONFLICT,
+                "organigrama_demasiado_profundo",
+                f"El organigrama supera {ArchiveRepository.ORGANIGRAMA_PROFUNDIDAD_MAX} niveles en "
+                f"las dependencias {exc.codigos}.",
+                codigos=exc.codigos,
+            ) from exc
+
+    async def get_cuadro_clasificacion(
+        self,
+        *,
+        incluir_borradores: bool = False,
+        incluir_vacias: bool = False,
+        segun: str = "convalidado",
+    ) -> CuadroClasificacionResponse:
+        """`GET /api/v1/trd/cuadro` (C-4/C8): fondo > sección > subsección > serie >
+        subserie, DERIVADO del organigrama y de la productora declarada en la TRD vigente.
+
+        Una sola transacción `REPEATABLE READ` de solo lectura: series, productoras y
+        árbol salen de la misma instantánea (un cuadro armado con tres lecturas sueltas
+        podría mezclar un organigrama de antes y una TRD de después). Los parámetros de
+        la entidad se leen ANTES, fuera de la transacción: una tabla ausente aborta la
+        transacción en curso."""
+        await self._repo._set_search_path()
+        nombre = await leer_param(self._conn, "entidad_nombre")
+        sigla = await leer_param(self._conn, "entidad_sigla")
+        try:
+            async with self._conn.transaction(isolation="repeatable_read", readonly=True):
+                series, subseries = await self._repo.cuadro_series(incluir_borradores=incluir_borradores)
+                prods = await self._repo.get_productoras([r["id"] for r in series])
+                filas = await self._repo.organigrama_hacia_arriba(None)
+        except asyncpg.UndefinedTableError as exc:
+            # Un cuadro sin secciones parece un cuadro sin productoras: no se degrada.
+            raise self._http(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "catalogo_dependencias_no_disponible",
+                "No se puede derivar el cuadro: el catálogo de dependencias no está disponible.",
+            ) from exc
+        nodos = self._nodos_o_409(filas)
+        return armar_cuadro(
+            series=[dict(r) for r in series],
+            subseries=[dict(r) for r in subseries],
+            productoras=prods,
+            nodos=nodos,
+            fondo={
+                "nombre": nombre if isinstance(nombre, str) else None,
+                "sigla": sigla if isinstance(sigla, str) else None,
+            },
+            generado_at=datetime.now(tz=UTC),
+            incluir_vacias=incluir_vacias,
+            segun=segun,
+        )
+
+    # ------------------------------------------------------------------
     # TRD series
     # ------------------------------------------------------------------
 
     async def create_trd_serie(
         self, payload: TrdSerieCreate, actor: uuid.UUID | None = None
     ) -> TrdSerieResponse:
+        productoras: list[tuple[int, str]] = []
+        if payload.parent_id is not None:
+            if payload.dependencias_productoras:
+                raise self._http(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "productora_solo_en_serie",
+                    "La dependencia productora se declara en la serie; la subserie la hereda.",
+                )
+            await self._exigir_jerarquia_dos_niveles(None, payload.parent_id)
         # Atomicidad mutación<->asiento (mismo patrón que `update_expediente`/
         # `close_expediente`): el INSERT y `audit.append` son un único acto
-        # dentro de una sola `conn.transaction()` — si el asiento falla, el
-        # alta de la serie no queda persistida (fail-closed, ver [[auditoria-actos-custodia]]).
+        # dentro de una sola `conn.transaction()` — si el asiento falla, el alta de la
+        # serie no queda persistida (fail-closed, ver [[auditoria-actos-custodia]]).
         async with self._conn.transaction():
-            serie = await self._repo.create_trd_serie(
-                code=payload.code,
-                name=payload.name,
-                description=payload.description,
-                retention_years=payload.retention_years,
-                total_retention=payload.total_retention,
-                disposition=payload.disposition,
-                parent_id=payload.parent_id,
-                archivo_gestion_years=payload.archivo_gestion_years,
-                archivo_central_years=payload.archivo_central_years,
-                pdfa_profile=payload.pdfa_profile,
-            )
+            if payload.parent_id is None:
+                # Dentro de la tx y con `FOR SHARE`: la dependencia no se desactiva entre la
+                # comprobación y la escritura.
+                productoras = await self._resolver_productoras(payload.dependencias_productoras or [])
+            try:
+                serie = await self._repo.create_trd_serie(
+                    code=payload.code,
+                    name=payload.name,
+                    description=payload.description,
+                    disposition=payload.disposition,
+                    parent_id=payload.parent_id,
+                    archivo_gestion_years=payload.archivo_gestion_years,
+                    archivo_central_years=payload.archivo_central_years,
+                    pdfa_profile=payload.pdfa_profile,
+                )
+            except asyncpg.CheckViolationError as exc:
+                if "trd_jerarquia_dos_niveles" in str(exc):
+                    raise self._dos_niveles("El padre indicado no admite subseries.") from exc
+                raise
+            if productoras:
+                await self._repo.set_productoras(serie.id, productoras)
             # Auditoría forense transversal (E08 §9, Canal A): la TRD gobierna
             # retención y disposición final (Ley 594/2000 art. 24) — su alta
             # debe quedar trazada igual que la de un expediente. Estado
             # INICIAL completo (no solo `id`): sin él la cadena de
             # reconstrucción before/after de `update_trd_serie` no tiene punto
-            # de partida.
+            # de partida. Se registran las FASES (lo escrito), no el derivado.
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -2911,17 +3068,19 @@ class ArchiveService:
                     "code": serie.code,
                     "name": serie.name,
                     "description": serie.description,
-                    "retention_years": serie.retention_years,
-                    "total_retention": serie.total_retention,
                     "disposition": serie.disposition,
                     "parent_id": str(serie.parent_id) if serie.parent_id else None,
                     "archivo_gestion_years": serie.archivo_gestion_years,
                     "archivo_central_years": serie.archivo_central_years,
                     "pdfa_profile": serie.pdfa_profile,
+                    "dependencias_productoras": [c for c, _ in productoras],
                 },
                 canal=audit.CANAL_PETICION,
             )
-        return _to_trd_response(serie)
+        return _to_trd_response(
+            serie,
+            [{"dependencia_codigo": c, "dependencia_nombre": n, "ruta_convalidada": None} for c, n in productoras],
+        )
 
     async def compute_retention(
         self,
@@ -2980,8 +3139,16 @@ class ArchiveService:
                     "status": 404,
                 },
             )
+        if serie.archivo_central_years is None:
+            # El CHECK `trd_series_fases_check` (069) lo impide en la base; si llegara, un
+            # 0 silencioso sería «retención cero» y, aguas abajo, un candado WORM mal fijado.
+            raise self._http(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "trd_sin_fase_central",
+                f"La serie «{serie.code}» no declara archivo_central_years: no se calcula su calendario.",
+            )
         agest = 0 if base_date_origen == "fecha_extrema_final" else (serie.archivo_gestion_years or 0)
-        acentral = serie.archivo_central_years or 0
+        acentral = serie.archivo_central_years
         fin_gestion = _add_years(base_date, agest)
         fin_central = _add_years(fin_gestion, acentral)
         code, label = _agn_disposition(serie.disposition)
@@ -3020,15 +3187,28 @@ class ArchiveService:
         is_active: bool | None,
         page: int,
         size: int,
+        con_circuito: bool = True,
+        incluir_en_tramite: bool = True,
     ) -> tuple[list[TrdSerieResponse], int]:
+        """`con_circuito`: el llamante puede ver la deliberación del Comité (USUA_PERM_TRD). Sin
+        él la lista es el INSTRUMENTO PUBLICADO: solo versiones `convalidada`/`migrada`, sin
+        `acta_comite`, `fecha_aprobacion_comite` ni `created_by` (frontera de trd.py, S1)."""
         offset = (page - 1) * size
         series, total = await self._repo.list_trd_series(
-            is_active=is_active, offset=offset, limit=size
+            is_active=is_active,
+            offset=offset,
+            limit=size,
+            estados=None if (con_circuito and incluir_en_tramite) else _ESTADOS_PUBLICADOS,
         )
-        return [_to_trd_response(s) for s in series], total
+        respuestas = await self._trd_responses(series)
+        return ([_sin_circuito(r) for r in respuestas] if not con_circuito else respuestas), total
 
-    async def get_trd_serie(self, serie_id: uuid.UUID) -> TrdSerieResponse:
+    async def get_trd_serie(
+        self, serie_id: uuid.UUID, *, con_circuito: bool = True
+    ) -> TrdSerieResponse:
         serie = await self._repo.get_trd_serie_by_id(serie_id)
+        if serie is not None and not con_circuito and serie.estado in _ESTADOS_EN_TRAMITE:
+            serie = None  # un borrador es deliberación: para quien no ve el circuito, no existe
         if serie is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -3038,7 +3218,8 @@ class ArchiveService:
                     "status": 404,
                 },
             )
-        return _to_trd_response(serie)
+        respuesta = await self._trd_response(serie)
+        return respuesta if con_circuito else _sin_circuito(respuesta)
 
     async def get_trd_serie_versiones(self, code: str) -> list[TrdSerieResponse]:
         """`GET /api/v1/trd/{code}/versiones` (ADR-026): gemelo que ADR-025
@@ -3048,7 +3229,7 @@ class ArchiveService:
         vacía si el código nunca existió (no es un 404: "sin versiones" es
         una respuesta válida, no un error)."""
         series = await self._repo.list_trd_serie_versiones_by_code(code)
-        return [_to_trd_response(s) for s in series]
+        return await self._trd_responses(series)
 
     # Campos SUSTANTIVOS del contenido convalidado (ADR-025 D1): los mismos
     # que el trigger `trg_trd_series_append_only` rechaza fuera de `borrador`.
@@ -3057,8 +3238,6 @@ class ArchiveService:
     _TRD_SUBSTANTIVE_FIELDS = (
         "name",
         "description",
-        "retention_years",
-        "total_retention",
         "archivo_gestion_years",
         "archivo_central_years",
         "disposition",
@@ -3086,7 +3265,10 @@ class ArchiveService:
                     "status": 404,
                 },
             )
-        has_substantive_change = any(
+        # La dependencia productora es contenido de la versión: como el resto de lo
+        # sustantivo, solo se edita en sitio en `borrador`.
+        cambia_productoras = payload.dependencias_productoras is not None
+        has_substantive_change = cambia_productoras or any(
             getattr(payload, field) is not None for field in self._TRD_SUBSTANTIVE_FIELDS
         )
         if existing.estado != "borrador" and has_substantive_change:
@@ -3104,48 +3286,47 @@ class ArchiveService:
                     "status": 409,
                 },
             )
+        productoras: list[tuple[int, str]] | None = None
+        antes_productoras: list[int] = []
+        if cambia_productoras:
+            if not self._es_serie_trd_raiz(existing):
+                raise self._http(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "productora_solo_en_serie",
+                    "La dependencia productora se declara en la serie TRD; la subserie la hereda.",
+                )
+            antes_productoras = [
+                int(p["dependencia_codigo"])
+                for p in (await self._repo.get_productoras([serie_id])).get(serie_id, [])
+            ]
         # Atomicidad mutación<->asiento (mismo patrón que `update_expediente`):
         # el UPDATE y `audit.append` son un único acto dentro de una sola
         # `conn.transaction()` — si el asiento falla, el cambio de retención/
-        # disposición no queda persistido (fail-closed).
-        # AREA-06-07: los dos juegos de retención no pueden quedar en desacuerdo. Lo que
-        # decide el calendario son las dos fases; un PATCH del juego legado SOLO (sin las
-        # fases) se traduce a ellas como en el alta (gestión = retention_years, central =
-        # total - gestión), y las columnas legadas se reescriben DERIVADAS de las fases
-        # finales. Antes ese PATCH cambiaba números que ningún cálculo leía.
-        gestion = payload.archivo_gestion_years
-        central = payload.archivo_central_years
-        legado = payload.retention_years is not None or payload.total_retention is not None
-        if gestion is None and central is None and legado:
-            base_gestion = (
-                payload.retention_years
-                if payload.retention_years is not None
-                else existing.retention_years
-            )
-            base_total = (
-                payload.total_retention
-                if payload.total_retention is not None
-                else existing.total_retention
-            )
-            gestion, central = base_gestion, max(base_total - base_gestion, 0)
-        fases_cambian = gestion is not None or central is not None
-        final_gestion = gestion if gestion is not None else (existing.archivo_gestion_years or 0)
-        final_central = central if central is not None else (existing.archivo_central_years or 0)
+        # disposición no queda persistido (fail-closed). C-4/C6: las dos fases son la
+        # única fuente; no hay juego legado que mantener de acuerdo.
         async with self._conn.transaction():
-            updated = await self._repo.update_trd_serie(
-                serie_id,
-                name=payload.name,
-                description=payload.description,
-                retention_years=final_gestion if fases_cambian else None,
-                total_retention=(final_gestion + final_central) if fases_cambian else None,
-                archivo_gestion_years=gestion,
-                archivo_central_years=central,
-                disposition=payload.disposition,
-                pdfa_profile=payload.pdfa_profile,
-            )
+            if cambia_productoras:
+                # Dentro de la tx y con `FOR SHARE` (ver `lookup_dependencias`).
+                productoras = await self._resolver_productoras(payload.dependencias_productoras or [])
+            try:
+                updated = await self._repo.update_trd_serie(
+                    serie_id,
+                    name=payload.name,
+                    description=payload.description,
+                    archivo_gestion_years=payload.archivo_gestion_years,
+                    archivo_central_years=payload.archivo_central_years,
+                    disposition=payload.disposition,
+                    pdfa_profile=payload.pdfa_profile,
+                )
+            except asyncpg.CheckViolationError as exc:
+                if "trd_series_retencion_minima_check" in str(exc):
+                    raise self._retencion_minima() from exc
+                raise
+            if productoras is not None:
+                await self._repo.set_productoras(serie_id, productoras)
             # Diff before/after POR CAMPO (E08 §9, Canal A / Ley 594/2000 art.
             # 24): `payload.model_dump(exclude_unset=True)` solo decía el
-            # valor NUEVO -- si alguien bajaba `retention_years` de 20 a 2, el
+            # valor NUEVO -- si alguien bajaba la fase central de 20 a 2, el
             # asiento no permitía reconstruir el valor anterior. Compara
             # contra `existing` (ya leído antes del UPDATE, no hace falta
             # releer) y solo incluye los campos que REALMENTE cambiaron: un
@@ -3159,6 +3340,11 @@ class ArchiveService:
                 before = getattr(existing, field)
                 if sent != before:
                     changes[field] = {"before": before, "after": sent}
+            if productoras is not None and [c for c, _ in productoras] != antes_productoras:
+                changes["dependencias_productoras"] = {
+                    "before": antes_productoras,
+                    "after": [c for c, _ in productoras],
+                }
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -3170,7 +3356,7 @@ class ArchiveService:
                 payload={"id": str(serie_id), "changes": changes},
                 canal=audit.CANAL_PETICION,
             )
-        return _to_trd_response(updated)  # type: ignore[arg-type]
+        return await self._trd_response(updated)  # type: ignore[arg-type]
 
     async def create_trd_serie_version(
         self,
@@ -3211,42 +3397,54 @@ class ArchiveService:
                 },
             )
         vigente = base
-        # AREA-06-07: las dos fases deciden el calendario; el juego legado se DERIVA de
-        # ellas (o se traduce a ellas si solo se envió el legado), nunca se copia de la
-        # versión vigente en desacuerdo con las fases nuevas.
-        base_gestion = (
-            vigente.archivo_gestion_years
-            if vigente.archivo_gestion_years is not None
-            else vigente.retention_years
+        # C-4/C6: las dos fases son la única fuente; las que no se envían se clonan de la
+        # base. Sin fase en la base el calendario no se puede heredar (no se inventa 0).
+        nueva_gestion = (
+            payload.archivo_gestion_years
+            if payload.archivo_gestion_years is not None
+            else vigente.archivo_gestion_years
         )
-        base_central = (
-            vigente.archivo_central_years
-            if vigente.archivo_central_years is not None
-            else max(vigente.total_retention - vigente.retention_years, 0)
+        nueva_central = (
+            payload.archivo_central_years
+            if payload.archivo_central_years is not None
+            else vigente.archivo_central_years
         )
-        if payload.archivo_gestion_years is None and payload.archivo_central_years is None and (
-            payload.retention_years is not None or payload.total_retention is not None
-        ):
-            ret = payload.retention_years if payload.retention_years is not None else base_gestion
-            tot = (
-                payload.total_retention
-                if payload.total_retention is not None
-                else vigente.total_retention
+        if nueva_gestion is None or nueva_central is None:
+            raise self._http(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "trd_fases_requeridas",
+                "La versión base no declara sus dos fases de retención: envíe "
+                "archivo_gestion_years y archivo_central_years.",
             )
-            nueva_gestion, nueva_central = ret, max(tot - ret, 0)
-        else:
-            nueva_gestion = (
-                payload.archivo_gestion_years
-                if payload.archivo_gestion_years is not None
-                else base_gestion
-            )
-            nueva_central = (
-                payload.archivo_central_years
-                if payload.archivo_central_years is not None
-                else base_central
-            )
+        if nueva_gestion + nueva_central < 1:
+            raise self._retencion_minima()
+        nuevo_parent = payload.parent_id if payload.parent_id is not None else vigente.parent_id
+        if payload.parent_id is not None and payload.parent_id != vigente.parent_id:
+            await self._exigir_jerarquia_dos_niveles(vigente.code, payload.parent_id)
+        # Productora: lo enviado manda; si no, se CLONA de la base. Una productora que ya
+        # no está activa no se hereda en silencio (422 con la lista): el cliente reenvía la
+        # lista explícita. Así entra una productora en una TRD convalidada: versión N+1 en
+        # borrador -> aprobar -> convalidar (no hay vía en sitio, es contenido convalidado).
+        productoras: list[tuple[int, str]] = []
+        if nuevo_parent is not None:
+            if payload.dependencias_productoras:
+                raise self._http(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "productora_solo_en_serie",
+                    "La dependencia productora se declara en la serie; la subserie la hereda.",
+                )
         # Atomicidad mutación<->asiento (mismo patrón que `create_trd_serie`).
         async with self._conn.transaction():
+            if nuevo_parent is None:
+                if payload.dependencias_productoras is not None:
+                    codigos_prod = payload.dependencias_productoras
+                elif self._es_serie_trd_raiz(vigente):
+                    heredadas = (await self._repo.get_productoras([vigente.id])).get(vigente.id, [])
+                    codigos_prod = [int(p["dependencia_codigo"]) for p in heredadas]
+                else:
+                    codigos_prod = []
+                # Dentro de la tx y con `FOR SHARE` (ver `lookup_dependencias`).
+                productoras = await self._resolver_productoras(codigos_prod)
             try:
                 new_serie = await self._repo.create_trd_serie_version(
                     code=vigente.code,
@@ -3259,16 +3457,12 @@ class ArchiveService:
                         if payload.description is not None
                         else vigente.description
                     ),
-                    retention_years=nueva_gestion,
-                    total_retention=nueva_gestion + nueva_central,
                     disposition=(
                         payload.disposition
                         if payload.disposition is not None
                         else vigente.disposition
                     ),
-                    parent_id=(
-                        payload.parent_id if payload.parent_id is not None else vigente.parent_id
-                    ),
+                    parent_id=nuevo_parent,
                     archivo_gestion_years=nueva_gestion,
                     archivo_central_years=nueva_central,
                     pdfa_profile=(
@@ -3294,6 +3488,8 @@ class ArchiveService:
                         "status": 409,
                     },
                 ) from exc
+            if productoras:
+                await self._repo.set_productoras(new_serie.id, productoras)
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -3308,10 +3504,16 @@ class ArchiveService:
                     "version": new_serie.version,
                     "supersede_a": str(vigente.id),
                     "supersede_a_version": vigente.version,
+                    "archivo_gestion_years": new_serie.archivo_gestion_years,
+                    "archivo_central_years": new_serie.archivo_central_years,
+                    "dependencias_productoras": [c for c, _ in productoras],
                 },
                 canal=audit.CANAL_PETICION,
             )
-        return _to_trd_response(new_serie)
+        return _to_trd_response(
+            new_serie,
+            [{"dependencia_codigo": c, "dependencia_nombre": n, "ruta_convalidada": None} for c, n in productoras],
+        )
 
     # ------------------------------------------------------------------
     # Circuito de convalidación (ADR-025 D2/D6, Increment 2): aprobar /
@@ -3408,6 +3610,10 @@ class ArchiveService:
             )
             if updated is None:
                 raise self._trd_race_conflict("aprobar")
+            # C-4/C8: el Comité no aprueba un CCD que no dice quién produce. Se comprueba
+            # tras el UPDATE, ya dentro de la transacción: desde `aprobada` el trigger de la
+            # 070 no deja tocar la lista, así que no hay carrera con un PATCH que la vacíe.
+            await self._exigir_productora(updated)
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -3429,7 +3635,7 @@ class ArchiveService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        return _to_trd_response(updated)
+        return await self._trd_response(updated)
 
     async def devolver_trd_serie_version(
         self,
@@ -3472,7 +3678,7 @@ class ArchiveService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        return _to_trd_response(updated)
+        return await self._trd_response(updated)
 
     async def convalidar_trd_serie_version(
         self,
@@ -3542,6 +3748,13 @@ class ArchiveService:
                 },
             )
 
+        if payload.dependencias_productoras is not None and existing.estado != "migrada":
+            raise self._http(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "productora_solo_en_ratificacion",
+                "La dependencia productora solo se captura al ratificar una versión `migrada`; en "
+                "el circuito normal se declara en el borrador (PATCH o versión nueva).",
+            )
         # Atomicidad mutación<->asiento (mismo patrón que `create_trd_serie`).
         async with self._conn.transaction():
             if existing.estado == "aprobada":
@@ -3568,6 +3781,13 @@ class ArchiveService:
                 )
                 if updated is None:
                     raise self._trd_race_conflict("convalidar")
+                # C-4/C8: gate de productora y ruta del organigrama que el Consejo aprobó.
+                codigos_productoras = await self._exigir_productora(updated)
+                rutas = (
+                    await self._fijar_ruta_convalidada(updated, codigos_productoras)
+                    if codigos_productoras
+                    else {}
+                )
 
                 n_tipos = n_tipos_omitidos = n_templates = n_templates_omitidos = 0
                 if derogada is not None:
@@ -3630,6 +3850,10 @@ class ArchiveService:
                         ),
                         "ratificacion": False,
                         "estado_anterior": "aprobada",
+                        "dependencias_productoras": codigos_productoras,
+                        "rutas_convalidadas": {
+                            str(c): [n["codigo"] for n in r] for c, r in rutas.items()
+                        },
                         "derogada_id": str(derogada.id) if derogada else None,
                         "derogada_version": derogada.version if derogada else None,
                         "tipos_documentales_repointed": n_tipos,
@@ -3668,6 +3892,46 @@ class ArchiveService:
                         canal=audit.CANAL_PETICION,
                     )
             else:  # existing.estado == "migrada" -- ratificación D6.
+                declaradas: list[tuple[int, str]] = []
+                if payload.dependencias_productoras is not None:
+                    # A1: la serie `migrada` nació del backfill SIN productora y el trigger de la
+                    # 070 solo deja AÑADIRLA en este estado. Es la captura de un dato preexistente
+                    # (no un cambio de contenido convalidado): una sola vez, dentro de esta tx y
+                    # ANTES del gate, con asiento propio.
+                    if not self._es_serie_trd_raiz(existing):
+                        raise self._http(
+                            status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "productora_solo_en_serie",
+                            "La dependencia productora se declara en la serie TRD; la subserie la hereda.",
+                        )
+                    ya = (await self._repo.get_productoras([existing.id])).get(existing.id, [])
+                    if ya:
+                        raise self._http(
+                            status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            "productora_ya_declarada",
+                            "Esta versión ya tiene dependencia productora: no se reemplaza al "
+                            "ratificar (es contenido). Omita `dependencias_productoras`.",
+                        )
+                    declaradas = await self._resolver_productoras(payload.dependencias_productoras)
+                    await self._repo.set_productoras(existing.id, declaradas)
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action="archive.trd_productora_declarada",
+                        object_type="trd_serie",
+                        object_ref=existing.code,
+                        actor=str(actor) if actor else None,
+                        payload={
+                            "id": str(existing.id),
+                            "code": existing.code,
+                            "version": existing.version,
+                            "dependencias_productoras": [c for c, _ in declaradas],
+                            "motivo": "captura de dato de TRD preexistente (ratificación de una "
+                            "versión migrada)",
+                        },
+                        canal=audit.CANAL_PETICION,
+                    )
                 updated = await self._repo.convalidar_trd_serie_desde_migrada(
                     existing.id,
                     acto_administrativo=payload.acto_administrativo,
@@ -3678,6 +3942,13 @@ class ArchiveService:
                 )
                 if updated is None:
                     raise self._trd_race_conflict("convalidar")
+                # La ratificación de una `migrada` tampoco pasa por `aprobar`: mismo gate.
+                codigos_productoras = await self._exigir_productora(updated)
+                rutas = (
+                    await self._fijar_ruta_convalidada(updated, codigos_productoras)
+                    if codigos_productoras
+                    else {}
+                )
 
                 n_ratificados = await self._repo.clear_revision_pendiente_por_serie(
                     updated.id, motivo="cerrado_bajo_serie_migrada"
@@ -3710,11 +3981,15 @@ class ArchiveService:
                         ),
                         "ratificacion": True,
                         "estado_anterior": "migrada",
+                        "dependencias_productoras": codigos_productoras,
+                        "rutas_convalidadas": {
+                            str(c): [n["codigo"] for n in r] for c, r in rutas.items()
+                        },
                         "expedientes_ratificados": n_ratificados,
                     },
                     canal=audit.CANAL_PETICION,
                 )
-        return _to_trd_response(updated)
+        return await self._trd_response(updated)
 
     async def derogar_trd_serie_version(
         self, code: str, version: int, actor: uuid.UUID | None = None
@@ -3779,7 +4054,7 @@ class ArchiveService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        return _to_trd_response(updated)
+        return await self._trd_response(updated)
 
     async def registrar_rusd_trd_serie_version(
         self,
@@ -3867,7 +4142,7 @@ class ArchiveService:
                 },
                 canal=audit.CANAL_PETICION,
             )
-        return _to_trd_response(updated)
+        return await self._trd_response(updated)
 
     # ------------------------------------------------------------------
     # TVD agrupaciones (ADR-026, Increment 1): la TVD es el MISMO instrumento
@@ -3926,7 +4201,6 @@ class ArchiveService:
                     code=payload.code,
                     name=payload.name,
                     description=payload.description,
-                    total_retention=payload.total_retention,
                     disposition=payload.disposition,
                     parent_id=payload.parent_id,
                     fondo_nombre=payload.fondo_nombre,
@@ -3953,7 +4227,6 @@ class ArchiveService:
                     "code": agrupacion.code,
                     "name": agrupacion.name,
                     "description": agrupacion.description,
-                    "total_retention": agrupacion.total_retention,
                     "disposition": agrupacion.disposition,
                     "parent_id": str(agrupacion.parent_id) if agrupacion.parent_id else None,
                     "archivo_central_years": agrupacion.archivo_central_years,
@@ -4018,7 +4291,7 @@ class ArchiveService:
         substantive_fields = (
             "name",
             "description",
-            "total_retention",
+            "archivo_central_years",
             "disposition",
             "fondo_nombre",
             "fecha_extrema_inicial",
@@ -4048,7 +4321,7 @@ class ArchiveService:
                 agrupacion_id,
                 name=payload.name,
                 description=payload.description,
-                total_retention=payload.total_retention,
+                archivo_central_years=payload.archivo_central_years,
                 disposition=payload.disposition,
                 pdfa_profile=payload.pdfa_profile,
                 fondo_nombre=payload.fondo_nombre,
@@ -4145,6 +4418,18 @@ class ArchiveService:
                     "status": 422,
                 },
             )
+        archivo_central_years = (
+            payload.archivo_central_years
+            if payload.archivo_central_years is not None
+            else vigente.archivo_central_years
+        )
+        if archivo_central_years is None:
+            raise self._http(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "tvd_forma_incompleta",
+                "Una versión de TVD exige archivo_central_years (la fase central es obligatoria, "
+                "C-4/C6): la versión base no la declara; envíela.",
+            )
         async with self._conn.transaction():
             try:
                 new_agrupacion = await self._repo.create_tvd_agrupacion_version(
@@ -4158,11 +4443,6 @@ class ArchiveService:
                         if payload.description is not None
                         else vigente.description
                     ),
-                    total_retention=(
-                        payload.total_retention
-                        if payload.total_retention is not None
-                        else vigente.total_retention
-                    ),
                     disposition=(
                         payload.disposition
                         if payload.disposition is not None
@@ -4175,11 +4455,7 @@ class ArchiveService:
                     fecha_extrema_inicial=fecha_extrema_inicial,
                     fecha_extrema_final=fecha_extrema_final,
                     justificacion_valoracion=justificacion_valoracion,
-                    archivo_central_years=(
-                        payload.archivo_central_years
-                        if payload.archivo_central_years is not None
-                        else vigente.archivo_central_years
-                    ),
+                    archivo_central_years=archivo_central_years,
                     pdfa_profile=(
                         payload.pdfa_profile
                         if payload.pdfa_profile is not None
@@ -4324,6 +4600,12 @@ class ArchiveService:
         tiene el mismo sentido archivístico en un fondo acumulado."""
         existing = await self._tvd_agrupacion_by_code_version_or_404(code, version)
         self._assert_trd_action_from(existing, "convalidar", self._TVD_CONVALIDAR_DESDE)
+        if payload.dependencias_productoras is not None:
+            raise self._http(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "productora_solo_en_serie",
+                "La TVD no lleva dependencia productora (tiene `fondo_nombre`).",
+            )
 
         if existing.acta_comite is None or existing.fecha_aprobacion_comite is None:
             raise HTTPException(
@@ -4665,6 +4947,9 @@ class ArchiveService:
            físicamente imposible en modo COMPLIANCE, y un lote que se acepta y
            luego no se puede ejecutar es la peor de las dos respuestas.
         5. **No está ya en otro lote** vivo.
+        6. **Sin retención legal activa** (C-5 / C7, ADR-043): ni judicial, ni
+           disciplinaria, ni fiscal, ni administrativa, ni la `valoracion_pendiente`
+           de un fondo acumulado cuyo calendario venció y aún no valora el Comité.
 
         **Lo rechazado se informa, no se descarta.** Quien propone 40 y recibe
         31 tiene que ver cuáles nueve faltan y qué le pasa a cada uno; si no, la
@@ -4677,6 +4962,9 @@ class ArchiveService:
             expediente_ids, max_clearance=clearance
         )
         por_id = {c["id"]: c for c in candidatos}
+        prestadas = await FisicoRepository(
+            self._conn, self._tenant_slug
+        ).unidades_prestadas_de_expedientes(list(por_id))
 
         admitidos: list[dict] = []
         rechazados: list[LoteEliminacionRechazo] = []
@@ -4708,6 +4996,22 @@ class ArchiveService:
                         expediente_code=fila["code"],
                         motivo=motivo,
                         detalle=detalle,
+                    )
+                )
+                continue
+            # C11 (condición "unidad_prestada"): un expediente cuya unidad de
+            # conservación está FUERA del archivo no puede entrar en una propuesta
+            # de destrucción: no se puede verificar ni custodiar lo que no está.
+            if exp_id in prestadas:
+                rechazados.append(
+                    LoteEliminacionRechazo(
+                        expediente_id=exp_id,
+                        expediente_code=fila["code"],
+                        motivo="unidad_prestada",
+                        detalle=(
+                            f"La unidad {prestadas[exp_id]} que lo contiene está "
+                            "prestada: devuélvala antes de proponer su eliminación."
+                        ),
                     )
                 )
                 continue
@@ -4743,6 +5047,43 @@ class ArchiveService:
             )
 
         async with self._conn.transaction():
+            # C11: se serializa con el préstamo por la RAÍZ del árbol de unidades
+            # (bloqueo en sentencia aparte) y se RE-comprueba: un préstamo
+            # confirmado entre la lectura de arriba y este punto tumba la propuesta
+            # entera en vez de colarse (el préstamo, a su vez, rechaza una unidad
+            # con un lote vivo: simetría).
+            fisico_repo = FisicoRepository(self._conn, self._tenant_slug)
+            ids_admitidos = [a["expediente_id"] for a in admitidos]
+            await fisico_repo.lock_arboles_de_expedientes(ids_admitidos)
+            tardias = await fisico_repo.unidades_prestadas_de_expedientes(ids_admitidos)
+            if tardias:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "unidad_prestada",
+                        "detail": (
+                            "Una unidad que contiene expedientes del lote fue prestada "
+                            f"mientras se proponía: {', '.join(sorted(set(tardias.values())))}."
+                        ),
+                        "status": 409,
+                    },
+                )
+            # C14: una constancia que cita un anexo SIN huella no puede congelarse como baja de
+            # soporte (nada que avalar destruir): se rechaza ANTES de crear el lote.
+            sin_huella = await self._repo.soportes_citados_sin_huella(ids_admitidos)
+            if sin_huella:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "soporte_sin_huella",
+                        "detail": (
+                            "Una constancia de firma inobtenible cita un anexo sin huella "
+                            "SHA-256 registrada: no puede darse de baja su soporte. Corrija la "
+                            f"constancia (transferencia(s) {', '.join(sorted(str(t) for t in sin_huella))})."
+                        ),
+                        "status": 409,
+                    },
+                )
             try:
                 lote = await self._repo.crear_lote_eliminacion(
                     codigo=codigo, observaciones=observaciones, creado_por=actor
@@ -4758,6 +5099,12 @@ class ArchiveService:
                 )
             for item in admitidos:
                 await self._repo.add_item_lote_eliminacion(lote["id"], item)
+            # C14 (ADR-043): la BAJA DE SOPORTE se congela con el inventario. No rechaza: avisa
+            # qué constancias de firma inobtenible pierden su anexo si el Comité avala el lote.
+            soportes = await self._repo.congelar_soportes_citados(
+                lote["id"], [a["expediente_id"] for a in admitidos]
+            )
+            codigos = {a["expediente_id"]: a["expediente_code"] for a in admitidos}
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -4770,6 +5117,7 @@ class ArchiveService:
                     "codigo": codigo,
                     "admitidos": len(admitidos),
                     "rechazados": len(rechazados),
+                    "soportes_citados": len(soportes),
                 },
                 canal=audit.CANAL_PETICION,
             )
@@ -4784,6 +5132,17 @@ class ArchiveService:
             total_items=len(admitidos),
             items=[LoteEliminacionItem(**a) for a in admitidos],
             rechazados=rechazados,
+            soportes_citados=[
+                SoporteCitado(
+                    expediente_id=r["expediente_id"],
+                    expediente_code=codigos[r["expediente_id"]],
+                    excepcion_id=r["excepcion_id"],
+                    transferencia_id=r["transferencia_id"],
+                    rol=r["rol"],
+                    ordinal=r["ordinal"],
+                )
+                for r in soportes
+            ],
         )
 
     async def publicar_lote_eliminacion(
@@ -5154,6 +5513,7 @@ class ArchiveService:
             dias_interrumpido=dias_interrumpido,
             lote=fila,
             items=items,
+            soportes=await self._repo.list_soportes_lote(lote_id),
             tenant_slug=self._tenant_slug,
             metodo_borrado=metodo_borrado,
             observaciones=observaciones,
@@ -5697,15 +6057,25 @@ class ArchiveService:
                 recuento = await self._eliminar_expediente(
                     expediente_id, item=item, lote=lote, acta=acta, actor=actor
                 )
-            except (DocumentPurgaError, DocumentClientError) as exc:
+            except (DocumentPurgaError, DocumentClientError, SoporteCitadoNoAvaladoError) as exc:
                 # El expediente queda INTACTO y sin lápida. Se informa con su
                 # código, no solo con su UUID: quien tiene que reintentar
                 # necesita saber cuál es.
+                # C14: una constancia vigente cita un anexo del expediente y el lote no trae su
+                # baja avalada -> `soporte_citado_no_avalado` (la comprobación previa de archive
+                # o, de rebote, el gate de storage `anexo_citado_por_constancia`).
+                motivo_fallo = (
+                    "soporte_citado_no_avalado"
+                    if isinstance(exc, SoporteCitadoNoAvaladoError)
+                    or "anexo_citado_por_constancia" in str(exc)
+                    else None
+                )
                 fallidos.append(
                     EjecucionFallo(
                         expediente_id=expediente_id,
                         expediente_code=item["expediente_code"],
                         detalle=str(exc),
+                        motivo=motivo_fallo,
                     )
                 )
                 await audit.append(
@@ -5724,6 +6094,7 @@ class ArchiveService:
                         "lote": lote["codigo"],
                         "expediente_code": item["expediente_code"],
                         "motivo": str(exc)[:500],
+                        "causa": motivo_fallo,
                     },
                     canal=audit.CANAL_PETICION,
                 )
@@ -5786,6 +6157,21 @@ class ArchiveService:
         nadie que supiera que debían morir. Es el mismo razonamiento que dentro
         de document-service pone los bytes antes que las filas.
         """
+        # C14 (ADR-043): ANTES de tocar un solo byte, ninguna constancia de firma inobtenible
+        # vigente puede citar un anexo de este expediente sin baja de soporte avalada. Si
+        # document-service/storage se negaran a mitad, el borrado quedaría PARCIAL; el gate de
+        # storage (`anexo_citado_por_constancia`) es la red final, esta es la puerta.
+        bloqueantes = await self._repo.soportes_bloqueantes_de_expediente(expediente_id)
+        if bloqueantes:
+            raise SoporteCitadoNoAvaladoError(
+                "Constancia(s) de firma inobtenible vigente(s) citan un anexo del expediente sin "
+                "baja de soporte avalada en este lote: "
+                + ", ".join(
+                    f"transferencia {b['transferencia_id']} rol {b['rol']} #{b['ordinal']}"
+                    for b in bloqueantes
+                )
+                + ". Anule el lote y propóngalo de nuevo para que la baja quede congelada."
+            )
         radicados = await self._repo.list_radicados_de_expediente(expediente_id)
         motivo = f"Eliminación TRD, lote {lote['codigo']}, {lote['acto_administrativo']}"
         recuento = await document_client.purgar_radicados_internal(
@@ -5817,6 +6203,26 @@ class ArchiveService:
                     "eliminado_por": actor,
                 }
             )
+            # C14: el soporte de las constancias dadas de baja con el lote queda destruido.
+            for baja in await self._repo.marcar_soportes_eliminados(lote["id"], expediente_id):
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service="archive-service",
+                    action="archive.constancia_soporte_eliminado_trd",
+                    object_type="transferencia_acta",
+                    object_ref=str(baja["transferencia_id"]),
+                    actor=str(actor),
+                    payload={
+                        "excepcion_id": str(baja["excepcion_id"]),
+                        "rol": baja["rol"],
+                        "ordinal": baja["ordinal"],
+                        "expediente_code": item["expediente_code"],
+                        "lote": lote["codigo"],
+                        "acta_sha256": acta["acta_sha256"],
+                    },
+                    canal=audit.CANAL_PETICION,
+                )
             await self._repo.delete_expediente(expediente_id)
             await audit.append(
                 self._conn,
@@ -5895,6 +6301,7 @@ class ArchiveService:
             observaciones=lote["observaciones"],
             anulado_motivo=lote["anulado_motivo"],
             total_items=len(items),
+            soportes_citados=await self._repo.count_soportes_lote(lote_id),
             items=[LoteEliminacionItemPublico(**dict(i)) for i in items],
         )
 
@@ -5933,7 +6340,8 @@ class ArchiveService:
                 },
             )
         total = await self._repo.contar_items_lote(lote_id)
-        return self._lote_a_respuesta(
+        soportes = await self._repo.list_soportes_lote(lote_id, max_clearance=clearance)
+        respuesta = self._lote_a_respuesta(
             lote,
             total_items=total,
             items=[
@@ -5953,6 +6361,19 @@ class ArchiveService:
                 for i in items
             ],
         )
+        respuesta.soportes_citados = [
+            SoporteCitado(
+                expediente_id=r["expediente_id"],
+                expediente_code=r["expediente_code"],
+                excepcion_id=r["excepcion_id"],
+                transferencia_id=r["transferencia_id"],
+                rol=r["rol"],
+                ordinal=r["ordinal"],
+                soporte_eliminado_at=r["soporte_eliminado_at"],
+            )
+            for r in soportes
+        ]
+        return respuesta
 
     @staticmethod
     def _lote_a_respuesta(
@@ -6284,6 +6705,11 @@ _AGN_DISPOSITION: dict[str, tuple[str, str]] = {
 }
 
 
+# Valor centinela de `holds_activos` cuando el registro de holds no existe (ver
+# `ArchiveRepository.list_candidatos_eliminacion`).
+HOLDS_DESCONOCIDOS = "__desconocido__"
+
+
 def _sin_worm(valor: object) -> bool:
     """`GREATEST(...)` sobre tres `COALESCE(..., '-infinity')` devuelve
     `-infinity` cuando el expediente no tiene NINGÚN candado. Se traduce a
@@ -6328,6 +6754,35 @@ def _motivo_de_rechazo(
             "instrumento_no_gobierna",
             "El instrumento congelado no está convalidado: no puede gobernar "
             "una eliminación efectiva (ADR-025 D5).",
+        )
+    # Condición 6 (C-5 / C7, ADR-043): sin retención legal activa. Un expediente con hold
+    # `valoracion_pendiente` no tiene `worm_retain_until` (NULL -> «-infinity» en el GREATEST) y
+    # parecería VENCIDO: el lote se avalaría y la purga fallaría. Fail-closed si el registro de
+    # holds no existe: no se puede afirmar que no hay retención.
+    try:
+        seleccionado = bool(fila["seleccionado_conservar"])
+    except (KeyError, IndexError):
+        seleccionado = False
+    if seleccionado:
+        return (
+            "seleccionado_para_conservacion",
+            "Fue seleccionado para conservación en la valoración de la TVD (disposición "
+            "Selección): forma parte de la muestra que se conserva y no puede destruirse.",
+        )
+    holds = fila["holds_activos"]
+    if holds == HOLDS_DESCONOCIDOS:
+        return (
+            "estado_retencion_desconocido",
+            "No se pudo comprobar si el expediente tiene una retención legal activa "
+            "(el registro de retenciones no está disponible): no se admite hasta saberlo.",
+        )
+    if holds:
+        # El MOTIVO (no el fundamento, que puede ser reservado) basta para que quien propone
+        # sepa a quién acudir.
+        return (
+            "legal_hold_activo",
+            f"Tiene una retención legal activa ({holds.replace(',', ', ')}): la disposición "
+            "final está congelada hasta que se levante.",
         )
     worm = fila["worm_retain_until"]
     if not _sin_worm(worm) and worm > ahora:
@@ -6413,7 +6868,21 @@ def _add_years(d: date, years: int) -> date:
         return d.replace(year=d.year + years, day=28)
 
 
-def _to_trd_response(s: TrdSerie) -> TrdSerieResponse:
+_ESTADOS_PUBLICADOS = ("convalidada", "migrada")
+_ESTADOS_EN_TRAMITE = ("borrador", "aprobada")
+
+
+def _sin_circuito(r: TrdSerieResponse) -> TrdSerieResponse:
+    """Quita lo que es deliberación del Comité y autoría: el instrumento publicado conserva el
+    acto de convalidación (público), no el acta interna ni quién redactó la versión."""
+    return r.model_copy(
+        update={"acta_comite": None, "fecha_aprobacion_comite": None, "created_by": None}
+    )
+
+
+def _to_trd_response(
+    s: TrdSerie, productoras: list[dict[str, Any]] | None = None
+) -> TrdSerieResponse:
     return TrdSerieResponse(
         id=s.id,
         code=s.code,
@@ -6446,4 +6915,7 @@ def _to_trd_response(s: TrdSerie) -> TrdSerieResponse:
         fecha_extrema_inicial=s.fecha_extrema_inicial,
         fecha_extrema_final=s.fecha_extrema_final,
         justificacion_valoracion=s.justificacion_valoracion,
+        dependencias_productoras=[
+            DependenciaProductoraResponse(**p) for p in (productoras or [])
+        ],
     )

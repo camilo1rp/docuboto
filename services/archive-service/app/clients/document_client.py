@@ -189,3 +189,36 @@ async def purgar_radicados_internal(
             f"document-service → HTTP {resp.status_code} al purgar: {resp.text[:300]!r}"
         )
     return resp.json()
+
+
+async def fetch_clasificados_internal(*, tenant_slug: str) -> dict:
+    """Radicados nivel >= 2 (causal, plazo, fecha) y catálogo de causales, para el
+    índice público POR SERIE (C12, ADR-039). Acto de SISTEMA: sin gate de clearance,
+    porque el índice del art. 20 es un registro público y completo. **Content-free**:
+    document-service no devuelve número, asunto ni fundamento.
+
+    Forma: ``{"causales": [...], "radicados": [{"radicado_id", "nivel_seguridad",
+    "clasificacion_causal", "clasificacion_plazo_meses", "clasificado_at"}, ...]}``.
+
+    Lanza ``DocumentClientError`` ante cualquier fallo: un índice público construido
+    con una lista parcial de reservas sería peor que no publicarlo."""
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.document_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.document_service_url, timeout=60.0
+        ) as client:
+            resp = await client.get(
+                "/api/v1/internal/documentos/clasificados", headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise DocumentClientError(
+            f"document-service inalcanzable al pedir los radicados clasificados: {exc}"
+        ) from exc
+    if resp.status_code != 200:
+        raise DocumentClientError(
+            f"document-service → HTTP {resp.status_code} al pedir los radicados clasificados"
+        )
+    return resp.json()

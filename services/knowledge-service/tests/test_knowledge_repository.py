@@ -67,7 +67,7 @@ async def test_upsert_chunk_is_idempotent_on_conflict_and_uses_greatest() -> Non
     assert "GREATEST(" in sql
     assert "knowledge_chunk.nivel_seguridad" in sql
     assert "EXCLUDED.nivel_seguridad" in sql
-    assert "::vector" in sql
+    assert "::public.vector" in sql
 
 
 @pytest.mark.asyncio

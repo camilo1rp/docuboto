@@ -241,6 +241,10 @@ class Settings(BaseSettings):
     # CA. Vacío = solo se usa la que viaje en el token; sin CA no se acepta la CRL.
     tsa_ca_pem_paths: str = ""
     tsa_timeout_seconds: float = 10.0
+    # Kill-switch (C-6): consultar el OCSP del AIA del certificado de la TSA anterior cuando su CA no
+    # publica CRL. Con `false` el comportamiento es el de antes de C-6 (solo CRL: sin ella no se renueva).
+    # Solo se apaga si un respondedor se comporta mal; el OCSP es una vía ADITIVA, no sustituye la CRL.
+    tsa_ocsp_enabled: bool = True
     # Declara que la TSA remota configurada en `tsa_url` es de un prestador
     # ACREDITADO (ONAC). Solo tiene efecto con `tsa_url` puesto: la TSA LOCAL
     # es un par autofirmado del propio despliegue y jamás se acredita, mire lo

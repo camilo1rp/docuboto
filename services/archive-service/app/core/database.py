@@ -26,7 +26,7 @@ def tenant_schema(slug: str) -> str:
     """Devuelve el identificador de schema `tenant_{slug}` validado (fail-closed 400).
 
     Normaliza guiones a guiones bajos. El resultado se usa SIEMPRE entrecomillado:
-    ``f'SET search_path TO "{tenant_schema(slug)}", public'``.
+    ``f'SET search_path TO "{tenant_schema(slug)}"'``.
     """
     if not slug_valido(slug):
         raise HTTPException(
@@ -114,7 +114,7 @@ async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection,
     """
     schema = tenant_schema(tenant_slug)
     async with get_pool().acquire() as conn:
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:

@@ -35,7 +35,7 @@ _EVT_COLS = "id, object_ref, tipo, resultado, hash_before, hash_after, detalle, 
 _AIP_COLS = (
     "id, expediente_id, premis_xml, aip_sha256, indice_sha256, num_documentos, "
     "estado, created_at, bucket, object_key, aip_bytes, formato, retain_until, "
-    "retention_mode, legal_hold"
+    "retention_mode, legal_hold, version, sustituye_a, motivo"
 )
 
 
@@ -53,7 +53,7 @@ class PreservacionRepository:
         self._schema = tenant_schema(tenant_slug)
 
     async def _sp(self) -> None:
-        await self._conn.execute(f'SET search_path = "{self._schema}", public')
+        await self._conn.execute(f'SET search_path = "{self._schema}"')
 
     # -- plan ----------------------------------------------------------
 
@@ -282,8 +282,9 @@ class PreservacionRepository:
             INSERT INTO aip (id, expediente_id, premis_xml, aip_sha256,
                              indice_sha256, num_documentos, bucket, object_key,
                              aip_bytes, formato, retain_until, retention_mode,
-                             legal_hold)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                             legal_hold, version, sustituye_a, motivo)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                    $14, $15, $16)
             RETURNING {_AIP_COLS}
             """,
             data["id"],
@@ -299,6 +300,9 @@ class PreservacionRepository:
             data["retain_until"],
             data["retention_mode"],
             data["legal_hold"],
+            data.get("version", 1),
+            data.get("sustituye_a"),
+            data.get("motivo", "ingesta"),
         )
         assert row is not None
         return row
@@ -307,9 +311,62 @@ class PreservacionRepository:
         await self._sp()
         return await self._conn.fetchrow(
             f"SELECT {_AIP_COLS} FROM aip "
-            "WHERE expediente_id = $1 ORDER BY created_at DESC LIMIT 1",
+            "WHERE expediente_id = $1 ORDER BY version DESC, created_at DESC LIMIT 1",
             expediente_id,
         )
+
+    async def get_aip_cabeza(self, expediente_id: str) -> asyncpg.Record | None:
+        """La versión VIGENTE del AIP (C-6): la cabeza de la cadena `sustituye_a`, es decir, la
+        que ningún otro AIP sustituye. Es la de consulta; la RAÍZ (versión 1) es la de retención."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_AIP_COLS} FROM aip a WHERE a.expediente_id = $1 "
+            "AND NOT EXISTS (SELECT 1 FROM aip s WHERE s.sustituye_a = a.id) "
+            "ORDER BY a.version DESC LIMIT 1",
+            expediente_id,
+        )
+
+    async def get_aip(self, aip_id: uuid.UUID) -> asyncpg.Record | None:
+        await self._sp()
+        return await self._conn.fetchrow(f"SELECT {_AIP_COLS} FROM aip WHERE id = $1", aip_id)
+
+    async def get_aip_sucesor(self, aip_id: uuid.UUID) -> asyncpg.Record | None:
+        """El AIP que sustituye a `aip_id`, si lo hay (a lo sumo uno: `ux_aip_sustituye_a`)."""
+        await self._sp()
+        return await self._conn.fetchrow(
+            f"SELECT {_AIP_COLS} FROM aip WHERE sustituye_a = $1", aip_id
+        )
+
+    async def listar_versiones_aip(self, expediente_id: str) -> list[asyncpg.Record]:
+        """Toda la cadena de versiones del AIP de un expediente, de la primera a la última."""
+        await self._sp()
+        return list(
+            await self._conn.fetch(
+                f"SELECT {_AIP_COLS} FROM aip WHERE expediente_id = $1 ORDER BY version ASC",
+                expediente_id,
+            )
+        )
+
+    async def existe_aip(self, expediente_id: str) -> bool:
+        """¿Hay algún AIP para el expediente? (`fetch` y no `fetchval`: el empaquetado inicial
+        ya consume una secuencia fija de `fetchrow` que los tests fijan.)"""
+        await self._sp()
+        rows = await self._conn.fetch(
+            "SELECT 1 FROM aip WHERE expediente_id = $1 LIMIT 1", expediente_id
+        )
+        return len(list(rows)) > 0
+
+    async def aip_vigente_id(self, expediente_id: str) -> uuid.UUID | None:
+        """`id` del AIP vigente (la versión más reciente) del expediente, o `None`. `fetch` y no
+        `fetchrow`, por la misma razón que `existe_aip`."""
+        await self._sp()
+        rows = list(
+            await self._conn.fetch(
+                "SELECT id FROM aip WHERE expediente_id = $1 ORDER BY version DESC, created_at DESC LIMIT 1",
+                expediente_id,
+            )
+        )
+        return rows[0]["id"] if rows else None
 
     async def get_aip_by_expediente_and_sha256(
         self, expediente_id: str, aip_sha256: str

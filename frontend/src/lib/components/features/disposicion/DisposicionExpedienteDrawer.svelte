@@ -150,8 +150,7 @@
           <dd>{trdSerieDetail.code} — {trdSerieDetail.name}</dd>
           <dt>Archivo de gestión</dt>
           <dd>
-            {trdSerieDetail.archivo_gestion_years ?? trdSerieDetail.retention_years ?? "—"} año(s) desde
-            el cierre
+            {trdSerieDetail.archivo_gestion_years ?? "—"} año(s) desde el cierre
           </dd>
           {#if trdSerieDetail.archivo_central_years != null}
             <dt>Archivo central</dt>

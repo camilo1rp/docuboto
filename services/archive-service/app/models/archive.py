@@ -99,8 +99,6 @@ class TrdSerie:
     code: str
     name: str
     description: str | None
-    retention_years: int
-    total_retention: int
     disposition: str
     is_active: bool
     created_at: datetime
@@ -142,3 +140,22 @@ class TrdSerie:
     fecha_extrema_inicial: date | None = None
     fecha_extrema_final: date | None = None
     justificacion_valoracion: str | None = None
+
+    # C-4/C6: las dos fases son la ÚNICA fuente de la retención. El juego legado ya
+    # no es dato: se DERIVA al leer, y por eso ningún código nuevo puede pasarlo al
+    # repositorio ni dejarlo en desacuerdo con las fases.
+    @property
+    def retention_years(self) -> int:
+        """Años de archivo de gestión (0 en una TVD, que no tiene esa fase)."""
+        return self.archivo_gestion_years or 0
+
+    @property
+    def total_retention(self) -> int:
+        """Gestión + central. Una fase central ausente es un dato corrupto (el CHECK
+        `trd_series_fases_check` la exige): falla en voz alta, no devuelve un 0 que se
+        leería como «sin retención»."""
+        if self.archivo_central_years is None:
+            raise ValueError(
+                f"La serie {self.code} v{self.version} no declara archivo_central_years"
+            )
+        return self.retention_years + self.archivo_central_years

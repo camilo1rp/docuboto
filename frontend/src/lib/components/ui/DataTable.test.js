@@ -317,7 +317,7 @@ describe("DataTable — selección múltiple (enableSelection)", () => {
   });
 
   it("no entra en bucle: marcar una fila desde la UI no revierte la selección del usuario", async () => {
-    const { component } = render(DataTable, {
+    render(DataTable, {
       props: { columns: richColumns, rows: richRows, enableSelection: true, selected: [] },
     });
     await fireEvent.click(screen.getByLabelText("Seleccionar fila 2"));

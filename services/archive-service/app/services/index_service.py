@@ -74,7 +74,7 @@ from app.services.index_builder import (
     xml_sha256,
 )
 from app.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
-from app.services.retention_math import base_worm, total_trd_years
+from app.services.retention_math import RetencionDiferida, base_worm, total_trd_years
 
 if TYPE_CHECKING:
     from app.clients.signature_client import SignedIndice
@@ -1316,7 +1316,7 @@ class IndexService:
 
     async def _resolve_worm_retention(
         self, expediente_id: uuid.UUID
-    ) -> tuple[int, date] | None:
+    ) -> tuple[int, date] | RetencionDiferida | None:
         """Deriva ``(retencion_anios_total, fecha_inicio=fecha_cierre)`` de la
         TRD del expediente para el cableado WORM (E10 Inc.1, AGN 001/2024
         Art. 4.3.2.6) — ``retencion_anios_total`` es la suma de las DOS fases
@@ -1336,9 +1336,11 @@ class IndexService:
         ADR-026 (Increment 3, D4, AREA-06-04): para `exp.origen == 'fondo_acumulado'`
         la fecha base NO es `closed_at` (la del registro: alargaría décadas un lock
         COMPLIANCE sobre documentación ya vencida) sino la `fecha_extrema_final`
-        del fondo con el clamp de `retention_math.base_worm`
-        (`retain_until = max(hoy + margen, fecha_extrema_final + total)`). Antes
-        devolvía `None` y el índice quedaba SIN Object-Lock de forma indefinida."""
+        del fondo. Si su calendario ya venció (ADR-043, enmienda de D4.4) NO hay
+        `retain_until`: devuelve `RetencionDiferida` tras ASEGURAR el hold
+        `valoracion_pendiente` (`ValoracionService.resolver_diferida`); lanza
+        `ValoracionHoldError` si el hold no se pudo fijar. Antes devolvía `None` y el
+        índice quedaba SIN Object-Lock de forma indefinida."""
         exp = await self._archive.get_expediente_by_id(
             expediente_id, max_clearance=CLEARANCE_SIN_RESTRICCION
         )
@@ -1355,10 +1357,16 @@ class IndexService:
             closed_at=exp.closed_at,
             fecha_extrema_final=exp.fecha_extrema_final,
             total_years=total,
-            margen_dias=settings.worm_fondo_acumulado_margen_dias,
+            margen_dias=settings.worm_piso_margen_dias,
         )
         if inicio is None:
             return None
+        if isinstance(inicio, RetencionDiferida):
+            from app.services.valoracion_service import ValoracionService
+
+            return await ValoracionService(self._conn, self._tenant_slug).resolver_diferida(
+                exp, serie
+            )
         return total, inicio
 
     async def _resolve_ct_retencion_anios(self, expediente_id: uuid.UUID) -> int | None:
@@ -1481,14 +1489,34 @@ class IndexService:
                 return "omitido"
             file_id = row["minio_key_firmado"].split("/", 1)[0]
 
-            retention = await self._resolve_worm_retention(expediente_id)
+            from app.services.valoracion_service import ValoracionHoldError
+
+            try:
+                retention = await self._resolve_worm_retention(expediente_id)
+            except ValoracionHoldError:
+                logger.warning(
+                    "Cableado WORM del índice: no se pudo fijar el hold de valoración "
+                    "(expediente_id=%s)",
+                    expediente_id,
+                    exc_info=True,
+                )
+                return await self._bump_worm_backoff(
+                    indice_id,
+                    intentos_previos=int(row["worm_reconcile_intentos"]),
+                    motivo="hold_valoracion_no_fijado",
+                )
             if retention is None:
                 return await self._bump_worm_backoff(
                     indice_id,
                     intentos_previos=int(row["worm_reconcile_intentos"]),
                     motivo="trd_sin_retencion",
                 )
-            retencion_anios, fecha_inicio = retention
+            # Fondo vencido: sin retencion_anios/fecha_inicio, solo el hold (ADR-043).
+            if isinstance(retention, RetencionDiferida):
+                retencion_anios, fecha_inicio, diferida = None, None, retention.motivo
+            else:
+                retencion_anios, fecha_inicio = retention
+                diferida = None
 
             from app.clients import storage_client
 
@@ -1500,6 +1528,7 @@ class IndexService:
                     expediente_id=str(expediente_id),
                     retencion_anios=retencion_anios,
                     fecha_inicio=fecha_inicio,
+                    retencion_diferida=diferida,
                 )
             else:
                 outcome = await storage_client.proteger_indice_worm_internal(
@@ -1508,6 +1537,7 @@ class IndexService:
                     expediente_id=str(expediente_id),
                     retencion_anios=retencion_anios,
                     fecha_inicio=fecha_inicio,
+                    retencion_diferida=diferida,
                 )
 
             if outcome.ok:
@@ -1542,6 +1572,7 @@ class IndexService:
                                     else None
                                 ),
                                 "retencion_anios": retencion_anios,
+                                "retencion_diferida": diferida,
                                 "origen": origen,
                             },
                         )

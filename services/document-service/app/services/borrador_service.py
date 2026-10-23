@@ -34,6 +34,7 @@ from app.clients.storage_client import (
     render_documento,
     upload_artefacto,
 )
+from app.core.causales_reserva import POR_CLASIFICAR
 from app.core.combinacion import SEGUNDA_PASADA, combinar, desconocidos, marcadores
 from app.core.datos_minimos import exigir_o_422
 from app.core.dependencias import normalizar_dependencia
@@ -931,8 +932,13 @@ class BorradorService:
             nivel = max(nivel, int(padre["nivel_seguridad"]))
             if nivel >= 2:
                 fundamento = padre["clasificacion_fundamento"]
-                causal = padre["clasificacion_causal"]
-                plazo = padre["clasificacion_plazo_meses"]
+                if int(padre["nivel_seguridad"]) == nivel:
+                    # Hereda la causal y el plazo del padre SOLO si están al mismo nivel:
+                    # una causal art. 19 no sirve a un hijo de nivel 3 (C12).
+                    causal = padre["clasificacion_causal"]
+                    plazo = padre["clasificacion_plazo_meses"]
+                else:
+                    causal, plazo = POR_CLASIFICAR, None
                 if not (fundamento and fundamento.strip()):
                     # Ley 1712 art. 19/28: la reserva se motiva. Un padre antiguo
                     # sin fundamento no puede dejar al hijo en nivel 1; se motiva
@@ -941,7 +947,12 @@ class BorradorService:
                         f"Heredada del radicado {padre['tracking_number']} "
                         "(clasificación vigente del antecedente)"
                     )[:300]
-        payload = DocumentCreate(
+        elif nivel >= 2:
+            # Sin padre pero con nivel del borrador: nada que heredar -> pendiente de motivar.
+            fundamento = "Pendiente de motivar (borrador clasificado sin antecedente)"
+            causal, plazo = POR_CLASIFICAR, None
+        payload = DocumentCreate.model_validate(
+            dict(
             doc_type=row["doc_type"],
             subject=row["subject"],
             doc_class=doc_class,
@@ -958,6 +969,9 @@ class BorradorService:
             # Solo lo que aporta quien radica; la procedencia va aparte para que
             # no pase por el JSON Schema del tipo.
             metadata=dict(datos.metadata) if datos and datos.metadata else {},
+            ),
+            # `por_clasificar` solo lo admite el contexto interno (herencia): la API no.
+            context={"interno": True},
         )
         result = await document_service.create(
             payload, registered_by, procedencia={"from_borrador": str(borrador_id)}

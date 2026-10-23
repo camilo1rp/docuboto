@@ -18,7 +18,7 @@ CREATE SCHEMA IF NOT EXISTS keycloak;
 -- `vector` queda disponible para todos los schemas tenant_{slug}.
 -- Nota: este script solo corre en la PRIMERA inicialización del volumen; las
 -- migraciones de E21 también ejecutan CREATE EXTENSION IF NOT EXISTS de forma defensiva.
-CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
 
 -- Tabla de tracking de migraciones (usada por migrations/runner.py de cada servicio)
 CREATE TABLE IF NOT EXISTS public._migrations (

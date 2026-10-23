@@ -27,7 +27,7 @@
 #   PORTAL_TENANT_SLUG=demo ./scripts/verificar-ventanilla.sh   # o por entorno
 #   GATEWAY_URL=https://api.entidad.gov.co ./scripts/verificar-ventanilla.sh demo
 #
-# Salida: una línea por entidad (`OK` / `NO HABILITADA` / `SIN POLITICA`). Código 0 si todas
+# Salida: una línea por entidad (`OK` / `NO HABILITADA` / `SIN POLITICA` / `SIN ANTIROBOTS`). Código 0 si todas
 # están habilitadas; 1 si alguna no lo está; 2 si no se pudo consultar (red, gateway).
 
 set -euo pipefail
@@ -54,6 +54,16 @@ for slug in "${SLUGS[@]}"; do
         [ "$estado" -eq 2 ] || estado=1
     elif ! printf '%s' "$cuerpo" | grep -Eq '"politica_publicada"[[:space:]]*:[[:space:]]*true'; then
         echo "SIN POLITICA   $slug  $cuerpo  (publique politica_tratamiento_* en /admin/parametros)"
+        [ "$estado" -eq 2 ] || estado=1
+    elif printf '%s' "$cuerpo" | grep -Eq '"antirrobots_disponible"[[:space:]]*:[[:space:]]*false'; then
+        # El estado publica si el antirrobots puede emitir y consumir retos AHORA (clave de
+        # >= 32 bytes y Redis que responde al PING): sin eso todo POST público da 503.
+        echo "SIN ANTIROBOTS $slug  antirrobots_disponible=false (ALTCHA_HMAC_KEY o Redis)  $cuerpo"
+        [ "$estado" -eq 2 ] || estado=1
+    elif ! reto="$(curl -fsS --max-time 10 "$GATEWAY_URL/api/v1/public/$slug/ventanilla/reto")" \
+        || ! printf '%s' "$reto" | grep -Eq '"challenge"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"'; then
+        # C16 (ADR-038): sin reto ALTCHA firmable (ALTCHA_HMAC_KEY ausente o corta) nadie radica.
+        echo "SIN ANTIROBOTS $slug  GET .../ventanilla/reto no entrega un reto (revise ALTCHA_HMAC_KEY)"
         [ "$estado" -eq 2 ] || estado=1
     else
         echo "OK             $slug  $cuerpo"

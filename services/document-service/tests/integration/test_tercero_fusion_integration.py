@@ -85,7 +85,7 @@ async def test_la_fusion_no_toca_ni_una_fila_de_radicado_actor(
     sola ficha, cuando el día del envío había dos.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "José Pérez Gómez")
@@ -117,7 +117,7 @@ async def test_el_superviviente_HEREDA_los_radicados_al_leer(
     en dos, con una mitad inalcanzable.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "Ana Ríos")
@@ -142,7 +142,7 @@ async def test_una_ficha_fusionada_desaparece_del_buscador(
 ) -> None:
     """O el duplicado que alguien acaba de resolver reaparecería al radicar."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "Luis Mora")
@@ -164,7 +164,7 @@ async def test_no_se_encadenan_fusiones(
     una cadena con un ciclo colgaría al lector.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from fastapi import HTTPException
 
     from app.services.tercero_service import TerceroService
@@ -191,7 +191,7 @@ async def test_los_duplicados_se_detectan_sin_tildes_y_sin_mayusculas(
     pendientes nunca bajaría.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "María Ángel")
@@ -221,7 +221,7 @@ async def test_dos_documentos_DISTINTOS_no_son_un_duplicado(
     el acto no tiene vuelta atrás.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from fastapi import HTTPException
 
     from app.services.tercero_service import TerceroService
@@ -262,7 +262,7 @@ async def test_si_solo_UNA_tiene_documento_la_fusion_sigue_siendo_posible(
     convertido la guarda en «no se puede fusionar casi nunca».
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     a = await _tercero_con_documento(conn, "Luis Paz", "777")

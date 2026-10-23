@@ -46,8 +46,34 @@ const DOC = {
   nivel_seguridad: 1,
 };
 
+// Catálogo cerrado de causales (SSR, GET /documents/causales-reserva): sin él el
+// modal no ofrece reservar ni clasificar.
+const CATALOGO_RESERVA = {
+  nivel_doble_firma: 3,
+  plazo_max_meses: 180,
+  causales: [
+    {
+      codigo: "art19_b_seguridad_publica",
+      articulo: "Ley 1712/2014 art. 19",
+      literal: "b",
+      descripcion: "Seguridad pública",
+      nivel: 2,
+      plazo_max_meses: 180,
+    },
+    {
+      codigo: "art18_a_intimidad",
+      articulo: "Ley 1712/2014 art. 18",
+      literal: "a",
+      descripcion: "Intimidad",
+      nivel: 3,
+      plazo_max_meses: null,
+    },
+  ],
+};
+
 function baseData() {
   return {
+    catalogoReserva: CATALOGO_RESERVA,
     documents: [DOC],
     total: 1,
     loadError: null,
@@ -65,7 +91,7 @@ beforeEach(() => {
   initSession({
     user: { sub: "u1", name: "Jefe", tenant_slug: "demo" },
     permissions: ["PERM_RECLASIFICAR", "PERM_RADI"],
-    permissionLevels: { PERM_RECLASIFICAR: 3, PERM_RADI: 3 },
+    permission_levels: { PERM_RECLASIFICAR: 3, PERM_RADI: 3 },
   });
   globalThis.fetch = vi.fn(async (url, init) => {
     if (init?.method === "POST") {
@@ -85,6 +111,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Elige Reservada con causal del art. 19 y su plazo (los datos de reserva distintos del fundamento). */
+async function elegirReservada(nivel) {
+  await fireEvent.change(nivel, { target: { value: "2" } });
+  await waitFor(() => expect(document.getElementById("reclasificar-causal")).toBeTruthy());
+  await fireEvent.change(document.getElementById("reclasificar-causal"), {
+    target: { value: "art19_b_seguridad_publica" },
+  });
+  await waitFor(() => expect(document.getElementById("reclasificar-plazo")).toBeTruthy());
+  await fireEvent.input(document.getElementById("reclasificar-plazo"), {
+    target: { value: "60" },
+  });
+}
+
 /** Abre el drawer y el modal de reclasificación sobre el radicado. */
 async function abrirModal() {
   currentPageStore.set({ url: new URL(`http://localhost/bandeja?radicado=${DOC.id}`) });
@@ -98,7 +137,7 @@ async function abrirModal() {
 describe("/bandeja — reclasificar exige el fundamento jurídico", () => {
   it("al elegir Reservada, el fundamento NO se ofrece como opcional", async () => {
     const nivel = await abrirModal();
-    await fireEvent.change(nivel, { target: { value: "2" } });
+    await elegirReservada(nivel);
 
     const etiquetas = screen.getAllByText(/fundamento jurídico/i).map((e) => e.textContent);
     expect(
@@ -109,7 +148,7 @@ describe("/bandeja — reclasificar exige el fundamento jurídico", () => {
 
   it("sin fundamento, el envío se detiene y se explica por qué", async () => {
     const nivel = await abrirModal();
-    await fireEvent.change(nivel, { target: { value: "2" } });
+    await elegirReservada(nivel);
     await fireEvent.input(document.getElementById("reclasificar-motivo"), {
       target: { value: "Contiene datos personales sensibles." },
     });
@@ -124,7 +163,7 @@ describe("/bandeja — reclasificar exige el fundamento jurídico", () => {
   it("con fundamento, la petición sale y lo lleva dentro", async () => {
     // Control positivo: la corrección no puede consistir en bloquear el acto.
     const nivel = await abrirModal();
-    await fireEvent.change(nivel, { target: { value: "2" } });
+    await elegirReservada(nivel);
     await fireEvent.input(document.getElementById("reclasificar-motivo"), {
       target: { value: "Contiene datos personales sensibles." },
     });

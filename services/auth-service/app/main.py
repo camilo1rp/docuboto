@@ -37,6 +37,7 @@ from app.routers.auth import set_auth_service
 from app.routers.clearance import router as clearance_router
 from app.routers.context import router as context_router
 from app.routers.health import router as health_router
+from app.routers.metrics import router as metrics_router
 from app.routers.rbac import pick_router as rbac_pick_router
 from app.routers.rbac import router as rbac_router
 from app.routers.signing_key import admin_router as signing_key_admin_router
@@ -142,6 +143,7 @@ app.include_router(signing_key_admin_router)  # /api/v1/auth/admin/users/.../sig
 app.include_router(signing_key_internal_router)  # /internal/signing-key — NUNCA vía gateway
 app.include_router(audit_router)
 app.include_router(health_router)
+app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 
 
 @app.exception_handler(Exception)

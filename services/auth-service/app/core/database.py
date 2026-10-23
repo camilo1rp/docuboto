@@ -109,7 +109,7 @@ async def get_optional_tenant_conn(
         if not aprovisionado:
             yield None
             return
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:
@@ -130,7 +130,7 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
             )
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:

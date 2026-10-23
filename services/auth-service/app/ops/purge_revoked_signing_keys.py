@@ -86,7 +86,7 @@ async def _purge_tenant(
     conn: asyncpg.Connection, *, schema: str, slug: str, days: int, dry_run: bool
 ) -> tuple[int, int]:
     """Purga las credenciales revocadas vencidas de un tenant. (hechas, fallidas)."""
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = SigningKeyRepository(conn)
     pendientes = await repo.fetch_ids_to_purge(days)
     if not pendientes:
@@ -100,7 +100,7 @@ async def _purge_tenant(
     for p in pendientes:
         try:
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 repo_tx = SigningKeyRepository(conn)
                 row = await repo_tx.get_for_rewrap(p["id"])  # FOR UPDATE, cualquier estado
                 if row is None or row["private_key_cifrado"] is None:

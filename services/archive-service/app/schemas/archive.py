@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.retencion_legal import SoporteCitado
+
 
 def validar_forma_fondo_acumulado(
     *,
@@ -273,31 +275,6 @@ class PublicacionResponse(BaseModel):
     publicado_at: datetime | None = None
 
 
-class LegalHoldRequest(BaseModel):
-    """Acto de declarar o levantar el legal hold (freeze de litigio) de un
-    expediente (AREA-08-07; Ley 594/2000 art. 4, Ac. AGN 001/2024 4.3.2.6).
-
-    `motivo` y `acta_ref` son obligatorios en AMBOS sentidos: un freeze que
-    bloquea la disposición final sin acto que lo respalde es un bloqueo
-    arbitrario, y levantarlo sin acto es la forma de deshacerlo sin dar
-    cuentas. Quedan en el asiento de archive y en el de storage.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    activo: bool
-    motivo: str = Field(..., min_length=10, max_length=2000)
-    acta_ref: str = Field(..., min_length=1, max_length=255)
-
-
-class LegalHoldResponse(BaseModel):
-    expediente_id: uuid.UUID
-    code: str
-    activo: bool
-    objetos_afectados: int
-    objetos_sin_cambio: int
-
-
 class ExpedienteDisposicionResult(BaseModel):
     """Respuesta de `POST /{id}/close` y `POST /{id}/transfer`.
 
@@ -340,25 +317,69 @@ def _validate_pdfa_profile(value: str | None) -> str | None:
     return value
 
 
+# C-4/C6 (ADR-040): los esquemas de ESCRITURA del instrumento rechazan lo que no
+# conocen. Un cliente viejo que mande `retention_years`/`total_retention` recibe
+# 422 `extra_forbidden`, no un silencio que le haga creer que fijó una retención.
+_ESCRITURA_ESTRICTA = ConfigDict(extra="forbid")
+
+# Tope razonable de dependencias productoras por serie (T4: la misma serie en
+# varias oficinas). Defensa contra una lista desbocada, no una regla de negocio.
+_MAX_PRODUCTORAS = 50
+
+
+def _validate_productoras(value: list[int] | None) -> list[int] | None:
+    if value is None:
+        return None
+    if len(value) > _MAX_PRODUCTORAS:
+        raise ValueError(f"dependencias_productoras admite como máximo {_MAX_PRODUCTORAS} códigos")
+    if len(set(value)) != len(value):
+        raise ValueError("dependencias_productoras no admite códigos repetidos")
+    if any(c < 1 for c in value):
+        raise ValueError("dependencias_productoras: los códigos de dependencia son enteros positivos")
+    return value
+
+
 class TrdSerieCreate(BaseModel):
+    """`POST /api/v1/trd`. La retención son DOS fases OBLIGATORIAS (C-4/C6): sin
+    default, porque un 0 silencioso es retención cero. `retention_years` /
+    `total_retention` ya no existen en la escritura (la respuesta los deriva)."""
+
+    model_config = _ESCRITURA_ESTRICTA
+
     code: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1)
     description: str | None = None
-    retention_years: int = 5
-    total_retention: int = 10
     disposition: _DISPOSITION = "E"
-    # E04/ADR-015: subserie (parent_id) + retención en dos fases.
+    # E04/ADR-015: subserie (parent_id), solo DOS niveles (serie > subserie).
     parent_id: uuid.UUID | None = None
-    archivo_gestion_years: int | None = Field(default=None, ge=0)
-    archivo_central_years: int | None = Field(default=None, ge=0)
+    archivo_gestion_years: int = Field(..., ge=0)
+    archivo_central_years: int = Field(..., ge=0)
     # E10 debt: perfil PDF/A de la serie (RF-FIR-15) -- NULL = sin política
     # propia, el AIP cae al default global de storage-service.
     pdfa_profile: str | None = None
+    # C-4/C8: dependencia(s) productora(s), por `dependencias.codigo` (ADR-032).
+    # Solo en la SERIE (no en subseries); obligatoria para aprobar/convalidar.
+    dependencias_productoras: list[int] | None = None
 
     @field_validator("pdfa_profile")
     @classmethod
     def _check_pdfa_profile(cls, value: str | None) -> str | None:
         return _validate_pdfa_profile(value)
+
+    @field_validator("dependencias_productoras")
+    @classmethod
+    def _check_productoras(cls, value: list[int] | None) -> list[int] | None:
+        return _validate_productoras(value)
+
+    @model_validator(mode="after")
+    def _retencion_minima(self) -> TrdSerieCreate:
+        # Espejo del CHECK `trd_series_retencion_minima_check` (069): 422 legible antes que 23514.
+        if self.archivo_gestion_years + self.archivo_central_years < 1:
+            raise ValueError(
+                "la retención total (gestión + central) debe ser de al menos 1 año: "
+                "0 + 0 no es «sin retención», es un calendario que vence al cerrar"
+            )
+        return self
 
 
 class TrdSerieUpdate(BaseModel):
@@ -368,49 +389,60 @@ class TrdSerieUpdate(BaseModel):
     `POST /trd/{code}/versiones`). `pdfa_profile` es la ÚNICA excepción: sigue
     aceptándose en cualquier estado (D1, política de preservación técnica, no
     contenido convalidado). `is_active` YA NO se acepta -- la baja de una
-    versión es `derogar` (Increment 2), nunca un efecto colateral del PATCH."""
+    versión es `derogar` (Increment 2), nunca un efecto colateral del PATCH.
+
+    C-4/C6: el juego legado (`retention_years`/`total_retention`) ya no se acepta
+    (422): las dos fases son la única fuente. `dependencias_productoras`
+    REEMPLAZA la lista entera y, como contenido de la versión, solo en `borrador`."""
+
+    model_config = _ESCRITURA_ESTRICTA
 
     name: str | None = None
     description: str | None = None
-    # AREA-06-07: `retention_years`/`total_retention` son el juego LEGADO. El cálculo real
-    # del calendario usa `archivo_gestion_years`/`archivo_central_years`; el servicio
-    # mantiene los dos juegos de acuerdo (y la respuesta los DERIVA de las dos fases:
-    # `retention_years` = gestión, `total_retention` = gestión + central). Si se envía el
-    # juego legado SIN las dos fases, se traduce a ellas igual que en el alta; si se
-    # envían las fases, mandan ellas.
-    retention_years: int | None = None
-    total_retention: int | None = None
     archivo_gestion_years: int | None = Field(default=None, ge=0)
     archivo_central_years: int | None = Field(default=None, ge=0)
     disposition: str | None = None
     pdfa_profile: str | None = None
+    dependencias_productoras: list[int] | None = None
 
     @field_validator("pdfa_profile")
     @classmethod
     def _check_pdfa_profile(cls, value: str | None) -> str | None:
         return _validate_pdfa_profile(value)
+
+    @field_validator("dependencias_productoras")
+    @classmethod
+    def _check_productoras(cls, value: list[int] | None) -> list[int] | None:
+        return _validate_productoras(value)
 
 
 class TrdSerieVersionCreate(BaseModel):
     """`POST /api/v1/trd/{code}/versiones` (ADR-025, Increment 1, nuevo):
     clona la versión VIGENTE (convalidada/migrada) del código como una fila
     NUEVA `version+1`, estado `borrador`. Solo los campos enviados se
-    sobre-escriben; el resto se copia de la versión vigente."""
+    sobre-escriben; el resto se copia de la versión vigente (fases y
+    dependencias productoras incluidas, C-4)."""
+
+    model_config = _ESCRITURA_ESTRICTA
 
     name: str | None = Field(default=None, min_length=1)
     description: str | None = None
-    retention_years: int | None = None
-    total_retention: int | None = None
     disposition: _DISPOSITION | None = None
     parent_id: uuid.UUID | None = None
     archivo_gestion_years: int | None = Field(default=None, ge=0)
     archivo_central_years: int | None = Field(default=None, ge=0)
     pdfa_profile: str | None = None
+    dependencias_productoras: list[int] | None = None
 
     @field_validator("pdfa_profile")
     @classmethod
     def _check_pdfa_profile(cls, value: str | None) -> str | None:
         return _validate_pdfa_profile(value)
+
+    @field_validator("dependencias_productoras")
+    @classmethod
+    def _check_productoras(cls, value: list[int] | None) -> list[int] | None:
+        return _validate_productoras(value)
 
 
 class TrdSerieAprobar(BaseModel):
@@ -476,6 +508,15 @@ class TrdSerieConvalidar(BaseModel):
     instancia_convalidante: str = Field(..., min_length=1)
     rusd_radicado: str | None = None
     fecha_publicacion: date | None = None
+    # C-4/A1: SOLO en la ratificación de una versión `migrada` (backfill sin productora): captura
+    # de un dato preexistente, una sola vez, en la misma transacción y antes del gate. En el
+    # circuito normal (`aprobada`) la productora se declaró en `borrador`: aquí es 422.
+    dependencias_productoras: list[int] | None = None
+
+    @field_validator("dependencias_productoras")
+    @classmethod
+    def _check_productoras(cls, value: list[int] | None) -> list[int] | None:
+        return _validate_productoras(value)
 
 
 class TvdAgrupacionCreate(BaseModel):
@@ -490,13 +531,17 @@ class TvdAgrupacionCreate(BaseModel):
     `justificacion_valoracion` son OBLIGATORIOS: son el objeto del
     instrumento (D5), no un dato secundario."""
 
+    model_config = _ESCRITURA_ESTRICTA
+
     code: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1)
     description: str | None = None
     disposition: _DISPOSITION = "E"
     parent_id: uuid.UUID | None = None
-    total_retention: int = Field(default=10, ge=0)
-    archivo_central_years: int | None = Field(default=None, ge=0)
+    # C-4/C6: la fase central es OBLIGATORIA y sin default (antes `total_retention`
+    # valía 10 por omisión y el calendario salía en 0). `total_retention` ya no se
+    # acepta: la respuesta lo deriva.
+    archivo_central_years: int = Field(..., ge=0)
     pdfa_profile: str | None = None
     fondo_nombre: str = Field(..., min_length=1)
     fecha_extrema_inicial: date
@@ -524,9 +569,11 @@ class TvdAgrupacionUpdate(BaseModel):
     gate que `TrdSerieUpdate`. `retention_years`/`archivo_gestion_years`
     quedan fuera a propósito: son 0/NULL por construcción para TVD."""
 
+    model_config = _ESCRITURA_ESTRICTA
+
     name: str | None = None
     description: str | None = None
-    total_retention: int | None = Field(default=None, ge=0)
+    archivo_central_years: int | None = Field(default=None, ge=0)
     disposition: str | None = None
     pdfa_profile: str | None = None
     fondo_nombre: str | None = Field(default=None, min_length=1)
@@ -546,11 +593,12 @@ class TvdAgrupacionVersionCreate(BaseModel):
     `archivo_gestion_years`/`retention_years`, con los campos propios de TVD
     opcionales (se copian de la vigente cuando se omiten)."""
 
+    model_config = _ESCRITURA_ESTRICTA
+
     name: str | None = Field(default=None, min_length=1)
     description: str | None = None
     disposition: _DISPOSITION | None = None
     parent_id: uuid.UUID | None = None
-    total_retention: int | None = Field(default=None, ge=0)
     archivo_central_years: int | None = Field(default=None, ge=0)
     pdfa_profile: str | None = None
     fondo_nombre: str | None = Field(default=None, min_length=1)
@@ -645,6 +693,9 @@ class LoteEliminacionResponse(BaseModel):
     total_items: int
     items: list[LoteEliminacionItem] = []
     rechazados: list[LoteEliminacionRechazo] = []
+    # C14 (ADR-043): constancias de firma inobtenible vigentes que pierden su soporte con este
+    # lote. Aviso, no rechazo; el aval del lote es la baja de soporte.
+    soportes_citados: list[SoporteCitado] = []
     # `ejecutado` es False en la respuesta de PROPONER: ahí no se ha eliminado
     # nada. La destrucción es la quinta fase (`POST .../ejecutar`) y su resultado
     # lo dice `EjecucionLoteResponse`. Va explícito por el mismo motivo que en la
@@ -756,6 +807,8 @@ class LoteEliminacionPublico(BaseModel):
     # qué quedó.
     anulado_motivo: str | None = None
     total_items: int
+    # C14: solo el recuento (la identidad de las constancias no es pública).
+    soportes_citados: int = 0
     items: list[LoteEliminacionItemPublico] = []
 
 
@@ -812,6 +865,8 @@ class EjecucionFallo(BaseModel):
     expediente_id: uuid.UUID
     expediente_code: str
     detalle: str
+    # Código estable cuando el fallo tiene una causa de dominio (`soporte_citado_no_avalado`).
+    motivo: str | None = None
 
 
 class EjecucionLoteResponse(BaseModel):
@@ -957,6 +1012,24 @@ class ExpedienteDisposicionVencidaResponse(BaseModel):
     decidido_at: datetime | None = None
 
 
+class RutaDependenciaNodo(BaseModel):
+    """Un nodo de la ruta raíz → productora del organigrama (C-4/C8)."""
+
+    codigo: int
+    sigla: str | None = None
+    nombre: str
+
+
+class DependenciaProductoraResponse(BaseModel):
+    """Dependencia productora de una versión de serie TRD (C-4/C8, ADR-040)."""
+
+    dependencia_codigo: int
+    dependencia_nombre: str
+    # Lo que el organigrama decía al convalidar; null mientras la versión no
+    # se haya convalidado.
+    ruta_convalidada: list[RutaDependenciaNodo] | None = None
+
+
 class TrdSerieResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -964,8 +1037,20 @@ class TrdSerieResponse(BaseModel):
     code: str
     name: str
     description: str | None
-    retention_years: int
-    total_retention: int
+    # DERIVADOS de las dos fases (C-4/C6): solo lectura, no son columnas ni se
+    # aceptan en la escritura (422).
+    retention_years: int = Field(
+        ...,
+        description="Derivado, solo lectura: años de archivo de gestión.",
+        json_schema_extra={"readOnly": True},
+    )
+    total_retention: int = Field(
+        ...,
+        description="Derivado, solo lectura: gestión + central.",
+        json_schema_extra={"readOnly": True},
+    )
+    # C-4/C8: dependencias productoras de la versión (solo series TRD raíz).
+    dependencias_productoras: list[DependenciaProductoraResponse] = Field(default_factory=list)
     disposition: str
     is_active: bool
     created_at: datetime
@@ -1303,6 +1388,11 @@ class TipoDocumentalCreate(BaseModel):
     #: UPDATE a mano, y cerrar una puerta sin dejar la manija es media
     #: corrección.
     admite_ventanilla_publica: bool = False
+    #: ¿Entra este tipo en el esquema de publicación de la entidad (Ley 1712/2014
+    #: art. 12)? Marca PROPIA, distinta de `admite_ventanilla_publica` (recepción
+    #: del público, Ley 1755): recibir por la ventanilla no implica difundir.
+    #: Opt-in; cambiarla exige `USUA_PERM_TRD` nivel 3 (decisión de difusión).
+    publicable: bool = False
 
 
 class TipoDocumentalUpdate(BaseModel):
@@ -1312,6 +1402,7 @@ class TipoDocumentalUpdate(BaseModel):
     metadata_template: str | None = None
     activo: bool | None = None
     admite_ventanilla_publica: bool | None = None
+    publicable: bool | None = None
 
 
 class TipoDocumentalResponse(BaseModel):
@@ -1325,7 +1416,12 @@ class TipoDocumentalResponse(BaseModel):
     metadata_template: str | None
     activo: bool
     admite_ventanilla_publica: bool
+    publicable: bool = False
     created_at: datetime
+    #: Solo en la respuesta de un PATCH que pasa `publicable` de true a false:
+    #: cuántos radicados de este tipo siguen publicados (no se despublican solos;
+    #: el retiro es un acto explícito por radicado). `null` = no se pudo contar.
+    publicados_vigentes: int | None = None
 
 
 class ExpedienteSearchHit(BaseModel):
@@ -1387,6 +1483,17 @@ class RolAutorizado(BaseModel):
     crud: int
 
 
+class AipVersionItem(BaseModel):
+    """Una versión del AIP (C-6): la 1 es la ingesta; las siguientes, renovaciones del sello."""
+
+    version: int
+    aip_id: uuid.UUID
+    sustituye_a_aip_id: uuid.UUID | None = None
+    motivo: str
+    firma_ordinal: int | None = None
+    created_at: datetime
+
+
 class AipResponse(BaseModel):
     """Espejo del `AipResponse` de storage-service (E10), reexpuesto por el
     endpoint mediado `GET /expedientes/{id}/aip` — único punto de acceso
@@ -1417,6 +1524,12 @@ class AipResponse(BaseModel):
     retain_until: datetime | None = None
     retention_mode: str | None = None
     legal_hold: bool
+    # C-6 (ADR-042): versión de la CABEZA que devuelve storage y la historia completa
+    # (`expediente_aip_version`, más reciente primero). Solo lectura.
+    version: int | None = None
+    sustituye_a: uuid.UUID | None = None
+    motivo: str | None = None
+    versiones: list[AipVersionItem] = Field(default_factory=list)
 
 
 class AipReintentoResponse(BaseModel):
@@ -1450,3 +1563,86 @@ class EventoPreservacionResponse(BaseModel):
     detalle: dict[str, Any] = Field(default_factory=dict)
     agente: str | None = None
     ts: datetime
+
+
+# ---------------------------------------------------------------------------
+# Cuadro de clasificación documental derivado (C-4/C8, ADR-040)
+# ---------------------------------------------------------------------------
+
+
+class CuadroSubserie(BaseModel):
+    code: str
+    name: str
+    version: int
+    estado: str
+    disposition: str
+    archivo_gestion_years: int | None = None
+    archivo_central_years: int | None = None
+
+
+class CuadroSerie(BaseModel):
+    code: str
+    name: str
+    version: int
+    estado: str
+    disposition: str
+    archivo_gestion_years: int | None = None
+    archivo_central_years: int | None = None
+    #: La serie la producen varias dependencias: aparece bajo cada una.
+    compartida: bool = False
+    #: ¿La ruta viva de esta productora difiere de la que fijó la convalidación
+    #: (reorganización posterior)? `null` = no hay instantánea (migrada/borrador).
+    ruta_difiere_de_la_convalidada: bool | None = None
+    subseries: list[CuadroSubserie] = Field(default_factory=list)
+
+
+class CuadroNodo(BaseModel):
+    """Sección (raíz del organigrama) o subsección (cualquier nivel inferior)."""
+
+    codigo: int
+    sigla: str | None = None
+    nombre: str
+    activo: bool
+    nivel: Literal["seccion", "subseccion"]
+    series: list[CuadroSerie] = Field(default_factory=list)
+    subsecciones: list[CuadroNodo] = Field(default_factory=list)
+
+
+class CuadroFondo(BaseModel):
+    #: `null` si la entidad no ha configurado `entidad_nombre` (no se inventa con el slug).
+    nombre: str | None = None
+    sigla: str | None = None
+    origen: str = "sgd_param_admin"
+
+
+class CuadroSinSeccion(BaseModel):
+    code: str
+    name: str
+    version: int
+    estado: str
+    motivo: Literal["sin_productora", "productora_desconocida", "serie_padre_no_vigente"]
+
+
+class CuadroAviso(BaseModel):
+    tipo: Literal[
+        "productora_inactiva",
+        "organigrama_reorganizado_tras_convalidacion",
+        "entidad_sin_nombre",
+        "productora_desconocida",
+    ]
+    dependencia_codigo: int | None = None
+    series: list[str] | None = None
+
+
+class CuadroClasificacionResponse(BaseModel):
+    """`GET /api/v1/trd/cuadro`: fondo > sección > subsección > serie > subserie,
+    DERIVADO del organigrama (E14) y de la productora declarada en la TRD vigente."""
+
+    fondo: CuadroFondo
+    secciones: list[CuadroNodo] = Field(default_factory=list)
+    sin_seccion: list[CuadroSinSeccion] = Field(default_factory=list)
+    avisos: list[CuadroAviso] = Field(default_factory=list)
+    generado_at: datetime
+
+
+CuadroNodo.model_rebuild()

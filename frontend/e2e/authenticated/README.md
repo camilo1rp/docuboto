@@ -53,7 +53,7 @@ documento_modificado` (control positivo).
 
    ```bash
    E2E_USERNAME=operador E2E_PASSWORD='...' \
-     npx playwright test --config=playwright.authenticated.config.js
+     npm run test:e2e:auth   # = npx playwright test --config=playwright.authenticated.config.js
    ```
 
 Las credenciales **no tienen valor por defecto a propósito**: un default

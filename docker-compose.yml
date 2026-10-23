@@ -21,7 +21,80 @@ volumes:
   # para quien luego elija otro.
   whisper-models:
 
+# Migraciones al arrancar en DESARROLLO (C19, ADR-041): cada servicio con base de
+# datos espera a su `migrate-<servicio>`, un contenedor de un solo uso que corre
+# `migrations/runner.py` con la conexión del PROPIETARIO sobre la MISMA imagen que
+# va a servir (la construye el servicio; el migrador la reutiliza por nombre, sin
+# `build:` propio para no construirla dos veces). Si el runner falla, el servicio
+# no arranca (`service_completed_successfully`). Los nueve runners comparten un
+# cerrojo global, así que arrancar todo junto es seguro.
+#
+# Los servicios CONSERVAN `MIGRATIONS_DATABASE_URL` en dev: `scripts/init-tenant.sh`
+# hace `docker compose exec` y los conftest de integración la leen.
+#
+# Recrear UN servicio con `--no-deps` salta su migrador (a propósito): para una
+# imagen nueva, `docker compose build <svc> && docker compose run --rm --no-deps
+# migrate-<svc> && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose
+# up -d --no-build --no-deps <svc>`. Ver .claude/docs/arranque.md.
+x-migracion-dev: &migracion-dev
+  restart: "no"
+  command: ["python", "migrations/runner.py"]
+  pull_policy: never
+  networks:
+    - orpycamcp-net
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
+
 services:
+
+  # ─── Migraciones (un contenedor de un solo uso por servicio con base de datos) ───
+  migrate-auth:
+    <<: *migracion-dev
+    image: orpycamcp/auth-service:dev
+    container_name: orpycamcp-migrate-auth
+
+  migrate-tenant:
+    <<: *migracion-dev
+    image: orpycamcp/tenant-service:dev
+    container_name: orpycamcp-migrate-tenant
+
+  migrate-document:
+    <<: *migracion-dev
+    image: orpycamcp/document-service:dev
+    container_name: orpycamcp-migrate-document
+
+  migrate-storage:
+    <<: *migracion-dev
+    image: orpycamcp/storage-service:dev
+    container_name: orpycamcp-migrate-storage
+
+  migrate-workflow:
+    <<: *migracion-dev
+    image: orpycamcp/workflow-service:dev
+    container_name: orpycamcp-migrate-workflow
+
+  migrate-archive:
+    <<: *migracion-dev
+    image: orpycamcp/archive-service:dev
+    container_name: orpycamcp-migrate-archive
+
+  migrate-notification:
+    <<: *migracion-dev
+    image: orpycamcp/notification-service:dev
+    container_name: orpycamcp-migrate-notification
+
+  migrate-signature:
+    <<: *migracion-dev
+    image: orpycamcp/signature-service:dev
+    container_name: orpycamcp-migrate-signature
+
+  migrate-knowledge:
+    <<: *migracion-dev
+    image: orpycamcp/knowledge-service:dev
+    container_name: orpycamcp-migrate-knowledge
 
   # ─── Infrastructure ───────────────────────────────────────────────────────────
 
@@ -246,6 +319,7 @@ services:
     # del tenant [Inc.1] + sello de tiempo RFC 3161 de una TSA local propia
     # del despliegue [Inc.4]; 'nativa' = HMAC de servicio, resto de objetos).
     # Contexto raíz para acceder a shared/orpycamcp_common (ADR-010, RF-FIR-14).
+    image: orpycamcp/signature-service:dev
     build:
       context: .
       dockerfile: services/signature-service/Dockerfile
@@ -343,6 +417,8 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-signature:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -393,6 +469,7 @@ services:
     # Capa de conocimiento (E21, ADR-006): pgvector por tenant, advisoria/derivada.
     # Contexto en la raíz para incluir shared/ (ADR-010): el worker de ingesta
     # consume orpycamcp.document.events y audita con orpycamcp_common.
+    image: orpycamcp/knowledge-service:dev
     build:
       context: .
       dockerfile: services/knowledge-service/Dockerfile
@@ -438,6 +515,8 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-knowledge:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -449,6 +528,7 @@ services:
   auth-service:
     # Contexto en la raíz para incluir shared/ (ADR-010): el Dockerfile hace
     # COPY shared + pip install /shared. El .dockerignore de la raíz acota el contexto.
+    image: orpycamcp/auth-service:dev
     build:
       context: .
       dockerfile: services/auth-service/Dockerfile
@@ -504,15 +584,20 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-auth:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       keycloak:
         condition: service_started
+      redis:
+        condition: service_healthy
     restart: "no"
     mem_limit: 2g
     memswap_limit: 2g
 
   tenant-service:
+    image: orpycamcp/tenant-service:dev
     build:
       context: .
       dockerfile: services/tenant-service/Dockerfile
@@ -527,10 +612,19 @@ services:
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
+      # Proveedores efectivos del asistente que muestra GET /config/asistente: los mismos
+      # valores que recibe knowledge-service (ADR-037).
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-stub}
+      - AI_PROVIDER=${AI_PROVIDER:-ollama_cloud}
+      - ASSISTANT_MODEL=${ASSISTANT_MODEL:-claude-opus-4-8}
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-tenant:
+        condition: service_completed_successfully
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: "no"
     mem_limit: 2g
@@ -539,6 +633,7 @@ services:
   document-service:
     # Contexto en la raíz para incluir shared/ (ADR-010): el Dockerfile hace
     # COPY shared + pip install /shared. El .dockerignore de la raíz acota el contexto.
+    image: orpycamcp/document-service:dev
     build:
       context: .
       dockerfile: services/document-service/Dockerfile
@@ -571,6 +666,10 @@ services:
       # signature-service.SIGNATURE_INTERNAL_TOKEN. Dev-only.
       - SIGNATURE_SERVICE_URL=http://signature-service:8008
       - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
+      # C16 (ADR-038): clave con la que se firman los retos ALTCHA de la ventanilla
+      # pública. Dev-only; en producción es obligatoria (openssl rand -hex 32) y
+      # NUNCA llega al navegador. Sin clave de >= 32 bytes el servicio no arranca.
+      - ALTCHA_HMAC_KEY=${ALTCHA_HMAC_KEY:-orpycamcp_altcha_dev_hmac_key_0000000000}
       - TENANT_SERVICE_URL=http://tenant-service:8002
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
@@ -595,6 +694,8 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-document:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -604,6 +705,7 @@ services:
     memswap_limit: 2g
 
   archive-service:
+    image: orpycamcp/archive-service:dev
     build:
       context: .
       dockerfile: services/archive-service/Dockerfile
@@ -647,7 +749,11 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-archive:
+        condition: service_completed_successfully
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: "no"
     mem_limit: 2g
@@ -660,6 +766,7 @@ services:
     # y el ÚLTIMO stage declarado es "production" (Java+veraPDF, ver
     # services/storage-service/Dockerfile) -- sin este target, `docker build`
     # tomaría por defecto ese último stage y dev dejaría de ser slim.
+    image: orpycamcp/storage-service:dev
     build:
       context: .
       dockerfile: services/storage-service/Dockerfile
@@ -681,6 +788,9 @@ services:
       # Dev-only — NUNCA este valor en producción.
       - INTERNAL_SERVICE_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
+      # Registro del nonce de un solo uso de la identidad firmada (ADR-036, addendum C-7):
+      # con IDENTITY_SIGNING_SECRET y sin REDIS_URL el servicio NO arranca.
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       # Generación del documento de salida (E23, RF-PRO-03). A diferencia de
       # veraPDF y Ghostscript —que solo van en la imagen `production`—, las
       # librerías nativas de WeasyPrint SÍ están en la imagen base, así que aquí
@@ -693,7 +803,11 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-storage:
+        condition: service_completed_successfully
       minio:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: "no"
     mem_limit: 2g
@@ -702,6 +816,7 @@ services:
   workflow-service:
     # Contexto en la raíz para incluir shared/ (ADR-010): emite eventos en el
     # sobre canónico con orpycamcp_common.
+    image: orpycamcp/workflow-service:dev
     build:
       context: .
       dockerfile: services/workflow-service/Dockerfile
@@ -719,6 +834,8 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-workflow:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -733,6 +850,7 @@ services:
   notification-service:
     # Contexto en la raíz para incluir shared/ (ADR-010): consume el sobre
     # canónico de eventos (orpycamcp.document.events) con orpycamcp_common.
+    image: orpycamcp/notification-service:dev
     build:
       context: .
       dockerfile: services/notification-service/Dockerfile
@@ -765,6 +883,8 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
+      migrate-notification:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

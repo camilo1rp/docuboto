@@ -132,8 +132,8 @@ async def _verificar_replica(
     object_key: str,
     *,
     version_id: str | None,
-    retention_mode: str,
-    retain_until: datetime,
+    retention_mode: str | None,
+    retain_until: datetime | None,
     zip_sha256: str,
 ) -> None:
     """Read-back de la copia (misma disciplina que el primario, `aip_service`).
@@ -141,14 +141,16 @@ async def _verificar_replica(
     Hasta aquí la réplica se daba por buena porque `put_object`/`copy_object` no
     fallaron: ni la retención ni los bytes se releían, y el evento REPLICA `ok`
     atestiguaba una copia que nadie había mirado."""
-    await verificar_retencion_aplicada(
-        client,
-        bucket,
-        object_key,
-        version_id=version_id,
-        modo_esperado=retention_mode,
-        hasta_esperado=retain_until,
-    )
+    if retention_mode is not None and retain_until is not None:
+        # C-5/C7: una réplica de retención diferida solo lleva legal hold: no hay fecha que releer.
+        await verificar_retencion_aplicada(
+            client,
+            bucket,
+            object_key,
+            version_id=version_id,
+            modo_esperado=retention_mode,
+            hasta_esperado=retain_until,
+        )
     obj = await client.get_object(bucket, object_key)
     try:
         leido = await obj.read()
@@ -201,8 +203,8 @@ async def replicate_aip(
     primary_bucket: str,
     object_key: str,
     zip_bytes: bytes,
-    retention_mode: str,
-    retain_until: datetime,
+    retention_mode: str | None,
+    retain_until: datetime | None,
     legal_hold: bool,
     num_copias: int,
 ) -> ReplicaResult | None:
@@ -222,7 +224,11 @@ async def replicate_aip(
     cross_site = _is_cross_site()
     target: Literal["local", "cross-site"] = "cross-site" if cross_site else "local"
     bucket = replica_bucket_name(tenant_slug)
-    retention = Retention(retention_mode, retain_until)
+    retention = (
+        Retention(retention_mode, retain_until)
+        if retention_mode is not None and retain_until is not None
+        else None
+    )
 
     try:
         if cross_site:

@@ -42,6 +42,27 @@ def tenant_ctx(tenant_flujo):
     return tenant_flujo
 
 
+async def _bajar_a_1(conn: asyncpg.Connection, radicado_id) -> None:
+    """Baja un radicado clasificado por la ÚNICA vía que la base admite (C4, ADR-039): una
+    solicitud aprobada por otra persona en la misma transacción que el UPDATE."""
+    ana, beto = uuid.uuid4(), uuid.uuid4()
+    async with conn.transaction():
+        sid = await conn.fetchval(
+            "INSERT INTO reclasificacion_solicitudes (radicado_id, nivel_anterior, nivel_nuevo, "
+            "motivo, solicitado_por) VALUES ($1, 3, 1, 'Cesó la causa de la clasificación', $2) RETURNING id",
+            radicado_id, ana,
+        )
+        await conn.execute(
+            "UPDATE reclasificacion_solicitudes SET estado = 'aprobada', resuelto_por = $2, "
+            "resuelto_at = now() WHERE id = $1", sid, beto,
+        )
+        await conn.execute(
+            "UPDATE radicados SET nivel_seguridad = 1, clasificacion_causal = NULL, "
+            "clasificacion_plazo_meses = NULL, clasificacion_fundamento = NULL, clasificado_at = NULL "
+            "WHERE id = $1", radicado_id,
+        )
+
+
 async def _escenario(tenant_ctx: tuple[str, asyncpg.Connection]):
     from app.schemas.borrador import BorradorCreate
     from app.schemas.document import DocumentCreate
@@ -49,12 +70,12 @@ async def _escenario(tenant_ctx: tuple[str, asyncpg.Connection]):
     from app.services.document_service import DocumentService
 
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     padre = await DocumentService(conn, slug).create(
         DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Queja reservada", sender_name="x"),
         registered_by=AUTOR,
     )
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)' WHERE id = $1", padre.id)
+    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)', clasificacion_causal = 'art18_a_intimidad' WHERE id = $1", padre.id)
     servicio = BorradorService(conn, slug)
     reservado = await servicio.crear(
         BorradorCreate(
@@ -149,14 +170,14 @@ async def test_reclasificar_el_padre_cierra_tambien_el_borrador(
     from app.schemas.borrador import BorradorCreate
 
     # Padre público, borrador nivel 1; después el padre sube a 2.
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 1 WHERE id = $1", padre.id)
+    await _bajar_a_1(conn, padre.id)
     b = await servicio.crear(
         BorradorCreate(doc_type="S", subject="Respuesta posterior", radicado_padre_id=padre.id),
         None,
         max_clearance=1,
     )
     assert b.nivel_seguridad == 1
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 2, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)' WHERE id = $1", padre.id)
+    await conn.execute("UPDATE radicados SET nivel_seguridad = 2, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)', clasificacion_causal = 'art19_i_salud_publica', clasificacion_plazo_meses = 12 WHERE id = $1", padre.id)
     assert b.id not in {x.id for x in await servicio.listar(None, max_clearance=1)}
     with pytest.raises(HTTPException):
         await servicio.get(b.id, max_clearance=1)
@@ -248,7 +269,7 @@ async def test_radicar_hereda_el_nivel_del_padre_y_el_de_clearance_1_no_lo_ve(
     slug, conn, _, padre, _, _ = await _escenario(tenant_ctx)
     await conn.execute(
         "UPDATE radicados SET clasificacion_fundamento = 'Ley 1712 art. 18', "
-        "clasificacion_causal = 'intimidad', clasificacion_plazo_meses = 60 WHERE id = $1",
+        "clasificacion_causal = 'art18_a_intimidad', clasificacion_plazo_meses = NULL WHERE id = $1",
         padre.id,
     )
     servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
@@ -277,8 +298,8 @@ async def test_radicar_hereda_el_nivel_del_padre_y_el_de_clearance_1_no_lo_ve(
     )
     assert fila["nivel_seguridad"] == 3
     assert fila["clasificacion_fundamento"] == "Ley 1712 art. 18"
-    assert fila["clasificacion_causal"] == "intimidad"
-    assert fila["clasificacion_plazo_meses"] == 60
+    assert fila["clasificacion_causal"] == "art18_a_intimidad"
+    assert fila["clasificacion_plazo_meses"] is None
     assert fila["responde_a"] == padre.id
     # Quien tiene clearance 1 no lo alcanza por la vía del documento...
     assert await docs._repo.get_by_id(nuevo.id, 1) is None

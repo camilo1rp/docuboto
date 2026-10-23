@@ -864,6 +864,8 @@ async def test_create_document_returns_nivel_seguridad(
             **_CREATE_PAYLOAD,
             "nivel_seguridad": 2,
             "clasificacion_fundamento": "Art. 19 Ley 1712",
+            "clasificacion_causal": "art19_b_seguridad_publica",
+            "clasificacion_plazo_meses": 12,
         },
         headers=TENANT_HEADERS,
     )
@@ -886,6 +888,7 @@ async def test_create_document_no_write_up_403(
             **_CREATE_PAYLOAD,
             "nivel_seguridad": 3,
             "clasificacion_fundamento": "Art. 18 Ley 1712",
+            "clasificacion_causal": "art18_a_intimidad",
         },
         headers=TENANT_HEADERS,
     )
@@ -1171,7 +1174,13 @@ async def test_publicar_un_reservado_da_404_neutro(
     convertir el endpoint en un oráculo.
     """
     client, mock_conn = client_with_conn
-    mock_conn.fetchval.return_value = True
+
+    # El gate RBAC concede; la comprobación diagnóstica de C-4/C10 («¿lo único que falla
+    # es el tipo?») responde que NO: el radicado es reservado, así que sigue el 404 neutro.
+    async def _fetchval(sql, *args, **kw):
+        return False if "FROM radicados" in sql else True
+
+    mock_conn.fetchval.side_effect = _fetchval
     mock_conn.fetchrow.side_effect = [_clearance_row(), None]
 
     resp = await client.post(

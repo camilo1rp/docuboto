@@ -21,6 +21,8 @@ argon2-cffi==23.1.0
     # via miniopy-async
 argon2-cffi-bindings==26.1.0
     # via argon2-cffi
+async-timeout==5.0.1
+    # via redis
 asyncpg==0.31.0
     # via -r services/storage-service/requirements.txt
 attrs==26.1.0
@@ -122,6 +124,8 @@ python-multipart==0.0.32
     # via -r services/storage-service/requirements.txt
 pyyaml==6.0.3
     # via uvicorn
+redis==8.1.0
+    # via -r services/storage-service/requirements.txt
 starlette==1.6.0
     # via fastapi
 tinycss2==1.5.1

@@ -785,7 +785,7 @@
       <section class="firma-chain" aria-label="Cadena de firmas">
         <h3 class="firma-chain__title">Turnos de firma</h3>
         <ol class="firma-chain__list" role="list">
-          {#each selectedDetail.items as turno, idx (turno.orden)}
+          {#each selectedDetail.items as turno (turno.orden)}
             {@const activo = esTurnoActivo(turno)}
             <li
               class="firma-chain__item"

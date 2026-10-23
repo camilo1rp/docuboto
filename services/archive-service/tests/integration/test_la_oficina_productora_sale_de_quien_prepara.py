@@ -37,7 +37,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _sp(conn: asyncpg.Connection, slug: str) -> None:
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
 async def _crear_catalogos(conn: asyncpg.Connection, slug: str) -> None:

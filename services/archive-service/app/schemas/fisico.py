@@ -12,10 +12,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _NIVEL = Literal[
     "sede",
@@ -136,10 +136,58 @@ class ExpedienteEnUnidad(BaseModel):
     folio_fin: int | None
 
 
+_DOC_TIPO = Literal["CC", "CE", "NIT", "PA", "TI", "PEP", "PPT"]
+
+
+class PrestatarioInterno(BaseModel):
+    """Un usuario del sistema. SIEMPRE `auth_users.id`, nunca el `sub` de Keycloak:
+    el INSERT lo valida contra `auth_users` (activo) y un `sub` no existe ahí."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: Literal["interno"]
+    user_id: uuid.UUID
+
+
+class PrestatarioExterno(BaseModel):
+    """Un tercero sin cuenta: instantánea con el identificador MÍNIMO (Ley 1581/2012,
+    finalidad de custodia). No se enlaza al directorio de terceros de document-service."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tipo: Literal["externo"]
+    nombre: str = Field(..., min_length=3, max_length=255)
+    documento_tipo: _DOC_TIPO
+    documento_numero: str = Field(..., min_length=3, max_length=30)
+    entidad: str | None = Field(default=None, max_length=255)
+    cargo: str | None = Field(default=None, max_length=255)
+    correo: str | None = Field(default=None, max_length=255)
+    telefono: str | None = Field(default=None, max_length=40)
+
+    @field_validator("nombre", "documento_numero")
+    @classmethod
+    def _sin_blancos(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("debe tener al menos 3 caracteres no blancos")
+        return v
+
+
 class PrestamoCreate(BaseModel):
-    prestado_a: str = Field(..., min_length=1, max_length=255)
-    prestado_por: str | None = Field(default=None, max_length=255)
+    """`prestado_por` NO viene del cuerpo: lo resuelve el servidor (`X-User-Id`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prestatario: PrestatarioInterno | PrestatarioExterno = Field(..., discriminator="tipo")
     fecha_devolucion_esperada: date
+    observaciones: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("fecha_devolucion_esperada")
+    @classmethod
+    def _no_en_el_pasado(cls, v: date) -> date:
+        if v < datetime.now(tz=UTC).date():
+            raise ValueError("fecha_devolucion_esperada no puede estar en el pasado")
+        return v
 
 
 class PrestamoResponse(BaseModel):
@@ -150,13 +198,61 @@ class PrestamoResponse(BaseModel):
     # busca en un depósito.
     unidad_codigo: str | None = None
     unidad_signatura: str | None = None
-    prestado_a: str
-    prestado_por: str | None
+    prestatario_tipo: Literal["interno", "externo"]
+    prestatario_user_id: uuid.UUID | None = None
+    # Interno: el `username` resuelto por JOIN al leer (la traza es el UUID, el
+    # nombre puede cambiar). Externo: el de la fila.
+    prestatario_nombre: str | None = None
+    tercero_documento_tipo: str | None = None
+    tercero_documento_numero: str | None = None
+    tercero_entidad: str | None = None
+    tercero_cargo: str | None = None
+    tercero_correo: str | None = None
+    tercero_telefono: str | None = None
+    prestado_por: uuid.UUID
+    devuelto_recibido_por: uuid.UUID | None = None
+    observaciones: str | None = None
     fecha_prestamo: datetime
     fecha_devolucion_esperada: date
     fecha_devolucion_real: datetime | None
     estado: str
     vencido: bool
+
+
+def _cola(valor: str, visibles: int = 4) -> str:
+    return "*" * max(len(valor) - visibles, 3) + valor[-visibles:] if len(valor) > visibles else "***"
+
+
+def enmascarar_prestatario(p: PrestamoResponse) -> PrestamoResponse:
+    """Copia con documento, correo y teléfono del prestatario EXTERNO enmascarados.
+
+    Datos personales (Ley 1581/2012): un listado de custodia (crud 1) dice QUIÉN tiene la
+    unidad —nombre, entidad, cargo— pero no cómo contactarlo ni su identificación; eso es del
+    registro completo (crud >= 3). Sin contenido que enmascarar devuelve la misma fila."""
+    if p.prestatario_tipo != "externo":
+        return p
+    correo = p.tercero_correo
+    if correo:
+        local, _, dominio = correo.partition("@")
+        correo = f"{local[:1]}***@{dominio}" if dominio else "***"
+    return p.model_copy(
+        update={
+            "tercero_documento_numero": _cola(p.tercero_documento_numero)
+            if p.tercero_documento_numero
+            else None,
+            "tercero_correo": correo,
+            "tercero_telefono": _cola(p.tercero_telefono) if p.tercero_telefono else None,
+        }
+    )
+
+
+class PrestatarioElegible(BaseModel):
+    """Quién puede recibir la unidad: usuario activo cuyo clearance cubre el árbol.
+    Nunca expone el nivel."""
+
+    user_id: uuid.UUID
+    username: str
+    nombre: str | None = None
 
 
 class MovimientoResponse(BaseModel):

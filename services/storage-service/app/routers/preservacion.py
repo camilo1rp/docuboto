@@ -16,7 +16,7 @@ import json
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -29,14 +29,21 @@ from app.core.minio_client import ObjectLockNotEnabledError, get_minio
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.schemas.preservacion import (
     AipCreate,
+    AipReempaquetarRequest,
     AipResponse,
+    AipVersionItem,
     EstadoResponse,
     EventoCreate,
     EventoInternalCreate,
     EventoResponse,
     ExportZipCreate,
-    LegalHoldRequest,
-    LegalHoldResponse,
+    FijarRetencionRequest,
+    FijarRetencionResponse,
+    HoldFijarRequest,
+    HoldFijarResponse,
+    HoldItem,
+    HoldLevantarRequest,
+    HoldLevantarResponse,
     MigracionResponse,
     MigrarFormatoRequest,
     PlanCreate,
@@ -47,9 +54,17 @@ from app.schemas.preservacion import (
     RenovarArtefactoResponse,
     RenovarRetencionRequest,
     RenovarRetencionResponse,
+    canonicalize_expediente_id,
 )
 from app.services.aip_builder import PremisValidationError
-from app.services.aip_service import AipService
+from app.services.aip_service import (
+    AipAnteriorFixityMismatchError,
+    AipNoEncontradoError,
+    AipService,
+    AipYaExisteError,
+    AipYaSustituidoError,
+    IndiceNoEsRenovacionError,
+)
 from app.services.format_migration_service import (
     FileNotFoundForMigrationError,
     FormatMigrationService,
@@ -61,6 +76,13 @@ from app.services.format_migration_service import (
     # capturara la equivocada sin que nada avisara.
     FixityMismatchError as MigracionFixityMismatchError,
 )
+from app.services.legal_hold_service import (
+    HoldActorRequeridoError,
+    HoldMotivoNoCoincideError,
+    HoldNoEncontradoError,
+    HoldYaLevantadoError,
+    LegalHoldService,
+)
 from app.services.preservation_worm_service import (
     ArtefactoNoEsDeFirmaError,
     FileNotFoundForPreservationError,
@@ -68,6 +90,8 @@ from app.services.preservation_worm_service import (
     InvalidRetentionError,
     PreservationDisabledError,
     PreservationWormService,
+    RetencionDiferidaSinHoldError,
+    SinRetencionQueRenovarError,
     WormObjectNotFoundError,
     WormSingletonConflictError,
 )
@@ -234,6 +258,19 @@ def _map_empaquetar_aip_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "premis_invalid", "detail": str(exc), "status": 500},
         )
+    if isinstance(exc, AipYaExisteError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "aip_ya_existe",
+                "detail": str(exc),
+                "status": 409,
+                # AIP vigente del expediente: permite a quien llamó reconciliar.
+                "aip_id": str(exc.aip_id) if exc.aip_id is not None else None,
+            },
+        )
+    if isinstance(exc, RetencionDiferidaSinHoldError):
+        return _retencion_diferida_sin_hold(exc)
     raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
 
 
@@ -270,6 +307,8 @@ async def empaquetar_aip(
         FixityMismatchError,
         ObjectLockNotEnabledError,
         PremisValidationError,
+        AipYaExisteError,
+        RetencionDiferidaSinHoldError,
     ) as exc:
         raise _map_empaquetar_aip_error(exc) from exc
 
@@ -314,6 +353,8 @@ async def empaquetar_aip_internal(
         FixityMismatchError,
         ObjectLockNotEnabledError,
         PremisValidationError,
+        AipYaExisteError,
+        RetencionDiferidaSinHoldError,
     ) as exc:
         raise _map_empaquetar_aip_error(exc) from exc
 
@@ -346,7 +387,8 @@ async def get_aip(
     EXTERNO al AIP — resuelve el clearance del llamante, confirma que el
     expediente es visible para él (404 neutro si no) y SOLO ENTONCES media
     esta llamada con el token interno."""
-    row = await PreservacionRepository(conn, tenant_slug).latest_aip(expediente_id)
+    # C-6: la versión VIGENTE (cabeza de la cadena `sustituye_a`), no «la más reciente por fecha».
+    row = await PreservacionRepository(conn, tenant_slug).get_aip_cabeza(expediente_id)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -491,7 +533,18 @@ def _map_proteger_indice_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
         )
+    if isinstance(exc, RetencionDiferidaSinHoldError):
+        return _retencion_diferida_sin_hold(exc)
     raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
+
+
+def _retencion_diferida_sin_hold(exc: Exception) -> HTTPException:
+    """409: se pidió (o se hereda) una retención diferida y el expediente no tiene hold
+    `valoracion_pendiente` activo (C-5/C7). Nada se escribió."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"error": "retencion_diferida_sin_hold", "detail": str(exc), "status": 409},
+    )
 
 
 @router.post(
@@ -536,6 +589,7 @@ async def proteger_indice(
         FixityMismatchError,
         WormSingletonConflictError,
         ObjectLockNotEnabledError,
+        RetencionDiferidaSinHoldError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
@@ -587,6 +641,7 @@ async def proteger_indice_internal(
         FixityMismatchError,
         WormSingletonConflictError,
         ObjectLockNotEnabledError,
+        RetencionDiferidaSinHoldError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
@@ -624,6 +679,7 @@ async def proteger_artefacto(
         FixityMismatchError,
         WormSingletonConflictError,
         ObjectLockNotEnabledError,
+        RetencionDiferidaSinHoldError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
@@ -648,6 +704,11 @@ def _map_renovar_retencion_error(exc: Exception) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
+        )
+    if isinstance(exc, SinRetencionQueRenovarError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "sin_retencion_que_renovar", "detail": str(exc), "status": 409},
         )
     raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
 
@@ -698,6 +759,7 @@ async def renovar_retencion_internal(
         PreservationDisabledError,
         WormObjectNotFoundError,
         InvalidRetentionError,
+        SinRetencionQueRenovarError,
     ) as exc:
         raise _map_renovar_retencion_error(exc) from exc
 
@@ -762,6 +824,7 @@ async def proteger_artefacto_internal(
         FixityMismatchError,
         WormSingletonConflictError,
         ObjectLockNotEnabledError,
+        RetencionDiferidaSinHoldError,
     ) as exc:
         raise _map_proteger_indice_error(exc) from exc
     http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
@@ -774,40 +837,131 @@ def _map_legal_hold_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"error": "preservation_disabled", "detail": str(exc), "status": 503},
         )
-    if isinstance(exc, WormObjectNotFoundError):
+    if isinstance(exc, HoldNoEncontradoError):
         return HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"error": "worm_object_not_found", "detail": str(exc), "status": 404},
+            detail={"error": "hold_not_found", "detail": str(exc), "status": 404},
+        )
+    if isinstance(exc, HoldMotivoNoCoincideError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "motivo_no_coincide", "detail": str(exc), "status": 409},
+        )
+    if isinstance(exc, HoldYaLevantadoError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "hold_ya_levantado", "detail": str(exc), "status": 409},
+        )
+    if isinstance(exc, HoldActorRequeridoError):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "actor_requerido", "detail": str(exc), "status": 422},
         )
     raise exc  # pragma: no cover — defensivo, no debería alcanzarse.
 
 
 @router.post(
-    "/legal-hold-internal",
-    response_model=LegalHoldResponse,
+    "/legal-hold-internal/fijar",
+    response_model=HoldFijarResponse,
     summary=(
-        "Fija o levanta el legal hold de los objetos WORM de un expediente "
-        "(acto explícito, con motivo y asiento). Solo SISTEMA (D-02)"
+        "Fija una retención legal POR MOTIVO sobre un expediente (acto explícito, con "
+        "fundamento, acta y asiento). Solo SISTEMA (D-02). No exige objetos WORM (C-5/C7)"
     ),
     dependencies=[Depends(require_internal_token)],
 )
-async def legal_hold_internal(
-    payload: LegalHoldRequest,
+async def legal_hold_fijar(
+    payload: HoldFijarRequest,
     request: Request,
     tenant_slug: str = Depends(_require_tenant),
     conn: asyncpg.Connection = Depends(get_db_conn),
-) -> LegalHoldResponse:
-    """Único camino para declarar o levantar un legal hold (AREA-08-07): ya no
-    es un campo del body de ninguna ruta de protección. Lo orquesta
-    archive-service (dueño del permiso y del acto administrativo); `motivo` y
-    `acta_ref` quedan en el asiento. Actor: el de la identidad firmada si la
-    trae, `SYSTEM_RECONCILER_ID` si no."""
-    service = PreservationWormService(conn, tenant_slug)
+) -> JSONResponse:
+    """Único camino para declarar un legal hold (AREA-08-07, C-5/C7): no es un campo del body de
+    ninguna ruta de protección. Lo orquesta archive-service (dueño del permiso y del acto
+    administrativo). 201 si crea el hold; 200 si ya existía el hold de sistema `valoracion_pendiente`
+    (idempotente). Actor: el de la identidad firmada si la trae, `SYSTEM_RECONCILER_ID` si no; la
+    columna `fijado_por` solo se llena con una persona real (un hold que no es de sistema la exige)."""
+    service = LegalHoldService(conn, tenant_slug)
     actor = _actor(request) or str(SYSTEM_RECONCILER_ID)
     try:
-        return await service.fijar_legal_hold(payload, actor=actor)
-    except (PreservationDisabledError, WormObjectNotFoundError) as exc:
+        res = await service.fijar(payload, actor=actor, actor_id=_actor_uuid(request))
+    except (PreservationDisabledError, HoldActorRequeridoError) as exc:
         raise _map_legal_hold_error(exc) from exc
+    http_status = status.HTTP_201_CREATED if res.creado else status.HTTP_200_OK
+    return JSONResponse(status_code=http_status, content=res.model_dump(mode="json"))
+
+
+@router.post(
+    "/legal-hold-internal/{hold_id}/levantar",
+    response_model=HoldLevantarResponse,
+    summary=(
+        "Levanta UN hold por `hold_id`, confirmando su `motivo_tipo`. El almacén se libera solo "
+        "si no queda ningún otro hold activo del expediente. Solo SISTEMA (D-02)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def legal_hold_levantar(
+    hold_id: uuid.UUID,
+    payload: HoldLevantarRequest,
+    request: Request,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> HoldLevantarResponse:
+    service = LegalHoldService(conn, tenant_slug)
+    actor = _actor(request) or str(SYSTEM_RECONCILER_ID)
+    try:
+        return await service.levantar(
+            hold_id, payload, actor=actor, actor_id=_actor_uuid(request)
+        )
+    except (
+        PreservationDisabledError,
+        HoldNoEncontradoError,
+        HoldMotivoNoCoincideError,
+        HoldYaLevantadoError,
+        HoldActorRequeridoError,
+    ) as exc:
+        raise _map_legal_hold_error(exc) from exc
+
+
+@router.get(
+    "/legal-hold-internal",
+    response_model=list[HoldItem],
+    summary="Retenciones legales (activas y levantadas) de un expediente. Solo SISTEMA (D-02)",
+    dependencies=[Depends(require_internal_token)],
+)
+async def legal_hold_listar(
+    expediente_id: str = Query(..., min_length=1, max_length=255),
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[HoldItem]:
+    """Lectura INTERNA: el no-read-up lo aplica archive-service aguas arriba (devuelve el
+    fundamento, que puede ser reservado)."""
+    return await LegalHoldService(conn, tenant_slug).listar(
+        canonicalize_expediente_id(expediente_id)
+    )
+
+
+@router.post(
+    "/fijar-retencion-internal",
+    response_model=FijarRetencionResponse,
+    summary=(
+        "Fija COMPLIANCE por PRIMERA vez en las filas `valoracion_pendiente` de un expediente "
+        "(valoración CT del Comité, C-5/C7). Solo SISTEMA (D-02)"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def fijar_retencion_internal(
+    payload: FijarRetencionRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> FijarRetencionResponse:
+    """Idempotente: sin filas pendientes responde 200 con `filas_fijadas=0`. Nunca toca una fila
+    `calendario` (su retención solo se extiende, por `renovar-retencion-internal`). Actor fijo
+    `SYSTEM_RECONCILER_ID`."""
+    service = PreservationWormService(conn, tenant_slug)
+    try:
+        return await service.fijar_retencion_diferida(payload, actor=str(SYSTEM_RECONCILER_ID))
+    except (PreservationDisabledError, InvalidRetentionError) as exc:
+        raise _map_renovar_retencion_error(exc) from exc
 
 
 @router.post(
@@ -981,3 +1135,116 @@ async def listar_migraciones(
     es lo que dice qué documentos siguen esperando una migración que no sale."""
     repo = PreservacionRepository(conn, tenant_slug)
     return [MigracionResponse(**dict(r)) for r in await repo.list_migraciones(file_id)]
+
+
+@router.get(
+    "/aip/{expediente_id}/versiones",
+    response_model=list[AipVersionItem],
+    dependencies=[Depends(require_internal_token)],
+)
+async def listar_versiones_aip(
+    expediente_id: str,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[AipVersionItem]:
+    """Endpoint INTERNO (D-02): la cadena de versiones del AIP de un expediente (C-6, ADR-042),
+    de la primera a la vigente. Sin el PREMIS. El no-read-up lo aplica archive-service aguas
+    arriba, igual que `GET /aip/{expediente_id}`."""
+    rows = await PreservacionRepository(conn, tenant_slug).listar_versiones_aip(expediente_id)
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "aip_not_found",
+                "detail": "No existe ningún AIP para el expediente solicitado",
+                "status": 404,
+            },
+        )
+    return [AipVersionItem(**{k: r[k] for k in AipVersionItem.model_fields}) for r in rows]
+
+
+@router.post(
+    "/aip-reempaquetar-internal",
+    response_model=AipResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Reempaqueta el AIP con el índice de sello de archivo renovado (C-6, ADR-042): "
+        "versión n+1 construida desde el bag anterior"
+    ),
+    dependencies=[Depends(require_internal_token)],
+)
+async def reempaquetar_aip_internal(
+    payload: AipReempaquetarRequest,
+    response: Response,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> AipResponse:
+    """Endpoint INTERNO (D-02, `X-Internal-Token`, ruta de CONSERVACIÓN: se atiende también con la
+    entidad suspendida, ADR-035 §8). Actor fijo `SYSTEM_RECONCILER_ID`. 201 si crea la versión,
+    200 si el sucesor ya existía con el mismo índice (reintento idempotente)."""
+    service = AipService(conn, tenant_slug)
+    try:
+        resultado, creado = await service.reempaquetar_aip(
+            payload, actor=str(SYSTEM_RECONCILER_ID)
+        )
+    except PreservationDisabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "worm_disabled", "detail": str(exc), "status": 503},
+        ) from exc
+    except AipNoEncontradoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "aip_not_found", "detail": str(exc), "status": 404},
+        ) from exc
+    except AipYaSustituidoError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "aip_ya_sustituido", "detail": str(exc), "status": 409},
+        ) from exc
+    except (AipAnteriorFixityMismatchError, FixityMismatchError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "aip_anterior_fixity_mismatch", "detail": str(exc), "status": 409},
+        ) from exc
+    except IndiceNoEsRenovacionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "indice_no_es_renovacion_del_embebido",
+                "detail": str(exc),
+                "status": 422,
+            },
+        ) from exc
+    except FileNotFoundForPreservationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "file_not_found", "detail": str(exc), "status": 404},
+        ) from exc
+    except InvalidRetentionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_retention", "detail": str(exc), "status": 400},
+        ) from exc
+    except RetencionDiferidaSinHoldError as exc:
+        raise _retencion_diferida_sin_hold(exc) from exc
+    except ObjectLockNotEnabledError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "worm_bucket_misconfigured", "detail": str(exc), "status": 500},
+        ) from exc
+    except PremisValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "premis_invalid", "detail": str(exc), "status": 500},
+        ) from exc
+    except asyncpg.UniqueViolationError as exc:
+        # Dos reempaquetados del mismo AIP corriendo a la vez: `ux_aip_sustituye_a` /
+        # `ux_aip_expediente_version` deciden; el segundo reintenta y recibe el 200 idempotente.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "aip_ya_sustituido", "detail": str(exc), "status": 409},
+        ) from exc
+    if not creado:
+        response.status_code = status.HTTP_200_OK
+    return resultado

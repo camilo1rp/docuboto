@@ -38,19 +38,25 @@ from tests.conftest import TENANT_HEADERS, make_trd_serie_record
 
 @pytest.mark.parametrize("profile", sorted(_PDFA_PROFILES))
 def test_trd_serie_create_accepts_every_valid_pdfa_profile(profile: str) -> None:
-    payload = TrdSerieCreate(code="X1", name="Serie itest", pdfa_profile=profile)
+    payload = TrdSerieCreate(
+        code="X1", name="Serie itest", archivo_gestion_years=2, archivo_central_years=8, pdfa_profile=profile
+    )
     assert payload.pdfa_profile == profile
 
 
 def test_trd_serie_create_accepts_null_pdfa_profile() -> None:
-    payload = TrdSerieCreate(code="X1", name="Serie itest")
+    payload = TrdSerieCreate(
+        code="X1", name="Serie itest", archivo_gestion_years=2, archivo_central_years=8
+    )
     assert payload.pdfa_profile is None
 
 
 @pytest.mark.parametrize("bad_profile", ["9z", "2B", "", "1a ", "2b; rm -rf /", "1"])
 def test_trd_serie_create_rejects_invalid_pdfa_profile(bad_profile: str) -> None:
     with pytest.raises(ValidationError) as exc_info:
-        TrdSerieCreate(code="X1", name="Serie itest", pdfa_profile=bad_profile)
+        TrdSerieCreate(
+            code="X1", name="Serie itest", archivo_gestion_years=2, archivo_central_years=8, pdfa_profile=bad_profile
+        )
     assert "pdfa_profile" in str(exc_info.value)
 
 
@@ -88,7 +94,13 @@ async def test_create_trd_serie_with_valid_pdfa_profile_is_persisted_and_echoed(
 
     resp = await client.post(
         "/api/v1/trd",
-        json={"code": "200", "name": "Serie con perfil 2u", "pdfa_profile": "2u"},
+        json={
+            "code": "200",
+            "name": "Serie con perfil 2u",
+            "archivo_gestion_years": 2,
+            "archivo_central_years": 8,
+            "pdfa_profile": "2u",
+        },
         headers=TENANT_HEADERS,
     )
 
@@ -115,7 +127,12 @@ async def test_create_trd_serie_without_pdfa_profile_defaults_to_null(
 
     resp = await client.post(
         "/api/v1/trd",
-        json={"code": "201", "name": "Serie sin perfil propio"},
+        json={
+            "code": "201",
+            "name": "Serie sin perfil propio",
+            "archivo_gestion_years": 2,
+            "archivo_central_years": 8,
+        },
         headers=TENANT_HEADERS,
     )
 

@@ -42,7 +42,7 @@ async def test_una_firma_nativa_se_inserta_sin_tipo_firma_explicito(
     """El caso exacto que reventaba: la rama nativa no pasa `tipo_firma`."""
     slug, db_conn = tenant_ctx
     schema = tenant_schema(slug)
-    await db_conn.execute(f'SET search_path TO "{schema}", public')
+    await db_conn.execute(f'SET search_path TO "{schema}"')
 
     row = await FirmaRepository(db_conn).insert(
         {

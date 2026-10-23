@@ -64,7 +64,7 @@ describe("POST /admin/trd/api/[code]/versiones (nueva versión en borrador)", ()
     expect(res.status).toBe(401);
   });
 
-  it("clona con overrides parciales; solo campos de TrdSerieVersionCreate viajan (nunca archivo_gestion_years fuera de allowlist)", async () => {
+  it("clona con overrides parciales; solo campos de TrdSerieVersionCreate viajan (nunca retention_years/total_retention, id ni estado)", async () => {
     let capturedBody;
     let capturedUrl;
     globalThis.fetch = vi.fn(async (input, init) => {
@@ -76,12 +76,18 @@ describe("POST /admin/trd/api/[code]/versiones (nueva versión en borrador)", ()
       locals: SESSION_LOCALS,
       params: { code: "OF" },
       request: {
-        json: async () => ({ total_retention: 15, id: "otro-id", estado: "convalidada" }),
+        json: async () => ({
+          name: "Serie nueva",
+          archivo_gestion_years: 2,
+          total_retention: 15,
+          id: "otro-id",
+          estado: "convalidada",
+        }),
       },
     });
     expect(res.status).toBe(201);
     expect(capturedUrl).toContain("/trd/OF/versiones");
-    expect(capturedBody).toEqual({ total_retention: 15 });
+    expect(capturedBody).toEqual({ name: "Serie nueva", archivo_gestion_years: 2 });
   });
 });
 

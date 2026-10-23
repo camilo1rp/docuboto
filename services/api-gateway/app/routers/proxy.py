@@ -112,6 +112,9 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # de un documento). SIN barra final: la ruta es `/api/v1/anulaciones`
         # exacta, y con barra el prefijo no casaría con ella.
         ("/api/v1/anulaciones", app_state.document_service_url),
+        # Cola del aprobador de desclasificaciones (C4, ADR-039): mismo criterio,
+        # recurso propio y SIN barra final.
+        ("/api/v1/desclasificaciones", app_state.document_service_url),
         ("/api/v1/plantillas/", app_state.document_service_url),
         ("/api/v1/borradores/", app_state.document_service_url),
         # Batch API (carga masiva): document-service y archive-service comparten
@@ -153,7 +156,8 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/storage/upload", app_state.storage_service_url),
         # preservación (E10) — LISTA DE ADMISIÓN de subrutas, no el prefijo
         # entero (AREA-08-16). `/proteger-indice`, `/proteger-artefacto`, `/aip`,
-        # `/*-internal` y `/legal-hold-internal` son actos de SISTEMA: los
+        # `/*-internal` y `/legal-hold-internal/*` (`/fijar` y `/{hold_id}/levantar`,
+        # ADR-043) son actos de SISTEMA: los
         # invoca archive-service (con X-Internal-Token) y NO se enrutan desde el
         # exterior. Con el prefijo completo, un JWT de usuario con
         # USUA_PERM_EXPEDIENTE:3 ocupaba el singleton WORM irreversible de

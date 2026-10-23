@@ -67,6 +67,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import DataTable from "$lib/components/ui/DataTable.svelte";
+  import { mensajeConocimiento } from "$lib/utils/asistenteAcceso.js";
   import { mensajeError } from "$lib/utils/apiError.js";
   import { ubicacionTexto, ubicacionActual } from "$lib/utils/ubicacionRadicado.js";
 
@@ -76,12 +77,16 @@
   // ---------------------------------------------------------------------------
   // Pestañas — ?tab=exacta|semantica|antecedentes (deep-link, T-Fase6)
   // ---------------------------------------------------------------------------
-  const TABS = [
+  const TODAS_LAS_TABS = [
     { id: "exacta", label: "Exacta", icon: "fas fa-magnifying-glass" },
     { id: "semantica", label: "Semántica", icon: "fas fa-brain" },
     { id: "antecedentes", label: "Antecedentes", icon: "fas fa-diagram-project" },
   ];
-  $: activeTab = data.tab ?? "exacta";
+  // Semántica y Antecedentes solo existen si la entidad activó el asistente y la persona
+  // tiene PERM_CONOCIMIENTO (C-1, ADR-037). El loader lo calcula; sin dato = solo Exacta.
+  $: tabsPermitidas = data.tabsPermitidas ?? ["exacta"];
+  $: TABS = TODAS_LAS_TABS.filter((t) => tabsPermitidas.includes(t.id));
+  $: activeTab = tabsPermitidas.includes(data.tab) ? data.tab : "exacta";
 
   /** href de una pestaña: conserva TODOS los parámetros vigentes (cada pestaña
    * usa su propio espacio de nombres de query params, así que cambiar de
@@ -369,7 +374,7 @@
       const body = await res.json();
       if (!res.ok) {
         semanticaResults = null;
-        semanticaError = mensajeError(body, "No se pudo completar la búsqueda semántica.");
+        semanticaError = mensajeConocimiento(body, "No se pudo completar la búsqueda semántica.");
       } else {
         semanticaResults = body.results ?? [];
         semanticaError = null;
@@ -481,7 +486,7 @@
         antecedentesError =
           res.status === 404
             ? "No se encontró un antecedente indexado para ese radicado."
-            : mensajeError(body, "No se pudo completar la búsqueda de antecedentes.");
+            : mensajeConocimiento(body, "No se pudo completar la búsqueda de antecedentes.");
       } else {
         antecedentesData = body;
         antecedentesError = null;
@@ -817,329 +822,341 @@
   <!-- -------------------------------------------------------------------------
     Pestaña Semántica — /busqueda/api/semantica (POST /api/v1/knowledge/search)
   ------------------------------------------------------------------------- -->
-  <div
-    id="busqueda-panel-semantica"
-    role="tabpanel"
-    aria-labelledby="busqueda-tab-semantica"
-    hidden={activeTab !== "semantica"}
-    class="busqueda__panel"
-  >
-    <section class="busqueda__search-panel" aria-label="Formulario de búsqueda semántica">
-      <form
-        class="search-form"
-        on:submit|preventDefault={buscarSemantica}
-        aria-label="Buscar por significado"
-      >
-        <div class="search-form__main">
-          <label for="semantica-q" class="search-form__label">
-            Describe lo que buscas (no necesitas las palabras exactas)
-          </label>
-          <div class="search-form__input-row">
-            <input
-              id="semantica-q"
-              type="search"
-              class="search-form__input"
-              class:search-form__input--error={!!semanticaQError}
-              bind:value={sq}
-              placeholder="Ej. quejas sobre demoras en el trámite de becas…"
-              autocomplete="off"
-              aria-describedby={semanticaQError ? "semantica-q-error" : "semantica-q-hint"}
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={semanticaLoading}
-              aria-label="Buscar por significado"
-            >
-              <i class="fas fa-brain" aria-hidden="true"></i>
-              <span>Buscar</span>
-            </Button>
-          </div>
-          {#if semanticaQError}
-            <p id="semantica-q-error" class="search-form__field-error" role="alert">
-              {semanticaQError}
-            </p>
-          {:else}
-            <p id="semantica-q-hint" class="search-form__hint">
-              Encuentra documentos <strong>parecidos</strong> por significado, no por coincidencia literal
-              de texto — útil cuando no recuerdas las palabras exactas del radicado.
-            </p>
-          {/if}
-        </div>
-        <div class="search-form__topk">
-          <label for="semantica-topk" class="search-form__label-inline"
-            >Cantidad de resultados</label
-          >
-          <select id="semantica-topk" class="search-form__select" bind:value={sTopK}>
-            <option value={5}>5</option>
-            <option value={10}>10</option>
-            <option value={20}>20</option>
-            <option value={50}>50</option>
-          </select>
-        </div>
-      </form>
-    </section>
-
-    <p class="sr-only" aria-live="polite" aria-atomic="true">
-      {#if semanticaLoading}Buscando documentos parecidos…{:else if semanticaSearched && !semanticaError}{(
-          semanticaResults ?? []
-        ).length} resultado{(semanticaResults ?? []).length !== 1 ? "s" : ""} encontrado{(
-          semanticaResults ?? []
-        ).length !== 1
-          ? "s"
-          : ""}{/if}
-    </p>
-    <section
-      class="busqueda__results"
-      aria-label="Resultados de búsqueda semántica"
-      aria-busy={semanticaLoading}
+  {#if tabsPermitidas.includes("semantica")}
+    <div
+      id="busqueda-panel-semantica"
+      role="tabpanel"
+      aria-labelledby="busqueda-tab-semantica"
+      hidden={activeTab !== "semantica"}
+      class="busqueda__panel"
     >
-      {#if semanticaLoading}
-        <div class="busqueda__loading">
-          <Loader type="skeleton" lines={4} label="Buscando documentos parecidos…" />
-        </div>
-      {:else if semanticaError}
-        <EmptyState
-          icon="fas fa-exclamation-circle"
-          title="No se pudo buscar"
-          description={semanticaError}
+      <section class="busqueda__search-panel" aria-label="Formulario de búsqueda semántica">
+        <form
+          class="search-form"
+          on:submit|preventDefault={buscarSemantica}
+          aria-label="Buscar por significado"
         >
-          <Button variant="primary" on:click={buscarSemantica}>Reintentar</Button>
-        </EmptyState>
-      {:else if !semanticaSearched}
-        <EmptyState
-          icon="fas fa-brain"
-          title="Busca por significado"
-          description="Describe el contenido que buscas; no hace falta que uses las palabras exactas del documento."
-        />
-      {:else if (semanticaResults ?? []).length === 0}
-        <EmptyState
-          icon="fas fa-file-search"
-          title="Sin resultados"
-          description="No se encontraron documentos parecidos a tu búsqueda."
-        />
-      {:else}
-        <p class="busqueda__advisory">
-          <i class="fas fa-circle-info" aria-hidden="true"></i>
-          <span>
-            Estos son documentos <strong>parecidos</strong> por significado, no coincidencias exactas
-            de texto. Verifica cada uno contra el radicado original antes de darlo por válido.
-          </span>
-        </p>
-        <ul class="result-cards">
-          {#each semanticaResults as hit (hit.id)}
-            {@const sim = similitudLabel(hit.score)}
-            <li class="result-card">
-              <div class="result-card__head">
-                <span class="result-card__ref">{hit.source_ref}</span>
-                <StatusChip status={sim.variant} label={sim.label} dot={true} />
-              </div>
-              <p class="result-card__snippet">{hit.texto}</p>
-              <div class="result-card__score" title="Similitud vectorial, no coincidencia textual">
-                <div class="result-card__score-track">
-                  <div
-                    class="result-card__score-fill"
-                    style="width: {similitudPercent(hit.score)}%"
-                  ></div>
+          <div class="search-form__main">
+            <label for="semantica-q" class="search-form__label">
+              Describe lo que buscas (no necesitas las palabras exactas)
+            </label>
+            <div class="search-form__input-row">
+              <input
+                id="semantica-q"
+                type="search"
+                class="search-form__input"
+                class:search-form__input--error={!!semanticaQError}
+                bind:value={sq}
+                placeholder="Ej. quejas sobre demoras en el trámite de becas…"
+                autocomplete="off"
+                aria-describedby={semanticaQError ? "semantica-q-error" : "semantica-q-hint"}
+              />
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={semanticaLoading}
+                aria-label="Buscar por significado"
+              >
+                <i class="fas fa-brain" aria-hidden="true"></i>
+                <span>Buscar</span>
+              </Button>
+            </div>
+            {#if semanticaQError}
+              <p id="semantica-q-error" class="search-form__field-error" role="alert">
+                {semanticaQError}
+              </p>
+            {:else}
+              <p id="semantica-q-hint" class="search-form__hint">
+                Encuentra documentos <strong>parecidos</strong> por significado, no por coincidencia literal
+                de texto — útil cuando no recuerdas las palabras exactas del radicado.
+              </p>
+            {/if}
+          </div>
+          <div class="search-form__topk">
+            <label for="semantica-topk" class="search-form__label-inline"
+              >Cantidad de resultados</label
+            >
+            <select id="semantica-topk" class="search-form__select" bind:value={sTopK}>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+            </select>
+          </div>
+        </form>
+      </section>
+
+      <p class="sr-only" aria-live="polite" aria-atomic="true">
+        {#if semanticaLoading}Buscando documentos parecidos…{:else if semanticaSearched && !semanticaError}{(
+            semanticaResults ?? []
+          ).length} resultado{(semanticaResults ?? []).length !== 1 ? "s" : ""} encontrado{(
+            semanticaResults ?? []
+          ).length !== 1
+            ? "s"
+            : ""}{/if}
+      </p>
+      <section
+        class="busqueda__results"
+        aria-label="Resultados de búsqueda semántica"
+        aria-busy={semanticaLoading}
+      >
+        {#if semanticaLoading}
+          <div class="busqueda__loading">
+            <Loader type="skeleton" lines={4} label="Buscando documentos parecidos…" />
+          </div>
+        {:else if semanticaError}
+          <EmptyState
+            icon="fas fa-exclamation-circle"
+            title="No se pudo buscar"
+            description={semanticaError}
+          >
+            <Button variant="primary" on:click={buscarSemantica}>Reintentar</Button>
+          </EmptyState>
+        {:else if !semanticaSearched}
+          <EmptyState
+            icon="fas fa-brain"
+            title="Busca por significado"
+            description="Describe el contenido que buscas; no hace falta que uses las palabras exactas del documento."
+          />
+        {:else if (semanticaResults ?? []).length === 0}
+          <EmptyState
+            icon="fas fa-file-search"
+            title="Sin resultados"
+            description="No se encontraron documentos parecidos a tu búsqueda."
+          />
+        {:else}
+          <p class="busqueda__advisory">
+            <i class="fas fa-circle-info" aria-hidden="true"></i>
+            <span>
+              Estos son documentos <strong>parecidos</strong> por significado, no coincidencias exactas
+              de texto. Verifica cada uno contra el radicado original antes de darlo por válido.
+            </span>
+          </p>
+          <ul class="result-cards">
+            {#each semanticaResults as hit (hit.id)}
+              {@const sim = similitudLabel(hit.score)}
+              <li class="result-card">
+                <div class="result-card__head">
+                  <span class="result-card__ref">{hit.source_ref}</span>
+                  <StatusChip status={sim.variant} label={sim.label} dot={true} />
                 </div>
-                <span class="result-card__score-label"
-                  >{similitudPercent(hit.score)}% de similitud</span
+                <p class="result-card__snippet">{hit.texto}</p>
+                <div
+                  class="result-card__score"
+                  title="Similitud vectorial, no coincidencia textual"
                 >
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-  </div>
+                  <div class="result-card__score-track">
+                    <div
+                      class="result-card__score-fill"
+                      style="width: {similitudPercent(hit.score)}%"
+                    ></div>
+                  </div>
+                  <span class="result-card__score-label"
+                    >{similitudPercent(hit.score)}% de similitud</span
+                  >
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    </div>
+  {/if}
 
   <!-- -------------------------------------------------------------------------
     Pestaña Antecedentes — /busqueda/api/antecedentes (POST /api/v1/knowledge/antecedentes)
     y /busqueda/api/by-tracking/[trackingNumber] (preview del radicado pivote)
   ------------------------------------------------------------------------- -->
-  <div
-    id="busqueda-panel-antecedentes"
-    role="tabpanel"
-    aria-labelledby="busqueda-tab-antecedentes"
-    hidden={activeTab !== "antecedentes"}
-    class="busqueda__panel"
-  >
-    <section class="busqueda__search-panel" aria-label="Formulario de búsqueda de antecedentes">
-      <form
-        class="search-form"
-        on:submit|preventDefault={buscarAntecedentes}
-        aria-label="Buscar antecedentes"
-      >
-        <fieldset class="search-form__mode">
-          <legend class="sr-only">Modo de búsqueda de antecedentes</legend>
-          <div class="search-form__mode-toggle" role="radiogroup" aria-label="Buscar por">
-            <button
-              type="button"
-              class="mode-btn"
-              class:mode-btn--active={aMode === "texto"}
-              role="radio"
-              aria-checked={aMode === "texto"}
-              on:click={() => cambiarModoAntecedentes("texto")}
-            >
-              Por texto
-            </button>
-            <button
-              type="button"
-              class="mode-btn"
-              class:mode-btn--active={aMode === "radicado"}
-              role="radio"
-              aria-checked={aMode === "radicado"}
-              on:click={() => cambiarModoAntecedentes("radicado")}
-            >
-              Por número de radicado
-            </button>
-          </div>
-        </fieldset>
+  {#if tabsPermitidas.includes("antecedentes")}
+    <div
+      id="busqueda-panel-antecedentes"
+      role="tabpanel"
+      aria-labelledby="busqueda-tab-antecedentes"
+      hidden={activeTab !== "antecedentes"}
+      class="busqueda__panel"
+    >
+      <section class="busqueda__search-panel" aria-label="Formulario de búsqueda de antecedentes">
+        <form
+          class="search-form"
+          on:submit|preventDefault={buscarAntecedentes}
+          aria-label="Buscar antecedentes"
+        >
+          <fieldset class="search-form__mode">
+            <legend class="sr-only">Modo de búsqueda de antecedentes</legend>
+            <div class="search-form__mode-toggle" role="radiogroup" aria-label="Buscar por">
+              <button
+                type="button"
+                class="mode-btn"
+                class:mode-btn--active={aMode === "texto"}
+                role="radio"
+                aria-checked={aMode === "texto"}
+                on:click={() => cambiarModoAntecedentes("texto")}
+              >
+                Por texto
+              </button>
+              <button
+                type="button"
+                class="mode-btn"
+                class:mode-btn--active={aMode === "radicado"}
+                role="radio"
+                aria-checked={aMode === "radicado"}
+                on:click={() => cambiarModoAntecedentes("radicado")}
+              >
+                Por número de radicado
+              </button>
+            </div>
+          </fieldset>
 
-        {#if aMode === "texto"}
-          <div class="search-form__main">
-            <label for="antecedentes-q" class="search-form__label">Texto de búsqueda</label>
-            <input
-              id="antecedentes-q"
-              type="search"
-              class="search-form__input"
-              class:search-form__input--error={!!antecedentesFieldError}
-              bind:value={aq}
-              placeholder="Ej. renovación de convenio interadministrativo…"
-              autocomplete="off"
-            />
-          </div>
-        {:else}
-          <div class="search-form__main">
-            <label for="antecedentes-atr" class="search-form__label">Número de radicado</label>
-            <div class="search-form__input-row">
+          {#if aMode === "texto"}
+            <div class="search-form__main">
+              <label for="antecedentes-q" class="search-form__label">Texto de búsqueda</label>
               <input
-                id="antecedentes-atr"
-                type="text"
+                id="antecedentes-q"
+                type="search"
                 class="search-form__input"
                 class:search-form__input--error={!!antecedentesFieldError}
-                bind:value={atr}
-                placeholder="Ej. 2026-ICETEX-E-000123"
+                bind:value={aq}
+                placeholder="Ej. renovación de convenio interadministrativo…"
                 autocomplete="off"
               />
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={pivotLoading}
-                on:click={verificarPivote}
-              >
-                {pivotLoading ? "Verificando…" : "Verificar"}
-              </Button>
             </div>
-            {#if pivotError}
-              <p class="search-form__field-error" role="alert">{pivotError}</p>
-            {:else if pivotPreview}
-              <div class="pivot-preview" role="status">
-                <i class="fas fa-check-circle" aria-hidden="true"></i>
-                <span class="doc-type-badge doc-type-badge--{pivotPreview.doc_type?.toLowerCase()}">
-                  {DOC_TYPE_LABELS[pivotPreview.doc_type] ?? pivotPreview.doc_type ?? "—"}
-                </span>
-                <span class="pivot-preview__subject" title={pivotPreview.subject}
-                  >{pivotPreview.subject}</span
+          {:else}
+            <div class="search-form__main">
+              <label for="antecedentes-atr" class="search-form__label">Número de radicado</label>
+              <div class="search-form__input-row">
+                <input
+                  id="antecedentes-atr"
+                  type="text"
+                  class="search-form__input"
+                  class:search-form__input--error={!!antecedentesFieldError}
+                  bind:value={atr}
+                  placeholder="Ej. 2026-ICETEX-E-000123"
+                  autocomplete="off"
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={pivotLoading}
+                  on:click={verificarPivote}
                 >
+                  {pivotLoading ? "Verificando…" : "Verificar"}
+                </Button>
               </div>
-            {/if}
-          </div>
-        {/if}
-
-        {#if antecedentesFieldError}
-          <p class="search-form__field-error" role="alert">{antecedentesFieldError}</p>
-        {/if}
-
-        <div class="search-form__topk">
-          <label for="antecedentes-topk" class="search-form__label-inline"
-            >Cantidad de resultados</label
-          >
-          <select id="antecedentes-topk" class="search-form__select" bind:value={aTopK}>
-            <option value={5}>5</option>
-            <option value={10}>10</option>
-            <option value={20}>20</option>
-          </select>
-        </div>
-
-        <div class="search-form__filters-actions">
-          <Button type="submit" variant="primary" disabled={antecedentesLoading}>
-            <i class="fas fa-diagram-project" aria-hidden="true"></i>
-            <span>Buscar antecedentes</span>
-          </Button>
-        </div>
-      </form>
-    </section>
-
-    <p class="sr-only" aria-live="polite" aria-atomic="true">
-      {#if antecedentesLoading}Buscando antecedentes…{:else if antecedentesSearched && !antecedentesError}{(
-          antecedentesData?.antecedentes ?? []
-        ).length} antecedente{(antecedentesData?.antecedentes ?? []).length !== 1 ? "s" : ""} encontrado{(
-          antecedentesData?.antecedentes ?? []
-        ).length !== 1
-          ? "s"
-          : ""}{/if}
-    </p>
-    <section
-      class="busqueda__results"
-      aria-label="Resultados de antecedentes"
-      aria-busy={antecedentesLoading}
-    >
-      {#if antecedentesLoading}
-        <div class="busqueda__loading">
-          <Loader type="skeleton" lines={4} label="Buscando antecedentes…" />
-        </div>
-      {:else if antecedentesError}
-        <EmptyState
-          icon="fas fa-exclamation-circle"
-          title="No se pudo buscar"
-          description={antecedentesError}
-        >
-          <Button variant="primary" on:click={buscarAntecedentes}>Reintentar</Button>
-        </EmptyState>
-      {:else if !antecedentesSearched}
-        <EmptyState
-          icon="fas fa-diagram-project"
-          title="Busca antecedentes"
-          description="Busca por texto o a partir de un radicado existente para encontrar trámites relacionados."
-        />
-      {:else if (antecedentesData?.antecedentes ?? []).length === 0}
-        <EmptyState
-          icon="fas fa-file-search"
-          title="Sin antecedentes"
-          description="No se encontraron antecedentes relacionados."
-        />
-      {:else}
-        <p class="busqueda__advisory">
-          <i class="fas fa-circle-info" aria-hidden="true"></i>
-          {antecedentesData.advisory}
-        </p>
-        <ul class="result-cards">
-          {#each antecedentesData.antecedentes as ant, i (ant.source_ref + i)}
-            {@const sim = similitudLabel(ant.score)}
-            <li class="result-card">
-              <div class="result-card__head">
-                <span class="result-card__ref">{ant.source_ref}</span>
-                <StatusChip status={sim.variant} label={sim.label} dot={true} />
-              </div>
-              <p class="result-card__snippet">{ant.snippet}</p>
-              <div class="result-card__score" title="Similitud vectorial, no coincidencia textual">
-                <div class="result-card__score-track">
-                  <div
-                    class="result-card__score-fill"
-                    style="width: {similitudPercent(ant.score)}%"
-                  ></div>
+              {#if pivotError}
+                <p class="search-form__field-error" role="alert">{pivotError}</p>
+              {:else if pivotPreview}
+                <div class="pivot-preview" role="status">
+                  <i class="fas fa-check-circle" aria-hidden="true"></i>
+                  <span
+                    class="doc-type-badge doc-type-badge--{pivotPreview.doc_type?.toLowerCase()}"
+                  >
+                    {DOC_TYPE_LABELS[pivotPreview.doc_type] ?? pivotPreview.doc_type ?? "—"}
+                  </span>
+                  <span class="pivot-preview__subject" title={pivotPreview.subject}
+                    >{pivotPreview.subject}</span
+                  >
                 </div>
-                <span class="result-card__score-label"
-                  >{similitudPercent(ant.score)}% de similitud</span
+              {/if}
+            </div>
+          {/if}
+
+          {#if antecedentesFieldError}
+            <p class="search-form__field-error" role="alert">{antecedentesFieldError}</p>
+          {/if}
+
+          <div class="search-form__topk">
+            <label for="antecedentes-topk" class="search-form__label-inline"
+              >Cantidad de resultados</label
+            >
+            <select id="antecedentes-topk" class="search-form__select" bind:value={aTopK}>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+              <option value={20}>20</option>
+            </select>
+          </div>
+
+          <div class="search-form__filters-actions">
+            <Button type="submit" variant="primary" disabled={antecedentesLoading}>
+              <i class="fas fa-diagram-project" aria-hidden="true"></i>
+              <span>Buscar antecedentes</span>
+            </Button>
+          </div>
+        </form>
+      </section>
+
+      <p class="sr-only" aria-live="polite" aria-atomic="true">
+        {#if antecedentesLoading}Buscando antecedentes…{:else if antecedentesSearched && !antecedentesError}{(
+            antecedentesData?.antecedentes ?? []
+          ).length} antecedente{(antecedentesData?.antecedentes ?? []).length !== 1 ? "s" : ""} encontrado{(
+            antecedentesData?.antecedentes ?? []
+          ).length !== 1
+            ? "s"
+            : ""}{/if}
+      </p>
+      <section
+        class="busqueda__results"
+        aria-label="Resultados de antecedentes"
+        aria-busy={antecedentesLoading}
+      >
+        {#if antecedentesLoading}
+          <div class="busqueda__loading">
+            <Loader type="skeleton" lines={4} label="Buscando antecedentes…" />
+          </div>
+        {:else if antecedentesError}
+          <EmptyState
+            icon="fas fa-exclamation-circle"
+            title="No se pudo buscar"
+            description={antecedentesError}
+          >
+            <Button variant="primary" on:click={buscarAntecedentes}>Reintentar</Button>
+          </EmptyState>
+        {:else if !antecedentesSearched}
+          <EmptyState
+            icon="fas fa-diagram-project"
+            title="Busca antecedentes"
+            description="Busca por texto o a partir de un radicado existente para encontrar trámites relacionados."
+          />
+        {:else if (antecedentesData?.antecedentes ?? []).length === 0}
+          <EmptyState
+            icon="fas fa-file-search"
+            title="Sin antecedentes"
+            description="No se encontraron antecedentes relacionados."
+          />
+        {:else}
+          <p class="busqueda__advisory">
+            <i class="fas fa-circle-info" aria-hidden="true"></i>
+            {antecedentesData.advisory}
+          </p>
+          <ul class="result-cards">
+            {#each antecedentesData.antecedentes as ant, i (ant.source_ref + i)}
+              {@const sim = similitudLabel(ant.score)}
+              <li class="result-card">
+                <div class="result-card__head">
+                  <span class="result-card__ref">{ant.source_ref}</span>
+                  <StatusChip status={sim.variant} label={sim.label} dot={true} />
+                </div>
+                <p class="result-card__snippet">{ant.snippet}</p>
+                <div
+                  class="result-card__score"
+                  title="Similitud vectorial, no coincidencia textual"
                 >
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-  </div>
+                  <div class="result-card__score-track">
+                    <div
+                      class="result-card__score-fill"
+                      style="width: {similitudPercent(ant.score)}%"
+                    ></div>
+                  </div>
+                  <span class="result-card__score-label"
+                    >{similitudPercent(ant.score)}% de similitud</span
+                  >
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    </div>
+  {/if}
 </div>
 
 <style lang="scss">

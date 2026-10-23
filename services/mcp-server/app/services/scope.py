@@ -115,6 +115,50 @@ NO_OFRECIDAS: tuple[dict[str, str], ...] = (
         ),
     },
     {
+        "operacion": "Fijar o levantar una retención legal (legal hold) de un expediente",
+        "motivo": (
+            "Congela la disposición de un expediente por orden de una autoridad judicial, "
+            "disciplinaria, fiscal o administrativa, y levantarla la reanuda: es un acto "
+            "con acta y responsable, no una operación de trámite. Levantar exige además "
+            "repetir el motivo, y el que fija el propio sistema (valoración pendiente) "
+            "solo lo levanta la valoración del Comité. Una retención fijada o liberada "
+            "por un modelo no tendría a nadie que responda por ella"
+        ),
+        "via_alternativa": (
+            "Consulte las retenciones de un expediente y sus motivos; fijarlas o "
+            "levantarlas se hace desde la interfaz, con el acta de la autoridad"
+        ),
+    },
+    {
+        "operacion": "Aprobar la desclasificación de un radicado",
+        "motivo": (
+            "Aprobar ejecuta el cambio: el radicado deja de ser clasificado y pasa a ser "
+            "visible para quienes antes no lo veían. Exige ver el documento, y el asistente "
+            "no lo muestra (para quien consulta con un nivel inferior ni siquiera se puede "
+            "enseñar), de modo que quien aprobara por aquí lo haría a ciegas. Se ofrece "
+            "pedir, consultar, rechazar y retirar una desclasificación; aprobarla no"
+        ),
+        "via_alternativa": (
+            "Revise la cola con las solicitudes pendientes; aprobar se hace desde la pantalla "
+            "de desclasificaciones (/desclasificaciones), con el documento delante y por una "
+            "persona distinta de quien la pidió"
+        ),
+    },
+    {
+        "operacion": "Registrar la valoración del Comité sobre una agrupación de la TVD",
+        "motivo": (
+            "Es el acto del Comité Institucional que decide la disposición final de un "
+            "fondo acumulado (conservar o eliminar) y libera su retención legal. Exige "
+            "el acta del Comité y una TVD aprobada o convalidada; lo mismo vale para el "
+            "acto de selección de cada expediente cuando la disposición es Selección. No "
+            "lo decide quien conversa con el asistente"
+        ),
+        "via_alternativa": (
+            "Consulte la valoración de la agrupación y cuántos expedientes la esperan; "
+            "se registra desde la interfaz de la TVD con el acta del Comité"
+        ),
+    },
+    {
         "operacion": "Sellar un artefacto en WORM (Object Lock)",
         "motivo": (
             "El sellado exige el identificador interno del artefacto firmado, que solo "
@@ -360,6 +404,8 @@ def _motivo(tool: Tool, identidad: Identity) -> str:
     administra; «lo tiene, pero solo para consultar» es otra conversación, y
     confundirlas manda a la persona a la puerta equivocada.
     """
+    if catalog.es_de_conocimiento(tool) and not identidad.asistente_habilitado:
+        return "su entidad no tiene activado el asistente ni la búsqueda semántica"
     if tool.permission and tool.permission not in identidad.permissions:
         return f"requiere el permiso {tool.permission}, que su cuenta no tiene"
     nivel = identidad.levels.get(tool.permission or "", 0)
@@ -390,7 +436,11 @@ async def build_scope(
 
     for tool in catalog.CATALOG:
         if catalog.puede_usar(
-            tool, identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+            tool,
+            identidad.permissions,
+            is_root=identidad.is_root,
+            levels=identidad.levels,
+            asistente_habilitado=identidad.asistente_habilitado,
         ):
             (puede_hacer if tool.write else puede_consultar).append(_entrada(tool))
             continue

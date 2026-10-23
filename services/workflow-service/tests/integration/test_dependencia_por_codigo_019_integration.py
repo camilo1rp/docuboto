@@ -83,14 +83,14 @@ async def pre019(
     await db_conn.execute(f'CREATE SCHEMA "{schema}"')
     try:
         async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
             await db_conn.execute(_STUB_TABLES_DDL)
         for path in runner._sql_files(runner.TENANT_DIR):
             if path.name < "019":
                 async with db_conn.transaction():
-                    await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                    await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
                     await db_conn.execute(path.read_text())
-        await db_conn.execute(f'SET search_path TO "{schema}", public')
+        await db_conn.execute(f'SET search_path TO "{schema}"')
         yield slug, schema, db_conn
     finally:
         assert schema.startswith("tenant_itest_")

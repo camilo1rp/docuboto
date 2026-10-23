@@ -49,7 +49,7 @@ async def _acta(
     proximo_at: datetime | None = None,
     avalado: bool = False,
 ) -> uuid.UUID:
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     lote_id = await conn.fetchval(
         "INSERT INTO eliminacion_lotes (codigo, creado_por) "
         "VALUES ($1, gen_random_uuid()) RETURNING id",

@@ -164,3 +164,40 @@ async def veredicto_entidad(
     if estado is EstadoEntidad.OPERATIVA:
         return None
     return ERRORES_ENTIDAD[estado]
+
+
+#: Proveedores de embeddings que NUNCA envían el texto a un tercero (corren en el propio
+#: proceso). Única definición: knowledge-service decide con ella y tenant-service la muestra
+#: en la tarjeta del asistente (ADR-037). `ollama` queda fuera a propósito: puede ser remoto.
+LOCAL_EMBEDDING_PROVIDERS = frozenset({"stub", "local_st"})
+
+
+async def asistente_habilitado(conn: asyncpg.Connection, slug: str) -> bool:
+    """¿La entidad `slug` tiene activado el asistente y la búsqueda semántica? (ADR-037)
+
+    Lee `public.tenants.asistente_habilitado`. Fila ausente o slug mal formado
+    cuentan como apagado (el mismo fail-closed de `estado_entidad`). NO captura
+    excepciones: quien llama decide qué hace si el registro no responde (HTTP: 503;
+    `/auth/me`: `False`). Sin caché a propósito: apagar es el acto que debe ser
+    inmediato.
+    """
+    if not slug_valido(slug):
+        return False
+    return bool(
+        await conn.fetchval(
+            "SELECT asistente_habilitado FROM public.tenants WHERE slug = $1", slug
+        )
+    )
+
+
+#: Cuerpos de error comunes de la bandera del asistente: (HTTP, error, detalle).
+ERROR_ASISTENTE_DESHABILITADO: tuple[int, str, str] = (
+    403,
+    "asistente_deshabilitado",
+    "Esta entidad no tiene activado el asistente ni la búsqueda semántica.",
+)
+ERROR_ASISTENTE_NO_DISPONIBLE: tuple[int, str, str] = (
+    503,
+    "asistente_estado_no_disponible",
+    "No se pudo comprobar si la entidad tiene activado el asistente.",
+)

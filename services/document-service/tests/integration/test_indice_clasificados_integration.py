@@ -43,12 +43,13 @@ async def _seed_radicado(conn: asyncpg.Connection, *, doc_type: str = "E", nivel
 @pytest.mark.asyncio
 async def test_set_classification_persists_meta_and_indice_lists(tenant_ctx) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     repo = DocumentRepository(conn, slug)
     rid = await _seed_radicado(conn, nivel=1)
 
     await repo.set_classification(
-        rid, 3, fundamento="Art. 18 lit. b Ley 1712", causal="Datos personales", plazo_meses=None
+        rid, 3, nivel_esperado=1, fundamento="Art. 18 lit. b Ley 1712",
+        causal="art18_b_vida_salud_seguridad", plazo_meses=None,
     )
     row = await conn.fetchrow(
         "SELECT nivel_seguridad, clasificacion_fundamento, clasificacion_causal, "
@@ -57,7 +58,7 @@ async def test_set_classification_persists_meta_and_indice_lists(tenant_ctx) -> 
     )
     assert row["nivel_seguridad"] == 3
     assert row["clasificacion_fundamento"] == "Art. 18 lit. b Ley 1712"
-    assert row["clasificacion_causal"] == "Datos personales"
+    assert row["clasificacion_causal"] == "art18_b_vida_salud_seguridad"
     assert row["clasificado_at"] is not None
 
     indice = await repo.indice_clasificados()
@@ -71,15 +72,17 @@ async def test_set_classification_persists_meta_and_indice_lists(tenant_ctx) -> 
 @pytest.mark.asyncio
 async def test_declassify_clears_meta_and_removes_from_indice(tenant_ctx) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     repo = DocumentRepository(conn, slug)
     rid = await _seed_radicado(conn, nivel=1)
 
-    await repo.set_classification(rid, 2, fundamento="F", causal="C", plazo_meses=12)
+    await repo.set_classification(
+        rid, 2, nivel_esperado=1, fundamento="F", causal="art19_i_salud_publica", plazo_meses=12
+    )
     assert len(await repo.indice_clasificados()) == 1
 
     # Desclasificar (nivel 1) limpia la metadata y saca del índice.
-    await repo.set_classification(rid, 1)
+    await repo.set_classification(rid, 1, nivel_esperado=2)
     row = await conn.fetchrow(
         "SELECT nivel_seguridad, clasificacion_fundamento, clasificacion_causal, "
         "clasificacion_plazo_meses, clasificado_at FROM radicados WHERE id=$1",
@@ -97,14 +100,18 @@ async def test_declassify_clears_meta_and_removes_from_indice(tenant_ctx) -> Non
 async def test_indice_complete_and_orthogonal_to_clearance(tenant_ctx) -> None:
     """El índice incluye TODOS los nivel≥2 (2 y 3), excluye PUBLICA, sin filtro de clearance."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     repo = DocumentRepository(conn, slug)
 
     pub = await _seed_radicado(conn, doc_type="E", nivel=1)
     res = await _seed_radicado(conn, doc_type="S", nivel=1)
     cla = await _seed_radicado(conn, doc_type="I", nivel=1)
-    await repo.set_classification(res, 2, fundamento="reservada")
-    await repo.set_classification(cla, 3, fundamento="clasificada")
+    await repo.set_classification(
+        res, 2, nivel_esperado=1, fundamento="reservada", causal="art19_i_salud_publica", plazo_meses=12
+    )
+    await repo.set_classification(
+        cla, 3, nivel_esperado=1, fundamento="clasificada", causal="art18_a_intimidad"
+    )
 
     indice = await repo.indice_clasificados()
     niveles = sorted(r["nivel_seguridad"] for r in indice)
@@ -123,5 +130,5 @@ async def test_migration_018_idempotent(tenant_ctx) -> None:
         Path(__file__).parents[2] / "migrations" / "tenant" / "018_radicado_clasificacion_meta.sql"
     ).read_text()
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}", public')
+        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
         await conn.execute(sql)  # segunda pasada, no-op sin error

@@ -227,7 +227,7 @@ async def test_area_07_08_el_rol_de_la_app_no_puede_actualizar_el_acta(
     from migrations import runner
 
     revoke = next(p for p in runner._sql_files(runner.TENANT_DIR) if "054_" in p.name)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     await conn.execute(revoke.read_text())
 
     try:

@@ -35,16 +35,28 @@ def test_create_trd_serie(http: httpx.Client, archive_url: str) -> None:
         json={
             "code": "E2E-100",
             "name": "Contratos E2E",
-            "retention_years": 5,
-            "total_retention": 10,
-            "disposition": "conserve",
+            # C-4/C6: las dos fases son obligatorias; el total lo deriva la respuesta.
+            "archivo_gestion_years": 5,
+            "archivo_central_years": 5,
+            "disposition": "CT",
         },
     )
     assert r.status_code in (201, 409), r.text
     if r.status_code == 201:
         body = r.json()
         assert body["code"] == "E2E-100"
-        assert body["disposition"] == "conserve"
+        assert body["disposition"] == "CT"
+        assert (body["retention_years"], body["total_retention"]) == (5, 10)
+
+
+def test_el_juego_legado_de_retencion_ya_no_se_acepta(http: httpx.Client, archive_url: str) -> None:
+    """C-4/C6: `retention_years`/`total_retention` salieron de la escritura (422, no silencio)."""
+    r = http.post(
+        f"{archive_url}/api/v1/trd",
+        headers=TENANT_HEADERS,
+        json={"code": "E2E-101", "name": "Legado", "retention_years": 5, "total_retention": 10},
+    )
+    assert r.status_code == 422, r.text
 
 
 def test_list_trd_series(http: httpx.Client, archive_url: str) -> None:

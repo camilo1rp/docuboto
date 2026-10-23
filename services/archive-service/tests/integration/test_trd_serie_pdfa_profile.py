@@ -73,6 +73,8 @@ async def test_create_and_read_serie_with_pdfa_profile_persists_real_postgres(
             code=f"PDA{uuid.uuid4().hex[:6]}",
             name="itest serie con perfil 2u",
             pdfa_profile="2u",
+            archivo_gestion_years=5,
+            archivo_central_years=5,
         ),
         actor=None,
     )
@@ -82,7 +84,7 @@ async def test_create_and_read_serie_with_pdfa_profile_persists_real_postgres(
     # (no solo devuelta desde la fila del INSERT en la misma transacción).
     other_conn = await asyncpg.connect(dsn=DSN)
     try:
-        await other_conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+        await other_conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
         reread = await ArchiveService(other_conn, slug).get_trd_serie(created.id)
     finally:
         await other_conn.close()
@@ -97,7 +99,7 @@ async def test_create_serie_without_pdfa_profile_persists_null_real_postgres(
     archive = ArchiveService(conn, slug)
 
     created = await archive.create_trd_serie(
-        TrdSerieCreate(code=f"PDN{uuid.uuid4().hex[:6]}", name="itest serie sin perfil"),
+        TrdSerieCreate(code=f"PDN{uuid.uuid4().hex[:6]}", name="itest serie sin perfil", archivo_gestion_years=5, archivo_central_years=5),
         actor=None,
     )
 
@@ -113,7 +115,7 @@ async def test_update_serie_sets_pdfa_profile_real_postgres(
     slug, conn = tenant_ctx
     archive = ArchiveService(conn, slug)
     created = await archive.create_trd_serie(
-        TrdSerieCreate(code=f"PDU{uuid.uuid4().hex[:6]}", name="itest serie a actualizar"),
+        TrdSerieCreate(code=f"PDU{uuid.uuid4().hex[:6]}", name="itest serie a actualizar", archivo_gestion_years=5, archivo_central_years=5),
         actor=None,
     )
     assert created.pdfa_profile is None
@@ -141,10 +143,10 @@ async def test_check_constraint_rejects_invalid_pdfa_profile_raw_sql(
     schema = tenant_schema(slug)
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             await conn.execute(
-                "INSERT INTO trd_series (code, name, pdfa_profile) VALUES ($1, $2, $3)",
+                "INSERT INTO trd_series (code, name, pdfa_profile, archivo_gestion_years, archivo_central_years) VALUES ($1, $2, $3, 5, 5)",
                 f"BAD{uuid.uuid4().hex[:6]}",
                 "itest serie perfil inválido (bypass Pydantic)",
                 "9z",
@@ -160,11 +162,11 @@ async def test_check_constraint_accepts_null_and_all_valid_profiles_raw_sql(
     profiles = [None, "1a", "1b", "2a", "2b", "2u", "3a", "3b", "3u"]
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         for profile in profiles:
             code = f"OK{uuid.uuid4().hex[:6]}"
             row = await conn.fetchrow(
-                "INSERT INTO trd_series (code, name, pdfa_profile) VALUES ($1, $2, $3) "
+                "INSERT INTO trd_series (code, name, pdfa_profile, archivo_gestion_years, archivo_central_years) VALUES ($1, $2, $3, 5, 5) "
                 "RETURNING pdfa_profile",
                 code,
                 f"itest serie perfil {profile!r}",
@@ -189,7 +191,7 @@ async def test_migration_035_is_idempotent_on_real_postgres(
     sql = _MIGRATION_035_PATH.read_text(encoding="utf-8")
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(sql)  # re-ejecución sobre el schema YA migrado por tenant_ctx
 
     # El cableado sigue funcionando con normalidad tras la re-ejecución:
@@ -197,17 +199,19 @@ async def test_migration_035_is_idempotent_on_real_postgres(
     archive = ArchiveService(conn, slug)
     created = await archive.create_trd_serie(
         TrdSerieCreate(
-            code=f"MIG{uuid.uuid4().hex[:6]}", name="itest post-idempotencia 035", pdfa_profile="1a"
+            code=f"MIG{uuid.uuid4().hex[:6]}", name="itest post-idempotencia 035", pdfa_profile="1a",
+            archivo_gestion_years=5,
+            archivo_central_years=5,
         ),
         actor=None,
     )
     assert created.pdfa_profile == "1a"
 
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             await conn.execute(
-                "INSERT INTO trd_series (code, name, pdfa_profile) VALUES ($1, $2, $3)",
+                "INSERT INTO trd_series (code, name, pdfa_profile, archivo_gestion_years, archivo_central_years) VALUES ($1, $2, $3, 5, 5)",
                 f"MIB{uuid.uuid4().hex[:6]}",
                 "itest CHECK sigue activo post-idempotencia",
                 "bad",
@@ -233,8 +237,6 @@ async def _seed_ready_with_serie(
         TrdSerieCreate(
             code=f"E2E{uuid.uuid4().hex[:6]}",
             name="itest serie AIP end-to-end pdfa_profile",
-            retention_years=0,
-            total_retention=0,
             archivo_gestion_years=5,
             archivo_central_years=5,
             pdfa_profile=pdfa_profile,

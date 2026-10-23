@@ -54,6 +54,8 @@ def _minio() -> MagicMock:
         return MagicMock(version_id="v-ren")
 
     minio.put_object = AsyncMock(side_effect=_put)
+    # C-5/C7: el legal hold heredado también se RELEE (no se cree a la palabra del almacén).
+    minio.is_object_legal_hold_enabled = AsyncMock(side_effect=lambda *a, **k: minio._hold)
     minio.get_object_retention = AsyncMock(side_effect=lambda *a, **k: minio._ret)
 
     async def _get_object(_b, _k):
@@ -74,7 +76,7 @@ def _minio() -> MagicMock:
 async def _file(
     conn: asyncpg.Connection, slug: str, file_id: uuid.UUID, nombre: str, mime: str = "application/xml"
 ) -> None:
-    await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{_schema(slug)}"')
     await conn.execute(
         "INSERT INTO files (id, filename, mime_type, file_size, sha256, bucket, object_key)"
         " VALUES ($1, $2, $3, $4, $5, $6, $7)",
@@ -109,7 +111,7 @@ def _mundo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def _cuenta(conn, slug, sql: str, *args) -> int:
-    await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{_schema(slug)}"')
     return await conn.fetchval(sql, *args)
 
 
@@ -126,7 +128,7 @@ async def test_hereda_retain_until_modo_y_legal_hold_y_apunta_al_anterior(tenant
     assert nueva["retention_mode"] == fila["retention_mode"]
     assert nueva["legal_hold"] is True
     assert nueva["expediente_id"] == "EXP-1"
-    await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{_schema(slug)}"')
     assert await conn.fetchval(
         "SELECT renueva_a FROM preservacion_worm_objeto WHERE file_id = $1", req.file_id_nuevo
     ) == fila["id"]
@@ -226,7 +228,7 @@ async def test_la_cascada_corre_aunque_la_raiz_ya_este_al_dia(tenant_ctx) -> Non
     svc = PreservationWormService(conn, slug)
     await svc.renovar_artefacto(req, actor="sys")
     nueva = _RETAIN + timedelta(days=3650)
-    await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{_schema(slug)}"')
     await conn.execute("UPDATE preservacion_worm_objeto SET retain_until = $1 WHERE id = $2", nueva, fila["id"])
 
     resp = await svc.renovar_retencion(
@@ -244,7 +246,7 @@ async def test_la_segunda_renovacion_hereda_el_mayor_retain_until_de_la_cadena(t
     await svc.renovar_artefacto(req, actor="sys")
     # La raíz se extiende SIN cascada (p. ej. antes de existir la corrección): el eslabón 1 queda atrás.
     mayor = _RETAIN + timedelta(days=5000)
-    await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{_schema(slug)}"')
     await conn.execute("UPDATE preservacion_worm_objeto SET retain_until = $1 WHERE id = $2", mayor, fila["id"])
 
     nuevo2, firma = uuid.uuid4(), req.firma_id

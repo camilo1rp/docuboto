@@ -22,6 +22,8 @@ import pytest
 from orpycamcp_common import identidad
 
 BASE = "/api/v1/knowledge/admin/deadletter"
+pytestmark = pytest.mark.gates_reales
+
 USER = "11111111-1111-1111-1111-111111111111"
 EVT = "evt-1"
 RUTAS = [
@@ -33,8 +35,12 @@ RUTAS = [
 
 
 @pytest.fixture(autouse=True)
-def _secreto(monkeypatch: pytest.MonkeyPatch) -> None:
+def _secreto(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("IDENTITY_SIGNING_SECRET", "s3cr3to-de-prueba-dlq")
+    # El middleware reclama el nonce en Redis (ADR-036, addendum C-7): en unidad, en memoria.
+    identidad.fijar_registro(identidad.RegistroNoncesMemoria())
+    yield
+    identidad.fijar_registro(None)
 
 
 @pytest.mark.asyncio

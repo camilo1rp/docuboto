@@ -16,5 +16,5 @@
 --   pg_trgm   → índices GIN trigram para búsqueda difusa/prefijo (search-service)
 --   unaccent  → normalización de acentos para FTS en español
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE EXTENSION IF NOT EXISTS unaccent;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS unaccent WITH SCHEMA public;

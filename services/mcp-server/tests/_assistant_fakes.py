@@ -98,6 +98,9 @@ def make_gateway(
     user_id: str = "user-1",
     levels: dict[str, int] | None = None,
     tool_response: httpx.Response | None = None,
+    asistente_habilitado: bool = True,
+    con_conocimiento: bool = True,
+    root: bool = False,
 ) -> AsyncMock:
     """Gateway simulado, con los dos caminos separados a propósito.
 
@@ -118,13 +121,25 @@ def make_gateway(
     para consultar, que es donde una tool se ofrece y muere en un 403.
     """
     gw = AsyncMock()
+    # ADR-037: las rutas del asistente exigen la bandera de la entidad y
+    # PERM_CONOCIMIENTO; los dobles las conceden por defecto (`asistente_habilitado`,
+    # `con_conocimiento`) para que las suites ajenas a ese gate no dependan de él. Quien
+    # prueba el gate pasa `False` y comprueba el rechazo.
+    perms = list(permissions or [])
+    niveles = dict(levels) if levels is not None else {p: 3 for p in perms}
+    if root:
+        # Forma real de /auth/me para ROOT: `USUA_PERM_ROOT: 5` (no hay rol JWT «ROOT»).
+        perms.append("USUA_PERM_ROOT")
+        niveles["USUA_PERM_ROOT"] = 5
+    if con_conocimiento and "PERM_CONOCIMIENTO" not in perms:
+        perms.append("PERM_CONOCIMIENTO")
+        niveles.setdefault("PERM_CONOCIMIENTO", 1)
     me_body = {
-        "permissions": permissions or [],
-        "permission_levels": (
-            dict(levels) if levels is not None else {p: 3 for p in (permissions or [])}
-        ),
+        "permissions": perms,
+        "permission_levels": niveles,
         "roles": roles or [],
         "user_id": user_id,
+        "asistente_habilitado": asistente_habilitado,
     }
 
     async def _get(path: str, **kwargs: Any) -> httpx.Response:

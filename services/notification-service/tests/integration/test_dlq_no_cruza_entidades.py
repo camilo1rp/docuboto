@@ -70,7 +70,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     )
     try:
         # La DLQ física es una (en `bb`); `aa` solo aporta su propia `radicados`.
-        await c.execute(f'SET search_path TO "{schema}", "{schema_a}", public')
+        await c.execute(f'SET search_path TO "{schema}", "{schema_a}"')
         await c.execute(radicados.format(f'"{schema}"'))
         await c.execute(radicados.format(f'"{schema_a}"'))
         for nombre in (

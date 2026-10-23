@@ -102,8 +102,12 @@ async def _apply_global(conn: asyncpg.Connection) -> None:
             print(f"  skip  [global] {path.name}")
             continue
         print(f"  apply [global] {path.name}")
-        await conn.execute(path.read_text())
-        await ledger.record(conn, ledger.ESQUEMA_GLOBAL, SERVICIO, path.name)
+        # En transacción (C19): un fallo a mitad ya no deja DDL aplicado sin asiento
+        # en el libro. Ningún .sql global usa CONCURRENTLY/ADD VALUE/VACUUM/BEGIN
+        # (lo fija shared/tests/test_migraciones_al_arrancar.py).
+        async with conn.transaction():
+            await conn.execute(path.read_text())
+            await ledger.record(conn, ledger.ESQUEMA_GLOBAL, SERVICIO, path.name)
 
 
 async def _tenant_schemas(conn: asyncpg.Connection) -> list[str]:
@@ -206,7 +210,7 @@ async def asentar_backfill_fundamento(conn: asyncpg.Connection, schema: str, slu
     if (SERVICIO, "041_clasificado_con_fundamento.sql") not in await ledger.applied(conn, schema):
         return 0
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         filas = await conn.fetch(
             "SELECT r.tracking_number, r.clasificacion_fundamento FROM radicados r "
             " WHERE r.nivel_seguridad >= 2 AND r.clasificacion_fundamento LIKE $1 "
@@ -264,7 +268,7 @@ async def _apply_tenant(conn: asyncpg.Connection) -> None:
             # schema viene de information_schema (creado por tenant-service con slug
             # validado); seguro para interpolar como identificador.
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await conn.execute(path.read_text())
                 if path.name in _ANCLAS and await anclar_evidencia(conn, schema, path.name):
                     print(f"  anchor [{schema}] {path.name} -> audit_log")
@@ -289,18 +293,21 @@ def _warn_stray_root_files() -> None:
 async def run() -> None:
     conn = await asyncpg.connect(dsn=_require_dsn())
     try:
-        await ledger.ensure_ledger(conn)
-        for aviso in await ledger.importar_libros_antiguos(
-            conn,
-            servicios_por_archivo_global=_mapa_propio(GLOBAL_DIR),
-            servicios_por_archivo_tenant=_mapa_propio(TENANT_DIR),
-            ignorar_desconocidos=True,
-        ):
-            print(aviso)
-        _warn_stray_root_files()
-        await _apply_global(conn)
-        await _apply_tenant(conn)
-        print("migrations done")
+        # Cerrojo global único (C19, ADR-041): TODO lo que escribe el libro, `public`
+        # o un esquema tenant corre serializado entre los 9 runners e init_tenant.
+        async with ledger.cerrojo(conn):
+            await ledger.ensure_ledger(conn)
+            for aviso in await ledger.importar_libros_antiguos(
+                conn,
+                servicios_por_archivo_global=_mapa_propio(GLOBAL_DIR),
+                servicios_por_archivo_tenant=_mapa_propio(TENANT_DIR),
+                ignorar_desconocidos=True,
+            ):
+                print(aviso)
+            _warn_stray_root_files()
+            await _apply_global(conn)
+            await _apply_tenant(conn)
+            print("migrations done")
     finally:
         await conn.close()
 

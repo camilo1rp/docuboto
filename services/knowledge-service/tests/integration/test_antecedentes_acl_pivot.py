@@ -288,7 +288,7 @@ async def test_radicado_ref_from_other_tenant_is_not_found(
         await conn_b.execute(f'CREATE SCHEMA "{schema_b}"')
         for path in runner._sql_files(runner.TENANT_DIR):
             async with conn_b.transaction():
-                await conn_b.execute(f'SET LOCAL search_path = "{schema_b}", public')
+                await conn_b.execute(f'SET LOCAL search_path = "{schema_b}"')
                 await conn_b.execute(path.read_text())
         # `radicados` (de document-service) que el gate vivo del pivote lee (B10).
         await conn_b.execute(
@@ -296,7 +296,7 @@ async def test_radicado_ref_from_other_tenant_is_not_found(
             "gen_random_uuid(), tracking_number varchar(50) NOT NULL UNIQUE, "
             "nivel_seguridad smallint NOT NULL DEFAULT 1)"
         )
-        await conn_b.execute(f'SET search_path = "{schema_b}", public')
+        await conn_b.execute(f'SET search_path = "{schema_b}"')
 
         with pytest.raises(HTTPException) as exc:
             await antecedentes(AntecedentesRequest(radicado_ref=ref), conn=conn_b, caller_id=None)

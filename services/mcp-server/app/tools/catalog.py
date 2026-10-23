@@ -277,6 +277,63 @@ _P_BORRADOR_ID = Param(
     description="UUID del borrador (aún no tiene número de radicado).",
     label="Borrador",
 )
+#: Catálogo CERRADO de causales de la Ley 1712/2014 arts. 18-19 (C12). Espejo del
+#: `CAUSALES` de document-service: `shared/tests/test_causales_reserva_una_sola_lista.py`
+#: compara esta tupla con la constante de Python y con el CHECK de la migración 050.
+CAUSALES_RESERVA: tuple[str, ...] = (
+    "art18_a_intimidad",
+    "art18_b_vida_salud_seguridad",
+    "art18_c_secretos",
+    "art19_a_defensa_seguridad_nacional",
+    "art19_b_seguridad_publica",
+    "art19_c_relaciones_internacionales",
+    "art19_d_prevencion_investigacion_delitos",
+    "art19_e_debido_proceso",
+    "art19_f_administracion_justicia",
+    "art19_g_infancia_adolescencia",
+    "art19_h_estabilidad_macroeconomica",
+    "art19_i_salud_publica",
+    "art19_par_deliberativo",
+)
+_P_CAUSAL_RESERVA = Param(
+    name="causal_reserva",
+    enum=CAUSALES_RESERVA,
+    description=(
+        "Causal del catálogo cerrado: art18_* para Clasificada (nivel 3), art19_* para "
+        "Reservada (nivel 2). Obligatoria con nivel 2 o 3."
+    ),
+    label="Causal",
+)
+_P_PLAZO_RESERVA = Param(
+    name="plazo_reserva_meses",
+    type="integer",
+    minimum=1,
+    maximum=180,
+    description=(
+        "Plazo de la reserva en meses (1 a 180). Obligatorio en art19_*; no aplica en art18_*. "
+        "El tope de 15 años corre desde la GENERACIÓN del documento: a uno de 10 años solo le "
+        "quedan 60 meses, y a uno de 15 ya no se le puede reservar (422 `reserva_agotada`)."
+    ),
+    label="Plazo (meses)",
+)
+_P_FUNDAMENTO_NORMA = Param(
+    name="fundamento_norma",
+    max_length=160,
+    description=(
+        "Cita de la norma que sustenta la excepción, que SE PUBLICA en el índice de información "
+        "clasificada y reservada: tipo de norma y número/artículo, p. ej. «Ley 1581 de 2012, art. 5». "
+        "No es el fundamento jurídico libre (ese es interno)."
+    ),
+    label="Norma (publicable)",
+)
+_P_SOLICITUD_ID = Param(
+    name="solicitud_id",
+    required=True,
+    location="path",
+    format="uuid",
+    description="UUID de la solicitud de desclasificación.",
+    label="Solicitud",
+)
 _P_PAGE = Param(
     name="page",
     type="integer",
@@ -1231,6 +1288,45 @@ CATALOG: tuple[Tool, ...] = (
         ),
     ),
     Tool(
+        name="cuadro_clasificacion",
+        description=(
+            "Cuadro de clasificación documental de la entidad: fondo > sección > subsección > "
+            "serie > subserie, derivado del organigrama y de la dependencia productora que declara "
+            "la TRD vigente. Incluye los avisos (productora inactiva, organigrama reorganizado "
+            "después de convalidar) y las series que no se pueden ubicar."
+        ),
+        method="GET",
+        path="/api/v1/trd/cuadro",
+        epic="E04",
+        operacion="Consultar el cuadro de clasificación documental",
+        params=(
+            Param(
+                name="incluir_borradores",
+                type="boolean",
+                description=(
+                    "Además de la versión vigente, las versiones en trámite (borrador/aprobada). "
+                    "Es la deliberación del Comité: exige USUA_PERM_TRD (403 sin él)."
+                ),
+                label="Incluir borradores",
+            ),
+            Param(
+                name="segun",
+                enum=("convalidado", "vivo"),
+                description=(
+                    "Dónde ubicar una serie convalidada: `convalidado` (por omisión) en la ruta que "
+                    "aprobó el Consejo, `vivo` en la ruta actual del organigrama."
+                ),
+                label="Ubicar según",
+            ),
+            Param(
+                name="incluir_vacias",
+                type="boolean",
+                description="Incluye las secciones y subsecciones que no tienen series.",
+                label="Incluir ramas vacías",
+            ),
+        ),
+    ),
+    Tool(
         name="pendientes_equipo",
         description=(
             "Pasos de trámite pendientes, filtrables por dependencia o por persona "
@@ -1567,7 +1663,7 @@ CATALOG: tuple[Tool, ...] = (
         ),
         method="POST",
         path="/api/v1/knowledge/search",
-        permission=None,
+        permission="PERM_CONOCIMIENTO",
         write=False,
         epic="E21",
         operacion="Buscar en la base de conocimiento documental",
@@ -1615,7 +1711,7 @@ CATALOG: tuple[Tool, ...] = (
         ),
         method="POST",
         path="/api/v1/knowledge/antecedentes",
-        permission=None,
+        permission="PERM_CONOCIMIENTO",
         write=False,
         epic="E21",
         operacion="Buscar antecedentes de un asunto o de un radicado",
@@ -1667,7 +1763,7 @@ CATALOG: tuple[Tool, ...] = (
         ),
         method="POST",
         path="/api/v1/knowledge/rag",
-        permission=None,
+        permission="PERM_CONOCIMIENTO",
         write=False,
         epic="E21",
         operacion="Redactar un texto apoyado en antecedentes, con citas",
@@ -2019,8 +2115,10 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="listar_prestamos",
         description=(
-            "Préstamos de unidades del archivo físico: qué está prestado, a quién y desde "
-            "cuándo. Con 'estado' se ven solo los vencidos, que es la consulta habitual."
+            "Préstamos de unidades del archivo físico: qué está prestado, A QUIÉN "
+            "(`prestatario_tipo` interno o externo, con su nombre y, si es externo, su "
+            "documento), quién lo entregó, quién lo recibió de vuelta y desde cuándo. "
+            "Con 'estado' se ven solo los vencidos, que es la consulta habitual."
         ),
         method="GET",
         path="/api/v1/prestamos",
@@ -2036,7 +2134,70 @@ CATALOG: tuple[Tool, ...] = (
                 description="Filtra por estado del préstamo.",
                 label="Estado",
             ),
+            _P_PAGE,
+            _p_size(100),
         ),
+    ),
+    Tool(
+        name="listar_prestatarios_elegibles",
+        description=(
+            "Usuarios a quienes SE PUEDE prestar una unidad: activos y con acceso a todo "
+            "su contenido. Es la lectura previa de `registrar_prestamo` con un prestatario "
+            "interno: el `user_id` que devuelve es el que ese préstamo pide. Si quien "
+            "consulta no alcanza el contenido de la unidad, la lista sale vacía."
+        ),
+        method="GET",
+        path="/api/v1/unidades/{unidad_id}/prestatarios-elegibles",
+        path_params=("unidad_id",),
+        permission="USUA_PERM_EXPEDIENTE",
+        min_crud=1,
+        write=False,
+        epic="E17",
+        operacion="Listar a quién se puede prestar una unidad",
+        params=(
+            _P_UNIDAD_ID,
+            Param(name="q", max_length=80, description="Parte del nombre de usuario.", label="Buscar"),
+            _P_PAGE,
+            _p_size(100),
+        ),
+    ),
+    Tool(
+        name="listar_retenciones_legales",
+        description=(
+            "Retenciones legales (legal hold) de un expediente, una por motivo: judicial, "
+            "disciplinario, fiscal, administrativo, `ddhh_memoria_historica` o "
+            "`valoracion_pendiente` (la que el "
+            "sistema fija a un fondo acumulado cuyo calendario ya venció, hasta que el "
+            "Comité valore su TVD). Muestra quién la fijó, con qué acta y si sigue activa."
+        ),
+        method="GET",
+        path="/api/v1/expedientes/{expediente_id}/legal-holds",
+        path_params=("expediente_id",),
+        permission="USUA_PERM_ADMIN",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar las retenciones legales de un expediente",
+        params=(_P_EXPEDIENTE_ID,),
+    ),
+    Tool(
+        name="consultar_valoracion_tvd",
+        description=(
+            "Valoración del Comité sobre una agrupación de la TVD: el acto (acta, fecha, "
+            "fundamento) y cuántos expedientes de fondo acumulado esperan, ya aplicaron o "
+            "agotaron la aplicación de su disposición, y con disposición Selección cuántos "
+            "esperan el acto de selección por expediente. Sin acto registrado, devuelve 404: "
+            "los expedientes siguen bajo retención legal `valoracion_pendiente`."
+        ),
+        method="GET",
+        path="/api/v1/tvd/{agrupacion_id}/valoracion",
+        path_params=("agrupacion_id",),
+        permission="USUA_PERM_TRD",
+        min_crud=1,
+        write=False,
+        epic="E10",
+        operacion="Consultar la valoración de una agrupación TVD",
+        params=(_P_AGRUPACION_ID,),
     ),
     # ── F1 Ventanilla y radicación ──────────────────────────────────────
     #
@@ -2264,8 +2425,11 @@ CATALOG: tuple[Tool, ...] = (
         name="reclasificar_radicado",
         description=(
             "Cambia el nivel de seguridad de un radicado (pública, reservada, clasificada). "
-            "Exige MOTIVO y, al clasificar, el fundamento jurídico: reservar información "
-            "pública es un acto administrativo, no una etiqueta (Ley 1712/2014)."
+            "Exige MOTIVO y, al clasificar o reservar, una CAUSAL del catálogo cerrado de la "
+            "Ley 1712/2014 (consúltalo con `consultar_causales_reserva`), su fundamento "
+            "jurídico y, si es reservada, el plazo: reservar información pública es un acto "
+            "administrativo, no una etiqueta. BAJAR el nivel desde Clasificada (3) NO se hace "
+            "aquí —responde 409—: usa `solicitar_desclasificacion`, que decide otra persona."
         ),
         method="PATCH",
         path="/api/v1/documents/{document_id}/security-level",
@@ -2297,18 +2461,143 @@ CATALOG: tuple[Tool, ...] = (
                 description="Por qué se reclasifica. Queda en el asiento de auditoría.",
                 label="Motivo",
             ),
-            Param(name="causal_reserva", description="Causal de reserva invocada.", label="Causal"),
+            _P_CAUSAL_RESERVA,
             Param(
                 name="fundamento_juridico",
-                description="Norma que ampara la reserva (obligatoria al clasificar).",
+                description="Norma especial que ampara la reserva (obligatoria al clasificar o reservar).",
                 label="Fundamento",
             ),
+            _P_PLAZO_RESERVA,
+            _P_FUNDAMENTO_NORMA,
+        ),
+    ),
+    Tool(
+        name="consultar_causales_reserva",
+        description=(
+            "Catálogo cerrado de causales de clasificación (art. 18) y reserva (art. 19) de "
+            "la Ley 1712/2014, con su nivel y plazo máximo. Es la ley, no un dato de la "
+            "entidad: úsalo para ofrecer solo causales válidas."
+        ),
+        method="GET",
+        path="/api/v1/documents/causales-reserva",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar el catálogo de causales de reserva",
+        params=(),
+    ),
+    Tool(
+        name="solicitar_desclasificacion",
+        description=(
+            "Solicita BAJAR el nivel de un radicado CLASIFICADO (nivel 3) a reservada (2) o "
+            "pública (1). NO lo baja: lo decide otra persona (paso 2). Si el destino es "
+            "Reservada exige causal del art. 19, fundamento y plazo."
+        ),
+        method="POST",
+        path="/api/v1/documents/{document_id}/desclasificacion",
+        path_params=("document_id",),
+        permission="PERM_RECLASIFICAR",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E08",
+        operacion="Solicitar la desclasificación de un radicado",
+        params=(
+            _P_DOCUMENT_ID,
             Param(
-                name="plazo_reserva_meses",
+                name="nivel_seguridad",
                 type="integer",
-                description="Plazo de la reserva en meses.",
-                label="Plazo (meses)",
+                required=True,
+                minimum=1,
+                maximum=2,
+                description="Nivel de destino: 1=Pública, 2=Reservada.",
+                label="Nivel de destino",
             ),
+            Param(
+                name="motivo",
+                required=True,
+                min_length=10,
+                max_length=500,
+                description="Por qué se desclasifica (mínimo 10 caracteres).",
+                label="Motivo",
+            ),
+            _P_CAUSAL_RESERVA,
+            Param(
+                name="fundamento_juridico",
+                description="Norma que ampara la reserva (obligatoria si el destino es Reservada).",
+                label="Fundamento",
+            ),
+            _P_PLAZO_RESERVA,
+            _P_FUNDAMENTO_NORMA,
+        ),
+    ),
+    Tool(
+        name="consultar_desclasificaciones_radicado",
+        description="Historial de solicitudes de desclasificación de un radicado, con su estado.",
+        method="GET",
+        path="/api/v1/documents/{document_id}/desclasificacion",
+        path_params=("document_id",),
+        permission="PERM_RECLASIFICAR",
+        min_crud=1,
+        write=False,
+        epic="E08",
+        operacion="Consultar las desclasificaciones de un radicado",
+        params=(_P_DOCUMENT_ID,),
+    ),
+    Tool(
+        name="listar_desclasificaciones_pendientes",
+        description=(
+            "Solicitudes de desclasificación pendientes de decidir, la más antigua primero. "
+            "Marca `propia` las que pediste tú: esas no las puedes decidir."
+        ),
+        method="GET",
+        path="/api/v1/desclasificaciones",
+        permission="PERM_RECLASIFICAR",
+        min_crud=4,
+        write=False,
+        epic="E08",
+        operacion="Consultar la cola de desclasificaciones pendientes",
+        params=(_P_PAGE, _p_size(100)),
+    ),
+    Tool(
+        name="rechazar_desclasificacion",
+        description="Rechaza la solicitud de desclasificación (motivo obligatorio). El radicado sigue clasificado.",
+        method="POST",
+        path="/api/v1/desclasificaciones/{solicitud_id}/rechazar",
+        path_params=("solicitud_id",),
+        permission="PERM_RECLASIFICAR",
+        min_crud=4,
+        write=True,
+        destructive=False,
+        epic="E08",
+        operacion="Rechazar la desclasificación de un radicado",
+        params=(
+            _P_SOLICITUD_ID,
+            Param(
+                name="resolucion_motivo",
+                required=True,
+                min_length=10,
+                max_length=500,
+                description="Por qué se rechaza (mínimo 10 caracteres).",
+                label="Motivo del rechazo",
+            ),
+        ),
+    ),
+    Tool(
+        name="retirar_desclasificacion",
+        description="Retira tu propia solicitud de desclasificación mientras esté pendiente.",
+        method="POST",
+        path="/api/v1/desclasificaciones/{solicitud_id}/retirar",
+        path_params=("solicitud_id",),
+        permission="PERM_RECLASIFICAR",
+        min_crud=3,
+        write=True,
+        destructive=False,
+        epic="E08",
+        operacion="Retirar la solicitud de desclasificación",
+        params=(
+            _P_SOLICITUD_ID,
+            Param(name="motivo", max_length=500, description="Por qué se retira.", label="Motivo"),
         ),
     ),
     Tool(
@@ -2923,30 +3212,50 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="registrar_prestamo",
         description=(
-            "Presta una unidad del archivo a alguien, con fecha de devolución esperada. "
-            "Una unidad prestada bloquea su transferencia: el archivo no puede entregar "
-            "lo que no tiene."
+            "Presta una unidad del archivo a una persona IDENTIFICADA, con fecha de "
+            "devolución esperada. El prestatario es un usuario del sistema (`tipo` "
+            "'interno' y su `user_id`, que se obtiene con `listar_prestatarios_elegibles`) "
+            "o un tercero (`tipo` 'externo' con nombre y documento). Quien entrega es "
+            "quien ejecuta la tool: no se declara. Se rechaza si el prestatario no tiene "
+            "acceso a TODO el contenido de la unidad (un externo solo recibe contenido "
+            "público), si la unidad —o una caja que la contiene o una carpeta suya— ya "
+            "está prestada, o si algún expediente suyo tiene una transferencia en curso "
+            "o está en un lote de eliminación vivo. Mientras esté prestada, sus "
+            "expedientes no se pueden transferir, proponer para eliminación ni "
+            "vincular a la unidad."
         ),
         method="POST",
         path="/api/v1/unidades/{unidad_id}/prestamos",
         path_params=("unidad_id",),
         permission="USUA_PERM_EXPEDIENTE",
-        min_crud=1,
+        min_crud=3,
         write=True,
         destructive=False,
         epic="E17",
         operacion="Registrar el préstamo de una unidad",
         params=(
             _P_UNIDAD_ID,
-            Param(name="prestado_a", required=True, max_length=255, description="Persona o dependencia que la recibe.", label="Prestado a"),
-            Param(name="prestado_por", max_length=255, description="Quién la entrega.", label="Entregado por"),
+            Param(
+                name="prestatario",
+                type="object",
+                required=True,
+                description=(
+                    "Quién recibe la unidad. Interno: {\"tipo\": \"interno\", \"user_id\": "
+                    "\"<id de listar_prestatarios_elegibles>\"} (NUNCA el id de Keycloak). "
+                    "Externo: {\"tipo\": \"externo\", \"nombre\": \"...\", "
+                    "\"documento_tipo\": \"CC|CE|NIT|PA|TI|PEP|PPT\", \"documento_numero\": "
+                    "\"...\"} y, opcionales, entidad, cargo, correo, telefono."
+                ),
+                label="Prestatario",
+            ),
             Param(
                 name="fecha_devolucion_esperada",
                 required=True,
                 format="date",
-                description="Fecha en que debe volver (AAAA-MM-DD).",
+                description="Fecha en que debe volver (AAAA-MM-DD); no puede ser pasada.",
                 label="Devolución esperada",
             ),
+            Param(name="observaciones", max_length=1000, description="Nota opcional.", label="Observaciones"),
         ),
     ),
     Tool(
@@ -2956,7 +3265,7 @@ CATALOG: tuple[Tool, ...] = (
         path="/api/v1/prestamos/{prestamo_id}/devolver",
         path_params=("prestamo_id",),
         permission="USUA_PERM_EXPEDIENTE",
-        min_crud=1,
+        min_crud=2,
         write=True,
         destructive=False,
         epic="E17",
@@ -3914,18 +4223,34 @@ CATALOG: tuple[Tool, ...] = (
             Param(name="name", required=True, max_length=255, description="Nombre de la serie.", label="Nombre"),
             Param(name="description", description="Alcance y contenido de la serie.", label="Descripción"),
             Param(
-                name="retention_years",
+                name="archivo_gestion_years",
                 type="integer",
+                required=True,
                 minimum=0,
-                description="Años en archivo de gestión.",
-                label="Retención gestión",
+                description="Años en archivo de gestión. Obligatorio (0 es un valor válido).",
+                label="Años en gestión",
             ),
             Param(
-                name="total_retention",
+                name="archivo_central_years",
                 type="integer",
+                required=True,
                 minimum=0,
-                description="Años totales (gestión + central).",
-                label="Retención total",
+                description=(
+                    "Años en archivo central. Obligatorio (0 es un valor válido). El total de "
+                    "retención es gestión + central y no se envía: lo deriva el sistema."
+                ),
+                label="Años en central",
+            ),
+            Param(
+                name="dependencias_productoras",
+                type="array",
+                item_type="integer",
+                description=(
+                    "Códigos de la(s) dependencia(s) productora(s) de la serie (los de "
+                    "`listar_dependencias`, activas). Sin ellas la serie no se puede aprobar ni "
+                    "convalidar, y no aparece en el cuadro de clasificación."
+                ),
+                label="Dependencias productoras",
             ),
             Param(
                 name="disposition",
@@ -3975,8 +4300,31 @@ CATALOG: tuple[Tool, ...] = (
             _P_TRD_CODE,
             Param(name="name", max_length=255, description="Nombre de la serie en esta versión.", label="Nombre"),
             Param(name="description", description="Alcance y contenido.", label="Descripción"),
-            Param(name="retention_years", type="integer", minimum=0, description="Años en gestión.", label="Retención gestión"),
-            Param(name="total_retention", type="integer", minimum=0, description="Años totales.", label="Retención total"),
+            Param(
+                name="archivo_gestion_years",
+                type="integer",
+                minimum=0,
+                description="Años en gestión. Si se omite se hereda de la versión vigente.",
+                label="Años en gestión",
+            ),
+            Param(
+                name="archivo_central_years",
+                type="integer",
+                minimum=0,
+                description="Años en central. Si se omite se hereda de la versión vigente.",
+                label="Años en central",
+            ),
+            Param(
+                name="dependencias_productoras",
+                type="array",
+                item_type="integer",
+                description=(
+                    "Códigos de la(s) dependencia(s) productora(s) de esta versión. Si se omite "
+                    "se heredan de la vigente (y si alguna ya no está activa, falla: envíe la lista). "
+                    "Es la única forma de cambiar la productora de una serie que ya rige."
+                ),
+                label="Dependencias productoras",
+            ),
             Param(
                 name="disposition",
                 enum=("CT", "E", "S", "M"),
@@ -4270,6 +4618,43 @@ CATALOG: tuple[Tool, ...] = (
             Param(name="name", required=True, max_length=255, description="Nombre.", label="Nombre"),
             Param(name="description", description="Alcance de la agrupación.", label="Descripción"),
             Param(
+                name="archivo_central_years",
+                type="integer",
+                required=True,
+                minimum=0,
+                description=(
+                    "Años de la fase central. Obligatorio: la TVD no tiene fase de gestión y su "
+                    "total de retención es esta misma cifra (no se envía `total_retention`)."
+                ),
+                label="Años en central",
+            ),
+            Param(
+                name="fondo_nombre",
+                required=True,
+                description="Nombre del fondo acumulado.",
+                label="Fondo",
+            ),
+            Param(
+                name="fecha_extrema_inicial",
+                required=True,
+                format="date",
+                description="Fecha del documento más antiguo del fondo (AAAA-MM-DD).",
+                label="Fecha extrema inicial",
+            ),
+            Param(
+                name="fecha_extrema_final",
+                required=True,
+                format="date",
+                description="Fecha del documento más reciente del fondo (AAAA-MM-DD).",
+                label="Fecha extrema final",
+            ),
+            Param(
+                name="justificacion_valoracion",
+                required=True,
+                description="Fundamento de la valoración documental del fondo.",
+                label="Justificación de la valoración",
+            ),
+            Param(
                 name="disposition",
                 enum=("CT", "E", "S", "M"),
                 description="Disposición final.",
@@ -4306,6 +4691,13 @@ CATALOG: tuple[Tool, ...] = (
             _P_TVD_CODE,
             Param(name="name", max_length=255, description="Nombre en esta versión.", label="Nombre"),
             Param(name="description", description="Alcance.", label="Descripción"),
+            Param(
+                name="archivo_central_years",
+                type="integer",
+                minimum=0,
+                description="Años de la fase central. Si se omite se hereda de la versión vigente.",
+                label="Años en central",
+            ),
             Param(
                 name="disposition",
                 enum=("CT", "E", "S", "M"),
@@ -4420,7 +4812,9 @@ CATALOG: tuple[Tool, ...] = (
         name="crear_tipo_documental",
         description=(
             "Crea un tipo documental colgando de una serie de la TRD. Es el vocabulario "
-            "con el que se clasifica al radicar: lo que no está aquí, no se puede elegir."
+            "con el que se clasifica al radicar: lo que no está aquí, no se puede elegir. "
+            "Marcarlo `publicable` (difusión en internet, Ley 1712) exige TRD nivel 3 aunque "
+            "crear el tipo pida menos: con `publicable` y nivel menor la creación se rechaza (403)."
         ),
         method="POST",
         path="/api/v1/tipos-documentales",
@@ -4439,6 +4833,25 @@ CATALOG: tuple[Tool, ...] = (
                 type="boolean",
                 description="Si el tipo es obligatorio en su serie.",
                 label="Obligatorio",
+            ),
+            Param(
+                name="admite_ventanilla_publica",
+                type="boolean",
+                description=(
+                    "Si el tipo se ofrece en la ventanilla única pública (recepción desde afuera, "
+                    "sin autenticar). Por omisión no. NO implica que se publique."
+                ),
+                label="Admite ventanilla pública",
+            ),
+            Param(
+                name="publicable",
+                type="boolean",
+                description=(
+                    "Si los radicados de este tipo pueden PUBLICARSE de oficio en internet (esquema "
+                    "de publicación, Ley 1712 art. 12). Es una decisión de difusión, distinta de la "
+                    "ventanilla: por omisión no, y marcarla exige TRD nivel 3."
+                ),
+                label="Publicable (Ley 1712)",
             ),
         ),
     ),
@@ -6132,14 +6545,31 @@ def get_tool(name: str) -> Tool | None:
     return _BY_NAME.get(name)
 
 
+#: Épica de las tools que consultan la base de conocimiento (E21). Con la bandera de la
+#: entidad apagada (ADR-037) no se listan ni se despachan, ni siquiera para ROOT.
+EPICA_CONOCIMIENTO = "E21"
+
+
+def es_de_conocimiento(tool: Invocable) -> bool:
+    """¿Es una de las tools que dependen de que la entidad active el asistente?"""
+    return getattr(tool, "epic", "") == EPICA_CONOCIMIENTO
+
+
 def puede_usar(
     tool: Invocable,
     permissions: set[str],
     *,
     is_root: bool = False,
     levels: dict[str, int] | None = None,
+    asistente_habilitado: bool = False,
 ) -> bool:
     """¿Este usuario alcanza esta tool? Presencia del permiso **y** nivel CRUD.
+
+    `asistente_habilitado` (ADR-037) es la bandera de la ENTIDAD, no un permiso de la
+    persona: apagada, las tools de conocimiento quedan fuera también para ROOT. Su
+    valor por defecto es `False` (fail-closed): quien olvide pasarlo esconde esas
+    tools, nunca las ofrece de más. `shared/tests/test_conocimiento_mira_la_bandera.py`
+    exige que todo llamante de `app/` lo pase explícitamente.
 
     `levels` es el `permission_levels` de `GET /auth/me` (permiso → crud 0..5).
     Cuando no se aporta —llamantes antiguos que solo tienen la lista plana— se
@@ -6147,6 +6577,8 @@ def puede_usar(
     «no puede» dejaría sin tools a quien sí las tiene. Cuando SÍ se aporta, el
     permiso ausente vale 0, que es fail-closed.
     """
+    if es_de_conocimiento(tool) and not asistente_habilitado:
+        return False
     if is_root:
         return True
     if tool.permission is None:
@@ -6162,6 +6594,19 @@ def visible_tools(
     permissions: set[str],
     is_root: bool = False,
     levels: dict[str, int] | None = None,
+    *,
+    asistente_habilitado: bool = False,
 ) -> list[Tool]:
-    """Tools visibles para un usuario según sus permisos (ROOT ve todas)."""
-    return [t for t in CATALOG if puede_usar(t, permissions, is_root=is_root, levels=levels)]
+    """Tools visibles para un usuario según sus permisos (ROOT ve todas) y la bandera
+    del asistente de su entidad (ADR-037)."""
+    return [
+        t
+        for t in CATALOG
+        if puede_usar(
+            t,
+            permissions,
+            is_root=is_root,
+            levels=levels,
+            asistente_habilitado=asistente_habilitado,
+        )
+    ]

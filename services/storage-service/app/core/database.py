@@ -26,7 +26,7 @@ def tenant_schema(slug: str) -> str:
     """Devuelve el identificador de schema `tenant_{slug}` validado (fail-closed 400).
 
     Normaliza guiones a guiones bajos. Úsese SIEMPRE entrecomillado:
-    ``f'SET search_path TO "{tenant_schema(slug)}", public'``.
+    ``f'SET search_path TO "{tenant_schema(slug)}"'``.
     """
     if not slug_valido(slug):
         raise HTTPException(

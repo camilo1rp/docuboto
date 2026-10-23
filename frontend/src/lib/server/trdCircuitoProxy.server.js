@@ -30,6 +30,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { leerProductoras } from "$lib/server/trdFases.server.js";
 
 const VERSION_RE = /^[1-9]\d*$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -198,7 +199,13 @@ export function makeRegistrarRusdHandler(segment) {
   });
 }
 
-/** `POST .../convalidar` — body { acto_administrativo, fecha_convalidacion, instancia_convalidante, rusd_radicado?, fecha_publicacion? }. */
+/**
+ * `POST .../convalidar` — body { acto_administrativo, fecha_convalidacion, instancia_convalidante,
+ * rusd_radicado?, fecha_publicacion?, dependencias_productoras? }.
+ * `dependencias_productoras` (int[]) solo aplica a TRD y solo al ratificar una versión
+ * `migrada` que nació sin productora (C-4): el backend responde 422
+ * `productora_ya_declarada` / `productora_solo_en_ratificacion` en los demás casos.
+ */
 export function makeConvalidarHandler(segment) {
   return makeActionHandler(segment, "convalidar", {
     fallbackError: "No se pudo convalidar la versión.",
@@ -209,6 +216,7 @@ export function makeConvalidarHandler(segment) {
         instancia_convalidante,
         rusd_radicado,
         fecha_publicacion,
+        dependencias_productoras,
       } = body;
       if (typeof acto_administrativo !== "string" || !acto_administrativo.trim()) {
         return { error: badRequest("El acto administrativo es obligatorio.") };
@@ -229,6 +237,11 @@ export function makeConvalidarHandler(segment) {
         payload.rusd_radicado = rusd_radicado.trim();
       if (typeof fecha_publicacion === "string" && DATE_RE.test(fecha_publicacion)) {
         payload.fecha_publicacion = fecha_publicacion;
+      }
+      if (segment === "trd" && dependencias_productoras !== undefined) {
+        const p = leerProductoras(dependencias_productoras);
+        if (p.error) return { error: p.error };
+        payload.dependencias_productoras = p.value;
       }
       return { payload };
     },

@@ -151,3 +151,15 @@ homónimas dejan de confundirse; el código deja de poder cambiar bajo 8 tablas 
   `ix_flow_steps_inbox`); la función con `historico=true` se queda para el replay.
 - La copia de `resolver_codigo_dependencia` que usan los tests de integración de document y workflow debe
   coincidir con la de tenant-service: `test_dependencia_codigo.py` fija los mismos casos contra la real.
+
+## Addendum (2026-10-20) — C-4, [ADR-040](ADR-040-cuadro-de-clasificacion-derivado-y-fases-de-la-trd.md)
+
+- **Una nueva columna citante cubierta por el barrido**: `trd_serie_dependencia_productora.dependencia_codigo`
+  (archive, migración `070`) casa con `_REF_COLUMNAS` (`dependencia\w*_codigo$`). Eliminar una dependencia que una
+  versión de la TRD cita es `409 dependencia_con_historia` sin tocar tenant-service; `tests/integration/
+  test_dependencia_sin_ciclos.py` fija el nombre de la columna.
+- **El organigrama es un árbol** (tenant-service, migración `015`): trigger `BEFORE INSERT OR UPDATE OF parent_id`
+  con candado consultivo por schema que rechaza el ciclo (`dependencia_ciclo`, `409` en el router); la migración
+  aborta nombrando los códigos si ya hay uno. Antes solo se rechazaba `parent_id == id` y `/dependencias/tree`
+  hacía desaparecer los nodos de un ciclo en silencio.
+

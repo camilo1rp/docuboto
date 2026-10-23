@@ -41,7 +41,7 @@ async def _radicado(conn: asyncpg.Connection, nivel: int) -> uuid.UUID:
 @pytest.fixture
 async def ctx(tenant_ctx):
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     emit = AsyncMock()
     with (
         patch("app.services.workflow_service.events.emit", emit),

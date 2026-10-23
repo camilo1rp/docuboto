@@ -36,7 +36,11 @@ El gateway firma con HMAC las cabeceras de identidad (`CAMPOS_FIRMADOS`: usuario
 
 ## Consecuencias
 
-- Una identidad válida reutilizada en otro método u otra ruta da `401 identidad_no_autentica`. La ventana de 120 s sigue existiendo para *la misma* operación (un reintento idéntico): no es un nonce de un solo uso.
+- Una identidad válida reutilizada en otro método u otra ruta da `401 identidad_no_autentica`. La ventana de 120 s sigue existiendo para *la misma* operación (un reintento idéntico): ~~no es un nonce de un solo uso~~ (superado: ver el addendum «Nonce de un solo uso (C-7)»).
 - **Corte atómico, sin rama de compatibilidad**: la base del HMAC cambió, así que el api-gateway y los nueve servicios con `IdentidadFirmadaMiddleware` (archive, knowledge, auth, document, signature, notification, workflow, tenant, storage) deben reconstruirse y arrancar **a la vez**; si conviven dos versiones, toda petición autenticada responde 401.
 - `firmar_origen`, `firmar_ip_real` y `firmar_ip_publica` son otros mecanismos y no cambian. El mcp-server no verifica identidad: habla con el gateway y este vuelve a firmar.
 - Los clientes que llaman a una ruta con la identidad en un `Mount` o con reescritura de prefijo deberán firmar la ruta tal como la verá el destino.
+
+## Addendum (2026-10-22, tanda C-7): nonce de un solo uso
+
+La base del HMAC pasa a **v3** y añade `X-Identity-Nonce`, un nonce de 128 bits dentro de los campos firmados que `firmar()` genera siempre nuevo. `IdentidadFirmadaMiddleware` lo reclama en Redis (`SET NX EX`, clave `orpycamcp:identidad:nonce:v3:{tenant}:{nonce}`, TTL = vida restante + desfase, ≤ 180 s) **después** de verificar la firma: una reutilización da `401 identidad_no_autentica` y un registro caído `503 identidad_no_verificable` (`Retry-After: 1`), solo para peticiones con identidad de persona. Con secreto y sin `REDIS_URL` el servicio no arranca. Entre servicios se re-firma en cada salto (cada uno consume su propio nonce). Residuos: la carrera captura-primero, la query y el cuerpo sin atar, un servicio comprometido y ≤ 1 s de nonces perdidos en un reinicio de Redis con AOF. Corte atómico gateway + nueve servicios. Detalle y alternativas: [ADR-044](ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md).

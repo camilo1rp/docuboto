@@ -41,7 +41,7 @@ SELLO_STR = SELLO.astimezone(UTC).isoformat()
 
 async def _en_tenant(tenant_ctx) -> tuple[str, asyncpg.Connection]:
     slug, db_conn = tenant_ctx
-    await db_conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await db_conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return slug, db_conn
 
 

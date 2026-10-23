@@ -21,7 +21,7 @@ from datetime import date
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS, make_trd_serie_record
+from tests.conftest import TENANT_HEADERS, declara_productoras, make_trd_serie_record
 
 
 def _audit_actions(mock_conn) -> list[tuple]:
@@ -57,6 +57,7 @@ async def test_aprobar_borrador_to_aprobada(client_with_conn) -> None:
         fecha_aprobacion_comite=date(2026, 2, 1),
     )
     mock_conn.fetchrow.side_effect = [existing, updated]
+    declara_productoras(mock_conn, updated["id"])
 
     resp = await client.post(
         "/api/v1/trd/APR1/versiones/1/aprobar", json=_APROBAR_BODY, headers=TENANT_HEADERS
@@ -232,6 +233,7 @@ async def test_convalidar_desde_aprobada_derogates_previa_and_repoints_fks(
         instancia_convalidante="Consejo Departamental de Archivos",
     )
     mock_conn.fetchrow.side_effect = [existing, vigente_previa, derogada, updated]
+    declara_productoras(mock_conn, updated["id"])
 
     resp = await client.post(
         f"/api/v1/trd/{code}/versiones/2/convalidar",
@@ -305,6 +307,7 @@ async def test_convalidar_desde_aprobada_sin_vigente_previa_no_repoint(
     )
     # get_trd_serie_vigente_by_code -> None (nada vigente todavía)
     mock_conn.fetchrow.side_effect = [existing, None, updated]
+    declara_productoras(mock_conn, updated["id"])
 
     resp = await client.post(
         f"/api/v1/trd/{code}/versiones/1/convalidar",
@@ -430,6 +433,7 @@ async def test_convalidar_desde_aprobada_repoint_colision_traduce_409(client_wit
         instancia_convalidante="Consejo Departamental",
     )
     mock_conn.fetchrow.side_effect = [existing, vigente_previa, derogada, updated]
+    declara_productoras(mock_conn, updated["id"])
 
     async def _execute_side_effect(sql, *args, **kwargs):
         if "UPDATE tipos_documentales" in sql:
@@ -480,6 +484,7 @@ async def test_convalidar_desde_migrada_ratificacion_no_new_row(client_with_conn
         instancia_convalidante="Consejo Departamental",
     )
     mock_conn.fetchrow.side_effect = [existing, updated]
+    declara_productoras(mock_conn, serie_id)
 
     resp = await client.post(
         f"/api/v1/trd/{code}/versiones/1/convalidar",
@@ -542,6 +547,7 @@ async def test_convalidar_desde_migrada_solo_limpia_motivo_migrada(client_with_c
         instancia_convalidante="Consejo Departamental",
     )
     mock_conn.fetchrow.side_effect = [existing, updated]
+    declara_productoras(mock_conn, serie_id)
 
     resp = await client.post(
         f"/api/v1/trd/{code}/versiones/1/convalidar",

@@ -51,8 +51,12 @@ volumes:
 # con la conexión del PROPIETARIO (MIGRATIONS_DATABASE_URL) sobre la MISMA imagen
 # inmutable que va a servir. Si la migración falla, el servicio no arranca
 # (`service_completed_successfully`, fail-closed), así que una versión nunca sirve
-# contra un esquema que no es el suyo. El runner es idempotente y serializa por
-# `pg_advisory_lock`, de modo que repetir `up -d` o escalar réplicas es seguro.
+# contra un esquema que no es el suyo. El runner es idempotente y los nueve `migrate-*`
+# (y `scripts/init_tenant.py`) se serializan con UN cerrojo global:
+# `orpycamcp_common.migrations.cerrojo` (`pg_try_advisory_lock`, plazo
+# `MIGRATIONS_LOCK_TIMEOUT_S`, 600 s por defecto; si vence, el migrador sale con
+# error y el servicio no arranca). Ese cerrojo no existía cuando este comentario
+# lo afirmaba (C19, ADR-041). Repetir `up -d` o escalar réplicas es seguro.
 x-migracion: &migracion
   restart: "no"
   command: ["python", "migrations/runner.py"]
@@ -526,6 +530,12 @@ services:
       # Token que protege los endpoints /internal de ESTE servicio (los consume
       # archive-service al ensamblar el AIP y el export del expediente).
       INTERNAL_SERVICE_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
+      # C16 (ADR-038): clave HMAC con la que se firman los retos ALTCHA de la
+      # ventanilla pública anónima. `openssl rand -hex 32`; nunca llega al
+      # navegador. Sin ella (o con menos de 32 bytes) el servicio no arranca.
+      ALTCHA_HMAC_KEY: ${ALTCHA_HMAC_KEY:?ALTCHA_HMAC_KEY es obligatorio}
+      ALTCHA_TTL_SEGUNDOS: ${ALTCHA_TTL_SEGUNDOS:-300}
+      ALTCHA_MAXNUMBER: ${ALTCHA_MAXNUMBER:-100000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net

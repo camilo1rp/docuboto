@@ -52,7 +52,8 @@ def _url(sid: uuid.UUID = SID) -> str:
 
 
 def _h(actor: uuid.UUID | None = ACTOR) -> dict:
-    return {**TENANT_HEADERS, **({"X-User-Id": str(actor)} if actor else {})}
+    base = {k: v for k, v in TENANT_HEADERS.items() if k != "X-User-Id"}
+    return {**base, **({"X-User-Id": str(actor)} if actor else {})}
 
 
 def _audit():

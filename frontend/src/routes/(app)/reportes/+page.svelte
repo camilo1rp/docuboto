@@ -48,6 +48,7 @@
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import { getNivelChip } from "$lib/utils/nivelSeguridad.js";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import { POR_CLASIFICAR, POR_CLASIFICAR_ETIQUETA } from "$lib/utils/reserva.js";
   import { mapaNombres } from "$lib/utils/dependenciaNombre.js";
 
   /** @type {import('./$types').PageData} */
@@ -144,6 +145,8 @@
     ...it,
     tipo_label: TIPO_RADICADO_LABELS[/** @type {string} */ (it.tipo_radicado)] ?? it.tipo_radicado,
     clasificacion_label: it.clasificacion === "clasificada" ? "Clasificada" : "Reservada",
+    por_clasificar: it.causal_reserva === POR_CLASIFICAR,
+    causal_label: etiquetaCausal(it),
     fecha_clasificacion_label: fmtIndiceDate(/** @type {string} */ (it.fecha_clasificacion)),
     fecha_radicacion_label: fmtIndiceDate(/** @type {string} */ (it.fecha_radicacion)),
     plazo_label:
@@ -151,6 +154,19 @@
         ? "Sin plazo fijado"
         : `${it.plazo_reserva_meses} meses`,
   }));
+
+  /**
+   * Causal como etiqueta legible (ADR-039): artículo + descripción del catálogo
+   * cerrado. `por_clasificar` es lo clasificado sin causal: se muestra como
+   * «Pendiente de motivar» y se resalta, porque señala trabajo por hacer.
+   * @param {any} it
+   */
+  function etiquetaCausal(it) {
+    if (!it.causal_reserva) return "—";
+    if (it.causal_reserva === POR_CLASIFICAR) return POR_CLASIFICAR_ETIQUETA;
+    const art = it.causal_articulo ? `${it.causal_articulo}: ` : "";
+    return `${art}${it.causal_descripcion ?? it.causal_reserva}`;
+  }
 
   const indiceColumns = [
     {
@@ -163,7 +179,7 @@
     { key: "clasificacion_label", label: "Clasificación", sortable: true },
     { key: "excepcion_ley_1712", label: "Excepción legal", sortable: true },
     { key: "fundamento_juridico", label: "Fundamento jurídico" },
-    { key: "causal_reserva", label: "Causal de reserva" },
+    { key: "causal_label", label: "Causal de reserva", sortable: true },
     { key: "plazo_label", label: "Plazo de reserva" },
     { key: "fecha_clasificacion_label", label: "Fecha de clasificación", sortable: true },
     { key: "fecha_radicacion_label", label: "Fecha de radicación", sortable: true },
@@ -980,7 +996,13 @@
             </td>
             <td class="op-datatable__td">{row.excepcion_ley_1712}</td>
             <td class="op-datatable__td">{row.fundamento_juridico ?? "—"}</td>
-            <td class="op-datatable__td">{row.causal_reserva ?? "—"}</td>
+            <td class="op-datatable__td">
+              {#if row.por_clasificar}
+                <StatusChip status="warning" label={row.causal_label} dot />
+              {:else}
+                {row.causal_label}
+              {/if}
+            </td>
             <td class="op-datatable__td">{row.plazo_label}</td>
             <td class="op-datatable__td">{row.fecha_clasificacion_label}</td>
             <td class="op-datatable__td">{row.fecha_radicacion_label}</td>

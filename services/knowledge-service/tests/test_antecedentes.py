@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.routers.knowledge import ANTECEDENTES_ADVISORY
-from tests.conftest import TENANT_HEADERS
+from tests.conftest import TENANT_HEADERS, consultas_a
 
 NOW = datetime.now(tz=UTC)
 
@@ -77,7 +77,7 @@ async def test_query_path_returns_anchored_hits_with_source_ref(client_with_conn
     ]
     assert body["advisory"] == ANTECEDENTES_ADVISORY
     # Camino `query`: NO hay lectura de pivote (get_pivot_chunk usa fetchrow).
-    assert conn.fetchrow.call_count == 0
+    assert consultas_a(conn, "kb_suggestions") == []
     # `search` recibió max_clearance=1 (PUBLICA, sin X-User-Id) y top_k tal cual.
     call = conn.fetch.call_args.args
     assert call[2] == 1  # max_clearance

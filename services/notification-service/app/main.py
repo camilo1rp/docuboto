@@ -24,7 +24,7 @@ from app.core import webhook_secrets
 from app.core.config import settings
 from app.core.database import close_pool, init_pool
 from app.core.redis_client import close_redis, init_redis
-from app.routers import admin_deadletter, health, notifications, webhooks
+from app.routers import admin_deadletter, health, metrics, notifications, webhooks
 from app.workers import stream_worker
 
 logger = logging.getLogger(__name__)
@@ -105,4 +105,5 @@ app.include_router(health.router)
 app.include_router(notifications.router)
 app.include_router(webhooks.router)
 app.include_router(admin_deadletter.router)
+app.include_router(metrics.router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 deadletter.instalar_manejador_radicados_ausente(app)

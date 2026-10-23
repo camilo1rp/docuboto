@@ -53,6 +53,7 @@ from jsonschema import Draft202012Validator
 from orpycamcp_common import audit
 
 from app.clients import storage_client
+from app.core.causales_reserva import POR_CLASIFICAR, normalizar_para_importar
 from app.repositories.import_repository import ImportRepository
 from app.schemas.document import CLAVES_RESERVADAS
 from app.services.export_service import RADICADO_SCHEMA
@@ -132,6 +133,9 @@ class ImportService:
         # borra nada anterior). Se fija antes de la primera subida, con margen por
         # desfase de relojes entre servicios.
         self._subido_desde = datetime.now(tz=UTC)
+        # C12: lo clasificado cuya causal no cumple el catálogo entra `por_clasificar`; el
+        # texto original viaja al asiento de la importación (no a la columna).
+        self._causales_normalizadas: list[dict[str, Any]] = []
 
     # --- fase 1: abrir + validar (sin tocar la BD) -------------------------
     def _open_safe(self, zip_bytes: bytes) -> zipfile.ZipFile:
@@ -460,6 +464,18 @@ class ImportService:
     async def _insert(self, entity, m, subidos) -> uuid.UUID:
         sist = entity.get("metadata_sistema", {})
         clasif = entity.get("clasificacion") or {}
+        nivel = int(entity["nivel_seguridad"])
+        causal, plazo = normalizar_para_importar(
+            nivel, clasif.get("causal"), clasif.get("plazo_meses")
+        )
+        if causal == POR_CLASIFICAR:
+            self._causales_normalizadas.append(
+                {
+                    "numero_radicado": entity["numero_radicado"],
+                    "causal_original": clasif.get("causal"),
+                    "plazo_original": clasif.get("plazo_meses"),
+                }
+            )
         rid = await self._repo.insert_radicado(
             {
                 "tracking_number": entity["numero_radicado"],
@@ -480,8 +496,8 @@ class ImportService:
                 "metadata": _sin_claves_reservadas(entity.get("metadata_contextual")),
                 "disposition": entity.get("disposicion"),
                 "clasificacion_fundamento": clasif.get("fundamento"),
-                "clasificacion_causal": clasif.get("causal"),
-                "clasificacion_plazo_meses": clasif.get("plazo_meses"),
+                "clasificacion_causal": causal,
+                "clasificacion_plazo_meses": plazo,
             }
         )
         for file_id, anexo in subidos:
@@ -522,6 +538,7 @@ class ImportService:
                 "omitidos_existentes": len(omit_ex),
                 "omitidos_clearance": len(omit_cl),
                 "antecedentes_no_resueltos": no_resueltos,
+                "causales_por_clasificar": self._causales_normalizadas,
             },
             canal=audit.CANAL_PETICION,
         )

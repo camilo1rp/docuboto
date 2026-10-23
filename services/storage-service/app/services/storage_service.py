@@ -40,7 +40,7 @@ from app.core.config import settings
 from app.core.minio_client import Minio, get_minio
 from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
 from app.models.file_record import FileRecord
-from app.repositories.file_repository import FileRepository
+from app.repositories.file_repository import CitaConstancia, FileRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
 from app.schemas.preservacion import canonicalize_expediente_id
 from app.schemas.storage import (
@@ -77,6 +77,31 @@ class WormLockActiveError(Exception):
     juntos — este gate es la red de seguridad contra la eliminación prematura,
     no el mecanismo primario que decide CUÁNDO disponer.
     """
+
+
+class AnexoCitadoPorConstanciaError(Exception):
+    """El archivo es el anexo probatorio de una constancia de «firma inobtenible» VIGENTE (C-5/C14,
+    ADR-043). Se rechaza el borrado (soft o físico) NOMBRANDO las constancias.
+
+    `citas` con `ausente=True` es el fail-closed: la vista contrato de archive no existe, y «no sé
+    si está citado» no se trata como «no lo está». La salida para la disposición TRD es la baja de
+    soporte avalada por el Comité (la vista excluye la cita cuando hay baja en un lote avalado)."""
+
+    def __init__(self, file_id: uuid.UUID, citas: list[CitaConstancia]) -> None:
+        self.file_id = file_id
+        self.citas = citas
+        if any(c.ausente for c in citas):
+            texto = (
+                f"no se puede confirmar que el archivo {file_id} no esté citado por una constancia "
+                "(v_anexo_citado_vigente ausente): se conserva"
+            )
+        else:
+            texto = (
+                f"el archivo {file_id} es anexo probatorio de {len(citas)} constancia(s) de firma "
+                "inobtenible vigente(s): "
+                + ", ".join(f"{c.excepcion_id} ({c.rol} #{c.ordinal})" for c in citas)
+            )
+        super().__init__(texto)
 
 
 class UnsupportedFormatError(Exception):
@@ -401,29 +426,76 @@ class StorageService:
         Does NOT call remove_object on MinIO — the object is preserved until
         a TRD final disposition explicitly purges it. Records the act in the
         immutable audit_log via orpycamcp_common.audit (constitución inv. 12).
-        """
-        record = await self._repo.get_by_id(file_id)
-        if record is None:
-            return False
 
-        soft_deleted = await self._repo.soft_delete(file_id, deleted_by)
-        if not soft_deleted:
-            # File was already soft-deleted between get_by_id and soft_delete;
-            # treat as not found so the caller returns 404.
-            return False
+        C-5/C14: rechaza (`AnexoCitadoPorConstanciaError`) el archivo que cita una constancia de
+        firma inobtenible vigente. Patrón «bloquear y luego comprobar en OTRA sentencia»: la fila
+        de `files` se bloquea (`FOR UPDATE`) y SOLO ENTONCES se consulta la vista de citas; el
+        lado de archive cita con `FOR SHARE` sobre la misma fila, así que o la constancia ve el
+        archivo ya borrado, o este borrado ve la constancia."""
+        citas: list[CitaConstancia] = []
+        record: FileRecord | None = None
+        async with self._conn.transaction():
+            record = await self._repo.lock_any_state(file_id)
+            if record is None or record.deleted_at is not None:
+                # Inexistente, o ya dado de baja entre la petición y este bloqueo: 404.
+                return False
+            citas = await self._repo.citas_vigentes(file_id)
+            if not citas:
+                soft_deleted = await self._repo.soft_delete(file_id, deleted_by)
+                if not soft_deleted:
+                    return False
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="file.soft_deleted",
+                    object_type="file",
+                    object_ref=str(file_id),
+                    actor=str(deleted_by) if deleted_by else None,
+                    payload={"filename": record.filename, "sha256": record.sha256},
+                    canal=audit.CANAL_PETICION,
+                )
+                return True
+        # Fuera de la tx del bloqueo: el asiento del rechazo tiene que PERSISTIR.
+        assert record is not None
+        await self._asentar_bloqueo_por_constancia(file_id, record, citas, deleted_by, "soft_delete")
+        raise AnexoCitadoPorConstanciaError(file_id, citas)
 
+    async def _asentar_bloqueo_por_constancia(
+        self,
+        file_id: uuid.UUID,
+        record: FileRecord,
+        citas: list[CitaConstancia],
+        actor: uuid.UUID | None,
+        acto: str,
+    ) -> None:
         await audit.append(
             self._conn,
             tenant_slug=self._tenant_slug,
             service=_SERVICE,
-            action="file.soft_deleted",
+            action="file.purga_bloqueada_constancia",
             object_type="file",
             object_ref=str(file_id),
-            actor=str(deleted_by) if deleted_by else None,
-            payload={"filename": record.filename, "sha256": record.sha256},
-            canal=audit.CANAL_PETICION,
+            actor=str(actor) if actor else None,
+            payload={
+                "acto": acto,
+                "filename": record.filename,
+                "sha256": record.sha256,
+                "constancias": [c.como_dict() for c in citas],
+            },
+            canal=audit.CANAL_PETICION if acto == "soft_delete" else "system",
         )
-        return True
+
+    async def verificar_sin_citas(self, file_ids: list[uuid.UUID]) -> None:
+        """Pre-chequeo (SIN bloqueo) del lote de una purga: si ALGÚN archivo está citado por una
+        constancia vigente, aborta ANTES de borrar ninguno (C-5/C14). La purga corre archivo por
+        archivo y un rechazo a mitad dejaría el expediente medio destruido; esto lo evita en el caso
+        normal. NO sustituye al chequeo bajo `FOR UPDATE` de :meth:`purge_for_disposition`, que es el
+        que cierra la carrera con una constancia declarada mientras tanto."""
+        for file_id in dict.fromkeys(file_ids):
+            citas = await self._repo.citas_vigentes(file_id)
+            if citas:
+                raise AnexoCitadoPorConstanciaError(file_id, citas)
 
     async def purge_for_disposition(
         self,
@@ -460,15 +532,64 @@ class StorageService:
         # dejaría pasar la purga sin bloquear.
         expediente_id = canonicalize_expediente_id(expediente_id)
 
-        record = await self._repo.get_by_id_any_state(file_id)
-        if record is None:
-            return False
-
         worm_repo = PreservacionWormRepository(self._conn, self._tenant_slug)
-        active_lock = await worm_repo.active_lock_for_expediente(
-            expediente_id, exclude_retention_tipos=tuple(CONTROL_INSTRUMENT_TIPOS)
-        )
-        if active_lock is not None:
+        bloqueo_worm: dict[str, object] | None = None
+        citas: list[CitaConstancia] = []
+        record: FileRecord | None = None
+        async with self._conn.transaction():
+            # (1) Bloqueo de fila: serializa dos purgas y, frente al lado de archive que cita con
+            # FOR SHARE, decide quién llega primero (C-5/C14, cierra también H7).
+            record = await self._repo.lock_any_state(file_id)
+            if record is None:
+                return False
+
+            active_lock = await worm_repo.active_lock_for_expediente(
+                expediente_id, exclude_retention_tipos=tuple(CONTROL_INSTRUMENT_TIPOS)
+            )
+            if active_lock is not None:
+                bloqueo_worm = {
+                    "worm_object_id": str(active_lock["id"]),
+                    "retain_until": active_lock["retain_until"].isoformat()
+                    if active_lock["retain_until"] is not None
+                    else None,
+                    "legal_hold": active_lock["legal_hold"],
+                }
+            else:
+                # C-5/C7: un hold del registro bloquea AUNQUE el expediente no tenga ningún
+                # objeto WORM (H2): no se puede depender de que exista una fila de objeto.
+                hold = await worm_repo.hold_activo_del_expediente(expediente_id)
+                if hold is not None:
+                    bloqueo_worm = {
+                        "hold_id": str(hold["id"]),
+                        "motivo_tipo": hold["motivo_tipo"],
+                        "legal_hold": True,
+                    }
+            if bloqueo_worm is None:
+                # (2) Otra sentencia: instantánea nueva, ya con la fila bloqueada.
+                citas = await self._repo.citas_vigentes(file_id)
+                if not citas:
+                    minio = get_minio()
+                    await minio.remove_object(record.bucket, record.object_key)
+                    await self._repo.purge(file_id)
+                    await audit.append(
+                        self._conn,
+                        tenant_slug=self._tenant_slug,
+                        service=_SERVICE,
+                        action="file.purged_disposition",
+                        object_type="file",
+                        object_ref=str(file_id),
+                        actor=str(actor) if actor else None,
+                        payload={
+                            "filename": record.filename,
+                            "sha256": record.sha256,
+                            "disposition_reason": reason,
+                        },
+                        canal="system",
+                    )
+                    return True
+
+        # Bloqueada. Los asientos van FUERA de la tx del bloqueo: tienen que persistir.
+        if bloqueo_worm is not None:
             await audit.append(
                 self._conn,
                 tenant_slug=self._tenant_slug,
@@ -477,41 +598,17 @@ class StorageService:
                 object_type="file",
                 object_ref=str(file_id),
                 actor=str(actor) if actor else None,
-                payload={
-                    "expediente_id": expediente_id,
-                    "worm_object_id": str(active_lock["id"]),
-                    "retain_until": active_lock["retain_until"].isoformat(),
-                    "legal_hold": active_lock["legal_hold"],
-                },
+                payload={"expediente_id": expediente_id, **bloqueo_worm},
                 canal="system",
             )
             raise WormLockActiveError(
                 f"El expediente {expediente_id} tiene un objeto bajo protección "
-                f"WORM (retain_until={active_lock['retain_until']}, "
-                f"legal_hold={active_lock['legal_hold']}); disposición rechazada"
+                f"WORM (retain_until={bloqueo_worm.get('retain_until')}, "
+                f"legal_hold={bloqueo_worm['legal_hold']}); disposición rechazada"
             )
-
-        minio = get_minio()
-        await minio.remove_object(record.bucket, record.object_key)
-
-        await self._repo.purge(file_id)
-
-        await audit.append(
-            self._conn,
-            tenant_slug=self._tenant_slug,
-            service=_SERVICE,
-            action="file.purged_disposition",
-            object_type="file",
-            object_ref=str(file_id),
-            actor=str(actor) if actor else None,
-            payload={
-                "filename": record.filename,
-                "sha256": record.sha256,
-                "disposition_reason": reason,
-            },
-            canal="system",
-        )
-        return True
+        assert record is not None
+        await self._asentar_bloqueo_por_constancia(file_id, record, citas, actor, "purga")
+        raise AnexoCitadoPorConstanciaError(file_id, citas)
 
     async def purge_orphan(
         self,

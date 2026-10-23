@@ -104,7 +104,7 @@ def _schema_for(slug: str) -> str:
 
 async def _grant(conn: asyncpg.Connection, *, tenant: str, username: str, dry_run: bool) -> int:
     schema = _schema_for(tenant)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = RBACRepository(conn)
     user = await repo.get_user_by_username(username)
     if user is None:

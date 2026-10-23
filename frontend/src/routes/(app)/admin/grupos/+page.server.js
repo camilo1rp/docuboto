@@ -83,7 +83,39 @@ export async function load({ cookies, parent, fetch }) {
     securityLevels = [];
   }
 
+  // C-2 (ADR-039): si NINGÚN grupo concede PERM_RECLASIFICAR con crud 4, nadie puede
+  // aprobar una desclasificación y las solicitudes se quedan sin salida (fail-closed
+  // mudo). Se comprueba leyendo los permisos de cada grupo. Si alguna lectura falla
+  // NO se afirma nada (`null`): un aviso falso sería peor que ninguno.
+  /** @type {boolean|null} */
+  let sinAprobadorDesclasificacion = null;
+  if (Array.isArray(groups) && groups.length > 0) {
+    const lecturas = await Promise.allSettled(
+      groups.map(async (/** @type {any} */ g) => {
+        const r = await fetch(`${API_V1}/auth/groups/${encodeURIComponent(g.id)}/permissions`, {
+          headers,
+        });
+        if (!r.ok) throw new Error("lectura");
+        return r.json();
+      }),
+    );
+    if (lecturas.every((l) => l.status === "fulfilled")) {
+      const hay = lecturas.some(
+        (l) =>
+          l.status === "fulfilled" &&
+          Array.isArray(l.value) &&
+          l.value.some(
+            (/** @type {any} */ p) =>
+              (p.nombre === "PERM_RECLASIFICAR" || p.permission === "PERM_RECLASIFICAR") &&
+              Number(p.crud ?? 0) >= 4,
+          ),
+      );
+      sinAprobadorDesclasificacion = !hay;
+    }
+  }
+
   return {
+    sinAprobadorDesclasificacion,
     groups,
     permissions,
     securityLevels,

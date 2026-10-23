@@ -139,3 +139,22 @@ class ConfigRepository:
                 actor_id,
             )
             return old is not None, (json.loads(old) if isinstance(old, str) else old)
+
+    # --- asistente por entidad (ADR-037) -------------------------------------
+    async def get_asistente(self, slug: str) -> bool:
+        """Bandera de la entidad ``slug``; fila ausente = apagado (fail-closed)."""
+        val = await self._conn.fetchval(
+            "SELECT asistente_habilitado FROM public.tenants WHERE slug = $1", slug
+        )
+        return bool(val)
+
+    async def lock_asistente(self, slug: str) -> bool | None:
+        """Valor vigente bloqueado ``FOR UPDATE`` (``None`` si la entidad no existe)."""
+        return await self._conn.fetchval(
+            "SELECT asistente_habilitado FROM public.tenants WHERE slug = $1 FOR UPDATE", slug
+        )
+
+    async def set_asistente(self, slug: str, habilitado: bool) -> None:
+        await self._conn.execute(
+            "UPDATE public.tenants SET asistente_habilitado = $2 WHERE slug = $1", slug, habilitado
+        )

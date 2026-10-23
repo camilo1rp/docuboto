@@ -33,7 +33,7 @@ async def _anexo(tenant_ctx: tuple[str, asyncpg.Connection]):
     from app.services.document_service import DocumentService
 
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     doc = await DocumentService(conn, slug).create(
         DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Con anexo", sender_name="x"), registered_by=None
     )
@@ -147,7 +147,7 @@ async def test_el_anexo_de_un_radicado_reservado_es_404_neutro(
 
     monkeypatch.setattr(storage_client, "fetch_file_sha256", _espia)
     slug, conn, doc, anexo_id = await _anexo(tenant_ctx)
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)' WHERE id = $1", doc.id)
+    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)', clasificacion_causal = 'por_clasificar' WHERE id = $1", doc.id)
     with pytest.raises(HTTPException) as exc:
         await SignatureService(conn, slug).firmar(
             doc.id,
@@ -205,7 +205,7 @@ async def test_la_migracion_036_marca_las_filas_existentes(
 ) -> None:
     """El DEFAULT del ADD COLUMN cubre lo ya insertado; después pasa a `servidor`."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     default = await conn.fetchval(
         "SELECT column_default FROM information_schema.columns "
         "WHERE table_schema = $1 AND table_name = 'signatures' AND column_name = 'origen'",

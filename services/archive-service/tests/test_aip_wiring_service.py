@@ -314,9 +314,12 @@ async def test_intentar_empaquetar_builds_unique_nombres_across_radicados_same_f
 
     expected_indice_file_id = uuid.UUID(indice_row["minio_key_firmado"].split("/", 1)[0])
     assert mock_storage.await_args.kwargs["indice_file_id"] == expected_indice_file_id
-    service._aip.mark_empaquetado.assert_awaited_once_with(
-        exp.id, aip_id, worm_retain_until=None
-    )
+    service._aip.mark_empaquetado.assert_awaited_once()
+    _a, _k = service._aip.mark_empaquetado.await_args
+    assert _a == (exp.id, aip_id)
+    assert _k["worm_retain_until"] is None
+    assert _k["indice_xml_sha256"] == "a" * 64  # huella de la versión 1 (C-6)
+    assert _k["indice_file_id"] is not None
 
 
 @pytest.mark.asyncio
@@ -621,9 +624,12 @@ async def test_intentar_empaquetar_success_marks_and_audits_atomically() -> None
         resultado = await service.intentar_empaquetar(exp.id)
 
     assert resultado == "empaquetado"
-    service._aip.mark_empaquetado.assert_awaited_once_with(
-        exp.id, aip_id, worm_retain_until=None
-    )
+    service._aip.mark_empaquetado.assert_awaited_once()
+    _a, _k = service._aip.mark_empaquetado.await_args
+    assert _a == (exp.id, aip_id)
+    assert _k["worm_retain_until"] is None
+    assert _k["indice_xml_sha256"] == "a" * 64  # huella de la versión 1 (C-6)
+    assert _k["indice_file_id"] is not None
     mock_audit.assert_awaited_once()
     kwargs = mock_audit.await_args.kwargs
     assert kwargs["action"] == "archive.aip_empaquetado"
@@ -678,9 +684,12 @@ async def test_intentar_empaquetar_success_propagates_outcome_retain_until_to_mi
         resultado = await service.intentar_empaquetar(exp.id)
 
     assert resultado == "empaquetado"
-    service._aip.mark_empaquetado.assert_awaited_once_with(
-        exp.id, aip_id, worm_retain_until=retain_until
-    )
+    service._aip.mark_empaquetado.assert_awaited_once()
+    _a, _k = service._aip.mark_empaquetado.await_args
+    assert _a == (exp.id, aip_id)
+    assert _k["worm_retain_until"] == retain_until
+    assert _k["indice_xml_sha256"] == "a" * 64  # huella de la versión 1 (C-6)
+    assert _k["indice_file_id"] is not None
 
 
 @pytest.mark.asyncio
@@ -764,3 +773,62 @@ async def test_intentar_empaquetar_never_raises_on_unexpected_exception() -> Non
     resultado = await service.intentar_empaquetar(uuid.uuid4())
 
     assert resultado == "pendiente"
+
+
+# ---------------------------------------------------------------------------
+# 409 `aip_ya_existe` NO es fixity: se reconcilia con el GET interno (cierre del lote C, S2)
+# ---------------------------------------------------------------------------
+
+
+async def _con_409_ya_existe(*, vigente, aip_informado):
+    conn = _mock_conn()
+    service = _service(conn)
+    radicado = _radicado()
+    exp = _expediente(radicados=[radicado])
+    _wire_ready_to_call_storage(service, exp)
+    service._aip.mark_empaquetado = AsyncMock(return_value=1)
+    with (
+        patch(
+            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            new=AsyncMock(
+                return_value={
+                    str(radicado.radicado_id): [{"file_id": str(uuid.uuid4()), "filename": "a.pdf"}]
+                }
+            ),
+        ),
+        patch(
+            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            new=AsyncMock(
+                return_value=AipPackagingOutcome(ok=False, ya_existe=True, aip_id=aip_informado)
+            ),
+        ),
+        patch(
+            "app.services.aip_wiring_service.storage_client.get_aip", new=AsyncMock(return_value=vigente)
+        ),
+        patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()) as audit,
+    ):
+        resultado = await service.intentar_empaquetar(exp.id)
+    return resultado, service, audit
+
+
+@pytest.mark.asyncio
+async def test_aip_ya_existe_se_reconcilia_con_el_aip_vigente_de_storage() -> None:
+    aip_id = uuid.uuid4()
+    resultado, service, audit = await _con_409_ya_existe(
+        vigente={"id": str(aip_id), "retain_until": "2036-10-21T00:00:00+00:00"}, aip_informado=aip_id
+    )
+    assert resultado == "empaquetado"
+    assert service._aip.mark_empaquetado.await_args.args == (service._aip.mark_empaquetado.await_args.args[0], aip_id)
+    service._aip.bump_intento.assert_not_awaited()
+    assert audit.await_args.kwargs["payload"]["reconciliado_con_storage"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vigente", [None, {"id": str(uuid.uuid4())}])
+async def test_aip_ya_existe_sin_poder_reconciliar_es_un_reintento_no_un_fixity(vigente) -> None:
+    """Storage no confirma el mismo AIP: nada se registra y el motivo NO es `fixity_mismatch`
+    (que acusaba una mutación de anexo que no ocurrió)."""
+    resultado, service, _ = await _con_409_ya_existe(vigente=vigente, aip_informado=uuid.uuid4())
+    assert resultado == "pendiente"
+    service._aip.mark_empaquetado.assert_not_awaited()
+    assert service._aip.bump_intento.await_args.kwargs["ultimo_error"] == "aip_ya_existe_sin_reconciliar"

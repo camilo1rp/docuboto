@@ -47,6 +47,7 @@ from app.services.pdfa_ingest_service import (
     run_ingest_validation_background,
 )
 from app.services.storage_service import (
+    AnexoCitadoPorConstanciaError,
     NotCurrentVersionError,
     StorageService,
     UnsupportedFormatError,
@@ -54,6 +55,21 @@ from app.services.storage_service import (
 )
 
 router = APIRouter(prefix="/api/v1/storage", tags=["storage"])
+
+
+def _anexo_citado_409(exc: AnexoCitadoPorConstanciaError) -> HTTPException:
+    """409 `anexo_citado_por_constancia` NOMBRANDO las constancias que sostiene el archivo
+    (C-5/C14). Con la vista contrato ausente (fail-closed) `constancias` trae la marca `ausente`."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "error": "anexo_citado_por_constancia",
+            "detail": str(exc),
+            "status": 409,
+            "file_id": str(exc.file_id),
+            "constancias": [c.como_dict() for c in exc.citas],
+        },
+    )
 
 
 def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
@@ -595,7 +611,10 @@ async def delete_file(
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> None:
     service = StorageService(conn, tenant_slug)
-    deleted = await service.delete(file_id, deleted_by=deleted_by)
+    try:
+        deleted = await service.delete(file_id, deleted_by=deleted_by)
+    except AnexoCitadoPorConstanciaError as exc:
+        raise _anexo_citado_409(exc) from exc
     if not deleted:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -640,6 +659,10 @@ async def purgar_disposicion(
     service = StorageService(conn, tenant_slug)
     purgados: list[uuid.UUID] = []
     no_encontrados: list[uuid.UUID] = []
+    try:
+        await service.verificar_sin_citas(list(payload.file_ids))
+    except AnexoCitadoPorConstanciaError as exc:
+        raise _anexo_citado_409(exc) from exc
     for file_id in payload.file_ids:
         try:
             ok = await service.purge_for_disposition(
@@ -661,6 +684,11 @@ async def purgar_disposicion(
                     "status": 409,
                 },
             ) from exc
+        except AnexoCitadoPorConstanciaError as exc:
+            # Como el candado WORM, aborta la purga ENTERA: soltar el resto dejaría la constancia
+            # citando un anexo que ya no existe. La salida es la baja de soporte avalada por el
+            # Comité en el lote (la vista excluye la cita), no un borrado parcial.
+            raise _anexo_citado_409(exc) from exc
         (purgados if ok else no_encontrados).append(file_id)
     return PurgaDisposicionResponse(purgados=purgados, no_encontrados=no_encontrados)
 

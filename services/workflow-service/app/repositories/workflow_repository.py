@@ -177,7 +177,7 @@ class WorkflowRepository:
 
     async def _set_search_path(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
-        await self._conn.execute(f'SET search_path TO "{schema}", public')
+        await self._conn.execute(f'SET search_path TO "{schema}"')
 
     async def caller_clearance(self, user_id: uuid.UUID | None) -> int:
         """Clearance del llamante, resuelto tras fijar el search_path del tenant."""

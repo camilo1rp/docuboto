@@ -30,7 +30,7 @@ import uuid
 
 import pytest
 
-from tests.conftest import TENANT_HEADERS, make_trd_serie_record
+from tests.conftest import TENANT_HEADERS, make_trd_serie_record, responde_series
 
 _SOLO_TENANT = {"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]}
 
@@ -73,9 +73,9 @@ async def test_con_permiso_el_historial_se_sirve(client_with_conn, instrumento: 
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True
     tipo = "TRD" if instrumento == "trd" else "TVD"
-    mock_conn.fetch.return_value = [
-        make_trd_serie_record(code="100", name="Contratos", tipo_instrumento=tipo)
-    ]
+    responde_series(
+        mock_conn, [make_trd_serie_record(code="100", name="Contratos", tipo_instrumento=tipo)]
+    )
 
     resp = await client.get(f"/api/v1/{instrumento}/100/versiones", headers=TENANT_HEADERS)
 
@@ -98,9 +98,9 @@ async def test_el_listado_sigue_abierto_a_quien_solo_clasifica(
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = False  # NO tiene el permiso de administrar
     tipo = "TRD" if instrumento == "trd" else "TVD"
-    mock_conn.fetch.return_value = [
-        make_trd_serie_record(code="100", name="Contratos", tipo_instrumento=tipo)
-    ]
+    responde_series(
+        mock_conn, [make_trd_serie_record(code="100", name="Contratos", tipo_instrumento=tipo)]
+    )
 
     resp = await client.get(f"/api/v1/{instrumento}?is_active=true", headers=TENANT_HEADERS)
 

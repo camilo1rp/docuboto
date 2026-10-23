@@ -64,9 +64,9 @@ UPDATE knowledge_chunk
  WHERE embedding IS NOT NULL;
 
 ALTER TABLE knowledge_chunk
-    ALTER COLUMN embedding TYPE vector(384);
+    ALTER COLUMN embedding TYPE public.vector(384);
 
 DROP INDEX IF EXISTS ix_knowledge_embedding;
 
 CREATE INDEX IF NOT EXISTS ix_knowledge_embedding_hnsw
-    ON knowledge_chunk USING hnsw (embedding vector_cosine_ops);
+    ON knowledge_chunk USING hnsw (embedding public.vector_cosine_ops);

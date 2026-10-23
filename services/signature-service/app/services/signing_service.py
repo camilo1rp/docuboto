@@ -449,6 +449,18 @@ async def sign_payload(
                     gen_time=archive_timestamp_at_dt,
                     tsa_cert_fingerprint=huella_ats,
                     tsa_cert_not_after=not_after_ats,
+                    # C-6: lo que hace falta para vigilar la cadena. Sin el certificado identificado
+                    # por huella no se puede decir qué revocación ofrece su TSA: `ninguna`, que es lo
+                    # que la consulta de administración señala (el error seguro).
+                    tsa_cadena_not_after=(
+                        tsa_module.cadena_not_after(cert_tsa_ats, certs_ats)
+                        if cert_tsa_ats is not None else None
+                    ),
+                    tsa_revocacion_fuente=(
+                        tsa_module.fuente_revocacion_de(cert_tsa_ats)
+                        if cert_tsa_ats is not None else tsa_module.FUENTE_NINGUNA
+                    ),
+                    revocacion_tsa_previa=None,
                 )
 
         # Immutable audit record — RF-FIR-14, ADR-008.

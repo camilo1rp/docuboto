@@ -58,7 +58,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
     await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        await c.execute(f'SET search_path TO "{schema}", public')
+        await c.execute(f'SET search_path TO "{schema}"')
         await c.execute((_MIGRACIONES / "003_webhooks.sql").read_text())
         await c.execute((_MIGRACIONES / "009_webhook_secret_cifrado.sql").read_text())
         yield c

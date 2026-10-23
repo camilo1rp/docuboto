@@ -523,7 +523,7 @@ async def test_la_061_es_idempotente_y_no_toca_lo_ya_declarado(
     _c, tid, _e, _r = await _acta_recibida(conn, slug, "itest 07-10 idempotente")
     await _declarar(TransferenciaService(conn, slug), tid, Actor(id=uuid.uuid4()))
     antes = await conn.fetchrow(f'SELECT * FROM "{schema}".transferencia_acta_firma_excepcion')
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     for migracion in (_MIGRACION_061, _MIGRACION_062):
         await conn.execute(migracion.read_text(encoding="utf-8"))
         await conn.execute(migracion.read_text(encoding="utf-8"))
@@ -641,8 +641,9 @@ async def _serie_y_constancia(conn, slug, nombre, *, disposition: str, con_perso
     schema = tenant_schema(slug)
     serie = await ArchiveService(conn, slug).create_trd_serie(
         TrdSerieCreate(
-            code=f"IT-{uuid.uuid4().hex[:6]}", name="itest serie", retention_years=2,
-            total_retention=5, disposition=disposition,
+            code=f"IT-{uuid.uuid4().hex[:6]}", name="itest serie", disposition=disposition,
+            archivo_gestion_years=2,
+            archivo_central_years=3,
         ),
         actor=None,
     )
@@ -769,8 +770,9 @@ async def _acta_ct_con_firma_protegida(conn, slug, nombre, *, disposition: str, 
     schema = tenant_schema(slug)
     serie = await ArchiveService(conn, slug).create_trd_serie(
         TrdSerieCreate(
-            code=f"IT-{uuid.uuid4().hex[:6]}", name="itest serie", retention_years=2,
-            total_retention=5, disposition=disposition,
+            code=f"IT-{uuid.uuid4().hex[:6]}", name="itest serie", disposition=disposition,
+            archivo_gestion_years=2,
+            archivo_central_years=3,
         ),
         actor=None,
     )

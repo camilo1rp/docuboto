@@ -71,7 +71,7 @@ async def ctx() -> AsyncGenerator[tuple[asyncpg.Connection, str, str], None]:
     schema = f"tenant_itest_{sufijo}"
     await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        await c.execute(f'SET search_path TO "{schema}", public')
+        await c.execute(f'SET search_path TO "{schema}"')
         await c.execute((_MIGRACIONES / "003_webhooks.sql").read_text())
         yield c, schema, f"itest-{sufijo}"
     finally:

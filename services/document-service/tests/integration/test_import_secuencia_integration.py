@@ -54,7 +54,7 @@ async def test_numero_de_otra_entidad_no_toca_el_contador(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await _importar(conn, slug, f"{_ANIO}-OTRA-E-999999")
     assert await _last_seq(conn) is None
     assert await conn.fetchval("SELECT count(*) FROM radicados") == 1  # sí se importó
@@ -65,7 +65,7 @@ async def test_numero_propio_adelanta_el_contador_por_maximo(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(
         "INSERT INTO tracking_sequences (year, doc_type, last_seq) VALUES ($1, 'E', 10)", _ANIO
     )
@@ -78,7 +78,7 @@ async def test_secuencia_desbordada_es_422_y_la_radicacion_nativa_sigue_viva(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     with pytest.raises(PackageValidationError):
         await _importar(conn, slug, f"{_ANIO}-{slug.upper()}-E-2147483647")
     assert await _last_seq(conn) is None

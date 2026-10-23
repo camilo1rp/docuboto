@@ -45,7 +45,7 @@ async def test_un_fallo_tras_tomar_el_numero_no_lo_consume(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     svc = DocumentService(conn, slug)
     year = await conn.fetchval("SELECT EXTRACT(YEAR FROM now() AT TIME ZONE 'America/Bogota')::int")
 
@@ -90,13 +90,13 @@ async def test_radicacion_concurrente_con_fallos_no_repite_ni_deja_huecos(
 
     slug, base = tenant_ctx
     schema = tenant_schema(slug)
-    await base.execute(f'SET search_path TO "{schema}", public')
+    await base.execute(f'SET search_path TO "{schema}"')
     year = await base.fetchval("SELECT EXTRACT(YEAR FROM now() AT TIME ZONE 'America/Bogota')::int")
 
     conns = [await asyncpg.connect(DSN) for _ in range(15)]
     try:
         for c in conns:
-            await c.execute(f'SET search_path TO "{schema}", public')
+            await c.execute(f'SET search_path TO "{schema}"')
 
         async def _radicar(i: int, c: asyncpg.Connection):
             malo = i % 3 == 2  # 5 de 15 fallan DESPUÉS de tomar el número

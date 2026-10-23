@@ -63,6 +63,15 @@
         fetch("/admin/dependencias/api"),
       ]);
       if (treeRes.ok) tree = await treeRes.json();
+      else {
+        // 409 organigrama_con_ciclo (C-4): se dice, no se deja el árbol viejo en silencio.
+        notifyError(
+          mensajeEscrituraAdmin(
+            await treeRes.json().catch(() => ({})),
+            "No se pudo recargar el árbol de dependencias.",
+          ),
+        );
+      }
       if (flatRes.ok) flat = await flatRes.json();
     } catch {
       notifyError("No se pudo recargar el árbol de dependencias.");

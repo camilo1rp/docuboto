@@ -234,7 +234,7 @@ class AuthService:
             ):
                 schema = tenant_schema(tenant_slug)
                 try:
-                    await conn.execute(f'SET search_path = "{schema}", public')
+                    await conn.execute(f'SET search_path = "{schema}"')
                     repo = RBACRepository(conn)
                     user = await repo.get_user_by_keycloak_sub(keycloak_sub)
                     if user is None:

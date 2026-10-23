@@ -67,7 +67,7 @@ async def test_radicar_una_entrada_congela_su_remitente(
     slug, conn = tenant_ctx
     # El fixture aplica las migraciones con `SET LOCAL`, así que no deja el
     # `search_path` puesto: cada test lo fija, igual que los demás de este tier.
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.schemas.document import DocumentCreate
     from app.services.document_service import DocumentService
 
@@ -118,7 +118,7 @@ async def test_una_salida_con_tres_destinatarios_conserva_los_tres(
     slug, conn = tenant_ctx
     # El fixture aplica las migraciones con `SET LOCAL`, así que no deja el
     # `search_path` puesto: cada test lo fija, igual que los demás de este tier.
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.schemas.document import DocumentCreate
     from app.services.document_service import DocumentService
 
@@ -169,7 +169,7 @@ async def test_un_tercero_inexistente_no_deja_radicado_a_medias(
     justo el medio-estado que no puede existir en un registro legal.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from fastapi import HTTPException
 
     from app.schemas.document import DocumentCreate

@@ -58,7 +58,7 @@ async def _flow(conn: asyncpg.Connection, rid: uuid.UUID) -> None:
 @pytest.fixture
 async def ctx(tenant_ctx):
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return slug, conn
 
 

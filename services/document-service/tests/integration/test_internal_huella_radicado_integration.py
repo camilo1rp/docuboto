@@ -58,7 +58,7 @@ async def test_resuelve_por_numero_y_por_uuid_y_elige_el_principal_mas_reciente(
     reciente = await _anexo(conn, schema, rid, principal=True, segundos=10)
     # Un PDF más nuevo pero NO principal no gana al principal.
     await _anexo(conn, schema, rid, principal=False, segundos=20)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = DocumentRepository(conn, slug)
 
     for ref in ("2026-ITEST-E-000900", str(rid)):
@@ -78,7 +78,7 @@ async def test_sin_principal_no_hay_documento_aunque_haya_pdfs_de_soporte(tenant
     await _anexo(conn, schema, rid, mime="application/pdf", segundos=0)
     await _anexo(conn, schema, rid, mime="application/pdf", segundos=5)
     await _anexo(conn, schema, rid, mime="image/png", segundos=50)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     radicado, anexo = await DocumentRepository(conn, slug).get_documento_principal_para_firma(
         "2026-ITEST-E-000901"
     )
@@ -92,7 +92,7 @@ async def test_subir_otro_pdf_no_cambia_la_huella_del_principal(tenant_ctx) -> N
     schema = tenant_schema(slug)
     rid = await _radicado(conn, schema, "2026-ITEST-E-000903")
     principal = await _anexo(conn, schema, rid, mime="application/pdf", principal=True, segundos=0)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = DocumentRepository(conn, slug)
     await _anexo(conn, schema, rid, mime="application/pdf", segundos=30)  # soporte posterior
     _, anexo = await repo.get_documento_principal_para_firma("2026-ITEST-E-000903")
@@ -106,7 +106,7 @@ async def test_radicado_sin_pdf_devuelve_anexo_none_e_inexistente_none(tenant_ct
     schema = tenant_schema(slug)
     rid = await _radicado(conn, schema, "2026-ITEST-E-000902")
     await _anexo(conn, schema, rid, mime="image/png")
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = DocumentRepository(conn, slug)
     radicado, anexo = await repo.get_documento_principal_para_firma("2026-ITEST-E-000902")
     assert radicado["id"] == rid and anexo is None
@@ -121,7 +121,7 @@ async def test_otro_tenant_no_resuelve_el_radicado(two_tenant_ctx) -> None:
     sa, sb = tenant_schema(slug_a), tenant_schema(slug_b)
     rid = await _radicado(conn, sa, "2026-ITEST-E-000903")
     await _anexo(conn, sa, rid)
-    await conn.execute(f'SET search_path = "{sb}", public')
+    await conn.execute(f'SET search_path = "{sb}"')
     repo = DocumentRepository(conn, slug_b)
     assert await repo.get_documento_principal_para_firma("2026-ITEST-E-000903") is None
     assert await repo.get_documento_principal_para_firma(str(rid)) is None

@@ -31,7 +31,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _preparar(conn: asyncpg.Connection, slug: str) -> BorradorRepository:
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     return BorradorRepository(conn)
 
 

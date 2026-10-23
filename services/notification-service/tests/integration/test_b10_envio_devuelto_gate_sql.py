@@ -54,7 +54,7 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     schema = "tenant_" + TENANT.replace("-", "_")
     await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        await c.execute(f'SET search_path TO "{schema}", public')
+        await c.execute(f'SET search_path TO "{schema}"')
         await c.execute(
             """
             CREATE TABLE auth_users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), email varchar(255),

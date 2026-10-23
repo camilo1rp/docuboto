@@ -143,7 +143,10 @@ def _migrates_prod(compose: Path) -> dict[str, str]:
 
 
 def test_el_dev_conserva_el_propietario_para_el_runner_de_tenant() -> None:
-    """En desarrollo no hay `migrate-<svc>`: el runner corre dentro del servicio con
-    `docker compose run`, así que ahí la variable sí vive (decisión de dev, no de prod)."""
+    """En desarrollo la variable sigue viviendo en el servicio (decisión de dev, no de prod).
+
+    Desde C19 (ADR-041) dev SÍ tiene `migrate-<svc>`, así que ya no es por el runner: la
+    razón vigente es que `scripts/init-tenant.sh` hace `docker compose exec` dentro del
+    servicio y los conftest de integración la leen. Quitarla de dev los rompe."""
     mig = _migrations_url(REPO / "docker-compose.yml")
     assert "tenant-service" in mig and "DB_APP_USER" not in mig["tenant-service"]

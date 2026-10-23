@@ -413,24 +413,91 @@ async def verify(
     return None
 
 
-async def artefacto_vigente(*, tenant_slug: str, firma_id: str) -> str | None:
-    """``minio_key`` del XML que representa HOY a la firma (B10 §8).
+@dataclass(slots=True, frozen=True)
+class ArtefactoVigente:
+    """Un eslabón vigente renovado (``ordinal`` >= 1) de una firma XAdES-LTA."""
 
-    Una firma XAdES-LTA cuyo ``ArchiveTimeStamp`` se renovó tiene un XML nuevo en el almacén; el
-    original (``minio_key_firmado``) sigue siendo evidencia pero ya no es el vigente. Lee
-    ``GET /firmas/{id}`` (``minio_key_vigente``). Best-effort: ``None`` ante cualquier fallo, y
-    el llamador conserva el original (nunca se bloquea un empaquetado por esta consulta).
-    """
-    headers = {"X-Tenant-Slug": tenant_slug}
+    firma_id: str
+    file_id: uuid.UUID
+    minio_key: str
+    xml_sha256: str
+    ordinal: int
+
+
+class SinRenovacion:
+    """La firma no tiene eslabón renovado: el vigente es el original."""
+
+
+class ErrorArtefacto:
+    """signature-service no respondió una lectura válida (NO equivale a «sin renovación»)."""
+
+
+SIN_RENOVACION = SinRenovacion()
+ERROR_ARTEFACTO = ErrorArtefacto()
+
+#: Tope de ``firma_ids`` por petición del endpoint interno (``max_length`` del contrato).
+LOTE_ARTEFACTOS_VIGENTES = 200
+
+
+async def artefactos_vigentes(
+    *, tenant_slug: str, firma_ids: list[str]
+) -> dict[str, ArtefactoVigente] | None:
+    """Lote contra ``POST /internal/artefactos-vigentes`` (C-6, ADR-042).
+
+    Devuelve ``{firma_id: ArtefactoVigente}`` SOLO de las firmas con eslabón renovado (las
+    ausentes no tienen renovación). ``None`` ante CUALQUIER fallo (red, HTTP, cuerpo ilegible):
+    quien llama NUNCA debe leerlo como «sin renovación» (lectura opcional convierte error en
+    vacío). Parte ``firma_ids`` en tandas de 200."""
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.signature_internal_token,
+    }
+    out: dict[str, ArtefactoVigente] = {}
     try:
-        async with httpx.AsyncClient(base_url=settings.signature_service_url, timeout=5.0) as client:
-            resp = await client.get(f"/api/v1/signature/firmas/{firma_id}", headers=headers)
-            if resp.status_code == 200:
-                return resp.json().get("minio_key_vigente") or None
-            logger.warning("signature-service → HTTP %s al leer el artefacto vigente", resp.status_code)
-    except (httpx.RequestError, ValueError) as exc:
-        logger.warning("signature-service inalcanzable al leer el artefacto vigente: %s", exc)
-    return None
+        async with httpx.AsyncClient(base_url=settings.signature_service_url, timeout=10.0) as client:
+            for i in range(0, len(firma_ids), LOTE_ARTEFACTOS_VIGENTES):
+                tanda = firma_ids[i : i + LOTE_ARTEFACTOS_VIGENTES]
+                resp = await client.post(
+                    "/api/v1/signature/internal/artefactos-vigentes",
+                    json={"firma_ids": tanda},
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "signature-service → HTTP %s al leer artefactos vigentes", resp.status_code
+                    )
+                    return None
+                for it in resp.json()["items"]:
+                    out[str(it["firma_id"])] = ArtefactoVigente(
+                        firma_id=str(it["firma_id"]),
+                        file_id=uuid.UUID(str(it["file_id"])),
+                        minio_key=str(it["minio_key"]),
+                        xml_sha256=str(it["xml_sha256"]),
+                        ordinal=int(it["ordinal"]),
+                    )
+    except (httpx.RequestError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("signature-service: artefactos vigentes no resueltos: %s", exc)
+        return None
+    return out
+
+
+async def resolver_artefacto_vigente(
+    *, tenant_slug: str, firma_id: str
+) -> ArtefactoVigente | SinRenovacion | ErrorArtefacto:
+    """Tri-estado para UNA firma: ``ArtefactoVigente`` | ``SinRenovacion`` | ``ErrorArtefacto``."""
+    lote = await artefactos_vigentes(tenant_slug=tenant_slug, firma_ids=[firma_id])
+    if lote is None:
+        return ERROR_ARTEFACTO
+    return lote.get(firma_id) or SIN_RENOVACION
+
+
+async def artefacto_vigente(*, tenant_slug: str, firma_id: str) -> str | None:
+    """``minio_key`` del XML vigente de la firma, o ``None`` (sin renovación O error).
+
+    Solo para lectores que ya degradan con aviso (``IndexService.verify``). El cableado del AIP
+    NO debe usarla: distingue error de «sin renovación» con ``resolver_artefacto_vigente``."""
+    r = await resolver_artefacto_vigente(tenant_slug=tenant_slug, firma_id=firma_id)
+    return r.minio_key if isinstance(r, ArtefactoVigente) else None
 
 
 @dataclass(slots=True)

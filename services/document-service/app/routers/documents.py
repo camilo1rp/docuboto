@@ -69,6 +69,7 @@ from app.services.document_service import (
     InvalidDependenciaError,
     InvalidTenantError,
     ReclassifyForbiddenError,
+    TipoDocumentalNoPublicableError,
 )
 from app.services.metadata_service import MetadataValidationError
 
@@ -564,6 +565,11 @@ async def set_publicacion(
     404 neutro para «no existe», «te supera el clearance», «no es de nivel
     público» y «está anulado»: distinguirlos convertiría este endpoint en un
     oráculo sobre radicados reservados.
+
+    409 `tipo_documental_no_publicable` (C-4/C10) cuando lo ÚNICO que falta es que la
+    entidad marque el tipo del radicado como publicable (`tipos_documentales.publicable`):
+    el actor ya ve el radicado y su nivel es público, así que decírselo no revela nada,
+    y un 404 aquí mentiría sobre la causa.
     """
     service = _build_service(conn, _tenant_slug(request))
     clearance = await resolve_caller_clearance(conn, _get_registered_by(request))
@@ -582,6 +588,20 @@ async def set_publicacion(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "document_not_found", "detail": str(document_id), "status": 404},
         )
+    except TipoDocumentalNoPublicableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "tipo_documental_no_publicable",
+                "detail": (
+                    "El tipo documental de este radicado no está marcado como publicable en el "
+                    "esquema de publicación de la entidad (Ley 1712/2014 art. 12): márquelo en "
+                    "el catálogo de tipos documentales (requiere TRD nivel 3) o clasifique el "
+                    "radicado con otro tipo."
+                ),
+                "status": 409,
+            },
+        ) from exc
     except AnexoNoDisponibleError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -688,6 +708,7 @@ async def reclassify_security_level(
             causal_reserva=payload.causal_reserva,
             fundamento_juridico=payload.fundamento_juridico,
             plazo_reserva_meses=payload.plazo_reserva_meses,
+            fundamento_norma=payload.fundamento_norma,
         )
         return ReclassifyResponse(**result)
     except DocumentNotFoundError:

@@ -24,7 +24,13 @@
 <script>
   import { page } from "$app/stores";
   import { browser } from "$app/environment";
-  import { permissions, roles, sessionUser, tenantSlug } from "$lib/stores/auth.js";
+  import {
+    permissions,
+    permissionLevels,
+    roles,
+    sessionUser,
+    tenantSlug,
+  } from "$lib/stores/auth.js";
   import { sidebarCollapsed, closeMobileSidebar } from "$lib/stores/ui.js";
   import { ROUTES } from "$lib/utils/config.js";
   import { NAV_ITEMS, filterVisibleNavItems } from "$lib/utils/navItems.js";
@@ -36,7 +42,7 @@
   } from "$lib/stores/favorites.js";
 
   /** Filtra los ítems según los permisos/roles del usuario actual */
-  $: visibleItems = filterVisibleNavItems(NAV_ITEMS, $permissions, $roles);
+  $: visibleItems = filterVisibleNavItems(NAV_ITEMS, $permissions, $roles, $permissionLevels);
 
   // ── Favoritos (§10 módulo 04) ─────────────────────────────────────────────
   // Reinicializa la persistencia de favoritos cada vez que cambia el tenant o

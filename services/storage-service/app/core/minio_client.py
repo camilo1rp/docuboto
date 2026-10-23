@@ -78,6 +78,13 @@ async def verificar_retencion_aplicada(
             f"El almacén no devuelve la retención de {bucket}/{object_key} que acaba "
             f"de aceptar ({exc.code}): no se puede afirmar que el objeto esté protegido."
         ) from exc
+    except ValueError as exc:
+        # RustFS contesta 200 SIN <Mode> cuando no hay retención y el cliente lo levanta como
+        # ValueError: para este guardián es lo mismo que «no devuelve la retención».
+        raise RetencionNoVerificadaError(
+            f"El almacén contestó sin modo de retención para {bucket}/{object_key} que acaba "
+            "de aceptar: no se puede afirmar que el objeto esté protegido."
+        ) from exc
 
     if aplicada is None:
         raise RetencionNoVerificadaError(
@@ -97,6 +104,32 @@ async def verificar_retencion_aplicada(
         raise RetencionNoVerificadaError(
             f"El almacén aplicó una retención más corta de la pedida sobre "
             f"{bucket}/{object_key}: hasta {hasta_real}, se pidió {hasta_esperado}."
+        )
+
+
+async def verificar_legal_hold_aplicado(
+    minio: Minio,
+    bucket: str,
+    object_key: str,
+    *,
+    version_id: str | None,
+) -> None:
+    """Relee que el legal hold recién escrito esté PUESTO (C-5/C7).
+
+    Un objeto de retención diferida (``valoracion_pendiente``) NO tiene fecha que releer: lo único
+    que lo protege es el hold, así que darlo por puesto sobre la palabra del almacén sería atestiguar
+    una protección que nadie miró. Mismo patrón fail-closed que :func:`verificar_retencion_aplicada`."""
+    try:
+        puesto = await minio.is_object_legal_hold_enabled(bucket, object_key, version_id=version_id)
+    except S3Error as exc:
+        raise RetencionNoVerificadaError(
+            f"El almacén no devuelve el legal hold de {bucket}/{object_key} que acaba de "
+            f"aceptar ({exc.code}): no se puede afirmar que el objeto esté protegido."
+        ) from exc
+    if puesto is not True:
+        raise RetencionNoVerificadaError(
+            f"El almacén aceptó el legal hold de {bucket}/{object_key} y lo reporta como "
+            "ausente al releerlo."
         )
 
 

@@ -42,7 +42,8 @@ async def _radicado(conn, slug, nivel: int, fundamento: str | None) -> str:
         registered_by=None,
     )
     await conn.execute(
-        "UPDATE radicados SET nivel_seguridad = $2, clasificacion_fundamento = $3 WHERE id = $1",
+        "UPDATE radicados SET nivel_seguridad = $2, clasificacion_fundamento = $3, "
+        "clasificacion_causal = CASE WHEN $2::smallint >= 2 THEN 'por_clasificar' END WHERE id = $1",
         creado.id,
         nivel,
         fundamento,
@@ -65,7 +66,7 @@ async def _asientos(conn, slug) -> list[asyncpg.Record]:
 async def _ledger(tenant_ctx):
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     await runner.ledger.ensure_ledger(conn)
     await runner.ledger.record(conn, schema, runner.SERVICIO, _ARCHIVO_041)
     try:
@@ -104,7 +105,7 @@ async def test_correrlo_dos_veces_no_duplica_el_asiento(_ledger) -> None:
 async def test_sin_la_041_aplicada_no_asienta_nada(tenant_ctx) -> None:
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     await runner.ledger.ensure_ledger(conn)
     await _radicado(conn, slug, 3, "PENDIENTE DE MOTIVAR: x")
     assert await runner.asentar_backfill_fundamento(conn, schema, slug) == 0

@@ -53,8 +53,8 @@ async def _seed_expediente_firmado(
     slug: str,
     name: str,
     *,
-    archivo_gestion_years: int | None = 5,
-    archivo_central_years: int | None = 5,
+    archivo_gestion_years: int = 5,
+    archivo_central_years: int = 5,
 ) -> tuple[uuid.UUID, asyncpg.Record]:
     """Expediente 'closed' con una serie TRD real (retención declarada por
     parámetro) y su índice vigente promovido a 'firmado' directamente (sin
@@ -66,15 +66,8 @@ async def _seed_expediente_firmado(
         TrdSerieCreate(
             code=f"WRM{uuid.uuid4().hex[:6]}",
             name="itest serie worm",
-            # `retention_years`/`total_retention` en 0: `ArchiveRepository.
-            # create_trd_serie` usa `retention_years`/`max(total_retention -
-            # retention_years, 0)` como FALLBACK cuando
-            # `archivo_gestion_years`/`archivo_central_years` llegan en
-            # `None` — para el escenario "TRD sin retención declarada" (total
-            # derivado real = 0) hace falta anular también el fallback, no
-            # solo pasar `None` en las dos fases.
-            retention_years=0,
-            total_retention=0,
+            # C-4/C6: las dos fases son obligatorias (no hay TRD «sin retención declarada»
+            # con NULL); el escenario fail-closed es retención TOTAL 0 (0 + 0).
             archivo_gestion_years=archivo_gestion_years,
             archivo_central_years=archivo_central_years,
         ),
@@ -278,7 +271,7 @@ async def test_concurrent_proteger_worm_indice_does_not_double_mark(
     async def _attempt() -> str:
         own_conn = await asyncpg.connect(dsn=DSN)
         try:
-            await own_conn.execute(f'SET search_path = "{schema}", public')
+            await own_conn.execute(f'SET search_path = "{schema}"')
             return await IndexService(own_conn, slug).proteger_worm_indice(
                 expediente_id, row["id"], actor_id=None, origen="reconciliation"
             )
@@ -332,8 +325,8 @@ async def test_concurrent_proteger_worm_indice_does_not_double_mark(
 async def test_proteger_worm_indice_fail_closed_without_trd_retention_years(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """Serie TRD real SIN `archivo_gestion_years`/`archivo_central_years`
-    declarados (ambos NULL) — el cableado WORM NUNCA se dispara con una
+    """Serie TRD real con retención TOTAL FUERA DE RANGO (60 + 50 = 110 años, el techo es 100;
+    0 + 0 y NULL ya no son representables: CHECK de la 069) — el cableado WORM NUNCA se dispara con una
     retención inventada; queda 'pendiente' con el motivo correcto, elegible
     para que `run_once_worm` reintente si un archivista corrige la TRD."""
     slug, conn = tenant_ctx
@@ -342,8 +335,8 @@ async def test_proteger_worm_indice_fail_closed_without_trd_retention_years(
         conn,
         slug,
         "itest worm sin retencion TRD",
-        archivo_gestion_years=None,
-        archivo_central_years=None,
+        archivo_gestion_years=60,
+        archivo_central_years=50,
     )
 
     resultado = await IndexService(conn, slug).proteger_worm_indice(

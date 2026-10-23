@@ -25,6 +25,7 @@ desde el proceso de disposición final del TRD.
 """
 
 import uuid
+from dataclasses import dataclass
 
 import asyncpg
 from orpycamcp_common.tenant import slug_valido, tenant_schema
@@ -50,9 +51,43 @@ REFERENCIAS_DE_ARCHIVO: tuple[tuple[str, str], ...] = (
     ("borrador", "documento_file_id"),  # document-service: PDF/A del borrador
     ("postal_shipment", "acuse_file_id"),  # document-service: acuse de recibo del envío (T13)
     ("preservacion_worm_objeto", "file_id"),  # protegido bajo WORM (Object-Lock)
+    # archive-service (C-6, ADR-042): el XML del índice con el sello de archivo vigente que EMBEBE cada
+    # versión del AIP. Es parte de la procedencia de esa versión: borrarlo dejaría un AIP cuyo
+    # índice ya no existe fuera del propio ZIP.
+    ("expediente_aip_version", "indice_file_id"),
     ("preservacion_migracion", "file_id_origen"),
     ("preservacion_migracion", "file_id_destino"),
+    # archive-service (C-5/C14, ADR-043): vista CONTRATO con las constancias de «firma inobtenible»
+    # VIGENTES que citan este archivo como anexo probatorio. La semántica de «vigente» (revocación,
+    # baja avalada por el Comité) vive en su dueño; storage solo conoce este nombre y estas columnas.
+    ("v_anexo_citado_vigente", "file_id"),
 )
+
+# Nombre de la vista contrato de archive (migración 075). Constante, nunca entrada de usuario.
+VISTA_ANEXO_CITADO = "v_anexo_citado_vigente"
+
+
+@dataclass(frozen=True, slots=True)
+class CitaConstancia:
+    """Una constancia de firma inobtenible vigente que cita un archivo. `ausente=True` es el
+    FAIL-CLOSED: la vista contrato no existe en el tenant (archive no migró), y «no sé si está
+    citado» se trata como «está citado», nunca como «no lo está»."""
+
+    excepcion_id: uuid.UUID | None
+    transferencia_id: uuid.UUID | None
+    rol: str | None
+    ordinal: int | None
+    ausente: bool = False
+
+    def como_dict(self) -> dict[str, object]:
+        if self.ausente:
+            return {"vista": VISTA_ANEXO_CITADO, "ausente": True}
+        return {
+            "excepcion_id": str(self.excepcion_id),
+            "transferencia_id": str(self.transferencia_id),
+            "rol": self.rol,
+            "ordinal": self.ordinal,
+        }
 
 
 class InvalidTenantSlugError(Exception):
@@ -73,7 +108,7 @@ class FileRepository:
         self._schema = tenant_schema(tenant_slug)
 
     async def _set_search_path(self) -> None:
-        await self._conn.execute(f'SET search_path = "{self._schema}", public')
+        await self._conn.execute(f'SET search_path = "{self._schema}"')
 
     async def find_by_sha256(
         self, sha256: str, uploaded_by: uuid.UUID
@@ -318,6 +353,30 @@ class FileRepository:
             f"SELECT {_COLS} FROM files WHERE id = $1 FOR UPDATE", file_id
         )
         return _row_to_file_record(row) if row is not None else None
+
+    async def citas_vigentes(self, file_id: uuid.UUID) -> list[CitaConstancia]:
+        """Constancias de firma inobtenible VIGENTES que citan `file_id` (C-5/C14).
+
+        Se llama DESPUÉS de `lock_any_state` y en SENTENCIA APARTE, a propósito: bajo READ
+        COMMITTED, un `SELECT ... FROM files WHERE ... AND NOT EXISTS (vista) FOR UPDATE` re-evalúa
+        tras esperar el bloqueo SOLO la fila de `files`; la subconsulta conserva la instantánea
+        vieja y no vería una constancia commiteada mientras esperaba. Con el bloqueo ya tomado,
+        esta sentencia abre una instantánea NUEVA. Simétrico al lado de archive, que cita con
+        `SELECT ... FOR SHARE` sobre la misma fila.
+
+        Vista ausente => una cita `ausente=True` (fail-closed)."""
+        await self._set_search_path()
+        if await self._conn.fetchval("SELECT to_regclass($1)", VISTA_ANEXO_CITADO) is None:
+            return [CitaConstancia(None, None, None, None, ausente=True)]
+        rows = await self._conn.fetch(
+            "SELECT excepcion_id, transferencia_id, rol, ordinal "
+            f"FROM {VISTA_ANEXO_CITADO} WHERE file_id = $1 ORDER BY transferencia_id, ordinal",
+            file_id,
+        )
+        return [
+            CitaConstancia(r["excepcion_id"], r["transferencia_id"], r["rol"], r["ordinal"])
+            for r in rows
+        ]
 
     async def referencias(self, file_id: uuid.UUID) -> list[str]:
         """Fuentes (`tabla.columna`) que referencian `file_id`; vacío = nadie.

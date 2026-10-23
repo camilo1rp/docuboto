@@ -10,7 +10,8 @@
 /**
  * /admin/trd/api/tipos/[id] — Proxy SSR: actualizar/borrar un tipo documental
  * (D-05, E03/RF-MET-07). USUA_PERM_TRD en el backend (PATCH y DELETE con
- * min_crud=3 en el borrado).
+ * min_crud=3 en el borrado). `publicable` (Ley 1712) pide nivel 3 para cambiarla y
+ * para reactivar un tipo ya publicable (C-4).
  */
 
 import { json } from "@sveltejs/kit";
@@ -50,6 +51,7 @@ export async function PATCH({ locals, params, request }) {
 
   const { nombre, trd_serie_id, obligatorio, metadata_template, activo } = body ?? {};
   const admiteVentanilla = body?.admite_ventanilla_publica;
+  const publicable = body?.publicable;
   if (
     trd_serie_id !== undefined &&
     trd_serie_id !== null &&
@@ -66,6 +68,9 @@ export async function PATCH({ locals, params, request }) {
     payload.trd_serie_id = trd_serie_id && UUID_RE.test(trd_serie_id) ? trd_serie_id : null;
   if (typeof obligatorio === "boolean") payload.obligatorio = obligatorio;
   if (typeof admiteVentanilla === "boolean") payload.admite_ventanilla_publica = admiteVentanilla;
+  // Solo si viene explícita: cambiarla (o reactivar un tipo publicable) exige
+  // nivel 3 en el backend; el 403 se propaga tal cual.
+  if (typeof publicable === "boolean") payload.publicable = publicable;
   if (metadata_template !== undefined) {
     payload.metadata_template =
       typeof metadata_template === "string" && metadata_template.trim()

@@ -130,7 +130,9 @@ def _entorno(mock_conn, *, items, acta=None, estado="avalado"):
         *[{"expediente_id": i["expediente_id"]} for i in items],
         _lote_row(),
     ]
-    mock_conn.fetch.side_effect = [items] + [[] for _ in items]
+    # inventario; luego, por expediente: constancias que citan un anexo sin baja avalada (C14),
+    # radicados y bajas de soporte marcadas como destruidas -- todas vacías por defecto.
+    mock_conn.fetch.side_effect = [items] + [[] for _ in range(3 * len(items))]
 
 
 # ── Las cuatro precondiciones ────────────────────────────────────────────────
@@ -400,3 +402,90 @@ async def test_la_ejecucion_no_acepta_ningun_parametro_del_cliente(client_with_c
     kwargs = purgar.await_args.kwargs
     assert set(kwargs) == {"tenant_slug", "radicado_ids", "expediente_id", "motivo", "actor"}
     assert "Resolución 512 de 2026" in kwargs["motivo"]
+
+
+# ── C14 (ADR-043): el anexo citado por una constancia vigente ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_una_constancia_vigente_sin_baja_avalada_bloquea_el_expediente_ANTES_de_purgar(
+    client_with_conn,
+) -> None:
+    """Si document-service/storage se negaran a mitad, el borrado quedaría PARCIAL. La comprobación
+    previa (vista `v_anexo_citado_vigente`) frena ANTES de tocar un byte.
+
+    Mutación: quitar la comprobación previa de `_eliminar_expediente` -> `purgar` se llama y el
+    fallo ya no lleva el código `soporte_citado_no_avalado`."""
+    client, mock_conn = client_with_conn
+    _entorno(mock_conn, items=[_item(EXP_A)])
+    tid = uuid.uuid4()
+    mock_conn.fetch.side_effect = [
+        [_item(EXP_A)],
+        [{"excepcion_id": uuid.uuid4(), "transferencia_id": tid, "rol": "recibe", "ordinal": 1}],
+    ]
+
+    with _purga() as purgar:
+        resp = await client.post(RUTA, headers=TENANT_HEADERS)
+
+    cuerpo = resp.json()
+    assert cuerpo["estado"] != "ejecutado" and cuerpo["expedientes_eliminados"] == 0
+    (fallo,) = cuerpo["fallidos"]
+    assert fallo["motivo"] == "soporte_citado_no_avalado"
+    assert str(tid) in fallo["detalle"] and fallo["expediente_code"] == "EXP-2020-0001"
+    purgar.assert_not_called()
+    sql = " ".join(str(c.args[0]) for c in mock_conn.execute.call_args_list)
+    assert "INSERT INTO expediente_lapida" not in sql and "DELETE FROM expedientes" not in sql
+
+
+@pytest.mark.asyncio
+async def test_el_rechazo_de_storage_por_anexo_citado_tambien_se_etiqueta(client_with_conn) -> None:
+    """Red final: la constancia se declaró DESPUÉS de la comprobación y storage (que sí bloquea la
+    fila) se niega: el fallo se etiqueta igual."""
+    client, mock_conn = client_with_conn
+    _entorno(mock_conn, items=[_item(EXP_A)])
+
+    with _purga(error=DocumentPurgaError("storage → 409 anexo_citado_por_constancia")):
+        cuerpo = (await client.post(RUTA, headers=TENANT_HEADERS)).json()
+
+    assert cuerpo["fallidos"][0]["motivo"] == "soporte_citado_no_avalado"
+
+
+@pytest.mark.asyncio
+async def test_otros_fallos_de_purga_no_llevan_el_codigo_de_soporte(client_with_conn) -> None:
+    """Control negativo del etiquetado."""
+    client, mock_conn = client_with_conn
+    _entorno(mock_conn, items=[_item(EXP_A)])
+    with _purga(error=DocumentPurgaError("storage-service inalcanzable")):
+        cuerpo = (await client.post(RUTA, headers=TENANT_HEADERS)).json()
+    assert cuerpo["fallidos"][0]["motivo"] is None
+
+
+@pytest.mark.asyncio
+async def test_con_la_baja_avalada_se_purga_y_el_soporte_queda_destruido_con_asiento(
+    client_with_conn,
+) -> None:
+    """Control positivo: sin bloqueantes (la vista ya no cuenta la cita porque el lote avalado
+    trae su baja) la purga procede, se fija `soporte_eliminado_at` y se asienta cada constancia."""
+    client, mock_conn = client_with_conn
+    _entorno(mock_conn, items=[_item(EXP_A)])
+    tid = uuid.uuid4()
+    mock_conn.fetch.side_effect = [
+        [_item(EXP_A)],  # inventario
+        [],  # bloqueantes: ninguno
+        [],  # radicados
+        [{"excepcion_id": uuid.uuid4(), "transferencia_id": tid, "rol": "entrega",
+          "ordinal": 2, "file_id": uuid.uuid4()}],  # bajas marcadas como destruidas
+    ]
+
+    with _purga():
+        resp = await client.post(RUTA, headers=TENANT_HEADERS)
+
+    assert resp.json()["estado"] == "ejecutado"
+    acciones = [
+        c.args[5]
+        for c in mock_conn.execute.call_args_list
+        if isinstance(c.args[0], str) and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+    assert "archive.constancia_soporte_eliminado_trd" in acciones
+    sql = " ".join(str(c.args[0]) for c in mock_conn.fetch.call_args_list)
+    assert "UPDATE eliminacion_lote_soporte_citado" in sql and "soporte_eliminado_at" in sql

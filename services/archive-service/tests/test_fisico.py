@@ -382,8 +382,19 @@ def _prestamo_row(**kw) -> dict:
     base = {
         "id": uuid.uuid4(),
         "unidad_id": uuid.uuid4(),
-        "prestado_a": "Jurídica",
-        "prestado_por": "ana",
+        "prestatario_tipo": "externo",
+        "prestatario_user_id": None,
+        "prestatario_nombre": "Ana Jurídica",
+        "tercero_nombre": "Ana Jurídica",
+        "tercero_documento_tipo": "CC",
+        "tercero_documento_numero": "1234567890",
+        "tercero_entidad": None,
+        "tercero_cargo": None,
+        "tercero_correo": None,
+        "tercero_telefono": None,
+        "prestado_por": USER_ID,
+        "devuelto_recibido_por": None,
+        "observaciones": None,
         "fecha_prestamo": NOW,
         "fecha_devolucion_esperada": date(2099, 1, 1),
         "fecha_devolucion_real": None,
@@ -398,21 +409,34 @@ def _prestamo_row(**kw) -> dict:
     return base
 
 
+def _diag(**kw) -> dict:
+    """Fila de `diagnosticar_prestamo`: todo en False salvo lo indicado."""
+    base = {
+        "presta_sin_acceso": False,
+        "prestatario_inexistente": False,
+        "ya_prestada": False,
+        "en_transferencia": False,
+        "en_lote": False,
+        "prestatario_sin_acceso": False,
+    }
+    base.update(kw)
+    return base
+
+
 @pytest.mark.asyncio
 async def test_create_prestamo(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     unidad_id = uuid.uuid4()
-    # get_unidad (existe), active_loan (None), insert_prestamo (row)
+    # get_unidad (existe), resolve_caller_clearance, insert_prestamo (row)
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),
-        None,
         None,  # resolve_caller_clearance -> PUBLICA
         _prestamo_row(unidad_id=unidad_id),
     ]
     resp = await client.post(
         f"/api/v1/unidades/{unidad_id}/prestamos",
-        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        json={"prestatario": {"tipo": "externo", "nombre": "Ana Jurídica", "documento_tipo": "CC", "documento_numero": "1234567890"}, "fecha_devolucion_esperada": "2099-01-01"},
         headers={**TENANT_HEADERS, "X-Username": "ana"},
     )
     assert resp.status_code == 201
@@ -430,13 +454,13 @@ async def test_create_prestamo_con_contenido_sobre_el_clearance_es_403(client_wi
     unidad_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),
-        None,  # active_loan
         None,  # resolve_caller_clearance -> PUBLICA
         None,  # insert_prestamo: el gate no insertó
+        _diag(presta_sin_acceso=True),  # diagnosticar_prestamo
     ]
     resp = await client.post(
         f"/api/v1/unidades/{unidad_id}/prestamos",
-        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        json={"prestatario": {"tipo": "externo", "nombre": "Ana Jurídica", "documento_tipo": "CC", "documento_numero": "1234567890"}, "fecha_devolucion_esperada": "2099-01-01"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 403
@@ -449,14 +473,20 @@ async def test_create_prestamo_already_loaned(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: permission ok; service raises 409
     unidad_id = uuid.uuid4()
-    # get_unidad (existe), active_loan (existe → 409)
-    mock_conn.fetchrow.side_effect = [_unidad_row(id=unidad_id), {"id": uuid.uuid4()}]
+    # get_unidad, clearance, insert (0 filas: el WHERE vio la unidad prestada), diagnóstico
+    mock_conn.fetchrow.side_effect = [
+        _unidad_row(id=unidad_id),
+        None,
+        None,
+        _diag(ya_prestada=True),
+    ]
     resp = await client.post(
         f"/api/v1/unidades/{unidad_id}/prestamos",
-        json={"prestado_a": "X", "fecha_devolucion_esperada": "2099-01-01"},
+        json={"prestatario": {"tipo": "externo", "nombre": "Ana Jurídica", "documento_tipo": "CC", "documento_numero": "1234567890"}, "fecha_devolucion_esperada": "2099-01-01"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "unidad_ya_prestada"
 
 
 @pytest.mark.asyncio
@@ -671,7 +701,7 @@ async def test_create_prestamo_sin_permiso_403(client_with_conn) -> None:
     mock_conn.fetchval.return_value = None
     resp = await client.post(
         f"/api/v1/unidades/{uuid.uuid4()}/prestamos",
-        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        json={"prestatario": {"tipo": "externo", "nombre": "Ana Jurídica", "documento_tipo": "CC", "documento_numero": "1234567890"}, "fecha_devolucion_esperada": "2099-01-01"},
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 403
@@ -879,13 +909,12 @@ async def test_create_prestamo_writes_audit_entry(client_with_conn) -> None:
     prestamo_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),  # get_unidad
-        None,  # active_loan -> ninguno
         None,  # resolve_caller_clearance -> PUBLICA
         _prestamo_row(id=prestamo_id, unidad_id=unidad_id),  # insert_prestamo
     ]
     resp = await client.post(
         f"/api/v1/unidades/{unidad_id}/prestamos",
-        json={"prestado_a": "Jurídica", "fecha_devolucion_esperada": "2099-01-01"},
+        json={"prestatario": {"tipo": "externo", "nombre": "Ana Jurídica", "documento_tipo": "CC", "documento_numero": "1234567890"}, "fecha_devolucion_esperada": "2099-01-01"},
         headers={**TENANT_HEADERS, "X-Username": "ana"},
     )
     assert resp.status_code == 201
@@ -898,8 +927,12 @@ async def test_create_prestamo_writes_audit_entry(client_with_conn) -> None:
     assert audit_calls[0][7] == str(prestamo_id)
     payload = json.loads(audit_calls[0][8])
     assert payload["unidad_id"] == str(unidad_id)
-    assert payload["prestado_a"] == "Jurídica"
+    assert payload["prestatario_tipo"] == "externo"
+    assert payload["prestado_por"] == TENANT_HEADERS["X-User-Id"]
     assert payload["fecha_devolucion_esperada"] == "2099-01-01"
+    # El asiento NO lleva el documento completo: va enmascarado (Ley 1581/2012).
+    assert payload["documento_numero"] == "****7890"
+    assert "1234567890" not in audit_calls[0][8]
 
 
 @pytest.mark.asyncio
@@ -916,11 +949,10 @@ async def test_devolver_prestamo_writes_audit_entry(client_with_conn) -> None:
     unidad_id = uuid.uuid4()
     devuelto_ts = datetime(2099, 3, 1, 12, 0, tzinfo=UTC)
     mock_conn.fetchrow.side_effect = [
-        _prestamo_row(id=pid, unidad_id=unidad_id, prestado_a="Jurídica"),  # get_prestamo (previo)
+        _prestamo_row(id=pid, unidad_id=unidad_id),  # get_prestamo (previo)
         _prestamo_row(  # devolver_prestamo (fila DISTINTA: ya devuelta)
             id=pid,
             unidad_id=unidad_id,
-            prestado_a="Jurídica",
             estado="devuelto",
             fecha_devolucion_real=devuelto_ts,
         ),
@@ -936,8 +968,9 @@ async def test_devolver_prestamo_writes_audit_entry(client_with_conn) -> None:
     assert audit_calls[0][7] == str(pid)
     payload = json.loads(audit_calls[0][8])
     assert payload["unidad_id"] == str(unidad_id)
-    # Los tres datos de custodia que exige el auditor, en el MISMO asiento:
-    assert payload["prestado_a"] == "Jurídica"
+    # Los datos de custodia que exige el auditor, en el MISMO asiento:
+    assert payload["prestatario_tipo"] == "externo"
+    assert payload["devuelto_recibido_por"] == TENANT_HEADERS["X-User-Id"]
     assert payload["fecha_devolucion_esperada"] == date(2099, 1, 1).isoformat()
     assert payload["fecha_devolucion_real"] == devuelto_ts.isoformat()
 
@@ -971,7 +1004,6 @@ async def test_create_prestamo_audit_failure_not_swallowed(monkeypatch: pytest.M
     prestamo_id = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [
         _unidad_row(id=unidad_id),  # get_unidad
-        None,  # active_loan
         None,  # resolve_caller_clearance -> PUBLICA
         _prestamo_row(id=prestamo_id, unidad_id=unidad_id),  # insert_prestamo (nunca debe "ganar")
     ]
@@ -979,7 +1011,15 @@ async def test_create_prestamo_audit_failure_not_swallowed(monkeypatch: pytest.M
     monkeypatch.setattr(fisico_service_module.audit, "append", _boom)
 
     service = FisicoService(mock_conn, TENANT_SLUG)
-    payload = PrestamoCreate(prestado_a="Jurídica", fecha_devolucion_esperada=date(2099, 1, 1))
+    payload = PrestamoCreate(
+        prestatario={
+            "tipo": "externo",
+            "nombre": "Ana Jurídica",
+            "documento_tipo": "CC",
+            "documento_numero": "1234567890",
+        },
+        fecha_devolucion_esperada=date(2099, 1, 1),
+    )
 
     with pytest.raises(RuntimeError, match="audit failure"):
         await service.create_prestamo(unidad_id, payload, "ana", actor=USER_ID)
@@ -988,7 +1028,7 @@ async def test_create_prestamo_audit_failure_not_swallowed(monkeypatch: pytest.M
     # dentro de la MISMA transacción cuando `audit.append` reventó -- el
     # fallo es TARDÍO, no evita que se intente la escritura, pero SÍ evita
     # que el llamante reciba una `PrestamoResponse` de éxito sin asiento.
-    assert mock_conn.fetchrow.call_count == 4
+    assert mock_conn.fetchrow.call_count == 3
 
 
 @pytest.mark.asyncio

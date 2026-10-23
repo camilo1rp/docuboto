@@ -312,7 +312,7 @@ async def _provision_tenant_schema(conn: asyncpg.Connection, slug: str) -> str:
     await conn.execute(f'CREATE SCHEMA "{schema}"')
     for path in runner._sql_files(runner.TENANT_DIR):
         async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await conn.execute(f'SET LOCAL search_path = "{schema}"')
             await conn.execute(path.read_text())
     return schema
 

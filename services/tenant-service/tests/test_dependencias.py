@@ -314,6 +314,54 @@ async def test_update_trigger_de_codigo_se_mapea_a_422(
 
 
 @pytest.mark.asyncio
+async def test_update_ciclo_se_mapea_a_409(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    """C-4/C8: el trigger de la 015 rechaza A -> B -> A con `dependencia_ciclo`; el router lo
+    traduce a 409 (no a un 500 con la excepción cruda de Postgres)."""
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _dep(dep_id=dep_id),
+        asyncpg.CheckViolationError("dependencia_ciclo: el nuevo padre es descendiente"),
+    ]
+    resp = await client.patch(
+        f"/api/v1/dependencias/{dep_id}", json={"parent_id": str(uuid.uuid4())}, headers=_HDRS
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "dependencia_ciclo"
+    client.audit_append.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_update_otro_check_violation_no_se_disfraza_de_ciclo(
+    client_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Control: solo el mensaje `dependencia_ciclo` produce ese 409; cualquier otro CHECK sigue
+    siendo lo que es (aquí se propaga: el handler global lo convierte en 500)."""
+    client, conn = client_conn
+    dep_id = uuid.uuid4()
+    conn.fetchrow.side_effect = [
+        _dep(dep_id=dep_id),
+        asyncpg.CheckViolationError("ck_dependencias_nombre_len"),
+    ]
+    with pytest.raises(asyncpg.CheckViolationError):
+        await client.patch(f"/api/v1/dependencias/{dep_id}", json={"sigla": "ZZ"}, headers=_HDRS)
+
+
+@pytest.mark.asyncio
+async def test_create_ciclo_se_mapea_a_409(client_conn: tuple[AsyncClient, AsyncMock]) -> None:
+    client, conn = client_conn
+    conn.fetchval.side_effect = [True, False]
+    conn.fetchrow.side_effect = asyncpg.CheckViolationError("dependencia_ciclo: x")
+    resp = await client.post(
+        "/api/v1/dependencias",
+        json={"codigo": 100, "sigla": "DG", "nombre": "Dirección General"},
+        headers=_HDRS,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "dependencia_ciclo"
+
+
+@pytest.mark.asyncio
 async def test_update_desactivar_con_regla_viva_409(
     client_conn: tuple[AsyncClient, AsyncMock],
 ) -> None:

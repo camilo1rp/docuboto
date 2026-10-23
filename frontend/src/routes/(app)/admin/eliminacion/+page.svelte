@@ -34,6 +34,7 @@
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { mensajeError } from "$lib/utils/apiError.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
+  import SoportesCitados from "$lib/components/features/admin/SoportesCitados.svelte";
 
   /** @type {import('./$types').PageData} */
   export let data;
@@ -490,6 +491,8 @@
         {/if}
       {/if}
 
+      <SoportesCitados soportes={detalle.soportes_citados ?? []} />
+
       <h3 class="elim__inv-titulo">Inventario congelado</h3>
       {#if detalle.items.length === 0}
         <p class="elim__sub">
@@ -711,7 +714,15 @@
       </p>
       <ul class="elim__rechazos">
         {#each resultadoEjecucion.fallidos as f (f.expediente_id)}
-          <li><strong>{f.expediente_code}</strong>: {f.detalle}</li>
+          <li>
+            <strong>{f.expediente_code}</strong>: {f.detalle}
+            {#if f.motivo === "soporte_citado_no_avalado"}
+              <br /><span class="elim__sub"
+                >Una constancia de firma inobtenible declarada después de proponer el lote cita su
+                soporte. Anula el lote y propón uno nuevo para que el Comité avale esa baja.</span
+              >
+            {/if}
+          </li>
         {/each}
       </ul>
     {/if}

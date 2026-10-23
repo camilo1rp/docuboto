@@ -53,8 +53,11 @@ lista (vacía si no hay eventos) — no hay 404 legítimo que distinguir; solo
 AREA-08-16 / AREA-08-07: `/proteger-indice`, `/proteger-artefacto` y `/aip` de
 storage exigen `X-Internal-Token` (los clientes de este módulo lo envían junto a
 la identidad firmada cuando hay humano) y el gateway no las enruta. `legal_hold`
-YA NO viaja en ningún body: storage lo rechaza con 422; se declara solo por el
-acto interno `POST /preservacion/legal-hold-internal`.
+YA NO viaja en ningún body: storage lo rechaza con 422; se declara solo por los
+actos internos `POST /preservacion/legal-hold-internal/fijar` y
+`/legal-hold-internal/{hold_id}/levantar` (retención legal POR MOTIVO, ADR-043).
+La protección del contenido de un fondo vencido viaja con `retencion_diferida=
+"valoracion_pendiente"` en vez de `retencion_anios`+`fecha_inicio`.
 
 `proteger_indice_worm`/`proteger_indice_worm_internal` (E10 Inc.1, cableado
 WORM del índice) — gemelo ESTRUCTURADO al estilo de
@@ -119,6 +122,28 @@ logger = logging.getLogger(__name__)
 _RUTA_PROTEGER_INDICE = "/api/v1/preservacion/proteger-indice"
 _RUTA_PROTEGER_ARTEFACTO = "/api/v1/preservacion/proteger-artefacto"
 _RUTA_LEGAL_HOLD = "/api/v1/preservacion/legal-hold-internal"
+_RUTA_FIJAR_RETENCION = "/api/v1/preservacion/fijar-retencion-internal"
+
+
+RETENCION_DIFERIDA = "valoracion_pendiente"
+
+
+def _campos_retencion(
+    retencion_anios: int | None,
+    fecha_inicio: date | None,
+    retencion_diferida: str | None,
+) -> dict:
+    """Las DOS fuentes exclusivas de la retención (ADR-043): `retencion_anios`+`fecha_inicio`
+    (calendario) o `retencion_diferida` (solo hold). Mezclarlas o no dar ninguna es un error de
+    programación del llamador: se falla aquí, antes de la red, en vez de dejar que storage
+    responda 422 y se confunda con un fallo transitorio."""
+    if retencion_diferida is not None:
+        if retencion_anios is not None or fecha_inicio is not None:
+            raise ValueError("retencion_diferida es excluyente con retencion_anios/fecha_inicio")
+        return {"retencion_diferida": retencion_diferida}
+    if retencion_anios is None or fecha_inicio is None:
+        raise ValueError("falta retencion_anios+fecha_inicio o retencion_diferida")
+    return {"retencion_anios": retencion_anios, "fecha_inicio": fecha_inicio.isoformat()}
 
 
 @dataclass(slots=True)
@@ -186,7 +211,9 @@ def _worm_outcome_from_response(resp: httpx.Response, *, contexto: str) -> WormP
         # siendo la fuente de verdad legal.
         retain_until: datetime | None = None
         try:
-            retain_until = datetime.fromisoformat(data["retain_until"])
+            # `null` es legítimo con `retencion_diferida` (solo hold, ADR-043): sin aviso.
+            if data.get("retain_until") is not None:
+                retain_until = datetime.fromisoformat(data["retain_until"])
         except (KeyError, TypeError, ValueError):
             logger.warning(
                 "storage-service → respuesta 2xx sin 'retain_until' válido al "
@@ -216,16 +243,16 @@ async def proteger_indice_worm(
     actor_id: str,
     file_id: str,
     expediente_id: str,
-    retencion_anios: int,
-    fecha_inicio: date,
+    retencion_anios: int | None = None,
+    fecha_inicio: date | None = None,
+    retencion_diferida: str | None = None,
 ) -> WormProtectionOutcome:
     """Disparo SÍNCRONO (usuario real, `origen="close"`) — ver el docstring
     del módulo para el contrato completo."""
     body = {
         "file_id": file_id,
         "expediente_id": expediente_id,
-        "retencion_anios": retencion_anios,
-        "fecha_inicio": fecha_inicio.isoformat(),
+        **_campos_retencion(retencion_anios, fecha_inicio, retencion_diferida),
     }
     # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
     # cuando la inyecta el gateway: el middleware que la verifica se dispara por
@@ -259,16 +286,16 @@ async def proteger_indice_worm_internal(
     tenant_slug: str,
     file_id: str,
     expediente_id: str,
-    retencion_anios: int,
-    fecha_inicio: date,
+    retencion_anios: int | None = None,
+    fecha_inicio: date | None = None,
+    retencion_diferida: str | None = None,
 ) -> WormProtectionOutcome:
     """Gemelo SISTEMA (D-02, `X-Internal-Token`, `origen="reconciliation"`) —
     ver el docstring del módulo para el contrato completo."""
     body = {
         "file_id": file_id,
         "expediente_id": expediente_id,
-        "retencion_anios": retencion_anios,
-        "fecha_inicio": fecha_inicio.isoformat(),
+        **_campos_retencion(retencion_anios, fecha_inicio, retencion_diferida),
     }
     headers = {
         "X-Tenant-Slug": tenant_slug,
@@ -504,63 +531,196 @@ async def renovar_retencion_worm_internal(
 
 
 class StorageLegalHoldError(Exception):
-    """storage-service no pudo aplicar el legal hold. `status` es el código HTTP
-    que archive debe traducir (404 sin objetos protegidos, 503 preservación
-    apagada o storage inalcanzable/ilegible)."""
+    """storage-service no pudo aplicar el acto de retención legal. `status` es el código HTTP que
+    archive debe traducir y `code` el `error` del cuerpo de storage cuando lo hay
+    (`motivo_no_coincide`, `hold_de_sistema`, `hold_ya_levantado`, `hold_no_encontrado`,
+    `retencion_diferida_sin_hold`...). 503 = preservación apagada o storage inalcanzable/ilegible."""
 
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, code: str | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.code = code
 
 
-async def fijar_legal_hold_internal(
-    *,
-    tenant_slug: str,
-    actor_id: str,
-    expediente_id: str,
-    activo: bool,
-    motivo: str,
-    acta_ref: str,
-) -> dict:
-    """Acto de legal hold (AREA-08-07) contra `POST
-    /preservacion/legal-hold-internal`: token interno (D-02) + identidad
-    FIRMADA del humano que lo decide, para que el asiento de storage lo
-    atribuya a él y no a SISTEMA. Lanza `StorageLegalHoldError`; no es
-    best-effort: un freeze que no se aplicó no puede darse por declarado."""
-    headers = identidad.firmar(
-        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
-        metodo="POST",
-        ruta=_RUTA_LEGAL_HOLD,
-    )
+def _error_de_storage(resp: httpx.Response) -> str | None:
+    """`error` del cuerpo (`{"error": ...}` o `{"detail": {"error": ...}}`), o ``None``."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    detail = data.get("detail")
+    if isinstance(detail, dict):
+        data = detail
+    err = data.get("error")
+    return err if isinstance(err, str) else None
+
+
+def _headers_hold(tenant_slug: str, actor_id: str | None, *, metodo: str, ruta: str) -> dict:
+    """Con humano: identidad FIRMADA (el asiento de storage lo atribuye a él). Sin humano (acto de
+    sistema, p. ej. el hold `valoracion_pendiente`): solo token interno, y storage atribuye a
+    SISTEMA."""
+    if actor_id:
+        headers = identidad.firmar(
+            {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}, metodo=metodo, ruta=ruta
+        )
+    else:
+        headers = {"X-Tenant-Slug": tenant_slug}
     headers["X-Internal-Token"] = settings.storage_internal_token
-    body = {
-        "expediente_id": expediente_id,
-        "activo": activo,
-        "motivo": motivo,
-        "acta_ref": acta_ref,
-    }
+    return headers
+
+
+async def _llamar_hold(
+    metodo: str,
+    ruta: str,
+    *,
+    headers: dict,
+    json_body: dict | None = None,
+    params: dict | None = None,
+    ok: tuple[int, ...] = (200, 201),
+) -> object:
     try:
         async with httpx.AsyncClient(
             base_url=settings.storage_service_url, timeout=60.0
         ) as client:
-            resp = await client.post(
-                _RUTA_LEGAL_HOLD, json=body, headers=headers
+            resp = await client.request(
+                metodo, ruta, json=json_body, params=params, headers=headers
             )
     except httpx.RequestError as exc:
         raise StorageLegalHoldError(503, f"storage-service inalcanzable: {exc}") from exc
-    if resp.status_code == 200:
+    if resp.status_code in ok:
         try:
-            data: dict = resp.json()
-            int(data["objetos_afectados"])
-            int(data["objetos_sin_cambio"])
-        except (ValueError, KeyError, TypeError) as exc:
+            return resp.json()
+        except ValueError as exc:
             raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
-        return data
-    if resp.status_code == 404:
-        raise StorageLegalHoldError(404, "el expediente no tiene objetos WORM protegidos")
+    codigo = _error_de_storage(resp)
+    if resp.status_code in (404, 409, 422):
+        raise StorageLegalHoldError(
+            resp.status_code, f"storage-service respondió {resp.status_code}", codigo
+        )
     if resp.status_code == 503:
-        raise StorageLegalHoldError(503, "la protección WORM está desactivada")
-    raise StorageLegalHoldError(503, f"storage-service respondió {resp.status_code}")
+        raise StorageLegalHoldError(503, "la protección WORM está desactivada", codigo)
+    raise StorageLegalHoldError(503, f"storage-service respondió {resp.status_code}", codigo)
+
+
+async def fijar_legal_hold(
+    *,
+    tenant_slug: str,
+    actor_id: str | None,
+    expediente_id: str,
+    motivo_tipo: str,
+    fundamento: str,
+    acta_ref: str,
+) -> dict:
+    """`POST /preservacion/legal-hold-internal/fijar` (ADR-043): fija UNA retención legal por
+    motivo. Ya NO exige objetos WORM (el hold existe aunque aún no haya AIP/índice: los objetos
+    que nazcan después lo heredan). Devuelve `{hold_id, creado, objetos_afectados}`. Idempotente
+    para `valoracion_pendiente`. No es best-effort: un freeze que no se aplicó no puede darse por
+    declarado."""
+    body = {
+        "expediente_id": expediente_id,
+        "motivo_tipo": motivo_tipo,
+        "fundamento": fundamento,
+        "acta_ref": acta_ref,
+    }
+    ruta = f"{_RUTA_LEGAL_HOLD}/fijar"
+    data = await _llamar_hold(
+        "POST",
+        ruta,
+        headers=_headers_hold(tenant_slug, actor_id, metodo="POST", ruta=ruta),
+        json_body=body,
+    )
+    try:
+        assert isinstance(data, dict)
+        uuid.UUID(str(data["hold_id"]))
+        int(data["objetos_afectados"])
+        bool(data["creado"])
+    except (AssertionError, ValueError, KeyError, TypeError) as exc:
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+    return data
+
+
+async def levantar_legal_hold(
+    *,
+    tenant_slug: str,
+    actor_id: str | None,
+    hold_id: uuid.UUID | str,
+    motivo_tipo_esperado: str,
+    fundamento: str,
+    acta_ref: str,
+) -> dict:
+    """`POST /preservacion/legal-hold-internal/{hold_id}/levantar` (ADR-043). Storage libera el
+    legal hold de S3 SOLO si tras el levantamiento no queda ningún otro hold activo del expediente.
+    409 `motivo_no_coincide` si la confirmación no coincide con el motivo del hold. Devuelve
+    `{hold_id, objetos_liberados_s3, holds_restantes}`."""
+    body = {
+        "motivo_tipo_esperado": motivo_tipo_esperado,
+        "fundamento": fundamento,
+        "acta_ref": acta_ref,
+    }
+    ruta = f"{_RUTA_LEGAL_HOLD}/{hold_id}/levantar"
+    data = await _llamar_hold(
+        "POST",
+        ruta,
+        headers=_headers_hold(tenant_slug, actor_id, metodo="POST", ruta=ruta),
+        json_body=body,
+    )
+    try:
+        assert isinstance(data, dict)
+        int(data["objetos_liberados_s3"])
+        int(data["holds_restantes"])
+    except (AssertionError, ValueError, KeyError, TypeError) as exc:
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+    return data
+
+
+async def listar_legal_holds(*, tenant_slug: str, expediente_id: str) -> list[dict]:
+    """`GET /preservacion/legal-hold-internal?expediente_id=`: TODOS los holds del expediente
+    (activos y levantados), más recientes primero. Sin identidad humana: la lectura la mediatiza
+    archive (clearance en el `WHERE` del expediente)."""
+    data = await _llamar_hold(
+        "GET",
+        _RUTA_LEGAL_HOLD,
+        headers=_headers_hold(tenant_slug, None, metodo="GET", ruta=_RUTA_LEGAL_HOLD),
+        params={"expediente_id": expediente_id},
+        ok=(200,),
+    )
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        data = data["items"]
+    if not isinstance(data, list):
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service")
+    return [h for h in data if isinstance(h, dict)]
+
+
+async def fijar_retencion_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+) -> dict:
+    """`POST /preservacion/fijar-retencion-internal` (ADR-043): fija COMPLIANCE por PRIMERA vez en
+    los objetos `valoracion_pendiente` del expediente (valoración CT). Nunca toca filas con
+    calendario. Idempotente. Devuelve `{expediente_id, retain_until, filas_fijadas,
+    filas_pendientes_restantes}`. Acto de sistema (valoración aplicada por la fase de archive)."""
+    body = {
+        "expediente_id": expediente_id,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+    }
+    data = await _llamar_hold(
+        "POST",
+        _RUTA_FIJAR_RETENCION,
+        headers=_headers_hold(tenant_slug, None, metodo="POST", ruta=_RUTA_FIJAR_RETENCION),
+        json_body=body,
+    )
+    try:
+        assert isinstance(data, dict)
+        int(data["filas_fijadas"])
+    except (AssertionError, ValueError, KeyError, TypeError) as exc:
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+    return data
 
 
 @dataclass(slots=True)
@@ -596,6 +756,10 @@ class AipPackagingOutcome:
     disabled: bool = False
     fixity_mismatch: bool = False
     transient: bool = False
+    #: 409 `aip_ya_existe`: storage YA tiene un AIP del expediente (p. ej. un empaquetado que sí
+    #: se completó y cuya respuesta se perdió). NO es un fallo de fixity: el llamador reconcilia
+    #: con `get_aip` antes de tocar su registro. `aip_id` = el AIP vigente que storage informa.
+    ya_existe: bool = False
 
 
 async def empaquetar_aip_internal(
@@ -604,8 +768,9 @@ async def empaquetar_aip_internal(
     expediente_id: str,
     documentos: list[dict],
     indice_file_id: uuid.UUID | None,
-    retencion_anios: int,
-    fecha_inicio: date,
+    retencion_anios: int | None = None,
+    fecha_inicio: date | None = None,
+    retencion_diferida: str | None = None,
     pdfa_profile: str | None = None,
 ) -> AipPackagingOutcome:
     """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST /preservacion/aip`
@@ -635,8 +800,7 @@ async def empaquetar_aip_internal(
     body: dict = {
         "expediente_id": expediente_id,
         "documentos": documentos,
-        "retencion_anios": retencion_anios,
-        "fecha_inicio": fecha_inicio.isoformat(),
+        **_campos_retencion(retencion_anios, fecha_inicio, retencion_diferida),
     }
     if indice_file_id is not None:
         body["indice_file_id"] = str(indice_file_id)
@@ -675,6 +839,20 @@ async def empaquetar_aip_internal(
                 expediente_id,
             )
         return AipPackagingOutcome(ok=True, aip_id=aip_id, retain_until=retain_until)
+    if resp.status_code == status.HTTP_409_CONFLICT and _codigo_de_error(resp) == "aip_ya_existe":
+        existente: uuid.UUID | None = None
+        try:
+            det = resp.json().get("detail") or {}
+            if isinstance(det, dict) and det.get("aip_id"):
+                existente = uuid.UUID(str(det["aip_id"]))
+        except (ValueError, AttributeError, TypeError):
+            existente = None
+        logger.warning(
+            "storage-service: el AIP de %s ya existe (aip_id=%s); se reconcilia",
+            expediente_id,
+            existente,
+        )
+        return AipPackagingOutcome(ok=False, ya_existe=True, aip_id=existente)
     if resp.status_code == status.HTTP_409_CONFLICT:
         logger.warning(
             "storage-service: fixity_mismatch al empaquetar el AIP de %s "
@@ -695,6 +873,102 @@ async def empaquetar_aip_internal(
         expediente_id,
     )
     return AipPackagingOutcome(ok=False, transient=True)
+
+
+@dataclass(slots=True)
+class AipReempaqueOutcome:
+    """Resultado de ``POST /preservacion/aip-reempaquetar-internal`` (C-6, ADR-042)."""
+
+    ok: bool
+    aip_id: uuid.UUID | None = None
+    version: int | None = None
+    sustituye_a: uuid.UUID | None = None
+    retain_until: datetime | None = None
+    ya_sustituido: bool = False
+    fixity_mismatch: bool = False
+    indice_invalido: bool = False
+    not_found: bool = False
+    disabled: bool = False
+    transient: bool = False
+
+
+def _codigo_de_error(resp: httpx.Response) -> str:
+    """``error`` del cuerpo (``{"error": ...}`` o ``{"detail": {"error": ...}}``), o ``""``."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    if isinstance(data, dict):
+        det = data.get("detail")
+        if isinstance(det, dict):
+            return str(det.get("error", ""))
+        return str(data.get("error", ""))
+    return ""
+
+
+async def reempaquetar_aip_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    aip_anterior_id: uuid.UUID,
+    indice_file_id: uuid.UUID,
+    indice_xml_sha256: str,
+    firma_id: str,
+    ordinal: int,
+) -> AipReempaqueOutcome:
+    """Pide a storage-service el AIP NUEVO construido desde el bag anterior con el índice
+    renovado (C-6). Idempotente por ``indice_xml_sha256`` (reintento -> 200 con el mismo AIP).
+    Timeout alto: storage relee y re-empaqueta el ZIP completo."""
+    body = {
+        "expediente_id": expediente_id,
+        "aip_anterior_id": str(aip_anterior_id),
+        "indice_file_id": str(indice_file_id),
+        "indice_xml_sha256": indice_xml_sha256,
+        "firma_id": firma_id,
+        "ordinal": ordinal,
+    }
+    headers = {"X-Tenant-Slug": tenant_slug, "X-Internal-Token": settings.storage_internal_token}
+    try:
+        async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=120.0) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/aip-reempaquetar-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al reempaquetar el AIP: %s", exc)
+        return AipReempaqueOutcome(ok=False, transient=True)
+
+    if resp.status_code in (status.HTTP_200_OK, status.HTTP_201_CREATED):
+        try:
+            data = resp.json()
+            aip_id = uuid.UUID(data["id"])
+            version = int(data["version"])
+            sustituye = uuid.UUID(data["sustituye_a"])
+        except (ValueError, KeyError, TypeError):
+            logger.warning("storage-service → %s sin id/version/sustituye_a válidos", resp.status_code)
+            return AipReempaqueOutcome(ok=False, transient=True)
+        retain_until: datetime | None = None
+        try:
+            if data.get("retain_until"):
+                retain_until = datetime.fromisoformat(data["retain_until"])
+        except (TypeError, ValueError):
+            retain_until = None
+        return AipReempaqueOutcome(
+            ok=True, aip_id=aip_id, version=version, sustituye_a=sustituye, retain_until=retain_until
+        )
+    codigo = _codigo_de_error(resp)
+    if resp.status_code == status.HTTP_409_CONFLICT:
+        if codigo == "aip_ya_sustituido":
+            return AipReempaqueOutcome(ok=False, ya_sustituido=True)
+        # aip_anterior_fixity_mismatch (o 409 desconocido): nunca se da por bueno.
+        return AipReempaqueOutcome(ok=False, fixity_mismatch=True)
+    if resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+        return AipReempaqueOutcome(ok=False, indice_invalido=True)
+    if resp.status_code == status.HTTP_404_NOT_FOUND:
+        return AipReempaqueOutcome(ok=False, not_found=True)
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        return AipReempaqueOutcome(ok=False, disabled=True)
+    logger.warning("storage-service → HTTP %s al reempaquetar el AIP", resp.status_code)
+    return AipReempaqueOutcome(ok=False, transient=True)
 
 
 class StorageAipError(Exception):

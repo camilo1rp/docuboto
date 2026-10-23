@@ -48,9 +48,17 @@ from app.schemas.fisico import (
 )
 from app.services.fisico_service import FisicoService
 
+from ._auth_minimo import crear_tablas_auth
+
 pytestmark = pytest.mark.integration
 
 ACTOR = uuid.uuid4()
+_EXTERNO = {
+    "tipo": "externo",
+    "nombre": "Ana Jurídica",
+    "documento_tipo": "CC",
+    "documento_numero": "1234567890",
+}
 
 
 @dataclass
@@ -78,6 +86,7 @@ async def _asientos(conn: asyncpg.Connection, slug: str, accion: str) -> int:
 
 
 async def _con_unidad(ctx: Contexto) -> None:
+    await crear_tablas_auth(ctx.conn, ctx.slug)  # el INSERT del préstamo las lee (C11)
     ub = await ctx.servicio.create_ubicacion(
         UbicacionCreate(nivel="deposito", codigo="DEP-1", nombre="Depósito 1"), actor=ACTOR
     )
@@ -99,7 +108,7 @@ async def _con_prestamo(ctx: Contexto) -> None:
     await _con_unidad(ctx)
     prestamo = await ctx.servicio.create_prestamo(
         ctx.unidad_id,
-        PrestamoCreate(prestado_a="Jurídica", fecha_devolucion_esperada=date(2099, 1, 1)),
+        PrestamoCreate(prestatario=_EXTERNO, fecha_devolucion_esperada=date(2099, 1, 1)),
         str(ACTOR),
         actor=ACTOR,
     )
@@ -136,7 +145,7 @@ async def _vincular(ctx: Contexto) -> object:
 async def _prestar(ctx: Contexto) -> object:
     return await ctx.servicio.create_prestamo(
         ctx.unidad_id,
-        PrestamoCreate(prestado_a="Archivo", fecha_devolucion_esperada=date(2099, 1, 1)),
+        PrestamoCreate(prestatario=_EXTERNO, fecha_devolucion_esperada=date(2099, 1, 1)),
         str(ACTOR),
         actor=ACTOR,
     )

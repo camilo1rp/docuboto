@@ -61,6 +61,20 @@ class PublicVerifyResponse(BaseModel):
     dest_dept: str | None = None
 
 
+class ContactoEntidad(BaseModel):
+    """Cómo radicar sin la ventanilla en línea. Solo lo que la entidad declaró.
+
+    NO hay horario de atención: ningún parámetro de la entidad lo guarda todavía
+    (hueco declarado en el ADR-038); no se inventa.
+    """
+
+    nombre: str | None = None
+    direccion: str | None = None
+    telefono: str | None = None
+    email: str | None = None
+    web: str | None = None
+
+
 class VentanillaEstado(BaseModel):
     """¿Está operativa la ventanilla de esta entidad? (AREA-09-07).
 
@@ -78,6 +92,14 @@ class VentanillaEstado(BaseModel):
     #: ella `POST /ventanilla` responde 409 `politica_no_publicada` (Ley 1581 art. 12).
     #: No forma parte de `habilitada` (que describe el organigrama y el catálogo).
     politica_publicada: bool = False
+    #: (C16, ADR-038) El antirrobots puede emitir y consumir retos AHORA: clave
+    #: configurada y Redis responde. Si es `false`, `POST` responde 503
+    #: `antirrobots_no_disponible`. No forma parte de `habilitada`.
+    antirrobots_disponible: bool = False
+    #: Contacto de radicación de la entidad (de sus parámetros `entidad_*`, el mismo
+    #: membrete de los oficios): el canal alterno que el formulario muestra cuando la
+    #: ventanilla en línea no está disponible. `null` si la entidad no declaró ninguno.
+    contacto: ContactoEntidad | None = None
 
 
 class PoliticaTratamiento(BaseModel):
@@ -151,6 +173,12 @@ class VentanillaRadicacion(BaseModel):
     #: Honeypot (AREA-02-07). Invisible en el formulario; debe llegar vacío.
     sitio_web: str | None = Field(default=None, max_length=200)
 
+    #: Prueba de trabajo ALTCHA (C16, ADR-038): `base64(JSON)` que arma el widget al
+    #: resolver el reto de `GET .../ventanilla/reto`. OBLIGATORIO: una puerta sin el
+    #: gate sería el atajo. Se verifica y se consume en `VentanillaService.radicar`
+    #: (un único punto, para que ventanilla y PQRS no diverjan).
+    altcha: str = Field(..., min_length=16, max_length=4096)
+
     @model_validator(mode="after")
     def _sin_honeypot(self) -> "VentanillaRadicacion":
         _rechazar_honeypot(self.sitio_web)
@@ -174,6 +202,16 @@ class VentanillaRadicacion(BaseModel):
                 "deje también el documento de identidad en blanco."
             )
         return self
+
+
+class RetoAntirrobots(BaseModel):
+    """Reto ALTCHA (protocolo v1) ya firmado: lo que el widget resuelve en el navegador."""
+
+    algorithm: Literal["SHA-256"] = "SHA-256"
+    challenge: str
+    maxnumber: int
+    salt: str
+    signature: str
 
 
 class VentanillaRespuesta(BaseModel):
@@ -213,6 +251,9 @@ class PqrsCreate(BaseModel):
     politica_version: str = Field(..., min_length=1, max_length=50)
     #: Honeypot (AREA-02-07).
     sitio_web: str | None = Field(default=None, max_length=200)
+    #: Prueba de trabajo ALTCHA (C16, ADR-038) — ver `VentanillaRadicacion.altcha`.
+    #: También obligatoria en la ruta heredada: dejarla sin el gate sería el atajo.
+    altcha: str = Field(..., min_length=16, max_length=4096)
 
     @model_validator(mode="after")
     def _sin_honeypot(self) -> "PqrsCreate":

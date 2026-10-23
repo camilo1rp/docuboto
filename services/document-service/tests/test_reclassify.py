@@ -14,8 +14,9 @@ PATCH /api/v1/documents/{document_id}/security-level
 Orden de llamadas a la conexión mockeada por request:
 
   fetchval #1 — check_permission("PERM_RECLASIFICAR")
-  fetchrow #1 — get_security_context (SELECT id, tracking_number, nivel_seguridad)
-  fetchrow #2 — resolve_caller_clearance (SELECT is_root, max_level)
+  fetchrow #1 — resolve_caller_clearance (SELECT is_root, max_level): ANTES de la lectura,
+                porque su resultado entra en el WHERE de la consulta bloqueante
+  fetchrow #2 — get_security_context_for_update (... nivel_seguridad <= $2 FOR UPDATE)
   execute  #N — set_classification (UPDATE radicados) [solo si hay cambio efectivo]
   execute  #N — audit advisory lock (SELECT pg_advisory_xact_lock)  [solo si hay cambio]
   fetchval #2 — audit prev_hash (SELECT hash FROM audit_log)         [solo si hay cambio]
@@ -37,12 +38,26 @@ DOC_ID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
 TRACKING = "2024-DEMO-E-000001"
 
 
-def _sec_ctx(nivel: int = 1) -> dict:
-    """Simula la fila devuelta por get_security_context."""
+def _sec_ctx(
+    nivel: int = 1,
+    *,
+    causal: str | None = None,
+    fundamento: str | None = None,
+    plazo: int | None = None,
+    meses_generacion: int = 0,
+    meses_clasificacion: int = 0,
+) -> dict:
+    """Simula la fila devuelta por get_security_context_for_update."""
     return {
+        "clasificacion_norma": None,
+        "meses_desde_generacion": meses_generacion,
+        "meses_hasta_clasificacion": meses_clasificacion,
         "id": DOC_ID,
         "tracking_number": TRACKING,
         "nivel_seguridad": nivel,
+        "clasificacion_causal": causal,
+        "clasificacion_fundamento": fundamento,
+        "clasificacion_plazo_meses": plazo,
     }
 
 
@@ -96,7 +111,13 @@ async def test_reclassify_404_when_radicado_not_found(client_with_conn) -> None:
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba", "fundamento_juridico": "Art. 19 Ley 1712"},
+        json={
+            "nivel_seguridad": 2,
+            "motivo": "Motivo de prueba",
+            "fundamento_juridico": "Art. 19 Ley 1712",
+            "causal_reserva": "art19_b_seguridad_publica",
+            "plazo_reserva_meses": 12,
+        },
         headers=TENANT_HEADERS,
     )
 
@@ -116,25 +137,30 @@ async def test_reclassify_neutral_404_when_clearance_below_current_level(
     """clearance=1, nivel_actual=3 → 404 neutro (RF-SEG-08 no-read-up).
 
     El actor no puede distinguir "no existe" de "existe pero está por encima
-    de su clearance" — ambos producen el mismo 404.
+    de su clearance" — ambos producen el mismo 404. El gate va en el `WHERE` de la
+    consulta bloqueante: para el llamante la fila simplemente no vuelve (`None`), y
+    NO es un 409 aunque el movimiento fuera una desclasificación (no revela).
     """
     client, mock_conn = client_with_conn
-    # fetchval: [check_permission=1(True)]
-    # La clearance se resuelve con fetchrow, NO fetchval.
     mock_conn.fetchval.side_effect = [1]
     mock_conn.fetchrow.side_effect = [
-        _sec_ctx(nivel=3),       # get_security_context → nivel 3
-        _clearance_row(max_level=1),  # resolve_caller_clearance → clearance 1 < 3 → 404
+        _clearance_row(max_level=1),  # resolve_caller_clearance → clearance 1
+        None,                         # get_security_context_for_update: 3 > 1 → sin fila
     ]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "Motivo de prueba", "fundamento_juridico": "Art. 19 Ley 1712"},
+        json={"nivel_seguridad": 1, "motivo": "Motivo de prueba"},
         headers=TENANT_HEADERS,
     )
 
     assert resp.status_code == 404
     assert resp.json()["detail"]["error"] == "document_not_found"
+    # El clearance viaja a la consulta y el bloqueo con él: mutación 11 del diseño.
+    consulta = mock_conn.fetchrow.await_args_list[1]
+    assert "nivel_seguridad <= $2" in consulta.args[0]
+    assert "FOR UPDATE" in consulta.args[0]
+    assert consulta.args[2] == 1
     # Ningún execute de escritura debe haberse invocado.
     radicado_updates = [
         c for c in mock_conn.execute.call_args_list
@@ -156,13 +182,13 @@ async def test_reclassify_403_when_nuevo_nivel_exceeds_clearance(
     client, mock_conn = client_with_conn
     mock_conn.fetchval.side_effect = [1]   # check_permission passes
     mock_conn.fetchrow.side_effect = [
-        _sec_ctx(nivel=1),           # get_security_context → nivel 1
         _clearance_row(max_level=2), # resolve_caller_clearance → clearance 2 < nuevo 3
+        _sec_ctx(nivel=1),           # get_security_context_for_update → nivel 1
     ]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 3, "motivo": "Intento de over-clasificar", "fundamento_juridico": "Art. 18 Ley 1712"},
+        json={"nivel_seguridad": 3, "motivo": "Intento de over-clasificar", "fundamento_juridico": "Art. 18 Ley 1712", "causal_reserva": "art18_a_intimidad"},
         headers=TENANT_HEADERS,
     )
 
@@ -193,13 +219,13 @@ async def test_reclassify_success_updates_nivel_and_emits_event(
     # fetchval: [check_permission(1=True), audit_prev_hash(None)]
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
-        _sec_ctx(nivel=1),            # get_security_context → nivel 1
         _clearance_row(max_level=3),  # resolve_caller_clearance → clearance 3 ≥ nuevo 3
+        _sec_ctx(nivel=1),            # get_security_context_for_update → nivel 1
     ]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 3, "motivo": motivo, "fundamento_juridico": "Art. 18 Ley 1712"},
+        json={"nivel_seguridad": 3, "motivo": motivo, "fundamento_juridico": "Art. 18 Ley 1712", "causal_reserva": "art18_a_intimidad"},
         headers=TENANT_HEADERS,
     )
 
@@ -251,13 +277,24 @@ async def test_reclassify_noop_when_nivel_already_matches(client_with_redis) -> 
     # Solo check_permission (fetchval #1). El audit_prev_hash (#2) NO se llama.
     mock_conn.fetchval.side_effect = [1]
     mock_conn.fetchrow.side_effect = [
-        _sec_ctx(nivel=2),            # get_security_context → nivel 2
         _clearance_row(max_level=3),  # resolve_caller_clearance → clearance 3
+        _sec_ctx(
+            nivel=2,
+            causal="art19_a_defensa_seguridad_nacional",
+            fundamento="Art. 19 Ley 1712",
+            plazo=60,
+        ),  # get_security_context_for_update → nivel 2, ya motivado igual
     ]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "Reintento idempotente", "fundamento_juridico": "Art. 19 Ley 1712"},
+        json={
+            "nivel_seguridad": 2,
+            "motivo": "Reintento idempotente",
+            "fundamento_juridico": "Art. 19 Ley 1712",
+            "causal_reserva": "art19_a_defensa_seguridad_nacional",
+            "plazo_reserva_meses": 60,
+        },
         headers=TENANT_HEADERS,
     )
 
@@ -301,13 +338,13 @@ async def test_reclassify_succeeds_even_when_redis_emit_fails(
 
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
-        _sec_ctx(nivel=1),
         _clearance_row(max_level=3),
+        _sec_ctx(nivel=1),
     ]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
-        json={"nivel_seguridad": 3, "motivo": "Test best-effort", "fundamento_juridico": "Art. 18 Ley 1712"},
+        json={"nivel_seguridad": 3, "motivo": "Test best-effort", "fundamento_juridico": "Art. 18 Ley 1712", "causal_reserva": "art18_a_intimidad"},
         headers=TENANT_HEADERS,
     )
 
@@ -339,9 +376,16 @@ def test_reclassify_request_accepts_valid_range() -> None:
 
     # Nivel 1 (desclasificar) no exige fundamento; nivel ≥ 2 sí (Ley 1712 art. 19/28).
     assert ReclassifyRequest(nivel_seguridad=1, motivo="Motivo").nivel_seguridad == 1
-    for nivel in (2, 3):
+    for nivel, causal, plazo in (
+        (2, "art19_b_seguridad_publica", 12),
+        (3, "art18_c_secretos", None),
+    ):
         req = ReclassifyRequest(
-            nivel_seguridad=nivel, motivo="Motivo obligatorio", fundamento_juridico="Art. Ley 1712"
+            nivel_seguridad=nivel,
+            motivo="Motivo obligatorio",
+            fundamento_juridico="Art. Ley 1712",
+            causal_reserva=causal,
+            plazo_reserva_meses=plazo,
         )
         assert req.nivel_seguridad == nivel
 
@@ -399,17 +443,17 @@ async def test_reclassify_compliance_fields_recorded_in_audit(
 
     mock_conn.fetchval.side_effect = [1, None]
     mock_conn.fetchrow.side_effect = [
-        _sec_ctx(nivel=1),
         _clearance_row(max_level=3),
+        _sec_ctx(nivel=1),
     ]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
         json={
-            "nivel_seguridad": 3,
+            "nivel_seguridad": 2,
             "motivo": "Contiene información de seguridad nacional",
-            "causal_reserva": "Ley 1712 art.19 lit. a",
-            "fundamento_juridico": "Ley 1712/2014 art.18",
+            "causal_reserva": "art19_a_defensa_seguridad_nacional",
+            "fundamento_juridico": "Ley 1712/2014 art.19",
             "plazo_reserva_meses": 60,
         },
         headers=TENANT_HEADERS,
@@ -424,8 +468,8 @@ async def test_reclassify_compliance_fields_recorded_in_audit(
     assert len(audit_inserts) == 1
     # Posición $8 = payload en el INSERT de audit_log (ver comentario en Case 5).
     audit_payload = json.loads(audit_inserts[0].args[8])
-    assert audit_payload["causal_reserva"] == "Ley 1712 art.19 lit. a"
-    assert audit_payload["fundamento_juridico"] == "Ley 1712/2014 art.18"
+    assert audit_payload["causal_reserva"] == "art19_a_defensa_seguridad_nacional"
+    assert audit_payload["fundamento_juridico"] == "Ley 1712/2014 art.19"
     assert audit_payload["plazo_reserva_meses"] == 60
 
 
@@ -445,11 +489,14 @@ def test_reclassify_request_compliance_fields_are_optional() -> None:
 
     # Nivel ≥ 2 sin fundamento → ValidationError (motivación obligatoria).
     with pytest.raises(ValidationError):
-        ReclassifyRequest(nivel_seguridad=2, motivo="Solo motivo, sin fundamento")
+        ReclassifyRequest(
+            nivel_seguridad=2, motivo="Solo motivo, sin fundamento",
+            causal_reserva="art19_b_seguridad_publica", plazo_reserva_meses=12,
+        )
 
-    # Nivel ≥ 2 con fundamento: causal/plazo siguen opcionales.
-    ok = ReclassifyRequest(nivel_seguridad=2, motivo="m", fundamento_juridico="Art. 19")
-    assert ok.causal_reserva is None and ok.plazo_reserva_meses is None
+    # Nivel ≥ 2: la causal del catálogo es OBLIGATORIA (C12); el plazo, solo art. 19.
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(nivel_seguridad=2, motivo="m", fundamento_juridico="Art. 19")
 
 
 # ---------------------------------------------------------------------------
@@ -468,21 +515,22 @@ def test_reclassify_request_compliance_fields_are_optional() -> None:
 async def test_clasificar_retira_la_publicacion(client_with_redis) -> None:
     client, mock_conn, _ = client_with_redis
     mock_conn.fetchval.side_effect = [1, None]
-    mock_conn.fetchrow.side_effect = [_sec_ctx(nivel=1), _clearance_row(max_level=3)]
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3), _sec_ctx(nivel=1)]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
         json={
             "nivel_seguridad": 3,
             "motivo": "Reserva sobrevenida",
-            "fundamento_juridico": "Art. 19 lit. a Ley 1712",
+            "fundamento_juridico": "Art. 18 lit. a Ley 1712",
+            "causal_reserva": "art18_a_intimidad",
         },
         headers=TENANT_HEADERS,
     )
 
     assert resp.status_code == 200
     updates = [str(c.args[0]) for c in mock_conn.execute.call_args_list]
-    clasificar = [q for q in updates if "clasificado_at = now()" in q]
+    clasificar = [q for q in updates if "clasificado_at = CASE" in q]
     assert clasificar, "no se ejecutó la clasificación"
     assert "publicable = FALSE" in clasificar[0], (
         "clasificar deja la marca de publicación latente: la próxima "
@@ -499,7 +547,10 @@ async def test_desclasificar_no_republica(client_with_redis) -> None:
     """
     client, mock_conn, _ = client_with_redis
     mock_conn.fetchval.side_effect = [1, None]
-    mock_conn.fetchrow.side_effect = [_sec_ctx(nivel=3), _clearance_row(max_level=3)]
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(max_level=3),
+        _sec_ctx(nivel=2, causal="art19_i_salud_publica", fundamento="F", plazo=12),
+    ]
 
     resp = await client.patch(
         f"/api/v1/documents/{DOC_ID}/security-level",
@@ -545,7 +596,6 @@ async def test_reclasificar_exige_nivel_de_escritura(client_with_conn) -> None:
         json={
             "nivel_seguridad": 1,
             "motivo": "Desclasificar",
-            "fundamento_juridico": "Art. 19 Ley 1712",
         },
         headers=TENANT_HEADERS,
     )
@@ -556,3 +606,219 @@ async def test_reclasificar_exige_nivel_de_escritura(client_with_conn) -> None:
         "el gate se conformó con nivel de lectura: desclasificar un radicado "
         "reservado no puede exigir menos que publicarlo"
     )
+
+
+# ---------------------------------------------------------------------------
+# C4 — bajar desde «clasificada» (nivel 3) exige solicitud y aprobación de otra persona
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destino", [1, 2])
+async def test_bajar_desde_nivel_3_es_409_y_no_toca_nada(client_with_redis, destino) -> None:
+    client, mock_conn, fake_redis = client_with_redis
+    mock_conn.fetchval.side_effect = [1]
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(max_level=3),
+        _sec_ctx(nivel=3, causal="art18_a_intimidad", fundamento="F"),
+    ]
+    cuerpo = {"nivel_seguridad": destino, "motivo": "Se pide bajar el nivel"}
+    if destino == 2:
+        cuerpo |= {
+            "causal_reserva": "art19_i_salud_publica",
+            "fundamento_juridico": "Art. 19 lit. i",
+            "plazo_reserva_meses": 12,
+        }
+
+    resp = await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level", json=cuerpo, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "desclasificacion_requiere_aprobacion"
+    assert "desclasificación" in resp.json()["detail"]["detail"]
+    assert not [c for c in mock_conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]
+    assert fake_redis.xadd.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_bajar_de_2_a_1_sigue_siendo_directo_y_emite_evento(client_with_redis) -> None:
+    """Reservada (art. 19) -> pública: UNA persona, con asiento y evento (decisión del
+    usuario: el umbral es NIVEL_DOBLE_FIRMA = 3, no 2)."""
+    client, mock_conn, fake_redis = client_with_redis
+    mock_conn.fetchval.side_effect = [1, None]
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(max_level=3),
+        _sec_ctx(nivel=2, causal="art19_i_salud_publica", fundamento="F", plazo=12),
+    ]
+
+    resp = await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level",
+        json={"nivel_seguridad": 1, "motivo": "Cesó la causa de la reserva"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["nivel_seguridad"] == 1
+    assert fake_redis.xadd.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_subir_1_a_3_es_directo(client_with_redis) -> None:
+    client, mock_conn, fake_redis = client_with_redis
+    mock_conn.fetchval.side_effect = [1, None]
+    mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3), _sec_ctx(nivel=1)]
+
+    resp = await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level",
+        json={
+            "nivel_seguridad": 3,
+            "motivo": "Contiene datos de salud",
+            "causal_reserva": "art18_b_vida_salud_seguridad",
+            "fundamento_juridico": "Ley 1581 de 2012",
+        },
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200 and resp.json()["nivel_seguridad"] == 3
+    assert fake_redis.xadd.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_remotivar_al_mismo_nivel_no_emite_evento_ni_reinicia_el_reloj(
+    client_with_redis,
+) -> None:
+    """Re-motivación (sacar una fila `por_clasificar` de su limbo): UPDATE de metadata
+    SIN `nivel_seguridad` ni `clasificado_at`, asiento propio y SIN evento."""
+    client, mock_conn, fake_redis = client_with_redis
+    mock_conn.fetchval.side_effect = [1, None]
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(max_level=3),
+        _sec_ctx(nivel=3, causal="por_clasificar", fundamento="PENDIENTE DE MOTIVAR"),
+    ]
+
+    resp = await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level",
+        json={
+            "nivel_seguridad": 3,
+            "motivo": "Se motiva la clasificación pendiente",
+            "causal_reserva": "art18_a_intimidad",
+            "fundamento_juridico": "Ley 1581 de 2012",
+        },
+        headers=TENANT_HEADERS,
+    )
+
+    assert resp.status_code == 200 and resp.json()["nivel_seguridad"] == 3
+    updates = [str(c.args[0]) for c in mock_conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]
+    assert len(updates) == 1
+    assert "clasificado_at" not in updates[0], "re-motivar no puede reiniciar el reloj del plazo"
+    assert "SET nivel_seguridad" not in updates[0]
+    acciones = [
+        c.args[5] for c in mock_conn.execute.call_args_list
+        if "audit_log" in str(c.args[0]) and "INSERT" in str(c.args[0])
+    ]
+    assert acciones == ["document.radicado_remotivado"]
+    assert fake_redis.xadd.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_set_classification_no_reinicia_clasificado_at_si_el_nivel_no_cambia() -> None:
+    """Mutación 7 del diseño: volver a `clasificado_at = now()` incondicional deja que
+    una re-clasificación al mismo nivel perpetúe una reserva más allá de los 15 años."""
+    from unittest.mock import AsyncMock
+
+    from app.repositories.document_repository import DocumentRepository
+
+    conn = AsyncMock()
+    conn.execute.return_value = "UPDATE 1"
+    repo = DocumentRepository(conn, "demo")
+    await repo.set_classification(
+        DOC_ID, 2, nivel_esperado=2, fundamento="F", causal="art19_i_salud_publica", plazo_meses=12
+    )
+    sql = str(conn.execute.await_args_list[0].args[0])
+    assert "clasificado_at = CASE WHEN nivel_seguridad = $2" in sql
+    assert "clasificado_at = now()" not in sql
+    assert "nivel_seguridad = $6" in sql, "el nivel esperado va en el WHERE del UPDATE"
+
+
+def test_la_causal_debe_corresponder_al_nivel_y_al_plazo() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.document import ReclassifyRequest
+
+    base = {"motivo": "m", "fundamento_juridico": "F"}
+    # art. 18 con nivel 2, art. 19 con nivel 3
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(nivel_seguridad=2, causal_reserva="art18_a_intimidad", **base)
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(
+            nivel_seguridad=3, causal_reserva="art19_i_salud_publica", plazo_reserva_meses=12, **base
+        )
+    # art. 19 sin plazo / con 181; art. 18 con plazo
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(nivel_seguridad=2, causal_reserva="art19_i_salud_publica", **base)
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(
+            nivel_seguridad=2, causal_reserva="art19_i_salud_publica", plazo_reserva_meses=181, **base
+        )
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(
+            nivel_seguridad=3, causal_reserva="art18_a_intimidad", plazo_reserva_meses=12, **base
+        )
+    # por_clasificar y causales inventadas no entran por la API
+    for malo in ("por_clasificar", "Ley 1712 art. 19 lit. a"):
+        with pytest.raises(ValidationError):
+            ReclassifyRequest(nivel_seguridad=2, causal_reserva=malo, plazo_reserva_meses=12, **base)
+    # nivel 1 no lleva causal
+    with pytest.raises(ValidationError):
+        ReclassifyRequest(nivel_seguridad=1, motivo="m", causal_reserva="art18_a_intimidad")
+
+
+# ---------------------------------------------------------------------------
+# Tope de 15 años DESDE LA GENERACIÓN (Ley 1712 art. 22; cierre del lote C, ARCH #1)
+# ---------------------------------------------------------------------------
+
+
+async def _reservar(client_with_conn, *, meses_generacion: int, plazo: int):
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.side_effect = [1, None]
+    mock_conn.fetchrow.side_effect = [
+        _clearance_row(max_level=3),
+        _sec_ctx(nivel=1, meses_generacion=meses_generacion),
+    ]
+    resp = await client.patch(
+        f"/api/v1/documents/{DOC_ID}/security-level",
+        json={
+            "nivel_seguridad": 2,
+            "motivo": "Reserva del documento",
+            "fundamento_juridico": "Art. 19 Ley 1712",
+            "causal_reserva": "art19_b_seguridad_publica",
+            "plazo_reserva_meses": plazo,
+        },
+        headers=TENANT_HEADERS,
+    )
+    return resp, mock_conn
+
+
+@pytest.mark.asyncio
+async def test_el_plazo_no_puede_pasar_de_15_anios_desde_la_generacion(client_with_conn) -> None:
+    """Un documento de 10 años (120 meses) solo admite 60 meses más; 61 es 422 y no escribe."""
+    resp, conn = await _reservar(client_with_conn, meses_generacion=120, plazo=61)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "plazo_excede_tope_legal"
+    assert not [c for c in conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]
+
+
+@pytest.mark.asyncio
+async def test_el_limite_exacto_de_lo_que_resta_se_admite(client_with_conn) -> None:
+    resp, _ = await _reservar(client_with_conn, meses_generacion=120, plazo=60)
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_una_reserva_agotada_es_422_con_codigo_propio(client_with_conn) -> None:
+    """A los 15 años cumplidos ya no se reserva nada (ni 1 mes)."""
+    resp, conn = await _reservar(client_with_conn, meses_generacion=180, plazo=1)
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "reserva_agotada"
+    assert not [c for c in conn.execute.call_args_list if "UPDATE radicados" in str(c.args[0])]

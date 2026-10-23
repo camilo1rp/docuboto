@@ -26,6 +26,8 @@ from app.repositories.dead_letter_repository import (
 )
 from app.workers.document_consumer import GROUP as DLQ_GROUP
 
+pytestmark = pytest.mark.gates_reales
+
 USER = "11111111-1111-1111-1111-111111111111"
 TENANT_HEADERS = {"X-Tenant-Slug": "demo", "X-User-Id": USER}
 

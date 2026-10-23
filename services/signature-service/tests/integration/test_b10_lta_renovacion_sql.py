@@ -51,7 +51,7 @@ pytestmark = pytest.mark.asyncio
 async def _sembrar(conn, slug, monkeypatch, *, xml_alterado=None):
     """Firma LTA real + su fila `firma` + el eslabón 0. Devuelve (doc, firma_id, minio_key, xml)."""
     doc, _cert_sello, _ca = await _firmar_lta(monkeypatch)
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     firma_id = uuid.uuid4()
     minio_key = f"{uuid.uuid4()}/indice-X-v1-{firma_id}-firmado.xml"
     xml = xml_alterado or doc.signed_xml
@@ -84,6 +84,9 @@ async def _sembrar(conn, slug, monkeypatch, *, xml_alterado=None):
         gen_time=datetime.fromisoformat(ex["archive_timestamp_at"]),
         tsa_cert_fingerprint=ex["archive_tsa_cert_fingerprint"],
         tsa_cert_not_after=cert_tsa.not_valid_after_utc,
+        tsa_cadena_not_after=None,
+        tsa_revocacion_fuente="autofirmada",
+        revocacion_tsa_previa=None,
     )
     return doc, firma_id, minio_key, xml
 
@@ -260,7 +263,7 @@ async def test_al_quedar_vigente_publica_firma_lta_renovada(tenant_ctx, monkeypa
 
 
 async def _caducar_sello(conn, slug, firma_id) -> None:
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(
         "UPDATE firma_sello_archivo SET tsa_cert_not_after = now() - interval '2 days' WHERE firma_id = $1",
         firma_id,

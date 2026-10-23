@@ -59,6 +59,7 @@ import httpx
 from app.core.config import settings
 from app.schemas.assistant import AssistantMessageResponse, AssistantTurn
 from app.services import dispatcher, origen, proposals, write_gate
+from app.services.asistente_gate import exigir_asistente
 from app.services.identity import resolve_identity
 from app.services.scope import build_scope, marco_a_texto
 from app.tools import catalog
@@ -163,7 +164,11 @@ class ConversationLimitError(Exception):
 
 
 def _tools_del_asistente(
-    permissions: set[str], is_root: bool, levels: dict[str, int] | None = None
+    permissions: set[str],
+    is_root: bool,
+    levels: dict[str, int] | None = None,
+    *,
+    asistente_habilitado: bool = False,
 ) -> list[Tool]:
     """Tools que se le ofrecen al modelo: las que esta persona puede usar.
 
@@ -177,7 +182,12 @@ def _tools_del_asistente(
     nivel CRUD y no solo la presencia del permiso: tener `PERM_RADI` para *leer*
     no habilita las tools que exigen crear.
     """
-    return catalog.visible_tools(permissions, is_root=is_root, levels=levels)
+    return catalog.visible_tools(
+        permissions,
+        is_root=is_root,
+        levels=levels,
+        asistente_habilitado=asistente_habilitado,
+    )
 
 
 @dataclass
@@ -247,6 +257,7 @@ async def _execute_tool(
             permissions=identidad.permissions,
             is_root=identidad.is_root,
             levels=identidad.levels,
+            asistente_habilitado=identidad.asistente_habilitado,
         )
         # Whitelist del input al esquema DECLARADO de la tool antes de despachar:
         # `additionalProperties:False` solo es advisory para el modelo, no se aplica
@@ -459,6 +470,8 @@ async def run_turn(
     identidad = await resolve_identity(
         gateway_client, authorization=authorization, tenant_slug=tenant_slug
     )
+    # ADR-037: antes de armar el marco, el historial o el cliente de Anthropic.
+    exigir_asistente(identidad)
     permissions, is_root, user_id = identidad.permissions, identidad.is_root, identidad.user_id
 
     # El marco de alcance se calcula EN CADA TURNO, no una vez por conversación:
@@ -481,7 +494,12 @@ async def run_turn(
     if state.turn_count >= settings.assistant_max_turns:
         raise ConversationLimitError()
 
-    tools = _tools_del_asistente(permissions, is_root, identidad.levels)
+    tools = _tools_del_asistente(
+        permissions,
+        is_root,
+        identidad.levels,
+        asistente_habilitado=identidad.asistente_habilitado,
+    )
     tools_by_name = {t.name: t for t in tools}
     anthropic_tools = [to_anthropic_schema(t) for t in tools]
 

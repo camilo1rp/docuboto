@@ -136,19 +136,90 @@ async def test_sign_indice_internal_lleva_token(capturadas) -> None:
 @pytest.mark.asyncio
 async def test_fijar_legal_hold_lleva_token_identidad_y_va_a_la_ruta_interna(capturadas) -> None:
     with pytest.raises(storage_client.StorageLegalHoldError):
-        await storage_client.fijar_legal_hold_internal(
+        await storage_client.fijar_legal_hold(
             tenant_slug="demo",
             actor_id="u",
             expediente_id="e",
-            activo=True,
-            motivo="Orden del juzgado 12",
+            motivo_tipo="judicial",
+            fundamento="Orden del juzgado 12",
             acta_ref="A-1",
         )
     (req,) = capturadas
-    assert req.url.path == "/api/v1/preservacion/legal-hold-internal"
+    assert req.url.path == "/api/v1/preservacion/legal-hold-internal/fijar"
     assert req.headers["x-internal-token"] == _STO
     assert "x-user-id" in req.headers and "x-tenant-slug" in req.headers
-    assert json.loads(req.content)["acta_ref"] == "A-1"
+    cuerpo = json.loads(req.content)
+    assert cuerpo["acta_ref"] == "A-1" and cuerpo["motivo_tipo"] == "judicial"
+    assert "activo" not in cuerpo  # el booleano por objeto ya no existe (ADR-043)
+
+
+@pytest.mark.asyncio
+async def test_hold_de_sistema_va_sin_identidad_humana_pero_con_token(capturadas) -> None:
+    """`valoracion_pendiente` es un acto de SISTEMA: sin `X-User-Id` (storage lo atribuye a
+    SISTEMA) pero con el token interno. Mutación: mandar un actor inventado -> rojo."""
+    with pytest.raises(storage_client.StorageLegalHoldError):
+        await storage_client.fijar_legal_hold(
+            tenant_slug="demo",
+            actor_id=None,
+            expediente_id="e",
+            motivo_tipo="valoracion_pendiente",
+            fundamento="Fondo vencido hasta la valoracion",
+            acta_ref="TVD X v1",
+        )
+    (req,) = capturadas
+    assert req.headers["x-internal-token"] == _STO
+    assert "x-user-id" not in req.headers
+
+
+@pytest.mark.asyncio
+async def test_levantar_legal_hold_va_por_hold_id_y_confirma_el_motivo(capturadas) -> None:
+    hold = "5d0f6a52-0d0b-4f3e-9e2c-2b1f9b0a1111"
+    with pytest.raises(storage_client.StorageLegalHoldError):
+        await storage_client.levantar_legal_hold(
+            tenant_slug="demo",
+            actor_id="u",
+            hold_id=hold,
+            motivo_tipo_esperado="judicial",
+            fundamento="Fallo ejecutoriado",
+            acta_ref="A-2",
+        )
+    (req,) = capturadas
+    assert req.url.path == f"/api/v1/preservacion/legal-hold-internal/{hold}/levantar"
+    assert json.loads(req.content)["motivo_tipo_esperado"] == "judicial"
+    assert req.headers["x-internal-token"] == _STO
+
+
+@pytest.mark.asyncio
+async def test_fijar_retencion_internal_lleva_token_y_fecha(capturadas) -> None:
+    from datetime import date
+
+    with pytest.raises(storage_client.StorageLegalHoldError):
+        await storage_client.fijar_retencion_internal(
+            tenant_slug="demo", expediente_id="e", retencion_anios=10, fecha_inicio=date(2026, 10, 21)
+        )
+    (req,) = capturadas
+    assert req.url.path == "/api/v1/preservacion/fijar-retencion-internal"
+    assert req.headers["x-internal-token"] == _STO
+    assert json.loads(req.content) == {
+        "expediente_id": "e", "retencion_anios": 10, "fecha_inicio": "2026-10-21"
+    }
+
+
+def test_las_dos_fuentes_de_retencion_son_excluyentes() -> None:
+    """`retencion_diferida` no se mezcla con años+fecha ni se omite todo (error de
+    programación, falla antes de la red). Mutación: quitar el ValueError -> rojo."""
+    from datetime import date
+
+    assert storage_client._campos_retencion(None, None, "valoracion_pendiente") == {
+        "retencion_diferida": "valoracion_pendiente"
+    }
+    assert storage_client._campos_retencion(5, date(2026, 1, 1), None) == {
+        "retencion_anios": 5, "fecha_inicio": "2026-01-01"
+    }
+    with pytest.raises(ValueError):
+        storage_client._campos_retencion(5, date(2026, 1, 1), "valoracion_pendiente")
+    with pytest.raises(ValueError):
+        storage_client._campos_retencion(None, None, None)
 
 
 # ── Cableado de la tanda T12 (AREA-07-05 / 07-15 / 07-03): peticiones salientes ──

@@ -55,6 +55,8 @@ RUTAS_DE_CONSERVACION: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("POST", "/api/v1/preservacion/proteger-indice-internal"),
         ("POST", "/api/v1/preservacion/proteger-artefacto-internal"),
         ("POST", "/api/v1/preservacion/aip-internal"),
+        # C-6: reempaquetado del AIP al renovarse el sello de archivo (conservación pura).
+        ("POST", "/api/v1/preservacion/aip-reempaquetar-internal"),
         ("POST", "/api/v1/preservacion/eventos-internal"),
     )
 )

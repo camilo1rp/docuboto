@@ -7,6 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -170,6 +171,22 @@ class Settings(BaseSettings):
     # hasta que exista el opt-in por documento (columna `publicable` con acto
     # explícito auditado); cuando exista, esto pasa a ser una segunda barrera.
     public_interop_enabled: bool = False
+
+    # --- Antirrobots de la ventanilla pública (C16, ADR-038) ---
+    #
+    # Clave HMAC con la que el servidor firma los retos ALTCHA que entrega a la
+    # ventanilla anónima. Es del DESPLIEGUE, no de la entidad (la entidad va atada
+    # en el `salt` del reto). Nunca llega al navegador. Vacía = el servicio NO
+    # arranca (`main.lifespan`); rotarla solo invalida los retos vivos (<= TTL).
+    # Generar con `openssl rand -hex 32`. NUNCA commitear el valor real.
+    altcha_hmac_key: str = ""
+    # Vigencia de un reto: lo que tarda una persona en llenar el formulario más la
+    # resolución. Pasado el tiempo el widget pide otro solo.
+    altcha_ttl_segundos: int = Field(default=300, ge=60, le=900)
+    # Tope de la búsqueda del cliente (SHA-256 x ~maxnumber/2): costo del anónimo.
+    altcha_maxnumber: int = Field(default=100_000, ge=1_000, le=1_000_000)
+    # Holgura de reloj entre réplicas al fijar el TTL del registro de «reto usado».
+    altcha_skew_segundos: int = Field(default=60, ge=0, le=300)
 
 
 settings = Settings()

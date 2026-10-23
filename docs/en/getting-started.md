@@ -130,6 +130,19 @@ docker compose exec postgres psql -U orpycamcp -d orpycamcp_db \
   -f services/archive-service/migrations/003_trd_mi_entidad.sql
 ```
 
+**Retention and producing department (C-4).** The script requires `retencion_gestion` **and** `retencion_central` in the source JSON (it stops naming the series that lacks them: it does not invent retention times). A series seeded this way is `migrada` or `borrador` and has **no producing department**; for it to govern and appear in the classification scheme, open a new version with `dependencias_productoras` (`POST /api/v1/trd/{code}/versiones`), approve it and validate it.
+
+## The documentary classification scheme (C-4)
+
+The scheme is **not captured**: it is derived from the organigram and the TRD. Steps to have it:
+
+1. **Organigram** (`/admin/dependencias`): create the dependencias with their hierarchy (the root is a *section*, each level below a *subsection*). The organigram admits no cycles (`409 dependencia_ciclo`).
+2. **Entity name** (`/admin/parametros`, `entidad_nombre`): it is the *fonds*. If it is empty the scheme warns instead of inventing it.
+3. **TRD** (`/admin/trd`): when creating a series declare its **two retention phases** (mandatory; the system computes the total) and its **producing department(s)**. Without a producer the series cannot be approved or validated (`409 trd_serie_sin_productora`). To add or change the producer of an already validated series a new version must be opened.
+4. **Reading it**: the «Classification scheme» tab of `/admin/trd` (or `GET /api/v1/trd/cuadro`) shows fonds > section > subsection > series > subseries, the **warnings** (inactive producer, organigram reorganised since validation) and the series that cannot be placed.
+
+**Publishing ex officio** (Law 1712, art. 12) now requires the radicado's *document type* to be marked **"Publishable"** in `/admin/trd` → Document types (needs TRD level 3). It is a different flag from "Admits public window": being received through the window does not imply being disclosed.
+
 ## More end-to-end usage examples
 
 These examples assume you already have `$TOKEN` from the previous step. The full
@@ -217,12 +230,54 @@ or rejected first.
 
 ### Query the conversational assistant
 
+> **The assistant and semantic search are opt-in per entity (ADR-037).** New entities are born with the assistant **off**: the entity administrator (`USUA_PERM_ADMIN` level 3) switches it on in **/admin/parametros** (or with `PUT /api/v1/config/asistente {"habilitado": true}`); until then everything below answers `403 asistente_deshabilitado`. Each person also needs the **`PERM_CONOCIMIENTO`** permission (level 1 queries; level 2 also accepts a suggestion), granted per group in **/admin/grupos**. Entities that already existed at migration time were left on, with their groups holding the permission. Switching it off does not stop indexing: whatever is registered while it is off is already indexed on re-enabling.
+
 ```bash
 curl -X POST 'http://localhost:19080/api/v1/assistant/chat' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"message": "Which incoming radicados do I have pending this week?"}'
 # Response: natural-language text with citations to the radicados consulted (RAG, read-only)
 ```
+
+### File through the public window (automatic verification, C16)
+
+Unauthenticated intake (`POST /api/v1/public/{tenant}/ventanilla` and the legacy `/pqrs`) requires an **ALTCHA proof of work** on top of the honeypot and the rate limit: the browser solves, on its own and in a few seconds, a challenge the server hands out; the person solves nothing. From a script:
+
+```bash
+RETO=$(curl -s http://localhost:19080/api/v1/public/demo/ventanilla/reto)
+ALTCHA=$(printf '%s' "$RETO" | python3 scripts/lib/altcha_solver.py)   # a challenge is good ONCE
+# `altcha` goes inside the JSON of the multipart `datos` part, next to sitio_web
+```
+
+A used, expired or other-entity challenge is rejected (`409 antirrobots_usado`, `422 antirrobots_vencido|antirrobots_invalido`): ask for a new one. `ALTCHA_HMAC_KEY` (≥ 32 bytes, `openssl rand -hex 32`) is required; in development `docker-compose.yml` ships an example. `scripts/verificar-ventanilla.sh` also checks that a challenge is issued.
+
+Whoever identifies themselves with an ID number leaves a **provisional record**; it is not matched to an existing record by number. In **/admin/terceros → "Fichas por conciliar"** (`PERM_RADI` level 3) it is linked to the existing record, confirmed as a new one, or discarded with a reason (see [Domain](domain.md)).
+
+### Declassify a classified radicado (second person) and publish the index
+
+A **classified** radicado (level 3, Law 1712 art. 18) is not lowered with a `PATCH`: it answers `409 desclasificacion_requiere_aprobacion`. One person **requests**, another with `PERM_RECLASIFICAR` level 4 **approves**, and on approval the level drops at once:
+
+```bash
+# 1) The requester (PERM_RECLASIFICAR level 3)
+curl -X POST "$API/api/v1/documents/$ID/desclasificacion" -H "Authorization: Bearer $TOKEN_A" \
+  -H 'Content-Type: application/json' \
+  -d '{"nivel_seguridad": 1, "motivo": "The ground for classification has ceased"}'
+# 2) The approver (another person, PERM_RECLASIFICAR level 4): sees the queue, opens the radicado and decides
+curl "$API/api/v1/desclasificaciones" -H "Authorization: Bearer $TOKEN_B"
+curl -X POST "$API/api/v1/desclasificaciones/$REQUEST/aprobar" -H "Authorization: Bearer $TOKEN_B"
+```
+
+If the approver is the requester, `409 separacion_de_funciones`; the request expires after 15 days. In the demo, `scripts/seed_demo.py` grants `PERM_RECLASIFICAR` level 4 to the management groups: with no profile at level 4 nobody could approve. When reserving or classifying you must pick a **cause from the closed catalogue** (`GET /api/v1/documents/causales-reserva`); a reserved one (art. 19) also carries a term of 1 to 180 months.
+
+The **public index of classified and reserved information by series** (art. 20 obligation) is read unauthenticated: `curl http://localhost:19080/api/v1/public/archive/indice-clasificados/demo` (or `….csv`). It carries no radicado numbers or counts.
+
+### Lend a physical-archive unit, set a legal retention and record a TVD appraisal (C-5)
+
+1. **Loan**: in `/archivo-fisico`, "Registrar préstamo" asks for the **requester**: *Interno* (search among users who can receive that unit) or *Externo* (name and ID document required). The screen names the unit when the loan is refused (already lent, in a transfer or disposal batch, requester without access).
+2. **Legal retention**: on the expediente, the "Retenciones legales" tab (administration): set with reason, grounds and record; lift by repeating the reason. `valoracion_pendiente` is shown but not operable.
+3. **Appraisal**: in `/admin/tvd`, with the TVD approved or validated, "Valoración del Comité" records the minutes and releases the expired fonds' expedientes (pending, applied and exhausted are shown there).
+4. **Disposal batch**: when proposing, the screen lists the statements that would lose their support; an attachment cited by a current statement cannot be deleted (`anexo_citado_por_constancia`).
+
 
 ## The web UI: first steps
 

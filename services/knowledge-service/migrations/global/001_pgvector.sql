@@ -8,4 +8,4 @@
 -- SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 -- Migración global (E21, ADR-006): extensión pgvector para la capa de conocimiento.
-CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;

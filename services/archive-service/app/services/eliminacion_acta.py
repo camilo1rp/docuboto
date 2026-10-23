@@ -60,6 +60,7 @@ def construir_acta_xml(
     generado_ts: datetime,
     plazo_efectivo_hasta: Any = None,
     dias_interrumpido: int = 0,
+    soportes: list[Any] | None = None,
 ) -> str:
     """El acta de eliminación como XML canónico.
 
@@ -118,5 +119,23 @@ def construir_acta_xml(
         _texto(e, "fechaExtremaFinal", it["fecha_extrema_final"])
         _texto(e, "nivelSeguridad", it["nivel_seguridad"])
         _texto(e, "radicadosIncluidos", it["radicados_incluidos"])
+
+    # C14 (ADR-043): las constancias de firma inobtenible que pierden su anexo de soporte con este
+    # lote (baja de soporte avalada por el Comité). Solo si las hay: sin ellas el acta es byte a
+    # byte la de siempre. Content-free: identifica la constancia, nunca el anexo.
+    if soportes:
+        sop = ET.SubElement(
+            root, f"{{{NS}}}soportesCitados", attrib={"total": str(len(soportes))}
+        )
+        for r in sorted(
+            soportes,
+            key=lambda r: (r["expediente_code"], str(r["transferencia_id"]), r["rol"], r["ordinal"]),
+        ):
+            c = ET.SubElement(sop, f"{{{NS}}}constancia")
+            _texto(c, "expediente", r["expediente_code"])
+            _texto(c, "transferencia", r["transferencia_id"])
+            _texto(c, "rol", r["rol"])
+            _texto(c, "ordinal", r["ordinal"])
+            _texto(c, "excepcionId", r["excepcion_id"])
 
     return ET.canonicalize(ET.tostring(root, encoding="unicode"))

@@ -241,6 +241,49 @@ export const MENSAJES_VENTANILLA_ENVIO = {
 };
 
 /**
+ * Códigos del antirrobots ALTCHA de la ventanilla pública (C-3 / C16), en
+ * español. Los 422/409 piden un reto nuevo (el cliente reinicia el widget); el
+ * 503 nombra los canales alternos, porque sin reto vigente no se radica.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_ANTIRROBOTS = {
+  antirrobots_invalido:
+    "No se pudo completar la verificación automática. Espere unos segundos a que el sistema la repita e intente de nuevo.",
+  antirrobots_vencido:
+    "La verificación automática venció mientras llenaba el formulario. Se renovó sola: vuelva a enviar.",
+  antirrobots_usado: "Esa verificación ya se utilizó. Se renovó una nueva: vuelva a enviar.",
+  antirrobots_no_disponible:
+    "La verificación automática no está disponible en este momento, así que no se puede radicar en línea. Presente su documento de forma presencial en la ventanilla de la entidad o por el correo de atención de la entidad.",
+};
+
+/**
+ * Códigos de la conciliación de fichas provisionales de terceros (C17), con su
+ * mensaje en español para quien concilia. `motivo_requerido` NO está aquí a
+ * propósito: ya existe en `MENSAJES_FIRMA` con otro sentido y, al consultarse
+ * antes, taparía este; la pantalla de conciliación lo resuelve por su cuenta.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_CONCILIACION = {
+  tercero_no_encontrado:
+    "La ficha no existe, dejó de ser visible o está por encima de su nivel de acceso. Actualice la lista.",
+  medio_verificacion_requerido:
+    "Indique cómo se comprobó que es la misma persona: este acto exige un medio de verificación.",
+  medio_verificacion_no_aplica: "Descartar no lleva medio de verificación.",
+  tercero_ya_conciliado: "Esa ficha ya fue conciliada por otra persona. Actualice la lista.",
+  destino_invalido:
+    "La ficha de destino no sirve: debe existir, estar confirmada, vigente y ser distinta de la provisional. Pudo haberse fusionado con otra mientras trabajaba: busque de nuevo.",
+  documento_ya_registrado:
+    "Ya existe una ficha confirmada con ese documento. Vincule la ficha provisional a ella en lugar de confirmarla como nueva.",
+  destino_requerido: "Elija la ficha existente a la que se vincula.",
+  destino_no_aplica: "Esta acción no lleva ficha de destino.",
+  motivo_insuficiente: "El motivo es muy breve: escriba al menos 10 caracteres.",
+  documento_sin_tipo:
+    "La ficha declaró un número de documento sin tipo, así que no se puede confirmar como identidad nueva. Vincúlela o descártela.",
+  tercero_provisional:
+    "Esa ficha es provisional: primero debe conciliarse en «Fichas por conciliar».",
+};
+
+/**
  * Códigos de la dependencia identificada por CÓDIGO (ADR-032), con su mensaje
  * en español. Como los demás diccionarios, se consulta antes del `detail`.
  * @type {Record<string,string>}
@@ -263,6 +306,129 @@ export const MENSAJES_DEPENDENCIA = {
 };
 
 /**
+ * Códigos de la desclasificación con segunda persona (C-2, ADR-039) y del índice
+ * público de información clasificada. `indice_no_disponible` YA existe en
+ * `MENSAJES_FIRMA` con otro sentido (índice electrónico del expediente) y se
+ * consulta antes: la página pública del índice lo resuelve por su cuenta.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_DESCLASIFICACION = {
+  desclasificacion_requiere_aprobacion:
+    "Bajar el nivel de un radicado clasificado exige la aprobación de otra persona. Use «Solicitar desclasificación».",
+  no_requiere_aprobacion:
+    "Este radicado no está en el nivel que exige segunda persona: reclasifíquelo directamente.",
+  desclasificacion_pendiente:
+    "Este radicado ya tiene una solicitud de desclasificación pendiente. Retírela o espere la decisión.",
+  separacion_de_funciones:
+    "No puede aprobar ni rechazar una solicitud que usted mismo hizo: debe decidirla otra persona.",
+  solicitud_caducada:
+    "La solicitud caducó sin que nadie la decidiera. Quien la hizo debe presentarla de nuevo.",
+  solicitud_ya_resuelta:
+    "Otra persona ya resolvió esta solicitud. Actualice la lista para ver el estado actual.",
+  nivel_cambio:
+    "El nivel del radicado cambió mientras se tramitaba. No se hizo ningún cambio; revise el radicado y vuelva a intentarlo.",
+  solo_el_solicitante: "Solo quien hizo la solicitud puede retirarla.",
+  solicitud_not_found:
+    "No se encontró la solicitud, o el radicado está por encima de su nivel de acceso.",
+};
+
+/**
+ * Códigos de la custodia física (préstamo de unidades, C-5/C11), de la
+ * retención legal por motivo y la valoración de la TVD (C7) y del anexo citado
+ * por una constancia de firma inobtenible (C14).
+ *
+ * Los `unidad_*` se resuelven con el `detail` del backend cuando existe (nombra
+ * la unidad por su código: «la caja CJ-014 está prestada»); este texto es solo
+ * el respaldo cuando el detalle no llega. Ver `MENSAJES_CUSTODIA_CON_DETALLE`.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_CUSTODIA = {
+  unidad_ya_prestada: "La unidad (o una que la contiene o está dentro de ella) ya está prestada.",
+  unidad_prestada:
+    "La unidad está prestada: mientras esté fuera no se puede transferir, eliminar ni vincularle expedientes.",
+  unidad_en_transferencia:
+    "La unidad contiene expedientes de una transferencia en curso y no se puede prestar.",
+  unidad_en_lote_eliminacion:
+    "La unidad contiene expedientes de un lote de eliminación vivo y no se puede prestar.",
+  prestatario_sin_acceso:
+    "La persona que recibe no tiene el nivel de acceso para el contenido de la unidad. Elija otra o ajuste el acceso.",
+  prestatario_inexistente:
+    "El prestatario interno no existe o está inactivo. Elíjalo de la lista de personas elegibles.",
+  clearance_insuficiente: "El contenido de la unidad está por encima de su nivel de acceso.",
+  hold_de_sistema:
+    "Esta retención la fija y la levanta el sistema con la valoración del Comité; no se opera a mano.",
+  motivo_no_coincide:
+    "El motivo escrito no coincide con el de la retención. Para levantarla, repita su motivo exacto.",
+  hold_ya_levantado: "Esa retención legal ya fue levantada. Actualice la lista.",
+  tvd_no_aprobada:
+    "La TVD debe estar aprobada o convalidada para registrar la valoración del Comité.",
+  valoracion_ya_registrada: "Esta serie ya tiene una valoración del Comité registrada.",
+  legal_hold_activo: "El expediente tiene una retención legal activa y no puede eliminarse.",
+  soporte_citado_no_avalado:
+    "Una constancia de firma inobtenible cita el soporte de este expediente y su baja no fue avalada en el lote. Anule el lote y proponga de nuevo.",
+  radicado_en_lote_de_eliminacion:
+    "El radicado de soporte está en un lote de eliminación vivo: no se puede citar en una constancia.",
+  anexo_citado_por_constancia:
+    "El anexo es el soporte de una constancia de firma inobtenible vigente y no se puede borrar. Revoque la constancia o incluya su baja en un lote de eliminación avalado.",
+  retencion_diferida_sin_hold: "No hay retención legal de valoración que respalde esta protección.",
+};
+
+/** Códigos de custodia cuyo `detail` del backend (nombra la unidad) tiene prioridad. */
+const MENSAJES_CUSTODIA_CON_DETALLE = new Set([
+  "unidad_ya_prestada",
+  "unidad_prestada",
+  "unidad_en_transferencia",
+  "unidad_en_lote_eliminacion",
+  "prestatario_sin_acceso",
+  "anexo_citado_por_constancia",
+  "soporte_citado_no_avalado",
+]);
+
+/**
+ * Códigos de la TRD como fuente única de fases, dependencias productoras y
+ * `publicable` del tipo documental (C-4, ADR-040) y del organigrama sin ciclos.
+ * Los que nombran dependencias (`codigos`) prefieren el `detail` del backend.
+ * @type {Record<string,string>}
+ */
+export const MENSAJES_TRD = {
+  dependencia_inactiva:
+    "Una de las dependencias productoras está inactiva. Elija solo dependencias activas.",
+  productora_solo_en_serie:
+    "La dependencia productora solo se declara en series, no en subseries ni en otros niveles.",
+  productora_ya_declarada:
+    "Esta versión ya tiene dependencia productora declarada: no se puede declarar de nuevo al ratificar.",
+  productora_solo_en_ratificacion:
+    "La dependencia productora solo se declara al ratificar una versión migrada; en las demás se declara en el borrador.",
+  trd_serie_sin_productora:
+    "La serie no tiene dependencia productora. Declare al menos una en el borrador (o al ratificar, si es migrada) antes de aprobar o convalidar.",
+  trd_jerarquia_dos_niveles:
+    "La jerarquía de la TRD admite solo dos niveles: serie y subserie. La subserie no puede tener subseries propias.",
+  trd_padre_no_existe: "La serie padre no existe. Actualice la lista y elíjala de nuevo.",
+  trd_version_inmutable:
+    "Esta versión ya no es un borrador y no se puede modificar. Abra una versión nueva.",
+  trd_retencion_minima:
+    "La retención debe sumar al menos 1 año entre archivo de gestión y archivo central.",
+  catalogo_dependencias_no_disponible:
+    "El catálogo de dependencias no está disponible en este momento. Intente de nuevo en unos minutos.",
+  organigrama_con_ciclo:
+    "El organigrama tiene un ciclo (una dependencia aparece como su propia ascendiente), así que el cuadro no se puede derivar. Corrija el padre de las dependencias señaladas.",
+  dependencia_ciclo:
+    "Esa dependencia padre crearía un ciclo en el organigrama: una dependencia no puede depender de sí misma ni de una de sus descendientes.",
+  tipo_documental_no_publicable:
+    "El tipo documental del radicado no está marcado como publicable (Ley 1712) o está inactivo. Un administrador con nivel 3 debe habilitarlo antes de publicar.",
+  extra_forbidden:
+    "La petición incluye un campo que ya no existe. Recargue la página e intente de nuevo.",
+};
+
+/** Códigos de TRD cuyo `detail` del backend (nombra las dependencias por código) tiene prioridad. */
+const MENSAJES_TRD_CON_DETALLE = new Set([
+  "dependencia_inactiva",
+  "dependencia_desconocida",
+  "organigrama_con_ciclo",
+  "dependencia_ciclo",
+]);
+
+/**
  * Mensaje legible de un cuerpo de respuesta. **Nunca devuelve un objeto**: ese
  * es justo el fallo que motivó este módulo — un `[object Object]` en un aviso
  * de error deja a la persona sin saber qué pasó ni cómo arreglarlo.
@@ -273,11 +439,21 @@ export const MENSAJES_DEPENDENCIA = {
 export function mensajeError(data, porDefecto) {
   if (typeof data === "string" && data.trim()) return data;
   if (data && typeof data === "object") {
+    const cod = codigoError(data) ?? "";
+    if (MENSAJES_CUSTODIA_CON_DETALLE.has(cod) || MENSAJES_TRD_CON_DETALLE.has(cod)) {
+      const d = typeof data.detail === "string" ? data.detail : data.detail?.detail;
+      if (typeof d === "string" && d.trim()) return d;
+    }
     const delActo =
       MENSAJES_ACTO_TRAMITE[codigoError(data) ?? ""] ??
       MENSAJES_FIRMA[codigoError(data) ?? ""] ??
       MENSAJES_VENTANILLA_ENVIO[codigoError(data) ?? ""] ??
-      MENSAJES_DEPENDENCIA[codigoError(data) ?? ""];
+      MENSAJES_DEPENDENCIA[codigoError(data) ?? ""] ??
+      MENSAJES_ANTIRROBOTS[codigoError(data) ?? ""] ??
+      MENSAJES_CONCILIACION[codigoError(data) ?? ""] ??
+      MENSAJES_DESCLASIFICACION[codigoError(data) ?? ""] ??
+      MENSAJES_CUSTODIA[codigoError(data) ?? ""] ??
+      MENSAJES_TRD[codigoError(data) ?? ""];
     if (delActo) return delActo;
     if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
     const validacion = mensajeDeValidacion(data.detail);

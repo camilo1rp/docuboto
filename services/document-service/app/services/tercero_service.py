@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, status
@@ -51,6 +52,14 @@ from app.repositories.tercero_repository import TerceroRepository
 logger = logging.getLogger(__name__)
 
 _SERVICE = "document-service"
+
+#: Con qué se verificó la identidad al vincular o confirmar una ficha provisional (C17).
+MEDIOS_VERIFICACION = (
+    "presencial_documento",
+    "respuesta_canal_registrado",
+    "llamada_telefono_registrado",
+    "otro",
+)
 
 # Misma lista que `DocumentService`: consulta real de un usuario, no ruido interno.
 _CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
@@ -189,6 +198,259 @@ class TerceroService:
         )
         return dict(fila), True
 
+    async def crear_provisional(self, datos: dict, *, radicado: str) -> dict:
+        """Ficha PROVISIONAL del remitente anónimo, atómica con su radicado (C17).
+
+        La llama `DocumentService.create` DENTRO de la transacción del radicado
+        (no abre otra): si el radicado falla no queda ficha huérfana. No consulta
+        el directorio por documento —un solo camino, sin oráculo— y deja su asiento
+        en la misma transacción. El asiento NO lleva el número de documento: el
+        `audit_log` es inmutable y el dato personal ya vive en la ficha.
+        """
+        fila = await self._repo.crear_provisional(datos)
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="document.tercero_provisional_creado",
+            object_type="tercero",
+            object_ref=str(fila["id"]),
+            actor=None,
+            payload={"tipo": fila["tipo"], "radicado": radicado},
+            canal=audit.CANAL_PETICION,
+        )
+        return dict(fila)
+
+    # ── Cola y acto de conciliación (C17, ADR-038) ──────────────────────────
+
+    async def por_conciliar(
+        self, *, max_clearance: int, limit: int, offset: int
+    ) -> tuple[list[dict], int]:
+        """La cola de fichas provisionales y su total, con el MISMO clearance."""
+        filas = []
+        for fila in await self._repo.listar_por_conciliar(
+            max_clearance=max_clearance, limit=limit, offset=offset
+        ):
+            d = dict(fila)
+            # El pool no registra códec de `jsonb`: llega como texto (ver `grupos_duplicados`).
+            for campo in ("radicados", "candidata"):
+                if isinstance(d.get(campo), str):
+                    d[campo] = json.loads(d[campo])
+            filas.append(d)
+        total = await self._repo.contar_por_conciliar(max_clearance=max_clearance)
+        return filas, total
+
+    @staticmethod
+    def _error(codigo_http: int, error: str, detalle: str) -> HTTPException:
+        return HTTPException(
+            status_code=codigo_http,
+            detail={"error": error, "detail": detalle, "status": codigo_http},
+        )
+
+    async def conciliar(
+        self,
+        tercero_id: uuid.UUID,
+        *,
+        accion: str,
+        destino_id: uuid.UUID | None,
+        motivo: str | None,
+        medio_verificacion: str | None = None,
+        actor: uuid.UUID | None,
+        max_clearance: int,
+    ) -> dict:
+        """Concilia una ficha provisional: vincular, confirmar o descartar.
+
+        Atómico con su asiento. `actor` es `auth_users.id` (el `X-User-Id` que
+        FIRMA el gateway), nunca el `sub` de Keycloak; sin actor no se concilia.
+        El número del radicado no se toca: ni `radicados` ni `radicado_actor` se
+        escriben (el trigger de la 026 lo impide de todos modos).
+
+        Visibilidad: la ficha se lee con el clearance en el `WHERE`; invisible o
+        inexistente es 404 (indistinguibles), visible y no pendiente es 409.
+        """
+        if actor is None:
+            raise self._error(403, "forbidden", "Se necesita una identidad para conciliar.")
+        motivo = (motivo or "").strip() or None
+        if motivo is not None and len(motivo) < 10:
+            raise self._error(
+                422, "motivo_insuficiente", "El motivo debe tener al menos 10 caracteres."
+            )
+        if accion == "vincular" and destino_id is None:
+            raise self._error(422, "destino_requerido", "Vincular exige la ficha destino.")
+        if accion != "vincular" and destino_id is not None:
+            raise self._error(
+                422, "destino_no_aplica", "Solo vincular lleva una ficha destino."
+            )
+        if accion == "descartar" and motivo is None:
+            raise self._error(
+                422, "motivo_requerido", "Descartar exige un motivo de al menos 10 caracteres."
+            )
+        # Con qué se verificó la identidad: evidencia del acto. Vincular y confirmar la
+        # exigen; descartar no verifica nada y no la lleva.
+        if accion in ("vincular", "confirmar"):
+            if medio_verificacion not in MEDIOS_VERIFICACION:
+                raise self._error(
+                    422,
+                    "medio_verificacion_requerido",
+                    "Indique con qué se verificó la identidad: "
+                    + ", ".join(MEDIOS_VERIFICACION) + ".",
+                )
+            if medio_verificacion == "otro" and motivo is None:
+                raise self._error(
+                    422,
+                    "motivo_requerido",
+                    "Con medio de verificación «otro» el motivo es obligatorio.",
+                )
+        elif medio_verificacion is not None:
+            raise self._error(
+                422, "medio_verificacion_no_aplica", "Descartar no lleva medio de verificación."
+            )
+
+        async with self._conn.transaction():
+            # Vincular toca DOS fichas: ambas se bloquean juntas y en orden de id (el mismo
+            # orden que `fusionar`), así que un destino no puede fusionarse ni darse de
+            # baja entre su validación y el UPDATE, y los dos actos no se interbloquean.
+            await self._repo.bloquear_fichas(
+                [tercero_id, *([destino_id] if destino_id else [])]
+            )
+            ficha = await self._repo.bloquear_para_conciliar(
+                tercero_id, max_clearance=max_clearance
+            )
+            if ficha is None:
+                raise self._error(
+                    404, "tercero_no_encontrado", f"No existe el tercero {tercero_id}"
+                )
+            if ficha["conciliacion"] != "pendiente":
+                raise self._error(
+                    409,
+                    "tercero_ya_conciliado",
+                    "Esa ficha no está pendiente de conciliación.",
+                )
+
+            destino = None
+            coincide: bool | None = None
+            declarado = (
+                ficha["documento_declarado_tipo"],
+                ficha["documento_declarado_numero"],
+            )
+            if accion == "vincular":
+                assert destino_id is not None
+                destino = await self._repo.get(destino_id)
+                if destino is None:
+                    raise self._error(
+                        404, "tercero_no_encontrado", f"No existe el tercero {destino_id}"
+                    )
+                if (
+                    destino_id == tercero_id
+                    or destino["identidad"] != "confirmada"
+                    or destino["fusionado_en"] is not None
+                    or not destino["activo"]
+                ):
+                    raise self._error(
+                        409,
+                        "destino_invalido",
+                        "El destino debe ser una ficha confirmada, viva y distinta de la provisional.",
+                    )
+                coincide = (destino["tipo_documento"], destino["numero_documento"]) == declarado
+                if not coincide and motivo is None:
+                    raise self._error(
+                        422,
+                        "motivo_requerido",
+                        "El documento de la ficha destino no coincide con el declarado: "
+                        "explique el motivo (al menos 10 caracteres).",
+                    )
+                fila = await self._repo.conciliar_vincular(
+                    tercero_id,
+                    destino_id,
+                    actor=actor,
+                    motivo=motivo,
+                    medio=str(medio_verificacion),
+                    max_clearance=max_clearance,
+                )
+            elif accion == "confirmar":
+                if not ficha["documento_declarado_tipo"]:
+                    raise self._error(
+                        422,
+                        "documento_sin_tipo",
+                        "El remitente no declaró el tipo de documento: no se puede confirmar "
+                        "como ficha nueva. Vincúlela o descártela.",
+                    )
+                try:
+                    fila = await self._repo.conciliar_confirmar(
+                        tercero_id,
+                        actor=actor,
+                        motivo=motivo,
+                        medio=str(medio_verificacion),
+                        max_clearance=max_clearance,
+                    )
+                except asyncpg.UniqueViolationError:
+                    raise self._error(
+                        409,
+                        "documento_ya_registrado",
+                        "Ese documento ya pertenece a otra ficha del directorio: vincule la "
+                        "provisional a la existente.",
+                    ) from None
+                coincide = True
+            elif accion == "descartar":
+                assert motivo is not None
+                fila = await self._repo.conciliar_descartar(
+                    tercero_id, actor=actor, motivo=motivo, max_clearance=max_clearance
+                )
+            else:  # pragma: no cover — el esquema lo restringe a las tres acciones
+                raise self._error(422, "accion_invalida", "Acción no reconocida.")
+            if fila is None:
+                # Perdió una carrera o salió de alcance: nada se tocó. Se RELEE con el
+                # clearance en el WHERE: si ya no es visible para el llamante es el 404
+                # indistinguible, no un 409 que confirmaría que existe.
+                if (
+                    await self._repo.bloquear_para_conciliar(
+                        tercero_id, max_clearance=max_clearance
+                    )
+                    is None
+                ):
+                    raise self._error(
+                        404, "tercero_no_encontrado", f"No existe el tercero {tercero_id}"
+                    )
+                if accion == "vincular":
+                    raise self._error(
+                        409,
+                        "destino_invalido",
+                        "El destino ya no es una ficha confirmada, viva y sin fusionar.",
+                    )
+                raise self._error(
+                    409, "tercero_ya_conciliado", "Esa ficha no está pendiente de conciliación."
+                )
+
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="document.tercero_conciliado",
+                object_type="tercero",
+                object_ref=str(tercero_id),
+                actor=str(actor),
+                payload={
+                    "accion": accion,
+                    "destino_id": str(destino_id) if destino_id else None,
+                    # Solo identificadores: el `audit_log` es inmutable y el nombre es un dato
+                    # personal que ya vive en la ficha (y se puede rectificar allí).
+                    "documento_coincide": coincide,
+                    "medio_verificacion": medio_verificacion,
+                    "radicados": await self._repo.radicados_de_provisional(tercero_id),
+                    "motivo": motivo,
+                },
+                canal=audit.CANAL_PETICION,
+            )
+        resultado: dict[str, Any] = {
+            "id": tercero_id,
+            "accion": accion,
+            "conciliacion": {"vincular": "vinculada", "confirmar": "confirmada"}.get(
+                accion, "descartada"
+            ),
+            "destino_id": destino_id,
+        }
+        return resultado
+
     # Qué exige cada canal. Se escribe como MAPA y no como una cadena de `if`
     # para que un canal nuevo tenga que declarar su requisito: un `elif` que
     # falte deja pasar el envío imposible en silencio.
@@ -217,8 +479,14 @@ class TerceroService:
         actores: list[dict],
         *,
         actor: uuid.UUID | None,
+        provisionales_permitidas: frozenset[uuid.UUID] = frozenset(),
     ) -> list[dict]:
         """Ata los actores al radicado congelando su contacto.
+
+        Una ficha PROVISIONAL (C17) no se puede vincular desde el radicador interno
+        —no tiene identidad verificada—: solo la ventanilla pública la ata, a la
+        que ella misma acaba de crear en la misma transacción
+        (`provisionales_permitidas`). Cualquier otro intento es 422.
 
         Cada entrada trae `tercero_id`, `rol` y, opcionalmente, **los datos de
         contacto corregidos para ESTE envío**. Lo que no se corrija se toma de
@@ -236,6 +504,20 @@ class TerceroService:
                         "error": "tercero_no_encontrado",
                         "detail": f"No existe el tercero {entrada['tercero_id']}",
                         "status": 404,
+                    },
+                )
+            if tercero["identidad"] == "provisional" and (
+                entrada["tercero_id"] not in provisionales_permitidas
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "error": "tercero_provisional",
+                        "detail": (
+                            f"«{tercero['nombre']}» es una ficha provisional (la declaró un "
+                            "remitente anónimo) y no se puede vincular: concíliela primero."
+                        ),
+                        "status": 422,
                     },
                 )
             # La ficha vigente rellena lo que no se corrigió; la corrección
@@ -418,6 +700,24 @@ class TerceroService:
         *,
         actor: uuid.UUID | None,
     ) -> dict:
+        """Consolida dos fichas en una (ver `_fusionar_bloqueado`). **Irreversible.**
+
+        Bloquea las DOS fichas (`FOR UPDATE`, en orden de id) ANTES de validar: así
+        una conciliación concurrente que las toque espera, y las guardas se evalúan
+        sobre un estado que ya no cambia. El mismo orden de bloqueo que `conciliar`
+        impide el deadlock entre ambos actos.
+        """
+        async with self._conn.transaction():
+            await self._repo.bloquear_fichas([superviviente_id, absorbido_id])
+            return await self._fusionar_bloqueado(superviviente_id, absorbido_id, actor=actor)
+
+    async def _fusionar_bloqueado(
+        self,
+        superviviente_id: uuid.UUID,
+        absorbido_id: uuid.UUID,
+        *,
+        actor: uuid.UUID | None,
+    ) -> dict:
         """Consolida dos fichas en una. **Irreversible.**
 
         Cinco guardas, y ninguna es de adorno:
@@ -467,6 +767,21 @@ class TerceroService:
                     },
                 )
         for ficha in (superviviente, absorbido):
+            # Una provisional se concilia (`POST /{id}/conciliar`), no se fusiona: la
+            # fusión no deja el motivo ni el asiento de la conciliación, y el hueco
+            # de documentos (`doc_sup and doc_abs`) la dejaría pasar siempre.
+            if ficha["identidad"] == "provisional":  # type: ignore[index]
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "tercero_provisional",
+                        "detail": (
+                            f"«{ficha['nombre']}» es una ficha provisional: se concilia "  # type: ignore[index]
+                            "desde la cola de fichas por conciliar, no se fusiona."
+                        ),
+                        "status": 409,
+                    },
+                )
             if ficha["fusionado_en"] is not None:  # type: ignore[index]
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

@@ -27,6 +27,10 @@
     cumplir.
 -->
 <script>
+  import { onDestroy, onMount } from "svelte";
+  import "altcha/altcha.css";
+  import CanalesAlternos from "$lib/components/features/ventanilla/CanalesAlternos.svelte";
+  import { normalizarContacto } from "$lib/utils/contactoEntidad.js";
   import { urlHttpSegura } from "$lib/utils/urlSegura.js";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
@@ -74,6 +78,118 @@
     if (ultimoEnvio.firma !== firma) ultimoEnvio = { firma, clave: nuevaClave() };
     return ultimoEnvio.clave;
   }
+
+  // --- Antirrobots ALTCHA (C16) -------------------------------------------------
+  // El widget se carga SOLO en el navegador (`onMount`): `altcha/external` toca
+  // `customElements` al importarse y reventaría en SSR. El worker sale del propio
+  // origen (`?worker` lo empaqueta bajo /_app/): el bundle por defecto de altcha
+  // lo crearía desde un `blob:` y la CSP (sin `worker-src blob:`) lo bloquearía.
+  /** @type {any} */
+  let widget = null;
+  /** @type {HTMLFieldSetElement|null} */
+  let grupoAltcha = null;
+  let altchaListo = false;
+  let altchaFallo = false;
+  let altchaEstado = "unverified";
+  let altchaPayload = "";
+  /** @type {((ok: boolean) => void)|null} */
+  let esperaAltcha = null;
+
+  const CANALES_ALTERNOS =
+    "Puede presentar su documento de forma presencial en la ventanilla de la entidad o por " +
+    "el correo de atención de la entidad.";
+
+  onMount(async () => {
+    // `addEventListener` y no `on:statechange`: el tipo del elemento personalizado de altcha
+    // no declara eventos y svelte-check rechazaría la directiva.
+    widget?.addEventListener("statechange", alCambiarAltcha);
+    try {
+      // El orden importa: `altcha/external` fija su propio `altchaCreateWorker`
+      // (basado en `new URL(…, import.meta.url)`) al importarse; el nuestro va DESPUÉS.
+      await import("altcha/external");
+      await import("altcha/i18n/es-419");
+      const { default: AltchaWorker } = await import("altcha/worker?worker");
+      /** @type {any} */ (globalThis).altchaCreateWorker = () => new AltchaWorker();
+      altchaListo = true;
+    } catch {
+      altchaFallo = true;
+    }
+  });
+
+  onDestroy(() => widget?.removeEventListener?.("statechange", alCambiarAltcha));
+
+  $: textoAltcha = altchaFallo
+    ? "No se pudo cargar la verificación automática."
+    : !altchaListo
+      ? "Preparando la verificación automática…"
+      : altchaEstado === "verified"
+        ? "Verificación automática completada."
+        : altchaEstado === "verifying"
+          ? "Verificando… unos segundos."
+          : altchaEstado === "expired"
+            ? "La verificación venció; se repetirá al enviar."
+            : "Se hará al enviar el formulario.";
+
+  /** @param {CustomEvent} e */
+  function alCambiarAltcha(e) {
+    const estado = e.detail?.state ?? "";
+    altchaEstado = estado;
+    altchaPayload = estado === "verified" ? String(e.detail?.payload ?? "") : "";
+    if (estado === "error") altchaFallo = true;
+    else if (estado) altchaFallo = false;
+    if (esperaAltcha && (estado === "verified" || estado === "error" || estado === "expired")) {
+      const resolver = esperaAltcha;
+      esperaAltcha = null;
+      resolver(estado === "verified");
+    }
+  }
+
+  /** Lanza la prueba de trabajo y espera su resultado (máx. 90 s). */
+  function esperarAltcha() {
+    return new Promise((resolver) => {
+      esperaAltcha = resolver;
+      setTimeout(() => {
+        if (esperaAltcha === resolver) {
+          esperaAltcha = null;
+          resolver(false);
+        }
+      }, 90000);
+      try {
+        widget?.verify?.();
+      } catch {
+        esperaAltcha = null;
+        resolver(false);
+      }
+    });
+  }
+
+  /** Reto quemado o inservible: pedir otro y llevar la mirada al control. */
+  function renovarAltcha() {
+    altchaPayload = "";
+    try {
+      widget?.reset?.();
+    } catch {
+      /* el widget se reiniciará solo en el próximo envío */
+    }
+  }
+
+  /** Códigos que dejan inservible el reto actual (el 409/422 lo QUEMAN en el servidor). */
+  const RETO_QUEMADO = new Set([
+    "antirrobots_invalido",
+    "antirrobots_vencido",
+    "antirrobots_usado",
+  ]);
+
+  // Aviso ANTES de escribir: el servidor dice si la verificación está operativa. Si no,
+  // el formulario no se puede enviar y se muestran los canales alternos con el contacto
+  // que la entidad declaró (sin contacto, el texto genérico).
+  $: sinAntirrobots = data.estado?.antirrobotsDisponible === false;
+  /** Contacto que trae un 503 `antirrobots_no_disponible` (si no, el del estado). */
+  /** @type {any} */
+  let contactoVivo = null;
+  let antirrobotsCaido = false;
+  $: contactoActual = contactoVivo ?? data.estado?.contacto ?? null;
+  $: mostrarAlternos = altchaFallo || antirrobotsCaido;
 
   let enviando = false;
   let error = "";
@@ -128,10 +244,31 @@
       return;
     }
 
+    if (!altchaListo) {
+      error =
+        "No se pudo cargar la verificación automática, así que no se puede radicar en línea. " +
+        CANALES_ALTERNOS;
+      return;
+    }
+
+    enviando = true;
+    if (!altchaPayload && !(await esperarAltcha())) {
+      enviando = false;
+      error =
+        "No se pudo completar la verificación automática. Intente de nuevo; si persiste, " +
+        CANALES_ALTERNOS.charAt(0).toLowerCase() +
+        CANALES_ALTERNOS.slice(1);
+      antirrobotsCaido = true;
+      renovarAltcha();
+      grupoAltcha?.focus();
+      return;
+    }
+
     const datos = {
       acepta_tratamiento: true,
       politica_version: politica.version,
       sitio_web: sitioWeb,
+      altcha: altchaPayload,
       tipo_documental: tipoDocumental,
       nombre: nombre.trim(),
       entidad: entidad.trim() || null,
@@ -148,10 +285,12 @@
     cuerpo.append("datos", JSON.stringify(datos));
     for (const archivo of archivos ?? []) cuerpo.append("anexos", archivo);
 
-    enviando = true;
     try {
+      // La huella de idempotencia EXCLUYE el reto, como el backend: un reintento de
+      // red reenvía el mismo reto ya consumido y recibe el radicado ya hecho.
+      const { altcha: _reto, ...sinReto } = datos;
       const firma =
-        JSON.stringify(datos) +
+        JSON.stringify(sinReto) +
         Array.from(archivos ?? [], (a) => `${a.name}:${a.size}:${a.lastModified}`).join("|");
       const res = await fetch("/radicacion/api", {
         method: "POST",
@@ -160,8 +299,19 @@
       });
       const resultado = await res.json().catch(() => null);
       if (!res.ok) {
-        if (codigoError(resultado) === "politica_desactualizada") await recargarPolitica();
+        const codigo = codigoError(resultado);
+        if (codigo === "antirrobots_no_disponible") {
+          antirrobotsCaido = true;
+          contactoVivo = normalizarContacto(resultado?.contacto ?? resultado?.detail?.contacto);
+        }
+        if (codigo === "politica_desactualizada") await recargarPolitica();
         error = mensajeError(resultado, "No se pudo radicar en este momento.");
+        // Un 409 de política o un 422 de anexo QUEMAN el reto en el servidor; nunca se
+        // reenvía el mismo. Lo escrito por la persona no se toca.
+        if (res.status === 409 || res.status === 422 || RETO_QUEMADO.has(codigo ?? "")) {
+          renovarAltcha();
+          if (codigo?.startsWith("antirrobots_")) grupoAltcha?.focus();
+        }
         return;
       }
       acuse = resultado;
@@ -242,6 +392,13 @@
       </p>
 
       <form class="vent__form" on:submit|preventDefault={radicar}>
+        {#if sinAntirrobots}
+          <p class="vent__aviso vent__aviso--atencion" role="status" id="antirrobots-no-disponible">
+            <strong>La radicación en línea no está disponible en este momento</strong>, porque la
+            verificación automática de la entidad no está operativa. No necesita llenar el
+            formulario. <CanalesAlternos contacto={contactoActual} />
+          </p>
+        {/if}
         <fieldset class="vent__grupo">
           <legend>Trámite</legend>
 
@@ -381,6 +538,42 @@
           />
         </div>
 
+        <fieldset
+          class="vent__grupo"
+          bind:this={grupoAltcha}
+          tabindex="-1"
+          id="grupo-altcha"
+          aria-describedby="altcha-ayuda"
+        >
+          <legend>Verificación automática</legend>
+          <p class="vent__hint" id="altcha-ayuda">
+            No tiene que resolver nada: su navegador hace una comprobación de unos segundos al
+            enviar el formulario.
+          </p>
+          <altcha-widget
+            bind:this={widget}
+            challengeurl="/radicacion/api/reto"
+            auto="onfocus"
+            name="altcha"
+            hidelogo
+            hidefooter
+            language="es-419"
+          ></altcha-widget>
+          <p class="vent__hint" role="status" id="altcha-estado">{textoAltcha}</p>
+          {#if mostrarAlternos}
+            <p class="vent__aviso vent__aviso--atencion" id="altcha-alternos">
+              {#if altchaFallo}Si la verificación no funciona en su navegador:{:else}La verificación
+                automática no está disponible:{/if}
+              <CanalesAlternos contacto={contactoActual} />
+            </p>
+          {/if}
+          <noscript>
+            <p class="vent__aviso vent__aviso--atencion">
+              Esta verificación necesita JavaScript. {CANALES_ALTERNOS}
+            </p>
+          </noscript>
+        </fieldset>
+
         <fieldset class="vent__grupo">
           <legend>Tratamiento de datos personales</legend>
           <label class="vent__check" for="acepta-tratamiento">
@@ -420,7 +613,11 @@
           <p class="vent__aviso vent__aviso--error" role="alert">{error}</p>
         {/if}
 
-        <button class="vent__btn" type="submit" disabled={enviando || sinPolitica}>
+        <button
+          class="vent__btn"
+          type="submit"
+          disabled={enviando || sinPolitica || sinAntirrobots}
+        >
           {enviando ? "Radicando…" : "Radicar documento"}
         </button>
       </form>
@@ -429,6 +626,33 @@
 </div>
 
 <style lang="scss">
+  // Los `--altcha-*` del widget se resuelven a los tokens Orpyca (cero hex sueltos);
+  // `:global` porque el elemento personalizado vive fuera del ámbito de este componente.
+  :global(altcha-widget) {
+    --altcha-color-base: var(--op-surface);
+    --altcha-color-text: var(--op-text);
+    --altcha-color-border: var(--op-border);
+    --altcha-color-border-focus: var(--op-primary);
+    --altcha-color-active: var(--op-primary);
+    --altcha-color-error-text: var(--op-error-fg);
+    --altcha-color-footer-bg: var(--op-bg);
+    --altcha-max-width: 100%;
+    --altcha-border-radius: var(--op-radius);
+    display: block;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(altcha-widget *) {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
+
+  #grupo-altcha:focus-visible {
+    outline: 2px solid var(--op-primary);
+    outline-offset: 2px;
+  }
+
   // `position: absolute` solo se recorta con un bloque contenedor posicionado en la
   // cadena: el formulario lo es (ver `.vent__form`), así que la trampa NO puede
   // desplazar el documento a lo ancho (el defecto de los `sr-only` de 1 px).

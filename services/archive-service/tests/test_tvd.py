@@ -20,12 +20,19 @@ from datetime import date
 import asyncpg
 import pytest
 
-from tests.conftest import TENANT_HEADERS, make_trd_serie_record, make_tvd_agrupacion_record
+from tests.conftest import (
+    TENANT_HEADERS,
+    make_trd_serie_record,
+    make_tvd_agrupacion_record,
+    responde_series,
+)
 
 _TVD_CREATE_PAYLOAD = {
     "code": "FONDO-100",
     "name": "Fondo acumulado Dependencia X",
     "disposition": "CT",
+    # C-4/C6: la fase central es obligatoria y sin default.
+    "archivo_central_years": 10,
     "fondo_nombre": "Fondo Instituto Departamental de X (liquidado 2003)",
     "fecha_extrema_inicial": "1975-01-01",
     "fecha_extrema_final": "1998-12-31",
@@ -55,28 +62,61 @@ async def test_create_tvd_agrupacion(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_tvd_agrupacion_rejects_archivo_gestion_years_and_tipo_instrumento(
-    client_with_conn,
-) -> None:
-    """El body NO acepta `archivo_gestion_years`, `estado` ni
-    `tipo_instrumento` -- Pydantic los ignora (no forbid=extra), pero el
-    contrato (`TvdAgrupacionCreate`) simplemente no los declara: se
-    confirma que el INSERT nunca los recibe del cliente inspeccionando que
-    la respuesta trae `archivo_gestion_years=None` pase lo que pase en el
-    payload."""
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"archivo_gestion_years": 5},
+        {"tipo_instrumento": "TRD"},
+        {"estado": "convalidada"},
+        {"total_retention": 10},
+        {"retention_years": 3},
+    ],
+)
+async def test_create_tvd_agrupacion_rechaza_lo_que_no_declara(client_with_conn, extra: dict) -> None:
+    """El body NO acepta `archivo_gestion_years`, `estado`, `tipo_instrumento` ni el juego
+    legado (`total_retention`/`retention_years`): 422 `extra_forbidden` (C-4/C6), no un
+    silencio que haga creer al cliente que fijó una retención. Nunca llega al INSERT."""
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.return_value = make_tvd_agrupacion_record()
 
     resp = await client.post(
-        "/api/v1/tvd",
-        json={**_TVD_CREATE_PAYLOAD, "archivo_gestion_years": 5, "tipo_instrumento": "TRD"},
-        headers=TENANT_HEADERS,
+        "/api/v1/tvd", json={**_TVD_CREATE_PAYLOAD, **extra}, headers=TENANT_HEADERS
     )
 
+    assert resp.status_code == 422, resp.text
+    errores = resp.json()["detail"]
+    assert any(e["type"] == "extra_forbidden" for e in errores)
+    assert not any("INSERT INTO trd_series" in c.args[0] for c in mock_conn.fetchrow.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_create_tvd_agrupacion_exige_la_fase_central(client_with_conn) -> None:
+    """Antes `total_retention` valía 10 por omisión y la fase central quedaba NULL: la
+    pantalla mostraba 10 años y el calendario se calculaba con 0. Ahora no hay valor por
+    omisión: sin `archivo_central_years`, 422."""
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    sin_central = {k: v for k, v in _TVD_CREATE_PAYLOAD.items() if k != "archivo_central_years"}
+
+    resp = await client.post("/api/v1/tvd", json=sin_central, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 422, resp.text
+    assert any("archivo_central_years" in e["loc"] for e in resp.json()["detail"])
+
+
+@pytest.mark.asyncio
+async def test_la_respuesta_de_una_tvd_deriva_el_total_de_la_fase_central(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = make_tvd_agrupacion_record(archivo_central_years=7)
+
+    resp = await client.post("/api/v1/tvd", json=_TVD_CREATE_PAYLOAD, headers=TENANT_HEADERS)
+
     assert resp.status_code == 201, resp.text
-    assert resp.json()["archivo_gestion_years"] is None
-    assert resp.json()["tipo_instrumento"] == "TVD"
+    cuerpo = resp.json()
+    assert cuerpo["archivo_gestion_years"] is None
+    assert (cuerpo["retention_years"], cuerpo["total_retention"]) == (0, 7)
 
 
 @pytest.mark.asyncio
@@ -268,18 +308,20 @@ async def test_get_trd_serie_versiones(client_with_conn) -> None:
     # El historial es CIRCUITO, no vocabulario: exige USUA_PERM_TRD desde
     # 2026-08-28 (ver `tests/test_trd_lectura_frontera.py`).
     mock_conn.fetchval.return_value = True
-    mock_conn.fetch.return_value = [
-        make_trd_serie_record(code="100", version=2, estado="borrador"),
-        make_trd_serie_record(code="100", version=1, estado="derogada"),
-    ]
+    responde_series(
+        mock_conn,
+        [
+            make_trd_serie_record(code="100", version=2, estado="borrador"),
+            make_trd_serie_record(code="100", version=1, estado="derogada"),
+        ],
+    )
 
     resp = await client.get("/api/v1/trd/100/versiones", headers=TENANT_HEADERS)
 
     assert resp.status_code == 200
     body = resp.json()
     assert [v["version"] for v in body] == [2, 1]
-    fetch_call = mock_conn.fetch.call_args_list[-1]
-    assert "v_trd_series" in fetch_call.args[0]
+    assert any("v_trd_series" in c.args[0] for c in mock_conn.fetch.call_args_list)
 
 
 @pytest.mark.asyncio

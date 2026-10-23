@@ -32,7 +32,7 @@ import pytest_asyncio
 from app.core.database import tenant_schema
 from app.repositories.file_repository import FileRepository
 from app.services.storage_service import StorageService
-from tests.integration.conftest import _require_dsn
+from tests.integration.conftest import DDL_VISTA_CITAS_STUB, _require_dsn
 
 pytestmark = pytest.mark.integration
 
@@ -52,7 +52,10 @@ CREATE TABLE IF NOT EXISTS borrador (
 CREATE TABLE IF NOT EXISTS postal_shipment (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(), acuse_file_id UUID
 );
-"""
+CREATE TABLE IF NOT EXISTS expediente_aip_version (
+    expediente_id UUID, version INTEGER, indice_file_id UUID
+);
+""" + DDL_VISTA_CITAS_STUB
 
 
 async def _archivo(
@@ -114,7 +117,7 @@ async def _asientos(conn, slug, fid) -> int:
 @pytest_asyncio.fixture
 async def ctx(tenant_ctx):
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(_DDL_AJENAS)
     return slug, conn
 

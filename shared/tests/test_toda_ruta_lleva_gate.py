@@ -51,7 +51,9 @@ GATES = frozenset({
     "require_public_interop",
 })
 _METODOS = frozenset({"get", "post", "put", "patch", "delete"})
-_ARCHIVOS_EXENTOS = frozenset({"health.py", "openapi.py"})
+# `metrics.py` (C18, ADR-041) está exento SOLO si declara únicamente `GET /metrics`: esa
+# condición la verifica shared/tests/test_metricas_frontera.py, no esta exención.
+_ARCHIVOS_EXENTOS = frozenset({"health.py", "openapi.py", "metrics.py"})
 
 MOTIVOS = {
     "catalogo": (
@@ -69,11 +71,8 @@ MOTIVOS = {
     "clearance": (
         "Lectura/solicitud sobre un radicado: el gate es el clearance no-read-up en el WHERE de la consulta (RF-SEG-08), no un permiso funcional."
     ),
-    "knowledge": (
-        "Búsqueda/RAG: clearance + ACL en la consulta y colapso 404; el catálogo MCP lo declara permission=None (AREA-01-18)."
-    ),
     "delegado": (
-        "Asistente y MCP: ejecutan as-the-user contra los servicios, cuyos gates re-validan; el catálogo declara el permiso de cada herramienta."
+        "Asistente y MCP: ejecutan as-the-user contra los servicios, cuyos gates re-validan; el catálogo declara el permiso de cada herramienta. Las rutas /assistant/* exigen además la bandera de la entidad y PERM_CONOCIMIENTO (ADR-037, `exigir_asistente`; lo vigila test_conocimiento_mira_la_bandera)."
     ),
     "firma": (
         "Verificación de firmas (pública por diseño del verificador) y lectura de una firma por id con clearance; sin efecto de escritura."
@@ -98,6 +97,9 @@ EXCEPCIONES = {
         "auth-service::auth.py::POST /api/v1/auth/token",
     }),
     "propia": frozenset({
+        # Catálogo de causales de la Ley 1712 (C12): es la ley, no un dato de la entidad; solo
+        # exige tenant válido (get_tenant_conn) y no lee ninguna tabla.
+        "document-service::desclasificacion.py::GET /api/v1/documents/causales-reserva",
         "auth-service::clearance.py::GET /api/v1/auth/clearance",
         "auth-service::clearance.py::GET /api/v1/auth/clearance/check",
         "auth-service::clearance.py::GET /api/v1/auth/security-levels",
@@ -119,12 +121,6 @@ EXCEPCIONES = {
     "turno": frozenset({
         "workflow-service::visto_bueno.py::GET /api/v1/workflows/{radicado_id}/vistos-buenos",
         "workflow-service::visto_bueno.py::POST /api/v1/workflows/{radicado_id}/vistos-buenos/decidir",
-    }),
-    "knowledge": frozenset({
-        "knowledge-service::knowledge.py::POST /api/v1/knowledge/antecedentes",
-        "knowledge-service::knowledge.py::POST /api/v1/knowledge/rag",
-        "knowledge-service::knowledge.py::POST /api/v1/knowledge/search",
-        "knowledge-service::knowledge.py::POST /api/v1/knowledge/suggestions/{suggestion_id}/aceptar",
     }),
     "delegado": frozenset({
         "mcp-server::assistant.py::GET /api/v1/assistant/alcance",
@@ -164,6 +160,7 @@ EXCEPCIONES = {
         "archive-service::tipos_documentales.py::GET /api/v1/tipos-documentales",
         "archive-service::tipos_documentales.py::GET /api/v1/tipos-documentales/{tipo_id}",
         "archive-service::trd.py::GET /api/v1/trd",
+        "archive-service::trd.py::GET /api/v1/trd/cuadro",
         "archive-service::trd.py::GET /api/v1/trd/{serie_id}",
         "archive-service::trd.py::GET /api/v1/trd/{serie_id}/retention",
         "archive-service::tvd.py::GET /api/v1/tvd",
@@ -175,6 +172,7 @@ EXCEPCIONES = {
         "tenant-service::catalogos.py::GET /api/v1/catalogos",
         "tenant-service::catalogos.py::GET /api/v1/catalogos/{catalogo}",
         "tenant-service::config.py::GET /api/v1/business-days/calculate",
+        "tenant-service::config.py::GET /api/v1/config/asistente",
         "tenant-service::config.py::GET /api/v1/config/holidays",
         "tenant-service::config.py::GET /api/v1/config/params",
         "tenant-service::config.py::GET /api/v1/config/params/{key}",

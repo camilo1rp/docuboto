@@ -62,7 +62,7 @@ async def rewrap_tenant(
     slug = webhook_secrets.slug_from_schema(schema)
     active_v, _ = webhook_secrets.active_key()
     ring = webhook_secrets.keyring()
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     if not await migracion_009_aplicada(conn, schema):
         return (0, 0)
     pendientes = await WebhookRepository(conn).fetch_ids_to_rewrap(active_v)
@@ -76,7 +76,7 @@ async def rewrap_tenant(
     for p in pendientes:
         try:
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 repo = WebhookRepository(conn)
                 row = await repo.get_for_rewrap(p["id"])
                 if row is None or row["secret_kek_version"] == active_v:

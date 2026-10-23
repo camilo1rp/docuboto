@@ -40,8 +40,9 @@ from fastapi import (
 from app.core.config import settings
 from app.schemas.assistant import AssistantMessageRequest, AssistantMessageResponse
 from app.services import proposals, write_gate
+from app.services.asistente_gate import AsistenteDenegado, exigir_asistente
 from app.services.assistant import ConversationLimitError, run_turn
-from app.services.identity import IdentityError, resolve_identity
+from app.services.identity import Identity, IdentityError, resolve_identity
 from app.services.scope import build_scope
 from app.services.stt import SttNoDisponible
 
@@ -65,6 +66,44 @@ FALLO_PROVEEDOR = (
     "El asistente no pudo responder ahora mismo: el proveedor del modelo no contestó. "
     "Inténtalo de nuevo en unos minutos."
 )
+
+
+def _denegado(exc: AsistenteDenegado) -> HTTPException:
+    return HTTPException(
+        status_code=exc.status,
+        detail={"error": exc.code, "detail": exc.detail, "status": exc.status},
+    )
+
+
+async def _identidad_del_asistente(
+    request: Request, authorization: str | None, x_tenant_slug: str | None
+) -> Identity:
+    """Guardas de borde + identidad + gate del asistente (ADR-037) para una ruta suelta."""
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthenticated", "detail": "Falta el token.", "status": 401},
+        )
+    if not x_tenant_slug:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "missing_tenant", "detail": "Falta X-Tenant-Slug.", "status": 400},
+        )
+    try:
+        identidad = await resolve_identity(
+            request.app.state.gateway_client,
+            authorization=authorization,
+            tenant_slug=x_tenant_slug,
+        )
+        exigir_asistente(identidad)
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"error": exc.code, "detail": exc.code, "status": exc.status},
+        ) from exc
+    except AsistenteDenegado as exc:
+        raise _denegado(exc) from exc
+    return identidad
 
 
 def _unavailable(detalle: str) -> HTTPException:
@@ -121,6 +160,7 @@ async def assistant_confirmar(
         identidad = await resolve_identity(
             gateway_client, authorization=authorization, tenant_slug=x_tenant_slug
         )
+        exigir_asistente(identidad)
         return await write_gate.ejecutar(
             gateway_client,
             token,
@@ -134,6 +174,8 @@ async def assistant_confirmar(
             status_code=exc.status,
             detail={"error": exc.code, "detail": exc.code, "status": exc.status},
         )
+    except AsistenteDenegado as exc:
+        raise _denegado(exc) from exc
     except proposals.ProposalError as exc:
         raise HTTPException(
             status_code=exc.status,
@@ -179,6 +221,7 @@ async def assistant_alcance(
         identidad = await resolve_identity(
             gateway_client, authorization=authorization, tenant_slug=x_tenant_slug
         )
+        exigir_asistente(identidad)
         return await build_scope(
             gateway_client,
             identidad,
@@ -190,6 +233,8 @@ async def assistant_alcance(
             status_code=exc.status,
             detail={"error": exc.code, "detail": exc.code, "status": exc.status},
         )
+    except AsistenteDenegado as exc:
+        raise _denegado(exc) from exc
 
 
 @router.post(
@@ -241,6 +286,9 @@ async def assistant_message(
             status_code=exc.status,
             detail={"error": exc.code, "detail": exc.code, "status": exc.status},
         ) from exc
+    except AsistenteDenegado as exc:
+        # Antes del `except Exception` de abajo: un 403 NO es «proveedor caído».
+        raise _denegado(exc) from exc
     except ConversationLimitError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -263,16 +311,21 @@ async def assistant_message(
     "/transcribe",
     summary="¿Hay transcripción disponible en esta instalación?",
 )
-async def assistant_transcribe_disponible(request: Request) -> dict:
+async def assistant_transcribe_disponible(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_tenant_slug: str | None = Header(default=None),
+) -> dict:
     """Capacidad, para que la interfaz no ofrezca un botón que va a fallar.
 
     Sin esto, el frontend solo puede averiguarlo **intentándolo**: la persona
     graba, espera, y recibe un 503. Preguntar antes es el mismo criterio que el
     marco de alcance — no ofrecer lo que el backend va a negar.
 
-    No exige autenticación: no dice nada de nadie, solo si esta instalación tiene
-    activada la transcripción. Que el propio dictado sí la exija es otra cosa.
+    Desde ADR-037 exige sesión: es parte del asistente y la bandera es de la entidad
+    de quien pregunta, así que hay que saber quién es para poder negarla.
     """
+    await _identidad_del_asistente(request, authorization, x_tenant_slug)
     proveedor = request.app.state.stt_provider
     return {
         "disponible": proveedor.nombre != "disabled",
@@ -309,20 +362,11 @@ async def assistant_transcribe(
     porque una transcripción inventada acabaría en el cuerpo de un documento
     oficial (ver `app/services/stt.py`).
 
-    Se gatea por autenticación y nada más, igual que el resto del asistente: es
-    transporte de la propia voz de quien llama, no acceso a información de
-    nadie. Lo que se haga con el texto después sí pasa por su RBAC.
+    Se gatea por la bandera de la entidad y `PERM_CONOCIMIENTO` (ADR-037), como el
+    resto del asistente: es transporte de la propia voz de quien llama, no acceso a
+    información de nadie. Lo que se haga con el texto después sí pasa por su RBAC.
     """
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "unauthenticated", "detail": "Falta el token.", "status": 401},
-        )
-    if not x_tenant_slug:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "missing_tenant", "detail": "Falta X-Tenant-Slug.", "status": 400},
-        )
+    await _identidad_del_asistente(request, authorization, x_tenant_slug)
 
     # El tope se aplica ANTES de traer los bytes, y el comentario anterior decía
     # lo contrario: sostenía que había que leer primero porque el trasvase ya

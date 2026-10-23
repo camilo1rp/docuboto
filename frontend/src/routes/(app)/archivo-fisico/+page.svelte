@@ -34,7 +34,7 @@
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, permissionLevels } from "$lib/stores/auth.js";
   import { notifySuccess, notifyError } from "$lib/stores/notifications.js";
 
   import Modal from "$lib/components/ui/Modal.svelte";
@@ -45,6 +45,11 @@
   import FormField from "$lib/components/ui/FormField.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";
+  import {
+    DOCUMENTO_TIPOS,
+    construirPayloadPrestamo,
+    prestatarioEtiqueta,
+  } from "$lib/utils/prestamo.js";
   import { opcionesSerieTrd } from "$lib/utils/trd.js";
 
   /** @type {import('./$types').PageData} */
@@ -61,6 +66,8 @@
   // Autorización (espejo del RBAC; backend re-valida siempre)
   // ---------------------------------------------------------------------------
   $: canManage = $permissions.includes("USUA_PERM_EXPEDIENTE");
+  // Prestar es un registro de custodia: el backend exige USUA_PERM_EXPEDIENTE >= 3 (C11).
+  $: canPrestar = ($permissionLevels["USUA_PERM_EXPEDIENTE"] ?? 0) >= 3;
 
   // ---------------------------------------------------------------------------
   // Opciones de dominio (FormField options)
@@ -532,7 +539,67 @@
   }
 
   // Modal nuevo préstamo (declarado al final del bloque script para evitar hoisting issues)
-  let prestamoForm = { unidad_id: "", prestado_a: "", fecha_devolucion_esperada: "" };
+  /** Prestatario: unión interno / externo (C11). `user_id` es auth_users.id, nunca el sub de Keycloak. */
+  const prestamoVacio = () => ({
+    unidad_id: "",
+    tipo: /** @type {"interno"|"externo"} */ ("interno"),
+    user_id: "",
+    user_label: "",
+    nombre: "",
+    documento_tipo: "CC",
+    documento_numero: "",
+    entidad: "",
+    cargo: "",
+    correo: "",
+    telefono: "",
+    fecha_devolucion_esperada: "",
+    observaciones: "",
+  });
+  let prestamoForm = prestamoVacio();
+  /** @type {any[]} */
+  let elegibles = [];
+  let elegiblesQ = "";
+  let elegiblesLoading = false;
+  let elegiblesError = "";
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let elegiblesTimer;
+
+  // La UI espeja el gate del backend: solo ofrece a quien puede recibir el
+  // contenido de la unidad. El backend re-valida igualmente (403).
+  async function buscarElegibles() {
+    elegiblesError = "";
+    if (!prestamoForm.unidad_id || prestamoForm.tipo !== "interno") {
+      elegibles = [];
+      return;
+    }
+    elegiblesLoading = true;
+    try {
+      const q = new URLSearchParams({ size: "20" });
+      if (elegiblesQ.trim()) q.set("q", elegiblesQ.trim());
+      const res = await fetch(
+        `/archivo-fisico/api/unidades/${encodeURIComponent(prestamoForm.unidad_id)}/prestatarios-elegibles?${q}`,
+      );
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw d;
+      elegibles = Array.isArray(d) ? d : (d.items ?? []);
+    } catch (err) {
+      elegibles = [];
+      elegiblesError = mensajeError(err, "No se pudo consultar a las personas elegibles.");
+    } finally {
+      elegiblesLoading = false;
+    }
+  }
+
+  function onBuscarElegibles() {
+    clearTimeout(elegiblesTimer);
+    elegiblesTimer = setTimeout(buscarElegibles, 250);
+  }
+
+  function elegirPrestatario(/** @type {any} */ u) {
+    prestamoForm.user_id = u.user_id;
+    prestamoForm.user_label = u.nombre || u.username;
+    prestamoForm = prestamoForm;
+  }
   let prestamoLoading = false;
 
   // Qué unidades se pueden prestar. Se cargan al abrir el modal: el campo
@@ -563,12 +630,29 @@
   }
 
   async function handleRegistrarPrestamo() {
-    if (
-      !prestamoForm.unidad_id.trim() ||
-      !prestamoForm.prestado_a.trim() ||
-      !prestamoForm.fecha_devolucion_esperada
-    ) {
-      notifyError("Los campos Unidad, Prestado a y Fecha de devolución son obligatorios.");
+    if (!prestamoForm.unidad_id.trim() || !prestamoForm.fecha_devolucion_esperada) {
+      notifyError("Los campos Unidad y Fecha de devolución son obligatorios.");
+      return;
+    }
+    const f = prestamoForm;
+    const construido = construirPayloadPrestamo(
+      f.tipo === "interno"
+        ? { tipo: "interno", user_id: f.user_id }
+        : {
+            tipo: "externo",
+            nombre: f.nombre,
+            documento_tipo: f.documento_tipo,
+            documento_numero: f.documento_numero,
+            entidad: f.entidad,
+            cargo: f.cargo,
+            correo: f.correo,
+            telefono: f.telefono,
+          },
+      f.fecha_devolucion_esperada,
+      f.observaciones,
+    );
+    if ("error" in construido) {
+      notifyError(construido.error);
       return;
     }
     prestamoLoading = true;
@@ -578,17 +662,16 @@
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prestado_a: prestamoForm.prestado_a.trim(),
-            fecha_devolucion_esperada: prestamoForm.fecha_devolucion_esperada,
-          }),
+          body: JSON.stringify(construido.ok),
         },
       );
       const result = await res.json();
       if (!res.ok) throw result;
       notifySuccess("Préstamo registrado correctamente.");
       showPrestamoModal = false;
-      prestamoForm = { unidad_id: "", prestado_a: "", fecha_devolucion_esperada: "" };
+      prestamoForm = prestamoVacio();
+      elegibles = [];
+      elegiblesQ = "";
       await cargarPrestamos();
     } catch (err) {
       notifyError(mensajeError(err, "No se pudo registrar el préstamo."));
@@ -1156,7 +1239,7 @@
       <Card>
         <div slot="header" class="af-panel-header">
           <h2 class="op-card-title">Préstamos de unidades</h2>
-          {#if canManage}
+          {#if canPrestar}
             <Button variant="primary" size="sm" on:click={abrirModalPrestamo}>
               <i class="fas fa-plus" aria-hidden="true"></i>
               Registrar préstamo
@@ -1226,7 +1309,7 @@
                         <span class="af-fuid-tipo">{p.unidad_signatura}</span>
                       {/if}
                     </td>
-                    <td>{p.prestado_a ?? "—"}</td>
+                    <td>{prestatarioEtiqueta(p)}</td>
                     <td>{fmtDate(p.fecha_prestamo ?? p.created_at)}</td>
                     <td>{fmtDate(p.fecha_devolucion_esperada)}</td>
                     <td>
@@ -1236,8 +1319,8 @@
                       {#if canManage && p.estado === "prestado"}
                         <button
                           class="button is-small is-warning is-light"
-                          on:click={() => openDevolverModal(p.id, p.prestado_a)}
-                          aria-label="Registrar devolución del préstamo a {p.prestado_a}"
+                          on:click={() => openDevolverModal(p.id, prestatarioEtiqueta(p))}
+                          aria-label="Registrar devolución del préstamo a {prestatarioEtiqueta(p)}"
                         >
                           <i class="fas fa-undo" aria-hidden="true"></i>
                           <span>Devolver</span>
@@ -1658,7 +1741,16 @@
     <div class="field">
       <label class="label" for="pr-unidad">Unidad a prestar *</label>
       <div class="select is-fullwidth">
-        <select id="pr-unidad" bind:value={prestamoForm.unidad_id} required>
+        <select
+          id="pr-unidad"
+          bind:value={prestamoForm.unidad_id}
+          on:change={() => {
+            prestamoForm.user_id = "";
+            prestamoForm.user_label = "";
+            buscarElegibles();
+          }}
+          required
+        >
           <option value="">— Selecciona la unidad —</option>
           {#each catalogoUnidades as u (u.id)}
             <option value={u.id}>{etiquetaUnidad(u)}</option>
@@ -1673,14 +1765,103 @@
         </p>
       {/if}
     </div>
-    <FormField
-      id="pr-prestado-a"
-      label="Prestado a *"
-      type="text"
-      required
-      placeholder="Nombre del solicitante"
-      bind:value={prestamoForm.prestado_a}
-    />
+    <fieldset class="field">
+      <legend class="label">Quién recibe la unidad *</legend>
+      <label class="radio">
+        <input
+          type="radio"
+          name="pr-tipo"
+          value="interno"
+          bind:group={prestamoForm.tipo}
+          on:change={buscarElegibles}
+        />
+        Persona interna
+      </label>
+      <label class="radio">
+        <input type="radio" name="pr-tipo" value="externo" bind:group={prestamoForm.tipo} />
+        Solicitante externo
+      </label>
+    </fieldset>
+    {#if prestamoForm.tipo === "interno"}
+      <div class="field">
+        <label class="label" for="pr-buscar">Buscar persona</label>
+        <input
+          id="pr-buscar"
+          class="input"
+          type="search"
+          placeholder="Nombre o usuario"
+          bind:value={elegiblesQ}
+          on:input={onBuscarElegibles}
+          disabled={!prestamoForm.unidad_id}
+        />
+        {#if !prestamoForm.unidad_id}
+          <p class="help">
+            Elija primero la unidad: solo se ofrece a quien puede ver su contenido.
+          </p>
+        {:else if elegiblesLoading}
+          <p class="help">Buscando…</p>
+        {:else if elegiblesError}
+          <p class="help is-danger" role="alert">{elegiblesError}</p>
+        {:else if elegibles.length === 0}
+          <p class="help">Ninguna persona elegible para esa búsqueda.</p>
+        {:else}
+          <ul class="af-elegibles" aria-label="Personas elegibles">
+            {#each elegibles as u (u.user_id)}
+              <li>
+                <button
+                  type="button"
+                  class="button is-small is-light"
+                  class:is-link={prestamoForm.user_id === u.user_id}
+                  aria-pressed={prestamoForm.user_id === u.user_id}
+                  on:click={() => elegirPrestatario(u)}
+                >
+                  {u.nombre || u.username}
+                  {#if u.nombre && u.username}<span class="af-fuid-tipo">{u.username}</span>{/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if prestamoForm.user_id}
+          <p class="help">Recibe: <strong>{prestamoForm.user_label}</strong></p>
+        {/if}
+      </div>
+    {:else}
+      <FormField
+        id="pr-nombre"
+        label="Nombre del solicitante *"
+        type="text"
+        required
+        bind:value={prestamoForm.nombre}
+      />
+      <div class="field">
+        <label class="label" for="pr-doc-tipo">Tipo de documento *</label>
+        <div class="select is-fullwidth">
+          <select id="pr-doc-tipo" bind:value={prestamoForm.documento_tipo}>
+            {#each DOCUMENTO_TIPOS as t}<option value={t}>{t}</option>{/each}
+          </select>
+        </div>
+      </div>
+      <FormField
+        id="pr-doc-numero"
+        label="Número de documento *"
+        type="text"
+        required
+        bind:value={prestamoForm.documento_numero}
+      />
+      <details class="af-opcionales">
+        <summary>Más datos del solicitante (opcional)</summary>
+        <FormField id="pr-entidad" label="Entidad" type="text" bind:value={prestamoForm.entidad} />
+        <FormField id="pr-cargo" label="Cargo" type="text" bind:value={prestamoForm.cargo} />
+        <FormField id="pr-correo" label="Correo" type="email" bind:value={prestamoForm.correo} />
+        <FormField
+          id="pr-telefono"
+          label="Teléfono"
+          type="text"
+          bind:value={prestamoForm.telefono}
+        />
+      </details>
+    {/if}
     <FormField
       id="pr-fecha"
       label="Fecha de devolución esperada *"
@@ -1900,6 +2081,17 @@
   }
 
   // Tabla
+  .af-elegibles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--op-space-2, 0.5rem);
+    margin-top: var(--op-space-2, 0.5rem);
+    list-style: none;
+    padding: 0;
+  }
+  .af-opcionales {
+    margin-bottom: var(--op-space-3, 0.75rem);
+  }
   .af-prestamos-mas {
     display: flex;
     align-items: center;

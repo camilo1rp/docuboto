@@ -63,14 +63,22 @@ from app.core.constants import canal_del_acto
 from app.core.minio_client import (
     ensure_object_lock_bucket,
     get_minio,
+    verificar_legal_hold_aplicado,
     verificar_retencion_aplicada,
 )
 from app.models.file_record import FileRecord
 from app.repositories.file_repository import FileRepository
 from app.repositories.preservacion_repository import PreservacionRepository
 from app.repositories.preservacion_worm_repository import PreservacionWormRepository
-from app.schemas.preservacion import AipCreate, AipResponse
-from app.services.aip_builder import AipDocMaterial, aip_sha256, build_bag
+from app.schemas.preservacion import AipCreate, AipReempaquetarRequest, AipResponse
+from app.services.aip_builder import (
+    AipDocMaterial,
+    BagAnteriorCorruptoError,
+    ReempaquetadoInfo,
+    aip_sha256,
+    build_bag,
+    read_bag_anterior,
+)
 from app.services.aip_replica_service import ReplicaResult, replicate_aip
 from app.services.pdfa import (
     PDFA_RESULTADO_MAP,
@@ -84,15 +92,46 @@ from app.services.preservation_worm_service import (
     FileNotFoundForPreservationError,
     FixityMismatchError,
     PreservationDisabledError,
+    RetencionDiferidaSinHoldError,
+    _iso,
     _worm_lock_key,
+    legal_hold_compartido,
     preservation_bucket_name,
 )
-from app.services.retention_policy import validate_retain_until
+from app.services.retention_policy import InvalidRetentionError, validate_retain_until
 
 logger = logging.getLogger(__name__)
 
 _SERVICE = "storage-service"
 _AIP_TIPO = "aip"
+
+
+
+class AipNoEncontradoError(Exception):
+    """El AIP anterior no existe (o no es de este expediente) -- `404 aip_not_found`."""
+
+
+class AipYaSustituidoError(Exception):
+    """El AIP anterior ya tiene un sucesor con OTRO índice -- `409 aip_ya_sustituido`."""
+
+
+class AipYaExisteError(Exception):
+    """Ya hay un AIP para el expediente y el contenido es distinto: el AIP se VERSIONA (ADR-042),
+    no se re-empaqueta como si fuera nuevo -- `409 aip_ya_existe`. `aip_id` = el AIP vigente."""
+
+    def __init__(self, message: str, *, aip_id: uuid.UUID | None = None) -> None:
+        super().__init__(message)
+        self.aip_id = aip_id
+
+
+class AipAnteriorFixityMismatchError(Exception):
+    """El bag del AIP anterior no verifica contra sus manifiestos -- `409`."""
+
+
+class IndiceNoEsRenovacionError(Exception):
+    """El índice nuevo no desciende (cadena `renueva_a`) del índice embebido en el AIP anterior,
+    o no es un `firma_lta_renovada` del mismo expediente -- `422`."""
+
 
 # E10 C2b follow-up: estados TERMINALES de `files.pdfa_status` (migración
 # 013) -- distinto de "pendiente" (encolado, worker asíncrono de ingesta
@@ -249,8 +288,9 @@ class AipService:
                 "El empaquetado de AIP está desactivado (PRESERVATION_ENABLED=false)"
             )
 
-        retain_until = payload.resolve_retain_until()
-        validate_retain_until(retain_until)
+        retain_until = payload.resolve_retain_until_opcional()
+        if retain_until is not None:
+            validate_retain_until(retain_until)
 
         # Advisory lock de SESIÓN por `(tenant, expediente_id, 'aip')`
         # (remediación de auditoría, Media): serializa el
@@ -272,12 +312,16 @@ class AipService:
         lock_key = _worm_lock_key(self._tenant_slug, payload.expediente_id, _AIP_TIPO)
         await self._conn.execute("SELECT pg_advisory_lock($1)", lock_key)
         try:
-            return await self._empaquetar_aip_locked(payload, actor, retain_until)
+            # C-5/C7: «¿hay hold activo?» y el INSERT de la fila bajo el lock COMPARTIDO del hold.
+            async with legal_hold_compartido(
+                self._conn, self._tenant_slug, payload.expediente_id
+            ):
+                return await self._empaquetar_aip_locked(payload, actor, retain_until)
         finally:
             await self._conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
 
     async def _empaquetar_aip_locked(
-        self, payload: AipCreate, actor: str | None, retain_until: datetime
+        self, payload: AipCreate, actor: str | None, retain_until: datetime | None
     ) -> AipResponse:
         """Cuerpo de :meth:`empaquetar_aip` bajo el advisory lock de sesión
         por-(expediente, 'aip') -- todo el `check->put_object->insert` corre
@@ -409,6 +453,30 @@ class AipService:
             )
             return AipResponse(**dict(existing_aip))
 
+        # C-6: el AIP se versiona (ux_aip_expediente_version). Contenido DISTINTO sobre un
+        # expediente que ya tiene AIP ya no es «un re-empaquetado legítimo» (migración 009): sería
+        # una segunda versión 1. Se corta ANTES del `put_object` COMPLIANCE, que es irreversible.
+        if await self._evt_repo.existe_aip(payload.expediente_id):
+            # El 409 lleva el `aip_id` VIGENTE: quien llamó (archive-service) puede haber perdido
+            # la respuesta de un empaquetado que sí se completó, y con el id reconcilia en vez de
+            # tomar esto por un fallo de fixity (auditoría de cierre del lote C, S2).
+            raise AipYaExisteError(
+                f"el expediente {payload.expediente_id!r} ya tiene un AIP; una versión nueva "
+                "solo nace del reempaquetado por renovación del sello de archivo",
+                aip_id=await self._evt_repo.aip_vigente_id(payload.expediente_id),
+            )
+
+        # C-5/C7: el AIP nace con `legal_hold = existe un hold activo del expediente` (lo resuelve
+        # el servidor), y una retención diferida exige el hold `valoracion_pendiente`.
+        holds = await self._worm_repo.holds_activos(payload.expediente_id)
+        hold_activo = bool(holds)
+        if retain_until is None and "valoracion_pendiente" not in holds:
+            raise RetencionDiferidaSinHoldError(
+                f"expediente_id={payload.expediente_id}: retencion_diferida exige un hold "
+                "activo `valoracion_pendiente`"
+            )
+        origen = "calendario" if retain_until is not None else "valoracion_pendiente"
+
         bucket = preservation_bucket_name(self._tenant_slug)
         await ensure_object_lock_bucket(minio, bucket)
 
@@ -416,8 +484,10 @@ class AipService:
         safe_expediente = payload.expediente_id.replace("/", "-")
         object_key = f"aip/{safe_expediente}/{now.date().isoformat()}-{aip_id}.zip"
 
-        mode = settings.preservation_retention_mode
-        retention = Retention(mode, retain_until)
+        mode = settings.preservation_retention_mode if retain_until is not None else None
+        retention = (
+            Retention(mode, retain_until) if retain_until is not None and mode is not None else None
+        )
         write_result = await minio.put_object(
             bucket,
             object_key,
@@ -425,7 +495,7 @@ class AipService:
             length=len(artifact.zip_bytes),
             content_type="application/zip",
             retention=retention,
-            legal_hold=payload.legal_hold,
+            legal_hold=hold_activo,
         )
         version_id = getattr(write_result, "version_id", None)
 
@@ -437,14 +507,17 @@ class AipService:
         #
         # Antes de la réplica a propósito: replicar un objeto cuya protección no se
         # pudo confirmar sería propagar la duda a la segunda copia.
-        await verificar_retencion_aplicada(
-            minio,
-            bucket,
-            object_key,
-            version_id=version_id,
-            modo_esperado=mode,
-            hasta_esperado=retain_until,
-        )
+        if retain_until is not None and mode is not None:
+            await verificar_retencion_aplicada(
+                minio,
+                bucket,
+                object_key,
+                version_id=version_id,
+                modo_esperado=mode,
+                hasta_esperado=retain_until,
+            )
+        if hold_activo:
+            await verificar_legal_hold_aplicado(minio, bucket, object_key, version_id=version_id)
 
         # Réplica best-effort del AIP ya sellado (E10 Increment C1b). Se
         # dispara AQUÍ, ANTES de abrir la transacción crítica de abajo —
@@ -462,7 +535,7 @@ class AipService:
             zip_bytes=artifact.zip_bytes,
             retention_mode=mode,
             retain_until=retain_until,
-            legal_hold=payload.legal_hold,
+            legal_hold=hold_activo,
             num_copias=num_copias,
         )
 
@@ -488,7 +561,7 @@ class AipService:
                     "formato": "application/zip",
                     "retain_until": retain_until,
                     "retention_mode": mode,
-                    "legal_hold": payload.legal_hold,
+                    "legal_hold": hold_activo,
                 }
             )
 
@@ -501,7 +574,8 @@ class AipService:
                 sha256=zip_hash,
                 retain_until=retain_until,
                 retention_mode=mode,
-                legal_hold=payload.legal_hold,
+                legal_hold=hold_activo,
+                retencion_origen=origen,
             )
 
             # Rastro de eventos PREMIS consultable (`GET /eventos`, PIEZA 5):
@@ -536,9 +610,10 @@ class AipService:
                         "bucket": bucket,
                         "object_key": object_key,
                         "version_id": version_id,
-                        "retain_until": retain_until.isoformat(),
+                        "retain_until": _iso(retain_until),
                         "retention_mode": mode,
-                        "legal_hold": payload.legal_hold,
+                        "legal_hold": hold_activo,
+                        "retencion_origen": origen,
                     },
                 },
                 agente=actor,
@@ -620,9 +695,10 @@ class AipService:
                     "object_key": object_key,
                     "aip_sha256": zip_hash,
                     "num_documentos": len(docs_material),
-                    "retain_until": retain_until.isoformat(),
+                    "retain_until": _iso(retain_until),
                     "retention_mode": mode,
-                    "legal_hold": payload.legal_hold,
+                    "legal_hold": hold_activo,
+                    "retencion_origen": origen,
                     "replica": replica_result.detalle if replica_result is not None else None,
                 },
                 canal=canal_del_acto(actor),
@@ -647,4 +723,381 @@ class AipService:
             replicado=replica_result.ok if replica_result is not None else False,
             replica_target=replica_result.target if replica_result is not None else None,
             replica_copias_hechas=replica_result.copias_hechas if replica_result is not None else 1,
+            version=row.get("version", 1),
+            sustituye_a=row.get("sustituye_a"),
+            motivo=row.get("motivo", "ingesta"),
         )
+
+
+    # -- C-6 (ADR-042): reempaquetado por renovación del ArchiveTimeStamp --------------------
+
+    async def reempaquetar_aip(
+        self, payload: AipReempaquetarRequest, actor: str | None
+    ) -> tuple[AipResponse, bool]:
+        """Construye la versión n+1 de un AIP DESDE su bag anterior, con el índice renovado.
+
+        Devuelve ``(AipResponse, creado)``: ``creado=False`` cuando el sucesor ya existía con el
+        mismo ``indice_xml_sha256`` (reintento tras un corte entre storage y archive).
+
+        El AIP anterior NO se toca (sigue bajo COMPLIANCE, con su fila `aip` y su fila WORM); el
+        nuevo hereda el MAYOR `retain_until` de toda la cadena -- nunca menor -- y queda ligado
+        al anterior por `sustituye_a` (tabla `aip`) y `renueva_a` (tabla WORM), de modo que la
+        cascada de renovación de retención lo alcanza desde la raíz."""
+        if not settings.preservation_enabled:
+            raise PreservationDisabledError(
+                "El reempaquetado de AIP está desactivado (PRESERVATION_ENABLED=false)"
+            )
+        lock_key = _worm_lock_key(self._tenant_slug, payload.expediente_id, _AIP_TIPO)
+        await self._conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+        try:
+            async with legal_hold_compartido(
+                self._conn, self._tenant_slug, payload.expediente_id
+            ):
+                return await self._reempaquetar_aip_locked(payload, actor)
+        finally:
+            await self._conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
+
+    async def _reempaquetar_aip_locked(
+        self, payload: AipReempaquetarRequest, actor: str | None
+    ) -> tuple[AipResponse, bool]:
+        anterior = await self._evt_repo.get_aip(payload.aip_anterior_id)
+        if anterior is None or anterior["expediente_id"] != payload.expediente_id:
+            raise AipNoEncontradoError(str(payload.aip_anterior_id))
+
+        sucesor = await self._evt_repo.get_aip_sucesor(payload.aip_anterior_id)
+        if sucesor is not None:
+            if sucesor["indice_sha256"] == payload.indice_xml_sha256:
+                return _aip_response(sucesor), False
+            raise AipYaSustituidoError(
+                f"el AIP {payload.aip_anterior_id} ya fue sustituido por {sucesor['id']} "
+                "con otro índice"
+            )
+        if anterior["indice_sha256"] == payload.indice_xml_sha256:
+            # Ya embebe ese índice: nada que reempaquetar (idempotente).
+            return _aip_response(anterior), False
+
+        # El índice nuevo tiene que SER una renovación del embebido: su fila WORM es
+        # `firma_lta_renovada` y su cadena `renueva_a` sube por el índice embebido hasta el WORM
+        # `indice` del mismo expediente. Sin esto un XML arbitrario podría colarse como «renovación».
+        indice_record = await self._file_repo.get_by_id_any_state(payload.indice_file_id)
+        if indice_record is None:
+            raise FileNotFoundForPreservationError(str(payload.indice_file_id))
+        if indice_record.sha256 != payload.indice_xml_sha256:
+            raise IndiceNoEsRenovacionError(
+                "el SHA-256 declarado del índice no coincide con el registrado"
+            )
+        fila_indice = await self._worm_repo.get_by_file_id(payload.indice_file_id)
+        if fila_indice is None or fila_indice["tipo"] != "firma_lta_renovada":
+            raise IndiceNoEsRenovacionError(
+                "el índice nuevo no es un artefacto `firma_lta_renovada` protegido"
+            )
+        cadena = await self._worm_repo.cadena_ascendente(fila_indice["id"])
+        raiz = cadena[-1] if cadena else None
+        if (
+            raiz is None
+            or raiz["tipo"] != "indice"
+            or raiz["expediente_id"] != payload.expediente_id
+            or fila_indice["expediente_id"] != payload.expediente_id
+            or anterior["indice_sha256"] not in {f["sha256"] for f in cadena[1:]}
+        ):
+            raise IndiceNoEsRenovacionError(
+                "el índice nuevo no desciende del índice embebido en el AIP anterior "
+                "(mismo expediente)"
+            )
+
+        fila_anterior = await self._worm_repo.get_aip_por_sha256(
+            payload.expediente_id, anterior["aip_sha256"]
+        )
+        if fila_anterior is None:
+            # Sin fila WORM no hay `version_id` ni retención que heredar: no se inventan.
+            raise AipNoEncontradoError(f"{payload.aip_anterior_id} (sin objeto WORM)")
+
+        minio = get_minio()
+        bag_bytes = await self._descargar_aip_anterior(minio, fila_anterior)
+        if aip_sha256(bag_bytes) != anterior["aip_sha256"]:
+            await self._fixity_fallo(payload, anterior["aip_sha256"], aip_sha256(bag_bytes), actor)
+            raise AipAnteriorFixityMismatchError(
+                f"el ZIP del AIP {payload.aip_anterior_id} no coincide con su huella registrada"
+            )
+        try:
+            previo = read_bag_anterior(bag_bytes, expediente_id=payload.expediente_id)
+        except BagAnteriorCorruptoError as exc:
+            await self._fixity_fallo(payload, anterior["aip_sha256"], None, actor, motivo=str(exc))
+            raise AipAnteriorFixityMismatchError(str(exc)) from exc
+
+        content = await _download(minio, indice_record.bucket, indice_record.object_key)
+        if hashlib.sha256(content).hexdigest() != payload.indice_xml_sha256:
+            await self._fixity_fallo(
+                payload, payload.indice_xml_sha256, hashlib.sha256(content).hexdigest(), actor,
+                motivo="indice_sha256_mismatch",
+            )
+            raise FixityMismatchError(
+                f"SHA-256 del índice {payload.indice_file_id} no coincide con el declarado"
+            )
+        nuevo_indice = AipDocMaterial(
+            document_id=previo.indice.document_id,
+            nombre=previo.indice.nombre,
+            content=content,
+            sha256=payload.indice_xml_sha256,
+            mime_type=previo.indice.mime_type or "application/xml",
+        )
+
+        now = datetime.now(tz=UTC)
+        artifact = build_bag(
+            expediente_id=payload.expediente_id,
+            tenant_slug=self._tenant_slug,
+            docs=previo.docs,
+            indice=nuevo_indice,
+            generado=now,
+            actor=actor,
+            pdfa_results=previo.pdfa_results,
+            reempaquetado=ReempaquetadoInfo(
+                aip_anterior_id=str(payload.aip_anterior_id),
+                firma_id=str(payload.firma_id),
+                ordinal=payload.ordinal,
+            ),
+        )
+        zip_hash = aip_sha256(artifact.zip_bytes)
+
+        # Retención: NUNCA menor. El mayor de toda la cadena de AIP y del anterior. C-5/C7: una
+        # cadena sin ninguna fecha (retención diferida a la espera de la valoración) hereda ESO:
+        # sin retención, solo hold.
+        candidatos = [
+            f
+            for f in (
+                fila_anterior["retain_until"],
+                await self._worm_repo.retain_until_maximo_aip(payload.expediente_id),
+            )
+            if f is not None
+        ]
+        retain_until: datetime | None = max(candidatos) if candidatos else None
+        if retain_until is not None and retain_until <= now:
+            raise InvalidRetentionError(
+                "la retención heredada de la cadena de AIP ya venció: no se reempaqueta"
+            )
+        mode = fila_anterior["retention_mode"] if retain_until is not None else None
+        # El hold es «existe un hold activo del expediente» (lo resuelve el servidor, bajo el lock
+        # compartido del hold), en unión con el de la fila anterior (perder un hold es el error caro).
+        holds = await self._worm_repo.holds_activos(payload.expediente_id)
+        legal_hold = bool(holds) or bool(fila_anterior["legal_hold"])
+        origen = "calendario"
+        if retain_until is None:
+            origen = fila_anterior.get("retencion_origen", "valoracion_pendiente")
+            if origen == "valoracion_pendiente" and "valoracion_pendiente" not in holds:
+                raise RetencionDiferidaSinHoldError(
+                    f"expediente_id={payload.expediente_id}: el AIP anterior espera valoración y "
+                    "su hold `valoracion_pendiente` ya no está activo"
+                )
+
+        bucket = preservation_bucket_name(self._tenant_slug)
+        await ensure_object_lock_bucket(minio, bucket)
+        aip_id = uuid.uuid4()
+        safe_expediente = payload.expediente_id.replace("/", "-")
+        object_key = f"aip/{safe_expediente}/{now.date().isoformat()}-{aip_id}.zip"
+        write_result = await minio.put_object(
+            bucket,
+            object_key,
+            io.BytesIO(artifact.zip_bytes),
+            length=len(artifact.zip_bytes),
+            content_type="application/zip",
+            retention=(
+                Retention(mode, retain_until)
+                if retain_until is not None and mode is not None
+                else None
+            ),
+            legal_hold=legal_hold,
+        )
+        version_id = getattr(write_result, "version_id", None)
+        if retain_until is not None and mode is not None:
+            await verificar_retencion_aplicada(
+                minio,
+                bucket,
+                object_key,
+                version_id=version_id,
+                modo_esperado=mode,
+                hasta_esperado=retain_until,
+            )
+        if legal_hold:
+            await verificar_legal_hold_aplicado(minio, bucket, object_key, version_id=version_id)
+        num_copias = await self._evt_repo.current_num_copias()
+        replica_result = await replicate_aip(
+            primary_minio=minio,
+            tenant_slug=self._tenant_slug,
+            primary_bucket=bucket,
+            object_key=object_key,
+            zip_bytes=artifact.zip_bytes,
+            retention_mode=mode,
+            retain_until=retain_until,
+            legal_hold=legal_hold,
+            num_copias=num_copias if num_copias is not None else 1,
+        )
+
+        version = int(anterior["version"]) + 1
+        dedup_key = f"aip:{payload.expediente_id}:{payload.firma_id}:{payload.ordinal}"
+        async with self._conn.transaction():
+            row = await self._evt_repo.insert_aip(
+                {
+                    "id": aip_id,
+                    "expediente_id": payload.expediente_id,
+                    "premis_xml": artifact.premis_xml,
+                    "aip_sha256": zip_hash,
+                    "indice_sha256": payload.indice_xml_sha256,
+                    "num_documentos": len(previo.docs),
+                    "bucket": bucket,
+                    "object_key": object_key,
+                    "aip_bytes": len(artifact.zip_bytes),
+                    "formato": "application/zip",
+                    "retain_until": retain_until,
+                    "retention_mode": mode,
+                    "legal_hold": legal_hold,
+                    "version": version,
+                    "sustituye_a": payload.aip_anterior_id,
+                    "motivo": "renovacion_lta",
+                }
+            )
+            await self._worm_repo.insert(
+                expediente_id=payload.expediente_id,
+                tipo="aip",
+                bucket=bucket,
+                object_key=object_key,
+                version_id=version_id,
+                sha256=zip_hash,
+                retain_until=retain_until,
+                retention_mode=mode,
+                legal_hold=legal_hold,
+                objeto_tipo=fila_anterior["objeto_tipo"],
+                renueva_a=fila_anterior["id"],
+                retencion_origen=origen,
+            )
+            await self._evt_repo.insert_evento(
+                {
+                    "object_ref": payload.expediente_id,
+                    "tipo": "FIJACION",
+                    "resultado": "ok",
+                    "hash_before": anterior["aip_sha256"],
+                    "hash_after": zip_hash,
+                    "detalle": {
+                        "aip_anterior_id": str(payload.aip_anterior_id),
+                        "indice_sha256": payload.indice_xml_sha256,
+                        "payload_verificado_contra": "manifest-sha256 del AIP anterior",
+                    },
+                },
+                agente=actor,
+            )
+            await self._evt_repo.insert_evento(
+                {
+                    "object_ref": payload.expediente_id,
+                    "tipo": "RENOVACION",
+                    "resultado": "ok",
+                    "hash_before": anterior["aip_sha256"],
+                    "hash_after": zip_hash,
+                    "detalle": {
+                        "subtipo": "aip_reempaquetado",
+                        "aip_id": str(aip_id),
+                        "aip_anterior_id": str(payload.aip_anterior_id),
+                        "version": version,
+                        "firma_id": str(payload.firma_id),
+                        "ordinal": payload.ordinal,
+                        "retain_until": _iso(retain_until),
+                        "dedup_key": dedup_key,
+                    },
+                },
+                agente=actor,
+            )
+            if replica_result is not None:
+                await self._evt_repo.insert_evento(
+                    {
+                        "object_ref": payload.expediente_id,
+                        "tipo": "REPLICA",
+                        "resultado": "ok" if replica_result.ok else "fallo",
+                        "hash_after": zip_hash if replica_result.ok else None,
+                        "detalle": replica_result.detalle,
+                    },
+                    agente=actor,
+                )
+            await audit.append(
+                self._conn,
+                tenant_slug=self._tenant_slug,
+                service=_SERVICE,
+                action="aip.reempaquetado",
+                object_type="aip",
+                object_ref=payload.expediente_id,
+                actor=actor,
+                payload={
+                    "aip_id": str(aip_id),
+                    "aip_anterior_id": str(payload.aip_anterior_id),
+                    "version": version,
+                    "firma_id": str(payload.firma_id),
+                    "ordinal": payload.ordinal,
+                    "aip_sha256": zip_hash,
+                    "indice_sha256": payload.indice_xml_sha256,
+                    "retain_until": _iso(retain_until),
+                    "retention_mode": mode,
+                    "legal_hold": legal_hold,
+                    "retencion_origen": origen,
+                },
+                canal=canal_del_acto(actor),
+            )
+        response = _aip_response(row)
+        if replica_result is not None:
+            response.replicado = replica_result.ok
+            response.replica_target = replica_result.target
+            response.replica_copias_hechas = replica_result.copias_hechas
+        return response, True
+
+    async def _descargar_aip_anterior(self, minio, fila_worm) -> bytes:
+        kwargs = {"version_id": fila_worm["version_id"]} if fila_worm["version_id"] else {}
+        obj = await minio.get_object(fila_worm["bucket"], fila_worm["object_key"], **kwargs)
+        try:
+            return await obj.read()
+        finally:
+            close = getattr(obj, "close", None)
+            if close is not None:
+                close()
+
+    async def _fixity_fallo(
+        self,
+        payload: AipReempaquetarRequest,
+        esperado: str,
+        obtenido: str | None,
+        actor: str | None,
+        *,
+        motivo: str = "sha256_mismatch",
+    ) -> None:
+        """Rastro (evento FIJACION/fallo + asiento) ANTES de abortar, como `_resolve_and_verify`."""
+        await self._evt_repo.insert_evento(
+            {
+                "object_ref": payload.expediente_id,
+                "tipo": "FIJACION",
+                "resultado": "fallo",
+                "hash_before": esperado,
+                "hash_after": obtenido,
+                "detalle": {
+                    "aip_anterior_id": str(payload.aip_anterior_id),
+                    "motivo": motivo,
+                    "contexto": "aip_reempaquetado",
+                },
+            },
+            agente=actor,
+        )
+        await audit.append(
+            self._conn,
+            tenant_slug=self._tenant_slug,
+            service=_SERVICE,
+            action="aip.reempaquetado_fixity_fallo",
+            object_type="aip",
+            object_ref=payload.expediente_id,
+            actor=actor,
+            payload={
+                "aip_anterior_id": str(payload.aip_anterior_id),
+                "hash_esperado": esperado,
+                "hash_obtenido": obtenido,
+                "motivo": motivo,
+            },
+            canal=canal_del_acto(actor),
+        )
+
+
+def _aip_response(row) -> AipResponse:
+    """`AipResponse` desde una fila cruda de `aip` (con las columnas de versión)."""
+    return AipResponse(**dict(row))

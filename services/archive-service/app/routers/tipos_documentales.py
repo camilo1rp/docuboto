@@ -18,9 +18,15 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from orpycamcp_common import audit
 
 from app.core.actor import Actor, require_actor
-from app.core.clearance import require_permission
+from app.core.clearance import (
+    check_permission,
+    mensaje_denegacion,
+    nivel_efectivo,
+    require_permission,
+)
 from app.core.database import get_db_conn
 from app.repositories.archive_repository import ArchiveRepository
 from app.schemas.archive import (
@@ -46,6 +52,37 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
+async def _exigir_nivel_difusion(
+    conn: asyncpg.Connection, tenant_slug: str, actor: Actor
+) -> None:
+    """Cambiar `publicable` es una decisión de DIFUSIÓN a internet (Ley 1712/2014 art. 12):
+    exige `USUA_PERM_TRD` nivel 3, no el nivel con el que se edita el resto del catálogo
+    (C-4/C10). La conexión ya trae el `search_path` del tenant (lo fijó el gate de ruta)."""
+    if await check_permission(conn, actor.id, "USUA_PERM_TRD", 3):
+        return
+    try:  # traza best-effort de la denegación, nunca un 500 por auditoría
+        await audit.append_denial(
+            conn,
+            tenant_slug=tenant_slug,
+            service="archive-service",
+            actor=str(actor.id),
+            perm_name="USUA_PERM_TRD",
+            min_crud=3,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "forbidden",
+            "detail": mensaje_denegacion(
+                "USUA_PERM_TRD", 3, await nivel_efectivo(conn, actor.id, "USUA_PERM_TRD")
+            ),
+            "status": 403,
+        },
+    )
+
+
 def _not_found() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -68,6 +105,8 @@ async def create_tipo(
     actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TipoDocumentalResponse:
+    if payload.publicable:
+        await _exigir_nivel_difusion(conn, tenant_slug, actor)
     service = TipoDocumentalService(conn, tenant_slug)
     try:
         return await service.create(payload.model_dump(), actor=actor.id)
@@ -119,8 +158,16 @@ async def update_tipo(
     actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TipoDocumentalResponse:
+    cambios = payload.model_dump(exclude_unset=True)
     service = TipoDocumentalService(conn, tenant_slug)
-    row = await service.update(tipo_id, payload.model_dump(exclude_unset=True), actor=actor.id)
+    # La decisión de «¿esto cambia la difusión?» se toma en el servicio, sobre la fila BLOQUEADA
+    # (`FOR UPDATE`): decidirla aquí con una lectura suelta dejaba una carrera entre dos PATCH.
+    row = await service.update(
+        tipo_id,
+        cambios,
+        actor=actor.id,
+        exigir_difusion=lambda: _exigir_nivel_difusion(conn, tenant_slug, actor),
+    )
     if row is None:
         raise _not_found()
     return row

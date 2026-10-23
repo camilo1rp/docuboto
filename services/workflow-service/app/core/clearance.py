@@ -101,7 +101,7 @@ def require_permission(perm_name: str, min_crud: int = 1):
                 },
             )
         schema = tenant_schema(x_tenant_slug)  # valida + normaliza (fail-closed 400)
-        await conn.execute(f'SET search_path TO "{schema}", public')
+        await conn.execute(f'SET search_path TO "{schema}"')
         if not await check_permission(conn, user_id, perm_name, min_crud):
             # Traza best-effort del acceso denegado (RF-SEG / MoReq). Solo para un
             # usuario IDENTIFICADO (user_id no nulo) — la rama sin X-Tenant-Slug ya

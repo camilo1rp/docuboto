@@ -56,7 +56,7 @@ def _make_schema() -> str:
 
 async def _apply(conn: asyncpg.Connection, schema: str, path) -> None:  # noqa: ANN001
     async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+        await conn.execute(f'SET LOCAL search_path = "{schema}"')
         await conn.execute(path.read_text())
 
 
@@ -78,7 +78,7 @@ async def test_migration_007_nulls_old_embeddings_upgrades_column_and_index(
             if path.name not in _PRE_007_FILES:
                 continue
             await _apply(db_conn, schema, path)
-        await db_conn.execute(f'SET search_path = "{schema}", public')
+        await db_conn.execute(f'SET search_path = "{schema}"')
 
         # Fila PRE-migración: embedding real de dim 64 (formato de la columna
         # original, migración 001).
@@ -87,7 +87,7 @@ async def test_migration_007_nulls_old_embeddings_upgrades_column_and_index(
             """
             INSERT INTO knowledge_chunk
                 (source_type, source_ref, texto, embedding, nivel_seguridad)
-            VALUES ('radicado', 'MIG007-1', 'contenido dim64 pre-migracion', $1::vector, 1)
+            VALUES ('radicado', 'MIG007-1', 'contenido dim64 pre-migracion', $1::public.vector, 1)
             """,
             literal_64,
         )
@@ -124,7 +124,8 @@ async def test_migration_007_nulls_old_embeddings_upgrades_column_and_index(
             "WHERE attrelid = $1::regclass AND attname = 'embedding' AND NOT attisdropped",
             f'"{schema}".knowledge_chunk',
         )
-        assert col_type == "vector(384)"
+        # sin `public` en el path el tipo (de pgvector, en public) sale calificado
+        assert col_type in ("vector(384)", "public.vector(384)")
 
         hnsw_indexdef = await db_conn.fetchval(
             "SELECT indexdef FROM pg_indexes "
@@ -154,7 +155,7 @@ async def test_migration_007_nulls_old_embeddings_upgrades_column_and_index(
             "WHERE attrelid = $1::regclass AND attname = 'embedding' AND NOT attisdropped",
             f'"{schema}".knowledge_chunk',
         )
-        assert col_type_again == "vector(384)"
+        assert col_type_again in ("vector(384)", "public.vector(384)")
 
         hnsw_count_after_second_apply = await db_conn.fetchval(
             "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ix_knowledge_embedding_hnsw'",

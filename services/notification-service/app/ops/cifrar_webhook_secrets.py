@@ -105,7 +105,7 @@ async def cifrar_tenant(
 ) -> tuple[int, int]:
     """Cifra los secretos en claro de UN tenant. Devuelve (hechas, fallidas)."""
     slug = webhook_secrets.slug_from_schema(schema)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     if not await migracion_009_aplicada(conn, schema):
         print(f"  [{slug}] migración 009 sin aplicar: se omite")
         return (0, 0)
@@ -127,7 +127,7 @@ async def cifrar_tenant(
     for wid in await WebhookRepository(conn).fetch_plaintext_ids():
         try:
             async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await conn.execute(f'SET LOCAL search_path = "{schema}"')
                 repo = WebhookRepository(conn)
                 fila = await repo.get_plaintext_for_update(wid)
                 if fila is None:
@@ -172,7 +172,7 @@ async def verificar(conn: asyncpg.Connection) -> int:
     en_claro = 0
     por_version: dict[int, int] = {}
     for schema in await tenant_schemas(conn):
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         if not await migracion_009_aplicada(conn, schema):
             if await conn.fetchval("SELECT to_regclass('webhook_subscription') IS NOT NULL"):
                 print(f"  [{schema}] tiene webhooks pero la migración 009 no está aplicada")

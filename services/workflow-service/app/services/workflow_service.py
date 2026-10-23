@@ -1068,7 +1068,7 @@ class WorkflowService:
         RBAC — igual que la dependency — porque `get_db_conn` no lo hace, y deja la
         misma traza de denegación (best-effort) para no romper la simetría forense.
         """
-        await self._conn.execute(f'SET search_path TO "{tenant_schema(self._tenant_slug)}", public')
+        await self._conn.execute(f'SET search_path TO "{tenant_schema(self._tenant_slug)}"')
         if await check_permission(self._conn, actor, perm_name):
             return
         if audit is not None and actor is not None:
@@ -1115,7 +1115,7 @@ class WorkflowService:
         `check_permission` para "cualquiera de N", así que se prueba en orden y
         se corta en el primero que otorgue.
         """
-        await self._conn.execute(f'SET search_path TO "{tenant_schema(self._tenant_slug)}", public')
+        await self._conn.execute(f'SET search_path TO "{tenant_schema(self._tenant_slug)}"')
         for perm_name in _SCOPE_WIDENING_PERMS:
             if await check_permission(self._conn, actor, perm_name):
                 return

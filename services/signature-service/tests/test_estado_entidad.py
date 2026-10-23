@@ -61,6 +61,8 @@ class _Pool:
 def _request(pool: _Pool) -> SimpleNamespace:
     return SimpleNamespace(
         headers={"X-Tenant-Slug": "demo"},
+        method="POST",
+        scope={"path": "/api/v1/signature/verify"},
         app=SimpleNamespace(state=SimpleNamespace(db_pool=pool)),
     )
 
@@ -118,7 +120,7 @@ async def test_una_entidad_operativa_recibe_su_conexion(monkeypatch: pytest.Monk
     gen, entregada = await _abrir(conn, monkeypatch)
 
     assert entregada is conn
-    assert conn.ejecutados == ['SET search_path = "tenant_demo", public']
+    assert conn.ejecutados == ['SET search_path = "tenant_demo"']
     with pytest.raises(StopAsyncIteration):
         await gen.__anext__()
     assert conn.ejecutados[-1] == "SET search_path = public"

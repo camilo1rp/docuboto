@@ -55,7 +55,7 @@ def test_base_worm_fecha_futura_es_fail_closed() -> None:
             closed_at=datetime.now(tz=UTC),
             fecha_extrema_final=date(HOY.year + 100, 12, 31),
             total_years=10,
-            margen_dias=settings.worm_fondo_acumulado_margen_dias,
+            margen_dias=settings.worm_piso_margen_dias,
             hoy=HOY,
         )
         is None

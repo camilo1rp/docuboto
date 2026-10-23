@@ -28,6 +28,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from app.clients.tenant_client import TenantServiceError
+from app.core.config import settings
 from app.core.database import (
     get_db_conn,
     get_public_tenant_conn,
@@ -37,6 +38,7 @@ from app.core.database import (
     get_tenant_conn,
 )
 from app.main import app
+from app.services.ventanilla_service import VentanillaService
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -112,7 +114,9 @@ class FakeTenantClient:
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
     conn.fetchval.return_value = 1
-    conn.execute.return_value = None
+    # Tag de comando de un UPDATE de una fila: `set_classification` lo lee (`_filas`) para
+    # saber si el UPDATE aplicó; `None` se leería como «0 filas» (fail-closed).
+    conn.execute.return_value = "UPDATE 1"
     conn.fetch.return_value = []
     conn.fetchrow.return_value = None
     # `async with conn.transaction()` (auditoría atómica): transaction() es una
@@ -311,3 +315,27 @@ def _concordancia_sin_consulta(request: pytest.FixtureRequest, monkeypatch: pyte
         return None
 
     monkeypatch.setattr("app.routers.documents.exigir_concordancia", _nada)
+
+
+#: Clave ALTCHA de las pruebas (>= 32 bytes). La real nunca está en el repositorio.
+CLAVE_ALTCHA_PRUEBA = "clave-altcha-de-pruebas-0123456789abcdef"
+
+
+@pytest.fixture(autouse=True)
+def _antirrobots_en_pruebas(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fija la clave ALTCHA y, salvo en las suites del propio antirrobots, resuelve el reto.
+
+    Las suites de ventanilla/PQRS prueban OTRA cosa (política, anexos, directorio) y
+    mandan un `altcha` de relleno: ahí el gate se sustituye por un no-op. Las suites
+    `test_altcha*` y `*antirrobots*` ejercitan el gate REAL de punta a punta; si el
+    gate se pudiera saltar por accidente, esas suites caerían.
+    """
+    monkeypatch.setattr(settings, "altcha_hmac_key", CLAVE_ALTCHA_PRUEBA)
+    nodeid = request.node.nodeid
+    if "altcha" in nodeid or "antirrobots" in nodeid:
+        return
+
+    async def _resuelto(self: VentanillaService, payload: object) -> None:
+        return None
+
+    monkeypatch.setattr(VentanillaService, "_exigir_antirrobots", _resuelto)

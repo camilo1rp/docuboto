@@ -52,8 +52,11 @@ def _candidato(
     worm: datetime | None = None,
     lote_existente: str | None = None,
     nivel: int = 1,
+    holds_activos: str | None = None,
+    seleccionado_conservar: bool = False,
 ) -> dict:
     return {
+        "seleccionado_conservar": seleccionado_conservar,
         "id": exp_id or uuid.uuid4(),
         "code": code,
         "name": "Contratos 2020",
@@ -78,6 +81,8 @@ def _candidato(
         # que el test ejerza la traducción.
         "worm_retain_until": worm or datetime.min.replace(tzinfo=UTC),
         "lote_existente": lote_existente,
+        # C-5 / C7: motivos de las retenciones legales activas (`None` = ninguna).
+        "holds_activos": holds_activos,
     }
 
 
@@ -102,7 +107,11 @@ def _lote_row(codigo="LOTE-2026-001") -> dict:
 async def _proponer(client, mock_conn, candidatos, ids=None):
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.side_effect = [_CLEARANCE, _lote_row()]
-    mock_conn.fetch.return_value = candidatos
+    # candidatos; luego los dos `unidades_prestadas_de_expedientes` de C11 (el de
+    # lectura y el de la re-comprobación bajo bloqueo): ninguna unidad prestada.
+    # y la congelación de las bajas de soporte (C14): ninguna constancia cita estos expedientes.
+    # candidatos, prestadas, tardías, constancias sin huella, constancias congeladas
+    mock_conn.fetch.side_effect = [candidatos, [], [], [], []]
     return await client.post(
         RUTA,
         json={
@@ -215,6 +224,74 @@ async def test_5_no_puede_estar_en_dos_lotes(client_with_conn) -> None:
     assert "LOTE-2026-000" in r["detalle"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("motivo", ["judicial", "valoracion_pendiente", "fiscal,judicial"])
+async def test_6_una_retencion_legal_activa_no_entra_y_dice_el_motivo(
+    client_with_conn, motivo: str
+) -> None:
+    """Condición 6 (C-5 / C7, ADR-043). Un expediente con hold `valoracion_pendiente` no tiene
+    `worm_retain_until` (NULL -> `-infinity`) y parecería VENCIDO: sin esta condición el lote se
+    avalaría y la purga fallaría al ejecutar. Se informa el MOTIVO, nunca el fundamento.
+
+    Mutación: borrar la condición 6 de `_motivo_de_rechazo` -> el candidato (sin candado WORM)
+    entra y este test cae."""
+    client, mock_conn = client_with_conn
+    resp = await _proponer(client, mock_conn, [_candidato(holds_activos=motivo)])
+
+    assert resp.status_code == 409
+    r = resp.json()["detail"]["rechazados"][0]
+    assert r["motivo"] == "legal_hold_activo"
+    assert motivo.split(",")[0] in r["detalle"]
+
+
+@pytest.mark.asyncio
+async def test_6bis_sin_registro_de_holds_se_rechaza_fail_closed(client_with_conn) -> None:
+    """Si el registro de holds no existe en el schema, el repositorio devuelve el centinela y NO se
+    admite: no se puede afirmar que no hay retención. Mutación: tratar el centinela como «sin
+    holds» -> el candidato entra."""
+    client, mock_conn = client_with_conn
+    resp = await _proponer(client, mock_conn, [_candidato(holds_activos="__desconocido__")])
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["rechazados"][0]["motivo"] == "estado_retencion_desconocido"
+
+
+@pytest.mark.asyncio
+async def test_6ter_la_retencion_se_levanta_y_el_mismo_expediente_entra(client_with_conn) -> None:
+    """Control positivo de la 6: con el hold levantado (`None`) y sin candado WORM, entra."""
+    client, mock_conn = client_with_conn
+    resp = await _proponer(client, mock_conn, [_candidato(holds_activos=None)])
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_6quater_el_hold_gana_sobre_un_candado_ya_expirado(client_with_conn) -> None:
+    client, mock_conn = client_with_conn
+    pasado = datetime.now(tz=UTC) - timedelta(days=10)
+    resp = await _proponer(
+        client, mock_conn, [_candidato(worm=pasado, holds_activos="administrativo")]
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["rechazados"][0]["motivo"] == "legal_hold_activo"
+
+
+@pytest.mark.asyncio
+async def test_6quinquies_el_repositorio_pide_los_holds_en_la_misma_consulta(
+    client_with_conn,
+) -> None:
+    """La condición va en la consulta de candidatos (no en una comprobación previa) y filtra solo
+    los ACTIVOS (`levantado_at IS NULL`) del expediente."""
+    client, mock_conn = client_with_conn
+    await _proponer(client, mock_conn, [_candidato()])
+    sql = next(
+        c.args[0]
+        for c in mock_conn.fetch.call_args_list
+        if isinstance(c.args[0], str) and "AS holds_activos" in c.args[0]
+    )
+    assert "preservacion_legal_hold" in sql
+    assert "h.levantado_at IS NULL" in sql and "h.expediente_id = e.id::text" in sql
+
+
 # ── El informe, que es lo que hace utilizable el endpoint ────────────────────
 
 
@@ -251,7 +328,8 @@ async def test_un_expediente_fuera_de_alcance_no_se_distingue_de_uno_inexistente
     fantasma = str(uuid.uuid4())
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.side_effect = [_CLEARANCE, _lote_row()]
-    mock_conn.fetch.return_value = []  # el WHERE por clearance no lo devolvió
+    # el WHERE por clearance no lo devolvió; + el `unidades_prestadas_de_expedientes` (vacío)
+    mock_conn.fetch.side_effect = [[], []]
 
     resp = await client.post(
         RUTA,
@@ -310,3 +388,19 @@ async def test_sin_nivel_crud_no_se_propone_nada(client_with_conn) -> None:
 
     assert resp.status_code == 403
     mock_conn.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_un_expediente_seleccionado_para_conservacion_no_entra_al_lote(client_with_conn) -> None:
+    """Selección (S) con `conservar`: forma parte de la muestra que se conserva (cierre del lote C,
+    ARCH #4). Mutación: quitar la condición de `_motivo_de_rechazo` deja pasar el expediente."""
+    client, mock_conn = client_with_conn
+    resp = await _proponer(
+        client,
+        mock_conn,
+        [_candidato(code="EXP-BUENO"), _candidato(code="EXP-MUESTRA", seleccionado_conservar=True)],
+    )
+    assert resp.status_code == 201, resp.text
+    cuerpo = resp.json()
+    assert [i["expediente_code"] for i in cuerpo["items"]] == ["EXP-BUENO"]
+    assert [r["motivo"] for r in cuerpo["rechazados"]] == ["seleccionado_para_conservacion"]

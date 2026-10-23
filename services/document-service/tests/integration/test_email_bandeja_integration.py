@@ -35,7 +35,7 @@ BENITO = uuid.uuid4()
 
 
 async def _preparar(conn: asyncpg.Connection, slug: str) -> tuple[EmailMensajeRepository, uuid.UUID]:
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
     cuenta_id = uuid.uuid4()
     await conn.execute(
         """

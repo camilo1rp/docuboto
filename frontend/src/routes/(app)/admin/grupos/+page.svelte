@@ -355,6 +355,16 @@
 </svelte:head>
 
 <div class="grupos-page">
+  {#if data.sinAprobadorDesclasificacion === true}
+    <p class="grupos-page__aviso" role="alert">
+      <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+      <span>
+        Ningún grupo tiene <code>PERM_RECLASIFICAR</code> con nivel 4: nadie puede aprobar una desclasificación
+        de radicados clasificados y las solicitudes quedarán sin resolver. Asigne ese nivel a un grupo
+        de aprobadores.
+      </span>
+    </p>
+  {/if}
   <CatalogCrudPanel
     title="Grupos"
     ariaLabel="Lista de grupos"
@@ -560,6 +570,17 @@
 </Drawer>
 
 <style lang="scss">
+  .grupos-page__aviso {
+    display: flex;
+    gap: var(--op-space-2);
+    margin: 0 0 var(--op-space-3);
+    padding: var(--op-space-3);
+    border: 1px solid var(--op-warning);
+    border-radius: var(--op-radius);
+    background: var(--op-surface);
+    color: var(--op-text);
+  }
+
   .grupos-page {
     padding: var(--op-space-5);
     max-width: var(--op-content-max);

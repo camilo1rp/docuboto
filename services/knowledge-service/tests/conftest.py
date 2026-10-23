@@ -56,10 +56,18 @@ cfg_module.settings.embedding_provider = "stub"
 # dejar que la llamada real llegue a `httpx`/al SDK.
 cfg_module.settings.ai_provider = "disabled"
 
-TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
+# Desde ADR-037 las rutas de consulta exigen identidad (``get_actor``): 401 sin X-User-Id.
+USER_ID = "00000000-0000-4000-8000-0000000000a1"
+TENANT_HEADERS = {"X-Tenant-Slug": "demo", "X-User-Id": USER_ID}
 
 # Token compartido que usan los tests que ejercen el endpoint /ingest.
 TEST_INTERNAL_TOKEN = "test-internal-service-token-xxx"
+
+
+def consultas_a(conn: AsyncMock, tabla: str) -> list[str]:
+    """SQL de las lecturas ``fetchrow`` que tocan ``tabla`` (la resolución de clearance
+    también usa ``fetchrow``: contar llamadas a secas ya no distingue una de otra)."""
+    return [c.args[0] for c in conn.fetchrow.call_args_list if tabla in str(c.args[0])]
 
 
 @pytest.fixture
@@ -93,3 +101,19 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac, conn
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _gates_abiertos(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Abre los dos gates nuevos (ADR-037) para que las suites de lógica no dependan de ellos.
+
+    Quien prueba los gates en sí lo declara con ``@pytest.mark.gates_reales``: entonces
+    ``check_permission`` y la lectura de la bandera son los de verdad (contra el ``conn``
+    simulado de cada prueba).
+    """
+    if request.node.get_closest_marker("gates_reales"):
+        return
+    from app.core import clearance
+
+    monkeypatch.setattr(clearance, "check_permission", AsyncMock(return_value=True))
+    monkeypatch.setattr(clearance, "asistente_habilitado", AsyncMock(return_value=True))

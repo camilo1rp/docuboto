@@ -22,6 +22,7 @@ from orpycamcp_common.tenant import (
 from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from app.core.config import settings
+from app.core.conservacion import admitir_conservacion
 
 if TYPE_CHECKING:
     from app.clients.tenant_client import TenantServiceClient
@@ -100,8 +101,8 @@ def get_redis(request: Request) -> Any:
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     """Conexión con search_path al schema del tenant (X-Tenant-Slug). ADR-002/012.
 
-    Las tablas de radicación viven en tenant_{slug}; `public` queda en el
-    search_path para resolver el registro de tenants y las extensiones globales.
+    Las tablas de radicación viven en tenant_{slug}; el search_path es SOLO el
+    tenant (ADR-002, addendum C-7): lo global se califica `public.` en el SQL.
     """
     slug = request.headers.get("X-Tenant-Slug", "")
     schema = tenant_schema(slug)
@@ -111,12 +112,21 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
         # una entidad tiene que retirarle el acceso, y un schema inexistente es un
         # 503 limpio, no un `UndefinedTableError` (500). Fail-CLOSED: si el registro
         # no responde, no se atiende.
-        if (veto := await veredicto_entidad(conn, slug)) is not None:
+        if (veto := await veredicto_entidad(conn, slug)) is not None and not (
+            # Lectura obligatoria (ADR-035/039): el índice del art. 20 se sirve suspendida.
+            await admitir_conservacion(
+                conn,
+                slug=slug,
+                metodo=request.method,
+                ruta=request.scope["path"],
+                token=request.headers.get("X-Internal-Token"),
+            )
+        ):
             raise HTTPException(
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
             )
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:
@@ -142,7 +152,7 @@ async def acquire_tenant(tenant_slug: str) -> AsyncGenerator[asyncpg.Connection,
     """
     schema = tenant_schema(tenant_slug)
     async with get_pool().acquire() as conn:
-        await conn.execute(f'SET search_path = "{schema}", public')
+        await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn
         finally:
@@ -207,7 +217,7 @@ async def public_tenant_conn_atencion(
             raise _no_encontrado()
         if escritura and atencion is not AtencionPublica.COMPLETA:
             raise _canal_no_disponible()
-        await conn.execute(f'SET search_path = "{_schema_de(slug)}", public')
+        await conn.execute(f'SET search_path = "{_schema_de(slug)}"')
         try:
             yield conn, atencion
         finally:

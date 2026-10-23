@@ -57,3 +57,18 @@ Estado actual: existe `trd_series` (code, name, `retention_years`, `total_retent
 - [ADR-002](ADR-002-multi-tenancy-schema-isolation.md) — la TRD vive por `tenant_{slug}`.
 - [ADR-007](ADR-007-metadatos-jsonb.md) / E03 — la disposición calculada se materializa en `disposition` del radicado/expediente.
 - E14 — la Sección del CCD se corresponde con la dependencia del organigrama (no se duplica).
+
+## Addendum (2026-10-20) — C-4, [ADR-040](ADR-040-cuadro-de-clasificacion-derivado-y-fases-de-la-trd.md)
+
+- **Punto 2 y «Consecuencias»**: «se conserva `total_retention` como columna derivada» y «los campos
+  `retention_years`/`total_retention` previos se mantienen» **dejan de ser ciertos**. La migración `069` los
+  elimina de la tabla: las dos fases son la única fuente y obligatorias (CHECK `trd_series_fases_check`). La API
+  los sigue publicando en la **respuesta** como derivados de solo lectura (gestión y gestión + central) y los
+  rechaza en la escritura (`422 extra_forbidden`).
+- **«Jerarquía de dos niveles»**: era una intención; ahora la impone el motor (trigger `assert_trd_parent_mismo_tipo`,
+  `trd_jerarquia_dos_niveles`): el padre debe ser una serie raíz y una fila con hijos no puede ganar padre.
+- **«La Sección es la dependencia de E14» / «sin duplicar el organigrama»**: pasa a ser un mecanismo real. Cada
+  versión de la serie TRD declara su(s) dependencia(s) productora(s) (`trd_serie_dependencia_productora`, por
+  `dependencias.codigo`) y `GET /api/v1/trd/cuadro` deriva fondo > sección > subsección > serie > subserie del
+  organigrama, sin capturarlo dos veces.
+

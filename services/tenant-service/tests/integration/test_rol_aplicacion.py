@@ -74,7 +74,7 @@ async def ctx() -> AsyncGenerator[Ctx, None]:
         await owner.execute(f'CREATE SCHEMA "{schema}"')
         for path in runner._sql_files(runner.TENANT_DIR):
             async with owner.transaction():
-                await owner.execute(f'SET LOCAL search_path = "{schema}", public')
+                await owner.execute(f'SET LOCAL search_path = "{schema}"')
                 await owner.execute(path.read_text())
         # Tablas mínimas de workflow-service (otro servicio) para la correlación por código.
         await owner.execute(
@@ -178,7 +178,7 @@ async def test_suspension_asienta_antes_y_despues(ctx: Ctx) -> None:
 
 
 async def test_parametro_asienta_valor_previo(ctx: Ctx) -> None:
-    await ctx.app.execute(f'SET search_path = "{ctx.schema}", public')
+    await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     repo = ConfigRepository(ctx.app)
     existia, antes = await repo.upsert_param("consec_digits", 9, None)
     assert existia is True and antes == 6  # sembrado por 002_params.sql
@@ -194,7 +194,7 @@ async def test_dependencia_con_paso_vivo_se_detecta_por_codigo(ctx: Ctx) -> None
     await ctx.owner.execute(
         f'INSERT INTO "{ctx.schema}".workflow_rules (assign_to_dept_code) VALUES (901)'
     )
-    await ctx.app.execute(f'SET search_path = "{ctx.schema}", public')
+    await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     vivos = await DependenciaRepository(ctx.app).tramites_vivos(901)
     assert vivos == {"pasos_vivos": 1, "reglas": 1}
     assert await DependenciaRepository(ctx.app).tramites_vivos(999) == {
@@ -209,7 +209,7 @@ async def test_paso_en_curso_cuenta_como_tramite_vivo(ctx: Ctx) -> None:
         f'INSERT INTO "{ctx.schema}".flow_steps (to_dept_code, status) VALUES '
         "(903, 'in_progress'), (903, 'completed'), (903, 'cancelled')"
     )
-    await ctx.app.execute(f'SET search_path = "{ctx.schema}", public')
+    await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     vivos = await DependenciaRepository(ctx.app).tramites_vivos(903)
     assert vivos == {"pasos_vivos": 1, "reglas": 0}
 
@@ -222,7 +222,7 @@ async def test_regla_con_condicion_por_codigo_cuenta_como_viva(ctx: Ctx) -> None
         "(1, '[{\"field\": \"origin_dept_code\", \"op\": \"in\", \"value\": [906, 907]}]'), "
         "(1, '[{\"field\": \"subject\", \"op\": \"contains\", \"value\": \"905\"}]')"
     )
-    await ctx.app.execute(f'SET search_path = "{ctx.schema}", public')
+    await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     repo = DependenciaRepository(ctx.app)
     assert (await repo.tramites_vivos(905))["reglas"] == 1
     assert (await repo.tramites_vivos(907))["reglas"] == 1

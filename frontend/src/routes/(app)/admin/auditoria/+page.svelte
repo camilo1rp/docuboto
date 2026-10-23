@@ -48,7 +48,6 @@
   import Drawer from "$lib/components/ui/Drawer.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
-  import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
   import Loader from "$lib/components/ui/Loader.svelte";
   import { mensajeError } from "$lib/utils/apiError.js";

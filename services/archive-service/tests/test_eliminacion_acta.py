@@ -77,6 +77,12 @@ def _item(*, code="EXP-2020-0001", nivel=1) -> dict:
     }
 
 
+def _fetch_items_sin_soportes(sql, *args):
+    """`fetch` del acta: el inventario del lote y, aparte, las bajas de soporte congeladas (C14,
+    ADR-043) -- aquí ninguna constancia cita estos expedientes."""
+    return [] if "eliminacion_lote_soporte_citado" in str(sql) else [_item()]
+
+
 def _acta_row(*, firma_estado="pendiente_firma", last_error=None) -> dict:
     xml = construir_acta_xml(
         lote=_lote_row(),
@@ -260,7 +266,7 @@ async def test_generar_congela_el_acta_y_ancla_su_sha_en_la_auditoria(client_wit
         _acta_row(firma_estado="firmado"),  # lectura final de la respuesta
         _CLEARANCE,
     ]
-    mock_conn.fetch.return_value = [_item()]
+    mock_conn.fetch.side_effect = _fetch_items_sin_soportes
 
     with _sellado(signed=_Firmada()):
         resp = await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
@@ -307,7 +313,7 @@ async def test_el_acta_no_se_regenera(client_with_conn) -> None:
         None,  # plazo_oposicion_efectivo (ADR-035): sin interrupcion
         None,  # el INSERT no creó nada
     ]
-    mock_conn.fetch.return_value = [_item()]
+    mock_conn.fetch.side_effect = _fetch_items_sin_soportes
 
     resp = await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
 
@@ -363,7 +369,7 @@ async def test_si_no_hay_sello_el_acta_QUEDA_igual_con_el_motivo_a_la_vista(
         _acta_row(last_error="sello_ausente"),
         _CLEARANCE,
     ]
-    mock_conn.fetch.return_value = [_item()]
+    mock_conn.fetch.side_effect = _fetch_items_sin_soportes
 
     with _sellado(seal_absent=True):
         resp = await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
@@ -396,7 +402,7 @@ async def test_el_acta_se_sella_como_acta_eliminacion_y_sobre_SU_xml(
         _acta_row(firma_estado="firmado"),  # lectura final de la respuesta
         _CLEARANCE,
     ]
-    mock_conn.fetch.return_value = [_item()]
+    mock_conn.fetch.side_effect = _fetch_items_sin_soportes
 
     with _sellado(signed=_Firmada()) as firmar:
         await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
@@ -529,7 +535,7 @@ async def test_una_firma_SIN_artefacto_no_se_marca_firmada(client_with_conn) -> 
         _acta_row(last_error="sellado_sin_artefacto"),
         _CLEARANCE,
     ]
-    mock_conn.fetch.return_value = [_item()]
+    mock_conn.fetch.side_effect = _fetch_items_sin_soportes
 
     with _sellado(signed=_SinArtefacto()):
         resp = await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)
@@ -583,7 +589,7 @@ def _entorno_firmada(mock_conn):
         _acta_row(firma_estado="firmado"),
         _CLEARANCE,
     ]
-    mock_conn.fetch.return_value = [_item()]
+    mock_conn.fetch.side_effect = _fetch_items_sin_soportes
 
 
 @pytest.mark.asyncio
@@ -718,7 +724,7 @@ async def test_sin_sello_NO_se_llega_siquiera_a_pedir_el_candado(client_with_con
         _acta_row(last_error="sello_ausente"),
         _CLEARANCE,
     ]
-    mock_conn.fetch.return_value = [_item()]
+    mock_conn.fetch.side_effect = _fetch_items_sin_soportes
 
     with _sellado(seal_absent=True), _worm(_WormOk()) as proteger:
         await client.post(f"{BASE}/acta", json=CUERPO, headers=TENANT_HEADERS)

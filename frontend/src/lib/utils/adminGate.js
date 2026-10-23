@@ -47,8 +47,35 @@ export const ADMIN_AREA_PERMISSIONS = {
   terceros: ["PERM_RADI"],
   colas: ["PERM_DLQ_ADMIN"],
   interoperabilidad: ["USUA_PERM_EXPEDIENTE", "PERM_RADI"],
-  preservacion: ["USUA_PERM_EXPEDIENTE"],
+  // Plan, índices y WORM los lee USUA_PERM_EXPEDIENTE; la faceta de sellos de archivo (C-6,
+  // ADR-042) la lee USUA_PERM_ADMIN con nivel >= 3. Quien tiene solo lo segundo entra al área
+  // (ver `ADMIN_AREA_MIN_LEVEL`) y las demás facetas le responderán 403 por sí mismas.
+  preservacion: ["USUA_PERM_EXPEDIENTE", "USUA_PERM_ADMIN"],
 };
+
+/**
+ * Nivel CRUD mínimo con que un permiso del mapa abre el área, cuando no basta tenerlo (el
+ * resto de permisos entran con cualquier nivel). Espejo del `min_crud` del backend.
+ * @type {Record<string, Record<string, number>>}
+ */
+export const ADMIN_AREA_MIN_LEVEL = {
+  preservacion: { USUA_PERM_ADMIN: 3 },
+};
+
+/**
+ * ¿Abre `pathname` con estos permisos y niveles? Es el criterio del layout de /admin:
+ * algún permiso del área presente Y, si el área fija un nivel mínimo para él, con ese nivel.
+ * @param {string} pathname
+ * @param {string[]} permisos
+ * @param {Record<string, number>} [niveles] `permission_levels`
+ */
+export function accesoAdmin(pathname, permisos, niveles = {}) {
+  const requeridos = permisosRequeridosAdmin(pathname);
+  if (!requeridos) return true;
+  const segmento = pathname.replace(/^\/admin\/?/, "").split("/")[0];
+  const minimos = ADMIN_AREA_MIN_LEVEL[segmento] ?? {};
+  return requeridos.some((p) => permisos.includes(p) && (niveles?.[p] ?? 0) >= (minimos[p] ?? 0));
+}
 
 /**
  * Permisos de los que basta uno para entrar a `pathname`, o `null` si la ruta

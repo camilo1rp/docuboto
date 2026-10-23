@@ -32,7 +32,7 @@
   import { opcionesSerieTrd } from "$lib/utils/trd.js";
   import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { dndzone } from "svelte-dnd-action";
-  import { permissions } from "$lib/stores/auth.js";
+  import { permissions, puedeConsultarConocimiento } from "$lib/stores/auth.js";
   import { notify } from "$lib/stores/notifications.js";
   import { RADICADO_TIPO_LABEL, etiquetaEstadoRadicado } from "$lib/utils/radicado.js";
   import { campoError, codigoError, mensajeError } from "$lib/utils/apiError.js";
@@ -762,14 +762,16 @@
               {/if}
               <!-- F6: sugerencia de tipo documental basada en precedentes (RAG,
                    Patrón A) — el chip propone, nunca aplica solo (regla dura #2). -->
-              <TrdSuggestChips
-                endpoint="/radicar/api/rag/antecedentes"
-                query={subject}
-                on:apply={(e) => {
-                  docClass = e.detail.docClass;
-                  onDocClassChange();
-                }}
-              />
+              {#if $puedeConsultarConocimiento}
+                <TrdSuggestChips
+                  endpoint="/radicar/api/rag/antecedentes"
+                  query={subject}
+                  on:apply={(e) => {
+                    docClass = e.detail.docClass;
+                    onDocClassChange();
+                  }}
+                />
+              {/if}
             </div>
 
             <!-- Nivel de seguridad -->
@@ -885,12 +887,14 @@
               <div class="radicar-step__field radicar-step__field--full">
                 <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper
                      el paso si el servicio de conocimiento no responde. -->
-                <RagSuggestButton
-                  endpoint="/radicar/api/rag/suggest"
-                  query={subject}
-                  on:insert={(e) =>
-                    (observations = appendGeneratedHtml(observations, e.detail.html))}
-                />
+                {#if $puedeConsultarConocimiento}
+                  <RagSuggestButton
+                    endpoint="/radicar/api/rag/suggest"
+                    query={subject}
+                    on:insert={(e) =>
+                      (observations = appendGeneratedHtml(observations, e.detail.html))}
+                  />
+                {/if}
                 <RichEditor
                   id="observations"
                   label="Contenido / cuerpo del documento"
@@ -1105,7 +1109,7 @@
                     </div>
                     <div>
                       <dt>Retención gestión</dt>
-                      <dd>{serie.archivo_gestion_years ?? serie.retention_years} años</dd>
+                      <dd>{serie.archivo_gestion_years ?? "—"} años</dd>
                     </div>
                     <div>
                       <dt>Retención central</dt>

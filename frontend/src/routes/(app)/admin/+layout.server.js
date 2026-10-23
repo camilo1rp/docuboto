@@ -21,7 +21,7 @@
  */
 import { redirect } from "@sveltejs/kit";
 import { ROUTES } from "$lib/utils/config.js";
-import { permisosRequeridosAdmin } from "$lib/utils/adminGate.js";
+import { accesoAdmin, permisosRequeridosAdmin } from "$lib/utils/adminGate.js";
 
 /** @type {import('./$types').LayoutServerLoad} */
 export async function load({ parent, url }) {
@@ -33,8 +33,7 @@ export async function load({ parent, url }) {
   // expulsa a /403 a quien no perdió ningún permiso.
   if (entidadNoOperativa || user?.permisosDegradados) return {};
 
-  const tiene = user?.permissions ?? [];
-  if (!requeridos.some((p) => tiene.includes(p))) {
+  if (!accesoAdmin(url.pathname, user?.permissions ?? [], user?.permission_levels ?? {})) {
     redirect(303, ROUTES.forbidden);
   }
   return {};

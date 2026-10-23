@@ -24,7 +24,7 @@ import pytest
 
 from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
 from app.services.storage_service import StorageService, WormLockActiveError
-from tests.conftest import TENANT_SLUG, make_file_record, make_worm_row
+from tests.conftest import TENANT_SLUG, make_file_record, make_worm_row, vista_de_citas
 
 
 def _mock_conn() -> AsyncMock:
@@ -127,6 +127,7 @@ async def test_purge_allowed_once_worm_lock_expired() -> None:
     file_id = uuid.uuid4()
     record = make_file_record(file_id=file_id)
     conn.fetchrow.side_effect = [record, None]  # active_lock_for_expediente → nada bloquea
+    vista_de_citas(conn)  # C-5/C14: la vista contrato existe y nadie cita el archivo
     conn.execute.side_effect = None
     conn.execute.return_value = "DELETE 1"
 
@@ -207,6 +208,7 @@ async def test_purge_passes_control_instrument_tipos_to_gate_query() -> None:
     file_id = uuid.uuid4()
     record = make_file_record(file_id=file_id)
     conn.fetchrow.side_effect = [record, None]  # nada bloquea
+    vista_de_citas(conn)
     conn.execute.return_value = "DELETE 1"
 
     with patch("app.services.storage_service.get_minio") as get_minio_mock:

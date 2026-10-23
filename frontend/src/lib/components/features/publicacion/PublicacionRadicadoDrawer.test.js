@@ -22,6 +22,8 @@
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/svelte";
+import { get } from "svelte/store";
+import { toasts } from "$lib/stores/notifications.js";
 import PublicacionRadicadoDrawer from "./PublicacionRadicadoDrawer.svelte";
 
 const RADICADO = { id: "11111111-1111-1111-1111-111111111111", tracking_number: "2026-ICETEX-E-1" };
@@ -174,5 +176,44 @@ describe("PublicacionRadicadoDrawer", () => {
       fundamento: "Numeral 4.2 del esquema",
     });
     expect(cambios[0].publicable).toBe(true);
+  });
+});
+
+describe("409 tipo_documental_no_publicable (C-4)", () => {
+  it("se explica en español que el TIPO del radicado no es publicable, sin disfrazarlo de otro fallo", async () => {
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      if (opts?.method === "POST") {
+        return new Response(
+          JSON.stringify({ error: "tipo_documental_no_publicable", status: 409 }),
+          { status: 409 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          tracking_number: RADICADO.tracking_number,
+          nivel_seguridad: 1,
+          status: "registered",
+          publicable: false,
+          publicado_at: null,
+        }),
+        { status: 200 },
+      );
+    });
+    const { component } = render(PublicacionRadicadoDrawer, {
+      props: { open: true, radicado: RADICADO },
+    });
+    const cambios = [];
+    component.$on("changed", (e) => cambios.push(e.detail));
+    const campo = await screen.findByLabelText(/Fundamento de la publicación/i);
+    await fireEvent.input(campo, { target: { value: "Numeral 4.2" } });
+    await fireEvent.click(screen.getByRole("button", { name: /Publicar/ }));
+    await waitFor(() =>
+      expect(
+        get(toasts).some(
+          (n) => /tipo documental/i.test(n.message) && /publicable/i.test(n.message),
+        ),
+      ).toBe(true),
+    );
+    expect(cambios).toHaveLength(0);
   });
 });

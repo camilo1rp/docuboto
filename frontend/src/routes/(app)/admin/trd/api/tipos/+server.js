@@ -76,6 +76,9 @@ export async function POST({ locals, request }) {
   // Allowlist: el campo que no se nombre aquí se descarta EN SILENCIO — la
   // casilla parecería funcionar y no cambiaría nada.
   const admiteVentanilla = body?.admite_ventanilla_publica;
+  // `publicable` (Ley 1712, C-4) es una marca PROPIA, distinta de
+  // `admite_ventanilla_publica`; marcarla exige nivel 3 en el backend.
+  const publicable = body?.publicable;
 
   if (typeof code !== "string" || !code.trim()) {
     return json(
@@ -104,6 +107,7 @@ export async function POST({ locals, request }) {
     trd_serie_id: trd_serie_id && UUID_RE.test(trd_serie_id) ? trd_serie_id : null,
     obligatorio: obligatorio === true,
     admite_ventanilla_publica: admiteVentanilla === true,
+    publicable: publicable === true,
     metadata_template:
       typeof metadata_template === "string" && metadata_template.trim()
         ? metadata_template.trim()

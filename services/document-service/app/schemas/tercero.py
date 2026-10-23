@@ -82,6 +82,8 @@ class TerceroResponse(BaseModel):
     # ya resuelto. La búsqueda las excluye, así que aquí solo aparece al pedir
     # una ficha concreta — y entonces conviene decirlo, no callarlo.
     fusionado_en: uuid.UUID | None = None
+    #: `confirmada` o `provisional` (C17: la declaró un anónimo y aún no se concilia).
+    identidad: Literal["confirmada", "provisional"] = "confirmada"
     # `False` cuando la petición de alta devolvió un tercero que ya existía con
     # ese documento. Se dice en vez de callarlo: quien registra tiene derecho a
     # saber que está reutilizando una ficha y no creando una nueva.
@@ -228,3 +230,62 @@ class RadicadoDeTercero(BaseModel):
     nivel_seguridad: int
     rol: str
     creado_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Fichas provisionales y su conciliación (C17, ADR-038)
+# ---------------------------------------------------------------------------
+class RadicadoPorConciliar(BaseModel):
+    tracking_number: str
+    creado_at: datetime
+
+
+class CandidataConciliacion(BaseModel):
+    """La ficha confirmada viva con el documento declarado. Se calcula, no se guarda."""
+
+    id: uuid.UUID
+    nombre: str
+    email: str | None = None
+    municipio: str | None = None
+
+
+class FichaPorConciliar(BaseModel):
+    """Una provisional pendiente: lo que el anónimo declaró y a qué radicados quedó atada."""
+
+    id: uuid.UUID
+    nombre: str
+    entidad: str | None = None
+    email: str | None = None
+    telefono: str | None = None
+    direccion: str | None = None
+    documento_declarado_tipo: str | None = None
+    documento_declarado_numero: str
+    creado_at: datetime
+    radicados: list[RadicadoPorConciliar]
+    candidata: CandidataConciliacion | None = None
+
+
+class ConciliarRequest(BaseModel):
+    """`vincular` exige `destino_id`; `descartar` exige `motivo`; `confirmar` no lleva destino."""
+
+    accion: Literal["vincular", "confirmar", "descartar"]
+    destino_id: uuid.UUID | None = None
+    motivo: str | None = Field(default=None, max_length=1000)
+    #: Con qué se verificó la identidad. Obligatorio en `vincular` y `confirmar` (con
+    #: `otro`, el motivo es obligatorio); `descartar` no lo lleva. Evidencia archivística.
+    medio_verificacion: (
+        Literal[
+            "presencial_documento",
+            "respuesta_canal_registrado",
+            "llamada_telefono_registrado",
+            "otro",
+        ]
+        | None
+    ) = None
+
+
+class ConciliarResponse(BaseModel):
+    id: uuid.UUID
+    accion: Literal["vincular", "confirmar", "descartar"]
+    conciliacion: Literal["vinculada", "confirmada", "descartada"]
+    destino_id: uuid.UUID | None = None

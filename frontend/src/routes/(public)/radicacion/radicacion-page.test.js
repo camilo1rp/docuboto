@@ -19,6 +19,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import Pagina from "./+page.svelte";
+import { emitir, pintar } from "./altchaTestUtil.js";
+
+// El widget real y su worker no corren en jsdom: la página los importa en `onMount`.
+vi.mock("altcha/altcha.css", () => ({}));
+vi.mock("altcha/external", () => ({}));
+vi.mock("altcha/i18n/es-419", () => ({}));
+vi.mock("altcha/worker?worker", () => ({ default: class {} }));
 
 const datos = {
   tipos: [{ code: "DP-GEN", nombre: "Derecho de petición" }],
@@ -73,7 +80,8 @@ describe("/radicacion — ventanilla en línea", () => {
       json: async () => ({ tracking_number: "2026-DEMO-E-000001", verification_code: "x" }),
     });
     vi.stubGlobal("fetch", f);
-    render(Pagina, { data: datos });
+    const w = await pintar(Pagina, datos);
+    emitir(w);
     llenar();
     await fireEvent.click(screen.getByLabelText(/Autorizo a la entidad/i));
     await fireEvent.submit(document.querySelector("form"));
@@ -86,12 +94,15 @@ describe("/radicacion — ventanilla en línea", () => {
     expect(enviado.acepta_tratamiento).toBe(true);
     expect(enviado.politica_version).toBe("2026-03");
     expect(enviado.sitio_web).toBe("");
+    expect(typeof enviado.altcha).toBe("string");
+    expect(enviado.altcha.length).toBeGreaterThanOrEqual(16);
   });
 
   it("un reintento idéntico reutiliza la clave; si cambia el contenido, genera otra", async () => {
     const f = vi.fn().mockResolvedValue({ ok: false, json: async () => ({ detail: "caído" }) });
     vi.stubGlobal("fetch", f);
-    render(Pagina, { data: datos });
+    const w = await pintar(Pagina, datos);
+    emitir(w);
     llenar();
     await fireEvent.click(screen.getByLabelText(/Autorizo a la entidad/i));
     const form = document.querySelector("form");
@@ -144,7 +155,8 @@ describe("/radicacion — ventanilla en línea", () => {
           },
     );
     vi.stubGlobal("fetch", f);
-    render(Pagina, { data: datos });
+    const w = await pintar(Pagina, datos);
+    emitir(w);
     llenar();
     const casilla = screen.getByLabelText(/Autorizo a la entidad/i);
     await fireEvent.click(casilla);

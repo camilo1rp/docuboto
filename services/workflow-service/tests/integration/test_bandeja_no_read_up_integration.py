@@ -57,7 +57,7 @@ async def _paso(conn: asyncpg.Connection, rid: uuid.UUID) -> None:
 async def bandeja(tenant_ctx):
     """Un radicado publico (1), uno reservado (3) y un paso HUERFANO (sin radicado)."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     publico = await _radicado(conn, 1)
     reservado = await _radicado(conn, 3)
     huerfano = uuid.uuid4()  # flow_step sin fila en `radicados` (p. ej. tras purga TRD)

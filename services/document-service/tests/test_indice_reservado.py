@@ -82,6 +82,27 @@ async def test_indice_con_permiso_mapea_niveles(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
+async def test_indice_interno_trae_articulo_y_descripcion_del_catalogo(client_with_conn) -> None:
+    """C12: el código de la causal se acompaña del artículo/literal y la descripción del
+    catálogo cerrado; `por_clasificar` (o un código ajeno) sale sin ellos, no inventados."""
+    client, conn = client_with_conn
+    conn.fetchval.side_effect = [True, None]
+    conn.fetch.return_value = [
+        _indice_row("2026-DEMO-E-000001", "E", 3, fundamento="F", causal="art18_a_intimidad"),
+        _indice_row("2026-DEMO-E-000002", "E", 3, fundamento="F", causal="por_clasificar"),
+    ]
+    resp = await client.get(
+        "/api/v1/reports/indice-reservado", headers={**TENANT_HEADERS, "X-User-Id": _USER}
+    )
+    items = {i["numero_radicado"]: i for i in resp.json()["items"]}
+    ok = items["2026-DEMO-E-000001"]
+    assert ok["causal_articulo"] == "Ley 1712/2014 art. 18, literal a"
+    assert "intimidad" in ok["causal_descripcion"]
+    pend = items["2026-DEMO-E-000002"]
+    assert pend["causal_articulo"] is None and pend["causal_descripcion"] is None
+
+
+@pytest.mark.asyncio
 async def test_indice_vacio(client_with_conn) -> None:
     """Sin radicados clasificados → total 0, lista vacía."""
     client, conn = client_with_conn
@@ -156,7 +177,13 @@ async def test_reclassify_a_nivel2_sin_fundamento_422(client_with_conn) -> None:
     conn.fetchval.return_value = True  # permiso concedido → el 422 es del schema
     resp = await client.patch(
         f"/api/v1/documents/{uuid.uuid4()}/security-level",
-        json={"nivel_seguridad": 2, "motivo": "sin fundamento"},
+        # La causal y el plazo van completos: el 422 es por el FUNDAMENTO, no por ellos.
+        json={
+            "nivel_seguridad": 2,
+            "motivo": "sin fundamento",
+            "causal_reserva": "art19_b_seguridad_publica",
+            "plazo_reserva_meses": 12,
+        },
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert resp.status_code == 422
@@ -173,6 +200,7 @@ async def test_crear_radicado_clasificado_sin_fundamento_422(client_with_conn) -
             "doc_class": "oficio",
             "subject": "asunto",
             "nivel_seguridad": 3,  # clasificada, sin clasificacion_fundamento
+            "clasificacion_causal": "art18_a_intimidad",
         },
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )

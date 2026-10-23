@@ -16,9 +16,11 @@ tercero.
 
 **La regla tiene dos ramas y las dos importan:**
 
-* **Con identificación** → `crear_o_recuperar` por documento. Es idempotente,
-  así que quien se identifica converge SIEMPRE a la misma ficha por muchas veces
-  que escriba. Ahí es donde el duplicado se evita de verdad.
+* **Con identificación** → una ficha PROVISIONAL por petición (C17, ADR-038). Ya
+  NO se asocia por número: quien escribe la cédula de otro quedaba atado a la
+  ficha ajena. Una provisional no ocupa el documento (queda en
+  `documento_declarado_*`) y un funcionario la concilia después con la existente.
+  Los cruces con el directorio los fija `test_ficha_provisional_integration.py`.
 * **Sin identificación** → **ninguna ficha**. Una petición anónima es legítima
   (Ley 1755/2015 art. 16, denuncia anónima) y crear un tercero por cada una
   sería una fábrica de duplicados: exactamente lo contrario del objetivo, más un
@@ -63,6 +65,7 @@ async def _radicar_por_ventanilla(
         descripcion="Cuerpo de la petición",
         acepta_tratamiento=True,
         politica_version="2026-01",
+        altcha="altcha-de-prueba-0000",
     )
     # El único doble de este test: la validación de la dependencia contra
     # tenant-service, que es HTTP a otro servicio. Todo lo demás va a Postgres
@@ -110,12 +113,17 @@ async def _preparar_ventanilla(conn: asyncpg.Connection) -> None:
 
 
 @pytest.mark.asyncio
-async def test_el_mismo_ciudadano_identificado_converge_a_UNA_ficha(
+async def test_el_mismo_ciudadano_identificado_deja_una_provisional_por_peticion(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """Escribir tres veces no crea tres fichas. Es el caso que motivó todo esto."""
+    """Escribir tres veces deja tres fichas PROVISIONALES, ninguna con el documento.
+
+    Antes convergía a UNA por número, que es justo el defecto: la cédula escrita
+    por un anónimo lo ataba a la ficha de cualquiera. Ahora la identidad la decide
+    un funcionario al conciliar (agrupada por `documento_declarado_numero`).
+    """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await _preparar_ventanilla(conn)
 
     for asunto in ("Primera", "Segunda", "Tercera"):
@@ -129,15 +137,21 @@ async def test_el_mismo_ciudadano_identificado_converge_a_UNA_ficha(
             asunto=asunto,
         )
 
-    fichas = await conn.fetchval(
+    assert await conn.fetchval(
         "SELECT count(*) FROM tercero WHERE numero_documento = '1020304050'"
+    ) == 0, "una provisional NO ocupa el documento"
+    provisionales = await conn.fetch(
+        "SELECT identidad, conciliacion, documento_declarado_numero FROM tercero"
     )
-    assert fichas == 1, "tres peticiones del mismo ciudadano tienen que dar UNA ficha"
+    assert len(provisionales) == 3
+    assert {tuple(f.values()) for f in provisionales} == {
+        ("provisional", "pendiente", "1020304050")
+    }
 
     vinculos = await conn.fetchval(
-        "SELECT count(*) FROM radicado_actor WHERE rol = 'remitente'"
+        "SELECT count(DISTINCT tercero_id) FROM radicado_actor WHERE rol = 'remitente'"
     )
-    assert vinculos == 3, "las tres peticiones tienen que quedar atadas a esa ficha"
+    assert vinculos == 3, "cada petición queda atada a SU ficha provisional"
 
 
 @pytest.mark.asyncio
@@ -151,7 +165,7 @@ async def test_una_peticion_ANONIMA_no_crea_ninguna_ficha(
     fuente de duplicados del sistema.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await _preparar_ventanilla(conn)
 
     await _radicar_por_ventanilla(conn, slug, nombre="Anónimo", asunto="Denuncia")
@@ -176,7 +190,7 @@ async def test_el_mismo_remitente_de_correo_reutiliza_su_ficha(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     servicio = TerceroService(conn, slug)
@@ -201,7 +215,7 @@ async def test_dos_fichas_con_el_mismo_correo_NO_se_eligen_solas(
     `/admin/terceros`, que para eso existe.
     """
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     for nombre in ("Luis A", "Luis B"):
@@ -224,7 +238,7 @@ async def test_un_correo_sin_direccion_o_sin_nombre_no_crea_ficha(
 ) -> None:
     """Una ficha sin nombre no se puede buscar ni elegir después: no sirve."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from app.services.tercero_service import TerceroService
 
     servicio = TerceroService(conn, slug)

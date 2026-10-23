@@ -146,6 +146,7 @@ async def test_pqrs_delega_en_la_ventanilla_y_llega_a_una_bandeja(client_with_co
                 "descripcion": "Requiero copia de...",
                 "acepta_tratamiento": True,
                 "politica_version": "2026-01",
+                "altcha": "altcha-de-prueba-0000",
             },
         )
 
@@ -186,6 +187,7 @@ async def test_pqrs_respeta_el_interruptor_de_la_entidad(client_with_conn) -> No
             "descripcion": "D",
             "acepta_tratamiento": True,
             "politica_version": "2026-01",
+            "altcha": "altcha-de-prueba-0000",
         },
     )
 
@@ -204,6 +206,7 @@ async def test_pqrs_tenant_invalido_400(client_with_conn) -> None:
             "descripcion": "D",
             "acepta_tratamiento": True,
             "politica_version": "2026-01",
+            "altcha": "altcha-de-prueba-0000",
         },
     )
     assert resp.status_code == 400

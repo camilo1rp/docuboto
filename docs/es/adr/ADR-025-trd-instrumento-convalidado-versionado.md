@@ -548,6 +548,25 @@ UI de administración TRD versionada (hoy `admin/trd` edita en sitio) · versió
 
 ---
 
+## Addendum (2026-10-20) — C-4, [ADR-040](ADR-040-cuadro-de-clasificacion-derivado-y-fases-de-la-trd.md)
+
+- **El cuerpo del trigger `reject_trd_version_mutation` que este ADR cita pierde dos líneas**: la comparación de
+  `retention_years` y `total_retention` (columnas eliminadas por la `069`). El resto de la lista sustantiva
+  (nombre, descripción, padre, fases, disposición, versión, vigencia, contenido TVD) y las guardas de la 038 no
+  cambian.
+- **Gate de productora en el circuito**: `aprobar` y `convalidar` —incluida la ratificación `migrada →
+  convalidada`, que no pasa por `aprobar`— responden `409 trd_serie_sin_productora` si la serie TRD raíz no
+  declara dependencia productora. La comprobación va dentro de la transacción, tras el `UPDATE` de estado (desde
+  `aprobada` el trigger de la `070` ya no deja tocar la lista), de modo que el 409 revierte el cambio.
+- **La productora es contenido de la versión** (append-only como el resto): solo se escribe en `borrador`; para
+  añadirla a una TRD convalidada, versión `N+1` → aprobar → convalidar. Al convalidar se congela la ruta del
+  organigrama (`ruta_convalidada`, fill-once) y el asiento `archive.trd_version_convalidada` la lleva.
+- **La ratificación D6 sigue viva** (corregido tras la auditoría de C-4): una `migrada` nació sin productora,
+  así que `convalidar` acepta `dependencias_productoras` SOLO cuando el origen es `migrada` y las escribe una vez,
+  en la misma transacción y antes del gate, con el asiento `archive.trd_productora_declarada` («captura de dato
+  de TRD preexistente»). El trigger de la `070` deja añadirla en ese estado y nada más. Sin esto el gate habría
+  cerrado la ratificación de toda serie raíz.
+
 ## Relacionados
 
 - [ADR-015](ADR-015-trd-ccd-modelo.md) — modelo TRD/CCD; este ADR **cierra su versionado diferido** y corrige su §5 (que describía un comportamiento que el código nunca tuvo).

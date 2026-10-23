@@ -48,7 +48,7 @@
 <script>
   import { onMount } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions, roles } from "$lib/stores/auth.js";
+  import { permissionLevels, permissions, roles } from "$lib/stores/auth.js";
   import { filterVisibleNavItems } from "$lib/utils/navItems.js";
   import EmptyState from "$lib/components/ui/EmptyState.svelte";
 
@@ -254,11 +254,12 @@
         "Plan de preservación digital, índices pendientes de sellado XAdES y artefactos WORM en riesgo de retención (E10, AGN 001/2024).",
       icon: "fas fa-shield-halved",
       href: "/admin/preservacion",
-      // Lectura con USUA_PERM_EXPEDIENTE (mismo gate que el backend); el
+      // Lectura con USUA_PERM_EXPEDIENTE (mismo gate que el backend) o, para la faceta de
+      // sellos de archivo (C-6), USUA_PERM_ADMIN con nivel >= 3 (`minLevels`); el
       // reintento de sellado exige además PERM_FIRMA a nivel de acción, no
-      // de pantalla (ver cabecera de preservacion/+page.svelte). Pantalla
-      // construida y no enlazada (revisión UX 2026-08-02, punto 3).
-      permission: "USUA_PERM_EXPEDIENTE",
+      // de pantalla (ver cabecera de preservacion/+page.svelte).
+      permissions: ["USUA_PERM_EXPEDIENTE", "USUA_PERM_ADMIN"],
+      minLevels: { USUA_PERM_ADMIN: 3 },
       implemented: true,
     },
     {
@@ -290,7 +291,7 @@
     },
   ];
 
-  $: visibleAreas = filterVisibleNavItems(ADMIN_AREAS, $permissions, $roles);
+  $: visibleAreas = filterVisibleNavItems(ADMIN_AREAS, $permissions, $roles, $permissionLevels);
 
   onMount(() => {
     setBreadcrumbs([{ label: "Administración" }]);

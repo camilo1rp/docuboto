@@ -47,9 +47,10 @@ async def _seed_radicado(
         INSERT INTO "{schema}".radicados
             (tracking_number, doc_type, year, sequence, subject, tenant_code,
              origin_dept, origin_dept_code, dest_dept, dest_dept_code, nivel_seguridad,
-             clasificacion_fundamento)
+             clasificacion_fundamento, clasificacion_causal)
         VALUES ($1, 'E', 2026, 1, 'itest origen', 'ITEST', $2, $3, $4, $5, $6,
-                CASE WHEN $6::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END)
+                CASE WHEN $6::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END,
+        CASE WHEN $6::smallint >= 2 THEN 'por_clasificar' END)
         RETURNING id
         """,
         tracking_number,
@@ -117,7 +118,7 @@ async def test_devuelve_la_dependencia_de_origen_y_el_formato_del_primer_anexo(
         created_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
     )
 
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     repo = DocumentRepository(conn, slug)
     meta = await repo.list_radicado_metadata_internal([rad_id], max_clearance=3)
 
@@ -143,7 +144,7 @@ async def test_un_radicado_sin_anexos_no_inventa_formato(
     schema = tenant_schema(slug)
     rad_id = await _seed_radicado(conn, schema, tracking_number="2026-ITEST-E-000002")
 
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     repo = DocumentRepository(conn, slug)
     meta = await repo.list_radicado_metadata_internal([rad_id], max_clearance=3)
 
@@ -171,7 +172,7 @@ async def test_un_radicado_sin_dependencia_declarada_devuelve_vacio(
         origin_dept_code=None,
     )
 
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     repo = DocumentRepository(conn, slug)
     meta = await repo.list_radicado_metadata_internal([rad_id], max_clearance=3)
 
@@ -201,7 +202,7 @@ async def test_el_no_read_up_sigue_recortando(
         nivel_seguridad=1,
     )
 
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     repo = DocumentRepository(conn, slug)
     meta = await repo.list_radicado_metadata_internal([reservado, publico], max_clearance=1)
 
@@ -223,7 +224,7 @@ async def test_devuelve_el_numero_de_radicado_y_la_tipologia_que_guarda_la_tabla
         f'UPDATE "{schema}".radicados SET doc_class = $2 WHERE id = $1', rad_id, "COR-PET"
     )
 
-    await conn.execute(f'SET search_path TO "{schema}", public')
+    await conn.execute(f'SET search_path TO "{schema}"')
     meta = await DocumentRepository(conn, slug).list_radicado_metadata_internal(
         [rad_id], max_clearance=3
     )

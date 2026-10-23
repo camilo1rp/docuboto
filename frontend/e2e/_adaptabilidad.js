@@ -53,7 +53,7 @@ export async function medir(page) {
      * acusaba igualmente a `table, thead, tr, th, th`. Un culpable que también
      * aparece cuando no hay delito no es una pista.
      */
-    function recortadoPorAncestro(el, caja) {
+    function recortadoPorAncestro(el, _caja) {
       for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
         const ox = getComputedStyle(p).overflowX;
         if (ox === "visible") continue;

@@ -53,7 +53,7 @@ def _tipos_from_check() -> frozenset[str]:
         for linea in archivo.read_text(encoding="utf-8").splitlines():
             if linea.lstrip().startswith("--"):
                 continue
-            m = re.search(r"tipo\s+IN\s*\(([^)]*)\)", linea, re.IGNORECASE)
+            m = re.search(r"(?<![A-Za-z_])tipo\s+IN\s*\(([^)]*)\)", linea, re.IGNORECASE)
             if m:
                 # Cada CHECK nuevo REEMPLAZA al anterior (`DROP CONSTRAINT` +
                 # `ADD CONSTRAINT`), así que se sustituye, no se acumula.

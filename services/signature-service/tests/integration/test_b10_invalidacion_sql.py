@@ -34,7 +34,7 @@ H2 = "2" * 64
 
 async def _en_tenant(tenant_ctx):
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return slug, conn
 
 

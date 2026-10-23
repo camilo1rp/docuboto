@@ -129,7 +129,7 @@ async def test_el_lote_termina_y_crea_los_radicados(
     """
     slug, conn = tenant_ctx
     async with _tenant_registrado(conn, slug):
-        await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+        await conn.execute(f'SET search_path = "{_schema(slug)}"')
 
         servicio = BatchService(conn, slug)
         peticion = BatchDocumentsRequest(
@@ -178,7 +178,7 @@ async def test_los_items_quedan_con_su_numero_de_radicado(
     """
     slug, conn = tenant_ctx
     async with _tenant_registrado(conn, slug):
-        await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+        await conn.execute(f'SET search_path = "{_schema(slug)}"')
 
         actor = uuid.uuid4()
         # Límite de origen de la Salida: el responsable del lote tiene URD activa en la 1.
@@ -214,7 +214,7 @@ async def test_el_lote_rechaza_una_salida_con_origen_ajeno_al_responsable(
     gastar el consecutivo."""
     slug, conn = tenant_ctx
     async with _tenant_registrado(conn, slug):
-        await conn.execute(f'SET search_path = "{_schema(slug)}", public')
+        await conn.execute(f'SET search_path = "{_schema(slug)}"')
         servicio = BatchService(conn, slug)
         job_id = await servicio.create_batch_documents(
             BatchDocumentsRequest(

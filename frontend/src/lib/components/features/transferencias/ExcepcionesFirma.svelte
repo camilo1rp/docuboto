@@ -33,6 +33,7 @@
   import { notifySuccess } from "$lib/stores/notifications.js";
   import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+  import { soporteEstadoInfo } from "$lib/utils/valoracion.js";
   import {
     ROL_LABELS,
     MOTIVOS,
@@ -495,6 +496,14 @@
                 {/if}
               </dd>
             </div>
+            {#if soporteEstadoInfo(e)}
+              <div>
+                <dt>Estado del soporte</dt>
+                <dd data-testid="soporte-estado" data-estado={soporteEstadoInfo(e)?.estado}>
+                  {soporteEstadoInfo(e)?.texto}
+                </dd>
+              </div>
+            {/if}
             <div>
               <dt>Declarante</dt>
               <dd>

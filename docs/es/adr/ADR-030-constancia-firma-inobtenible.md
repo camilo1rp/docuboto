@@ -269,3 +269,9 @@ anclada en `audit_log`. El paquete se arma en un fichero temporal (son XML peque
 La conformidad XMLDSig de la firma (ADR-034) **no cambia** `constancia_sha256` ni `huella_de_firmado`: son huellas de la aplicación
 sobre el XML sin `ds:Signature`. Cambia solo la `ds:Signature` que lo sella (con `Transforms` declarados). Las constancias selladas
 antes de ADR-034 conservan sus huellas, pero su sello XAdES no verifica con un validador independiente y se regenera si hace falta.
+
+---
+
+## Enmienda C-5 (2026-10-21, [ADR-043](ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md) §4)
+
+El anexo que cita una constancia vigente no se puede destruir en silencio: storage consulta la vista contrato `v_anexo_citado_vigente` (bloqueando la fila y comprobando en otra sentencia) y declara la constancia con `FOR SHARE` sobre el archivo. Cuando llega la disposición TRD, la salida es una **baja de soporte avalada por el Comité**, congelada al proponer el lote de eliminación; la constancia firmada no se toca (append-only) y expone un `soporte_estado` derivado (`vigente | baja_avalada | eliminado_por_trd`).

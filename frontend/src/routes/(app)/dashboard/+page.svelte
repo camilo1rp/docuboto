@@ -34,7 +34,13 @@
   import { onMount } from "svelte";
   import { browser } from "$app/environment";
   import { navigating } from "$app/stores";
-  import { sessionUser, tenantSlug, permissions, roles } from "$lib/stores/auth.js";
+  import {
+    sessionUser,
+    tenantSlug,
+    permissions,
+    permissionLevels,
+    roles,
+  } from "$lib/stores/auth.js";
   import { formatearFecha } from "$lib/utils/fecha.js";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
   import { favoriteHrefs, initFavorites, pickFavoriteNavItems } from "$lib/stores/favorites.js";
@@ -102,7 +108,7 @@
     }
   }
 
-  $: visibleNavItems = filterVisibleNavItems(NAV_ITEMS, $permissions, $roles);
+  $: visibleNavItems = filterVisibleNavItems(NAV_ITEMS, $permissions, $roles, $permissionLevels);
   $: favoriteItems = pickFavoriteNavItems(visibleNavItems, $favoriteHrefs);
 
   // ---------------------------------------------------------------------------

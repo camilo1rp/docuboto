@@ -183,10 +183,16 @@ async def build_tools(client: httpx.AsyncClient) -> list[types.Tool]:
         client, authorization=await _authorization(s, client), tenant_slug=s["tenant"] or ""
     )
     visibles = catalog.visible_tools(
-        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+        identidad.permissions,
+        is_root=identidad.is_root,
+        levels=identidad.levels,
+        asistente_habilitado=identidad.asistente_habilitado,
     )
     procs = procedimientos_visibles(
-        identidad.permissions, is_root=identidad.is_root, levels=identidad.levels
+        identidad.permissions,
+        is_root=identidad.is_root,
+        levels=identidad.levels,
+        asistente_habilitado=identidad.asistente_habilitado,
     )
     tools = [
         types.Tool(
@@ -407,6 +413,7 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
         permissions=identidad.permissions,
         is_root=identidad.is_root,
         levels=identidad.levels,
+        asistente_habilitado=identidad.asistente_habilitado,
     )
     if tool.write:
         # La identidad de la propuesta se resuelve contra `/auth/me`, NO contra el
@@ -459,6 +466,7 @@ async def call(name: str, arguments: dict, client: httpx.AsyncClient) -> str:
                 permissions=identidad.permissions,
                 is_root=identidad.is_root,
                 levels=identidad.levels,
+                asistente_habilitado=identidad.asistente_habilitado,
             ),
             ensure_ascii=False,
         )

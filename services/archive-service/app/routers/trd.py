@@ -17,9 +17,15 @@ import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
 from app.core.actor import Actor, require_actor
-from app.core.clearance import require_permission
-from app.core.database import get_db_conn
+from app.core.clearance import (
+    check_permission,
+    mensaje_denegacion,
+    nivel_efectivo,
+    require_permission,
+)
+from app.core.database import get_db_conn, tenant_schema
 from app.schemas.archive import (
+    CuadroClasificacionResponse,
     DisposicionDecisionCreate,
     ExpedienteDisposicionDecisionResponse,
     ExpedienteDisposicionVencidaResponse,
@@ -103,6 +109,32 @@ def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     return x_canal or "system"
 
 
+async def _tiene_circuito(
+    conn: asyncpg.Connection, tenant_slug: str, user_id: uuid.UUID | None
+) -> bool:
+    """¿El llamante puede ver el CIRCUITO (borradores, actas del Comité, autores)? Mismo permiso
+    que `GET /{code}/versiones`. La conexión necesita el `search_path` del tenant."""
+    await conn.execute(f'SET search_path TO "{tenant_schema(tenant_slug)}"')
+    return await check_permission(conn, user_id, "USUA_PERM_TRD", 1)
+
+
+async def _exigir_circuito(
+    conn: asyncpg.Connection, tenant_slug: str, user_id: uuid.UUID | None
+) -> None:
+    if await _tiene_circuito(conn, tenant_slug, user_id):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "forbidden",
+            "detail": mensaje_denegacion(
+                "USUA_PERM_TRD", 1, await nivel_efectivo(conn, user_id, "USUA_PERM_TRD")
+            ),
+            "status": 403,
+        },
+    )
+
+
 @router.post(
     "",
     response_model=TrdSerieResponse,
@@ -150,15 +182,79 @@ async def create_trd_serie(
 async def list_trd_series(
     response: Response,
     is_active: bool | None = Query(default=None),
+    incluir_en_tramite: bool = Query(
+        default=False,
+        description=(
+            "Todas las versiones (borrador, aprobada, derogada…) con acta del Comité y autor. "
+            "Es el circuito, no el instrumento publicado: exige USUA_PERM_TRD (403 sin él). Por "
+            "omisión solo `convalidada`/`migrada`."
+        ),
+    ),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> list[TrdSerieResponse]:
+    # Frontera declarada al principio del módulo: el vocabulario es abierto a todo autenticado,
+    # el circuito exige USUA_PERM_TRD. Por omisión se sirve el instrumento publicado.
+    if incluir_en_tramite:
+        await _exigir_circuito(conn, tenant_slug, user_id)
+        con_circuito = True
+    else:
+        con_circuito = await _tiene_circuito(conn, tenant_slug, user_id)
     service = ArchiveService(conn, tenant_slug)
-    items, total = await service.list_trd_series(is_active=is_active, page=page, size=size)
+    items, total = await service.list_trd_series(
+        is_active=is_active,
+        page=page,
+        size=size,
+        con_circuito=con_circuito,
+        incluir_en_tramite=incluir_en_tramite,
+    )
     response.headers["X-Total-Count"] = str(total)
     return items
+
+
+@router.get(
+    "/cuadro",
+    response_model=CuadroClasificacionResponse,
+    summary="Cuadro de clasificación documental derivado del organigrama (C-4/C8, ADR-040)",
+)
+async def get_cuadro_clasificacion(
+    incluir_borradores: bool = Query(
+        default=False,
+        description=(
+            "Además de la versión vigente, las versiones en trámite (borrador/aprobada). Son la "
+            "deliberación del Comité, no el instrumento publicado: exige USUA_PERM_TRD (403 sin él)."
+        ),
+    ),
+    segun: Literal["convalidado", "vivo"] = Query(
+        default="convalidado",
+        description=(
+            "Dónde se ubica una serie convalidada: `convalidado` (por omisión) en la ruta que "
+            "fijó la convalidación —lo que el Consejo aprobó—; `vivo` en la ruta actual del "
+            "organigrama. La diferencia entre ambas se avisa siempre."
+        ),
+    ),
+    incluir_vacias: bool = Query(
+        default=False,
+        description="Incluye las secciones y subsecciones sin series (por omisión se podan).",
+    ),
+    tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> CuadroClasificacionResponse:
+    # Mismo gate que `GET /api/v1/trd`: usuario autenticado del tenant. El CCD es un
+    # instrumento de publicación obligatoria (Ley 1712/2014 art. 13; Ac. AGN 004/2019,
+    # compilado por 001/2024) y esta respuesta NO expone expedientes ni radicados, así que
+    # no hay clearance que aplicar. Declarado ANTES de `GET /{serie_id}` (plantilla de un
+    # segmento: si fuera después, "cuadro" caería ahí y reventaría con un 422).
+    if incluir_borradores:
+        await _exigir_circuito(conn, tenant_slug, user_id)
+    service = ArchiveService(conn, tenant_slug)
+    return await service.get_cuadro_clasificacion(
+        incluir_borradores=incluir_borradores, incluir_vacias=incluir_vacias, segun=segun
+    )
 
 
 @router.get(
@@ -310,10 +406,13 @@ async def compute_retention(
 async def get_trd_serie(
     serie_id: uuid.UUID,
     tenant_slug: str = Depends(_require_tenant),
+    user_id: uuid.UUID | None = Depends(_optional_user),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TrdSerieResponse:
     service = ArchiveService(conn, tenant_slug)
-    return await service.get_trd_serie(serie_id)
+    return await service.get_trd_serie(
+        serie_id, con_circuito=await _tiene_circuito(conn, tenant_slug, user_id)
+    )
 
 
 @router.patch(

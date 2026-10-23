@@ -160,3 +160,25 @@ async def test_la_salud_no_entra_en_el_cubo_global(cliente_con_redis_real):
         "el chequeo de salud suma al cubo global: la saturación provocada por un "
         "atacante volvería «no apto» a un gateway que responde correctamente"
     )
+
+
+async def test_el_reto_antirrobots_es_anonimo_y_cae_en_el_cubo_general(cliente_con_redis_real):
+    """C16 (ADR-038): `GET .../ventanilla/reto` NO es una alta de radicación.
+
+    Emitir un reto es puro cálculo sin escritura, así que cae en el cubo anónimo
+    GENERAL (aquí 3 por IP) y no en el estrecho de radicación (aquí 2): si entrara
+    en el estrecho, quien va a radicar agotaría su cuota pidiendo el reto y el POST
+    llegaría ya en 429. Y es público: no pide credenciales.
+    """
+    client, redis = cliente_con_redis_real
+
+    for _ in range(3):
+        respuesta = await client.get("/api/v1/public/demo/ventanilla/reto")
+        assert respuesta.status_code == 200, "el reto es anónimo: no pide credenciales"
+
+    assert not any(k.startswith("ratelimit:pqrs:") for k in redis.contadores), (
+        "el reto está contando en el cubo estrecho de radicación anónima"
+    )
+    # Control positivo: el POST de la misma ventanilla SÍ cuenta en el estrecho.
+    await client.post("/api/v1/public/demo/ventanilla", json={})
+    assert any(k.startswith("ratelimit:pqrs:") for k in redis.contadores)

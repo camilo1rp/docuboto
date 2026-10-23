@@ -40,7 +40,7 @@ pytestmark = pytest.mark.integration
 async def _en_el_tenant(conn: asyncpg.Connection, slug: str) -> None:
     """El fixture aplica las migraciones con `SET LOCAL` dentro de su propia
     transacción, así que la conexión vuelve a `public` al cederla."""
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
 
 
 def _plan(**extra) -> dict:

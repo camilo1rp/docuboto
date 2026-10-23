@@ -99,7 +99,12 @@ async def test_el_dependency_no_deja_el_search_path_pegado(pool: asyncpg.Pool) -
     with pytest.raises(StopAsyncIteration):
         await gen.__anext__()
     async with pool.acquire() as c:
-        assert await c.fetchval("SHOW search_path") in ("public", '"$user", public')
+        # El valor de fábrica del servidor (`"$user", public`) o `public`: lo que no puede
+        # quedar es el schema de la entidad.
+        ruta = await c.fetchval("SHOW search_path")
+        assert "tenant_" not in ruta and slug not in ruta and ruta in (
+            "public", '"$user"', '"$user", public'
+        )
 
 
 async def test_entidad_con_schema_si_resuelve_la_consulta(

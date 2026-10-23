@@ -219,6 +219,20 @@ class VerifyRequest(BaseModel):
     payload_xml: str = Field(..., min_length=1)
 
 
+class ArchiveTimestampInfo(BaseModel):
+    """Un ``ArchiveTimeStamp`` validado de la cadena (C-6). Sin datos del documento."""
+
+    ordinal: int
+    gen_time: datetime | None = None
+    tsa_fingerprint: str
+    # Lo primero que caduque del certificado de la TSA y de su CA.
+    vence_at: datetime | None = None
+    # Revocación que respalda al certificado de ESTA TSA en el `TimeStampValidationData` del sello
+    # siguiente: `crl` | `ocsp` | `autofirmada`. `None` en el último sello (aún no hay otro encima).
+    revocacion: str | None = None
+    valido: bool = True
+
+
 class VerifyResponse(BaseModel):
     firma_id: uuid.UUID
     valida: bool
@@ -294,3 +308,57 @@ class VerifyResponse(BaseModel):
     # `TSA_ESSCERTID_CORTE`: es historia (tokens de la TSA local previos a
     # AREA-04-08) y vale, pero el verificador lo declara. Vacío = nada que avisar.
     advertencias: list[str] = Field(default_factory=list)
+
+    # --- Cadena de sellos de archivo (C-6) ---
+    # Un elemento por `ArchiveTimeStamp` que la verificación validó, en orden. Vacío si la firma no es
+    # LTA. Los motivos de rechazo de la cadena viven en `motivo`: `tsvd_ausente[i]`, `tsvd_multiple[i]`,
+    # `tsvd_sin_certificado_tsa[i]`, `tsvd_sin_revocacion[i]`, `tsvd_tsa_revocada[i]`,
+    # `algoritmo_no_vigente[i]:<alg>`; avisos: `tsvd_tsa_autofirmada_sin_revocacion[i]`,
+    # `tsa_revocada_despues_del_sello[i]`.
+    archive_timestamps: list[ArchiveTimestampInfo] = Field(default_factory=list)
+
+
+class SelloArchivoListItem(BaseModel):
+    """Último eslabón de la cadena de sellos de archivo de una firma (C-6). Content-free: sin asunto,
+    sin XML. ``objeto_tipo``/``objeto_id`` van en ``null`` con ``objeto_reservado=true`` cuando el objeto
+    supera el clearance del administrador (la fila se ve; el campo se acota)."""
+
+    firma_id: uuid.UUID
+    objeto_tipo: str | None = None
+    objeto_id: str | None = None
+    objeto_reservado: bool = False
+    ordinal: int
+    estado: str
+    situaciones: list[str]
+    gen_time: datetime
+    vence_at: datetime
+    dias_restantes: int
+    tsa_cert_fingerprint: str
+    tsa_revocacion_fuente: str | None = None
+    revocacion_tsa_previa: str | None = None
+    ultimo_aviso: str | None = None
+
+
+class SellosArchivoResumen(BaseModel):
+    por_vencer: int
+    vencido: int
+    sin_revocacion: int
+    pendiente_worm: int
+    rechazado: int
+    margen_dias: int
+
+
+class ArtefactosVigentesRequest(BaseModel):
+    firma_ids: list[uuid.UUID] = Field(..., min_length=1, max_length=200)
+
+
+class ArtefactoVigenteItem(BaseModel):
+    firma_id: uuid.UUID
+    file_id: uuid.UUID
+    minio_key: str
+    xml_sha256: str
+    ordinal: int
+
+
+class ArtefactosVigentesResponse(BaseModel):
+    items: list[ArtefactoVigenteItem]

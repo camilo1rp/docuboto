@@ -64,7 +64,7 @@ async def test_ingest(client_with_conn, token_settings) -> None:
     assert resp.json()["source_ref"] == "2024-DEMO-E-000001"
     # El INSERT recibió un literal vector y el ACL.
     sql = conn.fetchrow.call_args.args[0]
-    assert "::vector" in sql and "knowledge_chunk" in sql
+    assert "::public.vector" in sql and "knowledge_chunk" in sql
 
 
 @pytest.mark.asyncio
@@ -126,7 +126,7 @@ async def test_search_with_acl(client_with_conn) -> None:
     assert body[0]["score"] == 0.87
     # El pre-filtrado ACL entró en el WHERE.
     sql = conn.fetch.call_args.args[0]
-    assert "acl @>" in sql and "embedding <=>" in sql
+    assert "acl @>" in sql and "embedding OPERATOR(public.<=>)" in sql
 
 
 @pytest.mark.asyncio

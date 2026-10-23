@@ -57,20 +57,20 @@ async def _aprobar(archive: ArchiveService, code: str, version: int):
 
 @pytest.mark.integration
 async def test_devolver_borra_acta_comite_y_permite_editar_de_nuevo(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Hallazgo #1: `aprobada -> borrador` con motivo, y la aprobación queda
     VOID (acta_comite/fecha_aprobacion_comite se limpian) -- el contenido se
     puede volver a editar (PATCH) porque el trigger ya no lo bloquea."""
     from app.schemas.archive import TrdSerieUpdate
 
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     schema = tenant_schema(slug)
     code = f"DEV{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest devolver", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest devolver", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     aprobada = await _aprobar(archive, code, serie.version)
     assert aprobada.estado == "aprobada"
@@ -85,7 +85,7 @@ async def test_devolver_borra_acta_comite_y_permite_editar_de_nuevo(
 
     # El contenido se puede editar de nuevo (el trigger ya no lo bloquea).
     editada = await archive.update_trd_serie(
-        devuelta.id, TrdSerieUpdate(retention_years=7), actor=None
+        devuelta.id, TrdSerieUpdate(archivo_gestion_years=7), actor=None
     )
     assert editada.retention_years == 7
 
@@ -98,19 +98,19 @@ async def test_devolver_borra_acta_comite_y_permite_editar_de_nuevo(
 
 @pytest.mark.integration
 async def test_convalidar_desde_aprobada_requiere_acta_comite(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Hallazgo #5: sin `aprobar` (con acta) de por medio, `convalidar` desde
     `aprobada` debe rechazar -- aunque la fila esté físicamente en
     'aprobada' (empujada por SQL crudo de test, simulando un bug/dato
     corrupto), el SERVICE re-verifica el acta antes de convalidar."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     schema = tenant_schema(slug)
     code = f"NOACT{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest sin acta", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest sin acta", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await conn.execute(
         f'UPDATE "{schema}".trd_series SET estado = \'aprobada\' WHERE id = $1', serie.id
@@ -131,18 +131,18 @@ async def test_convalidar_desde_aprobada_requiere_acta_comite(
 
 @pytest.mark.integration
 async def test_trigger_bloquea_mutacion_de_acto_sobre_convalidada(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Hallazgo de seguridad: el motor (no solo la aplicación) rechaza
     reescribir el acto de una fila `convalidada`, y solo permite
     `estado -> derogada` como única transición."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     schema = tenant_schema(slug)
     code = f"IMMUT{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest inmutable", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest inmutable", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, serie.id)
     convalidada = await archive.convalidar_trd_serie_version(
@@ -171,17 +171,17 @@ async def test_trigger_bloquea_mutacion_de_acto_sobre_convalidada(
 
 @pytest.mark.integration
 async def test_registrar_rusd_fill_once_y_trigger_bloquea_reescritura(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Hallazgo #4: RUSD/publicación se registran DESPUÉS de convalidar; el
     trigger permite NULL -> valor pero no valor -> otro valor."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     schema = tenant_schema(slug)
     code = f"RUSD{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest rusd", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest rusd", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, serie.id)
     convalidada = await archive.convalidar_trd_serie_version(
@@ -220,16 +220,16 @@ async def test_registrar_rusd_fill_once_y_trigger_bloquea_reescritura(
 
 @pytest.mark.integration
 async def test_derogar_bloqueado_por_expediente_open_y_desbloquea_al_cerrar(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Hallazgo #3 (decisión elegida): `derogar` se bloquea mientras exista
     algún expediente `open` clasificado bajo el código."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"DEROP{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest derogar open", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest derogar open", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, serie.id)
 
@@ -247,18 +247,18 @@ async def test_derogar_bloqueado_por_expediente_open_y_desbloquea_al_cerrar(
 
 @pytest.mark.integration
 async def test_create_version_cae_a_ultima_cuando_no_hay_vigente(
-    tenant_ctx: tuple[str, asyncpg.Connection],
+    tenant_con_organigrama: tuple[str, asyncpg.Connection],
 ) -> None:
     """Hallazgo #3: tras derogar sin sucesora (código sin expedientes `open`,
     caso legítimo de retiro), `POST /versiones` NO debe dar 404 permanente --
     cae a la última versión por número para poder abrir un `borrador` nuevo
     y, eventualmente, convalidarlo."""
-    slug, conn = tenant_ctx
+    slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)
     code = f"REVIVE{uuid.uuid4().hex[:6]}"
 
     serie = await archive.create_trd_serie(
-        TrdSerieCreate(code=code, name="itest revivir", disposition="E"), actor=None
+        TrdSerieCreate(code=code, name="itest revivir", disposition="E", archivo_gestion_years=5, archivo_central_years=5, dependencias_productoras=[110]), actor=None
     )
     await convalidate_for_test(conn, serie.id)
 
@@ -267,7 +267,7 @@ async def test_create_version_cae_a_ultima_cuando_no_hay_vigente(
 
     # Sin vigente para `code` -- antes de la 038 esto daba 404 permanente.
     v2 = await archive.create_trd_serie_version(
-        code, TrdSerieVersionCreate(retention_years=9), actor=None
+        code, TrdSerieVersionCreate(archivo_gestion_years=9), actor=None
     )
     assert v2.version == derogada.version + 1
     assert v2.estado == "borrador"

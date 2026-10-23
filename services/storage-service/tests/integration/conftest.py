@@ -225,6 +225,21 @@ CREATE TRIGGER trg_audit_log_default_no_mutation
 """
 
 
+# C-5/C14 (ADR-043): la vista CONTRATO de archive (migración 075) que el gate de borrado de storage
+# consulta. Este carril solo aplica las migraciones de storage, así que se simula con una vista
+# sobre una tabla: un test que quiera una constancia vigente inserta en `citas_anexo_stub`; uno que
+# quiera la vista AUSENTE (fail-closed) hace `DROP VIEW v_anexo_citado_vigente`.
+DDL_VISTA_CITAS_STUB = """
+CREATE TABLE IF NOT EXISTS citas_anexo_stub (
+    file_id UUID NOT NULL, excepcion_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    transferencia_id UUID NOT NULL DEFAULT gen_random_uuid(),
+    rol TEXT NOT NULL DEFAULT 'recibe', ordinal INTEGER NOT NULL DEFAULT 1
+);
+CREATE OR REPLACE VIEW v_anexo_citado_vigente AS
+    SELECT file_id, excepcion_id, transferencia_id, rol, ordinal FROM citas_anexo_stub;
+"""
+
+
 @pytest_asyncio.fixture(scope="session")
 async def _audit_log_ready() -> None:
     """Asegura que `public.audit_log` (+ triggers append-only) exista antes de
@@ -306,8 +321,11 @@ async def tenant_ctx(
     try:
         for path in runner._sql_files(runner.TENANT_DIR):
             async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await db_conn.execute(path.read_text())
+        async with db_conn.transaction():
+            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
+            await db_conn.execute(DDL_VISTA_CITAS_STUB)
         yield slug, db_conn
     finally:
         assert schema.startswith("tenant_itest_"), (

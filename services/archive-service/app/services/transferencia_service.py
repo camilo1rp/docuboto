@@ -82,7 +82,7 @@ from app.services.constancia_firma_excepcion import (
 # canónica (C14N) -- es el mismo cuerpo que congela el acta de entrega.
 from app.services.fisico_service import FisicoService, _fuid_to_xml
 from app.services.index_service import IndexService
-from app.services.retention_math import base_worm, total_trd_years
+from app.services.retention_math import RetencionDiferida, base_worm, total_trd_years
 
 if TYPE_CHECKING:
     from app.clients.signature_client import SignedPersonal
@@ -362,6 +362,20 @@ class TransferenciaService:
                     # Defensa en profundidad (migración 065): el trigger de tenencia física
                     # repite las reglas de `_validar_ubicaciones` con el MISMO código en el
                     # mensaje. Si una carrera lo dispara después del cotejo, es el mismo 422.
+                    if cv.constraint_name == "ck_transferencia_unidad_prestada":
+                        # C11, defensa del motor (migración 072): un préstamo que se
+                        # confirmó entre el cotejo y el INSERT.
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail={
+                                "error": "unidad_prestada",
+                                "detail": (
+                                    "Una unidad que contiene al expediente está prestada: "
+                                    "no se puede transferir mientras esté fuera del archivo."
+                                ),
+                                "status": 409,
+                            },
+                        ) from cv
                     if cv.constraint_name != "ck_transferencias_tenencia_fisica" or (
                         cv.message not in _CODIGOS_TENENCIA
                     ):
@@ -464,6 +478,28 @@ class TransferenciaService:
             raise
         return _resp(row)
 
+    async def _rechazar_si_unidad_prestada(self, expediente_id: uuid.UUID) -> None:
+        """C11: un expediente cuya unidad está PRESTADA no se puede transferir (ni
+        preparar ni enviar): la transferencia mueve la custodia de algo que está
+        físicamente fuera. Corre DENTRO de la transacción del acto (la función SQL
+        toma el bloqueo de árbol que comparte con el préstamo); el trigger
+        `trg_transferencia_unidad_prestada` es la defensa del motor."""
+        cod = await FisicoRepository(self._conn, self._tenant).expediente_unidad_prestada(
+            expediente_id
+        )
+        if cod is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "unidad_prestada",
+                    "detail": (
+                        f"La unidad {cod} que contiene al expediente está prestada: "
+                        "no se puede transferir mientras esté fuera del archivo."
+                    ),
+                    "status": 409,
+                },
+            )
+
     async def _validar_ubicaciones(self, payload: TransferenciaCreate) -> None:
         """Rama A/B de la coherencia origen/destino de `create` (ver los comentarios
         de ese método). Corre DENTRO de su transacción (AREA-07-06), con la tenencia
@@ -474,6 +510,7 @@ class TransferenciaService:
         # AREA-07-06: la tenencia se lee DENTRO de la transacción del acto y con
         # `FOR SHARE`, no antes: un movimiento de la unidad entre la lectura y el
         # INSERT dejaba al acta cotejada contra una ubicación que ya no era la actual.
+        await self._rechazar_si_unidad_prestada(payload.expediente_id)
         units = await fisico_repo.units_of_expediente(payload.expediente_id, lock_share=True)
         current_ubicaciones = {
             u["ubicacion_id"] for u in units if u["ubicacion_id"] is not None
@@ -630,6 +667,7 @@ class TransferenciaService:
             existing = await self._require(transferencia_id, "enviada")
             expediente_code = await self._expediente_code(existing["expediente_id"])
             async with self._conn.transaction():
+                await self._rechazar_si_unidad_prestada(existing["expediente_id"])
                 row = await self._repo.update_estado(
                     transferencia_id,
                     expected_estado="preparada",
@@ -2250,6 +2288,13 @@ class TransferenciaService:
             revocacion_worm_sobre_protegido=row.get("revocacion_worm_sobre_protegido"),
             revocacion_sello_valida=revocacion_sello_valida,
             revocacion_firma_personal_valida=revocacion_firma_personal_valida,
+            # Una constancia recién declarada (RETURNING, sin el JOIN del soporte) con anexo es
+            # `vigente` por definición.
+            soporte_estado=row.get("soporte_estado")
+            or ("vigente" if row.get("referencia_anexo_id") is not None else None),
+            soporte_lote_codigo=row.get("soporte_lote_codigo"),
+            soporte_acta_sha256=row.get("soporte_acta_sha256"),
+            soporte_eliminado_at=row.get("soporte_eliminado_at"),
         )
 
     async def _referencias_visibles(
@@ -2912,6 +2957,36 @@ class TransferenciaService:
         }
         try:
             async with self._conn.transaction():
+                # C14 (ADR-043): bloquear la fila del anexo (FOR SHARE) y comprobar en la misma
+                # tx; ver `asegurar_soporte_citable` por qué NO basta con haberlo validado antes.
+                negativa = await self._repo.asegurar_soporte_citable(
+                    payload.referencia_radicado_id, payload.referencia_anexo_id
+                )
+                if negativa == "anexo_no_disponible":
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail={
+                            "error": "referencia_documental_invalida",
+                            "detail": (
+                                "El radicado o anexo de soporte no existe o no está "
+                                "disponible para usted"
+                            ),
+                            "status": 422,
+                        },
+                    )
+                if negativa is not None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={
+                            "error": "radicado_en_lote_de_eliminacion",
+                            "detail": (
+                                "El radicado de soporte está en un lote de eliminación vivo "
+                                f"({negativa.removeprefix('lote:')}): una constancia nueva no "
+                                "tendría baja de soporte. Anule el lote o use otro soporte."
+                            ),
+                            "status": 409,
+                        },
+                    )
                 inserted = await self._repo.insert_acta_firma_excepcion(data)
                 if inserted is not None:
                     # Bookkeeping WORM en la MISMA tx: toda constancia tiene su fila aunque el
@@ -3776,10 +3851,8 @@ class TransferenciaService:
         lado de storage-service -- misma defensa en profundidad que su gemela
         del índice.
 
-        ADR-026 (Increment 3, D4, AREA-06-04): para `exp.origen == 'fondo_acumulado'`
-        la base es su `fecha_extrema_final` con el clamp de
-        `retention_math.base_worm`, no `firmado_at`. Antes devolvía `None` y el acta
-        de un fondo acumulado no tenía WORM nunca.
+        ADR-043 (enmienda de ADR-026 D4.4): la base del acta es SIEMPRE `firmado_at`
+        (`base_worm(..., tipo="instrumento")`), también para un fondo acumulado.
         """
         if firmado_at is None:
             return None
@@ -3794,16 +3867,19 @@ class TransferenciaService:
         total = total_trd_years(serie.archivo_gestion_years, serie.archivo_central_years)
         if total is None:
             return None
-        # Corriente: la fecha de FIRMA del acta (ver arriba). Fondo acumulado: su
-        # `fecha_extrema_final` con el clamp de D4.4 (AREA-06-04), nunca `firmado_at`.
+        # ADR-043: el acta es un INSTRUMENTO de control, no contenido. Su base es el ACTO
+        # (`firmado_at`) también en un fondo acumulado: no pospone la disposición del contenido y
+        # debe sobrevivirle como prueba; con la regla del contenido (hold sin retención) una
+        # valoración «E» la dejaría sin protección.
         inicio = base_worm(
             origen=exp.origen,
             closed_at=firmado_at,
             fecha_extrema_final=exp.fecha_extrema_final,
             total_years=total,
-            margen_dias=settings.worm_fondo_acumulado_margen_dias,
+            margen_dias=settings.worm_piso_margen_dias,
+            tipo="instrumento",
         )
-        if inicio is None:
+        if inicio is None or isinstance(inicio, RetencionDiferida):
             return None
         return total, inicio
 

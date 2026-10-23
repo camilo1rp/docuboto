@@ -16,7 +16,10 @@ rollback del UPDATE, que el WHERE de la publicación excluye por tipo y por cana
 
 Mutaciones (todas verificadas, ver CHANGELOG):
 - quitar `AND a.publicable` de `get_public_anexo` → `test_un_anexo_no_marcado_no_se_sirve` cae;
-- quitar la exclusión por tipo / por canal del WHERE de `set_publicable` → caen sus tests;
+- quitar la exclusión por canal del WHERE de `set_publicable` → cae `test_un_radicado_de_ventanilla_no_se_publica_de_oficio`;
+- C-4/C10: cambiar `EXISTS` por `NOT EXISTS`, o quitar `t.publicable` / `t.activo` del subselect →
+  caen `test_solo_un_tipo_publicable_permite_publicar_de_oficio` y
+  `test_un_tipo_inactivo_aunque_este_marcado_no_publica`;
 - insertar el evento del outbox DESPUÉS del `async with transaction()` en `reclassify` →
   `test_el_rollback_del_update_se_lleva_el_evento` cae;
 - sacar el INSERT de la clave de la transacción de `create` → cae
@@ -49,7 +52,7 @@ def _clearance_3(monkeypatch) -> None:
 
 async def _en(tenant_ctx) -> tuple[str, asyncpg.Connection]:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return slug, conn
 
 
@@ -70,6 +73,11 @@ async def _radicado(conn, slug, **kw) -> uuid.UUID:
     return creado.id
 
 
+async def _tipo_publicable(conn, code: str = "Petición") -> None:
+    """C-4/C10: el tipo del radicado de prueba entra en el esquema de publicación (opt-in)."""
+    await conn.execute("UPDATE tipos_documentales SET publicable = TRUE WHERE code = $1", code)
+
+
 async def _anexo(conn, radicado_id) -> uuid.UUID:
     return await conn.fetchval(
         "INSERT INTO anexos (radicado_id, file_id, filename) VALUES ($1, $2, 'a.pdf') RETURNING id",
@@ -87,6 +95,7 @@ async def test_un_anexo_no_marcado_no_se_sirve(tenant_ctx) -> None:
     from app.repositories.oai_repository import OaiRepository
 
     slug, conn = await _en(tenant_ctx)
+    await _tipo_publicable(conn)
     rid = await _radicado(conn, slug)
     tn = await conn.fetchval("SELECT tracking_number FROM radicados WHERE id = $1", rid)
     anexo = await _anexo(conn, rid)
@@ -128,6 +137,7 @@ async def test_el_acto_de_publicar_con_un_anexo_ajeno_revierte_entero(tenant_ctx
     from app.services.document_service import AnexoNoDisponibleError
 
     slug, conn = await _en(tenant_ctx)
+    await _tipo_publicable(conn)
     a, b = await _radicado(conn, slug), await _radicado(conn, slug)
     ajeno = await _anexo(conn, b)
     with pytest.raises(AnexoNoDisponibleError):
@@ -152,26 +162,227 @@ async def test_un_radicado_de_ventanilla_no_se_publica_de_oficio(tenant_ctx) -> 
     assert await DocumentRepository(conn, slug).set_publicable(rid, True, 3, None) is None
     assert await conn.fetchval("SELECT publicable FROM radicados WHERE id = $1", rid) is False
     # Control positivo: el mismo radicado SIN la marca de canal sí se publica.
+    await _tipo_publicable(conn)
     ok = await _radicado(conn, slug)
     assert await DocumentRepository(conn, slug).set_publicable(ok, True, 3, None) is not None
 
 
 @pytest.mark.asyncio
-async def test_un_tipo_admitido_en_ventanilla_no_se_publica_de_oficio(tenant_ctx) -> None:
+async def test_solo_un_tipo_publicable_permite_publicar_de_oficio(tenant_ctx) -> None:
+    """C-4/C10: `publicable` es marca PROPIA del tipo, opt-in, y va en el `WHERE`.
+
+    `EXISTS` y no `NOT EXISTS`: el radicado sin tipo o con un tipo desconocido NO se publica.
+    Mutación: `NOT EXISTS` (o quitar `t.publicable`) vuelve verde lo que aquí debe ser None."""
     from app.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     await conn.execute(
-        "INSERT INTO tipos_documentales (code, nombre, admite_ventanilla_publica) "
-        "VALUES ('PQRS', 'PQRS', true), ('OFICIO', 'Oficio', false)"
+        "INSERT INTO tipos_documentales (code, nombre, publicable) "
+        "VALUES ('DIFUNDIBLE', 'Difundible', true), ('INTERNO', 'Interno', false)"
     )
-    pqrs = await _radicado(conn, slug, doc_class="PQRS")
-    oficio = await _radicado(conn, slug, doc_class="OFICIO")
+    difundible = await _radicado(conn, slug, doc_class="DIFUNDIBLE")
+    interno = await _radicado(conn, slug, doc_class="INTERNO")
+    sin_tipo = await _radicado(conn, slug, doc_class="INTERNO")
+    desconocido = await _radicado(conn, slug, doc_class="INTERNO")
+    await conn.execute("UPDATE radicados SET doc_class = NULL WHERE id = $1", sin_tipo)
+    await conn.execute("UPDATE radicados SET doc_class = 'NO-EXISTE' WHERE id = $1", desconocido)
     repo = DocumentRepository(conn, slug)
-    assert await repo.set_publicable(pqrs, True, 3, None) is None  # 404 neutro
-    assert await repo.set_publicable(oficio, True, 3, None) is not None
-    # Retirar nunca se bloquea: un fail-safe en la dirección de dejar de difundir.
-    assert await repo.set_publicable(oficio, False, 3, None) is not None
+
+    assert await repo.set_publicable(interno, True, 3, None) is None
+    assert await repo.set_publicable(sin_tipo, True, 3, None) is None  # antes SÍ se publicaba
+    assert await repo.set_publicable(desconocido, True, 3, None) is None
+    assert await repo.set_publicable(difundible, True, 3, None) is not None  # control positivo
+    for rid in (interno, sin_tipo, desconocido):
+        assert await conn.fetchval("SELECT publicable FROM radicados WHERE id = $1", rid) is False
+
+
+@pytest.mark.asyncio
+async def test_un_tipo_inactivo_aunque_este_marcado_no_publica(tenant_ctx) -> None:
+    from app.repositories.document_repository import DocumentRepository
+
+    slug, conn = await _en(tenant_ctx)
+    await conn.execute("INSERT INTO tipos_documentales (code, nombre, publicable) VALUES ('VIEJO', 'Viejo', true)")
+    rid = await _radicado(conn, slug, doc_class="VIEJO")
+    await conn.execute("UPDATE tipos_documentales SET activo = FALSE WHERE code = 'VIEJO'")
+    assert await DocumentRepository(conn, slug).set_publicable(rid, True, 3, None) is None
+
+
+@pytest.mark.asyncio
+async def test_publicable_y_admite_ventanilla_son_ortogonales(tenant_ctx) -> None:
+    """Antes la ventanilla EXCLUÍA la publicación (acoplaba dos marcas que dicen cosas
+    distintas). Ahora un tipo que se recibe por la ventanilla puede, además, difundirse si la
+    entidad lo declara; y uno que se difunde no por eso se ofrece en la ventanilla."""
+    from app.repositories.document_repository import DocumentRepository
+
+    slug, conn = await _en(tenant_ctx)
+    await conn.execute(
+        "INSERT INTO tipos_documentales (code, nombre, admite_ventanilla_publica, publicable) VALUES "
+        "('AMBAS', 'Ambas', true, true), ('SOLO-VENT', 'Solo ventanilla', true, false), "
+        "('SOLO-PUB', 'Solo publicable', false, true)"
+    )
+    repo = DocumentRepository(conn, slug)
+    ambas = await _radicado(conn, slug, doc_class="AMBAS")
+    solo_vent = await _radicado(conn, slug, doc_class="SOLO-VENT")
+    solo_pub = await _radicado(conn, slug, doc_class="SOLO-PUB")
+    assert await repo.set_publicable(ambas, True, 3, None) is not None
+    assert await repo.set_publicable(solo_pub, True, 3, None) is not None
+    assert await repo.set_publicable(solo_vent, True, 3, None) is None
+
+
+@pytest.mark.asyncio
+async def test_el_canal_de_ventanilla_nunca_se_publica_aunque_el_tipo_lo_permita(tenant_ctx) -> None:
+    """La exclusión por canal es independiente del tipo (Ley 1581): se conserva."""
+    from app.repositories.document_repository import DocumentRepository
+
+    slug, conn = await _en(tenant_ctx)
+    await _tipo_publicable(conn)
+    rid = await _radicado(conn, slug, metadata={"canal": "ventanilla_publica"})
+    assert await DocumentRepository(conn, slug).set_publicable(rid, True, 3, None) is None
+
+
+@pytest.mark.asyncio
+async def test_retirar_una_publicacion_no_depende_del_tipo(tenant_ctx) -> None:
+    """Fail-safe: si la entidad desmarca el tipo después, el radicado ya publicado se puede
+    retirar igual — es la dirección segura."""
+    from app.repositories.document_repository import DocumentRepository
+
+    slug, conn = await _en(tenant_ctx)
+    await _tipo_publicable(conn)
+    rid = await _radicado(conn, slug)
+    repo = DocumentRepository(conn, slug)
+    assert await repo.set_publicable(rid, True, 3, None) is not None
+    await conn.execute("UPDATE tipos_documentales SET publicable = FALSE")
+    assert await repo.set_publicable(rid, False, 3, None) is not None
+    assert await conn.fetchval("SELECT publicable FROM radicados WHERE id = $1", rid) is False
+
+
+@pytest.mark.asyncio
+async def test_si_lo_unico_que_falta_es_el_tipo_el_acto_dice_409_y_no_deja_asiento(tenant_ctx) -> None:
+    from app.services.document_service import TipoDocumentalNoPublicableError
+
+    slug, conn = await _en(tenant_ctx)
+    rid = await _radicado(conn, slug)  # 'Petición': existe, activo, NO publicable
+    with pytest.raises(TipoDocumentalNoPublicableError):
+        await DocumentService(conn, slug).set_publicacion(rid, True, "Esquema de publicación", 3)
+    assert await conn.fetchval("SELECT publicable FROM radicados WHERE id = $1", rid) is False
+    assert await conn.fetchval(
+        "SELECT count(*) FROM public.audit_log WHERE action = 'document.publicacion_activada' "
+        "AND object_ref = (SELECT tracking_number FROM radicados WHERE id = $1)",
+        rid,
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_el_409_no_es_un_oraculo_cualquier_otro_motivo_sigue_siendo_404(tenant_ctx) -> None:
+    """El diagnóstico repite el MISMO gate (clearance, nivel público, anulado, canal) sin la condición
+    del tipo: reservado, anulado, de ventanilla, inexistente o que supera el clearance → 404 neutro
+    aunque además el tipo no sea publicable. Solo lo que el actor ya puede ver recibe el 409."""
+    from app.repositories.document_repository import DocumentRepository
+    from app.services.document_service import DocumentNotFoundError
+
+    slug, conn = await _en(tenant_ctx)  # 'Petición' NO publicable en todos
+    svc = DocumentService(conn, slug)
+    reservado = await _radicado(conn, slug)
+    await DocumentRepository(conn, slug).set_classification(
+        reservado, 2, nivel_esperado=1, fundamento="Ley 1712/2014 art. 19",
+        causal="art19_i_salud_publica", plazo_meses=12,
+    )
+    anulado = await _radicado(conn, slug)
+    await conn.execute("UPDATE radicados SET status = 'anulado' WHERE id = $1", anulado)
+    ventanilla = await _radicado(conn, slug, metadata={"canal": "ventanilla_publica"})
+    publico = await _radicado(conn, slug)
+
+    for rid in (reservado, anulado, ventanilla, uuid.uuid4()):
+        with pytest.raises(DocumentNotFoundError):
+            await svc.set_publicacion(rid, True, "x", 3)
+    # un actor sin clearance para ver el radicado público tampoco obtiene el 409
+    from app.services.document_service import TipoDocumentalNoPublicableError
+
+    with pytest.raises(TipoDocumentalNoPublicableError):
+        await svc.set_publicacion(publico, True, "x", 3)  # control positivo: aquí SÍ
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "caso, esperado",
+    [
+        ("tipo_publicable", "publicado"),
+        ("tipo_no_publicable", "409"),
+        ("tipo_inactivo_aunque_marcado", "409"),
+        ("sin_tipo", "409"),
+        ("tipo_desconocido", "409"),
+        ("canal_ventanilla_con_tipo_publicable", "404"),
+        ("reservado_con_tipo_no_publicable", "404"),
+        ("anulado_con_tipo_no_publicable", "404"),
+        ("supera_el_clearance_con_tipo_no_publicable", "404"),
+    ],
+)
+async def test_matriz_del_gate_de_publicable_y_de_su_diagnostico(tenant_ctx, caso: str, esperado: str) -> None:
+    """S6 (C-4/C10): el acto de publicar de oficio contra Postgres REAL, caso por caso, incluido el
+    DIAGNÓSTICO: el 409 solo sale cuando lo ÚNICO que falla es el tipo; cualquier otro motivo —y,
+    sobre todo, los que revelarían un radicado que el actor no puede ver— es el 404 neutro.
+
+    Mutaciones: `EXISTS`→`NOT EXISTS` o quitar `t.publicable` del UPDATE rompe las filas
+    `publicado`/`409`; quitar del diagnóstico el clearance, el nivel, el anulado o el canal rompe las
+    filas `404` (se vuelven 409: un oráculo)."""
+    from app.repositories.document_repository import DocumentRepository
+    from app.services.document_service import (
+        DocumentNotFoundError,
+        TipoDocumentalNoPublicableError,
+    )
+
+    slug, conn = await _en(tenant_ctx)
+    await conn.execute(
+        "INSERT INTO tipos_documentales (code, nombre, publicable, activo) VALUES "
+        "('PUB', 'Pub', true, true), ('NOPUB', 'NoPub', false, true), ('VIEJO', 'Viejo', true, true)"
+    )
+    clearance = 3
+    kw: dict = {}
+    if caso == "tipo_publicable":
+        kw["doc_class"] = "PUB"
+    elif caso in ("tipo_no_publicable", "reservado_con_tipo_no_publicable", "anulado_con_tipo_no_publicable",
+                  "supera_el_clearance_con_tipo_no_publicable"):
+        kw["doc_class"] = "NOPUB"
+    elif caso in ("tipo_inactivo_aunque_marcado",):
+        kw["doc_class"] = "VIEJO"
+    elif caso == "canal_ventanilla_con_tipo_publicable":
+        kw["doc_class"] = "PUB"
+        kw["metadata"] = {"canal": "ventanilla_publica"}
+    else:
+        kw["doc_class"] = "NOPUB"
+    rid = await _radicado(conn, slug, **kw)
+    if caso == "tipo_inactivo_aunque_marcado":
+        await conn.execute("UPDATE tipos_documentales SET activo = FALSE WHERE code = 'VIEJO'")
+    elif caso == "sin_tipo":
+        await conn.execute("UPDATE radicados SET doc_class = NULL WHERE id = $1", rid)
+    elif caso == "tipo_desconocido":
+        await conn.execute("UPDATE radicados SET doc_class = 'NO-EXISTE' WHERE id = $1", rid)
+    elif caso == "reservado_con_tipo_no_publicable":
+        await DocumentRepository(conn, slug).set_classification(
+            rid, 2, nivel_esperado=1, fundamento="Ley 1712/2014 art. 19",
+            causal="art19_i_salud_publica", plazo_meses=12,
+        )
+    elif caso == "anulado_con_tipo_no_publicable":
+        await conn.execute("UPDATE radicados SET status = 'anulado' WHERE id = $1", rid)
+    elif caso == "supera_el_clearance_con_tipo_no_publicable":
+        await DocumentRepository(conn, slug).set_classification(
+            rid, 3, nivel_esperado=1, fundamento="Ley 1712/2014 art. 18",
+            causal="art18_a_intimidad",  # nivel 3: causal del art. 18 y sin plazo (CHECK 050)
+        )
+        clearance = 1
+
+    svc = DocumentService(conn, slug)
+    if esperado == "publicado":
+        res = await svc.set_publicacion(rid, True, "Esquema de publicación", clearance)
+        assert res["publicable"] is True
+    elif esperado == "409":
+        with pytest.raises(TipoDocumentalNoPublicableError):
+            await svc.set_publicacion(rid, True, "Esquema de publicación", clearance)
+    else:
+        with pytest.raises(DocumentNotFoundError):
+            await svc.set_publicacion(rid, True, "Esquema de publicación", clearance)
+    if esperado != "publicado":
+        assert await conn.fetchval("SELECT publicable FROM radicados WHERE id = $1", rid) is False
 
 
 @pytest.mark.asyncio
@@ -183,7 +394,10 @@ async def test_clasificar_retira_tambien_la_marca_de_los_anexos(tenant_ctx) -> N
     anexo = await _anexo(conn, rid)
     repo = DocumentRepository(conn, slug)
     await repo.set_anexos_publicables(rid, [anexo])
-    await repo.set_classification(rid, 2, fundamento="Ley 1712/2014 art. 19")
+    await repo.set_classification(
+        rid, 2, nivel_esperado=1, fundamento="Ley 1712/2014 art. 19",
+        causal="art19_i_salud_publica", plazo_meses=12,
+    )
     assert await conn.fetchval("SELECT publicable FROM anexos WHERE id = $1", anexo) is False
 
 
@@ -214,15 +428,15 @@ async def test_un_insert_directo_clasificado_sin_fundamento_viola_el_check(tenan
     for fund in (None, "", "   "):
         with pytest.raises(asyncpg.CheckViolationError):
             await conn.execute(
-                "UPDATE radicados SET nivel_seguridad = 2, clasificacion_fundamento = $2 "
-                "WHERE id = $1",
+                "UPDATE radicados SET nivel_seguridad = 2, clasificacion_fundamento = $2, "
+                "clasificacion_causal = 'por_clasificar' WHERE id = $1",
                 rid,
                 fund,
             )
     # Con fundamento sí, y el nivel 1 no lo necesita.
     await conn.execute(
-        "UPDATE radicados SET nivel_seguridad = 2, clasificacion_fundamento = 'Ley 1712' "
-        "WHERE id = $1",
+        "UPDATE radicados SET nivel_seguridad = 2, clasificacion_fundamento = 'Ley 1712', "
+        "clasificacion_causal = 'por_clasificar' WHERE id = $1",
         rid,
     )
 
@@ -234,7 +448,7 @@ async def test_la_migracion_041_rellena_lo_heredado_y_valida(tenant_ctx) -> None
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn, slug)
     await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_clasificado_con_fundamento")
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3 WHERE id = $1", rid)  # heredado
+    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_causal = 'por_clasificar' WHERE id = $1", rid)  # heredado
     sql = (
         Path(__file__).parents[2] / "migrations/tenant/041_clasificado_con_fundamento.sql"
     ).read_text()
@@ -261,6 +475,8 @@ async def test_radicar_clasificado_nace_motivado_y_el_indice_trae_dependencia(
         slug,
         nivel_seguridad=2,
         clasificacion_fundamento="Ley 1712/2014 art. 19 lit. a",
+        clasificacion_causal="art19_a_defensa_seguridad_nacional",
+        clasificacion_plazo_meses=60,
     )
     assert rid is not None
     indice = await DocumentService(conn, slug).indice_clasificados(_uuid.uuid4())
@@ -314,7 +530,7 @@ async def test_reclasificar_con_redis_caido_deja_el_evento_pendiente_y_el_rele_l
         nuevo_nivel=3,
         motivo="Contiene datos sensibles",
         actor=actor,
-        causal_reserva="Art. 18",
+        causal_reserva="art18_a_intimidad",
         fundamento_juridico="Ley 1712/2014 art. 18 lit. a",
     )
     assert res["nivel_seguridad"] == 3
@@ -347,11 +563,14 @@ async def test_el_rele_no_baja_el_nivel_con_un_evento_rancio(tenant_ctx, monkeyp
     kw = dict(
         motivo="Contiene datos sensibles",
         actor=uuid.uuid4(),
-        causal_reserva="Art. 18",
         fundamento_juridico="Ley 1712/2014 art. 18 lit. a",
     )
-    await DocumentService(conn, slug, redis=_RedisQueSeCae()).reclassify(rid, nuevo_nivel=2, **kw)
-    await DocumentService(conn, slug, redis=_RedisBueno()).reclassify(rid, nuevo_nivel=3, **kw)
+    await DocumentService(conn, slug, redis=_RedisQueSeCae()).reclassify(
+        rid, nuevo_nivel=2, causal_reserva="art19_i_salud_publica", plazo_reserva_meses=12, **kw
+    )
+    await DocumentService(conn, slug, redis=_RedisBueno()).reclassify(
+        rid, nuevo_nivel=3, causal_reserva="art18_a_intimidad", **kw
+    )
 
     rele = _RedisBueno()
     await outbox.retransmitir(conn, rele, gracia_segundos=0)
@@ -377,7 +596,7 @@ async def test_el_rollback_del_update_se_lleva_el_evento(tenant_ctx, monkeypatch
     with pytest.raises(RuntimeError):
         await DocumentService(conn, slug).reclassify(
             rid, nuevo_nivel=3, motivo="x", actor=uuid.uuid4(),
-            fundamento_juridico="Ley 1712/2014 art. 18",
+            causal_reserva="art18_a_intimidad", fundamento_juridico="Ley 1712/2014 art. 18",
         )
     assert await conn.fetchval("SELECT nivel_seguridad FROM radicados WHERE id = $1", rid) == 1
     assert await _pendientes(conn) == []
@@ -400,7 +619,7 @@ async def test_si_no_se_puede_encolar_el_evento_el_update_revierte(tenant_ctx, m
     with pytest.raises(RuntimeError):
         await DocumentService(conn, slug).reclassify(
             rid, nuevo_nivel=3, motivo="x", actor=uuid.uuid4(),
-            fundamento_juridico="Ley 1712/2014 art. 18",
+            causal_reserva="art18_a_intimidad", fundamento_juridico="Ley 1712/2014 art. 18",
         )
     assert await conn.fetchval("SELECT nivel_seguridad FROM radicados WHERE id = $1", rid) == 1
 
@@ -413,6 +632,7 @@ async def test_el_camino_rapido_publica_y_marca_enviado(tenant_ctx, monkeypatch)
     redis = _RedisBueno()
     await DocumentService(conn, slug, redis=redis).reclassify(
         rid, nuevo_nivel=2, motivo="x", actor=uuid.uuid4(),
+        causal_reserva="art19_i_salud_publica", plazo_reserva_meses=12,
         fundamento_juridico="Ley 1712/2014 art. 19",
     )
     assert len(redis.enviados) == 1
@@ -451,6 +671,7 @@ def _payload(**kw):
         "descripcion": "Texto",
         "acepta_tratamiento": True,
         "politica_version": "2026-01",
+        "altcha": "altcha-de-prueba-0000",
     }
     base.update(kw)
     return VentanillaRadicacion(**base)
@@ -471,7 +692,7 @@ async def test_dos_envios_simultaneos_con_la_misma_clave_dan_un_solo_radicado(te
     async def _enviar() -> str:
         c = await asyncpg.connect(dsn=_require_dsn())
         try:
-            await c.execute(f'SET search_path TO "{schema}", public')
+            await c.execute(f'SET search_path TO "{schema}"')
             r = await VentanillaService(c, slug, ENTIDAD).radicar(
                 _payload(), DocumentService(c, slug), idempotency_key=clave, ip="203.0.113.5"
             )

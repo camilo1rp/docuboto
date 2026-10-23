@@ -31,12 +31,16 @@ from orpycamcp_common import audit
 
 from app.clients import storage_client
 from app.clients.storage_client import StoragePurgaError
+from app.core.causales_reserva import CAUSALES
 from app.core.database import get_tenant_conn
 from app.core.internal_auth import require_internal_token
 from app.repositories.document_repository import DocumentRepository
 from app.schemas.internal import (
     AnexoInternalItem,
     AnexosInternalRequest,
+    CausalReservaInternal,
+    ClasificadoInternalItem,
+    ClasificadosInternalResponse,
     PurgaInternalRequest,
     PurgaInternalResponse,
     RadicadoMetaItem,
@@ -73,6 +77,37 @@ async def anexos_batch(
         ]
         for radicado_id, anexos in grouped.items()
     }
+
+
+@router.get(
+    "/clasificados",
+    response_model=ClasificadosInternalResponse,
+    summary="Radicados nivel >= 2 (causal, plazo, fecha) y catálogo de causales — content-free",
+)
+async def clasificados(
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> ClasificadosInternalResponse:
+    """Acto de SISTEMA (sin gate de clearance, como `/anexos`): el índice del art. 20
+    es un registro público y COMPLETO, ortogonal al clearance de lectura. Lo compone
+    archive-service cruzando estas filas con el cuadro de clasificación. La consulta no
+    selecciona número, asunto ni fundamento (`DocumentRepository.clasificados_internal`)."""
+    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    repo = DocumentRepository(conn, tenant_slug)
+    return ClasificadosInternalResponse(
+        causales=[
+            CausalReservaInternal(
+                codigo=c.codigo,
+                articulo=c.articulo,
+                literal=c.literal,
+                descripcion=c.descripcion,
+                nivel=c.nivel,
+                plazo_max_meses=c.plazo_max_meses,
+            )
+            for c in CAUSALES.values()
+        ],
+        radicados=[ClasificadoInternalItem(**dict(r)) for r in await repo.clasificados_internal()],
+    )
 
 
 @router.post(

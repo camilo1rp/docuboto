@@ -36,7 +36,7 @@ _FILA_SINTETICA = "d4e62969-824d-4802-9e40-b402d977b6fc"
 
 
 async def _fijar(conn, slug: str) -> None:
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
 async def _radicado(conn, nivel: int) -> str:

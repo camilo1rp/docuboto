@@ -192,8 +192,6 @@ def make_trd_serie_record(
     code: str = "100",
     name: str = "Contratos",
     description: str | None = "Series contractuales",
-    retention_years: int = 5,
-    total_retention: int = 10,
     disposition: str = "conserve",
     is_active: bool = True,
     created_at: datetime | None = None,
@@ -229,8 +227,6 @@ def make_trd_serie_record(
         "code": code,
         "name": name,
         "description": description,
-        "retention_years": retention_years,
-        "total_retention": total_retention,
         "disposition": disposition,
         "is_active": is_active,
         "created_at": created_at or NOW,
@@ -268,7 +264,6 @@ def make_tvd_agrupacion_record(
     code: str = "FONDO-100",
     name: str = "Fondo acumulado Dependencia X",
     description: str | None = "Documentacion de dependencia suprimida",
-    total_retention: int = 10,
     disposition: str = "CT",
     is_active: bool = True,
     created_at: datetime | None = None,
@@ -295,7 +290,7 @@ def make_tvd_agrupacion_record(
 ) -> dict:
     """ADR-026 (Increment 1): gemela de `make_trd_serie_record` para TVD --
     `tipo_instrumento='TVD'`, `archivo_gestion_years=None` (la TVD no tiene
-    fase de archivo de gestión, `retention_years=0`) y las cuatro columnas de
+    fase de archivo de gestión) y las cuatro columnas de
     contenido valorado SIEMPRE pobladas (CHECK `trd_series_tvd_forma_check`).
     Estado por defecto `borrador` (nunca `migrada`: una TVD nace vacía, D6 no
     aplica -- a diferencia del default `migrada` de `make_trd_serie_record`,
@@ -305,8 +300,6 @@ def make_tvd_agrupacion_record(
         code=code,
         name=name,
         description=description,
-        retention_years=0,
-        total_retention=total_retention,
         disposition=disposition,
         is_active=is_active,
         created_at=created_at,
@@ -333,6 +326,82 @@ def make_tvd_agrupacion_record(
         fecha_extrema_final=fecha_extrema_final,
         justificacion_valoracion=justificacion_valoracion,
     )
+
+
+# ---------------------------------------------------------------------------
+# C-4/C8 (ADR-040): dependencia productora y organigrama como colaboradores del
+# circuito de convalidación. `aprobar`/`convalidar` exigen que la versión declare
+# su productora (409 si no), y `convalidar` congela la ruta del organigrama vivo.
+# Un test que aprueba/convalida sin declarar qué hay en esas dos tablas afirma sobre
+# un mundo donde el gate no existe: la respuesta de `fetch` es un dato EXPLÍCITO.
+# ---------------------------------------------------------------------------
+
+#: Organigrama de prueba: 100 Dirección General (raíz) > 110 Subdirección Administrativa.
+ARBOL_PRUEBA: dict[int, list[tuple[int, str, str]]] = {
+    100: [(100, "DG", "Dirección General")],
+    110: [(110, "SA", "Subdirección Administrativa"), (100, "DG", "Dirección General")],
+}
+
+
+def filas_organigrama(codigos: list[int]) -> list[dict[str, Any]]:
+    """Filas de `organigrama_hacia_arriba` (subida nodo -> raíz) para `codigos`."""
+    filas: list[dict[str, Any]] = []
+    for origen in codigos:
+        cadena = ARBOL_PRUEBA[origen]
+        for prof, (cod, sigla, nombre) in enumerate(cadena, start=1):
+            filas.append(
+                {
+                    "origen_codigo": origen,
+                    "codigo": cod,
+                    "sigla": sigla,
+                    "nombre": nombre,
+                    "activo": True,
+                    "prof": prof,
+                    "es_ciclo": False,
+                    "tiene_padre": prof < len(cadena),
+                }
+            )
+    return filas
+
+
+def declara_productoras(
+    mock_conn: AsyncMock,
+    serie_id: uuid.UUID,
+    codigos: list[int] | None = None,
+    *,
+    ruta_convalidada: list[dict[str, Any]] | None = None,
+) -> None:
+    """`conn.fetch` responde según la tabla que consulta el SQL: las productoras de
+    `serie_id` (`codigos`, por omisión la 110) y el organigrama de prueba. Sin
+    `codigos` explícito `[]`, la versión no declara ninguna (el gate debe cerrar)."""
+    codigos = [110] if codigos is None else codigos
+
+    async def _fetch(sql: str, *args: Any, **kw: Any) -> list[dict[str, Any]]:
+        if "trd_serie_dependencia_productora" in sql:
+            return [
+                {
+                    "trd_serie_id": serie_id,
+                    "dependencia_codigo": c,
+                    "dependencia_nombre": ARBOL_PRUEBA[c][0][2],
+                    "ruta_convalidada": ruta_convalidada,
+                }
+                for c in codigos
+            ]
+        if "FROM dependencias" in sql and "sube" in sql:
+            return filas_organigrama(list(args[0] or codigos))
+        return []
+
+    mock_conn.fetch.side_effect = _fetch
+
+
+def responde_series(mock_conn: AsyncMock, filas: list[dict[str, Any]]) -> None:
+    """`conn.fetch` devuelve `filas` a la lectura de series y `[]` a la de sus
+    dependencias productoras (C-4/C8): un `return_value` único se las daría a las dos."""
+
+    async def _fetch(sql: str, *args: Any, **kw: Any) -> list[dict[str, Any]]:
+        return [] if "trd_serie_dependencia_productora" in sql else list(filas)
+
+    mock_conn.fetch.side_effect = _fetch
 
 
 def _make_mock_conn() -> AsyncMock:
@@ -483,6 +552,26 @@ def _artefacto_vigente_doble() -> Iterator[AsyncMock]:
     doble = AsyncMock(return_value=None)
     with patch("app.clients.signature_client.artefacto_vigente", doble):
         yield doble
+
+
+# C-6 (ADR-042): el cableado del AIP resuelve el vigente en TRI-ESTADO y calcula la huella del
+# índice embebido. Por defecto «sin renovación» y una huella fija, sin red; las pruebas que
+# ejercen el cambio (`test_c6_*`, `test_aip_wiring_artefacto_vigente`) los sustituyen.
+@pytest.fixture(autouse=True)
+def _aip_c6_dobles() -> Iterator[None]:
+    from app.clients import signature_client
+
+    with (
+        patch(
+            "app.clients.signature_client.resolver_artefacto_vigente",
+            AsyncMock(return_value=signature_client.SIN_RENOVACION),
+        ),
+        patch(
+            "app.services.aip_wiring_service._huella_indice_original",
+            AsyncMock(return_value="a" * 64),
+        ),
+    ):
+        yield
 
 
 @pytest.fixture(autouse=True)

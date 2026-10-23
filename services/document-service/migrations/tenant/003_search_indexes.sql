@@ -31,10 +31,10 @@ CREATE INDEX IF NOT EXISTS ix_radicados_search_vector
 
 -- Trigram indexes for fuzzy/prefix matching
 CREATE INDEX IF NOT EXISTS ix_radicados_tracking_trgm
-    ON radicados USING GIN (tracking_number gin_trgm_ops);
+    ON radicados USING GIN (tracking_number public.gin_trgm_ops);
 
 CREATE INDEX IF NOT EXISTS ix_radicados_subject_trgm
-    ON radicados USING GIN (subject gin_trgm_ops);
+    ON radicados USING GIN (subject public.gin_trgm_ops);
 
 CREATE INDEX IF NOT EXISTS ix_radicados_sender_trgm
-    ON radicados USING GIN (sender_name gin_trgm_ops);
+    ON radicados USING GIN (sender_name public.gin_trgm_ops);

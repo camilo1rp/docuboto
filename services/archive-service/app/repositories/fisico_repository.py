@@ -36,7 +36,7 @@ class FisicoRepository:
 
     async def _sp(self) -> None:
         schema = tenant_schema(self._tenant_slug)  # valida + normaliza (fail-closed)
-        await self._conn.execute(f'SET search_path TO "{schema}", public')
+        await self._conn.execute(f'SET search_path TO "{schema}"')
 
     # -- ubicaciones ---------------------------------------------------
 
@@ -182,6 +182,17 @@ class FisicoRepository:
 
     # -- vínculo N:M ---------------------------------------------------
 
+    async def lock_arbol(self, unidad_id: uuid.UUID) -> None:
+        """Bloqueo de transacción por RAÍZ del árbol de unidades (C11).
+
+        Va en una sentencia APARTE de la comprobación que protege: bajo READ
+        COMMITTED una subconsulta de la misma sentencia usa la instantánea
+        anterior a la espera y no vería el préstamo que se confirmó mientras
+        esperaba el bloqueo. Quien presta, vincula, transfiere o propone una
+        eliminación lo toma ANTES de leer. Solo válido dentro de una transacción."""
+        await self._sp()
+        await self._conn.execute("SELECT unidad_lock_arbol($1::uuid)", unidad_id)
+
     async def link_expediente(
         self,
         *,
@@ -189,17 +200,24 @@ class FisicoRepository:
         unidad_id: uuid.UUID,
         folio_inicio: int | None,
         folio_fin: int | None,
-    ) -> None:
+    ) -> bool:
+        """Vincula SOLO si ni la unidad, ni un ancestro, ni un descendiente
+        está prestado: meter un expediente reservado en una caja que tiene
+        alguien sin acceso lo entregaría. `False` = la unidad está fuera (0
+        filas). El `WHERE` va en el INSERT; el llamador ya tomó `lock_arbol`."""
         await self._sp()
-        await self._conn.execute(
+        fila = await self._conn.fetchrow(
             "INSERT INTO expediente_unidad "
             "(expediente_id, unidad_id, folio_inicio, folio_fin) "
-            "VALUES ($1, $2, $3, $4)",
+            "SELECT $1::uuid, $2::uuid, $3::int, $4::int "
+            " WHERE unidad_con_prestamo_en_arbol($2::uuid) IS NULL "
+            "RETURNING expediente_id",
             expediente_id,
             unidad_id,
             folio_inicio,
             folio_fin,
         )
+        return fila is not None
 
     async def units_of_expediente(
         self, expediente_id: uuid.UUID, *, lock_share: bool = False
@@ -254,79 +272,281 @@ class FisicoRepository:
     # -- préstamos -----------------------------------------------------
 
     # Un préstamo se lee para saber QUÉ falta del estante, así que las cuatro
-    # rutas devuelven el código y la signatura de la unidad, no solo su UUID.
+    # rutas devuelven el código y la signatura de la unidad, no solo su UUID. Y
+    # QUIÉN lo tiene: el interno se resuelve por JOIN (la traza es el UUID; el
+    # `username` puede cambiar), el externo trae su nombre en la fila.
     # El JOIN obliga a prefijar las columnas de `prestamo` en los WHERE.
     _PRES_SELECT = """
-        SELECT p.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura
+        SELECT p.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura,
+               COALESCE(au.username, p.tercero_nombre) AS prestatario_nombre
           FROM prestamo p
           JOIN unidad_conservacion u ON u.id = p.unidad_id
+          LEFT JOIN auth_users au ON au.id = p.prestatario_user_id
     """
 
-    async def active_loan(self, unidad_id: uuid.UUID) -> asyncpg.Record | None:
-        await self._sp()
-        return await self._conn.fetchrow(
-            "SELECT id FROM prestamo WHERE unidad_id = $1 AND estado = 'prestado' " "LIMIT 1",
-            unidad_id,
+    # Cuerpo común a la proyección de un INSERT/UPDATE ... RETURNING envuelto en CTE.
+    _PRES_DE_CTE = """
+        SELECT n.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura,
+               COALESCE(au.username, n.tercero_nombre) AS prestatario_nombre
+          FROM {cte} n
+          JOIN unidad_conservacion u ON u.id = n.unidad_id
+          LEFT JOIN auth_users au ON au.id = n.prestatario_user_id
+    """
+
+    @staticmethod
+    def _contenido_sobre(umbral: str) -> str:
+        """`EXISTS` de contenido del árbol de `$1` por encima de `umbral` (SQL).
+
+        El árbol es la unidad y sus descendientes: prestar una caja saca también
+        las carpetas que lleva dentro."""
+        return (
+            "EXISTS (SELECT 1 FROM expediente_unidad eu "
+            "JOIN expedientes e ON e.id = eu.expediente_id "
+            "WHERE eu.unidad_id IN (SELECT unidad_arbol($1::uuid)) "
+            f"AND e.nivel_seguridad > ({umbral}))"
         )
+
+    # Clearance del usuario interno `$3` (misma expresión que
+    # `orpycamcp_common.rbac.resolve_caller_clearance`: root = 3, sin
+    # membresías = 1). Un `sub` de Keycloak no existe en `auth_users` => NULL.
+    _CLEARANCE_DE_USER3 = (
+        "SELECT CASE WHEN au.is_root THEN 3 ELSE COALESCE(("
+        "SELECT MAX(rc.max_level) FROM auth_memberships m "
+        "JOIN role_clearance rc ON rc.group_id = m.group_id "
+        "WHERE m.user_id = au.id), 1) END "
+        "FROM auth_users au WHERE au.id = $3::uuid AND au.is_active"
+    )
+    _EN_TRANSFERENCIA = (
+        "EXISTS (SELECT 1 FROM transferencias t "
+        "JOIN expediente_unidad eu ON eu.expediente_id = t.expediente_id "
+        "WHERE t.estado IN ('preparada','enviada') "
+        "AND eu.unidad_id IN (SELECT unidad_arbol($1::uuid)))"
+    )
+    _EN_LOTE = (
+        "EXISTS (SELECT 1 FROM eliminacion_lote_items i "
+        "JOIN eliminacion_lotes l ON l.id = i.lote_id "
+        "JOIN expediente_unidad eu ON eu.expediente_id = i.expediente_id "
+        "WHERE l.estado IN ('borrador','publicado','avalado') "
+        "AND eu.unidad_id IN (SELECT unidad_arbol($1::uuid)))"
+    )
 
     async def insert_prestamo(
         self,
         *,
         unidad_id: uuid.UUID,
-        prestado_a: str,
-        prestado_por: str | None,
+        prestatario_tipo: str,
+        prestatario_user_id: uuid.UUID | None,
+        tercero: dict[str, str | None],
+        prestado_por: uuid.UUID,
         fecha_devolucion_esperada,
+        observaciones: str | None,
         max_clearance: int,
     ) -> asyncpg.Record | None:
-        """Inserta el préstamo SOLO si la unidad no contiene ningún expediente
-        por encima de `max_clearance` (RF-SEG-08, AREA-01-13).
+        """Inserta el préstamo SOLO si TODAS las reglas pasan, en el `WHERE`
+        del `INSERT ... SELECT` (nunca en una comprobación previa):
 
-        El gate va en el `WHERE` del INSERT ... SELECT y no en una consulta
-        previa: leer-y-luego-escribir deja una ventana en la que un expediente
-        reservado entra a la unidad entre la comprobación y el préstamo.
-        `max_clearance` es obligatorio y por keyword (fail-closed, como
-        `expedientes_in_unit`). Devuelve `None` si el gate bloqueó (0 filas)."""
+        1. el contenido del árbol no excede el clearance de QUIEN PRESTA
+           (RF-SEG-08, AREA-01-13);
+        2. interno => `auth_users` activo; y su clearance cubre el contenido;
+           externo => todo el contenido es nivel 1 (pública);
+        3. ni la unidad, ni un ancestro, ni un descendiente está prestado;
+        4. ninguna transferencia `preparada|enviada` ni lote de eliminación vivo
+           toca expedientes del árbol.
+
+        El llamador tomó antes `lock_arbol` (sentencia aparte): sin eso el
+        `NOT EXISTS` leería una instantánea anterior al bloqueo. 0 filas =>
+        usar `diagnosticar_prestamo` SOLO para elegir el mensaje."""
         await self._sp()
+        gate_presta = "NOT " + self._contenido_sobre("$14::int")
+        umbral_prestatario = (
+            f"CASE WHEN $2::text = 'externo' THEN 1 ELSE ({self._CLEARANCE_DE_USER3}) END"
+        )
         return await self._conn.fetchrow(
-            """
+            f"""
             WITH nuevo AS (
                 INSERT INTO prestamo
-                    (unidad_id, prestado_a, prestado_por, fecha_devolucion_esperada)
-                SELECT $1::uuid, $2::text, $3::text, $4::date
-                 WHERE NOT EXISTS (
-                        SELECT 1
-                          FROM expediente_unidad eu
-                          JOIN expedientes e ON e.id = eu.expediente_id
-                         WHERE eu.unidad_id = $1::uuid AND e.nivel_seguridad > $5::int
-                 )
+                    (unidad_id, prestatario_tipo, prestatario_user_id,
+                     tercero_nombre, tercero_documento_tipo, tercero_documento_numero,
+                     tercero_entidad, tercero_cargo, tercero_correo, tercero_telefono,
+                     prestado_por, fecha_devolucion_esperada, observaciones)
+                SELECT $1::uuid, $2::text, $3::uuid,
+                       $4::text, $5::text, $6::text, $7::text, $8::text, $9::text, $10::text,
+                       $11::uuid, $12::date, $13::text
+                 WHERE {gate_presta}
+                   AND ($2::text = 'externo'
+                        OR EXISTS (SELECT 1 FROM auth_users WHERE id = $3::uuid AND is_active))
+                   AND NOT {self._contenido_sobre(umbral_prestatario)}
+                   AND unidad_con_prestamo_en_arbol($1::uuid) IS NULL
+                   AND NOT {self._EN_TRANSFERENCIA}
+                   AND NOT {self._EN_LOTE}
                 RETURNING *
             )
-            SELECT n.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura
-              FROM nuevo n JOIN unidad_conservacion u ON u.id = n.unidad_id
+            {self._PRES_DE_CTE.format(cte="nuevo")}
             """,
             unidad_id,
-            prestado_a,
+            prestatario_tipo,
+            prestatario_user_id,
+            tercero.get("nombre"),
+            tercero.get("documento_tipo"),
+            tercero.get("documento_numero"),
+            tercero.get("entidad"),
+            tercero.get("cargo"),
+            tercero.get("correo"),
+            tercero.get("telefono"),
             prestado_por,
             fecha_devolucion_esperada,
+            observaciones,
             max_clearance,
+        )
+
+    async def diagnosticar_prestamo(
+        self,
+        *,
+        unidad_id: uuid.UUID,
+        prestatario_tipo: str,
+        prestatario_user_id: uuid.UUID | None,
+        max_clearance: int,
+    ) -> asyncpg.Record:
+        """Por qué el INSERT dio 0 filas. Solo ELIGE EL MENSAJE: la decisión ya la
+        tomó el `WHERE` (con el bloqueo de árbol aún tomado, el estado no cambia
+        entre las dos sentencias). El orden de lectura lo fija el servicio, de
+        modo que quien no alcanza el contenido no aprenda nada de lo demás."""
+        await self._sp()
+        umbral = (
+            "CASE WHEN $2::text = 'externo' THEN 1 "
+            f"ELSE COALESCE(({self._CLEARANCE_DE_USER3}), 1) END"
+        )
+        prestatario_sin_acceso = self._contenido_sobre(umbral)
+        presta_sin_acceso = self._contenido_sobre("$4::int")
+        row = await self._conn.fetchrow(
+            f"""
+            SELECT {presta_sin_acceso} AS presta_sin_acceso,
+                   ($2::text = 'interno' AND NOT EXISTS (
+                        SELECT 1 FROM auth_users WHERE id = $3::uuid AND is_active)
+                   ) AS prestatario_inexistente,
+                   unidad_con_prestamo_en_arbol($1::uuid) IS NOT NULL AS ya_prestada,
+                   {self._EN_TRANSFERENCIA} AS en_transferencia,
+                   {self._EN_LOTE} AS en_lote,
+                   {prestatario_sin_acceso} AS prestatario_sin_acceso
+            """,
+            unidad_id,
+            prestatario_tipo,
+            prestatario_user_id,
+            max_clearance,
+        )
+        assert row is not None
+        return row
+
+    async def list_prestatarios_elegibles(
+        self,
+        *,
+        unidad_id: uuid.UUID,
+        max_clearance: int,
+        q: str | None,
+        page: int,
+        size: int,
+    ) -> tuple[list[asyncpg.Record], int]:
+        """Usuarios activos cuyo clearance cubre el árbol: la UI espeja el gate y
+        no ofrece a quien el backend rechazará. Si quien consulta NO alcanza el
+        contenido, la lista sale vacía (no revela quién lo alcanza). Nunca
+        devuelve el nivel."""
+        await self._sp()
+        rows = await self._conn.fetch(
+            """
+            WITH nivel AS (
+                SELECT COALESCE(MAX(e.nivel_seguridad), 1) AS n
+                  FROM expediente_unidad eu
+                  JOIN expedientes e ON e.id = eu.expediente_id
+                 WHERE eu.unidad_id IN (SELECT unidad_arbol($1::uuid))
+            )
+            SELECT u.id AS user_id, u.username, count(*) OVER() AS total
+              FROM auth_users u, nivel
+             WHERE u.is_active
+               -- Unidad inexistente: NADA (no el directorio entero con nivel 1). El servicio
+               -- ya responde 404; esto es la defensa en profundidad del propio repositorio.
+               AND EXISTS (SELECT 1 FROM unidad_conservacion WHERE id = $1::uuid)
+               AND nivel.n <= $2::int
+               AND (CASE WHEN u.is_root THEN 3 ELSE COALESCE((
+                        SELECT MAX(rc.max_level) FROM auth_memberships m
+                          JOIN role_clearance rc ON rc.group_id = m.group_id
+                         WHERE m.user_id = u.id), 1) END) >= nivel.n
+               AND ($3::text IS NULL OR strpos(lower(u.username), lower($3::text)) > 0)
+             ORDER BY u.username, u.id
+             LIMIT $4 OFFSET $5
+            """,
+            unidad_id,
+            max_clearance,
+            q,
+            size,
+            (page - 1) * size,
+        )
+        total = int(rows[0]["total"]) if rows else 0
+        return list(rows), total
+
+    async def expediente_unidad_prestada(self, expediente_id: uuid.UUID) -> str | None:
+        """Código de la unidad PRESTADA que contiene al expediente (o `None`).
+        Toma antes el bloqueo de árbol (la función SQL lo hace en orden estable),
+        así que solo es válida dentro de la transacción del acto que protege."""
+        await self._sp()
+        cod = await self._conn.fetchval("SELECT expediente_unidad_prestada($1::uuid)", expediente_id)
+        # La función SQL devuelve `text` o NULL: cualquier otra cosa no es un código.
+        return cod if isinstance(cod, str) else None
+
+    async def unidades_prestadas_de_expedientes(
+        self, expediente_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, str]:
+        """`{expediente_id: código de la unidad prestada}` de los que están fuera.
+        Admisión 7 del lote de eliminación; ver también `lock_arboles_de_expedientes`."""
+        await self._sp()
+        rows = await self._conn.fetch(
+            """
+            SELECT DISTINCT ON (eu.expediente_id) eu.expediente_id,
+                   (SELECT codigo FROM unidad_conservacion
+                     WHERE id = unidad_con_prestamo_en_arbol(eu.unidad_id)) AS codigo
+              FROM expediente_unidad eu
+             WHERE eu.expediente_id = ANY($1::uuid[])
+               AND unidad_con_prestamo_en_arbol(eu.unidad_id) IS NOT NULL
+             ORDER BY eu.expediente_id
+            """,
+            expediente_ids,
+        )
+        return {r["expediente_id"]: str(r["codigo"]) for r in rows}
+
+    async def lock_arboles_de_expedientes(self, expediente_ids: list[uuid.UUID]) -> None:
+        """Toma, en orden estable (sin interbloqueo), el bloqueo de la raíz de cada
+        unidad que contiene a alguno de los expedientes. Dentro de una transacción."""
+        await self._sp()
+        await self._conn.execute(
+            """
+            SELECT unidad_lock_arbol(r)
+              FROM (SELECT DISTINCT COALESCE(unidad_raiz(eu.unidad_id), eu.unidad_id) AS r
+                      FROM expediente_unidad eu
+                     WHERE eu.expediente_id = ANY($1::uuid[])
+                     ORDER BY 1) x
+            """,
+            expediente_ids,
         )
 
     async def get_prestamo(self, prestamo_id: uuid.UUID) -> asyncpg.Record | None:
         await self._sp()
         return await self._conn.fetchrow(f"{self._PRES_SELECT} WHERE p.id = $1", prestamo_id)
 
-    async def devolver_prestamo(self, prestamo_id: uuid.UUID) -> asyncpg.Record | None:
+    async def devolver_prestamo(
+        self, prestamo_id: uuid.UUID, recibido_por: uuid.UUID
+    ) -> asyncpg.Record | None:
         await self._sp()
         return await self._conn.fetchrow(
-            """
+            f"""
             WITH devuelto AS (
-                UPDATE prestamo SET estado = 'devuelto', fecha_devolucion_real = now()
+                UPDATE prestamo
+                   SET estado = 'devuelto', fecha_devolucion_real = now(),
+                       devuelto_recibido_por = $2::uuid
                  WHERE id = $1 AND estado = 'prestado' RETURNING *
             )
-            SELECT d.*, u.codigo AS unidad_codigo, u.signatura AS unidad_signatura
-              FROM devuelto d JOIN unidad_conservacion u ON u.id = d.unidad_id
+            {self._PRES_DE_CTE.format(cte="devuelto")}
             """,
             prestamo_id,
+            recibido_por,
         )
 
     async def list_prestamos(

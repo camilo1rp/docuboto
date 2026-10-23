@@ -8,7 +8,7 @@
 -- SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 -- Creates the files table in the calling tenant's schema.
--- This migration is applied after SET search_path = tenant_{slug}, public,
+-- This migration is applied after SET search_path = "tenant_{slug}" (solo el tenant, ADR-002), public,
 -- so all objects land in the correct schema without schema-qualifying.
 
 CREATE TABLE IF NOT EXISTS files (

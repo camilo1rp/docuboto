@@ -57,7 +57,7 @@ async def _padre_y_borrador(tenant_ctx, *, con_padre: bool = True):
     from app.services.document_service import DocumentService
 
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     padre = await DocumentService(conn, slug).create(
         DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Solicitud", sender_name="x"),
         registered_by=AUTOR,

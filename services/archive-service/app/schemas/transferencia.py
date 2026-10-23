@@ -287,6 +287,14 @@ class TransferenciaActaFirmaExcepcion(BaseModel):
     revocacion_worm_sobre_protegido: bool | None = None
     revocacion_sello_valida: bool | None = None
     revocacion_firma_personal_valida: bool | None = None
+    # --- soporte documental (C14, ADR-043). DERIVADO, la constancia firmada no se toca ---
+    # `vigente` = el anexo citado no se puede purgar; `baja_avalada` = un lote de eliminación
+    # avalado por el Comité dio de baja el soporte (aún no destruido); `eliminado_por_trd` = el
+    # soporte se destruyó con ese lote. `None` = la constancia no cita anexo (legada).
+    soporte_estado: Literal["vigente", "baja_avalada", "eliminado_por_trd"] | None = None
+    soporte_lote_codigo: str | None = None
+    soporte_acta_sha256: str | None = None
+    soporte_eliminado_at: datetime | None = None
 
 
 class FundamentoVerificacion(BaseModel):

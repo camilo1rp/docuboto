@@ -138,3 +138,91 @@ describe("mensajeError — la validación de esquema también se lee", () => {
     expect(mensajeError(cuerpo, "x")).toBe("No hay paso activo.");
   });
 });
+
+describe("mensajes de antirrobots y conciliación (C-3)", () => {
+  const anidado = (error) => ({ detail: { error, detail: "x", status: 409 } });
+
+  it.each([
+    ["antirrobots_invalido", /verificación automática/i],
+    ["antirrobots_vencido", /venció/i],
+    ["antirrobots_usado", /ya se utilizó/i],
+    ["antirrobots_no_disponible", /presencial.*correo/i],
+    ["tercero_ya_conciliado", /ya fue conciliada/i],
+    ["documento_ya_registrado", /Ya existe una ficha confirmada/i],
+    ["destino_invalido", /ficha de destino/i],
+    ["tercero_provisional", /provisional/i],
+    ["motivo_insuficiente", /al menos 10 caracteres/i],
+  ])("%s tiene mensaje propio en español", (codigo, patron) => {
+    expect(mensajeError(anidado(codigo), "por defecto")).toMatch(patron);
+  });
+
+  it("un código desconocido sigue cayendo al detalle del backend", () => {
+    expect(mensajeError(anidado("otro_codigo"), "por defecto")).toBe("x");
+  });
+});
+
+describe("códigos de desclasificación (C-2, ADR-039)", () => {
+  it.each([
+    "desclasificacion_requiere_aprobacion",
+    "no_requiere_aprobacion",
+    "desclasificacion_pendiente",
+    "separacion_de_funciones",
+    "solicitud_caducada",
+    "solicitud_ya_resuelta",
+    "nivel_cambio",
+    "solo_el_solicitante",
+    "solicitud_not_found",
+  ])("%s tiene mensaje propio en español, también en el sobre anidado", (codigo) => {
+    const plano = mensajeError({ error: codigo, detail: "x" }, "defecto");
+    const anidado = mensajeError(
+      { detail: { error: codigo, detail: "x", status: 409 } },
+      "defecto",
+    );
+    expect(plano).not.toBe("x");
+    expect(plano).not.toBe(codigo);
+    expect(anidado).toBe(plano);
+  });
+});
+
+describe("códigos de custodia, retención legal y anexo citado (C-5)", () => {
+  it("los unidad_* usan el detail del backend, que nombra la unidad", () => {
+    const body = {
+      detail: {
+        error: "unidad_ya_prestada",
+        detail: "La caja CJ-014 ya está prestada.",
+        status: 409,
+      },
+    };
+    expect(mensajeError(body, "defecto")).toBe("La caja CJ-014 ya está prestada.");
+  });
+
+  it("sin detail, el respaldo propio sustituye al código crudo (control positivo)", () => {
+    const m = mensajeError({ error: "unidad_prestada" }, "defecto");
+    expect(m).not.toBe("unidad_prestada");
+    expect(m).toMatch(/prestada/i);
+  });
+
+  it.each([
+    "prestatario_inexistente",
+    "motivo_no_coincide",
+    "hold_de_sistema",
+    "hold_ya_levantado",
+    "tvd_no_aprobada",
+    "valoracion_ya_registrada",
+    "legal_hold_activo",
+  ])("%s tiene mensaje propio aunque el detail sea técnico", (codigo) => {
+    const m = mensajeError({ error: codigo, detail: "x" }, "defecto");
+    expect(m).not.toBe("x");
+    expect(m).not.toBe(codigo);
+  });
+
+  it("anexo_citado_por_constancia: prefiere el detail que nombra la constancia, con respaldo propio", () => {
+    expect(
+      mensajeError(
+        { error: "anexo_citado_por_constancia", detail: "Citado por la constancia 7." },
+        "d",
+      ),
+    ).toBe("Citado por la constancia 7.");
+    expect(mensajeError({ error: "anexo_citado_por_constancia" }, "d")).toMatch(/constancia/i);
+  });
+});

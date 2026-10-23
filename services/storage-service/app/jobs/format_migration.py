@@ -122,7 +122,7 @@ async def run_once(*, descargar, subir_factory) -> dict[str, int]:
     for slug in await list_active_tenants(pool):
         try:
             async with pool.acquire() as conn:
-                await conn.execute(f'SET search_path = "{tenant_schema(slug)}", public')
+                await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
                 repo = PreservacionRepository(conn, slug)
 
                 # La política se resuelve POR ENTIDAD y en este orden: lo que

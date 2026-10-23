@@ -40,7 +40,7 @@ CREATE TABLE sgd_param_admin (
 
 async def _en_tenant(tenant_ctx) -> asyncpg.Connection:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     return conn
 
 

@@ -55,7 +55,7 @@ async def test_key_version_sin_default_y_con_comment_de_retirado(tenant_ctx, tab
 async def test_insertar_firma_sin_key_version_ya_no_es_posible(tenant_ctx) -> None:
     """Sin DEFAULT, un INSERT que olvide el esquema revienta en vez de nacer en 0."""
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     with pytest.raises(asyncpg.NotNullViolationError):
         await conn.execute(
             """INSERT INTO firma (objeto_tipo, objeto_id, firmante_id, payload_sha256,

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, Field
 
@@ -91,3 +92,42 @@ class PurgaInternalResponse(BaseModel):
 
     radicados_eliminados: int
     anexos_eliminados: int
+
+
+class ClasificadoInternalItem(BaseModel):
+    """Una fila de `GET /api/v1/internal/documentos/clasificados` (C12, ADR-039).
+
+    **Content-free por construcción**: ni `tracking_number`, ni `subject`, ni
+    `fundamento_juridico`. Solo lo que el índice público por serie necesita para
+    agrupar; `radicado_id` es la llave de unión con el cuadro de clasificación y no
+    sale hacia el público (archive-service lo descarta al agrupar).
+    """
+
+    radicado_id: uuid.UUID
+    nivel_seguridad: int
+    clasificacion_causal: str | None
+    clasificacion_plazo_meses: int | None
+    clasificado_at: datetime | None
+    #: Fecha de generación de la información (la del documento: `registered_at`). Decreto
+    #: 103/2015 art. 40: el índice publica el RANGO de generación por grupo.
+    fecha_generacion: datetime | None = None
+    #: Cita normativa PUBLICABLE (controlada por formato); no el fundamento libre.
+    clasificacion_norma: str | None = None
+
+
+class CausalReservaInternal(BaseModel):
+    codigo: str
+    articulo: str
+    literal: str
+    descripcion: str
+    nivel: int
+    plazo_max_meses: int | None
+
+
+class ClasificadosInternalResponse(BaseModel):
+    """`GET /api/v1/internal/documentos/clasificados`: las filas content-free Y el
+    catálogo de causales vigente. El catálogo viaja con la respuesta para que
+    archive-service no tenga una segunda copia de la ley que se desfase de esta."""
+
+    causales: list[CausalReservaInternal]
+    radicados: list[ClasificadoInternalItem]

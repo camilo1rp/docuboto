@@ -241,6 +241,8 @@ y `storage-service` se niegan a servir sin `SIGNATURE_SECRET`,
 (`change-me-in-production` y similares), por si alguien copia el `.env.example`
 sin tocarlo. El mensaje de error nombra la variable, nunca el valor recibido.
 
+**`ALTCHA_HMAC_KEY` (C16, ADR-038) es obligatoria**: clave (≥ 32 bytes; `openssl rand -hex 32`) con la que document-service firma los retos antirrobots de la ventanilla pública anónima. El manifiesto de producción la exige (`${ALTCHA_HMAC_KEY:?}`) y el servicio **no arranca** sin ella o con menos de 32 bytes. Nunca llega al navegador; rotarla solo invalida los retos vivos (≤ `ALTCHA_TTL_SEGUNDOS`, 300 por omisión). `ALTCHA_MAXNUMBER` (100000) acota el costo del cliente. Si Redis cae, la ventanilla responde `503 antirrobots_no_disponible` (fail-closed: sin Redis no se puede garantizar el uso único del reto).
+
 Si además se usa la ingesta de correo (E19), `EMAIL_ENCRYPTION_KEY` es
 obligatoria: con ella se cifran en reposo las credenciales de los buzones. Ya no
 hay variables `IMAP_*` — cada buzón se configura desde `/admin/correo` y vive en
@@ -525,6 +527,15 @@ docker swarm join --token <TOKEN> manager-node-ip
 docker stack deploy -c docker-compose.prod.yml orpyca-mcp
 ```
 
+### Identidad de un solo uso (Redis obligatorio) y `search_path` (ADR-044)
+
+La identidad que el gateway firma para cada servicio es de **un solo uso**: lleva un nonce de 128 bits (`X-Identity-Nonce`, formato de firma **v3**) que el servicio de destino reclama en Redis (`SET NX EX`, clave `orpycamcp:identidad:nonce:v3:{tenant}:{nonce}`, vida ≤ 180 s). Consecuencias de operación:
+
+- **Redis es dependencia dura de toda petición con identidad de persona.** Con Redis caído esas peticiones responden `503 identidad_no_verificable` (`Retry-After: 1`); la ventanilla pública, `/health`, los webhooks públicos y las llamadas internas sin `X-User-Id` siguen vivas. **`storage-service` ahora también necesita `REDIS_URL`** (y `depends_on: redis`); los diez componentes con `IDENTITY_SIGNING_SECRET` lo necesitan. Un servicio con el secreto y sin `REDIS_URL` **no arranca** (`lifespan.startup.failed`). No configure `maxmemory-policy allkeys-*` en ese Redis: podría desalojar un nonce y reabrir la reproducción (el valor por defecto, `noeviction`, es el correcto). En producción conserve `--appendonly yes`; sin él, un reinicio de Redis olvida hasta 180 s de nonces.
+- **Corte atómico.** Pasar de v2 a v3 cambia la base del HMAC y no hay rama de compatibilidad: reconstruya y arranque **a la vez** el gateway y los nueve servicios (`docker compose up -d --build api-gateway auth-service tenant-service document-service archive-service storage-service workflow-service notification-service signature-service knowledge-service`). Si conviven versiones, toda petición autenticada responde 401.
+- **`search_path` = solo el tenant.** Este cambio **no** requiere corte atómico: aplique las migraciones (`migrate-<servicio>`) y luego reconstruya los servicios. Las extensiones `pg_trgm`, `unaccent`, `pgcrypto` y `vector` **deben vivir en `public`**; las migraciones globales `document/005` y `knowledge/002` abortan con un mensaje claro si no es así. La migración `tenant-service/global/005` retira las 14 tablas de tenant que habían caído en `public`.
+- Verificación en la pila: un GET autenticado por el gateway responde 200; la misma petición reproducida directo al servicio con las cabeceras capturadas, 401; con `docker compose stop redis`, el GET autenticado responde 503 y `/health` y una ruta pública, 200.
+
 ### Opción 2: Kubernetes (no soportado todavía)
 
 **El repositorio no trae manifiestos de Kubernetes ni charts de Helm** (no hay `Chart.yaml` ni
@@ -726,12 +737,30 @@ Cada servicio con base de datos espera a su `migrate-<servicio>` (`auth`, `tenan
 `knowledge`): un contenedor de un solo uso que corre `migrations/runner.py` con la
 conexión del propietario sobre la **misma imagen inmutable** que va a servir, y el
 servicio solo arranca si terminó con éxito (`service_completed_successfully`). Si la
-migración falla, la versión nueva no sirve contra un esquema que no es el suyo. El
-runner es idempotente y serializa por `pg_advisory_lock`, así que repetir `up -d` o
-escalar réplicas es seguro. El paso 4 de abajo sigue siendo válido para ejecutarlas
-a mano **antes** de arrancar (p. ej. para ver su salida). El compose de desarrollo no
-lo hace: allí las migraciones se aplican a mano (`docker compose run --rm --no-deps
-<svc> python migrations/runner.py`).
+migración falla, la versión nueva no sirve contra un esquema que no es el suyo.
+
+**El cerrojo (ADR-041).** Los nueve `migrate-*` —y `scripts/init_tenant.py`— se serializan con **un solo
+cerrojo global** (`orpycamcp_common.migrations.cerrojo`, `pg_try_advisory_lock` sobre una constante fija, visible en
+`pg_locks`). Quien no lo obtiene reintenta cada medio segundo hasta `MIGRATIONS_LOCK_TIMEOUT_S` (600 s por
+defecto); vencido el plazo sale con un error legible («otra migración tiene el cerrojo desde hace N s (pid …)»), no
+se cumple `service_completed_successfully` y **el servicio no arranca**. Hasta C19 este texto afirmaba un
+`pg_advisory_lock` que el código no tenía. Las migraciones globales corren en transacción (un fallo a mitad ya no
+deja DDL sin asiento en el libro). Repetir `up -d` o escalar réplicas es seguro. El paso 4 de abajo sigue siendo
+válido para ejecutarlas a mano **antes** de arrancar (p. ej. para ver su salida).
+
+**Desarrollo.** `docker-compose.yml` hace lo mismo: `docker compose up -d --build` construye las imágenes, corre los
+nueve `migrate-<svc>` y solo entonces arranca cada servicio. Cada servicio lleva `image: orpycamcp/<svc>-service:dev`
+y el migrador la reutiliza (`pull_policy: never`, sin `build:` propio). Para recrear **un** servicio con una imagen
+nueva (la forma con `--no-deps` salta el migrador a propósito):
+
+```bash
+docker compose build <svc>-service \
+  && docker compose run --rm --no-deps migrate-<svc> \
+  && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose up -d --no-build --no-deps <svc>-service
+```
+
+Si el migrador falla, el `&&` no recrea el servicio. Recrear con la **misma** imagen
+(`up -d --no-build --no-deps <svc>-service`) no necesita migrar: el migrador ya la aplicó.
 
 ### Procedimiento
 
@@ -830,18 +859,87 @@ kibana:
 
 ### Métricas con Prometheus
 
-```yaml
-prometheus:
-  image: prom/prometheus:latest
-  volumes:
-    - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    - prometheus-data:/prometheus
+Seis servicios exponen `GET /metrics` (formato de texto 0.0.4) en su **puerto propio**: `auth-service:8001`,
+`archive-service:8004`, `workflow-service:8006`, `notification-service:8007`, `signature-service:8008` y
+`knowledge-service:8011`. No lo exponen gateway, tenant, document, storage, mcp ni whisper. El exportador es propio
+(`orpycamcp_common.metricas`, ADR-041): sin `prometheus_client`, **sin etiqueta de tenant ni de identidad** y con
+medición perezosa (caché de `METRICS_TTL_SECONDS`, 30 s por defecto, plazo de 10 s).
 
-grafana:
-  image: grafana/grafana:latest
-  ports:
-    - "3000:3000"  # A través de Nginx
+| Familia | Servicio | Significado |
+|---|---|---|
+| `orpycamcp_signal_measured{signal}` | los seis | `1` = la última medición fue completa en todos los tenants; `0` = **no verificado** |
+| `orpycamcp_signal_last_success_timestamp_seconds{signal}` | los seis | epoch de la última medición completa |
+| `orpycamcp_dlq_pending_events` | workflow, signature, notification, knowledge | eventos pendientes en la dead-letter del grupo propio |
+| `orpycamcp_dlq_oldest_pending_timestamp_seconds` | idem | el pendiente más antiguo (ausente si no hay) |
+| `orpycamcp_worm_exhausted_artifacts{artifact,phase}` | archive | artefactos WORM con el reintento agotado |
+| `orpycamcp_audit_chain_breaks`, `_declared_breaks`, `_verification_ok`, `_last_verification_timestamp_seconds` | auth | última corrida **completa** de `verify_audit_chains` |
+
+**«No verificado» no es 0.** Si la medición de una señal falla en cualquier tenant, se emite
+`orpycamcp_signal_measured{signal="…"} 0` y **no se emite ninguna serie de valor** de esa señal; nunca una suma
+parcial. Un `orpycamcp_dlq_pending_events 0` con `signal_measured 1` sí es un cero medido. Con réplicas, cada una
+reporta el mismo estado de la base: agregar con `max()`, no con `sum()`.
+
+**Cómo se protege.** `/metrics` no lo enruta el gateway (solo reenvía `/api/v1/`), el servicio responde **404** a toda
+petición con `X-Forwarded-For`, `Forwarded` o `X-Real-IP` (Prometheus no las manda; nginx y el gateway sí) y el nginx
+de producción responde 404 a `/metrics` en el host de la API. En producción los servicios no publican `ports:`: Prometheus
+debe unirse a `orpycamcp-net` y raspar por el nombre DNS del servicio. **Prometheus no forma parte del manifiesto
+de esta versión**; si lo despliega, fije su imagen por tag **y digest** (`docker buildx imagetools inspect
+<imagen>:<tag>`; nada de `:latest`) y no publique `ports:` de Prometheus ni de Grafana: acceda por un túnel o
+un proxy interno autenticado, no abriendo el puerto al exterior.
+
+```yaml
+# prometheus.yml (fragmento)
+scrape_configs:
+  - job_name: orpycamcp
+    metrics_path: /metrics
+    scrape_interval: 60s
+    static_configs:
+      - targets:
+          - auth-service:8001
+          - archive-service:8004
+          - workflow-service:8006
+          - notification-service:8007
+          - signature-service:8008
+          - knowledge-service:8011
 ```
+
+**La cadena de auditoría la mide el último job, no el scrape.** `orpycamcp_audit_chain_*` sale de
+`public.audit_chain_runs`, donde `python -m app.ops.verify_audit_chains` anota una fila por corrida (lo invocan
+`backup.sh` con `--origen backup` y `restore.sh` con `--origen restore`). Una corrida acotada con `--slug` o
+`--excluir-prefijo` se anota **parcial** y no cuenta. Para que haya señal aunque no haya respaldo, programe un cron
+diario (desde el anfitrión, sin montar el repo en escritura):
+
+```bash
+# /etc/cron.d/orpyca-verificar-auditoria
+30 3 * * * orpyca cd /srv/orpyca && docker compose -f infra/docker-compose.prod.yml run --rm --no-deps -T \
+  auth-service python -m app.ops.verify_audit_chains --anclas - --origen cron < /srv/orpyca/backups/anclas-auditoria.tsv
+```
+
+(Sin `--emitir-ancla`: el cron solo verifica y anota; anclar sigue siendo cosa de `backup.sh`.)
+
+Alertas de ejemplo (reglas de Prometheus):
+
+```yaml
+groups:
+  - name: orpycamcp
+    rules:
+      - alert: SenalNoVerificada
+        expr: orpycamcp_signal_measured == 0
+        for: 15m
+      - alert: DeadLetterConEventos
+        expr: max(orpycamcp_dlq_pending_events) by (job, instance) > 0
+        for: 1h
+      - alert: WormAgotado
+        expr: sum(orpycamcp_worm_exhausted_artifacts) > 0
+      - alert: CadenaDeAuditoriaRota
+        expr: orpycamcp_audit_chain_breaks > 0 or orpycamcp_audit_chain_verification_ok == 0
+      - alert: VerificacionDeAuditoriaVencida
+        expr: time() - orpycamcp_audit_chain_last_verification_timestamp_seconds > 26 * 3600
+```
+
+En **desarrollo** `audit_chain` saldrá no verificado o con roturas: los asientos `itest-*` que dejaron las pruebas
+de integración no se pueden borrar (`audit_log` solo admite anexar) y excluirlos con `--excluir-prefijo` es, por
+construcción, una corrida parcial.
 
 ### Alertas
 

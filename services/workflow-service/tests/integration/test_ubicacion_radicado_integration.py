@@ -441,17 +441,17 @@ async def test_016_guardas_de_orden_sin_radicados_omite_y_sin_columnas_falla(db_
     await db_conn.execute(f'CREATE SCHEMA "{schema}"')
     try:
         async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
             await db_conn.execute(sql)
         assert any("backfill de ubicación omitido" in a for a in avisos), avisos
 
         # `radicados` existe pero document-service aún no migró: NO se omite en silencio.
         async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
             await db_conn.execute("CREATE TABLE radicados (id UUID PRIMARY KEY, status VARCHAR(20))")
         with pytest.raises(asyncpg.PostgresError, match="037"):
             async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
                 await db_conn.execute(sql)
     finally:
         db_conn.remove_log_listener(_escucha)

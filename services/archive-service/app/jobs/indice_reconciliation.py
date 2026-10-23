@@ -55,6 +55,7 @@ from app.services.backoff import next_backoff_seconds
 from app.services.index_service import IndexService
 from app.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
 from app.services.transferencia_service import TransferenciaService
+from app.services.valoracion_service import ValoracionService
 
 logger = logging.getLogger(__name__)
 
@@ -1631,6 +1632,109 @@ async def run_once_aip() -> dict[str, int]:
     return summary
 
 
+async def run_once_aip_reempaquetado() -> dict[str, int]:
+    """Fase 11 (C-6, ADR-042): reempaqueta los AIP cuyo índice embebido ya no es el vigente.
+
+    Barrido de CONCILIACIÓN contra `firma_artefacto_vigente` de signature-service (no consume
+    `firma.lta_renovada`: ese evento es best-effort y sin outbox). Recorre entidades `active` y
+    `suspended` -- reempaquetar es CONSERVACIÓN (el plazo del sello corre aunque la entidad esté
+    suspendida, ADR-035 §8) y storage reconstruye desde su propio bag, sin tocar document-service.
+    Cadencia propia: `aip_reempaquetado_intervalo_s` (`0` apaga la fase)."""
+    summary = {"revisados": 0, "reempaquetados": 0, "sin_cambio": 0, "fallidos": 0, "agotados": 0}
+    if settings.aip_reempaquetado_intervalo_s <= 0:
+        return summary
+    pool = get_pool()
+    slugs = await list_tenants_conservacion(pool)
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:aip_reempaquetado'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    continue
+                try:
+                    parcial = await AipWiringService(conn, slug).barrer_reempaquetado(
+                        settings.indice_reconciliation_batch_size
+                    )
+                    for k, v in parcial.items():
+                        summary[k] += v
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:aip_reempaquetado'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reempaquetado del AIP para tenant=%s", slug, exc_info=True
+            )
+    logger.info(
+        "Reempaquetado del AIP completado: revisados=%d reempaquetados=%d sin_cambio=%d "
+        "fallidos=%d agotados=%d tenants=%d",
+        summary["revisados"],
+        summary["reempaquetados"],
+        summary["sin_cambio"],
+        summary["fallidos"],
+        summary["agotados"],
+        len(slugs),
+    )
+    return summary
+
+
+async def run_once_valoracion_holds() -> dict[str, int]:
+    """Fase 12 (C-5 / C7, ADR-043): aplica la valoración de la TVD a los expedientes de fondo
+    acumulado cuyo hold `valoracion_pendiente` ya tiene valoración registrada y aún no se aplicó.
+
+    Orden conservador por expediente (ver `ValoracionService.aplicar_expediente`): CT fija la
+    retención y DESPUÉS levanta el hold; E/S/M solo levanta. Espera (sin consumir intentos) mientras
+    quede un artefacto de contenido por proteger. Con backoff y `agotada` al agotar los intentos.
+    Recorre entidades `active` y `suspended`: levantar un hold es CONSERVACIÓN (ADR-035 §8), no
+    operación."""
+    pool = get_pool()
+    slugs = await list_tenants_conservacion(pool)
+    summary = {"vistos": 0, "aplicadas": 0, "esperando": 0, "pendientes": 0, "agotadas": 0}
+    for slug in slugs:
+        try:
+            async with acquire_tenant(slug) as conn:
+                got_lock = await conn.fetchval(
+                    "SELECT pg_try_advisory_lock(hashtext('orpycamcp:archive:valoracion_holds'), "
+                    "hashtext($1))",
+                    slug,
+                )
+                if not got_lock:
+                    continue
+                try:
+                    parcial = await ValoracionService(conn, slug).barrer(
+                        settings.valoracion_hold_batch_size
+                    )
+                    for k, v in parcial.items():
+                        summary[k] += v
+                finally:
+                    await conn.execute(
+                        "SELECT pg_advisory_unlock(hashtext('orpycamcp:archive:valoracion_holds'), "
+                        "hashtext($1))",
+                        slug,
+                    )
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de valoración de holds para tenant=%s", slug, exc_info=True
+            )
+    logger.info(
+        "Valoración de holds completada: vistos=%d aplicadas=%d esperando=%d pendientes=%d "
+        "agotadas=%d tenants=%d",
+        summary["vistos"],
+        summary["aplicadas"],
+        summary["esperando"],
+        summary["pendientes"],
+        summary["agotadas"],
+        len(slugs),
+    )
+    return summary
+
+
 # ---------------------------------------------------------------------------
 # Standalone entry point
 # ---------------------------------------------------------------------------
@@ -1650,6 +1754,8 @@ async def _main() -> None:
         await run_once_actas_eliminacion_worm()
         await run_once_worm_renovacion()
         await run_once_aip()
+        await run_once_aip_reempaquetado()
+        await run_once_valoracion_holds()
         await run_once_origen_legado()
         await run_once_firmas_personales_worm()
         await run_once_fixity_premis()

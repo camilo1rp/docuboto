@@ -114,7 +114,7 @@ def _make_mock_minio() -> MagicMock:
 
 async def _seed_file(conn: asyncpg.Connection, slug: str, *, file_id: uuid.UUID) -> None:
     schema = _schema_name(slug)
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     await conn.execute(
         """
         INSERT INTO files (id, filename, mime_type, file_size, sha256, bucket, object_key)
@@ -201,7 +201,7 @@ async def test_two_concurrent_empaquetados_same_content_produce_single_aip(
     verify_conn = await asyncpg.connect(dsn=DSN)
     try:
         schema = _schema_name(slug)
-        await verify_conn.execute(f'SET search_path = "{schema}", public')
+        await verify_conn.execute(f'SET search_path = "{schema}"')
         aip_count = await verify_conn.fetchval(
             "SELECT count(*) FROM aip WHERE expediente_id = $1", expediente_id
         )

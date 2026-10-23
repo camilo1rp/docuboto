@@ -29,9 +29,10 @@ pytestmark = pytest.mark.integration
 async def _envio(conn: asyncpg.Connection, nivel: int = 1) -> asyncpg.Record:
     rid = await conn.fetchval(
         "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, "
-        "tenant_code, registered_by, nivel_seguridad, clasificacion_fundamento) "
+        "tenant_code, registered_by, nivel_seguridad, clasificacion_fundamento, clasificacion_causal) "
         "VALUES ('2026-T-S-000001', 'S', 2026, 1, 'x', 'T', gen_random_uuid(), $1, "
-        "CASE WHEN $1::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END) "
+        "CASE WHEN $1::smallint >= 2 THEN 'Ley 1712/2014 art. 19 (prueba)' END, "
+        "CASE WHEN $1::smallint >= 2 THEN 'por_clasificar' END) "
         "RETURNING id",
         nivel,
     )
@@ -46,7 +47,7 @@ async def test_el_estado_previo_viejo_no_pisa_un_terminal(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     repo = PostalRepository(conn)
     envio = await _envio(conn)
     await repo.update_estado(
@@ -71,7 +72,7 @@ async def test_el_update_respeta_el_clearance_en_el_where(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     repo = PostalRepository(conn)
     envio = await _envio(conn, nivel=3)
     assert (

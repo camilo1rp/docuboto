@@ -719,7 +719,11 @@ def get_procedimiento(name: str) -> Procedimiento | None:
 
 
 def procedimientos_visibles(
-    permissions: set[str], is_root: bool = False, levels: dict[str, int] | None = None
+    permissions: set[str],
+    is_root: bool = False,
+    levels: dict[str, int] | None = None,
+    *,
+    asistente_habilitado: bool = False,
 ) -> list[Procedimiento]:
     """Los procedimientos que este usuario alcanza.
 
@@ -738,5 +742,11 @@ def procedimientos_visibles(
     return [
         p
         for p in PROCEDIMIENTOS
-        if puede_usar(p, permissions, is_root=is_root, levels=levels)
+        if puede_usar(
+            p,
+            permissions,
+            is_root=is_root,
+            levels=levels,
+            asistente_habilitado=asistente_habilitado,
+        )
     ]

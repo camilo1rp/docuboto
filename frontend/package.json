@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Frontend de OrpycaMCP — SvelteKit (SSR), cliente del api-gateway. Stack alineado con sgdINTI (ver ADR-011). ESTADO: planificado, aún no implementado.",
+  "description": "Frontend de OrpycaMCP — SvelteKit (SSR), cliente del api-gateway. Stack alineado con sgdINTI (ver ADR-011).",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "dev": "vite dev --host 0.0.0.0 --port 5173",
@@ -12,6 +12,7 @@
     "test": "vitest",
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:auth": "playwright test --config=playwright.authenticated.config.js",
     "check": "svelte-kit sync && svelte-check --tsconfig ./jsconfig.json",
     "lint": "prettier --check . && eslint .",
     "format": "prettier --write ."
@@ -32,7 +33,7 @@
     "@tiptap/pm": "3.20.2",
     "@tiptap/starter-kit": "3.20.2",
     "@tiptap/y-tiptap": "^3.0.3",
-    "altcha": "^2.3.0",
+    "altcha": "2.3.0",
     "survey-core": "^2.0.0",
     "survey-js-ui": "^2.0.0",
     "y-prosemirror": "^1.3.7",

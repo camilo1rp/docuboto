@@ -153,6 +153,7 @@ async def test_replay_de_un_purged_aparcado_deja_el_chunk_voided(ctx) -> None:
     assert asiento == 1
 
 
+@pytest.mark.gates_reales  # el autouse abre `check_permission`; aquí se prueba el de verdad
 async def test_sin_el_permiso_da_403_y_no_toca_nada(ctx) -> None:
     slug, conn, client = ctx
     await _indexar(conn, slug, 1)
@@ -168,6 +169,7 @@ async def test_sin_el_permiso_da_403_y_no_toca_nada(ctx) -> None:
     assert (await _chunk(conn))["voided"] is False
 
 
+@pytest.mark.gates_reales
 async def test_el_nivel_de_lectura_no_basta_para_reprocesar(ctx) -> None:
     slug, conn, client = ctx
     await _indexar(conn, slug, 1)

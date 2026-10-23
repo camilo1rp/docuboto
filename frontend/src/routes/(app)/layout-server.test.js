@@ -214,3 +214,28 @@ describe("(app)/+layout.server.js — entidad no operativa (ADR-035)", () => {
     expect(r.entidadNoOperativa).toBeNull();
   });
 });
+
+describe("(app)/+layout.server.js — asistente por entidad (ADR-037)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("asistente_habilitado:true de /auth/me llega al usuario (control positivo)", async () => {
+    const { user } = await load(
+      evento(fetchQue({ "/auth/me": () => json({ permissions: [], asistente_habilitado: true }) })),
+    );
+    expect(user.asistente_habilitado).toBe(true);
+  });
+
+  it("false, ausente o no booleano: apagado", async () => {
+    for (const me of [{ asistente_habilitado: false }, {}, { asistente_habilitado: "true" }]) {
+      const { user } = await load(evento(fetchQue({ "/auth/me": () => json(me) })));
+      expect(user.asistente_habilitado).toBe(false);
+    }
+  });
+
+  it("con /auth/me caído: apagado (fail-closed)", async () => {
+    const { user } = await load(
+      evento(fetchQue({ "/auth/me": () => new Response("", { status: 503 }) })),
+    );
+    expect(user.asistente_habilitado).toBe(false);
+  });
+});

@@ -43,7 +43,7 @@
     toggleMobileSidebar,
     closeMobileSidebar,
   } from "$lib/stores/ui.js";
-  import { sessionUser } from "$lib/stores/auth.js";
+  import { sessionUser, puedeConsultarConocimiento } from "$lib/stores/auth.js";
   import { ROUTES } from "$lib/utils/config.js";
 
   /** Título de la página actual (usado en el topbar y <title>) */
@@ -272,16 +272,18 @@
 
     <!-- Acciones derechas del topbar -->
     <div class="app-layout__topbar-actions" class:is-hidden-mobile={searchExpandedMobile}>
-      <!-- Botón asistente -->
-      <button
-        class="app-layout__action-btn"
-        type="button"
-        aria-label="Abrir asistente conversacional"
-        aria-pressed={assistantOpen}
-        on:click={toggleAssistant}
-      >
-        <i class="fas fa-robot" aria-hidden="true"></i>
-      </button>
+      <!-- Botón asistente: solo con asistente activo de la entidad Y PERM_CONOCIMIENTO (ADR-037) -->
+      {#if $puedeConsultarConocimiento}
+        <button
+          class="app-layout__action-btn"
+          type="button"
+          aria-label="Abrir asistente conversacional"
+          aria-pressed={assistantOpen}
+          on:click={toggleAssistant}
+        >
+          <i class="fas fa-robot" aria-hidden="true"></i>
+        </button>
+      {/if}
 
       <!-- Conmutador de dependencia activa (E08/ADR-013) — visible en
            cualquier pantalla; oculto si el usuario solo tiene una
@@ -399,7 +401,9 @@
 </div>
 
 <!-- Dock del asistente (Fase 3 — placeholder por ahora) -->
-<AssistantDock open={assistantOpen} onClose={() => (assistantOpen = false)} />
+{#if $puedeConsultarConocimiento}
+  <AssistantDock open={assistantOpen} onClose={() => (assistantOpen = false)} />
+{/if}
 
 <style lang="scss">
   @use "$styles/_tokens" as t;

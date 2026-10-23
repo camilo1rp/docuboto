@@ -7,7 +7,8 @@
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-import { codigoError, mensajeError } from "$lib/utils/apiError.js";
+import { codigoError } from "$lib/utils/apiError.js";
+import { mensajeConocimiento } from "$lib/utils/asistenteAcceso.js";
 
 /**
  * assistant.service.js — Cliente del asistente conversacional (lado navegador).
@@ -76,7 +77,7 @@ export async function confirmarPropuesta({ token, frase = "" }) {
   // El backend anida el error en `detail` (formato de error del proyecto):
   // `mensajeError` acepta esa forma y la plana. El `|| null` conserva el
   // centinela que espera `AssistantError` cuando no hay nada que contar.
-  const detail = mensajeError(data, "") || null;
+  const detail = mensajeConocimiento(data, "", { permiso: false }) || null;
 
   if (res.status === 503) {
     throw new AssistantError("unavailable", "El asistente aún no está disponible.", detail);
@@ -149,7 +150,7 @@ export async function sendMessage({ mensaje, conversationId = null }) {
     return data;
   }
 
-  const detail = mensajeError(data, "") || null;
+  const detail = mensajeConocimiento(data, "", { permiso: true }) || null;
 
   if (res.status === 503 || codigoError(data) === "assistant_unavailable") {
     throw new AssistantError("unavailable", "El asistente aún no está disponible.", detail);

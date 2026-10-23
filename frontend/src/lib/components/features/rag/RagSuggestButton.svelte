@@ -39,7 +39,7 @@
   import Loader from "$lib/components/ui/Loader.svelte";
   import StatusChip from "$lib/components/ui/StatusChip.svelte";
   import { buildGeneratedHtml } from "$lib/utils/ragInsert.js";
-  import { mensajeError } from "$lib/utils/apiError.js";
+  import { mensajeConocimiento } from "$lib/utils/asistenteAcceso.js";
 
   export let endpoint;
   export let query = "";
@@ -75,7 +75,7 @@
       if (!res.ok) {
         // Degradación honesta (regla dura #3): el error se muestra SOLO dentro de
         // este panel opcional, nunca se propaga al formulario que lo contiene.
-        errorMsg = mensajeError(data, "No se pudo generar una sugerencia en este momento.");
+        errorMsg = mensajeConocimiento(data, "No se pudo generar una sugerencia en este momento.");
         return;
       }
       result = data;

@@ -74,7 +74,7 @@ describe("/reportes — ubicación actual vs dependencia de radicación", () => 
   });
 
   it("un backend sin by_ubicacion no rompe la pantalla", () => {
-    const { by_ubicacion, ...sin } = SUMMARY;
+    const { by_ubicacion: _by_ubicacion, ...sin } = SUMMARY;
     expect(() => render(Reportes, { data: data(sin) })).not.toThrow();
   });
 });

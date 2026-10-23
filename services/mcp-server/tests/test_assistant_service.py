@@ -118,7 +118,7 @@ async def test_las_escrituras_SI_se_ofrecen_ahora_al_modelo() -> None:
     preparártelo».
     """
     anthropic = FakeAnthropic([Response([text_block("ok")], "end_turn")])
-    gateway = make_gateway(permissions=["PERM_RADI"], roles=["ROOT"])
+    gateway = make_gateway(permissions=["PERM_RADI"], root=True)
 
     await _run(anthropic=anthropic, gateway=gateway)
 
@@ -162,7 +162,7 @@ async def test_tool_fuera_del_conjunto_se_deniega_sin_tocar_gateway() -> None:
             Response([text_block("No puedo anular desde aquí."), ], "end_turn"),
         ]
     )
-    gateway = make_gateway(permissions=["PERM_RADI"], roles=["ROOT"])
+    gateway = make_gateway(permissions=["PERM_RADI"], root=True)
     conversations: dict = {}
 
     resp = await _run(anthropic=anthropic, gateway=gateway, conversations=conversations)

@@ -226,14 +226,16 @@ class OaiService:
         de lo general a lo específico + vínculo con el nivel superior). Camina
         `trd_series.parent_id` desde la raíz del CCD hasta la serie del
         expediente y anida: `archdesc[fonds]` → `dsc` → `c[series]` →
-        (`c[subseries]` …) → `c[file]` (el expediente, con sus 6 obligatorios).
+        (`c[subseries]`) → `c[file]` (el expediente, con sus 6 obligatorios).
 
         Los niveles salen de la POSICIÓN en la cadena, porque ese es el modelo
-        (ADR-015): la raíz es la serie y toda descendiente, subserie —un CCD de
-        tres niveles emite `series > subseries > subseries`, anidamiento válido en
-        EAD 2002—. `trd_series` no tiene columna de nivel (sección, subsección…):
-        añadirla es una decisión de dominio. `tests/test_ead_xsd.py` valida el
-        resultado contra el XSD oficial.
+        (ADR-015): la raíz es la serie y su única descendiente posible, la subserie
+        (el tope de dos niveles lo impone el motor, migración 069). Entre el fondo y la
+        serie, `c[subfonds]` por cada nodo de la ruta del organigrama de la dependencia
+        productora (sección y subsección = subfondo en ISAD(G)), solo cuando la serie
+        declara exactamente UNA productora (C-4/C8, ADR-040). El fondo se titula con el
+        nombre de la entidad. `tests/test_ead_xsd.py` valida el resultado contra el
+        XSD oficial.
 
         Si el expediente no tiene `trd_serie_id`, fallback honesto: solo
         `archdesc[level=file]` sin jerarquía superior — no se inventa un CCD
@@ -276,13 +278,29 @@ class OaiService:
         arch = ET.SubElement(ead, f"{{{EAD_NS}}}archdesc", {"level": "fonds"})
         fonds_did = ET.SubElement(arch, f"{{{EAD_NS}}}did")
         ET.SubElement(fonds_did, f"{{{EAD_NS}}}unitid").text = repo_code
-        ET.SubElement(fonds_did, f"{{{EAD_NS}}}unittitle").text = f"Fondo documental — {repo_code}"
+        entidad = await self._repo.get_entidad_nombre()
+        ET.SubElement(fonds_did, f"{{{EAD_NS}}}unittitle").text = (
+            _xml_safe(entidad) if entidad else f"Fondo documental — {repo_code}"
+        )
         dsc = ET.SubElement(arch, f"{{{EAD_NS}}}dsc")
 
-        # Anida serie → subserie → … de lo general a lo específico. El primer
-        # nodo de la cadena (raíz del CCD) es "series"; los siguientes
-        # (si los hay) son "subseries" anidadas dentro del anterior.
+        # Subfondos: sección y subsección del organigrama de la productora (C-4/C8).
         parent_c = dsc
+        for nodo in await self._repo.get_ruta_subfonds(chain[0]["id"]):
+            sub = ET.SubElement(parent_c, f"{{{EAD_NS}}}c", {"level": "subfonds"})
+            sub_did = ET.SubElement(sub, f"{{{EAD_NS}}}did")
+            # El identificador es el CÓDIGO (inmutable y nunca reutilizado, ADR-032): la sigla se
+            # puede cambiar y una cosecha que la usara como id rompería el vínculo al renombrar.
+            ET.SubElement(sub_did, f"{{{EAD_NS}}}unitid").text = _xml_safe(str(nodo["codigo"]))
+            titulo = str(nodo["nombre"])
+            if nodo.get("sigla"):
+                titulo = f"{titulo} ({nodo['sigla']})"
+            ET.SubElement(sub_did, f"{{{EAD_NS}}}unittitle").text = _xml_safe(titulo)
+            parent_c = sub
+
+        # Anida serie → subserie de lo general a lo específico. El primer nodo de la
+        # cadena (raíz del CCD) es "series"; el siguiente (si lo hay) es "subseries"
+        # anidada dentro del anterior.
         for idx, serie in enumerate(chain):
             level = "series" if idx == 0 else "subseries"
             c = ET.SubElement(parent_c, f"{{{EAD_NS}}}c", {"level": level})

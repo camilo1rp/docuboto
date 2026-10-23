@@ -9,7 +9,7 @@
 
 """Re-embedding / backfill del índice de conocimiento (E21 Inc.1, migración 007).
 
-La migración 007 (`vector(64)` → `vector(384)`, adopción de `local_st` como
+La migración 007 (`public.vector(64)` → `public.vector(384)`, adopción de `local_st` como
 proveedor real) NULLea los `embedding` existentes — quedan como CENTINELAS
 (mismo patrón que un tombstone) hasta que este job los repuebla. `search` ya
 los excluye (`embedding IS NOT NULL`), así que hasta correr este backfill el
@@ -63,6 +63,7 @@ from app.core.clearance import is_embeddable
 from app.core.config import settings
 from app.repositories.knowledge_repository import KnowledgeRepository
 from app.services.embeddings import EmbeddingProvider, get_provider, to_pgvector
+from app.services.ingestion import egreso_con_bandera_apagada
 
 try:
     from orpycamcp_common import audit as _audit
@@ -115,11 +116,36 @@ async def _reembed_tenant(
     primer elemento son las filas que SÍ se re-embeberían (pasan
     `is_embeddable`), sin tocar la BD ni el proveedor.
     """
-    await conn.execute(f'SET search_path = "{schema}", public')
+    await conn.execute(f'SET search_path = "{schema}"')
     repo = KnowledgeRepository(conn)
     ids = await repo.list_pending_reembed_ids()
     if not ids:
         return (0, 0, 0)
+
+    # ADR-037: con proveedor NO local, re-embeber es enviar `texto` a un tercero; una
+    # entidad con el asistente apagado no lo autorizó. Se salta el tenant entero.
+    if await egreso_con_bandera_apagada(conn, slug):
+        if not dry_run and _AUDIT_AVAILABLE:
+            try:
+                await _audit.append(
+                    conn,
+                    tenant_slug=slug,
+                    service=_SERVICE,
+                    action="knowledge.reembed_skipped_asistente_apagado",
+                    object_type="tenant",
+                    object_ref=slug,
+                    actor="system:reembed",
+                    canal="system",
+                    payload={
+                        "pendientes": len(ids),
+                        "embedding_provider": settings.embedding_provider,
+                        "motivo": "asistente_apagado_proveedor_de_embeddings_no_local",
+                    },
+                )
+            except Exception:  # noqa: BLE001 — best-effort, no bloquea el backfill
+                print(f"  [{slug}] fallo dejando traza de SKIP (best-effort)", file=sys.stderr)
+        print(f"  [{slug}] {len(ids)} pendiente(s) NO se re-embeben: asistente apagado y proveedor no local")
+        return (0, len(ids), 0)
 
     elegibles = 0
     bloqueadas = 0

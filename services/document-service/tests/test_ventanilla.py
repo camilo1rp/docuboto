@@ -120,6 +120,7 @@ def _cuerpo(**kw) -> dict:
         # Ley 1581/2012 (AREA-09-08): sin autorización no se radica por esta puerta.
         "acepta_tratamiento": True,
         "politica_version": "2026-01",
+        "altcha": "altcha-de-prueba-0000",
     }
     base.update(kw)
     return base

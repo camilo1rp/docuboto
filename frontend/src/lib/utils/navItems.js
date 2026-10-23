@@ -18,6 +18,7 @@
  *
  * - permission: se muestra si el usuario tiene ese permiso (string)
  * - permissions: se muestra si el usuario tiene AL MENOS UNO de esos permisos
+ * - minLevel: con `permission`, exige además ese nivel CRUD (`permission_levels`)
  * - role: se muestra si el usuario tiene ese rol (string)
  * - Si no hay permission/permissions/role, el ítem es público (dashboard, etc.)
  */
@@ -113,6 +114,15 @@ export const NAV_ITEMS = [
     permission: "PERM_PANU_CODI",
   },
   {
+    label: "Resolver desclasificaciones",
+    href: ROUTES.desclasificaciones,
+    icon: "fas fa-unlock-alt",
+    // PERM_RECLASIFICAR crud >= 4: la cola de la SEGUNDA persona (ADR-039). Con
+    // el nivel de escritura (3) no se ve: el backend responde 403 a la cola.
+    permission: "PERM_RECLASIFICAR",
+    minLevel: 4,
+  },
+  {
     label: "Mi perfil",
     href: ROUTES.perfil,
     icon: "fas fa-id-badge",
@@ -184,10 +194,11 @@ export const NAV_ITEMS = [
     icon: "fas fa-shield-halved",
     // USUA_PERM_EXPEDIENTE: gate real de lectura del plan/pendientes de
     // preservación (storage-service `preservacion.py` + archive-service
-    // `indice.py`); el reintento de sellado exige además PERM_FIRMA, pero la
-    // pantalla se abre solo con USUA_PERM_EXPEDIENTE (E10, revisión UX
-    // 2026-08-02, punto 3 del lote 1 — pantalla construida sin enlazar).
-    permission: "USUA_PERM_EXPEDIENTE",
+    // `indice.py`); el reintento de sellado exige además PERM_FIRMA. La faceta de sellos de
+    // archivo (C-6) la lee USUA_PERM_ADMIN con nivel >= 3, que también abre el área
+    // (decisión de cierre del lote C; mismo criterio que `ADMIN_AREA_MIN_LEVEL`).
+    permissions: ["USUA_PERM_EXPEDIENTE", "USUA_PERM_ADMIN"],
+    minLevels: { USUA_PERM_ADMIN: 3 },
   },
 ];
 
@@ -197,16 +208,28 @@ export const NAV_ITEMS = [
  * SidebarNav y el Dashboard obtengan exactamente el mismo resultado a partir
  * de los mismos arrays de permisos/roles.
  *
- * @template {{permission?: string, permissions?: string[], role?: string}} T
+ * @template {{permission?: string, permissions?: string[], role?: string, minLevel?: number, minLevels?: Record<string, number>}} T
  * @param {T[]} items
  * @param {string[]} permissions
  * @param {string[]} roles
+ * @param {Record<string, number>} [levels] `permission_levels`; sin él, `minLevel` falla cerrado
  * @returns {T[]}
  */
-export function filterVisibleNavItems(items, permissions, roles) {
+export function filterVisibleNavItems(items, permissions, roles, levels = {}) {
   return items.filter((item) => {
-    if (item.permissions) return item.permissions.some((p) => permissions.includes(p));
-    if (item.permission) return permissions.includes(item.permission);
+    if (item.permissions) {
+      // `minLevels`: nivel CRUD mínimo POR permiso (los que no figuran entran con cualquiera).
+      return item.permissions.some(
+        (p) =>
+          permissions.includes(p) &&
+          (item.minLevels?.[p] === undefined || (levels?.[p] ?? 0) >= item.minLevels[p]),
+      );
+    }
+    if (item.permission) {
+      if (!permissions.includes(item.permission)) return false;
+      if (item.minLevel !== undefined) return (levels?.[item.permission] ?? 0) >= item.minLevel;
+      return true;
+    }
     if (item.role) return roles.includes(item.role);
     return true;
   });

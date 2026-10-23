@@ -114,6 +114,14 @@ Example: 2024-ICETEX-E-001234
 | `anulado` | The dependencia where it was when annulled (annulment does not rewrite it) |
 
 The step stores the dependencia **code** (`to_dept_code`, ADR-032) and the name at that moment as a snapshot: the location comes from the step's code, so renaming the dependencia does not move it. (The step used to store only the name and the code was guessed when the name matched **one** active dependencia.) The location is **not public**: neither verification by code, nor OAI-PMH, nor CMIS expose it, and who holds the procedure (`flujo_usuario`) only appears in the authenticated detail. It can be filtered and counted (`?ubicacion_dept_code=`; the "Current location" report, which excludes closed and annulled). See [ADR-029](adr/ADR-029-ubicacion-actual-del-radicado.md).
+**Security reclassification (E08).** A radicado's `nivel_seguridad` (1=PUBLIC, 2=RESERVED, 3=CLASSIFIED) is set at registration but can be **reclassified** later through `PATCH /documents/{id}/security-level`. It changes **access control**, not the content or the number. It requires `PERM_RECLASIFICAR` (crud 3), respects *no-read-up* (the clearance gate lives in the `WHERE` of the locking read: what cannot be read cannot be reclassified → neutral `404`) and *no-write-up* (no level above the caller's own clearance → `403`), and **the act must be reasoned** (reason + cause + legal basis), recorded in the immutable `audit_log`. The change is propagated by event (outbox) to signature-service.
+
+**Reserve causes: a closed catalogue (C12, [ADR-039](adr/ADR-039-desclasificacion-segunda-persona-y-catalogo-de-reserva.md)).** Law 1712/2014 lists the only exceptions to access: art. 18 (**classified** information, level 3: privacy, life/health/safety, secrets) and art. 19 (**reserved** information, level 2: defence, public security, international relations, crime investigation, due process, administration of justice, children, macro-economic stability, public health, deliberative process). That is thirteen causes, and the entity does not edit them: they live in a constant, in a database `CHECK` and in the MCP tool's `enum`, and a guardian requires them to agree. An art. 19 cause carries a **term of 1 to 180 months** (15 years, art. 22) counted from `clasificado_at`, which is **not reset** when re-motivating (otherwise a reservation could be perpetuated); an art. 18 cause carries no term. `fundamento_juridico` is the concrete *special* rule (e.g. Law 1581) and is internal. What was left classified without a cause (older rows, imported packages with free text) is `por_clasificar`: it is published as such, "pending motivation", and resolved by **re-motivating** (`PATCH` at the same level with the right cause, no event: access does not change). Automatic expiry of the term is a declared follow-up.
+
+**Declassifying what is classified needs a second person (C4, ADR-039).** Lowering a radicado from **3** is not one person's decision: one **requests** (`POST /documents/{id}/desclasificacion`) and **another approves** (`POST /desclasificaciones/{id}/aprobar`, `PERM_RECLASIFICAR` crud 4, with sufficient clearance), and approving **executes**: the level drops, two audit entries are written and `reclassified` is emitted, in one transaction. The request expires after 15 days; only the requester can withdraw it; a resolved one is never rewritten. The direct `PATCH` from 3 answers `409 desclasificacion_requiere_aprobacion` and a database trigger closes every other route. **Lowering 2 → 1 (reserved, art. 19) stays direct**: the threshold is the constant `NIVEL_DOBLE_FIRMA = 3`; changing it means touching the constant, the requests table `CHECK` and the trigger (the guardian compares them).
+
+**Public per-series index (C12).** Art. 20 requires publishing the index of classified and reserved information **by documentary series**. archive-service, owner of the classification scheme, composes it from what document-service hands over without number, subject or basis, and publishes it unauthenticated at `GET /api/v1/public/archive/indice-clasificados/{tenant}`: series, subseries, cause (article and letter), qualification date, term and the series' producing department. It carries no counts or identifiers: the existence of a specific document cannot be deduced from it.
+
 ---
 
 ### Expediente
@@ -153,6 +161,12 @@ Entity
             └── Subserie (subseries, e.g.: Service provision contracts)
                 └── Tipo documental (document type, e.g.: Contract, Start Record, Report)
 ```
+
+**The classification scheme is derived, not captured twice (C-4, [ADR-040](adr/ADR-040-cuadro-de-clasificacion-derivado-y-fases-de-la-trd.md)).** Fonds = the entity; section and subsection = the **organigram** (E14, the dependencias); series and subseries = the **current TRD**. The only thing that joins them is the **producing department** that each version of the series declares (one or several, by `dependencias.codigo`): it is content of the version —written in `borrador`, and approving or validating without it answers `409 trd_serie_sin_productora`— and on validation the organigram **route** (root → producer) that the Council approved is **frozen**. `GET /api/v1/trd/cuadro` builds the scheme and **says** what has changed since (inactive producer, organigram reorganised after validation, series that cannot be placed) instead of rewriting the validated version. The organigram is a **tree**: it admits no cycles (409 `dependencia_ciclo`). The series > subseries hierarchy is capped at **two levels** in the engine.
+
+**Retention has a single source: the two phases.** `archivo_gestion_years` and `archivo_central_years` are mandatory when creating a series (0 is valid, absent is not); the retention total (management + central) is **derived** by the response and is not written. A TVD has no management phase: its total is its central phase, also mandatory.
+
+**Publishing ex officio and receiving through the public window are different decisions.** The document type carries two independent, opt-in flags: `admite_ventanilla_publica` ("received from the public", Law 1755) and `publicable` ("enters the publication scheme", Law 1712 art. 12). A radicado is only published ex officio if its type is `publicable` (a radicado with no type is not published) and it did not come in through the window (third-party information, Law 1581).
 
 **Final disposition:**
 | Code | Name | Description |
@@ -275,6 +289,17 @@ Person or entity that receives an outgoing radicado.
 
 ---
 
+### Anonymous sender and provisional record (C17, [ADR-038](adr/ADR-038-antirrobots-altcha-y-ficha-provisional.md))
+
+The public window is anonymous: nobody has checked that whoever types an ID number owns it. So **the system never matches by number** the window's sender to the record that may already exist for that ID (it would have tied the radicado to someone else's contact data, and the response would reveal which IDs are in the directory).
+
+- When the sender gives an ID number, a new **provisional** record (`identidad = provisional`) is **always** created, atomic with the radicado and tied as its sender. What was declared stays in `documento_declarado_*` — **immutable**, it is evidence — and does **not** occupy the ID: it does not collide with the `(type, number)` uniqueness nor appear in search, in email-ingestion lookup or in duplicates.
+- With no ID number there is no record (anonymous complaint, Law 1755/2015 art. 16).
+- An official with `PERM_RADI` level 3 **reconciles** each record from `/admin/terceros`: **link** to the existing record (the radicado and its number are untouched; the existing record inherits the history on read), **confirm** as a new record (the declared ID becomes its identity) or **discard** (it stays as a copy of the sender, with a reason). Every act leaves an atomic audit entry with its author (`auth_users.id`); terminal states are not redone.
+- The queue honours clearance (RF-SEG-08): a provisional record tied to a classified radicado is neither seen nor counted by someone who cannot read it.
+
+---
+
 ## Compliance and lifecycle entities (F3–F6)
 
 ### Electronic index — índice electrónico (E15)
@@ -291,11 +316,20 @@ Verifiable record of who signed a radicado/anexo and when: identity (the signer'
 
 **Archive seal renewal (B10, ADR-034).** A XAdES-LTA signature carries an archive timestamp (`ArchiveTimeStamp`) that only proves while its TSA certificate is valid. Before it expires, the system adds the validation material and a new timestamp covering everything before (EN 319 132-1 §5.5.2); each renewal is a new WORM object that inherits the previous one's retention and leaves the PREMIS `RENOVACION` event. The original signature is untouched: verification accepts any version of the seal chain, and the chain breaks if a seal was renewed after the previous one expired. **Expired seal**: the last seal is judged at the current date; if its TSA certificate has expired with no later seal, the chain stops proving (`lta_vigente=false`, the level drops to XAdES-LT) and can no longer be renewed —renewing late would break the chain—, so it is a loss of proof that is only avoided by renewing in time. That is why renewal **does not stop with a suspended entity**: suspension stops operation, not the duty to preserve (Ley 594/2000 art. 46; ADR-035 §8), and WORM retention and fixity keep running. Packaging a **new** AIP does wait for reactivation (it needs the attachments and document-service vetoes them for a suspended entity).
 
+**The AIP is versioned (C-6, [ADR-042](adr/ADR-042-el-aip-se-versiona-no-se-reescribe.md)).** An AIP embeds the index's current XML when packaged; if the seal is renewed afterwards, the AIP keeps the old seal. It is not rewritten (it is under COMPLIANCE and is evidence): a daily archive phase compares the hash of the embedded XML with the current one and, if they differ, storage builds a **new version** from the previous bag —same content, only the index changes— with PREMIS declaring `derivation / has source` and the `packing` event. Each version keeps its object; the retention of the whole chain is extended from the **root** (the first version) and the new one never ends up with less than the previous. It is preservation, not operation: it runs with a suspended entity too (it asks nothing of document-service). Renewing the seal also needs the revocation of the previous TSA's certificate —CRL or OCSP from its CA— and `/verify` evaluates it; an administrator sees seals about to expire, expired or without revocation in `/admin/preservacion` (`GET /signature/admin/sellos-archivo`).
+
 ### Physical archive: Location, Conservation unit, Signatura (E17)
 ArchivesSpace pattern (ADR-017): the **Location** (physical address, recursive hierarchy site→…→drawer) is separated from the **Conservation unit** (movable container: box/folder/file…). The **signatura topográfica** (topographic call number, `DEP01-E05-C0124`) locates the unit and is the intellectual↔physical bridge. A hybrid expediente is linked to its units with a folio range. Units are **lent** (`lent→returned→overdue`) with an append-only movement history.
 
 ### FUID — Formato Único de Inventario Documental (Single Document Inventory Form) (E17/E12)
 Canonical inventory (Agreement 042/2002) derived from expediente↔unit↔signatura↔serie; a deliverable of every transfer.
+
+#### Custody, legal retention and support (C-5, [ADR-043](adr/ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md))
+
+- **Loan**: a unit is lent to an **identified borrower**, internal (`auth_users.id`) or external (name and ID document, a snapshot on the row). A unit, its ancestor or its descendant cannot be lent twice; the borrower needs clearance for the content (an external one, public content only); what is leaving through a transfer or disposal batch cannot be lent, and nothing lent can be transferred, disposed of or linked to. The server resolves who hands it over and the trail cannot be deleted.
+- **Legal retention by reason**: judicial, disciplinary, fiscal or administrative (with grounds and record), plus the system `valoracion_pendiente`. Lifting one does not release the others; the reason must be repeated. An expediente with an active retention does not enter a disposal batch.
+- **Expired accumulated fonds**: gets no irreversible WORM retention; it stays under the `valoracion_pendiente` hold until the Committee records the TVD appraisal (CT sets retention then releases; E/S/M only releases).
+- **Support of an unobtainable-signature statement**: an attachment cited by a current statement is not destroyed. When TRD disposal arrives, the Committee endorses the **support write-off** by approving the batch; the signed statement is untouched.
 
 ### Document transfer — transferencia documental (E12)
 Movement of the expediente between the three archives of the lifecycle: **primary** (management→central) and **secondary** (central→historical). Cycle `prepared→sent→received|rejected`. Upon **receipt**, the expediente moves to `transferred` and becomes **frozen** (it accepts no documents). It carries the FUID as a deliverable.

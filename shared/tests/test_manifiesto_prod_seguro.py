@@ -264,6 +264,22 @@ def test_la_sonda_de_salud_solo_admite_el_propio_contenedor() -> None:
     assert "172.20.0.1" not in _sin_comentarios_nginx()
 
 
+def test_el_host_de_la_api_no_publica_metrics() -> None:
+    """C18 (ADR-041): `/metrics` es de Prometheus por la red interna; desde internet, 404.
+
+    Control positivo: `/api/v1/...` sigue al gateway (el bloque no se vació) y la sonda
+    interna conserva su `location`. Mutación que debe caer: quitar los dos `location`
+    de `/metrics` (entonces `/metrics` cae en `/` y se proxea al gateway).
+    """
+    cuerpo = _servidor("API_PUBLIC_HOSTNAME")
+    assert _destino_nginx(cuerpo, "/api/v1/documents") == "/:proxy"
+    assert _destino_nginx(cuerpo, "/health/ready") == "/health/ready:proxy"
+    assert _destino_nginx(cuerpo, "/metrics") == "/metrics:otro"
+    assert _destino_nginx(cuerpo, "/metrics/x") == "/metrics/:404"
+    [(_, _, exacto)] = [l for l in _locations(cuerpo) if l[0] == "= " and l[1] == "/metrics"]
+    assert "return 404" in exacto and "proxy_pass" not in exacto
+
+
 def test_nginx_escucha_tambien_en_ipv6() -> None:
     """Sin `listen [::]` el anfitrión con IPv6 rechaza las conexiones de los clientes IPv6."""
     texto = _sin_comentarios_nginx()

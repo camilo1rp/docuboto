@@ -23,9 +23,11 @@ Por firma candidata (la última fila `vigente` con la TSA a menos de `lta_renova
      renovar sellaría algo inválido (asiento `firma.lta_renovacion_rechazada`).
   2. La TSA tiene que dar más plazo que la anterior (+ margen); si no, se aborta
      (`firma.lta_renovacion_tsa_por_vencer`) — de lo contrario se renovaría a diario.
-     Y el `TimeStampValidationData` necesita la revocación de la TSA anterior (si su CA publica
-     CRL): si no se puede obtener o verificar, no se renueva (`firma.lta_renovacion_sin_revocacion_tsa`);
-     si la TSA figura revocada, tampoco (`firma.lta_renovacion_tsa_revocada`).
+     Y el `TimeStampValidationData` necesita la revocación de la TSA anterior (CRL de su CA o, si no
+     publica CRL, su OCSP; la TSA autofirmada no tiene): si no se puede obtener o verificar, no se
+     renueva (`firma.lta_renovacion_sin_revocacion_tsa`); si la TSA figura revocada ANTES de sellar,
+     tampoco (`firma.lta_renovacion_tsa_revocada`).
+     El plazo de cada eslabón es lo primero que caduque de la TSA y de su CA (`vence_at`, C-6).
      Los asientos de rechazo, TSA por vencer y sin revocación se escriben UNA vez por motivo y
      eslabón (`ultimo_aviso`); las pasadas siguientes solo dejan un WARNING en el log.
   3. Se construye el XML renovado, se sube, y en UNA tx se inserta el eslabón (`pendiente_worm`) y el
@@ -174,8 +176,9 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
     firma_id = c["firma_id"]
     margen = timedelta(days=settings.lta_renovacion_margen_dias)
 
-    # 0. ¿Ya caducó la TSA del último sello? Renovar ahora sellaría con un hueco en la prueba.
-    if datetime.now(UTC) >= c["tsa_cert_not_after"]:
+    # 0. ¿Ya caducó la TSA del último sello (o su CA, lo primero que venza)? Renovar ahora sellaría con
+    #    un hueco en la prueba.
+    if datetime.now(UTC) >= c["vence_at"]:
         async with conn.transaction():
             await repo.marcar_sello_caducado(c["id"])
             await _asiento(
@@ -183,13 +186,14 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
                 {
                     "ordinal": c["ordinal"],
                     "tsa_cert_not_after": c["tsa_cert_not_after"].isoformat(),
+                    "vence_at": c["vence_at"].isoformat(),
                     "tsa_cert_fingerprint": c["tsa_cert_fingerprint"],
                 },
             )
         logger.error(
             "renovación LTA firma=%s ordinal=%s: el certificado de su TSA caducó el %s sin "
             "renovarse; la cadena de sellos ya no prueba",
-            firma_id, c["ordinal"], c["tsa_cert_not_after"].isoformat(),
+            firma_id, c["ordinal"], c["vence_at"].isoformat(),
         )
         return "caducada"
 
@@ -230,7 +234,7 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
             conn, slug, c, "tsa_por_vencer", "firma.lta_renovacion_tsa_por_vencer",
             {
                 "ordinal": c["ordinal"],
-                "tsa_cert_not_after_anterior": c["tsa_cert_not_after"].isoformat(),
+                "tsa_cert_not_after_anterior": c["vence_at"].isoformat(),
                 "tsa_cert_not_after_nueva": not_after_nuevo.isoformat(),
                 "margen_dias": settings.lta_renovacion_margen_dias,
             },
@@ -239,7 +243,7 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
 
     try:
         cert_previo = tsa.cert_tsa_vigente()
-        if cert_previo is not None and cert_previo.not_valid_after_utc <= c["tsa_cert_not_after"] + margen:
+        if cert_previo is not None and cert_previo.not_valid_after_utc <= c["vence_at"] + margen:
             return await _por_vencer(cert_previo.not_valid_after_utc)
         # 3. XML renovado (el sellado puede bloquear: TSA remota).
         renovacion = await asyncio.to_thread(renovar_archive_timestamp, xml)
@@ -258,8 +262,9 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
     except tsa.TsaUnavailableError:
         logger.warning("renovación LTA firma=%s: TSA no disponible", firma_id, exc_info=True)
         return "error"
-    if renovacion.tsa_cert_not_after <= c["tsa_cert_not_after"] + margen:
-        return await _por_vencer(renovacion.tsa_cert_not_after)
+    # La TSA nueva tiene que dar más plazo que lo que vencía: lo primero que caduque de ella y de su CA.
+    if renovacion.vence_at <= c["vence_at"] + margen:
+        return await _por_vencer(renovacion.vence_at)
 
     nombre_original = sellos[0]["minio_key"].split("/", 1)[1]
     base = nombre_original.removesuffix(".xml")
@@ -283,6 +288,9 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
             gen_time=renovacion.token.gen_time,
             tsa_cert_fingerprint=renovacion.token.tsa_cert_fingerprint,
             tsa_cert_not_after=renovacion.tsa_cert_not_after,
+            tsa_cadena_not_after=renovacion.tsa_cadena_not_after,
+            tsa_revocacion_fuente=renovacion.tsa_revocacion_fuente,
+            revocacion_tsa_previa=renovacion.revocacion_tsa_previa,
             estado="pendiente_worm",
         )
         await _asiento(
@@ -293,6 +301,8 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
                 "gen_time": renovacion.token.gen_time.isoformat(),
                 "tsa_cert_fingerprint": renovacion.token.tsa_cert_fingerprint,
                 "tsa_cert_not_after": renovacion.tsa_cert_not_after.isoformat(),
+                "vence_at": renovacion.vence_at.isoformat(),
+                "revocacion_tsa_previa": renovacion.revocacion_tsa_previa,
                 "file_anterior": c["minio_key"].split("/", 1)[0],
             },
         )

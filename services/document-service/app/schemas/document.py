@@ -11,8 +11,21 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
+from app.core.causales_reserva import (
+    PLAZO_MAX_MESES,
+    CausalCodigo,
+    validar_cita_norma,
+    validar_clasificacion,
+)
 from app.core.datos_minimos import faltantes, mensaje_faltantes
 from app.schemas.tercero import ActorVincular
 
@@ -70,8 +83,18 @@ class DocumentCreate(BaseModel):
     # clasificada y reservada (art. 20) con fundamento vacío. Se persiste como
     # metadata de clasificación vigente (E08) y se motiva en el audit_log.
     clasificacion_fundamento: str | None = Field(default=None, max_length=300)
+    # Causal del CATÁLOGO CERRADO de la Ley 1712/2014 arts. 18-19 (C12, ADR-039;
+    # `GET /api/v1/documents/causales-reserva`). Obligatoria con nivel >= 2. Se valida
+    # como `str` y no como `Literal` para poder devolver el motivo concreto (nivel que no
+    # corresponde, plazo) en un solo 422; `por_clasificar` solo lo admite el contexto
+    # interno de la herencia de borrador (`model_validate(..., context={"interno": True})`).
     clasificacion_causal: str | None = Field(default=None, max_length=200)
-    clasificacion_plazo_meses: int | None = Field(default=None, ge=0, le=600)
+    # Art. 19: 1..180 meses (15 años, art. 22), obligatorio; art. 18: sin plazo.
+    clasificacion_plazo_meses: int | None = Field(default=None, ge=1, le=PLAZO_MAX_MESES)
+    # Cita normativa PUBLICABLE y controlada por formato (Decreto 103/2015 art. 40,
+    # «fundamento constitucional o legal»). Distinta del `clasificacion_fundamento`
+    # libre, que es interno. Opcional; solo con nivel >= 2.
+    clasificacion_norma: str | None = Field(default=None, max_length=160)
     # Plazo de respuesta en DÍAS HÁBILES (RF-RAD-04). Si se indica, document-service
     # calcula la fecha de vencimiento vía tenant-service; si se omite, no hay plazo.
     response_days: int | None = Field(default=None, ge=1, le=3650)
@@ -115,7 +138,22 @@ class DocumentCreate(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _require_fundamento_when_classified(self) -> "DocumentCreate":
+    def _require_fundamento_when_classified(self, info: ValidationInfo) -> "DocumentCreate":
+        interno = bool((info.context or {}).get("interno"))
+        motivo = validar_clasificacion(
+            self.nivel_seguridad,
+            self.clasificacion_causal,
+            self.clasificacion_plazo_meses,
+            permitir_por_clasificar=interno,
+        )
+        if motivo is not None:
+            raise ValueError(motivo)
+        if self.clasificacion_norma is not None:
+            if self.nivel_seguridad < 2:
+                raise ValueError("clasificacion_norma solo aplica con nivel_seguridad >= 2")
+            motivo = validar_cita_norma(self.clasificacion_norma)
+            if motivo is not None:
+                raise ValueError(motivo)
         if self.nivel_seguridad >= 2 and not (
             self.clasificacion_fundamento and self.clasificacion_fundamento.strip()
         ):
@@ -296,18 +334,33 @@ class ReclassifyRequest(BaseModel):
     nivel_seguridad: int = Field(..., ge=1, le=3)
     # Ley 1712/2014 art.19 y 28: todo acto de clasificación/reserva debe ser motivado.
     motivo: str = Field(..., min_length=1, max_length=500)
-    # Campos opcionales de fundamentación jurídica (Ley 1712/2014 art.18-19).
-    # Se registran en audit_log (hash-chain) como soporte inmutable del acto —
-    # no crean columnas nuevas; el JSONB de audit_log es el registro legal.
-    causal_reserva: str | None = Field(default=None, max_length=200)
+    # Causal del catálogo cerrado (C12): nivel 2 => art19_*, nivel 3 => art18_*. El
+    # `Literal` hace que OpenAPI publique el enum; `por_clasificar` no está en él (lo
+    # escriben la migración y la importación, no la API).
+    causal_reserva: CausalCodigo | None = None
+    # Norma ESPECIAL concreta que sustenta la reserva (interna: nunca sale del índice
+    # público, porque podría transportar contenido).
     fundamento_juridico: str | None = Field(default=None, max_length=300)
-    plazo_reserva_meses: int | None = Field(default=None, ge=0, le=600)
+    plazo_reserva_meses: int | None = Field(default=None, ge=1, le=PLAZO_MAX_MESES)
+    # Cita normativa PUBLICABLE y controlada por formato (Decreto 103/2015 art. 40).
+    fundamento_norma: str | None = Field(default=None, max_length=160)
 
     @model_validator(mode="after")
     def _require_fundamento_when_classifying(self) -> "ReclassifyRequest":
         # Al reclasificar A nivel >= 2 el fundamento es OBLIGATORIO (Ley 1712 art.
         # 19/28): así el índice del art. 20 nunca publica una reserva sin su
         # fundamento. Desclasificar (nivel 1) no lo exige.
+        motivo = validar_clasificacion(
+            self.nivel_seguridad, self.causal_reserva, self.plazo_reserva_meses
+        )
+        if motivo is not None:
+            raise ValueError(motivo)
+        if self.fundamento_norma is not None:
+            if self.nivel_seguridad < 2:
+                raise ValueError("fundamento_norma solo aplica con nivel_seguridad >= 2")
+            motivo = validar_cita_norma(self.fundamento_norma)
+            if motivo is not None:
+                raise ValueError(motivo)
         if self.nivel_seguridad >= 2 and not (
             self.fundamento_juridico and self.fundamento_juridico.strip()
         ):
@@ -344,6 +397,10 @@ class IndiceClasificadoItem(BaseModel):
     excepcion_ley_1712: str  # art. 19 (reservada) | art. 18 (clasificada)
     fundamento_juridico: str | None
     causal_reserva: str | None
+    #: Artículo y literal de la causal en el catálogo cerrado (C12); `None` si la fila
+    #: está `por_clasificar`.
+    causal_articulo: str | None = None
+    causal_descripcion: str | None = None
     plazo_reserva_meses: int | None
     fecha_clasificacion: datetime | None
     fecha_radicacion: datetime

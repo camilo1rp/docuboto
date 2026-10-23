@@ -38,7 +38,7 @@ pytestmark = pytest.mark.asyncio
 
 async def _montar(tenant_ctx, *, copia: int, vivo: int, tipo: str = "radicado"):
     slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(
         "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
         "tracking_number text, nivel_seguridad int NOT NULL)"
@@ -97,7 +97,7 @@ async def test_la_lectura_bloquea_la_fila_y_la_sincronizacion_concurrente_espera
     slug, conn, sol_id, rid = await _montar(tenant_ctx, copia=1, vivo=1)
     otra = await asyncpg.connect(dsn=_require_dsn().replace("postgresql+asyncpg://", "postgresql://"))
     try:
-        await otra.execute(f'SET search_path TO "{tenant_schema(slug)}", public')
+        await otra.execute(f'SET search_path TO "{tenant_schema(slug)}"')
         tx = conn.transaction()
         await tx.start()
         try:

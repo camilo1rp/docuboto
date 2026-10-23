@@ -105,6 +105,17 @@ class AipDocMaterial:
 
 
 @dataclass(slots=True)
+class ReempaquetadoInfo:
+    """Procedencia de un AIP reempaquetado por renovación del ArchiveTimeStamp (C-6): el PREMIS
+    declara que deriva del AIP anterior (`relationship derivation / has source`) y deja el evento
+    `packing`."""
+
+    aip_anterior_id: str
+    firma_id: str
+    ordinal: int
+
+
+@dataclass(slots=True)
 class BagArtifact:
     """Resultado de empaquetar el Bag: los bytes del ZIP + metadatos derivados."""
 
@@ -224,6 +235,7 @@ def _build_event_element(
     linked_object_ids: list[str],
     outcome_detail_note: str | None = None,
     extra_linking_agent: tuple[str, str] | None = None,
+    linking_objects: list[tuple[str, str, str | None]] | None = None,
 ) -> None:
     """Construye un `event` PREMIS.
 
@@ -262,6 +274,14 @@ def _build_event_element(
         linking_obj = _sub(ev, "linkingObjectIdentifier")
         _sub(linking_obj, "linkingObjectIdentifierType", "document_id")
         _sub(linking_obj, "linkingObjectIdentifierValue", object_id)
+    # C-6: objetos enlazados con tipo de identificador y rol propios (p. ej. el AIP
+    # anterior con rol `source` y el índice nuevo con rol `outcome`).
+    for obj_type, obj_value, obj_role in linking_objects or []:
+        linking_obj = _sub(ev, "linkingObjectIdentifier")
+        _sub(linking_obj, "linkingObjectIdentifierType", obj_type)
+        _sub(linking_obj, "linkingObjectIdentifierValue", obj_value)
+        if obj_role is not None:
+            _sub(linking_obj, "linkingObjectRole", obj_role)
 
 
 def _build_agent_element(
@@ -322,6 +342,7 @@ def build_premis_v3(
     actor: str | None,
     fixity_outcome: Literal["success", "failure"] = "success",
     pdfa_results: dict[str, PdfaResult] | None = None,
+    reempaquetado: ReempaquetadoInfo | None = None,
 ) -> str:
     """Construye el manifiesto PREMIS v3 (objetos + eventos + agentes).
 
@@ -399,6 +420,23 @@ def build_premis_v3(
         )
         linked_ids.append(f"indice:{expediente_id}")
 
+    if reempaquetado is not None:
+        # Objeto `representation` (el AIP como conjunto) con la relación de derivación al AIP
+        # anterior: el vocabulario LoC es `relationshipType=derivation`, `relationshipSubType=
+        # "has source"`. Va DESPUÉS de los `file` y ANTES de los eventos (orden del documento).
+        rep = etree.SubElement(
+            root, f"{{{_PREMIS_NS}}}object", attrib={f"{{{_XSI_NS}}}type": "premis:representation"}
+        )
+        rep_id = _sub(rep, "objectIdentifier")
+        _sub(rep_id, "objectIdentifierType", "expediente_id")
+        _sub(rep_id, "objectIdentifierValue", expediente_id)
+        rel = _sub(rep, "relationship")
+        _sub(rel, "relationshipType", "derivation")
+        _sub(rel, "relationshipSubType", "has source")
+        rel_id = _sub(rel, "relatedObjectIdentifier")
+        _sub(rel_id, "relatedObjectIdentifierType", "aip_id")
+        _sub(rel_id, "relatedObjectIdentifierValue", reempaquetado.aip_anterior_id)
+
     _build_event_element(
         root,
         event_id=f"ingest:{expediente_id}",
@@ -447,6 +485,24 @@ def build_premis_v3(
             extra_linking_agent=("software", result.validator_agent),
         )
         validator_agents_emitidos.add(result.validator_agent)
+
+    if reempaquetado is not None:
+        _build_event_element(
+            root,
+            event_id=f"packing:{expediente_id}:{reempaquetado.firma_id}:{reempaquetado.ordinal}",
+            event_type="packing",
+            generado=generado,
+            detail=(
+                "reempaquetado por renovación del ArchiveTimeStamp "
+                f"(firma {reempaquetado.firma_id}, ordinal {reempaquetado.ordinal})"
+            ),
+            outcome="success",
+            linked_object_ids=[],
+            linking_objects=[
+                ("aip_id", reempaquetado.aip_anterior_id, "source"),
+                ("document_id", f"indice:{expediente_id}", "outcome"),
+            ],
+        )
 
     _build_agent_element(
         root,
@@ -551,6 +607,7 @@ def build_bag(
     actor: str | None,
     fixity_outcome: Literal["success", "failure"] = "success",
     pdfa_results: dict[str, PdfaResult] | None = None,
+    reempaquetado: ReempaquetadoInfo | None = None,
 ) -> BagArtifact:
     """Arma el Bag REAL (RFC 8493) completo y lo serializa como ZIP.
 
@@ -599,6 +656,7 @@ def build_bag(
         actor=actor,
         fixity_outcome=fixity_outcome,
         pdfa_results=pdfa_results,
+        reempaquetado=reempaquetado,
     )
     validate_premis_xml(premis_xml)
 
@@ -666,3 +724,120 @@ def build_bag(
         num_files=num_files,
         premis_xml=premis_xml,
     )
+
+
+class BagAnteriorCorruptoError(Exception):
+    """El Bag de un AIP ya sellado no verifica contra sus propios manifiestos (o no es un Bag
+    legible): no se reconstruye nada a partir de él (C-6, `409 aip_anterior_fixity_mismatch`)."""
+
+
+@dataclass(slots=True)
+class BagAnterior:
+    """Contenido de un AIP anterior, ya verificado contra su `manifest-sha256` y `tagmanifest`."""
+
+    docs: list[AipDocMaterial]
+    indice: AipDocMaterial
+    pdfa_results: dict[str, PdfaResult]
+
+
+_PDFA_OUTCOME_FROM_LABEL = {v: k for k, v in _PDFA_OUTCOME_LABELS.items()}
+
+
+def _parse_manifest(data: bytes) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in data.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        digest, _, name = line.partition("  ")
+        out[name.replace("%0D", "\r").replace("%0A", "\n").replace("%25", "%")] = digest
+    return out
+
+
+def read_bag_anterior(zip_bytes: bytes, *, expediente_id: str) -> BagAnterior:
+    """Lee y VERIFICA un AIP anterior: `manifest-sha256` (payload) y `tagmanifest-sha256` (tag
+    files) tienen que coincidir byte a byte con el ZIP, y el PREMIS tiene que declarar los mismos
+    objetos. Devuelve los documentos (con su `document_id` original), el índice embebido y los
+    veredictos PDF/A ya registrados (se REUTILIZAN: el mismo archivo no se revalida)."""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+        names = set(zf.namelist())
+        entries = {n: zf.read(n) for n in names}
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise BagAnteriorCorruptoError(f"el AIP anterior no es un ZIP legible: {exc}") from exc
+    for required in (_MANIFEST_FILENAME, _TAGMANIFEST_FILENAME, _PREMIS_TAG_FILENAME):
+        if required not in entries:
+            raise BagAnteriorCorruptoError(f"el AIP anterior no contiene {required}")
+
+    manifest = _parse_manifest(entries[_MANIFEST_FILENAME])
+    payload_names = {n for n in entries if n.startswith("data/")}
+    if payload_names != set(manifest):
+        raise BagAnteriorCorruptoError("el payload del AIP anterior no coincide con su manifest")
+    for name, digest in manifest.items():
+        if hashlib.sha256(entries[name]).hexdigest() != digest:
+            raise BagAnteriorCorruptoError(f"fixity del payload {name!r} no coincide")
+    tagmanifest = _parse_manifest(entries[_TAGMANIFEST_FILENAME])
+    tag_names = {n for n in entries if not n.startswith("data/") and n != _TAGMANIFEST_FILENAME}
+    if tag_names != set(tagmanifest):
+        raise BagAnteriorCorruptoError("los tag files del AIP anterior no coinciden con su tagmanifest")
+    for name, digest in tagmanifest.items():
+        if hashlib.sha256(entries[name]).hexdigest() != digest:
+            raise BagAnteriorCorruptoError(f"fixity del tag file {name!r} no coincide")
+
+    try:
+        premis = etree.fromstring(entries[_PREMIS_TAG_FILENAME])
+    except etree.XMLSyntaxError as exc:
+        raise BagAnteriorCorruptoError(f"premis.xml del AIP anterior mal formado: {exc}") from exc
+    ns = {"p": _PREMIS_NS}
+    docs: list[AipDocMaterial] = []
+    indice: AipDocMaterial | None = None
+    indice_id = f"indice:{expediente_id}"
+    for obj in premis.findall("p:object", ns):
+        if obj.get(f"{{{_XSI_NS}}}type", "").split(":")[-1] != "file":
+            continue
+        value = obj.findtext("p:objectIdentifier/p:objectIdentifierValue", namespaces=ns) or ""
+        location = (
+            obj.findtext("p:storage/p:contentLocation/p:contentLocationValue", namespaces=ns) or ""
+        )
+        content = entries.get(location)
+        if content is None:
+            raise BagAnteriorCorruptoError(f"el PREMIS referencia {location!r}, ausente del Bag")
+        sha = obj.findtext(
+            "p:objectCharacteristics/p:fixity/p:messageDigest", namespaces=ns
+        ) or ""
+        if hashlib.sha256(content).hexdigest() != sha:
+            raise BagAnteriorCorruptoError(f"fixity PREMIS de {location!r} no coincide")
+        material = AipDocMaterial(
+            document_id=value,
+            nombre=obj.findtext("p:originalName", namespaces=ns) or Path(location).name,
+            content=content,
+            sha256=sha,
+            mime_type=obj.findtext(
+                "p:objectCharacteristics/p:format/p:formatDesignation/p:formatName", namespaces=ns
+            ),
+        )
+        if value == indice_id:
+            indice = material
+        else:
+            docs.append(material)
+    if indice is None:
+        raise BagAnteriorCorruptoError("el AIP anterior no embebe un índice electrónico")
+
+    pdfa: dict[str, PdfaResult] = {}
+    for ev in premis.findall("p:event", ns):
+        if ev.findtext("p:eventType", namespaces=ns) != "validation":
+            continue
+        doc_id = ev.findtext("p:linkingObjectIdentifier/p:linkingObjectIdentifierValue", namespaces=ns)
+        note = ev.findtext(
+            "p:eventOutcomeInformation/p:eventOutcomeDetail/p:eventOutcomeDetailNote", namespaces=ns
+        ) or ""
+        fields = dict(part.split("=", 1) for part in note.split("; ") if "=" in part)
+        outcome = fields.get("outcome")
+        if doc_id is None or outcome not in _PDFA_OUTCOME_LABELS:
+            continue
+        pdfa[doc_id] = PdfaResult(
+            outcome=outcome,  # type: ignore[arg-type]  # validado contra _PDFA_OUTCOME_LABELS
+            profile=fields.get("profile", ""),
+            validator_agent=fields.get("validator", ""),
+            detail={"motivo": "Veredicto reutilizado del AIP anterior (reempaquetado C-6)."},
+        )
+    return BagAnterior(docs=docs, indice=indice, pdfa_results=pdfa)

@@ -43,7 +43,16 @@ from app.schemas.archive import (
     TvdAgrupacionUpdate,
     TvdAgrupacionVersionCreate,
 )
+from app.schemas.retencion_legal import (
+    SeleccionPendienteItem,
+    SeleccionValoracionRequest,
+    SeleccionValoracionResponse,
+    ValoracionTvdEstado,
+    ValoracionTvdRequest,
+    ValoracionTvdResponse,
+)
 from app.services.archive_service import ArchiveService
+from app.services.valoracion_service import ValoracionService
 
 # ---------------------------------------------------------------------------
 # Qué se lee sin permiso, y por qué (decisión de 2026-08-28, §4.bis del plan de
@@ -316,3 +325,92 @@ async def derogar_tvd_agrupacion_version(
 ) -> TrdSerieResponse:
     service = ArchiveService(conn, tenant_slug)
     return await service.derogar_tvd_agrupacion_version(code, version, actor.id)
+
+
+@router.get(
+    "/{serie_id}/valoracion",
+    response_model=ValoracionTvdEstado,
+    summary="Valoración del Comité sobre una versión de TVD y avance de su aplicación (ADR-043)",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD"))],
+)
+async def get_valoracion_tvd(
+    serie_id: uuid.UUID,
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> ValoracionTvdEstado:
+    return await ValoracionService(conn, tenant_slug).get_estado(serie_id)
+
+
+@router.post(
+    "/{serie_id}/valoracion",
+    response_model=ValoracionTvdResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Registrar la valoración del Comité sobre una versión de TVD aprobada o convalidada: "
+        "levanta la retención legal 'valoracion_pendiente' de los expedientes del fondo (ADR-043)"
+    ),
+    # Mismo cargo que la TVD (ADR-026 §permiso): es el acto del Comité sobre el instrumento.
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def registrar_valoracion_tvd(
+    serie_id: uuid.UUID,
+    payload: ValoracionTvdRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> ValoracionTvdResponse:
+    """Respuesta: solo el RECUENTO de expedientes afectados (acto de custodia, ortogonal al
+    clearance: no enumera expedientes). 409 `tvd_no_aprobada` si la versión no está aprobada ni
+    convalidada; 409 `valoracion_ya_registrada` (una por versión)."""
+    return await ValoracionService(conn, tenant_slug).registrar_valoracion(
+        serie_id, payload, actor=actor.id
+    )
+
+
+@router.get(
+    "/{serie_id}/valoracion/seleccion-pendiente",
+    response_model=list[SeleccionPendienteItem],
+    summary="Expedientes de una valoración de Selección (S) que esperan el acto de selección",
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def listar_seleccion_pendiente(
+    serie_id: uuid.UUID,
+    response: Response,
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
+    tenant_slug: str = Depends(_require_tenant),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> list[SeleccionPendienteItem]:
+    """Solo identificador y código del expediente (ni título ni contenido): es la cola del acto
+    de selección, no una lectura del expediente. `X-Total-Count` lleva el total."""
+    items, total = await ValoracionService(conn, tenant_slug).listar_seleccion_pendiente(
+        serie_id, page=page, size=size
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return items
+
+
+@router.post(
+    "/{serie_id}/valoracion/expedientes/{expediente_id}/seleccion",
+    response_model=SeleccionValoracionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary=(
+        "Acto de selección (disposición S) sobre UN expediente: `conservar` sigue el camino de "
+        "CT; `descartar` levanta la retención legal y lo deja elegible para el lote (ADR-043)"
+    ),
+    dependencies=[Depends(require_permission("USUA_PERM_TRD", min_crud=3))],
+)
+async def registrar_seleccion_valoracion(
+    serie_id: uuid.UUID,
+    expediente_id: uuid.UUID,
+    payload: SeleccionValoracionRequest,
+    tenant_slug: str = Depends(_require_tenant),
+    actor: Actor = Depends(require_actor),
+    conn: asyncpg.Connection = Depends(get_db_conn),
+) -> SeleccionValoracionResponse:
+    """404 `valoracion_expediente_not_found` si el expediente no está en esa versión; 409
+    `valoracion_no_es_seleccion` si la valoración no es S; 409 `seleccion_ya_registrada` (el acto
+    no se rehace). Atómico con su asiento `archive.expediente_seleccion_registrada`."""
+    return await ValoracionService(conn, tenant_slug).registrar_seleccion(
+        serie_id, expediente_id, payload, actor=actor.id
+    )

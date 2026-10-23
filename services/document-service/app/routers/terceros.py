@@ -20,14 +20,17 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, Query, Request
+from fastapi import APIRouter, Depends, Header, Query, Request, Response
 
 from app.core.clearance import require_permission, resolve_caller_clearance
 from app.core.database import get_tenant_conn
 from app.schemas.tercero import (
     ActoresVincularRequest,
     ActorResponse,
+    ConciliarRequest,
+    ConciliarResponse,
     DepartamentoResponse,
+    FichaPorConciliar,
     FusionRequest,
     FusionResponse,
     GrupoDuplicados,
@@ -223,6 +226,78 @@ async def listar_duplicados(
     """
     service = TerceroService(conn, _tenant_slug(request))
     return [GrupoDuplicados(**g) for g in await service.grupos_duplicados(limit=limit)]
+
+
+@router.get(
+    "/por-conciliar",
+    response_model=list[FichaPorConciliar],
+    summary="Fichas provisionales de remitentes anónimos pendientes de conciliar",
+    # `crud>=3` también en la LECTURA: lista nombre, documento declarado, correo,
+    # teléfono y dirección de ciudadanos que nadie ha verificado.
+    dependencies=[Depends(require_permission("PERM_RADI", min_crud=3))],
+)
+async def listar_por_conciliar(
+    request: Request,
+    response: Response,
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=20, ge=1, le=100),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> list[FichaPorConciliar]:
+    """La cola de conciliación (C17, ADR-038), la más antigua primero.
+
+    No-read-up (RF-SEG-08): una provisional atada a un radicado por encima del
+    clearance del llamante no aparece, y tampoco cuenta en `X-Total-Count` (el
+    predicado va en el `WHERE` de las filas y del conteo). `candidata` es la ficha
+    confirmada con el documento declarado, si existe.
+    """
+    service = TerceroService(conn, _tenant_slug(request))
+    clearance = await resolve_caller_clearance(conn, _actor(request))
+    filas, total = await service.por_conciliar(
+        max_clearance=clearance, limit=size, offset=(page - 1) * size
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return [FichaPorConciliar(**f) for f in filas]
+
+
+@router.post(
+    "/{tercero_id}/conciliar",
+    response_model=ConciliarResponse,
+    summary="Conciliar una ficha provisional: vincular, confirmar o descartar",
+    dependencies=[Depends(require_permission("PERM_RADI", min_crud=3))],
+)
+async def conciliar_tercero(
+    tercero_id: uuid.UUID,
+    payload: ConciliarRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> ConciliarResponse:
+    """Resuelve quién es el remitente que un anónimo declaró. Auditado y atómico.
+
+    - `vincular`: la provisional pasa a resolverse hacia una ficha confirmada
+      (`fusionado_en`). Motivo obligatorio si el documento del destino no coincide.
+    - `confirmar`: el documento declarado se vuelve su identidad (409
+      `documento_ya_registrado` si ya es de otra ficha: vincule).
+    - `descartar`: se queda como copia del remitente, sin identidad. Motivo obligatorio.
+
+    El número del radicado no cambia. Errores: 404 `tercero_no_encontrado`
+    (inexistente o fuera del clearance, indistinguibles), 409 `tercero_ya_conciliado`,
+    409 `destino_invalido`, 409 `documento_ya_registrado`, 422 `motivo_requerido`,
+    `motivo_insuficiente`, `destino_requerido`, `destino_no_aplica`, `documento_sin_tipo`.
+    """
+    service = TerceroService(conn, _tenant_slug(request))
+    actor = _actor(request)
+    clearance = await resolve_caller_clearance(conn, actor)
+    return ConciliarResponse(
+        **await service.conciliar(
+            tercero_id,
+            accion=payload.accion,
+            destino_id=payload.destino_id,
+            motivo=payload.motivo,
+            medio_verificacion=payload.medio_verificacion,
+            actor=actor,
+            max_clearance=clearance,
+        )
+    )
 
 
 @router.get(

@@ -113,8 +113,8 @@ _CREATE_EXP_PAYLOAD = {
 _CREATE_TRD_PAYLOAD = {
     "code": "100",
     "name": "Contratos",
-    "retention_years": 5,
-    "total_retention": 10,
+    "archivo_gestion_years": 5,
+    "archivo_central_years": 5,
     "disposition": "conserve",
 }
 
@@ -968,7 +968,8 @@ async def test_list_trd_series(
         make_trd_serie_record(serie_id=uuid.uuid4(), code="200"),
     ]
     mock_conn.fetchval.return_value = 2
-    mock_conn.fetch.return_value = records
+    # 1.ª lectura: las series; 2.ª: sus dependencias productoras (C-4/C8, ninguna declarada).
+    mock_conn.fetch.side_effect = [records, []]
 
     response = await client.get(
         "/api/v1/trd",

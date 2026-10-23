@@ -36,6 +36,9 @@ from app.schemas.fisico import (
     MovimientoResponse,
     PrestamoCreate,
     PrestamoResponse,
+    PrestatarioElegible,
+    PrestatarioExterno,
+    PrestatarioInterno,
     UbicacionCreate,
     UbicacionResponse,
     UbicacionUpdate,
@@ -127,6 +130,20 @@ def _not_found(detail: str) -> HTTPException:
         status_code=status.HTTP_404_NOT_FOUND,
         detail={"error": "not_found", "detail": detail, "status": 404},
     )
+
+
+def _error(code: int, error: str, detail: str) -> HTTPException:
+    """Error estructurado `{error, detail, status}` con código propio (C11)."""
+    return HTTPException(
+        status_code=code, detail={"error": error, "detail": detail, "status": code}
+    )
+
+
+def _mask_documento(numero: str) -> str:
+    """`****1234`: el asiento de auditoría NO guarda el documento completo (la fila
+    sí, con finalidad de custodia: Ley 1581/2012)."""
+    n = numero.strip()
+    return "****" + n[-4:] if len(n) > 4 else "****"
 
 
 logger = logging.getLogger(__name__)
@@ -307,16 +324,28 @@ class FisicoService:
         *,
         actor: uuid.UUID | None = None,
     ) -> None:
-        if await self._repo.get_unidad(unidad_id) is None:
+        unidad = await self._repo.get_unidad(unidad_id)
+        if unidad is None:
             raise _not_found(f"Unidad {unidad_id} no encontrada")
         try:
             async with self._conn.transaction():
-                await self._repo.link_expediente(
+                # Meter un expediente en una unidad que está FUERA (prestada) lo
+                # entregaría a quien no se validó contra su nivel: se serializa
+                # con el préstamo por la raíz del árbol y se rechaza en el INSERT.
+                await self._repo.lock_arbol(unidad_id)
+                vinculado = await self._repo.link_expediente(
                     expediente_id=payload.expediente_id,
                     unidad_id=unidad_id,
                     folio_inicio=payload.folio_inicio,
                     folio_fin=payload.folio_fin,
                 )
+                if not vinculado:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "unidad_prestada",
+                        f"La unidad {unidad['codigo']} (o una contigua de su árbol) está "
+                        "prestada: no se pueden vincular expedientes mientras esté fuera.",
+                    )
                 await audit.append(
                     self._conn,
                     tenant_slug=self._tenant_slug,
@@ -364,8 +393,18 @@ class FisicoService:
             unidad_id=row["unidad_id"],
             unidad_codigo=row["unidad_codigo"],
             unidad_signatura=row["unidad_signatura"],
-            prestado_a=row["prestado_a"],
+            prestatario_tipo=row["prestatario_tipo"],
+            prestatario_user_id=row["prestatario_user_id"],
+            prestatario_nombre=row["prestatario_nombre"],
+            tercero_documento_tipo=row["tercero_documento_tipo"],
+            tercero_documento_numero=row["tercero_documento_numero"],
+            tercero_entidad=row["tercero_entidad"],
+            tercero_cargo=row["tercero_cargo"],
+            tercero_correo=row["tercero_correo"],
+            tercero_telefono=row["tercero_telefono"],
             prestado_por=row["prestado_por"],
+            devuelto_recibido_por=row["devuelto_recibido_por"],
+            observaciones=row["observaciones"],
             fecha_prestamo=row["fecha_prestamo"],
             fecha_devolucion_esperada=row["fecha_devolucion_esperada"],
             fecha_devolucion_real=row["fecha_devolucion_real"],
@@ -381,62 +420,174 @@ class FisicoService:
         *,
         actor: uuid.UUID | None = None,
     ) -> PrestamoResponse:
-        if await self._repo.get_unidad(unidad_id) is None:
+        unidad = await self._repo.get_unidad(unidad_id)
+        if unidad is None:
             raise _not_found(f"Unidad {unidad_id} no encontrada")
-        if await self._repo.active_loan(unidad_id) is not None:
-            raise _conflict("La unidad ya está prestada")
+        if actor is None:
+            # `require_permission` ya lo impide; sin quien entrega no hay custodia.
+            raise _error(
+                status.HTTP_403_FORBIDDEN,
+                "forbidden",
+                "No se puede prestar sin identificar a quien entrega.",
+            )
         # Cadena de custodia física (art. 26 Ley 594/2000): el préstamo saca la
-        # unidad de su ubicación de control -- el asiento fija A QUIÉN se
-        # prestó y la fecha PREVISTA de devolución, mismo patrón fail-closed
-        # (tx envolviendo repo-write + `audit.append` al final) que TRD.
-        # No-read-up (RF-SEG-08, AREA-01-13): quien presta una unidad no puede
-        # sacar del estante contenido por encima de su clearance. El gate vive
-        # en el WHERE del INSERT; 0 filas = 403 y no se escribe nada.
+        # unidad de su ubicación de control. QUIÉN entrega lo fija el servidor
+        # (`X-User-Id`); QUIÉN recibe es un usuario validado en el INSERT o un
+        # tercero con identificador mínimo.
+        #
+        # Orden: (1) bloqueo por RAÍZ del árbol en sentencia aparte; (2) el
+        # `INSERT ... SELECT` con TODAS las reglas en el `WHERE` (no-read-up de
+        # quien presta Y de quien recibe, no prestar lo ya prestado ni lo que
+        # está saliendo por transferencia o lote de eliminación); (3) solo si
+        # dio 0 filas, un diagnóstico que ELIGE el mensaje (no decide).
+        pres = payload.prestatario
+        tercero: dict[str, str | None] = {}
+        if isinstance(pres, PrestatarioExterno):
+            tercero = {
+                "nombre": pres.nombre,
+                "documento_tipo": pres.documento_tipo,
+                "documento_numero": pres.documento_numero,
+                "entidad": pres.entidad,
+                "cargo": pres.cargo,
+                "correo": pres.correo,
+                "telefono": pres.telefono,
+            }
         max_clearance = await self._archive.caller_clearance(actor)
-        async with self._conn.transaction():
-            row = await self._repo.insert_prestamo(
-                unidad_id=unidad_id,
-                prestado_a=payload.prestado_a,
-                prestado_por=payload.prestado_por,
-                fecha_devolucion_esperada=payload.fecha_devolucion_esperada,
-                max_clearance=max_clearance,
-            )
-            if row is None:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail={
-                        "error": "clearance_insuficiente",
-                        "detail": (
-                            "La unidad contiene expedientes por encima de su "
-                            "nivel de acceso: no puede prestarla."
-                        ),
-                        "status": 403,
-                    },
+        try:
+            async with self._conn.transaction():
+                await self._repo.lock_arbol(unidad_id)
+                row = await self._repo.insert_prestamo(
+                    unidad_id=unidad_id,
+                    prestatario_tipo=pres.tipo,
+                    prestatario_user_id=pres.user_id if isinstance(pres, PrestatarioInterno) else None,
+                    tercero=tercero,
+                    prestado_por=actor,
+                    fecha_devolucion_esperada=payload.fecha_devolucion_esperada,
+                    observaciones=payload.observaciones,
+                    max_clearance=max_clearance,
                 )
-            await self._repo.insert_movimiento(
-                unidad_id=unidad_id,
-                accion="RETIRADO",
-                ubicacion_before=None,
-                ubicacion_after=None,
-                performed_by=performed_by,
-            )
-            await audit.append(
-                self._conn,
-                tenant_slug=self._tenant_slug,
-                service=_SERVICE,
-                action="archive.prestamo_created",
-                object_type="prestamo",
-                object_ref=str(row["id"]),
-                actor=str(actor) if actor else None,
-                payload={
+                if row is None:
+                    await self._rechazar_prestamo(unidad, pres.tipo, pres, max_clearance)
+                    raise AssertionError("inalcanzable")  # pragma: no cover
+                await self._repo.insert_movimiento(
+                    unidad_id=unidad_id,
+                    accion="RETIRADO",
+                    ubicacion_before=None,
+                    ubicacion_after=None,
+                    performed_by=performed_by,
+                )
+                audit_payload: dict[str, object] = {
                     "unidad_id": str(unidad_id),
-                    "prestado_a": payload.prestado_a,
-                    "prestado_por": payload.prestado_por,
+                    "prestatario_tipo": pres.tipo,
+                    "prestado_por": str(actor),
                     "fecha_devolucion_esperada": payload.fecha_devolucion_esperada.isoformat(),
-                },
-                canal=audit.CANAL_PETICION,
+                }
+                if isinstance(pres, PrestatarioInterno):
+                    audit_payload["prestatario_user_id"] = str(pres.user_id)
+                else:
+                    audit_payload["prestatario_nombre"] = tercero["nombre"]
+                    audit_payload["documento_tipo"] = tercero["documento_tipo"]
+                    audit_payload["documento_numero"] = _mask_documento(
+                        str(tercero["documento_numero"])
+                    )
+                await audit.append(
+                    self._conn,
+                    tenant_slug=self._tenant_slug,
+                    service=_SERVICE,
+                    action="archive.prestamo_created",
+                    object_type="prestamo",
+                    object_ref=str(row["id"]),
+                    actor=str(actor),
+                    payload=audit_payload,
+                    canal=audit.CANAL_PETICION,
+                )
+        except asyncpg.UniqueViolationError:
+            # Defensa del motor (índice parcial / trigger de árbol).
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "unidad_ya_prestada",
+                f"La unidad {unidad['codigo']} (o una contigua de su árbol) ya está prestada.",
             )
+        except asyncpg.CheckViolationError as exc:
+            if exc.constraint_name == "ck_prestamo_unidad_en_transferencia":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "unidad_en_transferencia",
+                    f"La unidad {unidad['codigo']} tiene una transferencia en curso.",
+                )
+            if exc.constraint_name == "ck_prestamo_unidad_en_lote":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "unidad_en_lote_eliminacion",
+                    f"La unidad {unidad['codigo']} contiene expedientes de un lote de "
+                    "eliminación vivo.",
+                )
+            raise
         return self._prestamo_response(row)
+
+    async def _rechazar_prestamo(self, unidad, tipo: str, pres, max_clearance: int) -> None:
+        """Traduce el 0-filas del INSERT al error que corresponde. Orden pensado
+        para no ser un oráculo: primero lo de QUIEN PRESTA (si no alcanza el
+        contenido, nada más se le dice); luego quién recibe; luego el estado
+        físico de la unidad."""
+        d = await self._repo.diagnosticar_prestamo(
+            unidad_id=unidad["id"],
+            prestatario_tipo=tipo,
+            prestatario_user_id=getattr(pres, "user_id", None),
+            max_clearance=max_clearance,
+        )
+        codigo = unidad["codigo"]
+        if d["presta_sin_acceso"]:
+            raise _error(
+                status.HTTP_403_FORBIDDEN,
+                "clearance_insuficiente",
+                "La unidad contiene expedientes por encima de su nivel de acceso: "
+                "no puede prestarla.",
+            )
+        if d["prestatario_inexistente"]:
+            raise _error(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "prestatario_inexistente",
+                "El usuario indicado no existe o está inactivo. Use el `id` de "
+                "usuario del sistema (GET .../prestatarios-elegibles), no el de Keycloak.",
+            )
+        if d["prestatario_sin_acceso"]:
+            raise _error(
+                status.HTTP_403_FORBIDDEN,
+                "prestatario_sin_acceso",
+                (
+                    "Quien recibiría la unidad no tiene acceso al contenido de "
+                    f"{codigo}."
+                    if tipo == "interno"
+                    else f"Un tercero externo solo puede recibir unidades con contenido "
+                    f"público; {codigo} contiene expedientes clasificados o reservados."
+                ),
+            )
+        if d["ya_prestada"]:
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "unidad_ya_prestada",
+                f"La unidad {codigo} (o una contigua de su árbol) ya está prestada.",
+            )
+        if d["en_transferencia"]:
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "unidad_en_transferencia",
+                f"La unidad {codigo} contiene expedientes con una transferencia "
+                "preparada o enviada.",
+            )
+        if d["en_lote"]:
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "unidad_en_lote_eliminacion",
+                f"La unidad {codigo} contiene expedientes de un lote de eliminación vivo.",
+            )
+        # El WHERE rechazó y ninguna causa conocida lo explica: fail-closed.
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "prestamo_rechazado",
+            f"No se pudo prestar la unidad {codigo}; reintente.",
+        )
 
     async def devolver_prestamo(
         self,
@@ -448,10 +599,16 @@ class FisicoService:
         existing = await self._repo.get_prestamo(prestamo_id)
         if existing is None:
             raise _not_found(f"Préstamo {prestamo_id} no encontrado")
+        if actor is None:
+            raise _error(
+                status.HTTP_403_FORBIDDEN,
+                "forbidden",
+                "No se puede registrar la devolución sin identificar a quien la recibe.",
+            )
         # Ídem `create_prestamo`: cierra la cadena de custodia con la fecha
-        # REAL de devolución (art. 26 Ley 594/2000).
+        # REAL de devolución y QUIÉN la recibió (art. 26 Ley 594/2000).
         async with self._conn.transaction():
-            row = await self._repo.devolver_prestamo(prestamo_id)
+            row = await self._repo.devolver_prestamo(prestamo_id, actor)
             if row is None:
                 raise _conflict("El préstamo ya estaba devuelto")
             await self._repo.insert_movimiento(
@@ -468,10 +625,14 @@ class FisicoService:
                 action="archive.prestamo_devuelto",
                 object_type="prestamo",
                 object_ref=str(prestamo_id),
-                actor=str(actor) if actor else None,
+                actor=str(actor),
                 payload={
                     "unidad_id": str(row["unidad_id"]),
-                    "prestado_a": row["prestado_a"],
+                    "prestatario_tipo": row["prestatario_tipo"],
+                    "prestatario_user_id": (
+                        str(row["prestatario_user_id"]) if row["prestatario_user_id"] else None
+                    ),
+                    "devuelto_recibido_por": str(actor),
                     "fecha_devolucion_esperada": row["fecha_devolucion_esperada"].isoformat(),
                     "fecha_devolucion_real": (
                         row["fecha_devolucion_real"].isoformat()
@@ -482,6 +643,25 @@ class FisicoService:
                 canal=audit.CANAL_PETICION,
             )
         return self._prestamo_response(row)
+
+    async def list_prestatarios_elegibles(
+        self,
+        unidad_id: uuid.UUID,
+        *,
+        q: str | None,
+        page: int,
+        size: int,
+        actor: uuid.UUID | None,
+    ) -> tuple[list[PrestatarioElegible], int]:
+        """Usuarios a quienes SE PUEDE prestar la unidad (clearance cubre el árbol).
+        Vacío si quien consulta no alcanza el contenido: no es un oráculo."""
+        if await self._repo.get_unidad(unidad_id) is None:
+            raise _not_found(f"Unidad {unidad_id} no encontrada")
+        max_clearance = await self._archive.caller_clearance(actor)
+        rows, total = await self._repo.list_prestatarios_elegibles(
+            unidad_id=unidad_id, max_clearance=max_clearance, q=q, page=page, size=size
+        )
+        return [PrestatarioElegible(user_id=r["user_id"], username=r["username"]) for r in rows], total
 
     async def list_prestamos(
         self,

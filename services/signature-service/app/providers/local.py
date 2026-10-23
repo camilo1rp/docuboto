@@ -137,7 +137,7 @@ import hashlib
 import uuid
 from base64 import b64decode, b64encode
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from cryptography import x509
@@ -148,6 +148,7 @@ from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
 
+from app.core import algoritmos as catalogo
 from app.core import ocsp, tsa
 from app.core.config import settings
 from app.core.keys import cert_fingerprint
@@ -299,6 +300,11 @@ class VerifyOutcome:
     # — ver verify_xades.
     ocsp_present: bool = False
     ocsp_cert_status: str | None = None
+    # Un elemento por ``ArchiveTimeStamp`` validado (C-6): ``ordinal``, ``gen_time``, ``tsa_fingerprint``,
+    # ``vence_at`` (lo primero que caduque de la TSA y su CA), ``revocacion`` (``crl|ocsp|autofirmada``,
+    # la que respalda al certificado de ESA TSA en el ``TimeStampValidationData`` del sello que le
+    # sigue; ``None`` en el último) y ``valido``. Sin datos del documento.
+    archive_timestamps: list[dict[str, object]] = field(default_factory=list)
 
 
 def _c14n_element(el: etree._Element) -> bytes:
@@ -532,22 +538,29 @@ def _insert_certificate_values(unsigned_sig_props: etree._Element, *certs_der: b
         encapsulated_cert.text = b64encode(ca_cert_der).decode("ascii")
 
 
-def _insert_revocation_values(unsigned_sig_props: etree._Element, crl_der: bytes) -> etree._Element:
-    """Incrusta ``xades:RevocationValues/xades:CRLValues`` (XAdES-LT, Pieza 4).
+def _insert_revocation_values(
+    unsigned_sig_props: etree._Element, crl_der: bytes | None = None, ocsp_der: bytes | None = None
+) -> etree._Element:
+    """Incrusta ``xades:RevocationValues`` con ``xades:CRLValues`` y/o ``xades:OCSPValues``.
 
-    Una única CRL de la CA local de desarrollo (``crl.der``, DER en base64).
+    XAdES-LT del sello: una única CRL de la CA local de desarrollo (``crl.der``, DER en base64), con la
+    OCSP stapled como ADITIVA después (:func:`_insert_ocsp_values`). ``TimeStampValidationData`` de una
+    renovación (C-6): la CRL **o** la respuesta OCSP de la CA de la TSA del sello anterior —el esquema
+    XAdES 1.3.2 admite ambas, las dos son opcionales— según la que haya dado esa CA.
 
-    Devuelve el elemento ``xades:RevocationValues`` recién creado — el gate
-    OCSP (``settings.signer_ocsp_enabled``, ver :func:`_insert_ocsp_values`)
-    lo reutiliza para añadir ``xades:OCSPValues`` como HIJO del MISMO
+    Devuelve el elemento ``xades:RevocationValues`` recién creado — el gate OCSP del sello
+    (``settings.signer_ocsp_enabled``) lo reutiliza para añadir ``xades:OCSPValues`` como HIJO del MISMO
     ``RevocationValues`` (nunca uno separado), DESPUÉS de ``CRLValues``.
     """
     revocation_values = etree.SubElement(
         unsigned_sig_props, f"{{{_XADES_NS_URI}}}RevocationValues"
     )
-    crl_values = etree.SubElement(revocation_values, f"{{{_XADES_NS_URI}}}CRLValues")
-    encapsulated_crl = etree.SubElement(crl_values, f"{{{_XADES_NS_URI}}}EncapsulatedCRLValue")
-    encapsulated_crl.text = b64encode(crl_der).decode("ascii")
+    if crl_der is not None:
+        crl_values = etree.SubElement(revocation_values, f"{{{_XADES_NS_URI}}}CRLValues")
+        encapsulated_crl = etree.SubElement(crl_values, f"{{{_XADES_NS_URI}}}EncapsulatedCRLValue")
+        encapsulated_crl.text = b64encode(crl_der).decode("ascii")
+    if ocsp_der is not None:
+        _insert_ocsp_values(revocation_values, ocsp_der)
     return revocation_values
 
 
@@ -734,6 +747,20 @@ class ArchiveRenewal:
     tsa_cert_not_after: datetime
     # Ordinal del sello nuevo (0 = el de la firma original).
     ordinal: int
+    # Fin de vigencia de la CA por encima de esa TSA (``None`` = autofirmada o CA no localizada). Lo que
+    # vence antes manda: ver :attr:`vence_at` (C-6, H7).
+    tsa_cadena_not_after: datetime | None = None
+    # Revocación que ANUNCIA el certificado de la TSA nueva (``tsa_revocacion_fuente``) y la que
+    # realmente respaldó al sello ANTERIOR en el ``TimeStampValidationData`` (``crl|ocsp|autofirmada``).
+    tsa_revocacion_fuente: str = tsa.FUENTE_NINGUNA
+    revocacion_tsa_previa: str = tsa.FUENTE_AUTOFIRMADA
+
+    @property
+    def vence_at(self) -> datetime:
+        """Cuándo hay que haber renovado de nuevo: el primero que caduque de la TSA y su CA."""
+        if self.tsa_cadena_not_after is None:
+            return self.tsa_cert_not_after
+        return min(self.tsa_cert_not_after, self.tsa_cadena_not_after)
 
 
 def renovar_archive_timestamp(signed_xml: bytes) -> ArchiveRenewal:
@@ -742,7 +769,8 @@ def renovar_archive_timestamp(signed_xml: bytes) -> ArchiveRenewal:
 
     Detrás del último ATS inserta un ``xadesv141:TimeStampValidationData`` con el certificado de
     la TSA del sello anterior (para que éste siga siendo verificable cuando su TSA ya no
-    responda) y, a continuación, el ``ArchiveTimeStamp`` nuevo, cuya entrada incluye TODO lo
+    responda) y la revocación de ese certificado (CRL u OCSP de su CA; la TSA autofirmada no tiene)
+    y, a continuación, el ``ArchiveTimeStamp`` nuevo, cuya entrada incluye TODO lo
     anterior (los ATS y TSVD previos) además de las referencias, ``SignedInfo``,
     ``SignatureValue`` y ``KeyInfo``. NO verifica nada: el llamante verifica antes de renovar
     (renovar sellaría algo inválido).
@@ -750,6 +778,8 @@ def renovar_archive_timestamp(signed_xml: bytes) -> ArchiveRenewal:
     Raises:
         ValueError: la firma no lleva ``ArchiveTimeStamp`` (no es LTA) o está incompleta.
         app.core.tsa.TsaUnavailableError: ninguna TSA pudo sellar.
+        app.core.tsa.RevocacionTsaNoDisponibleError: sin CRL ni OCSP utilizables para la TSA anterior.
+        app.core.tsa.TsaRevocadaError: la TSA anterior se revocó antes de sellar.
     """
     root = _parse_no_doctype(signed_xml)
     usp = root.find(
@@ -769,14 +799,23 @@ def renovar_archive_timestamp(signed_xml: bytes) -> ArchiveRenewal:
     # EN 319 132-1 §5.5.1: el TSVD lleva los datos de validación del sello anterior —certificados
     # Y revocación—. Se resuelve ANTES de tocar el árbol: si no se puede, no se renueva.
     cert_tsa_previo = tsa.certificado_tsa_de_token(token_previo)
-    crl_tsa = tsa.revocacion_de_tsa(cert_tsa_previo, certs_tsa) if cert_tsa_previo is not None else None
+    revocacion: tsa.RevocacionTsa | None = None
+    if cert_tsa_previo is not None:
+        # La evidencia tiene que ser POSTERIOR al sello cuyo certificado cubre (a segundos: genTime
+        # y thisUpdate de una CRL son de resolución de segundo).
+        gen_previo = tsa.gen_time_de_token(token_previo).replace(microsecond=0)
+        revocacion = tsa.revocacion_de_tsa(cert_tsa_previo, certs_tsa, no_anterior_a=gen_previo)
 
     tsvd = etree.SubElement(usp, f"{{{_XADESV141_NS_URI}}}TimeStampValidationData")
     tsvd.set("Id", f"SignXMLTsvd{uuid.uuid4().hex[:8].upper()}")
-    if certs_tsa:
-        _insert_certificate_values(tsvd, *[c.public_bytes(serialization.Encoding.DER) for c in certs_tsa])
-    if crl_tsa is not None:
-        _insert_revocation_values(tsvd, crl_tsa)
+    certs_tsvd = list(certs_tsa)
+    if revocacion is not None:
+        presentes = {c.fingerprint(hashes.SHA256()) for c in certs_tsvd}
+        certs_tsvd += [c for c in revocacion.cadena if c.fingerprint(hashes.SHA256()) not in presentes]
+    if certs_tsvd:
+        _insert_certificate_values(tsvd, *[c.public_bytes(serialization.Encoding.DER) for c in certs_tsvd])
+    if revocacion is not None and (revocacion.crl_der is not None or revocacion.ocsp_der is not None):
+        _insert_revocation_values(tsvd, revocacion.crl_der, revocacion.ocsp_der)
     token = _insert_archive_timestamp(root, usp)
     tsa_cert = tsa.certificado_tsa_de_token(token.token_der)
     if tsa_cert is None:
@@ -786,6 +825,9 @@ def renovar_archive_timestamp(signed_xml: bytes) -> ArchiveRenewal:
         token=token,
         tsa_cert_not_after=tsa_cert.not_valid_after_utc,
         ordinal=len(anteriores),
+        tsa_cadena_not_after=tsa.cadena_not_after(tsa_cert, tsa.certificados_de_token(token.token_der)),
+        tsa_revocacion_fuente=tsa.fuente_revocacion_de(tsa_cert),
+        revocacion_tsa_previa=revocacion.fuente if revocacion is not None else tsa.FUENTE_AUTOFIRMADA,
     )
 
 
@@ -1121,6 +1163,134 @@ class LocalSigner:
         )
 
 
+@dataclass(slots=True)
+class _TsvdOutcome:
+    """Veredicto sobre el ``TimeStampValidationData`` que respalda al ``ArchiveTimeStamp`` ANTERIOR."""
+
+    valido: bool
+    motivo: str | None = None
+    revocacion: str | None = None  # crl | ocsp | autofirmada
+    advertencias: list[str] = field(default_factory=list)
+    ca_not_after: datetime | None = None
+    algoritmos: tuple[str, ...] = ()
+
+
+def _seg(instante: datetime) -> datetime:
+    """A segundos: ``genTime``, ``thisUpdate`` y ``producedAt`` son de resolución de segundo."""
+    return instante.replace(microsecond=0)
+
+
+def _evaluar_tsvd(
+    tsvd: etree._Element,
+    *,
+    cert_tsa: x509.Certificate,
+    gen_previo: datetime,
+    gen_siguiente: datetime,
+    i: int,
+) -> _TsvdOutcome:
+    """Evalúa el ``xadesv141:TimeStampValidationData`` ``i`` (entre el ATS ``i-1`` y el ``i``), EN 319 132-1
+    §5.5.1 (C-6): lo que permite validar el sello ``i-1`` aunque su TSA ya no responda.
+
+      1. Trae el certificado de la TSA que firmó el ATS ``i-1`` (por huella) y, si no es autofirmado,
+         el de su CA emisora (que lo firmó de verdad: ``verify_directly_issued_by``).
+      2. Revocación de ese certificado, posterior al sello que cubre y anterior al que lo cubre a su
+         vez (``gen_previo <= thisUpdate/producedAt <= gen_siguiente``): una CRL de la CA —firma
+         verificada— o una respuesta OCSP (:func:`app.core.ocsp.verify_ocsp_tsa`, modo archivado).
+         Revocado ANTES del sello ⇒ el sello nunca valió (``tsvd_tsa_revocada``); revocado DESPUÉS ⇒ vale,
+         con aviso. Sin revocación y sin ser autofirmado ⇒ ``tsvd_sin_revocacion`` (fail-closed).
+      3. TSA autofirmada: es su propia ancla (la huella ya está anclada en el pin del sello); válido con
+         el aviso ``tsvd_tsa_autofirmada_sin_revocacion`` —limitación declarada, ADR-034 §5.
+
+    Los algoritmos de la evidencia se devuelven para que el llamante los juzgue en la fecha que toca."""
+    nombre = f"[{i}]"
+    certs = [
+        x509.load_der_x509_certificate(b64decode((e.text or "").strip()))
+        for e in tsvd.findall(
+            "xades:CertificateValues/xades:EncapsulatedX509Certificate", namespaces=_XADES_NS
+        )
+    ]
+    huella = cert_tsa.fingerprint(hashes.SHA256()).hex()
+    if not any(c.fingerprint(hashes.SHA256()).hex() == huella for c in certs):
+        return _TsvdOutcome(False, f"tsvd_sin_certificado_tsa{nombre}")
+    if cert_tsa.issuer == cert_tsa.subject:
+        return _TsvdOutcome(
+            True, revocacion=tsa.FUENTE_AUTOFIRMADA,
+            advertencias=[f"tsvd_tsa_autofirmada_sin_revocacion{nombre}"],
+        )
+
+    emisor: x509.Certificate | None = None
+    for c in certs:
+        if c.subject == cert_tsa.issuer:
+            try:
+                cert_tsa.verify_directly_issued_by(c)
+            except Exception:  # noqa: BLE001 — otra CA con el mismo nombre: no es el emisor
+                continue
+            emisor = c
+            break
+    if emisor is None:
+        return _TsvdOutcome(False, f"tsvd_sin_certificado_tsa{nombre}: falta su CA emisora")
+    ca_na = tsa.cadena_not_after(cert_tsa, certs)
+    algs: list[str] = []
+    if cert_tsa.signature_hash_algorithm is not None:
+        algs.append(cert_tsa.signature_hash_algorithm.name)
+    algs.append(catalogo.identificador_de_clave(emisor.public_key()))
+
+    avisos: list[str] = []
+    fuentes: list[str] = []
+    descartes: list[str] = []
+    gen_lo, gen_hi = _seg(gen_previo), gen_siguiente
+
+    for e in tsvd.findall(
+        "xades:RevocationValues/xades:CRLValues/xades:EncapsulatedCRLValue", namespaces=_XADES_NS
+    ):
+        try:
+            crl = x509.load_der_x509_crl(b64decode((e.text or "").strip()))
+            if crl.issuer != cert_tsa.issuer:
+                raise ValueError("crl_de_otro_emisor")
+            if not crl.is_signature_valid(emisor.public_key()):  # type: ignore[arg-type]
+                raise ValueError("crl_firma_invalida")
+            if not (gen_lo <= _seg(crl.last_update_utc) and crl.last_update_utc <= gen_hi):
+                raise ValueError("crl_fuera_de_la_ventana_entre_sellos")
+        except Exception as exc:  # noqa: BLE001 — una CRL que no sirve no cuenta; se dice por qué
+            descartes.append(str(exc))
+            continue
+        if crl.signature_hash_algorithm is not None:
+            algs.append(crl.signature_hash_algorithm.name)
+        entrada = crl.get_revoked_certificate_by_serial_number(cert_tsa.serial_number)
+        if entrada is not None:
+            if entrada.revocation_date_utc <= gen_lo:
+                return _TsvdOutcome(False, f"tsvd_tsa_revocada{nombre}")
+            avisos.append(f"tsa_revocada_despues_del_sello{nombre}")
+        fuentes.append(tsa.FUENTE_CRL)
+
+    for e in tsvd.findall(
+        "xades:RevocationValues/xades:OCSPValues/xades:EncapsulatedOCSPValue", namespaces=_XADES_NS
+    ):
+        try:
+            der = b64decode((e.text or "").strip())
+        except Exception as exc:  # noqa: BLE001
+            descartes.append(f"ocsp_ilegible: {exc}")
+            continue
+        res = ocsp.verify_ocsp_tsa(der, cert_tsa, emisor, ventana=(gen_lo, gen_hi))
+        if not res.valido:
+            descartes.append(res.motivo or "ocsp_invalida")
+            continue
+        algs.extend(res.algoritmos)
+        if res.estado == "revoked":
+            if res.revocation_time is None or res.revocation_time <= gen_lo:
+                return _TsvdOutcome(False, f"tsvd_tsa_revocada{nombre}")
+            avisos.append(f"tsa_revocada_despues_del_sello{nombre}")
+        fuentes.append(tsa.FUENTE_OCSP)
+
+    if not fuentes:
+        detalle = f": {descartes[0]}" if descartes else ""
+        return _TsvdOutcome(False, f"tsvd_sin_revocacion{nombre}{detalle}")
+    return _TsvdOutcome(
+        True, revocacion=tsa.FUENTE_CRL if tsa.FUENTE_CRL in fuentes else tsa.FUENTE_OCSP,
+        advertencias=avisos, ca_not_after=ca_na, algoritmos=tuple(algs),
+    )
+
+
 def verify_xades(
     signed_xml: bytes,
     expected_fingerprint: str,
@@ -1141,8 +1311,15 @@ def verify_xades(
     en ``tsa.verify_timestamp_token``—, y la respuesta lo avisa en ``advertencias``. Sin un
     LTA válido (B, T, LT, o un ``ArchiveTimeStamp`` que no valida) se mantiene
     ``certificado_fuera_de_vigencia``. ``_vigencia_diferida`` es el modo interno de esa
-    segunda pasada; los llamadores no lo usan. NO hay renovación del ``ArchiveTimeStamp``:
-    la prueba descansa en el primero (deuda declarada).
+    segunda pasada; los llamadores no lo usan.
+
+    CADENA DE ``ArchiveTimeStamp`` (B10 §8, C-6). Cada sello se valida sobre sus hermanos previos y,
+    desde el segundo, el ``xadesv141:TimeStampValidationData`` que lo antecede se EVALÚA
+    (:func:`_evaluar_tsvd`): certificado de la TSA anterior y de su CA, y su revocación (CRL u OCSP)
+    emitida entre los dos sellos; una TSA revocada antes de sellar, o sin revocación alguna salvo la
+    autofirmada declarada, invalida la cadena. Los algoritmos de cada sello y de su evidencia se
+    juzgan contra el catálogo (:mod:`app.core.algoritmos`) en el instante del sello SIGUIENTE, y los
+    del último, hoy. La vigencia de cada eslabón es lo primero que caduque de la TSA y su CA.
 
     ``advertencias``: lista del LLAMADOR a la que se añaden los avisos de una
     verificación que sigue siendo válida (hoy: sello de tiempo sin ESSCertID
@@ -1551,12 +1728,24 @@ def verify_xades(
         "/xadesv141:ArchiveTimeStamp",
         namespaces=_LT_NS,
     )
+    usp_el = (
+        root.find(
+            ".//xades:UnsignedProperties/xades:UnsignedSignatureProperties", namespaces=_XADES_NS
+        )
+        if archive_els
+        else None
+    )
     archive_timestamp_present = False
     archive_count = 0
     archive_ultimo_at: datetime | None = None
+    archive_infos: list[dict[str, object]] = []
     prev_at: datetime | None = None
     prev_not_after: datetime | None = None
-    if archive_els:
+    prev_token_der: bytes | None = None
+    prev_cert_tsa: x509.Certificate | None = None
+    prev_algoritmos: tuple[str, ...] = ()
+    if archive_els and usp_el is not None:
+        hijos = list(usp_el)
         for i, ats_el in enumerate(archive_els):
             enc = ats_el.find("xades:EncapsulatedTimeStamp", namespaces=_XADES_NS)
             if enc is None or not (enc.text or "").strip():
@@ -1572,16 +1761,18 @@ def verify_xades(
                     root, archive_metodo.get("Algorithm", ""), objetivo=ats_el
                 )
                 # El pin de esta pieza: el de la firma para el primero; para los renovados, el
-                # de la firma o uno registrado al renovar.
+                # de la firma o uno registrado al renovar. Se identifica por el certificado que
+                # FIRMÓ el token (su `sid`), no por el primero de un SET OF (C-6, H6).
                 pin = expected_tsa_fingerprint
+                cert_tsa_i: x509.Certificate | None = None
                 if i > 0:
-                    huella_token = tsa.certificados_de_token(archive_token_der)[0].fingerprint(
-                        hashes.SHA256()
-                    ).hex()
+                    cert_tsa_i = tsa.certificado_tsa_de_token(archive_token_der)
+                    if cert_tsa_i is None:
+                        raise ValueError("token_sin_certificado_tsa")
+                    pin = cert_tsa_i.fingerprint(hashes.SHA256()).hex()
                     permitidas = {expected_tsa_fingerprint, *tsa_fingerprints_archivo} - {None}
-                    if huella_token not in permitidas:
+                    if pin not in permitidas:
                         return VerifyOutcome(False, f"archive_timestamp_tsa_no_anclada[{i}]")
-                    pin = huella_token
             except Exception as exc:  # noqa: BLE001 — fail-closed
                 return VerifyOutcome(False, f"archive_timestamp_ilegible: {exc}")
 
@@ -1598,23 +1789,87 @@ def verify_xades(
                 and archive_outcome.gen_time < prev_at
             ):
                 return VerifyOutcome(False, f"archive_timestamp_cadena_desordenada[{i}]")
+            if cert_tsa_i is None:  # el token ya validó: su certificado firmante existe
+                cert_tsa_i = tsa.certificado_tsa_de_token(archive_token_der)
+                if cert_tsa_i is None:  # pragma: no cover — verify_timestamp_token lo exige
+                    return VerifyOutcome(False, f"archive_timestamp_ilegible: token_sin_certificado_tsa[{i}]")
+            huella_token = cert_tsa_i.fingerprint(hashes.SHA256()).hex()
+
+            if i > 0 and prev_cert_tsa is not None and prev_token_der is not None:
+                # El `TimeStampValidationData` que respalda al sello ANTERIOR: uno solo, entre los dos.
+                ia, ib = hijos.index(archive_els[i - 1]), hijos.index(ats_el)
+                tsvds = [
+                    h for h in hijos[ia + 1 : ib]
+                    if h.tag == f"{{{_XADESV141_NS_URI}}}TimeStampValidationData"
+                ]
+                if not tsvds:
+                    return VerifyOutcome(False, f"tsvd_ausente[{i}]")
+                if len(tsvds) > 1:
+                    return VerifyOutcome(False, f"tsvd_multiple[{i}]")
+                assert prev_at is not None and archive_outcome.gen_time is not None
+                try:
+                    tsvd_res = _evaluar_tsvd(
+                        tsvds[0], cert_tsa=prev_cert_tsa, gen_previo=prev_at,
+                        gen_siguiente=archive_outcome.gen_time, i=i,
+                    )
+                except Exception as exc:  # noqa: BLE001 — TSVD ilegible: fail-closed
+                    return VerifyOutcome(False, f"tsvd_ilegible[{i}]: {exc}")
+                if not tsvd_res.valido:
+                    return VerifyOutcome(False, tsvd_res.motivo)
+                # Regla temporal (EN 319 102-1 §5.6.2.5): los algoritmos del sello anterior y de su
+                # evidencia tienen que ser vigentes cuando el sello SIGUIENTE los cubrió.
+                fuera = catalogo.no_vigentes(
+                    [*prev_algoritmos, *tsvd_res.algoritmos], archive_outcome.gen_time
+                )
+                if fuera:
+                    return VerifyOutcome(False, f"algoritmo_no_vigente[{i - 1}]:{fuera[0]}")
+                if tsvd_res.ca_not_after is not None:
+                    prev_not_after = (
+                        tsvd_res.ca_not_after if prev_not_after is None
+                        else min(prev_not_after, tsvd_res.ca_not_after)
+                    )
+                archive_infos[-1]["revocacion"] = tsvd_res.revocacion
+                if advertencias is not None:
+                    advertencias.extend(a for a in tsvd_res.advertencias if a not in advertencias)
+
             if (
                 prev_not_after is not None
                 and archive_outcome.gen_time is not None
                 and archive_outcome.gen_time > prev_not_after
             ):
-                # El sello anterior se renovó cuando el certificado de SU TSA ya había caducado:
-                # entre medias no hubo prueba vigente.
+                # El sello anterior se renovó cuando el certificado de SU TSA (o el de su CA) ya
+                # había caducado: entre medias no hubo prueba vigente.
                 return VerifyOutcome(False, f"archive_timestamp_cadena_rota[{i}]")
+
+            # Vence lo primero que caduque: el certificado de la TSA o el de su CA (C-6, H7).
+            ca_na_token = tsa.cadena_not_after(cert_tsa_i, tsa.certificados_de_token(archive_token_der))
+            vence = archive_outcome.tsa_cert_not_after
+            if vence is not None and ca_na_token is not None:
+                vence = min(vence, ca_na_token)
             prev_at = archive_outcome.gen_time
-            prev_not_after = archive_outcome.tsa_cert_not_after
+            prev_not_after = vence
+            prev_token_der = archive_token_der
+            prev_cert_tsa = cert_tsa_i
+            prev_algoritmos = archive_outcome.algoritmos
             archive_ultimo_at = archive_outcome.gen_time
             archive_count += 1
             archive_timestamp_present = True
+            archive_infos.append({
+                "ordinal": i,
+                "gen_time": archive_outcome.gen_time,
+                "tsa_fingerprint": huella_token,
+                "vence_at": vence,
+                "revocacion": None,
+                "valido": True,
+            })
             if advertencias is not None:
                 advertencias.extend(a for a in archive_outcome.advertencias if a not in advertencias)
         if archive_timestamp_present:
             xades_level = SignatureFormat.XADES_LTA.value
+            # El ÚLTIMO sello se juzga HOY: sin uno posterior, sus algoritmos tienen que seguir vigentes.
+            fuera = catalogo.no_vigentes(prev_algoritmos, now)
+            if fuera:
+                return VerifyOutcome(False, f"algoritmo_no_vigente[{archive_count - 1}]:{fuera[0]}")
 
     lta_vigente: bool | None = None
     if archive_timestamp_present:
@@ -1644,4 +1899,5 @@ def verify_xades(
         crl_next_update=crl_next_update,
         ocsp_present=ocsp_present,
         ocsp_cert_status=ocsp_cert_status,
+        archive_timestamps=archive_infos,
     )
