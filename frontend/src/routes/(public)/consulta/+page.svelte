@@ -1,5 +1,5 @@
 <!--
-  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Docuboto — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
   Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
   Contacto: aurigadl@gmail.com
 
@@ -68,7 +68,7 @@
 </script>
 
 <svelte:head>
-  <title>Consultar mi trámite — OrpycaMCP</title>
+  <title>Consultar mi trámite — Docuboto</title>
   <meta
     name="description"
     content="Consulte el estado de su trámite con el código de verificación que recibió al radicar."

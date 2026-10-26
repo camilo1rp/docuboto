@@ -1,0 +1,21 @@
+Docuboto
+========
+
+Docuboto is a fork of OrpycaMCP (https://gitlab.com/orpyca/orfeo_mcp),
+itself a modern reimplementation of Orfeo GPL document-management concepts.
+
+Upstream copyright
+------------------
+Copyright (C) 2024-2026 OrpyCA Contributors
+Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+
+This fork
+---------
+Copyright (C) 2026 Docuboto Contributors
+Licensed under the same AGPL-3.0 terms. See LICENSE.
+
+Trademark / naming
+------------------
+"Orpyca", "OrpycaMCP", and related marks belong to their respective owners.
+This project uses the name "Docuboto" for the fork and is not affiliated with
+Orpyca unless explicitly stated.

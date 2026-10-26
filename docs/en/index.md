@@ -1,4 +1,4 @@
-# OrpycaMCP — Free Document Management System
+# Docuboto — Free Document Management System
 
 **OrpycaMCP** is an open-source Document Management System (SGD — *Sistema de Gestión Documental*) for public and private institutions in Latin America, published under the **AGPL v3** license.
 

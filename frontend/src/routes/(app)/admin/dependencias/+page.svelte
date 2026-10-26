@@ -1,5 +1,5 @@
 <!--
-  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Docuboto — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
   Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
   Contacto: aurigadl@gmail.com
 
@@ -304,7 +304,7 @@
 </script>
 
 <svelte:head>
-  <title>Dependencias — OrpycaMCP</title>
+  <title>Dependencias — Docuboto</title>
 </svelte:head>
 
 <div class="dependencias-page">

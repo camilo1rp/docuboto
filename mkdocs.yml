@@ -1,10 +1,10 @@
-site_name: OrpycaMCP
+site_name: Docuboto
 site_description: Sistema de Gestión Documental Libre — Free Document Management System
 # El sitio de Orpyca publica esta documentación bajo /docs: su pipeline clona
 # este repositorio y corre `mkdocs build` en cada despliegue, para no mantener
 # dos copias. Si cambia esta ruta, hay que cambiarla también allá.
-site_url: https://orpyca.com/docs
-repo_url: https://gitlab.com/orpyca/orfeo_mcp
+site_url: https://example.com/docuboto/docs
+repo_url: https://gitlab.com/orpyca/orfeo_mcp  # upstream; Docuboto fork is local
 repo_name: GitLab
 edit_uri: edit/main/docs/
 

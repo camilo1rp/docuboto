@@ -1,9 +1,9 @@
 {
-  "name": "orpyca-frontend",
+  "name": "docuboto-frontend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Frontend de OrpycaMCP — SvelteKit (SSR), cliente del api-gateway. Stack alineado con sgdINTI (ver ADR-011).",
+  "description": "Frontend de Docuboto (fork de OrpycaMCP) — SvelteKit (SSR), cliente del api-gateway. Stack alineado con sgdINTI (ver ADR-011).",
   "license": "AGPL-3.0-or-later",
   "scripts": {
     "dev": "vite dev --host 0.0.0.0 --port 5173",

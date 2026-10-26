@@ -1,4 +1,4 @@
-# OrpycaMCP — Sistema de Gestión Documental Libre
+# Docuboto — Sistema de Gestión Documental Libre
 
 **OrpycaMCP** es un Sistema de Gestión Documental (SGD) de código abierto para instituciones públicas y privadas de América Latina, publicado bajo licencia **AGPL v3**.
 

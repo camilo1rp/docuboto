@@ -1,7 +1,7 @@
 # OrpycaMCP — Docker Compose (Development)
 # Production: see infra/docker-compose.prod.yml
 
-name: orpyca-mcp
+name: docuboto
 
 networks:
   orpycamcp-net:

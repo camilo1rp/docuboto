@@ -1,5 +1,5 @@
 <!--
-  OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+  Docuboto — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
   Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
   Contacto: aurigadl@gmail.com
 
@@ -324,7 +324,7 @@
 </script>
 
 <svelte:head>
-  <title>Radicar un documento — OrpycaMCP</title>
+  <title>Radicar un documento — Docuboto</title>
   <meta
     name="description"
     content="Presente peticiones, quejas, reclamos y demás documentos ante la entidad, sin necesidad de crear una cuenta."

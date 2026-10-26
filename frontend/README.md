@@ -1,4 +1,4 @@
-# Frontend — OrpycaMCP
+# Frontend — Docuboto
 
 > **Estado: E22 ✅ núcleo implementado.** SvelteKit ~completo: login PKCE, 14+ vistas
 > funcionales, Form Builder, asistente conversacional. Las dependencias **no** se

@@ -1,4 +1,4 @@
-// OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+// Docuboto — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
 // Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
 // Contacto: aurigadl@gmail.com
 //
@@ -8,7 +8,7 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * / — Landing pública de OrpycaMCP.
+ * / — Landing pública de Docuboto.
  *
  * `hooks.server.js` puebla `event.locals.user` cuando la cookie de sesión trae
  * un access_token válido (o refrescable). Si ya hay sesión activa, un usuario

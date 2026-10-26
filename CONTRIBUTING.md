@@ -1,4 +1,8 @@
-# Contributing to OrpycaMCP
+# Contributing to Docuboto
+
+Docuboto is a fork of OrpycaMCP. Keep AGPL-3.0 and credit upstream in NOTICE.
+
+# Contributing (upstream notes still apply)
 
 Thank you for considering a contribution to OrpycaMCP! This document outlines our development workflow, code standards, and submission process.
 

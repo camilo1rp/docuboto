@@ -1,4 +1,4 @@
-# Plantilla de servicio — OrpycaMCP
+# Plantilla de servicio — Docuboto
 
 Esqueleto mínimo de un microservicio FastAPI de OrpycaMCP, calcado de los servicios reales (auth, document, archive…). Sirve para crear servicios nuevos de forma **consistente** con las convenciones del proyecto.
 

@@ -1,4 +1,4 @@
-# Plan de pruebas funcionales — OrpycaMCP
+# Plan de pruebas funcionales — Docuboto
 
 > **Spanish only.** This page has no English translation: MkDocs falls back to the
 > Spanish version inside the English site (`fallback_to_default: true`). It is an internal
