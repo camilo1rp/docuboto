@@ -1,0 +1,10 @@
+{
+  "mode": "ask",
+  "status": "answered",
+  "claims": [],
+  "reason": null,
+  "models": [
+    "drafting-large"
+  ],
+  "pipeline_fingerprint": "ask-2026.10.1+aa31c2"
+}

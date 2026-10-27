@@ -1,0 +1,26 @@
+{
+  "ref": "rec.01JB7Q.classify.v1",
+  "kind": "classify",
+  "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+  "record_version": "7",
+  "arguments": {
+    "document_type": "records-request",
+    "alternatives": [
+      {
+        "code": "petition",
+        "confidence": 0.11
+      }
+    ]
+  },
+  "evidence": [],
+  "confidence": 0.86,
+  "models": [
+    "triage-small"
+  ],
+  "pipeline_fingerprint": "triage-2026.10.2+fc91d0",
+  "supersedes": null,
+  "run_ref": null,
+  "rationale": "Pide copia de documentos existentes: solicitud de información.",
+  "created_at": "2026-10-27T14:05:09Z",
+  "expires_at": "2026-11-26T14:05:09Z"
+}

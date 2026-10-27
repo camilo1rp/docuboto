@@ -1,0 +1,7 @@
+{
+  "type": "about:blank",
+  "title": "Level not accepted",
+  "status": 422,
+  "code": "level_not_accepted",
+  "detail": "This provider accepts only: public"
+}

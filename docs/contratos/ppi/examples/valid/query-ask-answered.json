@@ -1,0 +1,27 @@
+{
+  "mode": "ask",
+  "status": "answered",
+  "claims": [
+    {
+      "text": "Pide copia del contrato de obra 045 de 2026 y de sus actas de supervisión.",
+      "citations": [
+        {
+          "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+          "attachment_ref": "6f1d2c3b-8a9e-4f70-b1c2-d3e4f5a6b7c8",
+          "page": 1,
+          "span": {
+            "start": 412,
+            "end": 497
+          },
+          "quote": "solicito copia del contrato de obra 045 de 2026 y de sus actas de supervisión",
+          "source_version": "1"
+        }
+      ]
+    }
+  ],
+  "reason": null,
+  "models": [
+    "drafting-large"
+  ],
+  "pipeline_fingerprint": "ask-2026.10.1+aa31c2"
+}

@@ -1,0 +1,13 @@
+{
+  "no_recommendation": [
+    {
+      "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+      "record_version": "7",
+      "kinds": [
+        "classify",
+        "route"
+      ],
+      "reason": "The record body is empty and it has no readable attachment"
+    }
+  ]
+}

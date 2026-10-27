@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.ppi.example/v1/schemas/common.schema.json",
+  "title": "PPI v1 shared definitions",
+  "description": "Building blocks shared by every PPI v1 schema. The $id is an identifier, not a location: nothing is served from spec.ppi.example (a reserved, non-resolvable domain).",
+  "$defs": {
+    "ExternalRef": {
+      "description": "The host's own identifier for a record, an attachment or a party. Opaque to the provider and stable for the life of the object.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9._:~-]+$"
+    },
+    "Version": {
+      "description": "Opaque host version of an object. It changes whenever the object changes; the same version always means the same content.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "LevelCode": {
+      "description": "A sensitivity level code from the ordered list the host declares in its connection.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"
+    },
+    "VocabularyCode": {
+      "description": "A code from one of the vocabularies the host declares in its connection (for example its document types or its organisational units).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "Sha256": {
+      "description": "Lowercase hexadecimal SHA-256 digest.",
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "SubjectRef": {
+      "description": "Pseudonymous reference to a host user. The host can map it back; the provider cannot. Recorded by the provider in its audit trail.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{8,128}$"
+    },
+    "Span": {
+      "description": "Half-open range [start, end) of Unicode code point offsets into the provider's canonical text of the cited unit (the page when `page` is set, otherwise the whole unit). `end` is greater than `start`.",
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Date": {
+      "type": "string",
+      "format": "date"
+    },
+    "Identifier": {
+      "description": "An identifier of a party under a named scheme (for example a national ID type or a tax number). Schemes are host data, not protocol vocabulary.",
+      "type": "object",
+      "required": ["scheme", "value"],
+      "properties": {
+        "scheme": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "value": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "additionalProperties": false
+    },
+    "Party": {
+      "description": "A person or organisation that appears on a record.",
+      "type": "object",
+      "required": ["role", "name"],
+      "properties": {
+        "role": { "enum": ["sender", "recipient", "author", "mentioned"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "organization": { "type": ["string", "null"], "maxLength": 512 },
+        "host_party_ref": {
+          "oneOf": [{ "$ref": "#/$defs/ExternalRef" }, { "type": "null" }]
+        },
+        "identifiers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Identifier" },
+          "maxItems": 10
+        }
+      },
+      "additionalProperties": false
+    },
+    "VocabularyEntry": {
+      "type": "object",
+      "required": ["code", "label"],
+      "properties": {
+        "code": { "$ref": "#/$defs/VocabularyCode" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

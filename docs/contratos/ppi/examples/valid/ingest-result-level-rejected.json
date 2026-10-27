@@ -1,0 +1,10 @@
+{
+  "results": [
+    {
+      "external_ref": "5d4c3b2a-1f0e-4d9c-8b7a-695847362514",
+      "type": "record",
+      "status": "rejected",
+      "reason": "level_not_accepted"
+    }
+  ]
+}

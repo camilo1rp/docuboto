@@ -1,0 +1,11 @@
+{
+  "mode": "ask",
+  "text": "¿Qué documentos pide el solicitante?",
+  "on_behalf_of": "sub_7Hq2kX9mPz4LwR1v",
+  "clearance": "public",
+  "scope": {
+    "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+    "include_children": true
+  },
+  "language": "es"
+}

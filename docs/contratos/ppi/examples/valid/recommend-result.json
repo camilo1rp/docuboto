@@ -1,0 +1,14 @@
+{
+  "results": [
+    {
+      "ref": "rec.01JB7Q.classify.v1",
+      "status": "stored",
+      "reason": null
+    },
+    {
+      "ref": "rec.01JB7Q.deadline.v1",
+      "status": "duplicate",
+      "reason": null
+    }
+  ]
+}

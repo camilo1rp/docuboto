@@ -1,0 +1,19 @@
+{
+  "decisions": [
+    {
+      "recommendation_ref": "rec.01JB7Q.classify.v1",
+      "decision": "accepted",
+      "decided_at": "2026-10-27T15:12:00Z",
+      "decided_by": "sub_7Hq2kX9mPz4LwR1v",
+      "applied_arguments": {
+        "document_type": "records-request"
+      }
+    },
+    {
+      "recommendation_ref": "rec.01JB7Q.route.v1",
+      "decision": "superseded",
+      "decided_at": "2026-10-27T15:20:00Z",
+      "decided_by": null
+    }
+  ]
+}

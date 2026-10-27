@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.ppi.example/v1/schemas/citation.schema.json",
+  "title": "PPI v1 citation",
+  "description": "Evidence for a claim, a search hit or a recommendation. All five fields are always present: `attachment_ref` is null when the cited text is the rendered record itself, and `page` is null when the cited unit has no pages. A claim that cannot carry at least one citation is not made; the answer is `insufficient_evidence` instead.",
+  "type": "object",
+  "required": ["record_ref", "attachment_ref", "page", "span", "quote"],
+  "properties": {
+    "record_ref": { "$ref": "common.schema.json#/$defs/ExternalRef" },
+    "attachment_ref": {
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/ExternalRef" }, { "type": "null" }]
+    },
+    "page": { "type": ["integer", "null"], "minimum": 1 },
+    "span": { "$ref": "common.schema.json#/$defs/Span" },
+    "quote": {
+      "description": "The exact text at `span`. Hosts show it next to a link to the cited record, attachment and page, after re-checking that the viewer may see them.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "source_version": {
+      "description": "The version of the cited record or attachment the span refers to.",
+      "$ref": "common.schema.json#/$defs/Version"
+    }
+  },
+  "additionalProperties": false
+}

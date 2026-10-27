@@ -1,0 +1,12 @@
+{
+  "results": [
+    {
+      "recommendation_ref": "rec.01JB7Q.classify.v1",
+      "status": "recorded"
+    },
+    {
+      "recommendation_ref": "rec.01JB7Q.route.v1",
+      "status": "duplicate"
+    }
+  ]
+}
