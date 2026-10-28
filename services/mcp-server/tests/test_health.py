@@ -11,8 +11,8 @@
 
 `/health` devolvía `{"status": "ok"}` fijo y era el `healthcheck` del contenedor.
 mcp-server no tiene BD ni Redis: su única dependencia real es que el api-gateway
-conteste. Sin esa comprobación, la fachada MCP y el asistente conversacional se
-reportaban sanos cuando ninguna herramienta podía ejecutarse.
+conteste. Sin esa comprobación, la fachada MCP se reportaba sana cuando ninguna
+herramienta podía ejecutarse.
 """
 
 from __future__ import annotations

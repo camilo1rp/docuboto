@@ -347,9 +347,9 @@ Suscripción por tenant a eventos de dominio: OrpycaMCP entrega el evento a sist
 
 ---
 
-### Asistente y búsqueda semántica (E18/E21, [ADR-037](adr/ADR-037-asistente-activable-por-entidad.md))
+### Capa de conocimiento (E21, [ADR-037](adr/ADR-037-asistente-activable-por-entidad.md), [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md))
 
-El asistente conversacional y la búsqueda semántica sobre la base de conocimiento son una **decisión de la entidad** (atributo `asistente_habilitado` de `public.tenants`; las entidades nuevas nacen apagadas, la cambia su administrador y el cambio queda asentado) y, dentro de ella, un **permiso de la persona**: `PERM_CONOCIMIENTO` (nivel 1 consulta y usa el asistente; nivel 2 acepta una sugerencia propia). Las dos condiciones se suman al clearance (no-read-up), que sigue en la consulta. Apagarlo cierra la consulta, no la indexación (los embeddings son locales y no hay egreso).
+La capa de conocimiento (búsqueda y antecedentes sobre texto completo; generación solo cuando un proveedor PPI exista) es una **decisión de la entidad** (atributo `asistente_habilitado` de `public.tenants`; el nombre es histórico; las entidades nuevas nacen apagadas, la cambia su administrador y el cambio queda asentado) y, dentro de ella, un **permiso de la persona**: `PERM_CONOCIMIENTO` (nivel 1 consulta; nivel 2 aceptaría una sugerencia propia cuando haya generación). Las dos condiciones se suman al clearance (no-read-up), que aplica document-service en la consulta. Apagarlo cierra la consulta; Docuboto no indexa embeddings ni llama a modelos (ADR-046).
 
 ## Reglas de negocio críticas (resumen)
 

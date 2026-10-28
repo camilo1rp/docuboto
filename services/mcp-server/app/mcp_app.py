@@ -92,16 +92,15 @@ def _session() -> dict:
 
 # `_input_schema` se eliminó: declaraba solo los parámetros de RUTA como cadenas
 # y dejaba `additionalProperties: True`, de modo que el cliente MCP veía un
-# contrato distinto —y mucho más laxo— del que veía el modelo del asistente. Los
-# dos consumen ahora `catalog.json_schema`, que es la única declaración.
+# contrato distinto —y mucho más laxo— del que declara el catálogo. Ahora se usa
+# `catalog.json_schema`, que es la única declaración.
 
 
 # La tool genérica de confirmación, para clientes MCP EXTERNOS.
 #
-# El asistente web tiene su tarjeta y su endpoint (`/api/v1/assistant/confirmar`).
-# Un cliente MCP de terceros no tiene ninguno de los dos, así que sin esto vería
-# la propuesta y no tendría manera de llevarla a cabo: el gate habría dejado de
-# ser una confirmación para pasar a ser un muro.
+# Un cliente MCP de terceros no tiene tarjeta ni endpoint de confirmación propios,
+# así que sin esto vería la propuesta y no tendría manera de llevarla a cabo: el
+# gate habría dejado de ser una confirmación para pasar a ser un muro.
 #
 # Va aquí y no en `CATALOG` porque no corresponde a ningún endpoint del gateway:
 # el catálogo declara traducciones tool → API, y esto es protocolo. Meterlo allí

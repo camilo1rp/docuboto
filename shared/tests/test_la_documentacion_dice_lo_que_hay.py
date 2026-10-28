@@ -278,11 +278,6 @@ def test_adr_021_no_dice_que_el_dlq_de_notification_esta_pendiente() -> None:
     assert not _contiene(adr, "notification queda acoplado al Inc. 2")
 
 
-def test_adr_006_no_dice_que_no_hay_barrera_dura() -> None:
-    assert "def is_embeddable" in _leer("services/knowledge-service/app/core/clearance.py")
-    assert not _contiene("docs/es/adr/ADR-006-proveedor-ia-configurable.md", "No hay barrera dura que lo impida")
-
-
 def test_adr_018_no_promete_entregas_registradas_ni_deja_el_ssrf_como_evolutivo() -> None:
     assert "def validate_webhook_target" in _leer(
         "services/notification-service/app/core/webhook_security.py"

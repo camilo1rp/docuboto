@@ -149,8 +149,8 @@ PERMISOS_DEMO = (
     "USUA_PERM_ADMIN",          # dependencias, usuarios, grupos, auditoría
     "PERM_DLQ_ADMIN",           # colas de eventos fallidos
     "SGD_PERM_ESTADISTICA",     # reportes y tablero
-    # Asistente y búsqueda semántica (ADR-037): además exige que la entidad lo active
-    "PERM_CONOCIMIENTO",        # consultar con IA (1) / aceptar una sugerencia (2)
+    # Conocimiento (ADR-037, ADR-046): además exige que la entidad lo active
+    "PERM_CONOCIMIENTO",        # buscar y antecedentes (1) / aceptar una sugerencia (2)
 )
 
 # El clearance NO se hereda de los permisos: es un eje aparte (RF-SEG-08) y su
@@ -775,17 +775,6 @@ async def principal(gateway: str) -> int:
         user_id = await api.autenticar()
         ok(f"autenticado «{USUARIO}» en «{TENANT}» (id {user_id[:8]}…)")
 
-        # Opcional a propósito: el asistente puede no estar desplegado, y eso no
-        # invalida el resto del recorrido. Pero se DICE, en vez de callarlo.
-        marco = await api.get("/api/v1/assistant/alcance", opcional=True)
-        if marco:
-            ok(
-                f"{len(marco.get('puede_hacer', []))} acciones a su alcance, "
-                f"{len(marco.get('puede_consultar', []))} consultas"
-            )
-        else:
-            aviso("el asistente (mcp-server) no responde: el resto del demo sigue igual")
-
         creado = await sembrar(api, user_id)
         resumen(creado)
     return 0
@@ -896,12 +885,15 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
         await api.put(f"/api/v1/config/params/{clave}", json={"value": valor})
     ok(f"política «{POLITICA_DEMO['politica_tratamiento_version']}» publicada (aviso de demostración)")
 
-    # ── Asistente: las entidades nuevas nacen APAGADAS (ADR-037) ──
+    # ── Conocimiento: las entidades nuevas nacen APAGADAS (ADR-037) ──
     # Se enciende por la API, como lo haría su administrador: es el camino de opt-in
-    # que el demo tiene que ejercitar, no un atajo por SQL.
-    paso("Asistente y búsqueda semántica de la entidad demo")
-    await api.put("/api/v1/config/asistente", json={"habilitado": True})
-    ok("asistente activado por la API (PUT /config/asistente)")
+    # que el demo tiene que ejercitar, no un atajo por SQL. Va después de publicar la
+    # política, porque encender exige política publicada y la declaración.
+    paso("Búsqueda y antecedentes de la entidad demo")
+    await api.put(
+        "/api/v1/config/asistente", json={"habilitado": True, "declaracion_transmision": True}
+    )
+    ok("conocimiento activado por la API (PUT /config/asistente)")
 
     # ── URD: quién trabaja DESDE dónde ──
     #

@@ -74,13 +74,13 @@ FLUJOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     # una tool: subir un fichero por un chat exigiría que el modelo aportara los
     # bytes.
     # El proxy comodín del gateway (`/api/v1/{path}` en sus cinco métodos), su
-    # OpenAPI agregado y la superficie del propio mcp-server —`/mcp/*` y
-    # `/assistant/*`— entran aquí. No son capacidades que exponer: el comodín ES
+    # OpenAPI agregado y la superficie del propio mcp-server —`/mcp/*`— entran
+    # aquí. No son capacidades que exponer: el comodín ES
     # la puerta por la que pasan todas las demás, y contarlo como operación
     # pendiente sería contar el pasillo como si fuera una habitación. Aparecieron
     # al quitarle al censo su punto ciego: antes no se veían, y el script las
     # dejaba «SIN CLASIFICAR», que es su forma de pedir una decisión.
-    ("SISTEMA (sellado / no expuesto)", (r"/internal/", r"-internal$", r"^/api/v1/tenants", r"/health", r"^/api/v1/public/", r"^/api/v1/storage/", r"^/api/v1/\{path\}$", r"^/api/v1/openapi\.json$", r"^/api/v1/mcp/", r"^/api/v1/assistant/")),
+    ("SISTEMA (sellado / no expuesto)", (r"/internal/", r"-internal$", r"^/api/v1/tenants", r"/health", r"^/api/v1/public/", r"^/api/v1/storage/", r"^/api/v1/\{path\}$", r"^/api/v1/openapi\.json$", r"^/api/v1/mcp/")),
     ("F1 Ventanilla y radicación", (r"^/api/v1/documents", r"^/api/v1/terceros", r"^/api/v1/anulaciones", r"^/api/v1/desclasificaciones", r"^/api/v1/batch/documents", r"^/api/v1/import", r"^/api/v1/export")),
     ("F2 Trámite y reparto", (r"^/api/v1/workflows", r"^/api/v1/workflow/")),
     ("F3 Respuesta y despacho", (r"^/api/v1/borradores", r"^/api/v1/plantillas", r"^/api/v1/envios", r"^/api/v1/fuid")),
@@ -114,7 +114,7 @@ _PRESERVACION = "services/storage-service/app/routers/preservacion.py"
 # decisión está ESCRITA, y es lo que impide que esta lista sea una opinión más:
 #
 # - `NO_OFRECIDAS: <operación>` — prefijo de una entrada de `NO_OFRECIDAS`
-#   (services/mcp-server/app/services/scope.py), que es lo que el asistente le
+#   (services/mcp-server/app/services/scope.py), que es lo que el catálogo MCP le
 #   dice a la persona. Si la entrada no existe, el guardián lo acusa.
 # - `SELLADA: <fichero>` — rutas de servicio a servicio (`X-Internal-Token`, D-02)
 #   que el gateway no puede abrir a una persona. El guardián exige que TODA ruta
@@ -146,7 +146,7 @@ EXCLUIDAS_A_PROPOSITO: tuple[tuple[str, str, str, str], ...] = (
      "selección (disposición S) de un expediente: acto del Comité, con su fundamento",
      _NO + "Registrar la valoración del Comité"),
     ("POST", rf"^/api/v1/desclasificaciones/{_ID}/aprobar$",
-     "aprobar exige ver el documento y el asistente no lo muestra; rechazar y retirar sí se ofrecen",
+     "aprobar exige ver el documento y el cliente MCP no lo muestra; rechazar y retirar sí se ofrecen",
      _NO + "Aprobar la desclasificación de un radicado"),
     ("POST", r"^/api/v1/preservacion/proteger-(indice|artefacto)$",
      "sellar en WORM exige un file_id que el llamante no puede conocer; no se deshace",
@@ -163,9 +163,6 @@ EXCLUIDAS_A_PROPOSITO: tuple[tuple[str, str, str, str], ...] = (
     ("POST", r"^/api/v1/notifications/send$",
      "lo llama signature-service para el segundo factor; sin el sello cualquier token enviaría correo como la institución",
      _SELLADA + "services/notification-service/app/routers/notifications.py"),
-    ("POST", r"^/api/v1/knowledge/ingest$",
-     "ingesta por eventos entre servicios; no es un acto de persona",
-     _SELLADA + "services/knowledge-service/app/routers/knowledge.py"),
     # --- Firma: segundo factor o documento delante ------------------------------
     ("POST", rf"^/api/v1/signature/requests/{_ID}/(sign|vobo|reject)$",
      "firmar consume un segundo factor; aprobar/rechazar exige haber visto el documento",

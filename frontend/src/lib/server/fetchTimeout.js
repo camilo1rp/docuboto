@@ -38,8 +38,7 @@
  * sería peor que la enfermedad.)
  *
  * **Quien necesita más, lo pide.** Si la llamada trae su propio `signal`, el
- * envoltorio no lo toca. Es la vía para el asistente conversacional, cuyo bucle
- * LLM el gateway acota aparte en 180 s.
+ * envoltorio no lo toca: es la vía para una llamada que necesite un tope distinto.
  */
 
 /** Tiempo por defecto, en milisegundos. Alineado con `proxy_timeout` del gateway. */

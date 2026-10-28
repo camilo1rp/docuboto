@@ -150,11 +150,6 @@ class Settings(BaseSettings):
     # integridad la forja quien tenga solo la contraseña de Redis.
     auth_cache_mac_secret: str = ""
     proxy_timeout: float = 30.0
-    # Timeout largo SOLO para el asistente conversacional (E18): el loop LLM
-    # (varias iteraciones Claude + llamadas a tools vía gateway) supera con
-    # holgura el proxy_timeout global de 30s. No se sube el global para no
-    # relajar el resto de rutas.
-    assistant_proxy_timeout: float = 180.0
     service_port: int = 8080
     log_level: str = "info"
 

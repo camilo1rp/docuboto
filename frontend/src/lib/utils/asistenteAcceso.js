@@ -10,16 +10,17 @@
 import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 /**
- * asistenteAcceso.js — Quién ve el asistente y la búsqueda por conocimiento (C-1, ADR-037).
+ * asistenteAcceso.js — Quién ve la capa de conocimiento (C-1, ADR-037).
  *
  * Dos condiciones, ambas necesarias (la UI espeja al backend, que re-valida):
- *  1. La ENTIDAD activó el asistente (`asistente_habilitado` de `GET /auth/me`; el
- *     backend entrega `false` si no pudo comprobarlo — fail-closed).
+ *  1. La ENTIDAD activó la capa (`asistente_habilitado` de `GET /auth/me`; el
+ *     backend entrega `false` si no pudo comprobarlo — fail-closed). El nombre
+ *     de la bandera se conserva; no hay asistente conversacional (ADR-046 §6).
  *  2. La persona tiene `PERM_CONOCIMIENTO` (nivel 1 consultar, nivel 2 aceptar una
  *     sugerencia).
  *
- * El botón y el dock del asistente (y el dictado) exigen las dos: las cinco rutas
- * `/assistant/*` piden bandera Y `PERM_CONOCIMIENTO` >= 1 (403 `forbidden` sin el permiso).
+ * La búsqueda por conocimiento y «Sugerir con antecedentes» exigen las dos: las rutas
+ * `/knowledge/*` piden bandera Y `PERM_CONOCIMIENTO` >= 1 (403 `forbidden` sin el permiso).
  */
 
 export const PERM_CONOCIMIENTO = "PERM_CONOCIMIENTO";
@@ -63,22 +64,20 @@ export function tabsBusquedaPermitidas(user) {
 }
 
 /**
- * Mensaje legible para los errores de `/knowledge/*` y `/assistant/*`.
+ * Mensaje legible para los errores de `/knowledge/*`.
  * @param {any} data cuerpo de la respuesta (plano o anidado en `detail`)
  * @param {string} porDefecto
- * @param {{permiso?: boolean}} [opciones] `permiso:false` no traduce `forbidden` (en
- *   `/assistant/confirmar` un 403 puede ser OTRO permiso: se deja el texto del backend).
  */
-export function mensajeConocimiento(data, porDefecto, { permiso = true } = {}) {
+export function mensajeConocimiento(data, porDefecto) {
   const codigo = codigoError(data);
   if (codigo === "asistente_deshabilitado") {
-    return "Su entidad no tiene activado el asistente ni la búsqueda semántica. Un administrador puede activarlo en Administración > Parámetros.";
+    return "Su entidad no tiene activada la capa de conocimiento. Un administrador puede activarla en Administración > Parámetros.";
   }
-  if (permiso && codigo === "forbidden") {
+  if (codigo === "forbidden") {
     return "No tiene permiso para usar la base de conocimiento (PERM_CONOCIMIENTO). Solicítelo a un administrador.";
   }
   if (codigo === "asistente_estado_no_disponible") {
-    return "No se pudo comprobar si su entidad tiene activado el asistente. Intente de nuevo en unos minutos.";
+    return "No se pudo comprobar si su entidad tiene activada la capa de conocimiento. Intente de nuevo en unos minutos.";
   }
   return mensajeError(data, porDefecto);
 }

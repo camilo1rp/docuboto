@@ -16,6 +16,8 @@
  *   2. GET /api/v1/plantillas?activo=true — plantillas activas para el selector
  *      del formulario de creación de borrador.
  *   3. GET /api/v1/tipos-documentales?activo=true — catálogo para el modal de radicar.
+ *   4. GET /api/v1/knowledge/availability — si la entidad tiene generación de texto
+ *      (ADR-046 §3); sin ella no se muestra «Sugerir con antecedentes».
  *
  * El cuerpo HTML (campo `cuerpo`) de cada borrador/plantilla se SANEA server-side
  * con `attachSafeCuerpo` antes de entregarse al cliente (D-05, T-12c).
@@ -29,6 +31,7 @@ import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
 import { attachSafeCuerpo } from "$lib/server/sanitizeHtml.js";
 import { mensajeError } from "$lib/utils/apiError.js";
+import { fetchGenerationAvailable } from "$lib/server/knowledgeAvailability.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, url, fetch }) {
@@ -48,6 +51,7 @@ export async function load({ cookies, parent, url, fetch }) {
   const borradoresParams = new URLSearchParams();
   if (estadoFilter) borradoresParams.set("estado", estadoFilter);
 
+  const generacion = fetchGenerationAvailable(fetch, headers, user);
   const [borradoresRes, plantillasRes, dependenciasRes, tiposRes] = await Promise.allSettled([
     fetch(`${API_V1}/borradores?${borradoresParams.toString()}`, { headers }),
     fetch(`${API_V1}/plantillas?activo=true`, { headers }),
@@ -120,6 +124,7 @@ export async function load({ cookies, parent, url, fetch }) {
     plantillas,
     loadError,
     initialEstado: estadoFilter,
+    generationAvailable: await generacion,
     // token y tenant NO se exponen: las llamadas cliente usan /borradores/api/* (D-05)
   };
 }

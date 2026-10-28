@@ -166,13 +166,15 @@ class PurgaService:
     async def _emitir_purgado(
         self, radicado_id: uuid.UUID, tracking_number: str | None, actor: uuid.UUID | None
     ) -> None:
-        """Publica `document.radicado.purged` para que las copias derivadas se
-        purguen (knowledge-service/pgvector, E21).
+        """Publica `document.radicado.purged` por si un consumidor externo
+        (p. ej. un índice de conocimiento fuera de Docuboto) debe purgar copias
+        derivadas. Docuboto ya no indexa embeddings ni consume este evento
+        (ADR-046).
 
         Best-effort y **nunca revierte**: los bytes ya no están. Un fallo aquí
         deja una copia derivada viva, que es un problema real pero menor que
         deshacer una destrucción que ya es irreversible — y converge por
-        reentrega, porque el consumidor es idempotente.
+        reentrega si el consumidor es idempotente.
         """
         if self._redis is None or not tracking_number:
             return

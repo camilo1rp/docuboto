@@ -22,21 +22,10 @@ from orpycamcp_common import secrets as common_secrets
 from app import mcp_app
 from app.core.config import settings
 from app.core.contexto import ContextoEntranteMiddleware
-from app.routers.assistant import router as assistant_router
 from app.routers.health import router as health_router
 from app.routers.mcp import router as mcp_router
-from app.services.stt import build_stt_provider
-
-# Import guardado del SDK de Anthropic (E18): si el paquete falta, el asistente
-# degrada a "no disponible" en vez de tumbar el arranque del mcp-server (que
-# también sirve el catálogo MCP). RF-FIR-15: honestidad, nunca un crash opaco.
-try:  # pragma: no cover - trivial
-    import anthropic
-except ImportError:  # pragma: no cover
-    anthropic = None  # type: ignore[assignment]
 
 logging.basicConfig(level=settings.log_level.upper())
-logger = logging.getLogger(__name__)
 
 # Transporte HTTP streamable del protocolo MCP (clientes remotos). Stateless +
 # JSON response: cada POST es autocontenido, lo que permite propagar el contexto
@@ -91,47 +80,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         base_url=settings.gateway_url, timeout=settings.request_timeout
     )
 
-    # Transcripción de voz (ADR-020). Se construye UNA vez: el proveedor no
-    # tiene estado que dependa de la petición, y resolverlo en cada llamada
-    # escondería un error de configuración hasta el momento de dictar.
-    app.state.stt_provider = build_stt_provider(
-        settings.stt_provider,
-        whisper_url=settings.whisper_url,
-        timeout=settings.stt_timeout,
-        whisper_token=settings.whisper_internal_token,
-    )
-    if settings.stt_provider.strip().lower() != "whisper":
-        logger.info(
-            "Transcripción de voz DESHABILITADA (STT_PROVIDER=%s): "
-            "POST /api/v1/assistant/transcribe responderá 503. No hay modo de "
-            "prueba que aproxime lo que se dijo.",
-            settings.stt_provider,
-        )
-
-    # Asistente conversacional (E18/ADR-019). Historial efímero por proceso
-    # (límite declarado: no multi-réplica; migración a Redis diferida).
-    app.state.conversations = {}
-    if anthropic is not None and settings.anthropic_api_key:
-        # Claude API DIRECTO (no vía gateway). El token del USUARIO no se usa
-        # aquí: cada tool lo re-propaga al gateway vía el dispatcher.
-        app.state.anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-        app.state.assistant_available = True
-    else:
-        # Degradación honesta (RF-FIR-15): el endpoint responderá 503
-        # assistant_unavailable; nunca finge ni crashea.
-        app.state.anthropic_client = None
-        app.state.assistant_available = False
-        logger.info(
-            "Asistente E18 DESHABILITADO (sin ANTHROPIC_API_KEY o SDK ausente): "
-            "POST /api/v1/assistant/message responderá 503 assistant_unavailable."
-        )
-
     async with _session_manager.run():  # ciclo de vida del transporte MCP HTTP
         yield
 
-    if app.state.anthropic_client is not None:
-        with contextlib.suppress(Exception):
-            await app.state.anthropic_client.close()
     await app.state.gateway_client.aclose()
 
 
@@ -155,16 +106,15 @@ app.add_middleware(ContextoEntranteMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="mcp-server")
 
 app.include_router(mcp_router)  # API HTTP simple del catálogo (/api/v1/mcp/...)
-app.include_router(assistant_router)  # asistente conversacional (E18, /api/v1/assistant/...)
 app.include_router(health_router)
 # Protocolo MCP streamable (clientes remotos), montado en DOS rutas:
 #
 # - `/mcp` — acceso directo al servicio dentro de la red Docker (compatibilidad
 #   con lo que ya existía y con el despliegue local por stdio/túnel).
 # - `/api/v1/mcp/stream` — la MISMA aplicación bajo el prefijo que el gateway sí
-#   enruta. Es lo que permite cumplir «un solo catálogo y un solo gate para el
-#   asistente integrado y para clientes MCP externos» sin abrirle al proxy una
-#   forma de ruta distinta de `/api/v1/...`: el cliente externo apunta aquí con
+#   enruta. Es lo que permite que los clientes MCP externos usen el mismo catálogo
+#   y el mismo gate sin abrirle al proxy una forma de ruta distinta de
+#   `/api/v1/...`: el cliente externo apunta aquí con
 #   su bearer y hereda la validación JWT y la inyección de cabeceras del gateway,
 #   en vez de hablar con el servicio a sus espaldas.
 #

@@ -9,13 +9,11 @@
 
 """Todo esquema que lleve contenido de un radicado declara su `nivel_seguridad`.
 
-La barrera de residencia del asistente (`mcp-server/app/services/assistant.py`,
-`_recortar_por_residencia`) recorta el contenido de un objeto SOLO si el propio
-objeto trae `nivel_seguridad >= 2`. Es la decisión correcta (no se recorta lo
-que no es documento), pero deja el control en manos del PRODUCTOR: un esquema
-que lleva `subject` y no declara el nivel saca el asunto de un radicado
-RESERVADO al proveedor externo sin que nada lo note (ADR-006, «sin excepciones»).
-Pasó con `RespuestaItem` y con `RadicadoDeTercero` (AREA-11-X1/X2).
+Los clientes externos (MCP u otro canal) solo pueden respetar el no-read-up si el
+productor declara el nivel junto al contenido. Un esquema que lleva `subject` y
+no declara el nivel saca el asunto de un radicado RESERVADO sin que el consumidor
+pueda filtrarlo (ADR-006, «sin excepciones»). Pasó con `RespuestaItem` y con
+`RadicadoDeTercero` (AREA-11-X1/X2).
 
 **Qué vigila.** El censo se DERIVA de `services/*/app/schemas/*.py` con `ast`:
 toda clase con un campo `subject`, `observations` o `asunto` debe tener también

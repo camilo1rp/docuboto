@@ -27,7 +27,7 @@
  *
  * Uso:
  *
- *   docker compose --profile dev --profile assistant up -d
+ *   docker compose --profile dev up -d
  *   E2E_USERNAME=jefe E2E_PASSWORD='...' \
  *     npx playwright test --config=playwright.authenticated.config.js
  *

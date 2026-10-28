@@ -42,7 +42,6 @@ ADMITIDOS = {
     "workflow-service": {"dlq"},
     "signature-service": {"dlq"},
     "notification-service": {"dlq"},
-    "knowledge-service": {"dlq"},
 }
 
 
@@ -52,7 +51,7 @@ def _con_metrics() -> dict[str, Path]:
 
 def test_el_conjunto_de_servicios_con_metrics_es_el_admitido() -> None:
     encontrados = _con_metrics()
-    assert len(encontrados) >= 6, "censo de metrics.py vacío: guardián ciego"  # anti-vacuidad
+    assert len(encontrados) >= 5, "censo de metrics.py vacío: guardián ciego"  # anti-vacuidad
     assert set(encontrados) == set(ADMITIDOS), (
         f"servicios con /metrics: {sorted(encontrados)}; admitidos: {sorted(ADMITIDOS)}"
     )
@@ -102,7 +101,7 @@ def test_cada_servicio_expone_la_senal_que_le_toca() -> None:
 
 def test_la_senal_dlq_la_tienen_los_que_escriben_la_dlq() -> None:
     escriben = {p.parts[-4] for p in SERVICIOS.glob("*/app/repositories/dead_letter_repository.py")}
-    assert len(escriben) >= 4, f"censo de la DLQ vacío o incompleto: {sorted(escriben)}"
+    assert len(escriben) >= 3, f"censo de la DLQ vacío o incompleto: {sorted(escriben)}"
     con_senal = {s for s, r in _con_metrics().items() if "metricas.senal_dlq(" in r.read_text(encoding="utf-8")}
     assert con_senal == escriben
 

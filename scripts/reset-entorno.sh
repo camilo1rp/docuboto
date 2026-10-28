@@ -93,7 +93,7 @@ fi
 INICIO=$(date +%s)
 
 azul "1/8 · Derribando la pila y sus volúmenes"
-docker compose --profile dev --profile assistant down -v --remove-orphans
+docker compose --profile dev down -v --remove-orphans
 verde "volúmenes eliminados"
 
 azul "2/8 · Secretos y material criptográfico de desarrollo"
@@ -116,8 +116,8 @@ azul "2/8 · Secretos y material criptográfico de desarrollo"
 mkdir -p secrets/ca-users-public
 verde "secretos, sello y TSA listos; espejo de la sub-CA preparado"
 
-azul "3/8 · Levantando la pila (perfiles dev + assistant)"
-docker compose --profile dev --profile assistant up -d --build
+azul "3/8 · Levantando la pila (perfil dev)"
+docker compose --profile dev up -d --build
 docker build -q -t orpycamcp-scripts:dev -f scripts/Dockerfile scripts/ >/dev/null
 verde "contenedores arriba e imagen de guiones construida"
 

@@ -50,8 +50,8 @@
     },
     {
       icon: "fa-solid fa-wand-magic-sparkles",
-      title: "IA / capa MCP",
-      body: "Un asistente conversacional que traduce lenguaje natural en acciones auditadas, con tu autorización.",
+      title: "Capa MCP",
+      body: "Herramientas MCP auditadas sobre tu archivo: búsqueda por conocimiento y acciones con tu autorización.",
     },
   ];
 

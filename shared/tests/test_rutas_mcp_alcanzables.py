@@ -106,7 +106,7 @@ def test_todas_las_tools_pasan_por_el_gateway() -> None:
     [
         "/api/v1/tenants/",  # retirada del ruteo por fuga entre entidades
         "/api/v1/storage/download",  # sellada: la descarga la media document-service
-        "/api/v1/knowledge/ingest",  # interna, con token de servicio
+        "/api/v1/knowledge/ingest",  # retirada en D0 (ADR-046 §4)
         "/api/v1/inventado/",
     ],
 )
@@ -119,7 +119,7 @@ def test_el_control_distingue_lo_que_no_esta_enrutado(ruta: str) -> None:
 
 
 # Prefijos del propio mcp-server, ahora que el gateway SÍ los enruta.
-_SUPERFICIE_PROPIA = ("/api/v1/mcp", "/api/v1/assistant")
+_SUPERFICIE_PROPIA = ("/api/v1/mcp",)
 
 
 def test_ninguna_tool_apunta_a_la_superficie_del_propio_mcp() -> None:
@@ -139,9 +139,6 @@ def test_ninguna_tool_apunta_a_la_superficie_del_propio_mcp() -> None:
       `/api/v1/mcp/proposals/execute` ejecutaría una propuesta como si fuera una
       lectura cualquiera del catálogo — la confirmación seguiría existiendo, y ya
       no significaría nada.
-
-    Y el asistente por la misma razón: `/api/v1/assistant/confirmar` es el otro
-    extremo del mismo gate.
     """
     infractoras = [
         (n, r)

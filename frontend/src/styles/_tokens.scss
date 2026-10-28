@@ -260,9 +260,6 @@ $op-reading-max: 880px;
   --op-border: #{$op-border};
   // Velo BLOQUEANTE: lo que hay detrás no se puede usar (Modal, cajones).
   --op-scrim: rgba(#{$op-scrim-rgb}, 0.45);
-  // Velo de ACOMPAÑAMIENTO: el asistente se abre sobre la pantalla sin
-  // pretender que el resto desaparece, y su velo es deliberadamente más suave.
-  --op-scrim-soft: rgba(#{$op-scrim-rgb}, 0.25);
   // Blanco translúcido sobre superficie de MARCA (landing, login): chips,
   // su borde y texto atenuado. Neutros: no dependen del rebranding, pero viven
   // aquí y no repartidos como literales por las pantallas públicas.

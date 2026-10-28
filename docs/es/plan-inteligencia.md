@@ -1,6 +1,7 @@
 # Plan de inteligencia
 
-> **Estado: planeado.** Nada de lo que describe esta página está construido. La decisión
+> **Estado: D0 construida (2026-10-28); D1 a D3, planeadas.** knowledge-service ya no
+> llama a modelos y el asistente conversacional está retirado. La decisión
 > de arquitectura es [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)
 > (Propuesto) y el protocolo es PPI v1, en borrador, en `docs/contratos/ppi/`.
 > Actualizado al 2026-10-27, con la revisión de ADR-045 que deja a cada entidad decidir
@@ -74,11 +75,13 @@ no necesita al proveedor. Con ella se corta el egreso por defecto a ollama.com.
 
 **Criterios de éxito.**
 
-- [ ] Buscar y antecedentes devuelven, para el mismo usuario, los mismos radicados que la
-      búsqueda de la pantalla de consulta, y nunca uno fuera de su clearance.
-- [ ] `/rag` responde 503 `rag_unavailable`, y el botón «Sugerir texto» no aparece.
-- [ ] Con la red de salida cortada, knowledge-service arranca y responde igual.
-- [ ] Las tools MCP `buscar_conocimiento`, `buscar_antecedentes` y
+- [x] Buscar y antecedentes devuelven, para el mismo usuario, los mismos radicados que la
+      búsqueda de la pantalla de consulta, y nunca uno fuera de su clearance. Se cumple por
+      construcción: consultan esa misma búsqueda, como el usuario.
+- [x] `/rag` responde 503 `rag_unavailable`, y el botón «Sugerir texto» no aparece.
+- [ ] Con la red de salida cortada, knowledge-service arranca y responde igual. Falta
+      comprobarlo con la pila levantada; el código ya no tiene ningún egreso a modelos.
+- [x] Las tools MCP `buscar_conocimiento`, `buscar_antecedentes` y
       `redactar_con_antecedentes` siguen respondiendo sin cambios en mcp-server.
 
 ---

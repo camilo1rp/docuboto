@@ -1,6 +1,6 @@
 # Roadmap
 
-> Updated as of 2026-10-27.
+> Updated as of 2026-10-28.
 
 OrpycaMCP has followed **two complementary plans**:
 
@@ -13,7 +13,7 @@ OrpycaMCP has followed **two complementary plans**:
 
 ## specDrive plan — SGDEA conformance (current)
 
-**Global status:** the core of all **21 epics is implemented, tested in Docker and with migrations validated against real PostgreSQL/pgvector.** The current ADRs are listed in the [architecture decisions index](adrs.md) (the count is not repeated here by hand: it goes stale). The frontend had **1804 Vitest tests across 181 files** as of 2026-08-28; `npx vitest run` gives the current figure.
+**Global status:** the core of all **21 epics is implemented, tested in Docker and with migrations validated against real PostgreSQL.** The current ADRs are listed in the [architecture decisions index](adrs.md) (the count is not repeated here by hand: it goes stale). The frontend had **1804 Vitest tests across 181 files** as of 2026-08-28; `npx vitest run` gives the current figure.
 
 **And, since August 2026, tested from the browser as well.** Until then the project's guarantee was one of unit and contract, not of use: the 36 application screens had zero end-to-end coverage. The full functional review (blocks B0–B14) walked them performing real acts against a demo tenant — including the irreversible ones: annul, close an expediente, transfer, derogate a TRD version — and found defects in **every** block that wrote. All fixed, each with a test verified by mutation. The closing proof was re-verifying the `audit_log` hash chain over everything the review generated: **the Ley 594 integrity guarantee is proven with data, not with mocks**.
 
@@ -24,7 +24,9 @@ OrpycaMCP has followed **two complementary plans**:
 | **F3 — Lifecycle**               | E04 TRD/CCD (hierarchy + two-phase retention + AGN disposition), E02 expedientes (closure/transfer/foliation), E06 electronic signature (hash+identity + **XAdES-B of the index**, Inc. 1)                                                                                                                                                                                                                                                                                                                                              | ✅      |
 | **F4 — Conformance**             | E15 electronic index (append-only versioned XML + per-document fingerprint + verification) + **XAdES-B/T/LT/LTA signing of the index on closure, with an institutional seal + timestamp + long-term validation material (local dev CA + CRL + stapled OCSP per RFC 6960, not accredited)** (E06 Inc. 1/4/5/7, ADR-016) + **RT-15 "fully conformant" v4 profile** (stable documentary order + traceable exclusion + producing dependencia + declaration date + access policy + attested audit trail, prospective applicability, ADR-022) | ✅ core |
 | **F5 — Preservation / physical** | E17 physical archive (locations, units, shelf-mark, loans, history, **FUID**), E12 primary/secondary transfers, E11 interoperability (signed webhooks), E10 preservation (plan + PREMIS events + **WORM/Object-Lock of the signed index**, ADR-023)                                                                                                                                                                                                                                                                                     | ✅ core |
-| **F6 — Intelligence**            | E18 mcp-server (tool catalog over the gateway) + conversational assistant, E21 knowledge-service (pgvector + semantic retrieval with ACL pre-filtering + real RAG)                                                                                                                                                                                                                                                                                                                                                                      | ✅ core |
+| **F6 — Intelligence**            | E18 mcp-server (tool catalog, write gate; conversational assistant withdrawn [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)), E21 knowledge-service (FTS fallback via document-service; no local models, ADR-046)                                                                                                                                                                                                                                                                                                                  | ✅ core |
+
+> **CURRENT ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md), 2026-10-28):** F6/E18's conversational assistant (and Whisper) and E21's local pgvector/RAG model layer were **withdrawn**. Docuboto calls no models. Current F6 is an MCP facade (tool catalog + write gate) plus a knowledge FTS gateway (`/search` and `/antecedentes` proxy to document-service; `/rag` → `503` without an external PPI; `/availability`). No pgvector, embeddings, ingest consumer, or `kb_suggestions`. The flag `asistente_habilitado` and `PERM_CONOCIMIENTO` still gate knowledge ([ADR-037](adr/ADR-037-asistente-activable-por-entidad.md)). Historical ✅ items below remain as delivery history for that withdrawn slice unless annotated.
 
 ### specDrive status by epic (and what is still pending)
 

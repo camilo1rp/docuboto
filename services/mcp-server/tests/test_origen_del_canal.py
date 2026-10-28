@@ -10,13 +10,11 @@
 
 """AREA-11-04 / AREA-11-08: lo que el mcp-server dice de sí mismo al gateway.
 
-- El asistente y el MCP actúan EN NOMBRE de una persona pero entran al gateway por
+- El MCP actúa EN NOMBRE de una persona pero entra al gateway por
   `/api/v1/<dominio>`: sin una marca de origen verificable, lo que confirma la
   tarjeta quedaba asentado como canal 'api'.
-- Todas las llamadas del asistente de todas las entidades salían con la IP del
-  contenedor del mcp-server y compartían su cubo por IP del limitador.
-- Un número de radicado que el modelo escribe sin que ningún `tool_result` lo
-  haya devuelto se anota como no verificado.
+- Todas las llamadas del mcp-server de todas las entidades salían con la IP del
+  contenedor y compartían su cubo por IP del limitador.
 """
 
 from __future__ import annotations
@@ -27,14 +25,8 @@ from orpycamcp_common import identidad
 
 from app.core.contexto import ContextoEntranteMiddleware
 from app.services import dispatcher, origen
-from app.services.assistant import radicados_no_verificados, run_turn
-from tests._assistant_fakes import (
-    FakeAnthropic,
-    Response,
-    make_gateway,
-    text_block,
-    tool_use_block,
-)
+from app.services.identity import resolve_identity
+from app.services.scope import build_scope
 
 SECRETO = "secreto-de-prueba-del-origen"
 TOKEN = "Bearer token-de-ana"
@@ -100,22 +92,24 @@ async def test_sin_secreto_no_se_emite_marca(monkeypatch: pytest.MonkeyPatch) ->
 @pytest.mark.asyncio
 async def test_las_lecturas_de_identidad_y_marco_tambien_la_llevan(con_secreto) -> None:
     """`/auth/me` y el marco comparten el cubo de la persona: salen por el mismo sitio."""
-    gateway = make_gateway(permissions=[])
-    anthropic = FakeAnthropic([Response([text_block("hola")], "end_turn")])
+    vistas: list[httpx.Request] = []
 
-    await run_turn(
-        mensaje="hola",
-        conversation_id=None,
-        tenant_slug="demo",
-        authorization=TOKEN,
-        gateway_client=gateway,
-        anthropic_client=anthropic,
-        conversations={},
-    )
+    def _handler(request: httpx.Request) -> httpx.Response:
+        vistas.append(request)
+        if request.url.path == "/api/v1/auth/me":
+            return httpx.Response(200, json={"user_id": "u-1", "permissions": []})
+        return httpx.Response(200, json={})
 
-    assert gateway.get.call_args_list, "no hubo lecturas de contexto"
-    for llamada in gateway.get.call_args_list:
-        assert identidad.CABECERA_ORIGEN in llamada.kwargs["headers"], llamada.args
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_handler), base_url="http://gw"
+    ) as client:
+        ident = await resolve_identity(client, authorization=TOKEN, tenant_slug="demo")
+        await build_scope(client, ident, authorization=TOKEN, tenant_slug="demo")
+
+    rutas = {r.url.path for r in vistas}
+    assert {"/api/v1/auth/me", "/api/v1/auth/clearance", "/api/v1/auth/context"} <= rutas
+    for request in vistas:
+        assert identidad.CABECERA_ORIGEN in request.headers, request.url.path
 
 
 # -- AREA-11-04 (2): la correlación con la propuesta -----------------------------
@@ -210,126 +204,6 @@ async def test_sin_secreto_el_middleware_no_confia_en_ninguna_ip(
     monkeypatch.delenv("MCP_ORIGIN_SECRET", raising=False)
 
     assert await _correr_middleware({"X-Real-Ip": "6.6.6.6"}) is None
-
-
-# -- AREA-11-08: el costo de un turno se mide ------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_el_turno_cuenta_sus_llamadas_al_gateway(caplog) -> None:
-    gateway = make_gateway(permissions=[], tool_response=httpx.Response(200, json={"total": 1}))
-    anthropic = FakeAnthropic(
-        [
-            Response([tool_use_block("t1", "buscar_radicados", {"q": "tutela"})], "tool_use"),
-            Response([text_block("listo")], "end_turn"),
-        ]
-    )
-    with caplog.at_level("INFO", logger="app.services.assistant"):
-        await run_turn(
-            mensaje="hola",
-            conversation_id=None,
-            tenant_slug="demo",
-            authorization=TOKEN,
-            gateway_client=gateway,
-            anthropic_client=anthropic,
-            conversations={},
-        )
-
-    linea = next(r.getMessage() for r in caplog.records if "asistente turno" in r.getMessage())
-    n_gateway = len(gateway.get.call_args_list) + len(gateway.request.call_args_list)
-    assert f"llamadas_gateway={n_gateway}" in linea
-    assert "iteraciones=2" in linea
-
-
-# -- AREA-11-04 (3): el radicado que nadie devolvió ------------------------------
-
-INVENTADO = "2026-DEMO-E-999999"
-REAL = "2026-DEMO-E-000123"
-
-
-def _mensajes_con(resultado: str) -> list[dict]:
-    return [
-        {"role": "user", "content": "busca"},
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "t1", "content": resultado}],
-        },
-    ]
-
-
-def test_un_radicado_ausente_de_los_resultados_se_marca() -> None:
-    msgs = _mensajes_con(f'{{"data": [{{"tracking_number": "{REAL}"}}]}}')
-
-    assert radicados_no_verificados(f"Es el {INVENTADO}.", msgs) == [INVENTADO]
-
-
-def test_un_radicado_presente_en_los_resultados_no_se_marca() -> None:
-    """Control positivo: sin él, una comprobación que marcara TODO también pasaría."""
-    msgs = _mensajes_con(f'{{"data": [{{"tracking_number": "{REAL}"}}]}}')
-
-    assert radicados_no_verificados(f"Es el {REAL}, y también el {REAL}.", msgs) == []
-
-
-def test_lo_que_dijo_el_usuario_no_cuenta_como_verificado() -> None:
-    """Solo lo que el SISTEMA devolvió: el eco de lo que se tecleó no lo avala."""
-    msgs = [{"role": "user", "content": f"creo que es el {INVENTADO}"}]
-
-    assert radicados_no_verificados(f"Sí, el {INVENTADO}.", msgs) == [INVENTADO]
-
-
-@pytest.mark.asyncio
-async def test_run_turn_marca_el_radicado_inventado_y_no_el_real() -> None:
-    gateway = make_gateway(
-        permissions=[],
-        tool_response=httpx.Response(200, json={"data": [{"tracking_number": REAL}]}),
-    )
-    anthropic = FakeAnthropic(
-        [
-            Response([tool_use_block("t1", "buscar_radicados", {"q": "tutela"})], "tool_use"),
-            Response([text_block(f"Están {REAL} y {INVENTADO}.")], "end_turn"),
-        ]
-    )
-
-    resp = await run_turn(
-        mensaje="busca",
-        conversation_id=None,
-        tenant_slug="demo",
-        authorization=TOKEN,
-        gateway_client=gateway,
-        anthropic_client=anthropic,
-        conversations={},
-    )
-
-    assert resp.no_verificados == [INVENTADO]
-    assert "No verificado" in resp.message.texto
-    assert REAL not in resp.message.texto.split("No verificado")[1]
-
-
-@pytest.mark.asyncio
-async def test_run_turn_sin_radicados_inventados_no_anota_nada() -> None:
-    gateway = make_gateway(
-        permissions=[],
-        tool_response=httpx.Response(200, json={"data": [{"tracking_number": REAL}]}),
-    )
-    anthropic = FakeAnthropic(
-        [
-            Response([tool_use_block("t1", "buscar_radicados", {"q": "tutela"})], "tool_use"),
-            Response([text_block(f"Está el {REAL}.")], "end_turn"),
-        ]
-    )
-
-    resp = await run_turn(
-        mensaje="busca",
-        conversation_id=None,
-        tenant_slug="demo",
-        authorization=TOKEN,
-        gateway_client=gateway,
-        anthropic_client=anthropic,
-        conversations={},
-    )
-
-    assert resp.no_verificados == []
-    assert "No verificado" not in resp.message.texto
 
 
 # -- AREA-11-04 (2): el `jti` de la propuesta viaja como Idempotency-Key ---------

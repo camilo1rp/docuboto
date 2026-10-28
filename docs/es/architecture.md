@@ -30,11 +30,10 @@ graph TB
         SIG["signature-service"]
         MCP["mcp-server"]
         KNO["knowledge-service"]
-        WHI["whisper-service<br/>(perfil assistant)"]
     end
 
     subgraph infra["Infraestructura"]
-        PG[("PostgreSQL 15<br/>+ pgvector")]
+        PG[("PostgreSQL 15")]
         REDIS[("Redis<br/>Streams + cache")]
         MINIO[("RustFS<br/>Almacén de objetos S3")]
         KC["Keycloak<br/>OIDC"]
@@ -68,16 +67,15 @@ graph TB
     SIG --> PG
     SIG --> REDIS
     KNO --> PG
-    KNO --> REDIS
+    KNO -->|búsqueda como el usuario| DOC
     MCP -.->|solo cliente HTTP del gateway| GW
 ```
 
 `mcp-server` es una **fachada fina** (ADR-019): no tiene base de datos propia ni lógica
-de negocio — traduce llamadas del protocolo MCP (o del asistente conversacional) en
-peticiones al `api-gateway`, exactamente como lo haría cualquier otro cliente
-autenticado. El asistente es la excepción en cuanto a inferencia: llama **directo a la API de
-Anthropic** (`ANTHROPIC_API_KEY`) y, antes de enviar nada, sustituye el contenido de todo objeto
-con `nivel_seguridad >= 2` (barrera de residencia, ADR-006); sin clave responde 503.
+de negocio — traduce llamadas del protocolo MCP en peticiones al `api-gateway`,
+exactamente como lo haría cualquier otro cliente autenticado. Docuboto no llama a ningún
+modelo de lenguaje ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)): quien quiera actuar
+con IA usa un cliente MCP externo, con el modelo que ese cliente elija.
 
 El gateway firma la identidad que reenvía a cada servicio (HMAC con instante, método y ruta
 canónica, [ADR-036](adr/ADR-036-identidad-atada-a-metodo-y-ruta.md)) y aplica el estado de la
@@ -98,9 +96,8 @@ su portal público y la conservación de sus documentos
 | `workflow-service` | 8006 | **19006** | Flujos de distribución, vistos buenos, reglas, dead-letter |
 | `notification-service` | 8007 | **19007** | Correo/alertas, webhooks salientes, dead-letter |
 | `signature-service` | 8008 | **19008** | Firma electrónica XAdES-B/T/LT/LTA verificable por terceros (ADR-034): personal, sello institucional del índice/acta y renovación del sello de archivo LTA |
-| `mcp-server` | 8009 | **19009** | Capa Model Context Protocol + asistente conversacional (E18, ADR-019) |
-| `knowledge-service` | 8011 | **19011** | pgvector, RAG con ACL, recuperación semántica con citas (E21) |
-| `whisper-service` | 8012 | _no se publica_ | Transcripción de voz **dentro de la instalación** (`faster-whisper` en CPU). Perfil `assistant`: arranca **apagado** y **no se enruta por el gateway** — solo le habla el mcp-server (ADR-020) |
+| `mcp-server` | 8009 | **19009** | Capa Model Context Protocol para clientes externos (E18, ADR-019) |
+| `knowledge-service` | 8011 | **19011** | Pasarela de conocimiento sin modelos: buscar y antecedentes por texto completo, como el usuario (ADR-046) |
 | `frontend` | 3000 | **19300** | SvelteKit SSR — capa de presentación (E22) |
 | PostgreSQL | 5432 | **15432** | Base de datos única, multi-schema |
 | Redis | 6379 | **16379** | Streams de eventos + cache |
@@ -198,39 +195,11 @@ lo que expone cada uno:
 | Router | Qué gestiona |
 |---|---|
 | `mcp` | Catálogo/protocolo MCP (**no** expuesto por el gateway) |
-| `assistant` | Asistente conversacional (expuesto vía `/api/v1/assistant`) |
 
 ### `knowledge-service`
 | Router | Qué gestiona |
 |---|---|
-| `knowledge` | `/search`, `/antecedentes`, `/rag` (expuestos); `/ingest` interno event-driven |
-
-### `whisper-service`
-
-| Router | Qué gestiona |
-|---|---|
-| `main` | `GET /health`, `GET /ready` (¿está el modelo cargado?), `POST /transcribe` (audio → texto) |
-
-**El duodécimo servicio, y el único que no toca el gateway.** Existe porque el reconocedor de
-voz del navegador **no cumple la decisión de soberanía**: en Chrome y Edge la Web Speech API
-clásica manda el audio a un servicio de Google, así que el botón de dictado solo se ofrece
-donde el navegador reconoce *en el dispositivo*. Para el resto, la voz llega aquí y no sale de
-la instalación.
-
-Tres rasgos lo separan del resto de servicios, todos deliberados:
-
-- **Arranca apagado** (perfil `assistant`, ADR-020). Una instalación mínima corre sin él y sin
-  descargar ningún modelo; `POST /api/v1/assistant/transcribe` responde `503` explicando cómo
-  activarlo. **No hay un `stub` de transcripción** — tendría que inventarse lo que se dijo.
-- **No se enruta por el gateway ni publica puerto al host**: solo le habla el `mcp-server`, con
-  `INTERNAL_SERVICE_TOKEN`. Mismo criterio que `storage-service`, que sirve bytes únicamente al
-  mediador de `document-service` (D-02): superficie de red que nadie necesita es superficie que
-  alguien acabará usando.
-- **Es el único servicio sin base de datos ni schema por tenant.** Recibe audio, devuelve texto
-  y no guarda nada; por eso no aparece en el censo de migraciones ni en el de escrituras.
-
-Medido: ~9 s por ~5 s de audio en 4 CPU con el modelo `small`. **Sin verificar**: la calidad
-sobre voz humana — la prueba se hizo con voz sintética.
+| `knowledge` | `/search`, `/antecedentes`, `/rag` (503 sin proveedor) y `/availability` |
 
 ## Patrón de proxy del gateway
 
@@ -260,12 +229,11 @@ Reglas de seguridad **por diseño** en el proxy (no accidentales):
   `document-service` (`GET /api/v1/documents/{id}/anexos/{file_id}/download`), que
   revalida el clearance del usuario antes de pedirle el archivo a `storage-service` —
   nunca se llega directo al almacén de objetos desde afuera.
-- **`mcp-server` acotado**: solo `/api/v1/assistant/*` se enruta; el catálogo/protocolo
-  MCP crudo (`/api/v1/mcp`, `/mcp`) queda deliberadamente fuera del gateway — el
-  asistente es el único punto de entrada para clientes externos.
-- **`knowledge-service` acotado**: solo `/search`, `/antecedentes` y `/rag` se enrutan;
-  `/ingest` es un endpoint interno consumido únicamente por el propio worker
-  event-driven del servicio.
+- **`mcp-server` acotado**: solo `/api/v1/mcp/` se enruta (catálogo, invocación,
+  propuestas y el transporte streamable). Invocar una escritura por ahí devuelve una
+  propuesta firmada; ejecutarla exige ese token, atado a la persona y a su ventana.
+- **`knowledge-service` acotado**: solo `/search`, `/antecedentes`, `/rag` y
+  `/availability` se enrutan.
 
 ## Orquestación asíncrona — Redis Streams
 
@@ -285,7 +253,6 @@ sequenceDiagram
     participant WF as workflow-service
     participant SIG as signature-service
     participant NOT as notification-service
-    participant KNO as knowledge-service
 
     U->>DOC: POST /api/v1/documents (radicar entrada)
     DOC->>DOC: asigna tracking number (SELECT FOR UPDATE)
@@ -299,9 +266,6 @@ sequenceDiagram
     and
         R->>NOT: document.created
         NOT->>NOT: envía alerta al destinatario
-    and
-        R->>KNO: document.created
-        KNO->>KNO: genera embeddings, indexa para RAG (fail-closed por ACL)
     end
 ```
 

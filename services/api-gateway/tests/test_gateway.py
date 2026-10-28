@@ -525,7 +525,6 @@ async def test_route_to_upstream_domain_prefixes():
         signature_service_url="http://signature:8008",
         mcp_service_url="http://mcp:8009",
         knowledge_service_url="http://knowledge:8011",
-        assistant_proxy_timeout=180.0,
     )
     cases = {
         "/api/v1/audit": "http://auth:8001",
@@ -556,8 +555,6 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/tvd/agrupaciones": "http://archive:8004",
         "/api/v1/workflows/inbox": "http://workflow:8006",
         "/api/v1/workflow/rules/eval": "http://workflow:8006",
-        # E18: el asistente conversacional enruta al mcp-server.
-        "/api/v1/assistant/message": "http://mcp:8009",
         # E18 (bloque 9 del plan MCP funcional): el catálogo y el protocolo MCP
         # SÍ se exponen ahora a clientes externos. Antes no, y eso dejaba a
         # medias la decisión de «un solo catálogo y un solo gate»: un cliente MCP
@@ -570,10 +567,11 @@ async def test_route_to_upstream_domain_prefixes():
         # `/mcp`) justo para que quepa por esta tabla, en vez de abrirle al proxy
         # una forma de ruta fuera de `/api/v1/...`.
         "/api/v1/mcp/stream": "http://mcp:8009",
-        # E21: solo /search del knowledge-service se expone vía gateway.
+        # E21 / ADR-046: búsqueda, antecedentes, rag y disponibilidad de generación.
         "/api/v1/knowledge/search": "http://knowledge:8011",
-        # AREA-10-10: admin de la DLQ de knowledge (PERM_DLQ_ADMIN en el servicio).
-        "/api/v1/knowledge/admin/deadletter/": "http://knowledge:8011",
+        "/api/v1/knowledge/antecedentes": "http://knowledge:8011",
+        "/api/v1/knowledge/rag": "http://knowledge:8011",
+        "/api/v1/knowledge/availability": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
         # del storage-service se expone (el frontend sube directo);
         # /preservacion/ se admite SUBRUTA A SUBRUTA (AREA-08-16): plan,
@@ -607,9 +605,14 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/api/v1/tenants/", state) is None
     assert _route_to_upstream("/api/v1/tenants/by-slug/icetex", state) is None
     assert _route_to_upstream("/api/v1/unknown", state) is None
-    # /ingest es interno (X-Internal-Token) y NUNCA debe enrutarse desde el exterior.
+    # Retirado en D0 (ADR-046 §4 y §6): ni ingesta, ni sugerencias, ni admin de
+    # DLQ de knowledge, ni el asistente conversacional.
     assert _route_to_upstream("/api/v1/knowledge/ingest", state) is None
+    assert _route_to_upstream("/api/v1/knowledge/suggestions/abc/aceptar", state) is None
+    assert _route_to_upstream("/api/v1/knowledge/admin/deadletter/", state) is None
     assert _route_to_upstream("/api/v1/knowledge", state) is None
+    assert _route_to_upstream("/api/v1/assistant/message", state) is None
+    assert _route_to_upstream("/api/v1/assistant/transcribe", state) is None
     # D-02: la descarga directa de storage-service YA NO se enruta — pasa
     # SIEMPRE por el mediador de document-service (RF-SEG-08). Ídem metadata
     # y el stream de bytes interno (`/content`), ambos protegidos por
@@ -653,7 +656,6 @@ async def test_public_verify_route_is_public_and_routed():
         signature_service_url="http://signature:8008",
         mcp_service_url="http://mcp:8009",
         knowledge_service_url="http://knowledge:8011",
-        assistant_proxy_timeout=180.0,
     )
     assert _route_to_upstream("/api/v1/public/demo/verify/abc", state) == "http://document:8003"
 
@@ -969,59 +971,6 @@ async def test_proxy_reenvia_retry_after_del_503_de_una_entidad_suspendida(test_
     assert response.headers.get("retry-after") == "3600", (
         "sin Retry-After el operador no sabe cuándo reintentar y descarta el evento"
     )
-
-
-async def test_proxy_sin_override_deja_el_timeout_del_cliente(test_client):
-    """Sin override, `timeout` debe ser USE_CLIENT_DEFAULT — NUNCA None.
-
-    Para httpx los dos valores son distintos y opuestos: USE_CLIENT_DEFAULT es
-    "usa el que ya tiene el cliente"; None es "sin limite de tiempo". Pasar None
-    dejaria cada peticion al upstream colgada indefinidamente y el 503
-    `upstream_timeout` de este mismo router seria inalcanzable.
-    """
-    client, http_client, _ = test_client
-
-    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    wire_upstream(http_client, httpx.Response(
-            status_code=200,
-            json={"items": []},
-            headers={"content-type": "application/json"},
-        )
-    )
-
-    await client.get("/api/v1/documents/", headers={"Authorization": "Bearer valid-token"})
-
-    timeout_arg = http_client.build_request.call_args.kwargs["timeout"]
-    assert timeout_arg is httpx.USE_CLIENT_DEFAULT
-    assert timeout_arg is not None
-
-
-async def test_proxy_asistente_propaga_su_timeout_ampliado(test_client):
-    """E18: la ruta del asistente propaga `assistant_proxy_timeout` al upstream.
-
-    Su loop LLM excede el timeout global del cliente, asi que el override
-    por-peticion es lo unico que evita cortar la respuesta a media generacion.
-    """
-    client, http_client, _ = test_client
-
-    http_client.get = AsyncMock(return_value=make_validate_response(valid=True))
-    wire_upstream(http_client, httpx.Response(
-            status_code=200,
-            json={"reply": "ok"},
-            headers={"content-type": "application/json"},
-        )
-    )
-
-    await client.post(
-        "/api/v1/assistant/message",
-        json={"message": "hola"},
-        headers={"Authorization": "Bearer valid-token"},
-    )
-
-    from app.core.config import settings
-
-    assert http_client.build_request.call_args.kwargs["timeout"] == settings.assistant_proxy_timeout
-    assert http_client.build_request.call_args.kwargs["timeout"] is not httpx.USE_CLIENT_DEFAULT
 
 
 async def test_el_catalogo_no_es_publico_por_omision(test_client):

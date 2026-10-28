@@ -83,8 +83,8 @@ describe("instalarTiempoLimite", () => {
   });
 
   it("respeta el `signal` de quien llama y no le impone el suyo", async () => {
-    // La vía del asistente conversacional: el gateway le concede 180 s y el
-    // envoltorio no debe recortarlos.
+    // La vía para quien necesita más que el tope por defecto: el envoltorio no
+    // debe recortar lo que la propia llamada ya acota.
     const propio = new AbortController();
     globalThis.fetch = vi.fn(async (_entrada, init) => {
       expect(init.signal).toBe(propio.signal);
@@ -92,7 +92,7 @@ describe("instalarTiempoLimite", () => {
     });
     instalarTiempoLimite([API], 30_000);
 
-    await globalThis.fetch(`${API}/assistant/message`, { signal: propio.signal });
+    await globalThis.fetch(`${API}/knowledge/search`, { signal: propio.signal });
 
     expect(globalThis.fetch).toBeDefined();
   });

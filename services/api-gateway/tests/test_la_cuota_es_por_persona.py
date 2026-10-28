@@ -9,12 +9,11 @@
 
 """La cuota de un usuario autenticado es SUYA, no de su dirección de red.
 
-El defecto que cubren estas pruebas se encontró en la suite del frontend, y su
-disfraz era perfecto: `asistente-dock.spec.js` fallaba en las tres corridas
-completas y pasaba aislado, lo que se lee como un test inestable. No lo era. El
-log del gateway traía la causa:
+El defecto que cubren estas pruebas se encontró en la suite del frontend: una
+spec e2e fallaba en las tres corridas completas y pasaba aislado, lo que se lee
+como un test inestable. No lo era. El log del gateway traía la causa:
 
-    "path": "/api/v1/assistant/alcance", "status": 429,
+    "path": "/api/v1/…", "status": 429,
     "duracion_ms": 1.6, "tenant": null, "usuario": null
 
 Los `null` y el 1,6 ms son el hallazgo: el limitador rechazaba **antes** de
@@ -81,7 +80,6 @@ async def cliente(monkeypatch):
         app.state.max_request_body_bytes = settings.max_request_body_bytes
         app.state.max_public_body_bytes = settings.max_public_body_bytes
         app.state.max_upload_body_bytes = settings.max_upload_body_bytes
-        app.state.assistant_proxy_timeout = settings.assistant_proxy_timeout
         app.state.openapi_publico = settings.openapi_publico
         app.state.max_public_body_bytes = settings.max_public_body_bytes
         for atributo in dir(settings):

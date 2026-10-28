@@ -17,7 +17,7 @@ usuario. Cada rama negativa tiene su control positivo (200) en la misma tabla.
 
 from __future__ import annotations
 
-import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -25,13 +25,23 @@ from tests.conftest import TENANT_HEADERS
 
 pytestmark = [pytest.mark.gates_reales, pytest.mark.asyncio]
 
-SID = uuid.uuid4()
+#: (método, ruta, cuerpo, estado cuando los gates dejan pasar). `/rag` pasa los gates
+#: y responde 503: sin proveedor no hay generación (ADR-046).
 RUTAS = [
-    ("/api/v1/knowledge/search", {"query": "contratos"}),
-    ("/api/v1/knowledge/antecedentes", {"query": "contratos"}),
-    ("/api/v1/knowledge/rag", {"query": "contratos"}),
+    ("POST", "/api/v1/knowledge/search", {"query": "contratos"}, 200),
+    ("POST", "/api/v1/knowledge/antecedentes", {"query": "contratos"}, 200),
+    ("POST", "/api/v1/knowledge/rag", {"query": "contratos"}, 503),
+    ("GET", "/api/v1/knowledge/availability", None, 200),
 ]
-ACEPTAR = (f"/api/v1/knowledge/suggestions/{SID}/aceptar", None)
+IDS = [r[1].rsplit("/", 1)[1] for r in RUTAS]
+
+
+@pytest.fixture(autouse=True)
+def _busqueda_vacia(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Estas pruebas miran los gates, no la búsqueda: document-service responde vacío."""
+    from app.clients import document_search
+
+    monkeypatch.setattr(document_search, "search", AsyncMock(return_value=[]))
 
 
 def _fetchval(*, bandera: bool | Exception, crud: int):
@@ -53,19 +63,19 @@ def _fetchval(*, bandera: bool | Exception, crud: int):
 
 async def _post(client, conn, ruta, *, bandera=True, crud=1, headers=None):
     conn.fetchval.side_effect = _fetchval(bandera=bandera, crud=crud)
-    url, cuerpo = ruta
-    return await client.post(url, json=cuerpo, headers=headers or TENANT_HEADERS)
+    metodo, url, cuerpo, _ = ruta
+    return await client.request(metodo, url, json=cuerpo, headers=headers or TENANT_HEADERS)
 
 
-@pytest.mark.parametrize("ruta", RUTAS, ids=[r[0].rsplit("/", 1)[1] for r in RUTAS])
+@pytest.mark.parametrize("ruta", RUTAS, ids=IDS)
 async def test_con_bandera_y_permiso_la_consulta_pasa(client_with_conn, ruta) -> None:
-    """Control positivo: bandera encendida + nivel 1 = 200."""
+    """Control positivo: bandera encendida + nivel 1 pasa los gates."""
     client, conn = client_with_conn
     resp = await _post(client, conn, ruta, bandera=True, crud=1)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == ruta[3], resp.text
 
 
-@pytest.mark.parametrize("ruta", RUTAS, ids=[r[0].rsplit("/", 1)[1] for r in RUTAS])
+@pytest.mark.parametrize("ruta", RUTAS, ids=IDS)
 async def test_sin_permiso_403_aunque_la_bandera_este_encendida(client_with_conn, ruta) -> None:
     client, conn = client_with_conn
     resp = await _post(client, conn, ruta, bandera=True, crud=0)
@@ -73,7 +83,7 @@ async def test_sin_permiso_403_aunque_la_bandera_este_encendida(client_with_conn
     assert resp.json()["detail"]["error"] == "forbidden"
 
 
-@pytest.mark.parametrize("ruta", RUTAS + [ACEPTAR], ids=["search", "antecedentes", "rag", "aceptar"])
+@pytest.mark.parametrize("ruta", RUTAS, ids=IDS)
 async def test_bandera_apagada_403_aunque_tenga_el_permiso(client_with_conn, ruta) -> None:
     client, conn = client_with_conn
     resp = await _post(client, conn, ruta, bandera=False, crud=5)
@@ -89,12 +99,12 @@ async def test_bandera_apagada_tampoco_la_salva_ser_root(client_with_conn) -> No
         return False if "asistente_habilitado" in sql else True  # permiso: siempre sí
 
     conn.fetchval.side_effect = _f
-    resp = await client.post(RUTAS[0][0], json=RUTAS[0][1], headers=TENANT_HEADERS)
+    resp = await client.post(RUTAS[0][1], json=RUTAS[0][2], headers=TENANT_HEADERS)
     assert resp.status_code == 403
     assert resp.json()["detail"]["error"] == "asistente_deshabilitado"
 
 
-@pytest.mark.parametrize("ruta", RUTAS, ids=[r[0].rsplit("/", 1)[1] for r in RUTAS])
+@pytest.mark.parametrize("ruta", RUTAS, ids=IDS)
 async def test_bandera_ilegible_503_fail_closed(client_with_conn, ruta) -> None:
     client, conn = client_with_conn
     resp = await _post(client, conn, ruta, bandera=RuntimeError("registro caído"), crud=5)
@@ -102,79 +112,9 @@ async def test_bandera_ilegible_503_fail_closed(client_with_conn, ruta) -> None:
     assert resp.json()["detail"]["error"] == "asistente_estado_no_disponible"
 
 
-@pytest.mark.parametrize("ruta", RUTAS + [ACEPTAR], ids=["search", "antecedentes", "rag", "aceptar"])
+@pytest.mark.parametrize("ruta", RUTAS, ids=IDS)
 async def test_sin_identidad_401(client_with_conn, ruta) -> None:
     client, conn = client_with_conn
     sin_usuario = {k: v for k, v in TENANT_HEADERS.items() if k != "X-User-Id"}
     resp = await _post(client, conn, ruta, headers=sin_usuario)
     assert resp.status_code == 401
-
-
-async def test_aceptar_pide_nivel_2(client_with_conn) -> None:
-    """Nivel 1 consulta pero NO acepta; nivel 2 pasa el gate (404 neutro: no hay sugerencia)."""
-    client, conn = client_with_conn
-    nivel1 = await _post(client, conn, ACEPTAR, crud=1)
-    assert nivel1.status_code == 403
-    nivel2 = await _post(client, conn, ACEPTAR, crud=2)
-    assert nivel2.status_code == 404
-    assert nivel2.json()["detail"]["error"] == "suggestion_not_found"
-
-
-async def test_con_la_bandera_apagada_la_ingesta_sigue_indexando(
-    client_with_conn, token_settings
-) -> None:
-    """ADR-037: apagar el asistente cierra la CONSULTA, no la ingesta (embeddings locales,
-    sin egreso). Control positivo: `/ingest` da 201 con la bandera apagada y, en la misma
-    prueba, las rutas de consulta dan 403."""
-    from datetime import UTC, datetime
-
-    from tests.conftest import TEST_INTERNAL_TOKEN
-
-    client, conn = client_with_conn
-    conn.fetchval.side_effect = _fetchval(bandera=False, crud=5)
-    conn.fetchrow.return_value = {
-        "id": uuid.uuid4(),
-        "source_type": "radicado",
-        "source_ref": "R-1",
-        "created_at": datetime.now(UTC),
-    }
-    cuerpo = {"source_type": "radicado", "source_ref": "R-1", "texto": "hola", "nivel_seguridad": 1}
-    cab = {"X-Tenant-Slug": "demo", "X-Internal-Token": TEST_INTERNAL_TOKEN}
-
-    ingesta = await client.post("/api/v1/knowledge/ingest", json=cuerpo, headers=cab)
-    assert ingesta.status_code == 201, ingesta.text
-    assert any("knowledge_chunk" in str(c.args[0]) for c in conn.fetchrow.call_args_list)
-
-    for url, body in [*RUTAS, ACEPTAR]:
-        resp = await client.post(url, json=body, headers=TENANT_HEADERS)
-        assert resp.status_code == 403, url
-        assert resp.json()["detail"]["error"] == "asistente_deshabilitado"
-
-
-async def test_con_la_bandera_apagada_el_consumidor_de_created_indexa_igual() -> None:
-    """El consumidor de `document.radicado.created` ni siquiera lee la bandera."""
-    from unittest.mock import AsyncMock, patch
-
-    from orpycamcp_common import events
-
-    from app.core import clearance
-    from app.workers import document_consumer
-    from tests.test_document_consumer import _AcquireTenantCtx
-
-    fields = events.to_fields(
-        events.build_event(
-            "document.radicado.created",
-            tenant_slug="demo",
-            payload={"tracking_number": "2026-DEMO-E-000001", "nivel_seguridad": 1},
-        )
-    )
-    bandera = AsyncMock(return_value=False)
-    with (
-        patch.object(clearance, "asistente_habilitado", bandera),
-        patch.object(document_consumer, "acquire_tenant", return_value=_AcquireTenantCtx(AsyncMock())),
-        patch("app.workers.document_consumer.ingestion.ingest_radicado_created", AsyncMock()) as ingesta,
-    ):
-        await document_consumer._handle(fields)
-
-    ingesta.assert_awaited_once()
-    bandera.assert_not_awaited()

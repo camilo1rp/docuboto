@@ -23,7 +23,7 @@ from orpycamcp_common import deadletter
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
-DLQ = ("workflow-service", "signature-service", "notification-service", "knowledge-service")
+DLQ = ("workflow-service", "signature-service", "notification-service")
 
 pytestmark = pytest.mark.skipif(
     not SERVICIOS.is_dir(), reason="los directorios de servicios no están montados"

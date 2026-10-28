@@ -168,7 +168,6 @@ async def proxy_request(
     upstream_url: str,
     request: Request,
     extra_headers: dict[str, str] | None = None,
-    timeout: float | None = None,
     max_body_bytes: int | None = None,
 ) -> Response:
     """Reenvía la petición al upstream **por trozos**, en ambos sentidos.
@@ -198,11 +197,6 @@ async def proxy_request(
         else request.stream()
     )
 
-    # `timeout` override se pasa por-petición (p. ej. el asistente E18, cuyo loop
-    # LLM excede el timeout global del cliente). Sin override se usa el del cliente:
-    # USE_CLIENT_DEFAULT es el centinela de httpx para "no lo toques", y NO es
-    # intercambiable con None — None significa "sin límite de tiempo", que aquí
-    # dejaría cada petición al upstream colgada indefinidamente.
     # La cadena de consulta se reenvía como LISTA DE PARES y no como `dict()`.
     # Es un multidict: `dict()` se queda con el último valor de cada clave, así
     # que `?status=distributed&status=in_progress` salía de aquí convertido en
@@ -230,7 +224,6 @@ async def proxy_request(
         headers=headers,
         content=content,
         params=consulta,
-        timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
     )
     try:
         upstream_response = await http_client.send(upstream_request, stream=True)

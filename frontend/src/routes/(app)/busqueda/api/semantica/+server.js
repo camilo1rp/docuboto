@@ -8,9 +8,10 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * /busqueda/api/semantica — Proxy SSR de búsqueda semántica (D-05, Fase 6 E21↔UI).
+ * /busqueda/api/semantica — Proxy SSR de búsqueda por conocimiento (texto completo
+ * local, ADR-046). La ruta conserva el segmento histórico `semantica`.
  *
- * Endpoint real: POST /api/v1/knowledge/search (services/knowledge-service/app/routers/knowledge.py:188).
+ * Endpoint real: POST /api/v1/knowledge/search.
  *   Body: { query, top_k, acl } — `acl` es un filtro interno de metadata (no lo
  *   expone la UI: solo `query`/`top_k` pasan la allowlist, así el cliente no
  *   puede inyectar un filtro de acceso propio).
@@ -24,8 +25,8 @@
  * aquí; este proxy no debe (ni puede) distinguir "sin resultados" de "resultados
  * ocultos por permisos": esa distinción NO existe de este lado (anti-oráculo).
  *
- * `score` es una similitud vectorial (0–1, coseno), NO una coincidencia exacta
- * de texto — la UI es responsable de explicarlo, este proxy solo relaya el dato.
+ * `score` lo reenvía el backend (ranking de texto completo); este proxy no lo
+ * interpreta.
  */
 
 import { json } from "@sveltejs/kit";
@@ -51,7 +52,7 @@ export async function POST({ locals, request }) {
   const query = typeof body?.query === "string" ? body.query.trim() : "";
   if (query.length < 1) {
     return json(
-      { error: "validation_error", detail: "La búsqueda semántica requiere un texto." },
+      { error: "validation_error", detail: "La búsqueda por conocimiento requiere un texto." },
       { status: 422 },
     );
   }

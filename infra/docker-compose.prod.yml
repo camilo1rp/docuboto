@@ -79,10 +79,8 @@ services:
   # ─── Infrastructure ───────────────────────────────────────────────────────────
 
   postgres:
-    # pgvector, no postgres a secas: knowledge-service (E21) crea la extensión
-    # `vector` en el init. Con la imagen base la extensión no existe y la
-    # migración falla a mitad de la provisión del primer tenant.
-    image: pgvector/pgvector:0.8.7-pg15-bookworm@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9
+    # PostgreSQL a secas desde D0 (ADR-046 §4): ningún servicio usa pgvector.
+    image: postgres:15-bookworm@sha256:daeac543477e189e334f159133f4be6dae739b005cec2dfb9d482509fed05465
     container_name: orpycamcp-postgres-prod
     restart: unless-stopped
     # ── Presupuesto de conexiones ──────────────────────────────────────────
@@ -882,8 +880,8 @@ services:
         max-file: "3"
 
   knowledge-service:
-    # Capa de conocimiento (E21, pgvector). INTERNAL_SERVICE_TOKEN obligatorio:
-    # sin él la ingesta queda fail-closed (D-02 / RF-SEG-08) y rechaza todo /ingest.
+    # Capa de conocimiento (E21, ADR-046): sin modelos ni ingesta. /search y
+    # /antecedentes consultan la búsqueda de texto completo de document-service.
     # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
@@ -892,12 +890,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      INTERNAL_SERVICE_TOKEN: ${KNOWLEDGE_INTERNAL_TOKEN:?Knowledge internal token required}
-      # Faltaba, igual que en signature: la ingesta event-driven (E21) consume
-      # orpycamcp.document.events. Sin esto el índice semántico nunca se puebla y
-      # el fallo es silencioso.
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
@@ -919,15 +912,12 @@ services:
     deploy:
       resources:
         limits:
-          # 4G, no 1G como el resto: este servicio construye con WITH_ML=1 (default
-          # del Dockerfile) y carga el modelo de embeddings soberano en memoria —
-          # torch CPU solo ya pesa ~1,5 GB. Con 1G el contenedor muere por OOM al
-          # primer embedding, no al arrancar, que es el modo de fallo más confuso.
-          cpus: '2'
-          memory: 4G
+          # Sin modelos desde D0 (ADR-046): el mismo tope que el resto de servicios.
+          cpus: '1'
+          memory: 1G
         reservations:
           cpus: '0.5'
-          memory: 1G
+          memory: 512M
     logging:
       driver: "json-file"
       options:
@@ -953,10 +943,6 @@ services:
       MCP_PROPOSAL_SECRET_PREVIOUS: ${MCP_PROPOSAL_SECRET_PREVIOUS:-}
       # Marca de origen del canal 'mcp' (AREA-11-04) e IP real firmada (AREA-11-08).
       MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
-      # `STT_PROVIDER` NO se define a propósito: se aplica el defecto `disabled`
-      # (app/core/config.py) y el dictado por voz queda apagado. `whisper-service`
-      # (perfil `assistant`) no forma parte del manifiesto de producción en v1;
-      # activarlo exige declararlo aquí junto con su token (ver deployment.md).
     networks:
       - orpycamcp-net
     expose:
@@ -964,7 +950,7 @@ services:
     depends_on:
       - api-gateway
     # Era el único servicio de aplicación SIN healthcheck: si el proceso moría,
-    # el contenedor seguía "arriba" y el asistente conversacional simplemente no
+    # el contenedor seguía "arriba" y el catálogo MCP simplemente no
     # respondía, sin que el orquestador lo reiniciara.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/health')"]

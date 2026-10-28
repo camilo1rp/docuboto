@@ -29,13 +29,13 @@ _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 
 @dataclass(frozen=True)
 class Param:
-    """Un argumento de una tool, declarado UNA vez y consumido por cuatro sitios.
+    """Un argumento de una tool, declarado UNA vez y consumido por tres sitios.
 
-    Antes los parámetros vivían en `_TOOL_ARGS` (`services/assistant.py`), una
+    Antes los parámetros vivían en `_TOOL_ARGS` (del asistente, ya retirado), una
     tabla paralela mantenida a mano. Eso tenía dos costes reales, no teóricos:
 
     1. **Una tool sin entrada allí y sin parámetros de ruta se despachaba SIN
-       ARGUMENTOS.** La whitelist del asistente intersecta con las propiedades
+       ARGUMENTOS.** La whitelist de argumentos intersecta con las propiedades
        declaradas; sin declaración, la intersección es vacía y la llamada salía
        con el cuerpo en blanco, sin que nada chillara.
     2. **Derivaba de la API sin que nadie lo notara.** Al migrar se encontró que
@@ -43,9 +43,9 @@ class Param:
        `top_k` hasta 20, cuando el backend acepta 1 y 50 — y un test congelaba la
        divergencia.
 
-    De aquí salen: el `input_schema` de Anthropic, el `inputSchema` de MCP, la
-    whitelist de argumentos del dispatcher y las etiquetas de la tarjeta de
-    confirmación. Una sola fuente para las cuatro.
+    De aquí salen: el `inputSchema` de MCP, la whitelist de argumentos del
+    dispatcher y las etiquetas de la tarjeta de confirmación. Una sola fuente
+    para las tres.
     """
 
     name: str
@@ -1657,9 +1657,9 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="buscar_conocimiento",
         description=(
-            "Búsqueda semántica sobre la base de conocimiento documental: devuelve fragmentos "
-            "relevantes (con su fuente) para una consulta en lenguaje natural. Solo recupera "
-            "fragmentos que el usuario tiene autorizado ver."
+            "Búsqueda en la capa de conocimiento documental (texto completo local, ADR-046): "
+            "devuelve resultados con su fuente para una consulta. Solo recupera lo que el "
+            "usuario tiene autorizado ver."
         ),
         method="POST",
         path="/api/v1/knowledge/search",
@@ -1667,17 +1667,11 @@ CATALOG: tuple[Tool, ...] = (
         write=False,
         epic="E21",
         operacion="Buscar en la base de conocimiento documental",
-        # `acl` NO se expone: el knowledge-service impone el techo de clearance
-        # server-side desde `X-User-Id` (RF-SEG-08). Exponerlo al modelo sería
-        # superficie de mando innecesaria.
+        # `acl` NO se expone: knowledge-service reenvía la búsqueda a document-service
+        # como el usuario (clearance en el WHERE, RF-SEG-08).
         #
-        # Los límites SE ALINEARON con el backend al migrar. La tabla anterior
-        # anunciaba `query` de mínimo 2 caracteres y `top_k` hasta 20, mientras
-        # `SearchRequest` (knowledge-service/app/routers/knowledge.py) acepta
-        # `min_length=1` y `le=50` — y un test congelaba la divergencia. `top_k`
-        # se deja en 20 A PROPÓSITO y ahora dicho en voz alta: es un límite del
-        # asistente para no inundar la ventana de contexto del modelo, no del
-        # sistema. `query` pasa a 1, que es lo que el sistema acepta.
+        # `top_k` se deja en 20 a propósito (tope del catálogo MCP frente al `le=50`
+        # del backend) para no inundar al cliente externo. `query` admite min_length=1.
         params=(
             Param(
                 name="query",
@@ -1754,12 +1748,10 @@ CATALOG: tuple[Tool, ...] = (
     Tool(
         name="redactar_con_antecedentes",
         description=(
-            "Redacta un texto APOYADO en documentos del archivo y devuelve sus CITAS: "
-            "cada afirmación con el radicado del que sale. NO escribe nada en el "
-            "sistema — el texto se revisa y, si sirve, se lleva a un borrador con "
-            "'crear_borrador'. Si la respuesta llega sin 'answer' o sin citas, el "
-            "sistema no generó texto: entonces se ofrecen los antecedentes tal cual, "
-            "no una redacción propia. El texto es generado y así hay que presentarlo."
+            "Pide una redacción apoyada en antecedentes con citas. En modo local "
+            "(ADR-046) knowledge-service responde 503 rag_unavailable: no hay "
+            "generación hasta que exista un proveedor PPI. NO escribe nada en el "
+            "sistema. Mientras no haya generación, use buscar_antecedentes."
         ),
         method="POST",
         path="/api/v1/knowledge/rag",
@@ -6419,7 +6411,7 @@ class ArgError(ValueError):
 
 
 def json_schema(tool: Invocable) -> dict[str, Any]:
-    """JSON Schema de los argumentos. Sirve a MCP y a Anthropic sin adaptador.
+    """JSON Schema de los argumentos. Es el `inputSchema` que ve el cliente MCP.
 
     `additionalProperties: False` es solo advisory para el modelo —no lo aplica
     nadie server-side—, así que la barrera de verdad es `coerce_args`.
@@ -6551,7 +6543,7 @@ EPICA_CONOCIMIENTO = "E21"
 
 
 def es_de_conocimiento(tool: Invocable) -> bool:
-    """¿Es una de las tools que dependen de que la entidad active el asistente?"""
+    """¿Es una de las tools que dependen de que la entidad active la capa de conocimiento?"""
     return getattr(tool, "epic", "") == EPICA_CONOCIMIENTO
 
 
@@ -6597,8 +6589,8 @@ def visible_tools(
     *,
     asistente_habilitado: bool = False,
 ) -> list[Tool]:
-    """Tools visibles para un usuario según sus permisos (ROOT ve todas) y la bandera
-    del asistente de su entidad (ADR-037)."""
+    """Tools visibles según permisos (ROOT ve todas) y la bandera de capa de
+    conocimiento de la entidad (`asistente_habilitado`, ADR-037)."""
     return [
         t
         for t in CATALOG

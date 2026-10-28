@@ -18,7 +18,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core import config as cfg_module
 from app.core.database import get_tenant_conn
 from app.main import app
 
@@ -33,48 +32,9 @@ from app.main import app
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
 
-# E21 Inc.1: el default de DESPLIEGUE de `embedding_provider` es `local_st`
-# (sentence-transformers real, ver app/core/config.py) — pero la suite entera
-# (unit + integration, este conftest.py es el padre de tests/integration/)
-# jamás debe descargar/cargar ese modelo. Se fuerza `stub` a nivel de MÓDULO
-# (una sola vez, al importar este conftest — antes de que corra cualquier
-# test), no con un fixture: así el valor por defecto que ve cada test es
-# "stub" sin que cada archivo tenga que pedirlo explícitamente, y los
-# `monkeypatch.setattr(cfg_module.settings, "embedding_provider", ...)`
-# puntuales (simulando un proveedor externo) lo restauran a "stub" —no al
-# default de clase `local_st`— al terminar cada test.
-cfg_module.settings.embedding_provider = "stub"
-
-# E21 Inc.3: gemelo de lo anterior para GENERACIÓN — el default de despliegue de
-# `ai_provider` (`ollama_local`) apuntaría a `http://ollama:11434` (sin
-# infraestructura Ollama en este repo). Se fuerza `"disabled"` a nivel de MÓDULO
-# para que NINGÚN test dispare accidentalmente un intento de red real ni cargue el
-# SDK `anthropic` — `POST /rag` con `AI_PROVIDER=disabled` cae siempre al Patrón A
-# (recuperación pura, sin invocar ningún `LLMProvider`). Tests que SÍ quieran
-# ejercer la rama generativa deben mockear `app.services.llm.get_llm_provider` (o
-# monkeypatchear `ai_provider` a un nombre real Y mockear el provider) — nunca
-# dejar que la llamada real llegue a `httpx`/al SDK.
-cfg_module.settings.ai_provider = "disabled"
-
 # Desde ADR-037 las rutas de consulta exigen identidad (``get_actor``): 401 sin X-User-Id.
 USER_ID = "00000000-0000-4000-8000-0000000000a1"
 TENANT_HEADERS = {"X-Tenant-Slug": "demo", "X-User-Id": USER_ID}
-
-# Token compartido que usan los tests que ejercen el endpoint /ingest.
-TEST_INTERNAL_TOKEN = "test-internal-service-token-xxx"
-
-
-def consultas_a(conn: AsyncMock, tabla: str) -> list[str]:
-    """SQL de las lecturas ``fetchrow`` que tocan ``tabla`` (la resolución de clearance
-    también usa ``fetchrow``: contar llamadas a secas ya no distingue una de otra)."""
-    return [c.args[0] for c in conn.fetchrow.call_args_list if tabla in str(c.args[0])]
-
-
-@pytest.fixture
-def token_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Activa el token de ingesta para tests que necesitan llamar a /ingest."""
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
-
 
 @pytest_asyncio.fixture
 async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
@@ -84,10 +44,8 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     conn.fetch.return_value = []
 
     # `conn.transaction()` de asyncpg es un context manager async (no un
-    # coroutine). El default de AsyncMock lo haría awaitable y rompería
-    # `async with conn.transaction():` en el router (E21 Inc.3, escritura de
-    # kb_suggestions + asiento en la misma tx). Lo sustituimos por una factory
-    # que devuelve un CM async no-op reentrante.
+    # coroutine): el default de AsyncMock lo haría awaitable. Se sustituye por una
+    # factory que devuelve un CM async no-op reentrante.
     @asynccontextmanager
     async def _fake_tx() -> AsyncGenerator[None, None]:
         yield

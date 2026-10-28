@@ -30,7 +30,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { setBreadcrumbs } from "$lib/stores/ui.js";
-  import { permissions, sessionUser, puedeConsultarConocimiento } from "$lib/stores/auth.js";
+  import { permissions, sessionUser } from "$lib/stores/auth.js";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
 
   import Drawer from "$lib/components/ui/Drawer.svelte";
@@ -1096,8 +1096,9 @@
     {/if}
 
     <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper crear/editar
-         el borrador si el servicio de conocimiento no responde. -->
-    {#if $puedeConsultarConocimiento}
+         el borrador si el servicio de conocimiento no responde. Solo se muestra si
+         la entidad tiene generación (ADR-046 §3). -->
+    {#if data.generationAvailable === true}
       <RagSuggestButton
         endpoint="/borradores/api/rag/suggest"
         query={fSubject}

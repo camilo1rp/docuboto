@@ -181,12 +181,9 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/notification/admin/", app_state.notification_service_url),
         # signature-service
         ("/api/v1/signature/", app_state.signature_service_url),
-        # mcp-server — asistente conversacional (E18/ADR-019).
-        ("/api/v1/assistant/", app_state.mcp_service_url),
-        # Catálogo y protocolo MCP para clientes EXTERNOS. Antes no se enrutaba,
-        # y eso dejaba el diseño a medias: la decisión era «un solo catálogo y un
-        # solo gate para el asistente integrado y para clientes MCP externos», y
-        # los externos no tenían por dónde entrar salvo hablando con el servicio
+        # mcp-server — catálogo y protocolo MCP para clientes EXTERNOS (ADR-019;
+        # el asistente integrado se retiró en D0, ADR-046 §6). Sin esta ruta los
+        # externos no tendrían por dónde entrar salvo hablando con el servicio
         # a espaldas del gateway — es decir, sin su validación JWT ni la
         # inyección de `X-Tenant-Slug`.
         #
@@ -201,19 +198,13 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # a esa ventana. Con `X-Confirm-Write` —un booleano que cualquiera
         # fabricaba— enrutar esto habría sido abrir la escritura al exterior.
         ("/api/v1/mcp/", app_state.mcp_service_url),
-        # knowledge-service (E21) — SOLO /search, /antecedentes (Inc.2, Patrón A —
-        # recuperación anclada/citada, sin LLM) y /rag (Inc.3, Patrón B — RAG
-        # generativo con citas) se exponen; /ingest es interno (X-Internal-Token)
-        # y NO se enruta.
+        # knowledge-service (E21, ADR-046) — SOLO /search y /antecedentes (texto
+        # completo de document-service), /rag (503 `rag_unavailable` sin
+        # proveedor) y /availability (¿hay generación para la entidad?).
         ("/api/v1/knowledge/search", app_state.knowledge_service_url),
         ("/api/v1/knowledge/antecedentes", app_state.knowledge_service_url),
         ("/api/v1/knowledge/rag", app_state.knowledge_service_url),
-        # CC-02: aceptación humana de una sugerencia del RAG (solo quien la generó).
-        ("/api/v1/knowledge/suggestions/", app_state.knowledge_service_url),
-        # Admin DLQ (AREA-10-10): inspección y reproceso del dead-letter de la
-        # ingesta. Cada ruta exige PERM_DLQ_ADMIN en knowledge-service; /ingest
-        # sigue sin enrutarse.
-        ("/api/v1/knowledge/admin/", app_state.knowledge_service_url),
+        ("/api/v1/knowledge/availability", app_state.knowledge_service_url),
     ]
     # Límite de segmento: un prefijo sin barra final casa solo la ruta exacta o
     # sus subrutas (`/preservacion/eventos` NO casa `/preservacion/eventos-x`).
@@ -251,11 +242,6 @@ async def _handle_proxy(request: Request, path: str) -> Response:
 
     http_client: httpx.AsyncClient = request.app.state.http_client
 
-    # El asistente (E18) necesita un timeout mucho mayor que el global (loop LLM).
-    timeout: float | None = None
-    if upstream_base == request.app.state.mcp_service_url:
-        timeout = request.app.state.assistant_proxy_timeout
-
     # Las rutas anónimas llevan su propio tope, mucho más estrecho: el general
     # está dimensionado para el ZIP de importación, que exige autenticación.
     max_body_bytes = request.app.state.max_request_body_bytes
@@ -273,7 +259,6 @@ async def _handle_proxy(request: Request, path: str) -> Response:
             upstream_url=upstream_url,
             request=request,
             extra_headers=extra_headers,
-            timeout=timeout,
             max_body_bytes=max_body_bytes,
         )
     except httpx.TimeoutException:

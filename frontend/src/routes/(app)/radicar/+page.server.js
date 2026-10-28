@@ -23,6 +23,10 @@
  *        — catálogo de tipos documentales (archive-service)
  *        — usados en paso 1 para asociar al tipo E/S/I y en paso 2
  *
+ * Y, a la vez, si la entidad tiene generación de texto
+ * (`GET /api/v1/knowledge/availability`, ADR-046 §3): sin ella no se muestra
+ * «Sugerir con antecedentes» en el cuerpo del documento.
+ *
  * Si algún catálogo falla, se devuelve vacío y el stepper lo maneja con
  * estados de error en el paso correspondiente (degradación elegante).
  *
@@ -33,6 +37,7 @@
 
 import { COOKIE_ACCESS_TOKEN } from "$lib/services/auth.server.js";
 import { API_V1 } from "$lib/utils/config.server.js";
+import { fetchGenerationAvailable } from "$lib/server/knowledgeAvailability.server.js";
 
 /** @param {import('@sveltejs/kit').ServerLoadEvent} event */
 export async function load({ cookies, parent, fetch }) {
@@ -46,7 +51,8 @@ export async function load({ cookies, parent, fetch }) {
     "X-Tenant-Slug": tenant,
   };
 
-  // Carga paralela de los tres catálogos
+  // Carga paralela de los tres catálogos y de la disponibilidad de generación
+  const generacion = fetchGenerationAvailable(fetch, headers, user);
   const [depRes, trdRes, tiposRes] = await Promise.allSettled([
     fetch(`${API_V1}/dependencias?activo=true`, { headers }),
     fetch(`${API_V1}/trd?is_active=true&size=100`, { headers }),
@@ -82,6 +88,7 @@ export async function load({ cookies, parent, fetch }) {
     dependencias,
     trdSeries,
     tiposDocumentales,
+    generationAvailable: await generacion,
     // token y tenant NO se exponen: las llamadas cliente usan /radicar/api/* (D-05)
   };
 }

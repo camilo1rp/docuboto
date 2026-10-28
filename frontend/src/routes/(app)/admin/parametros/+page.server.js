@@ -72,20 +72,16 @@ export async function load({ cookies, parent, fetch }) {
     holidaysError = "No se pudo conectar al servidor de festivos.";
   }
 
-  // Bandera del asistente por entidad (C-1, ADR-037). `null` = no se pudo leer: la tarjeta
+  // Bandera de la capa de conocimiento por entidad (C-1, ADR-037). `null` = no se pudo leer: la tarjeta
   // lo dice en vez de mostrar «desactivado» como si fuera un dato.
   /** @type {boolean|null} */
   let asistenteHabilitado = null;
   let asistenteError = null;
-  /** @type {Record<string, unknown>|null} */
-  let asistenteProveedores = null;
   try {
     const res = await fetch(`${API_V1}/config/asistente`, { headers });
     if (res.ok) {
       const body = await res.json().catch(() => ({}));
       asistenteHabilitado = typeof body?.habilitado === "boolean" ? body.habilitado : null;
-      asistenteProveedores =
-        body?.proveedores && typeof body.proveedores === "object" ? body.proveedores : null;
       if (asistenteHabilitado === null) asistenteError = "Respuesta inesperada del servidor.";
     } else {
       const body = await res.json().catch(() => ({}));
@@ -102,6 +98,5 @@ export async function load({ cookies, parent, fetch }) {
     holidaysError,
     asistenteHabilitado,
     asistenteError,
-    asistenteProveedores,
   };
 }

@@ -205,11 +205,9 @@ plan que no declara sus puntos ciegos los convierte en aprobados.
   consume la interfaz y 3 —editar el plan en borrador, historial de seguimiento y mapa de
   ruta— tienen proxy sin pantalla todavía). La cifra ya no se escribe a mano:
   `pinar-paridad.test.js` la deriva de `pinar.py`.
-- **503 honestos que parecen averías**: asistente sin `ANTHROPIC_API_KEY`, RAG generativo con
-  `LLMProvider=disabled`, transcripción sin `whisper-service`. Son la respuesta correcta —
-  comprobar la configuración antes de tocar nada.
-- **El botón de dictado no aparece en Chrome**: es ADR-020 funcionando. En Chrome el reconocedor
-  del navegador manda el audio a Google, así que el camino es Whisper local. Ausencia esperada.
+- **503 honestos que parecen averías**: `/rag` sin proveedor PPI responde `503 rag_unavailable`
+  (ADR-046). Es la respuesta correcta — comprobar la configuración antes de tocar nada. El
+  asistente conversacional y `whisper-service` ya no existen.
 - **WORM y PDF/A**: con `preservation_enabled=False` la pantalla de preservación no muestra
   artefactos protegidos, y PDF/A informa `no_evaluado` sin veraPDF.
 - **Empaquetado AIP y protección WORM no tienen disparador en la interfaz**: son actos de

@@ -1,7 +1,7 @@
 # Suite "authenticated" — requiere la pila completa
 
 Los tests de este directorio ejercitan el login PKCE **real** contra Keycloak y
-vistas autenticadas (bandeja, acciones de operador, dock del asistente) contra
+vistas autenticadas (bandeja, acciones de operador) contra
 el `api-gateway` real.
 
 **No corren en el smoke**: `playwright.config.js` los excluye vía
@@ -12,8 +12,7 @@ determinista y sin infraestructura. Corren con su propio config.
 
 - `_sesion.js` (helper) y `_auth.setup.js` (proyecto `setup`) — la **única**
   puerta de sesión de la suite.
-- `login-flow.spec.js`, `bandeja-operador.spec.js`, `asistente-dock.spec.js` — los
-  flujos de operador.
+- `login-flow.spec.js`, `bandeja-operador.spec.js` — los flujos de operador.
 - **`rbac-restringido.spec.js`** — dos perfiles: `consulta` (sin `USUA_PERM_ADMIN`)
   no ve «Administración» y forzar `/admin/usuarios` o `/admin/trd` termina en
   `/403`; `e2e2` sí entra. `consulta` es del grupo «Consulta (solo lectura, nivel 1)»
@@ -118,7 +117,7 @@ defecto que el usuario sí veía.
 > vez de copiado en tres.
 >
 > Aquel «en vez de copiado en tres» era **la mitad de la historia**: había una
-> cuarta copia, en `asistente-dock.spec.js`, y se quedó fuera precisamente
+> cuarta copia, en `asistente-dock.spec.js` (spec retirada con el asistente, ADR-046 §6), y se quedó fuera precisamente
 > porque era la que funcionaba, así que nada la delató. Retirada en 2026-09-19,
 > ya con guardián: un recuento que se cree completo no informa de menos, afirma
 > de más.
