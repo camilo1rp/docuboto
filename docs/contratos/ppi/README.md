@@ -8,7 +8,7 @@
 > como todo el repositorio, bajo **AGPL-3.0-or-later**.
 > La decisión de arquitectura que la motiva es el ADR-045 de Docuboto, propuesto.
 
-**Status: draft, version 1.0.0, not yet implemented by any host or provider.**
+**Status: draft, version 1.1.0, not yet implemented by any host or provider.**
 
 ## Purpose
 
@@ -20,7 +20,7 @@ talk only over HTTP:
 | --- | --- | --- |
 | `capabilities` | host → provider | A statement, signed by the provider, of the sensitivity levels it accepts and how each level's model calls are routed, with its subprocessors |
 | `connection` | host → provider | The host declares its ordered sensitivity levels, its vocabularies (document types, units), its callback URLs and callback keys |
-| `ingest` | host → provider | The host pushes records and attachments, and deletes them. It can also purge everything and list what the provider holds |
+| `ingest` | host → provider | The host pushes records and attachments, and deletes them. It can also purge everything, or only some levels, and list what the provider holds |
 | `query` | host → provider | Search and ask on behalf of a host user, with that user's clearance and an optional scope (a record and its children) |
 | `run` | host → provider | On-demand tasks, such as drafting a reply. Results come back as recommendations |
 | `recommend` | provider → host (callback) | Typed, cited, advisory recommendations: `classify`, `route`, `deadline`, `relate`, `link_party`, `draft`. An explicit "none" with a reason is also allowed |
@@ -61,9 +61,9 @@ a single message can show. These rules cover what one message can't.
 
 1. A provider MUST reject an `ingest` item whose `sensitivity` it doesn't accept
    (`level_not_accepted`), and MUST store nothing about it.
-2. A deletion, a `410` from `content`, or a purge MUST remove the object, its children when
-   asked, and everything derived from them (parsed text, chunks, embeddings and cached
-   bytes). The provider MUST stop serving the object before it answers.
+2. A deletion, a `410` from `content`, or a purge (of the whole tenant, or of the levels it
+   names) MUST remove the object, its children when asked, and everything derived from
+   them (parsed text, chunks, embeddings and cached bytes). The provider MUST stop serving the object before it answers.
 3. A provider MUST NOT make a claim without at least one citation. When the evidence isn't
    enough, the answer MUST be `insufficient_evidence` with no claims.
 4. A recommendation MUST carry at least one citation, and MUST use only vocabulary codes
@@ -124,6 +124,13 @@ carries it in `PPI-Version`.
 
 Peers with the same major version interoperate. A new major version gets a new URL
 prefix (`/v2`) and both prefixes are served during the migration.
+
+### Changes
+
+- **1.1.0 (2026-10-27).** `PurgeRequest` gains an optional `levels` list, so a host can
+  delete only the levels it stops transmitting. Without it, a purge still deletes
+  everything for the host tenant. Fixtures: `purge-request-levels.json` (valid) and
+  `purge-request-empty-levels.json` (invalid).
 
 ## Where the specification lives
 

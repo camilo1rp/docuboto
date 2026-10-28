@@ -1,5 +1,5 @@
 {
-  "protocol_version": "1.0.0",
+  "protocol_version": "1.1.0",
   "description": "Conformance fixtures for PPI v1. Each entry names a fixture, the schema it is checked against (a JSON Schema file, or a component of the OpenAPI document), and whether it must validate. Paths are relative to this directory's parent.",
   "fixtures": [
     {
@@ -54,6 +54,11 @@
     },
     {
       "file": "examples/valid/purge-request.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/PurgeRequest",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/purge-request-levels.json",
       "schema": "ppi-v1.openapi.yaml#/components/schemas/PurgeRequest",
       "valid": true
     },
@@ -191,6 +196,12 @@
       "file": "examples/valid/problem-level-not-accepted.json",
       "schema": "ppi-v1.openapi.yaml#/components/schemas/Problem",
       "valid": true
+    },
+    {
+      "file": "examples/invalid/purge-request-empty-levels.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/PurgeRequest",
+      "valid": false,
+      "why": "A purge that names levels names at least one; to purge everything, leave `levels` out."
     },
     {
       "file": "examples/invalid/citation-without-quote.json",

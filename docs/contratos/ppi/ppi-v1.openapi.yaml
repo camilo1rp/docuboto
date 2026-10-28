@@ -11,7 +11,7 @@ openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: Intelligence Provider Protocol (PPI)
-  version: 1.0.0
+  version: 1.1.0
   summary: A neutral protocol between a records system (the host) and an intelligence provider.
   description: |
     PPI lets a **host** (a system of record) use an **intelligence provider** that runs
@@ -169,7 +169,12 @@ paths:
     post:
       tags: [ingest]
       operationId: purge
-      summary: Delete everything the provider holds for the calling host tenant
+      summary: Delete everything the provider holds for the calling host tenant, or only some levels
+      description: |
+        Without `levels`, the provider deletes everything it holds for the calling host
+        tenant. With `levels` (since 1.1.0), it deletes only the records and attachments at
+        those levels, and everything derived from them. A host uses it when it stops
+        transmitting a level.
       parameters:
         - $ref: '#/components/parameters/PpiVersion'
       requestBody:
@@ -817,6 +822,13 @@ components:
           enum: [withdrawn, host_request]
         requested_by:
           $ref: './schemas/common.schema.json#/$defs/SubjectRef'
+        levels:
+          description: Since 1.1.0. Delete only these levels. Without it, delete everything for the host tenant.
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: './schemas/common.schema.json#/$defs/LevelCode'
       additionalProperties: false
 
     PurgeAccepted:
