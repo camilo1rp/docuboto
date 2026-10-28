@@ -1,0 +1,56 @@
+{
+  "statement": {
+    "protocol_version": "1.0.0",
+    "provider": {
+      "id": "example-provider",
+      "name": "Example Provider",
+      "version": "4.17.0"
+    },
+    "connection_id": "conn.01JB6Z",
+    "accepted_levels": [
+      "public"
+    ],
+    "routing": [
+      {
+        "level": "public",
+        "hosting": "hosted",
+        "model_aliases": [
+          "triage-small",
+          "drafting-large",
+          "embed-default"
+        ],
+        "subprocessors": [
+          "model-host-a"
+        ],
+        "prompt_and_output_retention": "none",
+        "trains_on_customer_data": false
+      }
+    ],
+    "subprocessors": [
+      {
+        "id": "model-host-a",
+        "name": "Example Model Host",
+        "purpose": "Language model inference",
+        "country": "US"
+      }
+    ],
+    "recommendation_kinds": [
+      "classify",
+      "route",
+      "deadline",
+      "relate",
+      "link_party",
+      "draft"
+    ],
+    "run_tasks": [
+      "draft_reply"
+    ],
+    "limits": {
+      "max_batch_items": 100,
+      "max_attachment_bytes": 104857600
+    },
+    "issued_at": "2026-10-27T14:05:09Z",
+    "expires_at": "2026-11-27T14:05:09Z"
+  },
+  "jws": "eyJhbGciOiJFZERTQSIsImtpZCI6InByb3YtMjAyNi0xMCJ9..c2lnbmF0dXJlLXBsYWNlaG9sZGVyLW5vdC1hLXJlYWwtc2lnbmF0dXJl"
+}

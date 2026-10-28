@@ -1,0 +1,10 @@
+{
+  "mode": "ask",
+  "status": "insufficient_evidence",
+  "claims": [],
+  "reason": "No transmitted record mentions the supervision reports' dates.",
+  "models": [
+    "drafting-large"
+  ],
+  "pipeline_fingerprint": "ask-2026.10.1+aa31c2"
+}

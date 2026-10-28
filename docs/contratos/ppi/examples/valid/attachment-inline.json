@@ -1,0 +1,16 @@
+{
+  "external_ref": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d",
+  "parent_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+  "version": "1",
+  "sensitivity": "public",
+  "filename": "mensaje-original.txt",
+  "media_type": "text/plain",
+  "role": "original_message",
+  "size_bytes": 77,
+  "page_count": null,
+  "sha256": "9e8e166f72914341fa4bd64100e9772505247d2096820fdec9a2ea3fbf7ee887",
+  "content": {
+    "mode": "inline",
+    "bytes_base64": "U29saWNpdG8gY29waWEgZGVsIGNvbnRyYXRvIGRlIG9icmEgMDQ1IGRlIDIwMjYgeSBzdXMgYWN0YXMgZGUgc3VwZXJ2aXNpw7NuLgo="
+  }
+}

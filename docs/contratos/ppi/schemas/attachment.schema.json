@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.ppi.example/v1/schemas/attachment.schema.json",
+  "title": "PPI v1 attachment",
+  "description": "A file that belongs to a record (its child). The content travels either inline, as bytes, or as a locator that the provider fetches back through the host's `content` callback. `sha256` is mandatory in both modes, and a provider that fetches by locator verifies it and fails closed on a mismatch.",
+  "type": "object",
+  "required": [
+    "external_ref",
+    "parent_ref",
+    "version",
+    "sensitivity",
+    "filename",
+    "media_type",
+    "size_bytes",
+    "sha256",
+    "content"
+  ],
+  "properties": {
+    "external_ref": { "$ref": "common.schema.json#/$defs/ExternalRef" },
+    "parent_ref": {
+      "description": "The record this attachment belongs to.",
+      "$ref": "common.schema.json#/$defs/ExternalRef"
+    },
+    "version": { "$ref": "common.schema.json#/$defs/Version" },
+    "sensitivity": {
+      "description": "Never lower than the parent record's level.",
+      "$ref": "common.schema.json#/$defs/LevelCode"
+    },
+    "filename": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "media_type": {
+      "type": "string",
+      "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$",
+      "maxLength": 255
+    },
+    "role": {
+      "description": "`main` is the record's principal document; `original_message` is the original e-mail message a record was registered from.",
+      "enum": ["main", "attachment", "original_message"]
+    },
+    "size_bytes": { "type": "integer", "minimum": 0 },
+    "page_count": { "type": ["integer", "null"], "minimum": 1 },
+    "sha256": { "$ref": "common.schema.json#/$defs/Sha256" },
+    "content": {
+      "oneOf": [
+        {
+          "title": "Inline bytes",
+          "type": "object",
+          "required": ["mode", "bytes_base64"],
+          "properties": {
+            "mode": { "const": "inline" },
+            "bytes_base64": { "type": "string", "contentEncoding": "base64" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "title": "Locator",
+          "type": "object",
+          "required": ["mode", "locator"],
+          "properties": {
+            "mode": { "const": "locator" },
+            "locator": {
+              "description": "Opaque to the provider. It is only ever sent back to the host's `content` callback.",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

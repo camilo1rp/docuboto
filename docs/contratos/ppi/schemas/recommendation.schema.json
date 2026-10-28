@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.ppi.example/v1/schemas/recommendation.schema.json",
+  "title": "PPI v1 recommendation",
+  "description": "A typed, cited, advisory recommendation that the provider delivers to the host's `recommend` callback. It never changes host state: a person in the host decides, and the host reports the decision through `decisions`. `ref` is the idempotency key: delivering the same `ref` twice is the same recommendation.",
+  "type": "object",
+  "required": [
+    "ref",
+    "kind",
+    "record_ref",
+    "record_version",
+    "arguments",
+    "evidence",
+    "confidence",
+    "models",
+    "pipeline_fingerprint",
+    "supersedes",
+    "created_at"
+  ],
+  "properties": {
+    "ref": {
+      "description": "Idempotency key chosen by the provider, unique per provider. Hosts store a recommendation once per (provider, ref).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9._:~-]+$"
+    },
+    "kind": { "enum": ["classify", "route", "deadline", "relate", "link_party", "draft"] },
+    "record_ref": {
+      "description": "The host record the recommendation is about.",
+      "$ref": "common.schema.json#/$defs/ExternalRef"
+    },
+    "record_version": {
+      "description": "The record version the recommendation was computed on. A host may expire it if the record has changed since.",
+      "$ref": "common.schema.json#/$defs/Version"
+    },
+    "arguments": { "type": "object" },
+    "evidence": {
+      "description": "At least one citation. A recommendation without evidence is never sent.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "$ref": "citation.schema.json" }
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "models": {
+      "description": "Model aliases used, as named in the provider's capabilities statement. Never vendor model identifiers the host would have to interpret.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "pipeline_fingerprint": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "supersedes": {
+      "description": "The `ref` of an earlier recommendation this one replaces, or null.",
+      "type": ["string", "null"],
+      "maxLength": 200
+    },
+    "run_ref": {
+      "description": "Set when the recommendation is the result of a `run`.",
+      "type": ["string", "null"],
+      "maxLength": 200
+    },
+    "rationale": {
+      "description": "Short plain-text explanation. Hosts render it as text, never as markup.",
+      "type": ["string", "null"],
+      "maxLength": 2000
+    },
+    "created_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "expires_at": {
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/Timestamp" }, { "type": "null" }]
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "classify" } } },
+      "then": { "properties": { "arguments": { "$ref": "#/$defs/ClassifyArguments" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "route" } } },
+      "then": { "properties": { "arguments": { "$ref": "#/$defs/RouteArguments" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "deadline" } } },
+      "then": { "properties": { "arguments": { "$ref": "#/$defs/DeadlineArguments" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "relate" } } },
+      "then": { "properties": { "arguments": { "$ref": "#/$defs/RelateArguments" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "link_party" } } },
+      "then": { "properties": { "arguments": { "$ref": "#/$defs/LinkPartyArguments" } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "draft" } } },
+      "then": { "properties": { "arguments": { "$ref": "#/$defs/DraftArguments" } } }
+    }
+  ],
+  "$defs": {
+    "Alternative": {
+      "type": "object",
+      "required": ["code", "confidence"],
+      "properties": {
+        "code": { "$ref": "common.schema.json#/$defs/VocabularyCode" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "ClassifyArguments": {
+      "description": "Set the record's document type to a code from the host's `document_types` vocabulary.",
+      "type": "object",
+      "required": ["document_type"],
+      "properties": {
+        "document_type": { "$ref": "common.schema.json#/$defs/VocabularyCode" },
+        "alternatives": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/Alternative" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "RouteArguments": {
+      "description": "Send the record to a unit from the host's `units` vocabulary.",
+      "type": "object",
+      "required": ["unit"],
+      "properties": {
+        "unit": { "$ref": "common.schema.json#/$defs/VocabularyCode" },
+        "alternatives": {
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/Alternative" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DeadlineArguments": {
+      "description": "A due date the provider computed. It is labelled as computed; the host's value stays official.",
+      "type": "object",
+      "required": ["due_date", "computed", "host_due_date", "basis"],
+      "properties": {
+        "due_date": { "$ref": "common.schema.json#/$defs/Date" },
+        "computed": { "const": true },
+        "host_due_date": {
+          "description": "The official value the provider saw, or null if the record had none.",
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/Date" }, { "type": "null" }]
+        },
+        "business_days": { "type": ["integer", "null"], "minimum": 1, "maximum": 3650 },
+        "basis": {
+          "description": "Short reference to the rule applied, for display.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      },
+      "additionalProperties": false
+    },
+    "RelateArguments": {
+      "description": "Another host record that is related to this one.",
+      "type": "object",
+      "required": ["related_record_ref", "relation"],
+      "properties": {
+        "related_record_ref": { "$ref": "common.schema.json#/$defs/ExternalRef" },
+        "relation": { "enum": ["precedent", "same_matter", "duplicate"] }
+      },
+      "additionalProperties": false
+    },
+    "LinkPartyArguments": {
+      "description": "Who a party on the record is: an existing host party, or identifiers the host can match.",
+      "type": "object",
+      "required": ["role", "party"],
+      "properties": {
+        "role": { "enum": ["sender", "recipient", "mentioned"] },
+        "party": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "host_party_ref": {
+              "oneOf": [{ "$ref": "common.schema.json#/$defs/ExternalRef" }, { "type": "null" }]
+            },
+            "identifiers": {
+              "type": "array",
+              "maxItems": 10,
+              "items": { "$ref": "common.schema.json#/$defs/Identifier" }
+            }
+          },
+          "anyOf": [
+            { "required": ["host_party_ref"], "properties": { "host_party_ref": { "$ref": "common.schema.json#/$defs/ExternalRef" } } },
+            { "required": ["identifiers"], "properties": { "identifiers": { "minItems": 1 } } }
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "DraftArguments": {
+      "description": "A draft reply. The host creates its own draft from it, as the deciding user; the provider never files anything.",
+      "type": "object",
+      "required": ["reply_to_record_ref", "subject", "body", "body_format", "language"],
+      "properties": {
+        "reply_to_record_ref": { "$ref": "common.schema.json#/$defs/ExternalRef" },
+        "subject": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 100000 },
+        "body_format": { "enum": ["text/plain", "text/markdown"] },
+        "language": { "type": "string", "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

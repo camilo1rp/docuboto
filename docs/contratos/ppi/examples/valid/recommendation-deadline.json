@@ -1,0 +1,36 @@
+{
+  "ref": "rec.01JB7Q.deadline.v1",
+  "kind": "deadline",
+  "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+  "record_version": "7",
+  "arguments": {
+    "due_date": "2026-11-18",
+    "computed": true,
+    "host_due_date": null,
+    "business_days": 15,
+    "basis": "General term for petitions, counted in business days from receipt"
+  },
+  "evidence": [
+    {
+      "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+      "attachment_ref": null,
+      "page": null,
+      "span": {
+        "start": 0,
+        "end": 52
+      },
+      "quote": "Solicitud de copia del contrato de obra 045 de 2026",
+      "source_version": "7"
+    }
+  ],
+  "confidence": 0.93,
+  "models": [
+    "triage-small"
+  ],
+  "pipeline_fingerprint": "triage-2026.10.2+fc91d0",
+  "supersedes": null,
+  "run_ref": null,
+  "rationale": null,
+  "created_at": "2026-10-27T14:05:09Z",
+  "expires_at": "2026-11-26T14:05:09Z"
+}

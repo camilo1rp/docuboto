@@ -1,0 +1,15 @@
+{
+  "mode": "ask",
+  "status": "answered",
+  "claims": [
+    {
+      "text": "El contrato venció en 2025.",
+      "citations": []
+    }
+  ],
+  "reason": null,
+  "models": [
+    "drafting-large"
+  ],
+  "pipeline_fingerprint": "ask-2026.10.1+aa31c2"
+}

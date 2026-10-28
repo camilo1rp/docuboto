@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "external_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+      "type": "record",
+      "sensitivity": "public",
+      "version": "7",
+      "sha256": null,
+      "updated_at": "2026-10-27T14:05:09Z"
+    },
+    {
+      "external_ref": "6f1d2c3b-8a9e-4f70-b1c2-d3e4f5a6b7c8",
+      "type": "attachment",
+      "sensitivity": "public",
+      "version": "1",
+      "sha256": "4f0c8a1d9b2e7c6a5f3e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a",
+      "updated_at": "2026-10-27T14:05:09Z"
+    }
+  ],
+  "next_cursor": null
+}

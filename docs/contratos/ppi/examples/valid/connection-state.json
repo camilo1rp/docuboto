@@ -1,0 +1,28 @@
+{
+  "connection_id": "conn.01JB6Z",
+  "accepted_levels": [
+    "public"
+  ],
+  "rejected_levels": [
+    {
+      "code": "reserved",
+      "reason": "No local-only model zone is configured for this level"
+    },
+    {
+      "code": "classified",
+      "reason": "No local-only model zone is configured for this level"
+    }
+  ],
+  "recommendation_kinds": [
+    "classify",
+    "route",
+    "deadline",
+    "relate",
+    "link_party",
+    "draft"
+  ],
+  "key_ids": [
+    "k-2026-10"
+  ],
+  "updated_at": "2026-10-27T14:05:09Z"
+}

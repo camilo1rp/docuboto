@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.ppi.example/v1/schemas/record.schema.json",
+  "title": "PPI v1 record",
+  "description": "A host record pushed through `ingest`. The provider renders it deterministically into canonical text, so the official facts below (registration number, receipt time, type, unit, due date) can be cited with spans. Records are parents; attachments point to them with `parent_ref`.",
+  "type": "object",
+  "required": [
+    "external_ref",
+    "version",
+    "sensitivity",
+    "registration_number",
+    "received_at",
+    "direction",
+    "subject"
+  ],
+  "properties": {
+    "external_ref": { "$ref": "common.schema.json#/$defs/ExternalRef" },
+    "version": { "$ref": "common.schema.json#/$defs/Version" },
+    "sensitivity": { "$ref": "common.schema.json#/$defs/LevelCode" },
+    "registration_number": {
+      "description": "The official number the host gave the record when it was registered.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "received_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "direction": {
+      "description": "Whether the record came in, went out, or stayed inside the organisation.",
+      "enum": ["incoming", "outgoing", "internal"]
+    },
+    "subject": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "document_type": {
+      "description": "Official document type, from the host's `document_types` vocabulary. Null while the record is untyped.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/VocabularyCode" }, { "type": "null" }]
+    },
+    "unit": {
+      "description": "Organisational unit currently responsible, from the host's `units` vocabulary.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/VocabularyCode" }, { "type": "null" }]
+    },
+    "due_date": {
+      "description": "The host's official due date. The host's value is the official one; a provider that computes a different date sends a `deadline` recommendation instead of overriding it.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/Date" }, { "type": "null" }]
+    },
+    "status": {
+      "description": "Host-defined status label, for display and for excluding open records from training labels.",
+      "type": "string",
+      "maxLength": 64
+    },
+    "channel": {
+      "description": "Host-defined intake channel label (for example counter, email or web form).",
+      "type": ["string", "null"],
+      "maxLength": 64
+    },
+    "closed": {
+      "description": "True once the host considers the matter finished. Providers may use closed records as labelled examples.",
+      "type": "boolean"
+    },
+    "parties": {
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/Party" },
+      "maxItems": 50
+    },
+    "links": {
+      "description": "Links to other host records.",
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "required": ["relation", "external_ref"],
+        "properties": {
+          "relation": { "enum": ["reply_to", "related"] },
+          "external_ref": { "$ref": "common.schema.json#/$defs/ExternalRef" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "extra": {
+      "description": "Host-chosen display fields, rendered as-is. They are not vocabulary and must not carry content the host would not transmit.",
+      "type": "object",
+      "maxProperties": 50,
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+      "additionalProperties": { "type": "string", "maxLength": 2000 }
+    }
+  },
+  "additionalProperties": false
+}

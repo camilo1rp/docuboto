@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec.ppi.example/v1/schemas/decision.schema.json",
+  "title": "PPI v1 decision",
+  "description": "What the host did with a recommendation. A person decides `accepted` and `rejected`; the host itself records `superseded` (a newer recommendation or an official value replaced it) and `expired`.",
+  "type": "object",
+  "required": ["recommendation_ref", "decision", "decided_at", "decided_by"],
+  "properties": {
+    "recommendation_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9._:~-]+$"
+    },
+    "decision": { "enum": ["accepted", "rejected", "superseded", "expired"] },
+    "reason": {
+      "description": "Required when the decision is `rejected`.",
+      "enum": ["incorrect", "incomplete", "already_resolved", "not_applicable", "other", null]
+    },
+    "note": { "type": ["string", "null"], "maxLength": 1000 },
+    "decided_at": { "$ref": "common.schema.json#/$defs/Timestamp" },
+    "decided_by": {
+      "description": "Pseudonymous reference to the person who decided; null when the host recorded the decision itself.",
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/SubjectRef" }, { "type": "null" }]
+    },
+    "applied_arguments": {
+      "description": "On `accepted`, the arguments the host actually applied, in the shape of the recommendation's `arguments`.",
+      "type": ["object", "null"]
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "decision": { "const": "rejected" } } },
+      "then": {
+        "required": ["reason"],
+        "properties": { "reason": { "enum": ["incorrect", "incomplete", "already_resolved", "not_applicable", "other"] } }
+      }
+    },
+    {
+      "if": { "properties": { "decision": { "enum": ["accepted", "rejected"] } } },
+      "then": { "properties": { "decided_by": { "$ref": "common.schema.json#/$defs/SubjectRef" } } }
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "items": [
+    {
+      "type": "record",
+      "record": {
+        "external_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+        "version": "7",
+        "sensitivity": "public",
+        "registration_number": "R-2026-000123",
+        "received_at": "2026-10-27T13:58:41Z",
+        "direction": "incoming",
+        "subject": "Solicitud de copia del contrato de obra 045 de 2026",
+        "document_type": null,
+        "unit": "U-210",
+        "due_date": null,
+        "status": "received",
+        "channel": "email",
+        "closed": false,
+        "parties": [
+          {
+            "role": "sender",
+            "name": "Ana María Rojas",
+            "organization": null,
+            "host_party_ref": null,
+            "identifiers": [
+              {
+                "scheme": "national_id",
+                "value": "52123456"
+              }
+            ]
+          }
+        ],
+        "links": [],
+        "extra": {
+          "intake_note": "Recibido por correo institucional"
+        }
+      }
+    },
+    {
+      "type": "attachment",
+      "attachment": {
+        "external_ref": "6f1d2c3b-8a9e-4f70-b1c2-d3e4f5a6b7c8",
+        "parent_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+        "version": "1",
+        "sensitivity": "public",
+        "filename": "solicitud.pdf",
+        "media_type": "application/pdf",
+        "role": "main",
+        "size_bytes": 184233,
+        "page_count": 2,
+        "sha256": "4f0c8a1d9b2e7c6a5f3e1d0c9b8a7f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a",
+        "content": {
+          "mode": "locator",
+          "locator": "att:6f1d2c3b-8a9e-4f70-b1c2-d3e4f5a6b7c8:v1"
+        }
+      }
+    },
+    {
+      "type": "attachment",
+      "attachment": {
+        "external_ref": "9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d",
+        "parent_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+        "version": "1",
+        "sensitivity": "public",
+        "filename": "mensaje-original.txt",
+        "media_type": "text/plain",
+        "role": "original_message",
+        "size_bytes": 77,
+        "page_count": null,
+        "sha256": "9e8e166f72914341fa4bd64100e9772505247d2096820fdec9a2ea3fbf7ee887",
+        "content": {
+          "mode": "inline",
+          "bytes_base64": "U29saWNpdG8gY29waWEgZGVsIGNvbnRyYXRvIGRlIG9icmEgMDQ1IGRlIDIwMjYgeSBzdXMgYWN0YXMgZGUgc3VwZXJ2aXNpw7NuLgo="
+        }
+      }
+    },
+    {
+      "type": "deletion",
+      "deletion": {
+        "external_ref": "3c2b1a09-8f7e-4d6c-9b5a-493827161504",
+        "reason": "reclassified",
+        "include_children": true
+      }
+    }
+  ]
+}

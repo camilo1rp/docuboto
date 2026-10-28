@@ -1,0 +1,61 @@
+{
+  "protocol_version": "1.0.0",
+  "sensitivity_levels": [
+    {
+      "code": "public",
+      "label": "Public"
+    },
+    {
+      "code": "reserved",
+      "label": "Reserved"
+    },
+    {
+      "code": "classified",
+      "label": "Classified"
+    }
+  ],
+  "vocabularies": {
+    "document_types": [
+      {
+        "code": "petition",
+        "label": "Petition"
+      },
+      {
+        "code": "records-request",
+        "label": "Request for information"
+      },
+      {
+        "code": "complaint",
+        "label": "Complaint"
+      }
+    ],
+    "units": [
+      {
+        "code": "U-210",
+        "label": "Records office"
+      },
+      {
+        "code": "U-310",
+        "label": "Contracts office"
+      }
+    ]
+  },
+  "callbacks": {
+    "recommend_url": "https://host.internal:8443/ppi/v1/recommendations",
+    "content_url": "https://host.internal:8443/ppi/v1/content",
+    "keys": [
+      {
+        "kid": "k-2026-10",
+        "secret_base64": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+      }
+    ]
+  },
+  "recommendation_kinds": [
+    "classify",
+    "route",
+    "deadline",
+    "relate",
+    "link_party",
+    "draft"
+  ]
+}

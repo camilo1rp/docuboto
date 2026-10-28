@@ -1,0 +1,1145 @@
+# Docuboto — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: Intelligence Provider Protocol (PPI)
+  version: 1.0.0
+  summary: A neutral protocol between a records system (the host) and an intelligence provider.
+  description: |
+    PPI lets a **host** (a system of record) use an **intelligence provider** that runs
+    as a separate program, without either one depending on the other's code.
+
+    - The host **pushes** records and attachments (`ingest`). The provider never reads
+      the host's database, storage or event bus.
+    - The host asks on behalf of one of its users (`query`) and gets answers that cite
+      host references, or `insufficient_evidence`.
+    - The provider sends typed, cited, **advisory** recommendations to a host callback
+      (`recommend`). A person in the host decides, and the host reports back
+      (`decisions`). The provider never changes host state.
+    - On-demand tasks (`run`) return their results as recommendations.
+    - The provider publishes a **signed** statement of the sensitivity levels it
+      accepts and how each level's model calls are routed (`capabilities`).
+
+    Sensitivity levels are an ordered list that the host declares in its connection
+    (`PUT /v1/connection`). A host decides on its own which levels it transmits; the
+    levels a provider accepts never oblige the host to send anything.
+
+    Every request and response carries the header `PPI-Version` with the protocol
+    version the sender implements (semver). See README.md for the versioning policy and
+    the normative rules that conformance checks.
+
+    Part of Docuboto, licensed under AGPL-3.0-or-later (see LICENSE at the repository root).
+  license:
+    name: GNU Affero General Public License v3.0 or later
+    identifier: AGPL-3.0-or-later
+
+servers:
+  - url: https://provider.internal
+    description: Placeholder. A provider is reached on the installation's internal network; the host is configured with the real base URL.
+
+security:
+  - hostServiceAccount: []
+
+tags:
+  - name: capabilities
+    description: What the provider accepts, and how it routes model calls per level.
+  - name: connection
+    description: The host's declarations for its tenant at the provider.
+  - name: ingest
+    description: Records, attachments and deletions pushed by the host.
+  - name: query
+    description: Search and ask on behalf of a host user.
+  - name: run
+    description: On-demand tasks whose results come back as recommendations.
+  - name: recommendation-loop
+    description: The provider delivers recommendations to the host (`recommend`, a host callback) and the host sends back what it decided (`decisions`).
+
+paths:
+  /v1/capabilities:
+    get:
+      tags: [capabilities]
+      operationId: getCapabilities
+      summary: Signed statement of accepted levels and model routing per level
+      description: |
+        The statement is specific to the calling host tenant. The host verifies the
+        signature with the provider key pinned in its own configuration, shows the
+        provider and its subprocessors to the administrator who enables the provider,
+        and keeps the statement's SHA-256 (over its RFC 8785 canonical JSON form). A
+        changed digest means the provider changed what it does with the host's data, and
+        the host should stop transmitting until an administrator accepts the change.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      responses:
+        '200':
+          description: The current signed statement.
+          headers:
+            PPI-Version:
+              $ref: '#/components/headers/PpiVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedCapabilities'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/connection:
+    put:
+      tags: [connection]
+      operationId: putConnection
+      summary: Declare or update the host tenant's connection
+      description: |
+        The host declares its ordered sensitivity levels, its vocabularies, its callback
+        URLs and the keys the provider uses to sign callbacks. Callback keys are
+        write-only: they are never returned. Declaring two keys allows rotation; the
+        provider signs with the most recently added one.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Connection'
+      responses:
+        '200':
+          description: Connection stored. Levels the provider does not accept are listed with a reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionState'
+        default:
+          $ref: '#/components/responses/Problem'
+    get:
+      tags: [connection]
+      operationId: getConnection
+      summary: Read the stored connection (without secrets)
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      responses:
+        '200':
+          description: The stored connection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectionState'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/ingest:
+    post:
+      tags: [ingest]
+      operationId: ingest
+      summary: Upsert records and attachments, or delete them
+      description: |
+        Items are processed independently and each gets its own result.
+
+        - An upsert with a `version` the provider already holds is `unchanged`.
+        - An item whose `sensitivity` the provider does not accept is `rejected` with
+          reason `level_not_accepted`, and nothing about it is stored.
+        - A deletion removes the object, its children when `include_children` is true,
+          and everything derived from them (parsed text, chunks, embeddings, cached
+          bytes). The provider stops serving it before it answers.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestBatch'
+      responses:
+        '200':
+          description: One result per item, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResult'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/ingest/purge:
+    post:
+      tags: [ingest]
+      operationId: purge
+      summary: Delete everything the provider holds for the calling host tenant
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeRequest'
+      responses:
+        '202':
+          description: Purge accepted. Query the inventory to confirm it is empty.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeAccepted'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/ingest/inventory:
+    get:
+      tags: [ingest]
+      operationId: getInventory
+      summary: List what the provider holds for the calling host tenant
+      description: Lets the host reconcile what it sent with what the provider holds, for example to prove that nothing above a level remains.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 512
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 500
+      responses:
+        '200':
+          description: One page of the inventory.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryPage'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/query:
+    post:
+      tags: [query]
+      operationId: query
+      summary: Search or ask on behalf of a host user
+      description: |
+        `on_behalf_of` and `clearance` never widen what the host's service account may
+        reach. In `ask` mode every claim carries at least one citation; when the
+        evidence is not enough the answer is `insufficient_evidence`, with no claims.
+        The host re-checks every hit and citation against its own access rules before
+        showing it.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        '200':
+          description: Search hits or an answer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/runs:
+    post:
+      tags: [run]
+      operationId: startRun
+      summary: Start an on-demand task
+      description: The task must be one of the `run_tasks` in the capabilities statement. Results are delivered as recommendations carrying this run's `run_ref`.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunRequest'
+      responses:
+        '202':
+          description: Task accepted. Starting the same `idempotency_key` twice returns the same run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunStatus'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/runs/{run_ref}:
+    get:
+      tags: [run]
+      operationId: getRun
+      summary: Status of a task
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+        - name: run_ref
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 200
+      responses:
+        '200':
+          description: Current status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunStatus'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/decisions:
+    post:
+      tags: [recommendation-loop]
+      operationId: postDecisions
+      summary: Report what the host decided about recommendations
+      description: Sending the same decision twice is harmless (`duplicate`).
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionBatch'
+      responses:
+        '200':
+          description: One result per decision, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionResult'
+        default:
+          $ref: '#/components/responses/Problem'
+
+webhooks:
+  recommend:
+    post:
+      tags: [recommendation-loop]
+      operationId: recommend
+      summary: Host callback that receives recommendations
+      description: |
+        Served by the host at the `recommend_url` it declared in its connection. The
+        provider signs every call (see `providerSignature`) and retries with the same
+        `ref` until it gets a result. The host stores each `ref` once and rejects a
+        recommendation whose kind it does not handle, whose vocabulary code it did not
+        declare, or whose record it no longer transmits. A batch may also carry explicit
+        `no_recommendation` entries, so every processed record gets either
+        recommendations or a stated reason for having none.
+      security:
+        - providerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendationBatch'
+      responses:
+        '200':
+          description: One result per recommendation, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendResult'
+        default:
+          $ref: '#/components/responses/Problem'
+  content:
+    post:
+      tags: [ingest]
+      operationId: fetchContent
+      summary: Host callback that returns the bytes behind a locator
+      description: |
+        Served by the host at the `content_url` it declared. The host re-checks the
+        object's level before answering. The provider verifies the SHA-256 of what it
+        receives and fails closed on a mismatch. `410` means the object is no longer
+        transmitted: the provider deletes it and everything derived from it, as for an
+        `ingest` deletion.
+      security:
+        - providerSignature: []
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContentRequest'
+      responses:
+        '200':
+          description: The bytes.
+          headers:
+            PPI-Content-SHA256:
+              description: SHA-256 of the body, lowercase hex.
+              schema:
+                $ref: './schemas/common.schema.json#/$defs/Sha256'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        '404':
+          $ref: '#/components/responses/Problem'
+        '410':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+
+components:
+  securitySchemes:
+    hostServiceAccount:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        An access token the host obtains from its own identity provider with the OAuth 2.0
+        client credentials grant, one client per host tenant. The provider maps the pair
+        (issuer, client ID) to exactly one host tenant; claims in the token never make a
+        caller a service account by themselves. This token is only ever presented to the
+        provider.
+    providerSignature:
+      type: apiKey
+      in: header
+      name: PPI-Signature
+      description: |
+        Callbacks from the provider to the host are signed with an HMAC-SHA256 key the
+        host declared in its connection. The provider sends four headers:
+
+        - `PPI-Key-Id`: the `kid` of the key used;
+        - `PPI-Timestamp`: Unix time in seconds;
+        - `PPI-Nonce`: 16 to 64 random URL-safe characters, never reused;
+        - `PPI-Signature`: `v1=` followed by the unpadded base64url HMAC-SHA256, under
+          that key, of the string
+          `v1\n{METHOD}\n{path}\n{PPI-Timestamp}\n{PPI-Nonce}\n{lowercase hex SHA-256 of the body}`,
+          where `{path}` is the request path without the query string.
+
+        The host rejects a call whose timestamp is more than 300 seconds away from its
+        own clock, whose nonce it has already seen inside that window, or whose
+        signature does not verify under any of its current keys.
+
+  parameters:
+    PpiVersion:
+      name: PPI-Version
+      in: header
+      required: true
+      description: Protocol version the sender implements (semver). Peers with the same major version interoperate.
+      schema:
+        type: string
+        pattern: '^1\.\d+\.\d+$'
+
+  headers:
+    PpiVersion:
+      description: Protocol version the sender implements (semver).
+      schema:
+        type: string
+        pattern: '^1\.\d+\.\d+$'
+
+  responses:
+    Problem:
+      description: An error, as RFC 9457 problem details.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Record:
+      $ref: './schemas/record.schema.json'
+    Attachment:
+      $ref: './schemas/attachment.schema.json'
+    Citation:
+      $ref: './schemas/citation.schema.json'
+    Recommendation:
+      $ref: './schemas/recommendation.schema.json'
+    Decision:
+      $ref: './schemas/decision.schema.json'
+
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+        code:
+          description: |
+            Stable machine-readable code. Codes defined by v1: `invalid_request`,
+            `unauthenticated`, `not_enabled`, `level_not_accepted`,
+            `unknown_vocabulary_code`, `scope_not_found`, `unknown_task`,
+            `unknown_kind`, `signature_invalid`, `replayed_nonce`, `content_mismatch`,
+            `gone`, `rate_limited`, `unavailable`.
+          type: string
+          pattern: '^[a-z][a-z0-9_]{1,63}$'
+        instance:
+          type: string
+
+    LevelDeclaration:
+      type: object
+      required: [code, label]
+      properties:
+        code:
+          $ref: './schemas/common.schema.json#/$defs/LevelCode'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 128
+      additionalProperties: false
+
+    RecommendationKind:
+      enum: [classify, route, deadline, relate, link_party, draft]
+
+    Connection:
+      type: object
+      required: [protocol_version, sensitivity_levels, vocabularies, callbacks, recommendation_kinds]
+      properties:
+        protocol_version:
+          type: string
+          pattern: '^1\.\d+\.\d+$'
+        sensitivity_levels:
+          description: Ordered from lowest to highest. Codes are unique.
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/LevelDeclaration'
+        vocabularies:
+          type: object
+          required: [document_types, units]
+          properties:
+            document_types:
+              type: array
+              maxItems: 5000
+              items:
+                $ref: './schemas/common.schema.json#/$defs/VocabularyEntry'
+            units:
+              type: array
+              maxItems: 5000
+              items:
+                $ref: './schemas/common.schema.json#/$defs/VocabularyEntry'
+          additionalProperties: false
+        callbacks:
+          type: object
+          required: [recommend_url, content_url, keys]
+          properties:
+            recommend_url:
+              type: string
+              format: uri
+            content_url:
+              type: string
+              format: uri
+            keys:
+              type: array
+              minItems: 1
+              maxItems: 2
+              items:
+                type: object
+                required: [kid, secret_base64]
+                properties:
+                  kid:
+                    type: string
+                    pattern: '^[A-Za-z0-9._-]{1,64}$'
+                  secret_base64:
+                    description: At least 32 random bytes, base64-encoded. Write-only.
+                    type: string
+                    contentEncoding: base64
+                    minLength: 44
+                    writeOnly: true
+                additionalProperties: false
+          additionalProperties: false
+        recommendation_kinds:
+          description: The kinds the host wants to receive.
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RecommendationKind'
+      additionalProperties: false
+
+    ConnectionState:
+      type: object
+      required: [connection_id, accepted_levels, rejected_levels, recommendation_kinds, key_ids, updated_at]
+      properties:
+        connection_id:
+          type: string
+          maxLength: 200
+        accepted_levels:
+          type: array
+          items:
+            $ref: './schemas/common.schema.json#/$defs/LevelCode'
+        rejected_levels:
+          type: array
+          items:
+            type: object
+            required: [code, reason]
+            properties:
+              code:
+                $ref: './schemas/common.schema.json#/$defs/LevelCode'
+              reason:
+                type: string
+                maxLength: 500
+            additionalProperties: false
+        recommendation_kinds:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecommendationKind'
+        key_ids:
+          type: array
+          items:
+            type: string
+        updated_at:
+          $ref: './schemas/common.schema.json#/$defs/Timestamp'
+      additionalProperties: false
+
+    CapabilitiesStatement:
+      type: object
+      required:
+        - protocol_version
+        - provider
+        - connection_id
+        - accepted_levels
+        - routing
+        - subprocessors
+        - recommendation_kinds
+        - run_tasks
+        - limits
+        - issued_at
+        - expires_at
+      properties:
+        protocol_version:
+          type: string
+          pattern: '^1\.\d+\.\d+$'
+        provider:
+          type: object
+          required: [id, name, version]
+          properties:
+            id:
+              type: string
+              pattern: '^[a-z0-9][a-z0-9_.-]{0,63}$'
+            name:
+              type: string
+              maxLength: 200
+            version:
+              type: string
+              maxLength: 64
+          additionalProperties: false
+        connection_id:
+          type: string
+          maxLength: 200
+        accepted_levels:
+          type: array
+          items:
+            $ref: './schemas/common.schema.json#/$defs/LevelCode'
+        routing:
+          description: One entry per accepted level.
+          type: array
+          items:
+            type: object
+            required: [level, hosting, model_aliases, subprocessors, prompt_and_output_retention, trains_on_customer_data]
+            properties:
+              level:
+                $ref: './schemas/common.schema.json#/$defs/LevelCode'
+              hosting:
+                description: '`installation`: model calls never leave the installation. `hosted`: calls go to a model provider listed in `subprocessors`.'
+                enum: [installation, hosted]
+              model_aliases:
+                type: array
+                minItems: 1
+                items:
+                  type: string
+                  maxLength: 128
+              subprocessors:
+                description: IDs from the top-level `subprocessors` list that see content of this level.
+                type: array
+                items:
+                  type: string
+                  maxLength: 64
+              prompt_and_output_retention:
+                enum: [none, limited]
+              trains_on_customer_data:
+                type: boolean
+            additionalProperties: false
+        subprocessors:
+          type: array
+          items:
+            type: object
+            required: [id, name, purpose, country]
+            properties:
+              id:
+                type: string
+                maxLength: 64
+              name:
+                type: string
+                maxLength: 200
+              purpose:
+                type: string
+                maxLength: 500
+              country:
+                description: ISO 3166-1 alpha-2.
+                type: string
+                pattern: '^[A-Z]{2}$'
+            additionalProperties: false
+        recommendation_kinds:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecommendationKind'
+        run_tasks:
+          type: array
+          items:
+            type: string
+            pattern: '^[a-z][a-z0-9_]{1,63}$'
+        limits:
+          type: object
+          required: [max_batch_items, max_attachment_bytes]
+          properties:
+            max_batch_items:
+              type: integer
+              minimum: 1
+            max_attachment_bytes:
+              type: integer
+              minimum: 1
+          additionalProperties: false
+        issued_at:
+          $ref: './schemas/common.schema.json#/$defs/Timestamp'
+        expires_at:
+          $ref: './schemas/common.schema.json#/$defs/Timestamp'
+      additionalProperties: false
+
+    SignedCapabilities:
+      type: object
+      required: [statement, jws]
+      properties:
+        statement:
+          $ref: '#/components/schemas/CapabilitiesStatement'
+        jws:
+          description: |
+            JWS compact serialization with a detached payload (RFC 7515, Appendix F).
+            The payload is the RFC 8785 canonical JSON of `statement`. The protected
+            header carries `alg` (`EdDSA` or `ES256`) and `kid`.
+          type: string
+          pattern: '^[A-Za-z0-9_-]+\.\.[A-Za-z0-9_-]+$'
+      additionalProperties: false
+
+    Deletion:
+      type: object
+      required: [external_ref, reason]
+      properties:
+        external_ref:
+          $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+        reason:
+          enum: [reclassified, annulled, purged, withdrawn, host_request]
+        include_children:
+          type: boolean
+          default: true
+      additionalProperties: false
+
+    IngestItem:
+      oneOf:
+        - type: object
+          required: [type, record]
+          properties:
+            type:
+              const: record
+            record:
+              $ref: '#/components/schemas/Record'
+          additionalProperties: false
+        - type: object
+          required: [type, attachment]
+          properties:
+            type:
+              const: attachment
+            attachment:
+              $ref: '#/components/schemas/Attachment'
+          additionalProperties: false
+        - type: object
+          required: [type, deletion]
+          properties:
+            type:
+              const: deletion
+            deletion:
+              $ref: '#/components/schemas/Deletion'
+          additionalProperties: false
+
+    IngestBatch:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/IngestItem'
+      additionalProperties: false
+
+    IngestResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [external_ref, type, status, reason]
+            properties:
+              external_ref:
+                $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+              type:
+                enum: [record, attachment, deletion]
+              status:
+                enum: [stored, unchanged, deleted, rejected]
+              reason:
+                type: [string, 'null']
+                maxLength: 500
+            additionalProperties: false
+      additionalProperties: false
+
+    PurgeRequest:
+      type: object
+      required: [reason, requested_by]
+      properties:
+        reason:
+          enum: [withdrawn, host_request]
+        requested_by:
+          $ref: './schemas/common.schema.json#/$defs/SubjectRef'
+      additionalProperties: false
+
+    PurgeAccepted:
+      type: object
+      required: [purge_ref]
+      properties:
+        purge_ref:
+          type: string
+          maxLength: 200
+      additionalProperties: false
+
+    InventoryPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [external_ref, type, sensitivity, version, updated_at]
+            properties:
+              external_ref:
+                $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+              type:
+                enum: [record, attachment]
+              sensitivity:
+                $ref: './schemas/common.schema.json#/$defs/LevelCode'
+              version:
+                $ref: './schemas/common.schema.json#/$defs/Version'
+              sha256:
+                oneOf:
+                  - $ref: './schemas/common.schema.json#/$defs/Sha256'
+                  - type: 'null'
+              updated_at:
+                $ref: './schemas/common.schema.json#/$defs/Timestamp'
+            additionalProperties: false
+        next_cursor:
+          type: [string, 'null']
+          maxLength: 512
+      additionalProperties: false
+
+    Scope:
+      description: A record and, when `include_children` is true, its attachments.
+      type: object
+      required: [record_ref, include_children]
+      properties:
+        record_ref:
+          $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+        include_children:
+          type: boolean
+      additionalProperties: false
+
+    QueryRequest:
+      type: object
+      required: [mode, text, on_behalf_of, clearance]
+      properties:
+        mode:
+          enum: [search, ask]
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        on_behalf_of:
+          $ref: './schemas/common.schema.json#/$defs/SubjectRef'
+        clearance:
+          description: The highest level the user may see, as the host chooses to state it. A host may cap it at the highest level it transmits.
+          $ref: './schemas/common.schema.json#/$defs/LevelCode'
+        scope:
+          oneOf:
+            - $ref: '#/components/schemas/Scope'
+            - type: 'null'
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        language:
+          type: string
+          pattern: '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'
+      additionalProperties: false
+
+    SearchHit:
+      type: object
+      required: [citation, score]
+      properties:
+        citation:
+          $ref: '#/components/schemas/Citation'
+        score:
+          type: number
+      additionalProperties: false
+
+    Claim:
+      type: object
+      required: [text, citations]
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 4000
+        citations:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/Citation'
+      additionalProperties: false
+
+    SearchResponse:
+      type: object
+      required: [mode, hits, models, pipeline_fingerprint]
+      properties:
+        mode:
+          const: search
+        hits:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/SearchHit'
+        models:
+          type: array
+          items:
+            type: string
+        pipeline_fingerprint:
+          type: string
+      additionalProperties: false
+
+    AskResponse:
+      type: object
+      required: [mode, status, claims, reason, models, pipeline_fingerprint]
+      properties:
+        mode:
+          const: ask
+        status:
+          enum: [answered, insufficient_evidence]
+        claims:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/Claim'
+        reason:
+          description: Why the evidence was not enough. Null when answered.
+          type: [string, 'null']
+          maxLength: 2000
+        models:
+          type: array
+          items:
+            type: string
+        pipeline_fingerprint:
+          type: string
+      additionalProperties: false
+      allOf:
+        - if:
+            properties:
+              status:
+                const: answered
+          then:
+            properties:
+              claims:
+                minItems: 1
+        - if:
+            properties:
+              status:
+                const: insufficient_evidence
+          then:
+            properties:
+              claims:
+                maxItems: 0
+
+    QueryResponse:
+      oneOf:
+        - $ref: '#/components/schemas/SearchResponse'
+        - $ref: '#/components/schemas/AskResponse'
+
+    RunRequest:
+      type: object
+      required: [task, idempotency_key, on_behalf_of, clearance, scope]
+      properties:
+        task:
+          type: string
+          pattern: '^[a-z][a-z0-9_]{1,63}$'
+        idempotency_key:
+          type: string
+          minLength: 1
+          maxLength: 200
+        on_behalf_of:
+          $ref: './schemas/common.schema.json#/$defs/SubjectRef'
+        clearance:
+          $ref: './schemas/common.schema.json#/$defs/LevelCode'
+        scope:
+          $ref: '#/components/schemas/Scope'
+        instructions:
+          type: [string, 'null']
+          maxLength: 2000
+      additionalProperties: false
+
+    RunStatus:
+      type: object
+      required: [run_ref, status, recommendation_refs, error]
+      properties:
+        run_ref:
+          type: string
+          maxLength: 200
+        status:
+          enum: [queued, running, succeeded, failed]
+        recommendation_refs:
+          type: array
+          items:
+            type: string
+            maxLength: 200
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/Problem'
+            - type: 'null'
+      additionalProperties: false
+
+    NoRecommendation:
+      description: |
+        An explicit "nothing to recommend" for a record and one or more kinds, with the
+        reason. It lets the host tell "not processed yet" from "processed, nothing worth
+        recommending".
+      type: object
+      required: [record_ref, record_version, kinds, reason]
+      properties:
+        record_ref:
+          $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+        record_version:
+          $ref: './schemas/common.schema.json#/$defs/Version'
+        kinds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/RecommendationKind'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+      additionalProperties: false
+
+    RecommendationBatch:
+      description: At least one recommendation or one explicit "none".
+      type: object
+      properties:
+        recommendations:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/Recommendation'
+        no_recommendation:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/NoRecommendation'
+      additionalProperties: false
+      anyOf:
+        - required: [recommendations]
+          properties:
+            recommendations:
+              minItems: 1
+        - required: [no_recommendation]
+          properties:
+            no_recommendation:
+              minItems: 1
+
+    RecommendResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [ref, status, reason]
+            properties:
+              ref:
+                type: string
+                maxLength: 200
+              status:
+                enum: [stored, duplicate, rejected]
+              reason:
+                type: [string, 'null']
+                maxLength: 500
+            additionalProperties: false
+      additionalProperties: false
+
+    DecisionBatch:
+      type: object
+      required: [decisions]
+      properties:
+        decisions:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Decision'
+      additionalProperties: false
+
+    DecisionResult:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [recommendation_ref, status]
+            properties:
+              recommendation_ref:
+                type: string
+                maxLength: 200
+              status:
+                enum: [recorded, duplicate, unknown]
+            additionalProperties: false
+      additionalProperties: false
+
+    ContentRequest:
+      type: object
+      required: [locator, sha256]
+      properties:
+        locator:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        sha256:
+          $ref: './schemas/common.schema.json#/$defs/Sha256'
+      additionalProperties: false

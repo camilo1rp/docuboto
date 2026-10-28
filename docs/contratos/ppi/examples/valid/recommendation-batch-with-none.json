@@ -1,0 +1,63 @@
+{
+  "recommendations": [
+    {
+      "ref": "rec.01JB7Q.route.v1",
+      "kind": "route",
+      "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+      "record_version": "7",
+      "arguments": {
+        "unit": "U-310",
+        "alternatives": [
+          {
+            "code": "U-210",
+            "confidence": 0.22
+          }
+        ]
+      },
+      "evidence": [
+        {
+          "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+          "attachment_ref": "6f1d2c3b-8a9e-4f70-b1c2-d3e4f5a6b7c8",
+          "page": 1,
+          "span": {
+            "start": 412,
+            "end": 497
+          },
+          "quote": "solicito copia del contrato de obra 045 de 2026 y de sus actas de supervisión",
+          "source_version": "1"
+        },
+        {
+          "record_ref": "3c2b1a09-8f7e-4d6c-9b5a-493827161504",
+          "attachment_ref": null,
+          "page": null,
+          "span": {
+            "start": 0,
+            "end": 47
+          },
+          "quote": "Solicitud de copia del contrato de obra 031 de 2025",
+          "source_version": "4"
+        }
+      ],
+      "confidence": 0.71,
+      "models": [
+        "triage-small"
+      ],
+      "pipeline_fingerprint": "triage-2026.10.2+fc91d0",
+      "supersedes": null,
+      "run_ref": null,
+      "rationale": "Tres solicitudes similares cerradas terminaron en U-310.",
+      "created_at": "2026-10-27T14:05:09Z",
+      "expires_at": "2026-11-26T14:05:09Z"
+    }
+  ],
+  "no_recommendation": [
+    {
+      "record_ref": "0b7c6a2e-5d1f-4c1a-9a7e-2f4e9c1d8a01",
+      "record_version": "7",
+      "kinds": [
+        "link_party"
+      ],
+      "reason": "The sender matches no host party and carries no identifier"
+    }
+  ]
+}

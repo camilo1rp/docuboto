@@ -1,0 +1,292 @@
+{
+  "protocol_version": "1.0.0",
+  "description": "Conformance fixtures for PPI v1. Each entry names a fixture, the schema it is checked against (a JSON Schema file, or a component of the OpenAPI document), and whether it must validate. Paths are relative to this directory's parent.",
+  "fixtures": [
+    {
+      "file": "examples/valid/connection.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/Connection",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/connection-state.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/ConnectionState",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/capabilities.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/SignedCapabilities",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/record.json",
+      "schema": "schemas/record.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/attachment-locator.json",
+      "schema": "schemas/attachment.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/attachment-inline.json",
+      "schema": "schemas/attachment.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/ingest-batch.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/IngestBatch",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/ingest-result.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/IngestResult",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/ingest-result-level-rejected.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/IngestResult",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/inventory-page.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/InventoryPage",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/purge-request.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/PurgeRequest",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/citation-attachment.json",
+      "schema": "schemas/citation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/citation-record.json",
+      "schema": "schemas/citation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/query-search-request.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryRequest",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/query-search-response.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryResponse",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/query-ask-request-scoped.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryRequest",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/query-ask-answered.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryResponse",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/query-ask-insufficient.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryResponse",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-classify.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-route.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-deadline.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-relate.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-link-party.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-draft.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-superseding.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-batch.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/RecommendationBatch",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-batch-with-none.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/RecommendationBatch",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommendation-batch-only-none.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/RecommendationBatch",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/recommend-result.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/RecommendResult",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/decision-accepted.json",
+      "schema": "schemas/decision.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/decision-rejected.json",
+      "schema": "schemas/decision.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/decision-expired.json",
+      "schema": "schemas/decision.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/decision-batch.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/DecisionBatch",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/decision-result.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/DecisionResult",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/run-request.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/RunRequest",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/run-status.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/RunStatus",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/content-request.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/ContentRequest",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/problem-level-not-accepted.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/Problem",
+      "valid": true
+    },
+    {
+      "file": "examples/invalid/citation-without-quote.json",
+      "schema": "schemas/citation.schema.json",
+      "valid": false,
+      "why": "A citation always carries the exact quote."
+    },
+    {
+      "file": "examples/invalid/citation-without-page-key.json",
+      "schema": "schemas/citation.schema.json",
+      "valid": false,
+      "why": "All five citation fields are always present; `page` is null when the unit has no pages."
+    },
+    {
+      "file": "examples/invalid/recommendation-without-evidence.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": false,
+      "why": "A recommendation without evidence is never sent."
+    },
+    {
+      "file": "examples/invalid/recommendation-unknown-kind.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": false,
+      "why": "Kinds are a closed list; a provider never asks the host to close a matter."
+    },
+    {
+      "file": "examples/invalid/recommendation-arguments-do-not-match-kind.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": false,
+      "why": "`classify` arguments carry a document type, not a unit."
+    },
+    {
+      "file": "examples/invalid/recommendation-deadline-not-labelled-computed.json",
+      "schema": "schemas/recommendation.schema.json",
+      "valid": false,
+      "why": "A provider's due date is always labelled as computed; the host's value stays official."
+    },
+    {
+      "file": "examples/invalid/ask-answered-without-claims.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryResponse",
+      "valid": false,
+      "why": "An answer has at least one claim, or it is insufficient_evidence."
+    },
+    {
+      "file": "examples/invalid/ask-claim-without-citation.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryResponse",
+      "valid": false,
+      "why": "Every claim cites at least one host reference."
+    },
+    {
+      "file": "examples/invalid/ask-insufficient-with-claims.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/QueryResponse",
+      "valid": false,
+      "why": "insufficient_evidence carries no claims."
+    },
+    {
+      "file": "examples/invalid/recommendation-batch-empty.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/RecommendationBatch",
+      "valid": false,
+      "why": "A batch carries at least one recommendation or one explicit none."
+    },
+    {
+      "file": "examples/invalid/attachment-inline-and-locator.json",
+      "schema": "schemas/attachment.schema.json",
+      "valid": false,
+      "why": "Content travels either inline or by locator, never both."
+    },
+    {
+      "file": "examples/invalid/attachment-without-sha256.json",
+      "schema": "schemas/attachment.schema.json",
+      "valid": false,
+      "why": "SHA-256 is mandatory in both content modes."
+    },
+    {
+      "file": "examples/invalid/decision-rejected-without-reason.json",
+      "schema": "schemas/decision.schema.json",
+      "valid": false,
+      "why": "A rejection carries a reason."
+    },
+    {
+      "file": "examples/invalid/decision-accepted-without-person.json",
+      "schema": "schemas/decision.schema.json",
+      "valid": false,
+      "why": "A person accepts or rejects; only superseded and expired may have no decider."
+    },
+    {
+      "file": "examples/invalid/record-without-sensitivity.json",
+      "schema": "schemas/record.schema.json",
+      "valid": false,
+      "why": "Every pushed object declares its sensitivity level."
+    },
+    {
+      "file": "examples/invalid/connection-callback-key-too-short.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/Connection",
+      "valid": false,
+      "why": "Callback keys are at least 32 random bytes."
+    }
+  ]
+}

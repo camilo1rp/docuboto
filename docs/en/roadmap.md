@@ -1,6 +1,6 @@
 # Roadmap
 
-> Updated as of 2026-10-22.
+> Updated as of 2026-10-27.
 
 OrpycaMCP has followed **two complementary plans**:
 
@@ -231,6 +231,7 @@ Every item below is delivered unless explicitly marked as pending. Scope stateme
 - [ ] Native mobile app (iOS/Android)
 - [x] ~~Document signing~~ — native electronic signature + **signature chain / signer's inbox** done (E06: ordered turns, `GET /pending`, sign/reject/batch); **XAdES-B of the electronic index + institutional seal** done (Inc. 1); **email-OTP 2FA** (Inc. 2) and **TOTP RFC 6238 2FA** (Inc. 6) done; **XAdES-T (local TSA)** done (Inc. 4) and **XAdES-LT/LTA (local dev CA + CRL + ArchiveTimeStamp, not accredited)** done (Inc. 5); **stapled OCSP (RFC 6960) in XAdES-LT** done (Inc. 7); **per-user PKI personal signature XAdES-B/T (server custody, local dev sub-CA, split remote signing = a seam to an HSM)** done (E17/F4 Inc. 1; `acreditado=false`, art. 7, no sole control). Still pending: **ONAC accreditation** (CA/TSA/OCSP responder + qualified art. 28 personal signing via an HSM), a fully EN 319 132 LTA profile, online OCSP from an independent responder, and WebAuthn
 - [ ] Corporate SSO integration (Entra ID, Okta, LDAP)
+- [ ] **Docuboto 2.0 — internal intelligence provider** (proposed, [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)): a gateway grown out of knowledge-service, the neutral PPI protocol (`docs/contratos/ppi/`, AGPL like the rest), only PÚBLICA content leaves, and a suggestions inbox the officer accepts through the write gate. Phases D1 (read path), D2 (intake triage, including the due-date fixes needed with or without a provider) and D3 (reply drafts): see the [intelligence plan](plan-inteligencia.md).
 - [x] Frontend (E22, `frontend/`, ADR-011/020) — **essentially complete** (~14k LOC), see the section below
 - [x] ~~Webhooks API~~ — signed outbound webhooks done (E11), plus the inbound postal callback (E20)
 - [x] ~~Export expedientes to PDF/ZIP~~ — **ZIP done** (E02/export): `GET /api/v1/expedientes/{id}/export.zip` (archive orchestrates, storage assembles via an internal D-02 endpoint) with the electronic index XML (best-effort) + `manifiesto.csv` (including exclusions with their cause) + a `LEEME.txt` scope note + `checksums.txt` (SHA-256) + the attachment bytes; **PER-RADICADO no-read-up** (document-service filters `nivel <= clearance` and omits over-clearance radicados including their existence — closing a read-up leak that the expediente-level gate did not cover), `USUA_PERM_EXPEDIENTE` gate, zip-slip protection, aggregate auditing. Pending: a **combined PDF** (render engine), streaming for large expedientes
