@@ -76,7 +76,7 @@ respuesta es «evidencia insuficiente». Si el proveedor no está, responde el �
 | api-gateway | Enruta `/api/v1/config/intelligence*`. **No** enruta ninguna ruta interna de la pasarela. |
 | frontend | **Panel «Preguntar»** en el drawer de detalle de la bandeja (`frontend/src/routes/(app)/bandeja/+page.svelte`): solo con bandera, `PERM_CONOCIMIENTO` y radicado de un nivel habilitado. Muestra las citas con enlace al anexo y la página, dice cuándo responde el índice local y avisa de que la pregunta y el radicado se transmiten, y por qué ruta. |
 | | **Pantalla de administración** «Inteligencia»: proveedor, subencargados y enrutamiento según `capabilities`, declaración, niveles habilitados con la ruta de cada uno, estado (suspendido o activo) y retiro de datos. |
-| infra | **Perfil de Compose `intelligence`** en `docker-compose.yml` e `infra/docker-compose.prod.yml`: red `internal: true` compartida solo por knowledge-service y `intelligence-provider`, imagen `INTELLIGENCE_IMAGE` sin valor por defecto (por digest en producción, ADR-033) y sin puertos. `scripts/preflight-prod.sh` rechaza la imagen sin digest. |
+| infra | **Perfil de Compose `intelligence`** en `docker-compose.yml` e `infra/docker-compose.prod.yml`: no arranca ningún servicio del proveedor. Pasa knowledge-service a `ppi`, lo conecta a la red externa `ppi` (`docker network create --internal ppi`, creada una vez por host fuera de los dos proyectos) y le da `PPI_PROVIDER_URL` sin valor por defecto. El proveedor es otro proyecto Compose con su propia versión (ADR-045 §8). |
 
 ### Permisos nuevos
 
@@ -111,9 +111,10 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
   nonce repetido da 401, y un localizador de un nivel no habilitado da 410.
 - **El cliente de la entidad no es credencial de la API.** El cliente creado por
   `init_tenant.py` no aparece en `ALLOWED_AZP` y solo tiene cuenta de servicio.
-- **El perfil aísla al proveedor.** Un guardián de compose comprueba que
-  `intelligence-provider` solo está en la red `intelligence`, que esa red es
-  `internal: true`, que no publica puertos y que su imagen viene de variable.
+- **El perfil no arranca al proveedor.** Un guardián de compose comprueba que el perfil
+  `intelligence` no define servicios nuevos, que solo knowledge-service se conecta a la
+  red `ppi`, que esa red es `external` y que `PPI_PROVIDER_URL` no tiene valor por
+  defecto.
 - **La especificación PPI cumple su contrato.** Los ejemplos de
   `docs/contratos/ppi/examples/manifest.json` dan el resultado declarado contra su
   esquema. La carpeta solo tiene `.md`, `.json` y `.yaml`, bajo la AGPL del
