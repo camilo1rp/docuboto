@@ -8,7 +8,7 @@
 > como todo el repositorio, bajo **AGPL-3.0-or-later**.
 > La decisión de arquitectura que la motiva es el ADR-045 de Docuboto, propuesto.
 
-**Status: draft, version 1.1.0, not yet implemented by any host or provider.**
+**Status: draft, version 1.2.0, not yet implemented by any host or provider.**
 
 ## Purpose
 
@@ -127,6 +127,10 @@ prefix (`/v2`) and both prefixes are served during the migration.
 
 ### Changes
 
+- **1.2.0 (2026-10-28).** `record` gains an optional `metadata` object: flat, host-defined
+  structured fields with scalar values. A host sends it only when its own policy allows
+  it. Fixtures: `record-with-metadata.json` (valid) and `record-metadata-nested.json`
+  (invalid).
 - **1.1.0 (2026-10-27).** `PurgeRequest` gains an optional `levels` list, so a host can
   delete only the levels it stops transmitting. Without it, a purge still deletes
   everything for the host tenant. Fixtures: `purge-request-levels.json` (valid) and

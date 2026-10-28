@@ -3,6 +3,8 @@
 **Estado**: Propuesto
 **Fecha**: 2026-10-28
 **Autores**: Camilo Romero; borrador para revisión del responsable de producto y del mantenedor
+**Revisión 2026-10-28 (sin despliegues previos)**: Docuboto y el proveedor no tienen instalaciones ni datos que migrar, así que no hace falta compatibilidad hacia atrás. `knowledge_chunk`, `kb_suggestions` y la extensión `vector` se eliminan en D0 en vez de quedar como histórico, y no hay nota de migración. Se resuelven las preguntas 2 y 3.
+**Revisión 2026-10-28 (el asistente)**: se retira el asistente conversacional de mcp-server (§6). Con eso, ningún componente de Docuboto llama a un modelo. El servidor MCP y su gate de escritura se quedan. Se resuelve la pregunta 1.
 **Relacionados**: [ADR-045](ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md) (pasarela de inteligencia y PPI; **se enmienda**), [ADR-006](ADR-006-proveedor-ia-configurable.md) (proveedor de IA configurable; **deja de aplicar a la capa de conocimiento**), [ADR-037](ADR-037-asistente-activable-por-entidad.md) (bandera por entidad y `PERM_CONOCIMIENTO`; sigue gobernando), [ADR-014](ADR-014-busqueda-postgresql-fts.md) (búsqueda con PostgreSQL FTS; es el respaldo), [ADR-019](ADR-019-capa-mcp.md) (capa MCP), [ADR-020](ADR-020-sistema-diseno-orpyca-asistente.md) (asistente conversacional; fuera de alcance)
 
 ---
@@ -66,7 +68,7 @@ Por qué así:
 ### 3. Lo generado viene solo del proveedor y va a `suggestions`
 
 - `kb_suggestions` y `/suggestions/{id}/aceptar` se retiran. Todo lo generado lo origina el proveedor y entra por la bandeja `suggestions` de ADR-045 §6. Con eso desaparece la pregunta de tener dos tablas de sugerencias.
-- La tabla `kb_suggestions` se conserva **solo lectura** como traza histórica (su asiento de auditoría lleva la huella del contenido). Una migración posterior la archiva cuando se decida su retención (pregunta abierta 2).
+- La tabla `kb_suggestions` se elimina en D0. No hay instalaciones con datos, así que no hay histórico que conservar.
 - **«Sugerir texto»** en radicar y borradores, y la tool `redactar_con_antecedentes`, siguen llamando a `/rag`. Con `ppi`, la pasarela lo delega como una consulta PPI con alcance; en D3, la redacción pasa a la recomendación `draft` del plan. Con `local`, el botón no se muestra: el frontend pregunta a la pasarela si la generación está disponible para la entidad (`GET /api/v1/knowledge/availability`, que responde sin llamar al proveedor), en vez de mostrar el botón y fallar.
 
 ### 4. Qué se retira de knowledge-service
@@ -76,10 +78,10 @@ Por qué así:
 | `app/services/llm.py`, `AI_PROVIDER`, `MODEL_GENERATION`, `OLLAMA_*`, la dependencia `anthropic` | Se borran |
 | `app/services/embeddings.py`, `EMBEDDING_PROVIDER`, `EMBEDDING_DIM`, `requirements-ml.txt` y el build `WITH_ML` | Se borran; la imagen queda sin PyTorch ni modelos |
 | `app/services/ingestion.py`, el consumidor `knowledge-ingest`, `app/jobs/reconciliacion_nivel.py`, `app/ops/reembed.py` | Se borran; el consumidor de la pasarela es el único |
-| `knowledge_chunk` | Deja de escribirse y de leerse. Una migración la elimina en la versión siguiente: es material derivado y se reconstruye solo |
+| `knowledge_chunk` | Una migración de D0 la elimina, con su índice HNSW |
 | `is_embeddable`, `is_generatable`, `is_local_llm_provider`, `is_local_embedding_provider` (`app/core/clearance.py`) | Se borran. `require_asistente_habilitado`, `require_permission` y `get_actor` se quedan |
-| La extensión `vector` (migraciones globales `001` y `002`) | Se deja instalada mientras exista `knowledge_chunk`; luego se decide (pregunta abierta 3) |
-| `kb_suggestions` | Solo lectura (§3) |
+| La extensión `vector` (migraciones globales `001` y `002`) | Se retira en D0: ningún otro servicio usa pgvector |
+| `kb_suggestions` y `KbSuggestionRepository` | Se eliminan en D0 (§3) |
 
 Guardián nuevo: un test de importación falla si algún módulo de knowledge-service importa un SDK de modelos (`anthropic`, `openai`, `sentence_transformers`, `ollama`) o lee una variable `AI_*`, `EMBEDDING_*` u `OLLAMA_*`.
 
@@ -89,12 +91,22 @@ Guardián nuevo: un test de importación falla si algún módulo de knowledge-se
 - **ADR-045 §3.** «`is_generatable` y `is_embeddable` siguen decidiendo para `local`» se retira: en `local` no sale nada.
 - **ADR-045 §5.** El respaldo es el de §2 de este ADR. La etiqueta «respuesta del índice local» se mantiene; preguntar sin proveedor responde 503 `rag_unavailable`.
 - **ADR-045 §6.** «`kb_suggestions` sigue como traza de lo que genera `local`» se sustituye por §3 de este ADR.
-- **ADR-006** deja de aplicar a la capa de conocimiento: no hay proveedor de IA configurable por despliegue en knowledge-service. Su CC-03 sigue vigente para el asistente (§6).
+- **ADR-006** deja de aplicar a la capa de conocimiento: no hay proveedor de IA configurable por despliegue en knowledge-service. Con el asistente retirado (§6), CC-03 ya no tiene a quién aplicarse en Docuboto.
 - **ADR-037** no cambia: la bandera y `PERM_CONOCIMIENTO` siguen gobernando `/search`, `/antecedentes` y `/rag` en los dos modos.
 
-### 6. Fuera de alcance: el asistente
+### 6. Se retira el asistente
 
-El asistente de mcp-server sigue llamando a Anthropic (ADR-020) con su recorte fijo de RESERVADA y superior. Tras este ADR es el **único** componente de Docuboto que llama a un modelo. Si también debe pasar al proveedor (por PPI `run` o por su servidor MCP) o retirarse, se decide en otro ADR (pregunta abierta 1).
+El asistente conversacional de mcp-server (ADR-020) era el último componente de Docuboto que llamaba a un modelo: hablaba con Anthropic y aplicaba su propio recorte de RESERVADA y superior. Se retira en D0, junto con la capa local de modelos:
+
+| Pieza | Destino |
+|---|---|
+| `mcp-server/app/services/assistant.py`, `asistente_gate.py`, `stt.py`, `app/routers/assistant.py` y `app/schemas/assistant.py` | Se borran, con `assistant_model`, `ANTHROPIC_API_KEY` y la dependencia `anthropic` |
+| `whisper-service` y el perfil `assistant` de Compose | Se borran |
+| `AssistantDock.svelte` y `VoiceInput.svelte` en el frontend | Se borran |
+| El catálogo MCP, sus transportes y el gate de escritura (`write_gate.py`, `proposals.py`) | **Se quedan**: los usan los clientes MCP externos y la aceptación de sugerencias (ADR-045 §7) |
+| `ProposalCard.svelte` | Se queda, para aceptar sugerencias |
+
+Quien quiera actuar con IA sobre Docuboto usa un cliente MCP externo, con el modelo que ese cliente elija, o las sugerencias del proveedor. Llevar un asistente al proveedor exigiría que este actuara con la identidad del funcionario en la API de Docuboto, algo que ADR-045 prohíbe; si algún día hace falta, se diseña en su propio ADR.
 
 ## Alternativas consideradas
 
@@ -109,19 +121,17 @@ El asistente de mcp-server sigue llamando a Anthropic (ADR-020) con su recorte f
 - **knowledge-service adelgaza mucho.** Se van unas 1.550 líneas de servicio (generación, embeddings, ingesta, reconciliación, re-embebido), sus tests, la capa ML y una tabla con su índice HNSW.
 - **El respaldo es exacto y siempre al día**, porque es la búsqueda que ya usa la pantalla de consulta.
 - **Sin proveedor no hay respuestas ni borradores generados.** Una entidad en `local` conserva buscar y antecedentes por texto completo; preguntar y «sugerir texto» no se ofrecen. La condición 2 de ADR-045 («Docuboto funciona entero sin proveedor») sigue valiendo para la gestión documental; la generación pasa a ser algo que exige el proveedor.
+- **Los funcionarios pierden el chat y la voz del asistente.** Preguntar queda en el panel «Preguntar» del proveedor (ADR-045 D1), y actuar, en las sugerencias o en un cliente MCP externo.
 - **Se cierra el egreso por defecto** a ollama.com que hoy configura `docker-compose.yml`.
 - **Búsqueda sin sinónimos en el respaldo.** Es lo que ya da `stub` hoy.
-- **Cambio incompatible para quien use `AI_PROVIDER` o `EMBEDDING_PROVIDER=local_st`.** Lo cubre una nota de migración en el CHANGELOG: las variables dejan de leerse y el servicio arranca igual.
 
 ## Residuos declarados
 
-- `knowledge_chunk` y la extensión `vector` siguen en la base una versión más, sin uso, hasta su migración de retiro.
-- `kb_suggestions` queda como histórico solo lectura.
-- El asistente sigue llamando a Anthropic directamente (§6).
+Ninguno: no hay instalaciones previas que obliguen a conservar tablas, variables o servicios.
 
 ## Preguntas abiertas para el responsable de producto
 
-1. **El asistente.** ¿Pasa al proveedor (PPI `run` o su servidor MCP), se queda con Anthropic bajo ADR-020, o se retira? Propuesta: decidirlo en un ADR aparte cuando D1 esté construido.
-2. **Retención de `kb_suggestions`.** ¿Cuánto se conserva el histórico y dónde? Propuesta: lo mismo que el resto de trazas de auditoría.
-3. **La extensión `vector`.** ¿Se retira de la base cuando `knowledge_chunk` desaparezca? Propuesta: sí, salvo que otro servicio la necesite para entonces.
-4. **Orden frente a D1.** ¿Se hace antes de D1, para que la pasarela nazca sin el `local` actual, o dentro de D1? Propuesta: antes, como fase D0 corta; reduce lo que D1 tiene que envolver.
+1. ~~**El asistente.**~~ Resuelta el 2026-10-28: se retira en D0 (§6). El servidor MCP y su gate se quedan.
+2. ~~**Retención de `kb_suggestions`.**~~ Resuelta el 2026-10-28: no hay instalaciones con datos, así que la tabla se elimina en D0.
+3. ~~**La extensión `vector`.**~~ Resuelta el 2026-10-28: se retira en D0. Ningún otro servicio usa pgvector (`radicados.search_vector` es un `tsvector`).
+4. ~~**Orden frente a D1.**~~ Resuelta el 2026-10-28: se hace **antes** de D1, como fase D0 corta ([plan de inteligencia](../plan-inteligencia.md), fase D0). La pasarela de D1 nace sobre el `local` sin modelos, y el egreso por defecto a ollama.com se corta en cuanto D0 se despliega.
