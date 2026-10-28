@@ -2,22 +2,23 @@
 
 **Estado**: Propuesto
 **Fecha**: 2026-10-27
-**Autores**: Camilo Romero (Docuboto 2.0); borrador para revisión del responsable de producto y del mantenedor
+**Autores**: Camilo Romero; borrador para revisión del responsable de producto y del mantenedor
+**Revisión 2026-10-27 (niveles por entidad)**: el proveedor interno corre dentro de la instalación y bajo contrato con la entidad, así que es un encargado, no un tercero externo. Cada entidad decide qué niveles le transmite (por defecto solo PÚBLICA), y el proveedor declara en su `capabilities` firmada con qué modelos procesa cada nivel. Cambian la condición 3, §2, §3, §4, §5, §9 y las consecuencias. El resto queda igual.
 **Relacionados**: [ADR-006](ADR-006-proveedor-ia-configurable.md) (proveedor de IA; **se enmienda**), [ADR-037](ADR-037-asistente-activable-por-entidad.md) (bandera por entidad y `PERM_CONOCIMIENTO`; esta decisión vive bajo ella), [ADR-019](ADR-019-capa-mcp.md) (capa MCP y gate de escritura), [ADR-018](ADR-018-interoperabilidad-webhooks.md) (webhooks; no se usan aquí), [ADR-021](ADR-021-reclamacion-deadletter-eventos.md) (consumidores y dead-letter), [ADR-036](ADR-036-identidad-atada-a-metodo-y-ruta.md) y [ADR-044](ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md) (firma con nonce de un solo uso), [ADR-043](ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md) §5 (contrato SQL entre servicios), [ADR-008](ADR-008-auditoria-inmutable.md) (auditoría)
 
 ---
 
-> **Nada de lo que este ADR decide está construido.** Las piezas nuevas —la pasarela, el puerto de proveedor, la bandeja `sugerencias`, el perfil `inteligencia`, las rutas internas y los eventos nuevos— son **propuestas**. Lo que ya existe se cita en «Punto de partida» con su archivo, verificado contra el código del commit `7510257`. El plan por fases está en [Plan de inteligencia (Docuboto 2.0)](../plan-inteligencia.md) y la especificación del protocolo en `docs/contratos/ppi/`.
+> **Nada de lo que este ADR decide está construido.** Las piezas nuevas —la pasarela, el puerto de proveedor, la bandeja `sugerencias`, el perfil `inteligencia`, las rutas internas y los eventos nuevos— son **propuestas**. Lo que ya existe se cita en «Punto de partida» con su archivo, verificado contra el código del commit `7510257`. El plan por fases está en [Plan de inteligencia](../plan-inteligencia.md) y la especificación del protocolo en `docs/contratos/ppi/`.
 
 ## Contexto
 
-Docuboto 2.0 es Docuboto con inteligencia incorporada: búsqueda y preguntas sobre el cuerpo y los anexos de los radicados, y triage de lo que entra (tipificación, plazo, reparto, antecedentes, remitente, borrador de respuesta). La inteligencia la pone un **proveedor interno**: un programa aparte, con su propia licencia, que corre en sus propios contenedores dentro de la misma instalación. El primero previsto es un producto comercial independiente; Docuboto no lo nombra en su código.
+Docuboto evoluciona para incorporar inteligencia: búsqueda y preguntas sobre el cuerpo y los anexos de los radicados, y triage de lo que entra (tipificación, plazo, reparto, antecedentes, remitente, borrador de respuesta). La inteligencia la pone un **proveedor interno**: un programa aparte, con su propia licencia, que corre en sus propios contenedores dentro de la misma instalación. El primero previsto es un producto comercial independiente; Docuboto no lo nombra en su código.
 
 Tres condiciones gobiernan el diseño:
 
 1. **Docuboto sigue siendo el sistema de registro.** Radicación, flujo, expedientes, firma, archivo y auditoría siguen siendo suyos. El proveedor prepara y recomienda; quien decide es un funcionario en Docuboto, y lo aceptado se ejecuta **como ese funcionario**.
 2. **Docuboto funciona entero sin proveedor**, y queda limpio de AGPL y neutral frente a proveedores.
-3. **Solo sale lo PÚBLICO.** Únicamente contenido de `nivel_seguridad` PÚBLICA (1) puede llegar a un proveedor. RESERVADA (2) y CLASIFICADA (3) no salen nunca: es CC-03, sin excepción configurable. Un modelo alojado por terceros solo se admite en planes de pago que no entrenan con los datos del cliente y no conservan ni las entradas ni las salidas, y figurando como subencargado.
+3. **Cada entidad decide qué niveles salen.** Por defecto solo sale PÚBLICA (1). RESERVADA (2) y CLASIFICADA (3) salen solo si el administrador de la entidad habilita ese nivel, con una declaración que nombra cómo lo procesa el proveedor. El proveedor interno corre dentro de la instalación y bajo contrato con la entidad: es un encargado, no un tercero externo. Un modelo alojado por terceros solo se admite en planes de pago que no entrenan con los datos del cliente y no conservan ni las entradas ni las salidas, y figurando como subencargado. CC-03 sigue gobernando, sin cambios, a los proveedores de generación externos de la implementación `local` (ADR-006); para `ppi` la sustituye esta política por entidad (§3, §9).
 
 ### Punto de partida (verificado en el código)
 
@@ -55,18 +56,18 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
   - un **registro**: una lista cerrada de campos declarada en la pasarela (número, fecha de radicación, tipo E/S/I, tipo documental, dependencia, asunto, remitente, vencimiento oficial y estado). Los metadatos JSONB libres (ADR-007) no salen en v1;
   - sus **anexos**, como bytes o como localizador más SHA-256.
 - **De dónde saca los anexos.** De rutas internas nuevas de document-service con `X-Internal-Token`: una entrega el registro y otra los bytes de un anexo. Ambas vuelven a comprobar el nivel y dejan constancia en el **historial de acceso del radicado**, con actor de sistema y finalidad «transmisión al proveedor de inteligencia». El funcionario que mire ese historial verá que el radicado salió, cuándo y hacia qué proveedor.
-- **Qué hace que se borre en el proveedor.** Una reclasificación hacia arriba, una anulación o una purga provocan una **orden de borrado** al proveedor. Una desclasificación aprobada (ADR-039) que deje el radicado en PÚBLICA lo vuelve elegible y se empuja.
+- **Qué hace que se borre en el proveedor.** Una reclasificación hacia un nivel que la entidad no habilita, una anulación, una purga o que el administrador deshabilite un nivel provocan una **orden de borrado** al proveedor. Una reclasificación entre niveles habilitados se empuja como versión nueva del registro. Una desclasificación aprobada (ADR-039) que deje el radicado en un nivel habilitado lo vuelve elegible y se empuja.
 - **Lo que el proveedor nunca hace:** leer la base, los buckets ni el bus de Docuboto. La topología lo impide (ver §8): el proveedor no comparte red con ellos. La única vía de vuelta es la descarga de un anexo por localizador, que entra por la pasarela y pasa la barrera (§3).
-- **Libro de envíos.** Cada empuje y cada borrado quedan en una tabla de solo inserción de la pasarela, con referencia, nivel enviado, SHA-256 del cuerpo, destino y resultado, por el mismo motivo que `webhook_entregas` (ADR-018 B4). Sobre ese libro corre una **reconciliación periódica**: lo enviado y no borrado cuyo nivel vivo ya no es PÚBLICA se borra y alerta. Esa es la evidencia de «nada por encima de PÚBLICA existe en el proveedor».
+- **Libro de envíos.** Cada empuje y cada borrado quedan en una tabla de solo inserción de la pasarela, con referencia, nivel enviado, SHA-256 del cuerpo, destino y resultado, por el mismo motivo que `webhook_entregas` (ADR-018 B4). Sobre ese libro corre una **reconciliación periódica**: lo enviado y no borrado cuyo nivel vivo ya no está habilitado se borra y alerta. Esa es la evidencia de «nada fuera de los niveles habilitados existe en el proveedor».
 - **Eventos nuevos** (por el outbox de document-service, `042_eventos_salientes`): anexo añadido, datos del radicado cambiados y vencimiento cambiado. Sin ellos, el proveedor trabajaría sobre una foto vieja.
 
 ### 3. La barrera de nivel: un solo sitio
 
-- **Una función y un punto de paso.** «¿Puede salir?» lo responde una función de `knowledge-service/app/core/clearance.py`, con la regla `nivel_vivo == PUBLICA`. Todo envío al proveedor pasa por **un** punto de paso de la pasarela: registros, anexos, borrados, el alcance de una consulta, las entradas de una tarea y las descargas por localizador. Ese punto relee el nivel vivo **en el momento de enviar**, no el del evento, y niega si no es PÚBLICA.
-- **Sin excepción local.** `is_generatable` admite RESERVADA cuando el proveedor de generación es local. La barrera de PPI **no**: el proveedor interno puede usar modelos alojados por terceros, y lo que diga de sí mismo no cuenta.
-- **Lo que el proveedor declara no amplía nada.** Su declaración `capabilities` puede listar más niveles aceptados. La pasarela no la lee para decidir qué sale, solo para mostrarla y para detectar cambios (§4).
-- **Lo vigilan guardianes** (detalle en el plan): ningún módulo fuera del punto de paso usa el cliente PPI, y un radicado RESERVADA o CLASIFICADA no sale en ningún camino, incluida la carrera en la que se reclasifica entre el evento y el envío.
-- **Lo que escribe el funcionario no es un registro.** El texto de una pregunta lo escribe el funcionario y sí sale. Por eso el panel «Preguntar» solo se ofrece sobre radicados PÚBLICOS y avisa de que la pregunta se transmite.
+- **Una función y un punto de paso.** «¿Puede salir?» lo responde una función de `knowledge-service/app/core/clearance.py`, con dos condiciones: el nivel vivo está entre los **niveles habilitados** de la entidad (§4), y el envío no está suspendido, o sea, la huella de `capabilities` vigente es la que el administrador aceptó al habilitar ese nivel. Todo envío al proveedor pasa por **un** punto de paso de la pasarela: registros, anexos, borrados, el alcance de una consulta, las entradas de una tarea y las descargas por localizador. Ese punto relee el nivel vivo y los niveles habilitados **en el momento de enviar**, no los del evento, y niega si no se cumplen.
+- **La política es de la entidad, no del código ni del proveedor.** `is_generatable` y `is_embeddable` siguen decidiendo para `local`. Para `ppi` decide solo la lista de niveles habilitados de la entidad, que su administrador cambia con fricción (§4). No hay un nivel que el código habilite por su cuenta.
+- **Lo que el proveedor declara no amplía nada.** Su declaración `capabilities` puede listar más niveles aceptados. La pasarela no la lee para decidir qué sale; la usa para mostrarla, para que el administrador declare sobre ella y para detectar cambios (§4).
+- **Lo vigilan guardianes** (detalle en el plan): ningún módulo fuera del punto de paso usa el cliente PPI, y un radicado de un nivel no habilitado no sale en ningún camino, incluida la carrera en la que se reclasifica entre el evento y el envío.
+- **Lo que escribe el funcionario no es un registro.** El texto de una pregunta lo escribe el funcionario y sí sale. Por eso el panel «Preguntar» solo se ofrece sobre radicados de un nivel habilitado y avisa de que la pregunta y el radicado se transmiten, y por qué ruta.
 
 ### 4. Configuración por entidad, bajo ADR-037
 
@@ -77,10 +78,15 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
   - la `declaracion_transmision` del administrador. La declaración **nombra al proveedor y a sus subencargados** tal como vienen en la declaración `capabilities` firmada del proveedor; el nombre es un dato que viene del proveedor, no del código.
 
   El asiento `tenant.inteligencia_cambiada` guarda la declaración, la huella SHA-256 de la `capabilities` vigente y la versión de la política. Volver a `local` es inmediato y sin fricción, igual que apagar la bandera.
-- **Un cambio del proveedor suspende el envío.** Si la huella de `capabilities` cambia (otro subencargado, otro enrutamiento por nivel), la pasarela suspende todo envío de esa entidad hasta que su administrador vuelva a declarar.
+- **Niveles habilitados.** Una columna nueva `public.tenants.inteligencia_niveles` (lista de niveles, por defecto solo PÚBLICA) dice qué niveles se transmiten. Pasar a `ppi` habilita PÚBLICA. Habilitar RESERVADA o CLASIFICADA es otro acto con fricción, nivel por nivel, por `PUT /api/v1/config/inteligencia/niveles` con el mismo patrón (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento):
+  - la declaración del administrador nombra, para ese nivel, la ruta de modelos (alojados o locales), los modelos y los subencargados tal como los da la `capabilities` firmada;
+  - el asiento `tenant.inteligencia_nivel_habilitado` guarda la declaración, el nivel y la huella de `capabilities`.
+
+  Deshabilitar un nivel es inmediato y sin fricción: corta los envíos de ese nivel y ordena al proveedor el borrado de lo ya transmitido de ese nivel.
+- **Un cambio del proveedor suspende el envío.** Si la huella de `capabilities` cambia (otro subencargado, otro enrutamiento por nivel), la pasarela suspende todo envío de esa entidad hasta que su administrador vuelva a declarar cada nivel habilitado.
 - **Retirar los datos es un acto aparte.** Pasar a `local` corta las llamadas. Retirar lo ya transmitido es un acto explícito del administrador: pide al proveedor el borrado de todo lo de la entidad y deja asiento.
 - **Aprovisionamiento.** `scripts/init_tenant.py` gana un paso que crea en el realm un **cliente de servicio por entidad**, confidencial y solo `client_credentials`, sin flujo estándar ni concesión directa. Su secreto se guarda cifrado con la KEK (`orpycamcp_common.kek`, AAD atada a entidad y finalidad) y el paso imprime el par *(issuer, client_id)* que el proveedor registra para esa entidad. El mismo paso se puede correr para una entidad ya existente. **El cliente no entra en `ALLOWED_AZP`**: su token solo se presenta al proveedor, nunca a Docuboto, y añadirlo lo convertiría en una credencial válida para toda la API.
-- **El funcionario en cada llamada.** Viaja como `on_behalf_of` **seudónimo**: un HMAC de su `auth_users.id` con una clave de la entidad. Su clearance viaja recortada al nivel más alto que se transmite, que en v1 es PÚBLICA. Ni la cuenta de servicio ni el funcionario amplían lo que el proveedor puede ver.
+- **El funcionario en cada llamada.** Viaja como `on_behalf_of` **seudónimo**: un HMAC de su `auth_users.id` con una clave de la entidad. Su clearance real viaja recortada al nivel habilitado más alto de la entidad, y el proveedor solo le muestra lo de los niveles que caben en ella. Ni la cuenta de servicio ni el funcionario amplían lo que el proveedor puede ver.
 - **Las llamadas del proveedor a Docuboto se autentican con HMAC por entidad, no con un cliente de Keycloak.** Son dos: entregar recomendaciones y descargar un anexo por localizador. Motivos:
   1. **Superficie.** Esas llamadas llegan a rutas internas de la pasarela que el api-gateway no enruta. Un token de Keycloak obligaría a meter el cliente del proveedor en `ALLOWED_AZP`, lo que lo vuelve credencial de toda la API, o a construir una segunda vía de validación. Con HMAC, el proveedor no tiene ninguna credencial de la API de Docuboto, y eso es lo que permite afirmar que ninguna escritura de Docuboto la hace su cuenta.
   2. **Un realm para todas las entidades.** Con Keycloak habría que mapear cliente a entidad y validar audiencia por entidad. El secreto HMAC es por entidad por construcción, y la AAD de la KEK impide que una fila copiada a otra entidad descifre.
@@ -95,7 +101,7 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 - **Cada acierto y cada cita se vuelven a comprobar en vivo**, con la misma regla que `GET` de un radicado:
   - el radicado existe;
   - no está anulado ni purgado;
-  - su nivel vivo es PÚBLICA y cabe en la clearance del funcionario.
+  - su nivel vivo está habilitado y cabe en la clearance del funcionario.
 
   Lo que no pasa se descarta, deja traza y dispara un borrado en el proveedor. Una afirmación que se queda sin citas se retira, y una respuesta que se queda sin afirmaciones se presenta como `insufficient_evidence`. Nunca se muestra una afirmación sin cita.
 - **Respaldo.** Si el proveedor no responde, excede su plazo, devuelve 5xx o tiene el envío suspendido (§4), la consulta la atiende `local`, y la UI dice «respuesta del índice local». La respuesta local se basa en asunto y remitente, no en el cuerpo ni en los anexos.
@@ -150,7 +156,7 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 
 ### 9. Relación con otros ADR
 
-- **Enmienda a ADR-006.** Para esta capa, el proveedor se elige **por entidad**, no por despliegue. La generación de `local` sigue configurándose por despliegue como dice ADR-006, y su barrera dura sigue igual.
+- **Enmienda a ADR-006.** Para esta capa, el proveedor se elige **por entidad**, no por despliegue. La generación de `local` sigue configurándose por despliegue como dice ADR-006, y su barrera dura (CC-03) sigue igual. Para `ppi`, CC-03 se sustituye por los niveles habilitados de la entidad (§3, §4): el proveedor interno es un encargado dentro de la instalación, y la ruta de modelos de cada nivel queda declarada y firmada en su `capabilities`.
 - **ADR-037** gobierna todo: con la bandera apagada no hay consulta, ni sugerencia visible, ni aceptación, ni envío al proveedor. A diferencia de `local`, `ppi` no indexa con la bandera apagada: indexar en `ppi` es transmitir.
 - **ADR-019.** El MCP sigue siendo la fachada «como el usuario». Esta decisión reusa su gate de escritura y no le añade tools de proveedor.
 - **ADR-018.** Los webhooks quedan como están. Este diseño no los usa: son salida de eventos a terceros, sin barrera por registro, sin borrado y sin vuelta.
@@ -190,8 +196,9 @@ Pendiente de confirmación de asesoría jurídica:
 
 - Más piezas: una red, un perfil, un consumidor, un libro de envíos, una bandeja y un outbox de decisiones.
 - **El respaldo `local` es pobre** (asunto y remitente) hasta que se mejore su ingesta. La UI debe decirlo.
-- **El texto libre de una pregunta sale.** Se mitiga ofreciendo el panel solo sobre lo PÚBLICO y avisando, pero no se puede impedir que alguien escriba en la pregunta algo que no debería.
-- **Los datos personales de radicados PÚBLICOS salen** (remitente, contenido de los anexos). Lo cubre la declaración de transmisión de la entidad (Ley 1581; Decreto 1074 de 2015 [confirmar numerales]) y lo acota la lista cerrada de campos, pero no desaparece.
+- **El texto libre de una pregunta sale.** Se mitiga ofreciendo el panel solo sobre radicados de niveles habilitados y avisando, pero no se puede impedir que alguien escriba en la pregunta algo que no debería.
+- **Con RESERVADA o CLASIFICADA habilitadas, ese contenido llega a los modelos que el proveedor declare**, alojados por terceros en planes sin retención, salvo que la ruta del nivel sea local. La falta de retención limita lo que el subencargado guarda, no lo que ve. Lo cubre la declaración por nivel del administrador y la lectura jurídica del responsable de producto (Ley 1712 de 2014, arts. 18 y 19), pendiente de confirmar con asesoría jurídica (pregunta 8).
+- **Los datos personales de los radicados transmitidos salen** (remitente, contenido de los anexos). Lo cubre la declaración de transmisión de la entidad (Ley 1581; Decreto 1074 de 2015 [confirmar numerales]) y lo acota la lista cerrada de campos, pero no desaparece.
 - **El secreto HMAC es simétrico** (§4).
 - **Cambio compatible por defecto**: todas las entidades quedan en `local` hasta que su administrador elija `ppi`.
 
@@ -210,3 +217,5 @@ Pendiente de confirmación de asesoría jurídica:
 5. **Retirar los datos al pasar a `local`.** ¿Es automático o un acto aparte del administrador? Propuesta: acto aparte.
 6. **Metadatos JSONB.** ¿Sale algún campo de las plantillas de metadatos en v1? Propuesta: ninguno.
 7. **Imagen del perfil.** ¿La imagen configurable del perfil es la API del proveedor, o una puerta de entrada fina delante de su proyecto Compose? Hay que acordarlo con el proveedor.
+8. **Base jurídica de los niveles altos.** ¿Permiten la Ley 1712 de 2014 (arts. 18 y 19) y el Decreto 103 de 2015 que un encargado contratado, y sus subencargados alojados, procesen información RESERVADA y CLASIFICADA? ¿Qué exige la Ley 1581 de 2012 (y el Decreto 1074 de 2015) para la transmisión internacional? La revisión de 2026-10-27 parte de que sí se permite en planes sin retención; si asesoría jurídica dice otra cosa, el nivel pasa a ruta local o se deshabilita, sin cambiar el diseño.
+9. **Borrado por nivel.** PPI 1.1.0 añade `levels` opcional a `POST /v1/ingest/purge`. ¿Lo exige la pasarela para deshabilitar un nivel, o borra radicado por radicado cuando el proveedor solo habla 1.0?

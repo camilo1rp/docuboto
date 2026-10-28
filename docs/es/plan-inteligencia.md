@@ -1,15 +1,16 @@
-# Plan de inteligencia (Docuboto 2.0)
+# Plan de inteligencia
 
 > **Estado: planeado.** Nada de lo que describe esta página está construido. La decisión
 > de arquitectura es [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)
 > (Propuesto) y el protocolo es PPI v1, en borrador, en `docs/contratos/ppi/`.
-> Actualizado al 2026-10-27.
+> Actualizado al 2026-10-27, con la revisión de ADR-045 que deja a cada entidad decidir
+> qué niveles salen.
 
 ## Para qué
 
-Docuboto 2.0 incorpora un **proveedor interno de inteligencia**: un programa aparte, con
-su propia licencia, que corre en sus propios contenedores dentro de la instalación y que
-habla con Docuboto solo por PPI. Docuboto sigue siendo el sistema de registro y funciona
+Docuboto evoluciona para incorporar un **proveedor interno de inteligencia**: un programa
+aparte, con su propia licencia, que corre en sus propios contenedores dentro de la
+instalación, bajo contrato con la entidad, y que habla con Docuboto solo por PPI. Docuboto sigue siendo el sistema de registro y funciona
 entero sin proveedor.
 
 El plan tiene tres fases, que coinciden con las del primer proveedor para poder medir
@@ -23,9 +24,12 @@ ambos lados contra los mismos hitos:
 
 ## Reglas que valen para las tres fases
 
-1. **Solo sale lo PÚBLICO.** Un radicado RESERVADA o CLASIFICADA no llega nunca al
-   proveedor, por ningún camino (CC-03, sin excepción). Lo decide una sola función y lo
-   hace cumplir un solo punto de paso, que relee el nivel vivo al enviar.
+1. **Solo salen los niveles que la entidad habilita.** Por defecto, solo PÚBLICA.
+   RESERVADA y CLASIFICADA salen solo si el administrador habilita ese nivel con una
+   declaración que nombra la ruta de modelos del proveedor. Un radicado de un nivel no
+   habilitado no llega nunca al proveedor, por ningún camino. Lo decide una sola función y
+   lo hace cumplir un solo punto de paso, que relee el nivel vivo y los niveles habilitados
+   al enviar.
 2. **Con el interruptor apagado no hay llamadas.** Si la bandera de ADR-037 está apagada
    o la entidad está en `local`, Docuboto no hace ninguna llamada al proveedor.
 3. **Lo aceptado lo ejecuta el funcionario.** Cada aceptación pasa por el gate de
@@ -41,7 +45,7 @@ Cada regla tiene su guardián (ver [Guardianes transversales](#guardianes-transv
 ## Fase D1 — Camino de lectura
 
 **Objetivo.** En la bandeja y en `/busqueda`, el funcionario pregunta y busca sobre el
-cuerpo y los anexos de los radicados PÚBLICOS. Cada afirmación lleva cita, o la
+cuerpo y los anexos de los radicados de niveles habilitados. Cada afirmación lleva cita, o la
 respuesta es «evidencia insuficiente». Si el proveedor no está, responde el índice local.
 
 ### Cambios por servicio
@@ -49,25 +53,26 @@ respuesta es «evidencia insuficiente». Si el proveedor no está, responde el �
 | Servicio | Cambio |
 |---|---|
 | knowledge-service (la pasarela) | **Puerto de proveedor** con dos implementaciones: `local` (envoltorio de lo actual) y `ppi` (cliente HTTP de PPI v1). |
-| | **Punto de paso único** de todo envío al proveedor, con la función «¿puede salir?» (`nivel_vivo == PUBLICA`) en `app/core/clearance.py`. Ningún otro módulo usa el cliente PPI. |
-| | **Consumidor `inteligencia-pasarela`** sobre `orpycamcp.document.events` y `orpycamcp.workflow.events`, con reclamación de la PEL y dead-letter (ADR-021). Empuja altas y cambios, y ordena borrados por reclasificación hacia arriba, anulación y purga. |
+| | **Punto de paso único** de todo envío al proveedor, con la función «¿puede salir?» (nivel vivo entre los niveles habilitados de la entidad y envío no suspendido) en `app/core/clearance.py`. Ningún otro módulo usa el cliente PPI. |
+| | **Consumidor `inteligencia-pasarela`** sobre `orpycamcp.document.events` y `orpycamcp.workflow.events`, con reclamación de la PEL y dead-letter (ADR-021). Empuja altas y cambios, y ordena borrados por reclasificación hacia un nivel no habilitado, anulación, purga y nivel deshabilitado. |
 | | **Traducción a PPI**: radicado → `record` con una lista cerrada de campos (número, fecha, tipo E/S/I, tipo documental, dependencia, asunto, remitente, vencimiento oficial, estado), y anexo → `attachment` por localizador. Los metadatos JSONB no salen. |
 | | **Libro de envíos** de solo inserción y **reconciliación periódica** contra el nivel vivo y contra el inventario PPI (`GET /v1/ingest/inventory`). |
-| | **Carga inicial y reanudación**: al pasar a `ppi`, o al volver a encender la bandera, empuja lo PÚBLICO pendiente por lotes reanudables con cursor. |
+| | **Carga inicial y reanudación**: al pasar a `ppi`, o al volver a encender la bandera, empuja lo pendiente de los niveles habilitados por lotes reanudables con cursor. |
 | | **Conexión PPI**: declara niveles, vocabularios, URL de retorno y claves (`PUT /v1/connection`); lee y verifica `capabilities` con la clave fijada en configuración; guarda su huella y suspende el envío si cambia. |
 | | **Ruta interna de retorno `content`**, firmada con HMAC por entidad (ventana de 300 s, nonce de un solo uso en Redis): vuelve a pasar la barrera y sirve los bytes desde document-service. No la enruta el gateway. |
 | | **Delegación de `/search` y `/rag`**, con alcance opcional a un radicado y sus anexos. Re-comprobación viva de cada acierto y cada cita, y respaldo `local` con su etiqueta. Las tres tools de conocimiento del asistente (E21) pasan por aquí y heredan todo esto sin cambios en mcp-server. |
-| | **`on_behalf_of` seudónimo** (HMAC del `auth_users.id` con clave de la entidad) y clearance recortada a PÚBLICA. |
+| | **`on_behalf_of` seudónimo** (HMAC del `auth_users.id` con clave de la entidad) y su clearance real, recortada al nivel habilitado más alto. |
 | | **Métricas** sin etiqueta de tenant (ADR-041): envíos, rechazos de barrera, respaldos activados y suspensiones. |
-| document-service | **Dos rutas internas** (`X-Internal-Token`): el registro de un radicado y los bytes de un anexo (mediados por storage-service, como D-02). Ambas comprueban `nivel_seguridad = 1` en el `WHERE` y dejan constancia en el historial de acceso del radicado («transmitido al proveedor de inteligencia»). |
+| document-service | **Dos rutas internas** (`X-Internal-Token`): el registro de un radicado y los bytes de un anexo (mediados por storage-service, como D-02). Ambas comprueban en el `WHERE` que el nivel esté entre los habilitados y dejan constancia en el historial de acceso del radicado («transmitido al proveedor de inteligencia»). |
 | | **Eventos nuevos por el outbox** (`042_eventos_salientes`): anexo añadido y datos del radicado cambiados. |
-| tenant-service | **`GET` y `PUT /api/v1/config/inteligencia`** (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento `tenant.inteligencia_cambiada` en una transacción). Pasar a `ppi` exige bandera encendida, política publicada y `declaracion_transmision` con el proveedor y sus subencargados tal como los declara `capabilities`. |
+| tenant-service | **`GET` y `PUT /api/v1/config/inteligencia`** (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento `tenant.inteligencia_cambiada` en una transacción). Pasar a `ppi` exige bandera encendida, política publicada y `declaracion_transmision` con el proveedor y sus subencargados tal como los declara `capabilities`, y habilita PÚBLICA. |
+| | **`PUT /api/v1/config/inteligencia/niveles`** (mismo patrón y asiento `tenant.inteligencia_nivel_habilitado`): habilita RESERVADA o CLASIFICADA, nivel por nivel, con una declaración que nombra la ruta de modelos, los modelos y los subencargados de ese nivel según `capabilities`. Deshabilitar es inmediato y ordena el borrado de lo transmitido de ese nivel (`POST /v1/ingest/purge` con `levels`, PPI 1.1.0). |
 | | **`POST /api/v1/config/inteligencia/retirar`**: pide al proveedor el borrado de todo lo de la entidad (`POST /v1/ingest/purge`) y deja asiento. |
 | auth-service | `/auth/me` publica `inteligencia_proveedor` junto a `asistente_habilitado`, para que la UI decida qué mostrar. `ALLOWED_AZP` **no cambia**. |
 | `scripts/init_tenant.py` | **Paso nuevo e idempotente** que crea el cliente de servicio de la entidad en el realm (confidencial, solo `client_credentials`), guarda su secreto cifrado con la KEK e imprime el par *(issuer, client_id)* que registra el proveedor. Se puede correr para una entidad existente. |
 | api-gateway | Enruta `/api/v1/config/inteligencia*`. **No** enruta ninguna ruta interna de la pasarela. |
-| frontend | **Panel «Preguntar»** en el drawer de detalle de la bandeja (`frontend/src/routes/(app)/bandeja/+page.svelte`): solo con bandera, `PERM_CONOCIMIENTO` y radicado PÚBLICO. Muestra las citas con enlace al anexo y la página, dice cuándo responde el índice local y avisa de que la pregunta se transmite. |
-| | **Pantalla de administración** «Inteligencia»: proveedor, subencargados y enrutamiento según `capabilities`, declaración, estado (suspendido o activo) y retiro de datos. |
+| frontend | **Panel «Preguntar»** en el drawer de detalle de la bandeja (`frontend/src/routes/(app)/bandeja/+page.svelte`): solo con bandera, `PERM_CONOCIMIENTO` y radicado de un nivel habilitado. Muestra las citas con enlace al anexo y la página, dice cuándo responde el índice local y avisa de que la pregunta y el radicado se transmiten, y por qué ruta. |
+| | **Pantalla de administración** «Inteligencia»: proveedor, subencargados y enrutamiento según `capabilities`, declaración, niveles habilitados con la ruta de cada uno, estado (suspendido o activo) y retiro de datos. |
 | infra | **Perfil de Compose `inteligencia`** en `docker-compose.yml` e `infra/docker-compose.prod.yml`: red `internal: true` compartida solo por knowledge-service y `proveedor-inteligencia`, imagen `INTELIGENCIA_IMAGEN` sin valor por defecto (por digest en producción, ADR-033) y sin puertos. `scripts/preflight-prod.sh` rechaza la imagen sin digest. |
 
 ### Permisos nuevos
@@ -80,6 +85,7 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
 | Servicio | Migración | Contenido |
 |---|---|---|
 | tenant-service (global) | siguiente número libre | `public.tenants.inteligencia_proveedor TEXT NOT NULL DEFAULT 'local'` con `CHECK (… IN ('local','ppi'))`. Todas las entidades quedan en `local`. |
+| tenant-service (global) | siguiente número libre | `public.tenants.inteligencia_niveles SMALLINT[] NOT NULL DEFAULT '{1}'`, con `CHECK` de niveles válidos. |
 | knowledge-service (tenant) | siguiente número libre | `inteligencia_envios`: libro de envíos de solo inserción, con trigger que niega `UPDATE` y `DELETE`. |
 | knowledge-service (tenant) | siguiente número libre | `inteligencia_credenciales`: secretos cifrados con la KEK y AAD de entidad y finalidad (cliente de servicio, claves HMAC de retorno, clave de seudónimo). |
 | knowledge-service (tenant) | siguiente número libre | `inteligencia_estado`: huella de `capabilities` aceptada, suspensión y cursor de la carga inicial. |
@@ -99,7 +105,7 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
   la clearance se descarta. Una afirmación sin citas se retira, y una respuesta sin
   afirmaciones queda en «evidencia insuficiente».
 - **Las llamadas del proveedor van firmadas.** `content` con firma mala, instante viejo o
-  nonce repetido da 401, y un localizador de algo no PÚBLICO da 410.
+  nonce repetido da 401, y un localizador de un nivel no habilitado da 410.
 - **El cliente de la entidad no es credencial de la API.** El cliente creado por
   `init_tenant.py` no aparece en `ALLOWED_AZP` y solo tiene cuenta de servicio.
 - **El perfil aísla al proveedor.** Un guardián de compose comprueba que
@@ -115,18 +121,20 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
 
 ### Criterios de éxito (equivalen al hito D1 del proveedor)
 
-- [ ] En una instalación de staging de Docuboto 2.0, los funcionarios buscan y preguntan
+- [ ] En una instalación de staging de Docuboto, los funcionarios buscan y preguntan
       desde la bandeja y `/busqueda` sobre el cuerpo y los anexos. Cada respuesta va
       citada o es «evidencia insuficiente», y cada cita mostrada pasó la re-comprobación
       viva.
 - [ ] Con el proveedor detenido, Docuboto sigue funcionando: buscar y preguntar caen a
       `local` con su etiqueta, y radicar, tramitar y firmar no se enteran. Al volver, el
       consumidor recupera lo pendiente sin pérdida.
-- [ ] La reconciliación queda registrada: en el proveedor no existe nada por encima de
-      PÚBLICA (inventario PPI contra nivel vivo), y el libro de envíos de Docuboto no tiene
-      ningún envío que no fuera PÚBLICA.
-- [ ] Una reclasificación hacia arriba, una anulación y una purga terminan en un borrado
-      verificado en el inventario del proveedor.
+- [ ] La reconciliación queda registrada: en el proveedor no existe nada fuera de los
+      niveles habilitados (inventario PPI contra nivel vivo), y el libro de envíos de
+      Docuboto no tiene ningún envío de un nivel no habilitado al enviar.
+- [ ] Una reclasificación hacia un nivel no habilitado, una anulación, una purga y un nivel
+      deshabilitado terminan en un borrado verificado en el inventario del proveedor.
+- [ ] La ruta de modelos de cada nivel habilitado coincide con la `capabilities` firmada y
+      con la declaración del administrador.
 - [ ] La instalación corre desde una versión publicada, con la imagen del proveedor fijada
       por digest.
 - [ ] Con la bandera apagada o la entidad en `local`, el registro de acceso del proveedor
@@ -137,7 +145,7 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
 
 ## Fase D2 — Triage de entrada
 
-**Objetivo.** Lo que entra PÚBLICO por ventanilla y por correo recibe sugerencias de
+**Objetivo.** Lo que entra con un nivel habilitado por ventanilla y por correo recibe sugerencias de
 tipificación, plazo, reparto, antecedentes y remitente. El funcionario las acepta o las
 rechaza en la bandeja, y cada aceptación es un acto suyo, auditado con su sugerencia.
 
@@ -150,7 +158,7 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
 
 | Servicio | Cambio |
 |---|---|
-| knowledge-service | **Ruta interna de retorno `recommend`** (HMAC por entidad). Guarda en `sugerencias` de forma idempotente por `(proveedor, ref)`. Rechaza la clase desconocida, el código fuera de vocabulario, el radicado que ya no es PÚBLICO o la versión vieja. Registra los «ninguna» explícitos con su motivo para medir cobertura. |
+| knowledge-service | **Ruta interna de retorno `recommend`** (HMAC por entidad). Guarda en `sugerencias` de forma idempotente por `(proveedor, ref)`. Rechaza la clase desconocida, el código fuera de vocabulario, el radicado cuyo nivel ya no está habilitado o la versión vieja. Registra los «ninguna» explícitos con su motivo para medir cobertura. |
 | | **Rutas de la bandeja**: listar por radicado (`PERM_CONOCIMIENTO` nivel 1 y clearance en el `WHERE`), `aceptar` y `rechazar` (bandera, `PERM_CONOCIMIENTO` nivel 2 y permiso propio de la operación de destino; rechazar lleva motivo de catálogo cerrado). |
 | | **Reglas de vida**: `superada` cuando llega un reemplazo o cambia el valor oficial; `expirada` por plazo, cierre, anulación o subida de nivel. |
 | | **Outbox de decisiones** hacia `POST /v1/decisions`, con reintentos, bajo la barrera y el interruptor. |
@@ -215,7 +223,7 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
 
 ### Criterios de éxito (equivalen al hito D2 del proveedor)
 
-- [ ] En una instalación de Docuboto 2.0, lo que entra PÚBLICO por ventanilla y por correo
+- [ ] En una instalación de Docuboto, lo que entra con un nivel habilitado por ventanilla y por correo
       recibe sugerencias de tipificación, plazo, reparto y antecedentes dentro del p95
       acordado, visibles con su insignia en la bandeja.
 - [ ] Los funcionarios aceptan o rechazan en Docuboto. Cada aceptación aparece en la cadena
@@ -227,9 +235,9 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
       correlada.
 - [ ] Sobre el conjunto de oro de la entidad, la exactitud de tipo, plazo exacto y
       dependencia (top-1 y top-3) alcanza los umbrales acordados antes de la corrida. El
-      conjunto sale del historial PÚBLICO ya transmitido (radicados cerrados), sin una
+      conjunto sale del historial ya transmitido (radicados cerrados), sin una
       exportación aparte.
-- [ ] Al menos el 95 % de lo que entra PÚBLICO recibe sugerencias o un «ninguna» explícito
+- [ ] Al menos el 95 % de lo que entra con un nivel habilitado recibe sugerencias o un «ninguna» explícito
       con motivo, medido sobre `inteligencia_triage`.
 - [ ] Apagar la inteligencia en Docuboto (bandera o `local`) detiene toda llamada y todo
       egreso hacia el proveedor.
@@ -247,7 +255,7 @@ funcionario, que sigue su circuito normal de revisión, visto bueno y firma.
 
 | Servicio | Cambio |
 |---|---|
-| knowledge-service | **Ruta «pedir borrador»**: bandera, `PERM_CONOCIMIENTO` nivel 1 y radicado PÚBLICO. Lanza `POST /v1/runs` (`draft_reply`) bajo la barrera, con el radicado y sus anexos como alcance. |
+| knowledge-service | **Ruta «pedir borrador»**: bandera, `PERM_CONOCIMIENTO` nivel 1 y radicado de un nivel habilitado. Lanza `POST /v1/runs` (`draft_reply`) bajo la barrera, con el radicado y sus anexos como alcance. |
 | | El resultado llega como recomendación `draft` y se guarda como sugerencia `borrador_respuesta`. |
 | | Al aceptar, acuña la propuesta de `crear_borrador` con `radicado_padre_id` y el cuerpo sugerido. `crear_respuesta_vinculada` queda como opción, porque consume un número de radicado (pregunta abierta). |
 | mcp-server | La tool `crear_borrador` expone `radicado_padre_id`. `BorradorCreate` ya lo admite (`schemas/borrador.py`), pero la tool no lo ofrece hoy. |
@@ -266,7 +274,7 @@ funcionario, que sigue su circuito normal de revisión, visto bueno y firma.
   la sugerencia en `correlacion`.
 - **El cuerpo sugerido se muestra como texto**: ningún `{@html}` en los componentes de
   sugerencias.
-- **`run` solo sobre lo PÚBLICO** y solo con el interruptor encendido.
+- **`run` solo sobre niveles habilitados** y solo con el interruptor encendido.
 
 ### Criterios de éxito
 
@@ -288,7 +296,7 @@ lo que miren.
 | Guardián | Qué comprueba | Cómo |
 |---|---|---|
 | **Ningún proveedor se nombra en el código** | Ni `services/`, ni `frontend/src`, ni `shared/`, ni `scripts/`, ni los compose ni `infra/` nombran a un proveedor de inteligencia. | La lista prohibida se guarda como **huellas SHA-256** de los nombres normalizados, para que el guardián tampoco los nombre; se compara token a token. Exentos: `docs/` (los ADR y este plan pueden contar la historia) y los ajustes de modelos que ADR-006 ya admite. |
-| **Nada por encima de PÚBLICA llega a un proveedor** | Ningún camino envía un radicado RESERVADA o CLASIFICADA: registro, anexo, alcance de consulta, tarea `run`, descarga por localizador y outbox de decisiones. | Transporte falso que falla ante cualquier petición con nivel no PÚBLICO. Incluye la carrera de una reclasificación entre el evento y el envío. Un control AST asegura que solo el punto de paso usa el cliente PPI. |
+| **Nada de un nivel no habilitado llega a un proveedor** | Ningún camino envía un radicado de un nivel que la entidad no habilitó: registro, anexo, alcance de consulta, tarea `run`, descarga por localizador y outbox de decisiones. | Transporte falso que falla ante cualquier petición con un nivel no habilitado. Incluye la carrera de una reclasificación entre el evento y el envío. Un control AST asegura que solo el punto de paso usa el cliente PPI. |
 | **Con el interruptor apagado no hay llamadas ni egreso** | Con la bandera apagada, o la entidad en `local`, ni el consumidor, ni buscar, ni preguntar, ni la carga inicial, ni la reconciliación, ni el outbox de decisiones, ni `run` llaman al proveedor. | Transporte falso que falla ante cualquier petición. En compose, el proveedor solo está en una red `internal: true`. |
 | **Toda aceptación queda auditada con su sugerencia** | Cada sugerencia `aceptada` tiene un asiento de la operación de destino con la persona como actor y `correlacion.sugerencia` (identificador, proveedor, modelos), unido por el `jti` al asiento `inteligencia.sugerencia_aceptada` de la pasarela. | Prueba de integración del recorrido completo, más un control que recorre las sugerencias aceptadas de un tenant de prueba y busca su asiento. |
 

@@ -1,17 +1,18 @@
-# Intelligence plan (Docuboto 2.0)
+# Intelligence plan
 
 > **Status: planned.** Nothing on this page is built. This is a condensed English version.
 > The Spanish version of this page is canonical (switch with the language selector) and
 > carries the per-service detail, file references and open questions. The architecture
 > decision is [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)
 > (Proposed), written in Spanish like every ADR, and the protocol is PPI v1 (draft) in
-> `docs/contratos/ppi/`. Updated as of 2026-10-27.
+> `docs/contratos/ppi/`. Updated as of 2026-10-27, with the ADR-045 revision that lets each
+> entity choose which levels leave.
 
 ## Purpose
 
-Docuboto 2.0 adds an **internal intelligence provider**: a separate program, under its own
-license, that runs in its own containers inside the installation and talks to Docuboto
-only through PPI. Docuboto stays the system of record and works fully with no provider.
+Docuboto evolves to add an **internal intelligence provider**: a separate program, under
+its own license, that runs in its own containers inside the installation, under contract
+with the entity, and talks to Docuboto only through PPI. Docuboto stays the system of record and works fully with no provider.
 
 | Phase | What the officer gets |
 | --- | --- |
@@ -21,9 +22,11 @@ only through PPI. Docuboto stays the system of record and works fully with no pr
 
 ## Rules for every phase
 
-1. **Only PÚBLICA content leaves.** RESERVADA and CLASIFICADA never reach a provider. One
-   function decides and one choke point enforces it, re-reading the live level at send
-   time.
+1. **Only the levels the entity enables leave.** By default, only PÚBLICA. RESERVADA and
+   CLASIFICADA leave only after the administrator enables that level, with a declaration
+   naming the provider's model route for it. A record at a level that isn't enabled never
+   reaches the provider. One function decides and one choke point enforces it, re-reading
+   the live level and the enabled levels at send time.
 2. **With the switch off, no calls.** With the ADR-037 flag off, or the entity on `local`,
    Docuboto makes no call to the provider.
 3. **The officer executes what is accepted.** Every acceptance goes through the write gate
@@ -42,12 +45,17 @@ only through PPI. Docuboto stays the system of record and works fully with no pr
   - An HMAC-signed internal `content` callback.
   - Delegated `/search` and `/rag` with a live re-check of every hit and citation, and a
     labelled `local` fallback.
-  - A pseudonymous `on_behalf_of`.
+  - A pseudonymous `on_behalf_of`, with the officer's real clearance capped at the highest
+    enabled level.
 - **document-service.** Internal routes for a record and for attachment bytes, which
   re-check the level and leave an access-trail entry. Two new outbox events: attachment
   added and record changed.
 - **tenant-service.** `GET`/`PUT /api/v1/config/inteligencia` with a transmission
-  declaration naming the provider and its subprocessors, plus a withdraw act.
+  declaration naming the provider and its subprocessors, plus a withdraw act. Switching
+  to `ppi` enables PÚBLICA. `PUT /api/v1/config/inteligencia/niveles` enables RESERVADA or
+  CLASIFICADA one level at a time, with a declaration naming that level's model route,
+  models and subprocessors from `capabilities`. Disabling a level is immediate and orders
+  deletion of what was sent at that level.
 - **`scripts/init_tenant.py`.** Creates one client-credentials Keycloak client per entity.
   It is not added to `ALLOWED_AZP`.
 - **Frontend.** An "Ask" panel in the inbox detail drawer and an admin screen.
@@ -56,8 +64,10 @@ only through PPI. Docuboto stays the system of record and works fully with no pr
 - **Success criteria** match the provider's D1 gate:
   - cited answers or `insufficient_evidence`;
   - Docuboto keeps working with the provider stopped;
-  - a recorded reconciliation shows nothing above PÚBLICA at the provider;
-  - deletion is verified after reclassification, annulment and purge;
+  - a recorded reconciliation shows nothing outside the enabled levels at the provider;
+  - deletion is verified after reclassification to a level that isn't enabled, annulment,
+    purge and disabling a level;
+  - each enabled level's model route matches the signed `capabilities`;
   - the installation runs from a published bundle;
   - no calls happen with the switch off;
   - human sign-off.
@@ -103,7 +113,7 @@ only through PPI. Docuboto stays the system of record and works fully with no pr
 
 - No provider name appears in code. The denylist is kept as SHA-256 digests, so the test
   itself names no one.
-- Nothing above PÚBLICA reaches a provider, on any path, including the race where a record
+- Nothing at a level the entity hasn't enabled reaches a provider, on any path, including the race where a record
   is reclassified between the event and the send.
 - With the switch off, no calls or egress happen.
 - Every acceptance is audited with its suggestion ID.

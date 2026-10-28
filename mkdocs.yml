@@ -116,7 +116,7 @@ plugins:
             Referencia API: API reference
             Despliegue: Deployment
             Integraciones externas: External integrations
-            Plan de inteligencia (Docuboto 2.0): Intelligence plan (Docuboto 2.0)
+            Plan de inteligencia: Intelligence plan
             Contribuir: Contributing
             Seguridad: Security
 
@@ -192,7 +192,7 @@ nav:
   - Despliegue: deployment.md
   - Integraciones externas: integraciones-externas.md
   - Roadmap: roadmap.md
-  - Plan de inteligencia (Docuboto 2.0): plan-inteligencia.md
+  - Plan de inteligencia: plan-inteligencia.md
   - Contribuir: contributing.md
   - Seguridad: security-audit.md
   - Changelog: changelog.md
