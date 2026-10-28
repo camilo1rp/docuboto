@@ -56,7 +56,7 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 
 - **Grupo consumidor propio.** La pasarela lee `orpycamcp.document.events` y `orpycamcp.workflow.events` con su propio grupo (`intelligence-gateway`), distinto de `knowledge-ingest`. Usa el mismo patrón de reclamación de la PEL y dead-letter de ADR-021.
 - **Qué empuja.** Por cada radicado elegible empuja:
-  - un **registro**: una lista cerrada de campos declarada en la pasarela (número, fecha de radicación, tipo E/S/I, tipo documental, dependencia, asunto, remitente, vencimiento oficial y estado). Los metadatos JSONB libres (ADR-007) no salen en v1;
+  - un **registro**: una lista cerrada de campos declarada en la pasarela (número, fecha de radicación, tipo E/S/I, tipo documental, dependencia, asunto, remitente, vencimiento oficial y estado). Los metadatos de las plantillas por tipo documental (ADR-007) salen solo si la entidad enciende su interruptor (§4), aplanados en el campo `metadata` de PPI 1.2;
   - sus **anexos**, como bytes o como localizador más SHA-256.
 - **De dónde saca los anexos.** De rutas internas nuevas de document-service con `X-Internal-Token`: una entrega el registro y otra los bytes de un anexo. Ambas vuelven a comprobar el nivel y dejan constancia en el **historial de acceso del radicado**, con actor de sistema y finalidad «transmisión al proveedor de inteligencia». El funcionario que mire ese historial verá que el radicado salió, cuándo y hacia qué proveedor.
 - **Qué hace que se borre en el proveedor.** Una reclasificación hacia un nivel que la entidad no habilita, una anulación, una purga o que el administrador deshabilite un nivel provocan una **orden de borrado** al proveedor. Una reclasificación entre niveles habilitados se empuja como versión nueva del registro. Una desclasificación aprobada (ADR-039) que deje el radicado en un nivel habilitado lo vuelve elegible y se empuja.
@@ -87,7 +87,8 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 
   Deshabilitar un nivel es inmediato y sin fricción: corta los envíos de ese nivel y ordena al proveedor el borrado de lo ya transmitido de ese nivel.
 - **Un cambio del proveedor suspende el envío.** Si la huella de `capabilities` cambia (otro subencargado, otro enrutamiento por nivel), la pasarela suspende todo envío de esa entidad hasta que su administrador vuelva a declarar cada nivel habilitado.
-- **Retirar los datos es un acto aparte.** Pasar a `local` corta las llamadas. Retirar lo ya transmitido es un acto explícito del administrador: pide al proveedor el borrado de todo lo de la entidad y deja asiento.
+- **Metadatos de plantilla: un interruptor.** Una columna nueva `public.tenants.intelligence_send_metadata` (por defecto `false`) decide si salen los metadatos de las plantillas (ADR-007) de los radicados de niveles habilitados. Es todo o nada, sin elegir campos. Lo cambia el administrador con `PUT /api/v1/config/intelligence`, con el mismo patrón y el asiento `tenant.intelligence_metadata_changed`. Por defecto está apagado porque PPI es un protocolo neutro: otro proveedor puede no tener la confianza que tiene el proveedor interno. Apagarlo deja de enviar metadatos en adelante; lo ya enviado se reemplaza cuando cada radicado se vuelve a empujar.
+- **Retirar los datos es un acto aparte.** Pasar a `local` corta las llamadas. Retirar lo ya transmitido es un acto explícito del administrador: pide al proveedor el borrado de todo lo de la entidad y deja asiento. Para que no se olvide, la pantalla de administración muestra en `local` cuántos radicados conserva el proveedor, y la confirmación del cambio ofrece retirarlos en el mismo acto.
 - **Aprovisionamiento.** `scripts/init_tenant.py` gana un paso que crea en el realm un **cliente de servicio por entidad**, confidencial y solo `client_credentials`, sin flujo estándar ni concesión directa. Su secreto se guarda cifrado con la KEK (`orpycamcp_common.kek`, AAD atada a entidad y finalidad) y el paso imprime el par *(issuer, client_id)* que el proveedor registra para esa entidad. El mismo paso se puede correr para una entidad ya existente. **El cliente no entra en `ALLOWED_AZP`**: su token solo se presenta al proveedor, nunca a Docuboto, y añadirlo lo convertiría en una credencial válida para toda la API.
 - **El funcionario en cada llamada.** Viaja como `on_behalf_of` **seudónimo**: un HMAC de su `auth_users.id` con una clave de la entidad. Su clearance real viaja recortada al nivel habilitado más alto de la entidad, y el proveedor solo le muestra lo de los niveles que caben en ella. Ni la cuenta de servicio ni el funcionario amplían lo que el proveedor puede ver.
 - **Las llamadas del proveedor a Docuboto se autentican con HMAC por entidad, no con un cliente de Keycloak.** Son dos: entregar recomendaciones y descargar un anexo por localizador. Motivos:
@@ -108,6 +109,15 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 
   Lo que no pasa se descarta, deja traza y dispara un borrado en el proveedor. Una afirmación que se queda sin citas se retira, y una respuesta que se queda sin afirmaciones se presenta como `insufficient_evidence`. Nunca se muestra una afirmación sin cita.
 - **Respaldo.** Si el proveedor no responde, excede su plazo, devuelve 5xx o tiene el envío suspendido (§4), la consulta la atiende `local`, y la UI dice «respuesta del índice local». La respuesta local se basa en asunto y remitente, no en el cuerpo ni en los anexos.
+- **Plazos propuestos al proveedor** (2026-10-28, a acordar en su paso 4.18):
+
+  | Camino | p95 | Plazo | Al vencer o fallar |
+  |---|---|---|---|
+  | Buscar y antecedentes | 2 s | 3 s | Búsqueda de texto completo local, con su etiqueta |
+  | Preguntar | 15 s | 30 s | «Respuesta no disponible, inténtelo de nuevo», con los resultados de la búsqueda local para la misma pregunta |
+  | Borrador (D3, `run` asíncrono) | sin objetivo interactivo | 5 min | No se crea la sugerencia; el funcionario puede volver a pedirla |
+
+  Buscar queda dentro de RF-BUS-09 (3 s una búsqueda simple). Se pueden ajustar tras medir el piloto de D1.
 
 ### 6. La bandeja de sugerencias (`suggestions`)
 
@@ -119,7 +129,7 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 | `document_type` | `classify` | `tipificar_radicado` | `PERM_RADI` nivel 3 |
 | `due_date` | `deadline` | operación nueva para fijar o corregir el vencimiento (plan D2) | permiso nuevo `PERM_DUE_DATE` (plan D2) |
 | `routing` | `route` | `asignar_radicado` sin paso activo; `trasladar_radicado` con paso activo | `PERM_TRAMITAR` nivel 1, más la tenencia que esas operaciones ya exigen |
-| `related_records` | `relate` | `vincular_radicado` al expediente del antecedente (pregunta abierta 4) | `USUA_PERM_EXPEDIENTE` nivel 2 |
+| `related_records` | `relate` | operación nueva `link_related_records`: un vínculo `related` entre los dos radicados, no la inclusión en un expediente (plan D2) | `PERM_RADI` nivel 2, y clearance sobre los dos radicados |
 | `party_link` | `link_party` | conciliar la ficha provisional o vincular actores (`/api/v1/terceros/…`); hoy sin tool en el catálogo (plan D2) | `PERM_RADI` nivel 3 |
 | `reply_draft` | `draft` | `crear_respuesta_vinculada` o `crear_borrador` (plan D3) | `PERM_RESPUESTA_VINCULADA` o `PERM_RADI` |
 
@@ -128,7 +138,7 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
   - `accepted`: la operación se ejecutó con éxito.
   - `rejected`: el funcionario la rechazó, con motivo de un catálogo cerrado.
   - `superseded`: llegó otra que la reemplaza (`supersedes`), o un funcionario fijó el valor oficial por otra vía.
-  - `expired`: venció su plazo, el radicado se cerró o se anuló, o su nivel subió.
+  - `expired`: pasaron 30 días sin decidirla, el trámite se cerró, el radicado se anuló o su nivel subió. El plazo es el mismo para todas las clases.
 - **Un «ninguna» explícito no crea sugerencia.** Cuando el proveedor dice que no tiene nada que recomendar para un radicado y una clase, con su motivo (`no_recommendation` en PPI), la pasarela lo guarda como estado de triage del radicado. Así se distingue «no procesado» de «procesado, sin sugerencia» y se puede medir la cobertura.
 - **Se muestra con las reglas del radicado**: la sugerencia solo la ve quien puede ver el radicado (clearance en el `WHERE`), y solo con la bandera encendida y `PERM_CONOCIMIENTO`.
 - **El valor oficial manda.** Una sugerencia de plazo o de tipo es una diferencia propuesta, nunca un hecho guardado.
@@ -141,6 +151,7 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
   3. el permiso propio de la operación de destino (tabla de §6).
 
   Rechazar exige lo mismo: rechazar también es decidir, y quien no puede ejecutar la operación no debería quitarla de la vista de quien sí puede.
+- **Aceptar con cambios.** La tarjeta de aceptación abre con los valores sugeridos ya puestos y editables, con los mismos controles de las pantallas normales (selector de tipo documental, fecha, dependencia). La propuesta se acuña con los valores finales del funcionario. La decisión vuelve al proveedor como `accepted` con `applied_arguments`, y el asiento guarda el valor sugerido y el aplicado. No hace falta un estado aparte: una aceptación con valores distintos de los sugeridos es una aceptación corregida.
 - **La propuesta se acuña al aceptar, no al recibir.** Como vence a los 120 s, la sugerencia guarda la recomendación y, cuando el funcionario pulsa «Aceptar», la pasarela pide a mcp-server una propuesta firmada (`write_gate.preparar`) de la operación del catálogo, a nombre de ese funcionario. La UI la muestra con `ProposalCard` (`frontend/src/lib/components/layout/ProposalCard.svelte`). El texto de la tarjeta lo redacta el catálogo, no el proveedor.
 - **Se ejecuta como el funcionario.** Al confirmar, la operación corre con su identidad por el gate de siempre. No hay escritura con la cuenta del proveedor ni con un actor de sistema.
 - **La auditoría lo ata.** El asiento de la operación lleva en `correlacion`, además de `request_id` e `idempotency_key`, el bloque `suggestion` con su identificador, el proveedor y los modelos. Llega en una cabecera que mcp-server firma con el mismo mecanismo que `X-Origen-Canal` (`identidad.firmar_origen`) y que el gateway solo reenvía si la firma verifica. **No se añade un canal**: el acto entra por el gate, el canal sigue siendo `mcp` y el `CHECK` no cambia. La pasarela asienta además `intelligence.suggestion_accepted` con el `jti` de la propuesta, de modo que los dos asientos se unen por él.
@@ -211,12 +222,12 @@ Pendiente de confirmación de asesoría jurídica:
 
 ## Preguntas abiertas para el responsable de producto
 
-1. **Plazo de vida de una sugerencia `pending`** antes de `expired`. Propuesta: 30 días, o el cierre del trámite si llega antes.
-2. **«Aceptar con cambios».** ¿Se permite corregir el valor sugerido (otra fecha, otra dependencia) dentro de la misma aceptación, o se rechaza y se hace a mano?
-3. **Ampliar un plazo propio.** ¿Corregir un vencimiento hacia más tarde exige una segunda persona, como bajar de CLASIFICADA (ADR-039), o basta `PERM_DUE_DATE` con motivo?
-4. **Qué significa aceptar un antecedente.** ¿Vincular el radicado al expediente del antecedente, crear una relación entre radicados (hoy no existe) o solo marcarlo como útil?
-5. **Retirar los datos al pasar a `local`.** ¿Es automático o un acto aparte del administrador? Propuesta: acto aparte.
-6. **Metadatos JSONB.** ¿Sale algún campo de las plantillas de metadatos en v1? Propuesta: ninguno.
+1. ~~**Plazo de vida de una sugerencia `pending`.**~~ Resuelta el 2026-10-28: una sola regla para todas las clases. Pasa a `expired` a los 30 días, o antes si el trámite se cierra. Las reglas de `superseded` y de `expired` por anulación o subida de nivel siguen igual.
+2. ~~**«Aceptar con cambios».**~~ Resuelta el 2026-10-28: sí, dentro de la misma aceptación (§7). La decisión vuelve con `applied_arguments`, que PPI ya admite.
+3. ~~**Ampliar un plazo propio.**~~ Resuelta el 2026-10-28: «no el propio». Cualquiera con `PERM_DUE_DATE` amplía un vencimiento con motivo, salvo el funcionario que tiene asignado el radicado; acortar siempre se permite. La ampliación no pasa del doble del término inicial (Ley 1755 de 2015, art. 14 [confirmar]). Sin segunda persona (plan D2).
+4. ~~**Qué significa aceptar un antecedente.**~~ Resuelta el 2026-10-28: crea un vínculo `related` entre los dos radicados (tabla nueva, plan D2). Una sugerencia nunca incluye un radicado en un expediente: eso sigue siendo un acto manual del funcionario, que puede hacer desde la sección «Radicados relacionados». Los vínculos confirmados viajan al proveedor en `record.links` de PPI.
+5. ~~**Retirar los datos al pasar a `local`.**~~ Resuelta el 2026-10-28: es un acto aparte del administrador (§4). Dos salvaguardas: mientras la entidad está en `local`, la pantalla de administración muestra cuántos radicados conserva el proveedor (inventario PPI), y la confirmación del cambio a `local` ofrece «retirar también los datos» como casilla.
+6. ~~**Metadatos JSONB.**~~ Resuelta el 2026-10-28: un interruptor por entidad, `intelligence_send_metadata`, apagado por defecto (§4). Encendido, salen todos los metadatos de plantilla de los radicados de niveles habilitados, en el campo `metadata` de PPI 1.2.
 7. ~~**Imagen del perfil.**~~ Resuelta el 2026-10-28 (§8): el perfil no arranca ningún servicio del proveedor; cada programa es su propio proyecto Compose y se encuentran en la red externa `ppi`, como fija el ADR 0009a del proveedor (decisión 12).
-8. **Base jurídica de los niveles altos.** ¿Permiten la Ley 1712 de 2014 (arts. 18 y 19) y el Decreto 103 de 2015 que un encargado contratado, y sus subencargados alojados, procesen información RESERVADA y CLASIFICADA? ¿Qué exige la Ley 1581 de 2012 (y el Decreto 1074 de 2015) para la transmisión internacional? La revisión de 2026-10-27 parte de que sí se permite en planes sin retención; si asesoría jurídica dice otra cosa, el nivel pasa a ruta local o se deshabilita, sin cambiar el diseño.
-9. **Borrado por nivel.** PPI 1.1.0 añade `levels` opcional a `POST /v1/ingest/purge`. ¿Lo exige la pasarela para deshabilitar un nivel, o borra radicado por radicado cuando el proveedor solo habla 1.0?
+8. **Base jurídica de los niveles altos.** ¿Permiten la Ley 1712 de 2014 (arts. 18 y 19) y el Decreto 103 de 2015 que un encargado contratado, y sus subencargados alojados, procesen información RESERVADA y CLASIFICADA? ¿Qué exige la Ley 1581 de 2012 (y el Decreto 1074 de 2015) para la transmisión internacional? La revisión de 2026-10-27 parte de que sí se permite en planes sin retención; si asesoría jurídica dice otra cosa, el nivel pasa a ruta local o se deshabilita, sin cambiar el diseño. **Plan de arranque (2026-10-28):** el piloto empieza solo con PÚBLICA; la consulta a asesoría jurídica corre en paralelo, y RESERVADA o CLASIFICADA se habilitan después, nivel por nivel, cuando firmen asesoría jurídica y la revisión de seguridad de CR-005 C10 del proveedor. Ninguna fase espera por esto.
+9. ~~**Borrado por nivel.**~~ Resuelta el 2026-10-28: la pasarela exige la versión vigente de PPI (1.2) y deshabilita un nivel con `POST /v1/ingest/purge` y `levels`. No hay proveedores desplegados que solo hablen 1.0, así que no se construye el borrado radicado por radicado.

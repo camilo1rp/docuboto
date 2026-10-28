@@ -1,5 +1,5 @@
 {
-  "protocol_version": "1.1.0",
+  "protocol_version": "1.2.0",
   "description": "Conformance fixtures for PPI v1. Each entry names a fixture, the schema it is checked against (a JSON Schema file, or a component of the OpenAPI document), and whether it must validate. Paths are relative to this directory's parent.",
   "fixtures": [
     {
@@ -298,6 +298,17 @@
       "schema": "ppi-v1.openapi.yaml#/components/schemas/Connection",
       "valid": false,
       "why": "Callback keys are at least 32 random bytes."
+    },
+    {
+      "file": "examples/valid/record-with-metadata.json",
+      "schema": "schemas/record.schema.json",
+      "valid": true
+    },
+    {
+      "file": "examples/invalid/record-metadata-nested.json",
+      "schema": "schemas/record.schema.json",
+      "valid": false,
+      "why": "`metadata` is flat: each value is a string, number, boolean or null. The host flattens nested template fields."
     }
   ]
 }

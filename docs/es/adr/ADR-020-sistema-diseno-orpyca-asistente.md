@@ -3,6 +3,7 @@
 **Estado**: Propuesto
 **Fecha**: 2026-06-23
 **Autores**: Giampiero (mantenedor principal)
+**Enmendado por**: [ADR-046](ADR-046-conocimiento-sin-modelos.md) (propuesto, 2026-10-28): se retira el asistente conversacional (texto y voz) y `whisper-service`. El sistema de diseño de este ADR no cambia.
 
 ---
 

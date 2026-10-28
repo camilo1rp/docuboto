@@ -326,7 +326,7 @@ The frontend is **not a scaffold**: it is a practically complete SvelteKit appli
   the second pass. Code: per-unit loans paginated (+ BFF), signature migration `022` (`xades_level` COMMENT), the OAI
   EAD validated against the official XSD (21 real demo records, 0 invalid), `scripts/carga/busqueda_sla.py` (p95 of
   `/search` against RF-BUS-09: 3 s simple / 10 s complex; p95 ≤ 0.2 s over 222 radicados) and 20 documentation
-  guardians. **Open**: the `webhook_entregas` table (ADR-018), streaming expediente export, a CCD level discriminator
+  guardians. `webhook_entregas` (ADR-018) retention now follows `audit_log` (ADR-008, decided 2026-10-28 in the intelligence plan). **Open**: streaming expediente export, a CCD level discriminator
   (domain decision), EN changelog parity (decision), a generated MCP coverage figure, and **rebuilding archive-service
   and the frontend on the local stack (disk at 98 %)**.
 ### UX review of the API↔UI drift closure (2026-08-02)

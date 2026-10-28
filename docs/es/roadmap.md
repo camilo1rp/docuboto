@@ -324,8 +324,8 @@ procedimiento, los casos y los puntos ciegos declarados quedan en
       sin gate (decisión de producto; cerrado en C-1, ADR-037).
       **B4/P3 (2026-10-10)**: las previas bajo COMPLIANCE se respaldan (`minio-versiones.tsv`, salida 5) y se restauran
       con su retención; cada objeto remapeado deja evento PREMIS `REPLICA`; `verify_audit_chains` sale 2 con objetivo
-      vacío; `webhook_entregas` (notification `012`) + `GET /webhooks/{id}/entregas`. Pendiente: retención/purga de esa
-      tabla y probar backup/restore extremo a extremo en un entorno desechable.
+      vacío; `webhook_entregas` (notification `012`) + `GET /webhooks/{id}/entregas`. Su retención/purga sigue la de
+      `audit_log` (ADR-008), decidido el 2026-10-28 en el plan de inteligencia. Pendiente: probar backup/restore extremo a extremo en un entorno desechable.
       **Cerrado (2026-10-22, Bloque C)**: ~~gatear con permiso las rutas de knowledge~~ (`PERM_CONOCIMIENTO`, C-1,
       [ADR-037](adr/ADR-037-asistente-activable-por-entidad.md)) y ~~reconstruir auth-service en la pila local~~ (la verificación de cierre reconstruyó las 11 imágenes).
 - [x] **T15 — transversal sobre `orpycamcp_common`** (2026-10-04, AREA-02-05, 01-17, 03-07): un solo validador de slug

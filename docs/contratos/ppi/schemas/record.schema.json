@@ -80,6 +80,20 @@
       "maxProperties": 50,
       "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
       "additionalProperties": { "type": "string", "maxLength": 2000 }
+    },
+    "metadata": {
+      "description": "Since 1.2.0. Host-defined structured fields for the record (for example the fields of a per-type metadata template). Flat, with scalar values; the provider must not assume a schema for them. A host sends them only when its own policy allows it, and leaves the property out otherwise.",
+      "type": "object",
+      "maxProperties": 100,
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string", "maxLength": 2000 },
+          { "type": "number" },
+          { "type": "boolean" },
+          { "type": "null" }
+        ]
+      }
     }
   },
   "additionalProperties": false

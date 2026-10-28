@@ -11,7 +11,7 @@ openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: Intelligence Provider Protocol (PPI)
-  version: 1.1.0
+  version: 1.2.0
   summary: A neutral protocol between a records system (the host) and an intelligence provider.
   description: |
     PPI lets a **host** (a system of record) use an **intelligence provider** that runs
