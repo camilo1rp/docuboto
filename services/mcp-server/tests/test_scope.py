@@ -22,7 +22,7 @@ import httpx
 import pytest
 
 from app.services.identity import Identity
-from app.services.scope import build_scope, marco_a_texto
+from app.services.scope import build_scope
 
 
 def _gateway(*, clearance: int | None = 2, contexto: dict | None = None) -> httpx.AsyncClient:
@@ -135,23 +135,3 @@ async def test_si_falla_una_lectura_complementaria_el_marco_se_entrega_igual() -
     marco = await _marco({"PERM_RADI"}, {"PERM_RADI": 3}, clearance=None)
     assert "acceso" not in marco
     assert marco["puede_hacer"], "el resto del marco sí debe entregarse"
-
-
-@pytest.mark.asyncio
-async def test_el_texto_para_el_modelo_ordena_no_iniciar_trabajo() -> None:
-    """La instrucción que evita que la persona espere algo que no va a ocurrir."""
-    marco = await _marco(set(), {})
-    texto = marco_a_texto(marco)
-
-    assert "NO inicies ningun trabajo" in texto or "NO intentes" in texto
-    assert "Vía alternativa:" in texto
-    assert "no las distingue" in texto
-
-
-@pytest.mark.asyncio
-async def test_el_texto_no_ensena_nombres_de_herramienta_a_la_persona() -> None:
-    """El marco habla el idioma del trabajo, no el del catálogo."""
-    marco = await _marco({"PERM_RADI"}, {"PERM_RADI": 3})
-    texto = marco_a_texto(marco)
-    assert "radicar_documento" not in texto
-    assert "Radicar un documento" in texto

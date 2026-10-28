@@ -16,10 +16,9 @@
  * Y cambiar el velo del sistema obligaba a encontrar cuatro literales repartidos
  * por tres componentes y una ruta, sin nada que dijera dónde estaban.
  *
- * Ahora el color vive una vez (`$op-scrim-rgb`) y hay DOS niveles con
- * significado: `--op-scrim` para lo que bloquea —Modal y cajones, que atrapan el
- * foco— y `--op-scrim-soft` para el asistente, que se abre sobre la pantalla sin
- * pretender que el resto desaparece.
+ * Ahora el color vive una vez (`$op-scrim-rgb`) y un solo nivel, `--op-scrim`,
+ * para lo que bloquea: Modal y cajones, que atrapan el foco. (El velo suave
+ * `--op-scrim-soft` era del dock del asistente, retirado con ADR-046 §6.)
  *
  * El censo recorre también las hojas `.scss` (salvo `_tokens.scss`): `layout.scss`
  * repetía el velo a mano y escapaba porque solo se leían los `.svelte`.
@@ -59,11 +58,10 @@ describe("el velo de los diálogos sale del token", () => {
     expect(archivos.length).toBeGreaterThan(50);
   });
 
-  it("los dos niveles de velo existen y comparten color", () => {
+  it("el velo existe y sale del color del sistema", () => {
     const tokens = readFileSync(TOKENS, "utf8");
     expect(tokens).toMatch(/\$op-scrim-rgb:\s*33,\s*36,\s*33;/);
     expect(tokens).toMatch(/--op-scrim:\s*rgba\(#\{\$op-scrim-rgb\}/);
-    expect(tokens).toMatch(/--op-scrim-soft:\s*rgba\(#\{\$op-scrim-rgb\}/);
   });
 
   it("el censo incluye las hojas .scss (layout.scss escapaba al guardián)", () => {
@@ -88,10 +86,9 @@ describe("el velo de los diálogos sale del token", () => {
     expect(culpables).toEqual([]);
   });
 
-  it("quien bloquea usa el velo fuerte, y el asistente el suave", () => {
-    // El nivel no es estético: dice si lo de detrás se puede usar. Un Modal o un
-    // cajón atrapan el foco; el dock del asistente acompaña. Confundirlos hace
-    // que la pantalla mienta sobre lo que está disponible.
+  it("quien bloquea usa el velo del sistema", () => {
+    // El velo no es estético: dice que lo de detrás no se puede usar. Un Modal o
+    // un cajón atrapan el foco.
     const lee = (f) => readFileSync(join(SRC, f), "utf8");
     for (const f of [
       "lib/components/ui/Modal.svelte",
@@ -100,8 +97,5 @@ describe("el velo de los diálogos sale del token", () => {
     ]) {
       expect(lee(f), f).toMatch(/background:\s*var\(--op-scrim\)/);
     }
-    expect(lee("lib/components/layout/AssistantDock.svelte")).toMatch(
-      /background:\s*var\(--op-scrim-soft\)/,
-    );
   });
 });

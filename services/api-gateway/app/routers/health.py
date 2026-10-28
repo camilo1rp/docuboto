@@ -27,7 +27,7 @@ estado es una palabra y el detalle va al log.
 
 **3. No cubría tres servicios.** La lista tenía siete entradas; el sistema tiene
 diez servicios detrás del gateway. signature (firma y sellado), knowledge
-(recuperación semántica) y mcp (asistente) podían estar caídos sin que el
+(búsqueda y antecedentes) y mcp (catálogo MCP) podían estar caídos sin que el
 diagnóstico lo mencionara — y el diagnóstico se lee justo cuando algo va mal.
 La lista se deriva ahora de `_DOWNSTREAM`, que enumera los diez.
 """

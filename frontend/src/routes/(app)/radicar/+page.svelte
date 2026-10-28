@@ -57,7 +57,7 @@
   // se realizan a través de los endpoints locales /radicar/api/* que leen la
   // cookie httpOnly en el servidor — el token nunca alcanza el JS del cliente (D-05).
 
-  /** @type {{ user: any, dependencias: any[], trdSeries: any[], tiposDocumentales: any[] }} */
+  /** @type {{ user: any, dependencias: any[], trdSeries: any[], tiposDocumentales: any[], generationAvailable?: boolean }} */
   export let data;
 
   // ---------------------------------------------------------------------------
@@ -886,8 +886,9 @@
             {#if docType === "S" || docType === "I"}
               <div class="radicar-step__field radicar-step__field--full">
                 <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper
-                     el paso si el servicio de conocimiento no responde. -->
-                {#if $puedeConsultarConocimiento}
+                     el paso si el servicio de conocimiento no responde. Solo se
+                     muestra si la entidad tiene generación (ADR-046 §3). -->
+                {#if data.generationAvailable === true}
                   <RagSuggestButton
                     endpoint="/radicar/api/rag/suggest"
                     query={subject}

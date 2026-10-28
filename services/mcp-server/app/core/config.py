@@ -31,19 +31,6 @@ class Settings(BaseSettings):
     mcp_auth_username: str = ""
     mcp_auth_password: str = ""
 
-    # Asistente conversacional (E18/ADR-019): el mcp-server llama a Claude API
-    # DIRECTO (no vía gateway); cada tool se ejecuta vía el dispatcher existente,
-    # que re-propaga el token del usuario al gateway (el asistente corre AS-THE-USER).
-    # Vacío = degradación honesta (503 assistant_unavailable, RF-FIR-15); nunca
-    # una respuesta fingida ni un 500 crudo. NO poner una key real aquí — se
-    # inyecta por entorno (ver docker-compose.yml).
-    anthropic_api_key: str = ""
-    assistant_model: str = "claude-opus-4-8"
-    assistant_max_tokens: int = 16000
-    assistant_max_iterations: int = 8  # tope del loop tool_use manual
-    assistant_history_ttl_seconds: int = 1800  # inactividad → se descarta el historial
-    assistant_max_turns: int = 20  # tope de turnos de usuario por conversación
-
     # ---------------------------------------------------------------------
     # Propuestas firmadas (gate de escritura)
     # ---------------------------------------------------------------------
@@ -51,25 +38,6 @@ class Settings(BaseSettings):
     # arranca** (ver `app/main.py`): una clave vacía produce firmas que cualquiera
     # reproduce, y el gate quedaría decorativo sin que nada lo aparentara — el
     # mismo modo de fallo que los secretos con valor de ejemplo del bloque 11.
-    # ── Transcripción de voz (STT, ADR-020) ────────────────────────────────
-    # `disabled` por defecto y a propósito: no existe un «stub» honesto de
-    # transcripción — cualquiera tendría que inventarse lo que la persona dijo, y
-    # ese texto acabaría en un documento oficial. Ver `app/services/stt.py`.
-    stt_provider: str = "disabled"
-    # Token del gate D-02 de whisper-service. Sin él, la transcripción responde
-    # 403: ese servicio dejó de estar abierto a cualquiera de la red interna.
-    whisper_internal_token: str = ""
-    # `whisper-service` corre bajo el perfil `assistant` de Compose y arranca
-    # desactivado: es un servicio pesado y una instalación mínima no lo necesita.
-    whisper_url: str = "http://whisper-service:8012"
-    # Un minuto de audio tarda unos segundos en CPU; el margen cubre un dictado
-    # largo sin dejar la petición colgada para siempre.
-    stt_timeout: float = 120.0
-    # Tope del audio aceptado. Un dictado para el compositor del asistente son
-    # segundos, no una grabación de una reunión: el límite protege la memoria del
-    # servicio y hace explícito para qué es esto.
-    stt_max_bytes: int = 10 * 1024 * 1024
-
     mcp_proposal_secret: str = ""
     # Clave anterior, para que una rotación no invalide las propuestas vivas.
     mcp_proposal_secret_previous: str = ""

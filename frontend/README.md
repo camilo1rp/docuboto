@@ -1,7 +1,7 @@
 # Frontend — Docuboto
 
 > **Estado: E22 ✅ núcleo implementado.** SvelteKit ~completo: login PKCE, 14+ vistas
-> funcionales, Form Builder, asistente conversacional. Las dependencias **no** se
+> funcionales, Form Builder. Las dependencias **no** se
 > instalan en el host: el build y el dev server corren siempre en Docker (regla
 > _Docker-only_ del proyecto). Decisión registrada en
 > [ADR-011](../docs/es/adr/ADR-011-frontend-sveltekit-monorepo.md) y
@@ -75,7 +75,7 @@ frontend/
 Ver el detalle de propósito, rol y endpoints de cada vista en
 [Pantallas del sistema](../docs/es/pantallas.md). Resumen: `/dashboard`, `/bandeja`,
 `/radicar`, `/borradores`, `/busqueda`, `/expedientes` (+ detalle), `/archivo-fisico`,
-`/transferencias`, `/firmas`, `/envios`, `/reportes`, `/asistente`,
+`/transferencias`, `/firmas`, `/envios`, `/reportes`,
 `/admin/plantillas`, más el flujo de autenticación (`/login`, `/login/callback`,
 `/logout`) y `/403`.
 
@@ -89,8 +89,11 @@ Ver el detalle de propósito, rol y endpoints de cada vista en
   microservicio) a través del patrón BFF descrito arriba.
 - **Multi-tenancy:** el front es agnóstico; el tenant se resuelve por el claim
   `tenant_slug` del JWT.
-- **MCP / IA:** el asistente conversacional (E18/E21) se consume vía `/api/v1/assistant`
-  a través del gateway; el front no habla con el LLM ni con `mcp-server` directamente.
+- **Conocimiento / IA:** la búsqueda por conocimiento y «Sugerir con antecedentes» van
+  a `/api/v1/knowledge/*` a través del gateway; el botón de sugerir solo aparece si
+  `GET /api/v1/knowledge/availability` dice que hay generación para la entidad. El
+  asistente conversacional se retiró ([ADR-046](../docs/es/adr/ADR-046-conocimiento-sin-modelos.md) §6):
+  el front no habla con un modelo ni con `mcp-server`.
 - **RBAC espejo:** la navegación y las acciones visibles reflejan los permisos reales
   (`PERM_RADI`, `USUA_PERM_EXPEDIENTE`, `USUA_PERM_ADMIN`, `PERM_RADI_SALIDA`, …), pero
   el backend siempre re-valida — la UI es defensa en profundidad, no el control real.

@@ -79,11 +79,12 @@
   // ---------------------------------------------------------------------------
   const TODAS_LAS_TABS = [
     { id: "exacta", label: "Exacta", icon: "fas fa-magnifying-glass" },
-    { id: "semantica", label: "Semántica", icon: "fas fa-brain" },
+    { id: "semantica", label: "Conocimiento", icon: "fas fa-brain" },
     { id: "antecedentes", label: "Antecedentes", icon: "fas fa-diagram-project" },
   ];
-  // Semántica y Antecedentes solo existen si la entidad activó el asistente y la persona
-  // tiene PERM_CONOCIMIENTO (C-1, ADR-037). El loader lo calcula; sin dato = solo Exacta.
+  // Conocimiento (`?tab=semantica`) y Antecedentes solo existen si la entidad
+  // activó la capa de conocimiento y la persona tiene PERM_CONOCIMIENTO (C-1,
+  // ADR-037). El loader lo calcula; sin dato = solo Exacta.
   $: tabsPermitidas = data.tabsPermitidas ?? ["exacta"];
   $: TABS = TODAS_LAS_TABS.filter((t) => tabsPermitidas.includes(t.id));
   $: activeTab = tabsPermitidas.includes(data.tab) ? data.tab : "exacta";
@@ -361,7 +362,7 @@
     semanticaQError = "";
     const query = sq.trim();
     if (query.length < 1) {
-      semanticaQError = "Introduce un texto para la búsqueda semántica.";
+      semanticaQError = "Introduce un texto para la búsqueda por conocimiento.";
       return;
     }
     semanticaLoading = true;
@@ -374,7 +375,7 @@
       const body = await res.json();
       if (!res.ok) {
         semanticaResults = null;
-        semanticaError = mensajeConocimiento(body, "No se pudo completar la búsqueda semántica.");
+        semanticaError = mensajeConocimiento(body, "No se pudo completar la búsqueda por conocimiento.");
       } else {
         semanticaResults = body.results ?? [];
         semanticaError = null;
@@ -830,7 +831,7 @@
       hidden={activeTab !== "semantica"}
       class="busqueda__panel"
     >
-      <section class="busqueda__search-panel" aria-label="Formulario de búsqueda semántica">
+      <section class="busqueda__search-panel" aria-label="Formulario de búsqueda por conocimiento">
         <form
           class="search-form"
           on:submit|preventDefault={buscarSemantica}
@@ -897,7 +898,7 @@
       </p>
       <section
         class="busqueda__results"
-        aria-label="Resultados de búsqueda semántica"
+        aria-label="Resultados de búsqueda por conocimiento"
         aria-busy={semanticaLoading}
       >
         {#if semanticaLoading}
@@ -943,7 +944,7 @@
                 <p class="result-card__snippet">{hit.texto}</p>
                 <div
                   class="result-card__score"
-                  title="Similitud vectorial, no coincidencia textual"
+                  title="Relevancia del ranking de texto completo"
                 >
                   <div class="result-card__score-track">
                     <div
@@ -952,7 +953,7 @@
                     ></div>
                   </div>
                   <span class="result-card__score-label"
-                    >{similitudPercent(hit.score)}% de similitud</span
+                    >{similitudPercent(hit.score)}% de relevancia</span
                   >
                 </div>
               </li>
@@ -1138,7 +1139,7 @@
                 <p class="result-card__snippet">{ant.snippet}</p>
                 <div
                   class="result-card__score"
-                  title="Similitud vectorial, no coincidencia textual"
+                  title="Relevancia del ranking de texto completo"
                 >
                   <div class="result-card__score-track">
                     <div
@@ -1147,7 +1148,7 @@
                     ></div>
                   </div>
                   <span class="result-card__score-label"
-                    >{similitudPercent(ant.score)}% de similitud</span
+                    >{similitudPercent(ant.score)}% de relevancia</span
                   >
                 </div>
               </li>

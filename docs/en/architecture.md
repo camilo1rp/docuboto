@@ -31,11 +31,10 @@ graph TB
         SIG["signature-service"]
         MCP["mcp-server"]
         KNO["knowledge-service"]
-        WHI["whisper-service<br/>(assistant profile)"]
     end
 
     subgraph infra["Infrastructure"]
-        PG[("PostgreSQL 15<br/>+ pgvector")]
+        PG[("PostgreSQL 15")]
         REDIS[("Redis<br/>Streams + cache")]
         MINIO[("RustFS<br/>S3 Object Store")]
         KC["Keycloak<br/>OIDC"]
@@ -69,16 +68,16 @@ graph TB
     SIG --> PG
     SIG --> REDIS
     KNO --> PG
-    KNO --> REDIS
-    MCP -.->|gateway client only| GW
+    KNO -->|search as the user| DOC
+    MCP -.->|gateway HTTP client only| GW
 ```
 
 `mcp-server` is a **thin facade** (ADR-019): it has no database of its own and no
-business logic — it translates MCP protocol calls (or the conversational assistant)
-into requests to the `api-gateway`, exactly like any other authenticated client
-would. The assistant is the exception as far as inference goes: it calls **Anthropic’s API
-directly** (`ANTHROPIC_API_KEY`) and, before sending anything, replaces the content of every
-object with `nivel_seguridad >= 2` (residency barrier, ADR-006); without a key it answers 503.
+business logic — it translates MCP protocol calls into requests to the
+`api-gateway`, exactly like any other authenticated client would. Docuboto does
+not call any language model
+([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)): anyone who wants AI over
+Docuboto uses an external MCP client with whatever model that client chooses.
 
 The gateway signs the identity it forwards to each service (HMAC with timestamp, method and
 canonical route, [ADR-036](adr/ADR-036-identidad-atada-a-metodo-y-ruta.md)) and enforces the
@@ -99,9 +98,8 @@ its public portal read-only and the preservation of its records
 | `workflow-service` | 8006 | **19006** | Distribution flows, approvals (vistos buenos), rules, dead-letter |
 | `notification-service` | 8007 | **19007** | Email/alerts, outgoing webhooks, dead-letter |
 | `signature-service` | 8008 | **19008** | XAdES-B/T/LT/LTA electronic signature verifiable by third parties (ADR-034): personal, institutional seal of the index/transfer minutes, and LTA archive time-stamp renewal |
-| `mcp-server` | 8009 | **19009** | Model Context Protocol layer + conversational assistant (E18, ADR-019) |
-| `knowledge-service` | 8011 | **19011** | pgvector, RAG with ACL, semantic retrieval with citations (E21) |
-| `whisper-service` | 8012 | _not published_ | Speech transcription **inside the installation** (`faster-whisper` on CPU). Profile `assistant`: starts **off** and is **not routed through the gateway** — only mcp-server talks to it (ADR-020) |
+| `mcp-server` | 8009 | **19009** | Model Context Protocol layer for external clients (E18, ADR-019) |
+| `knowledge-service` | 8011 | **19011** | Model-free knowledge gateway: search and antecedents via full-text, as the user (ADR-046) |
 | `frontend` | 3000 | **19300** | SvelteKit SSR — presentation layer (E22) |
 | PostgreSQL | 5432 | **15432** | Single database, multi-schema |
 | Redis | 6379 | **16379** | Event streams + cache |
@@ -198,41 +196,12 @@ Summary of what each one exposes:
 ### `mcp-server`
 | Router | What it manages |
 |---|---|
-| `mcp` | MCP catalog/protocol (**not** exposed by the gateway) |
-| `assistant` | Conversational assistant (exposed via `/api/v1/assistant`) |
+| `mcp` | MCP catalog/protocol (**not** exposed by the gateway as a raw mount; routed under `/api/v1/mcp/`) |
 
 ### `knowledge-service`
 | Router | What it manages |
 |---|---|
-| `knowledge` | `/search`, `/antecedentes`, `/rag` (exposed); `/ingest` internal, event-driven |
-
-### `whisper-service`
-
-| Router | What it manages |
-|---|---|
-| `main` | `GET /health`, `GET /ready` (is the model loaded?), `POST /transcribe` (audio → text) |
-
-**The twelfth service, and the only one that never touches the gateway.** It exists because the
-browser's own speech recogniser **does not meet the sovereignty decision**: in Chrome and Edge
-the classic Web Speech API ships the audio to a Google service, so the dictation button is only
-offered where the browser recognises *on the device*. For everyone else the voice arrives here
-and never leaves the installation.
-
-Three traits set it apart from the other services, all deliberate:
-
-- **It starts switched off** (`assistant` profile, ADR-020). A minimal install runs without it
-  and without downloading any model; `POST /api/v1/assistant/transcribe` answers `503`
-  explaining how to enable it. **There is no transcription `stub`** — it would have to invent
-  what was said.
-- **It is neither routed through the gateway nor published to the host**: only `mcp-server`
-  talks to it, with `INTERNAL_SERVICE_TOKEN`. Same criterion as `storage-service`, which serves
-  bytes only to `document-service`'s mediator (D-02): network surface nobody needs is surface
-  somebody will eventually use.
-- **It is the only service with no database and no per-tenant schema.** It takes audio, returns
-  text and stores nothing; hence its absence from the migration and write censuses.
-
-Measured: ~9 s per ~5 s of audio on 4 CPUs with the `small` model. **Unverified**: quality on
-human speech — the test used synthetic voice.
+| `knowledge` | `/search`, `/antecedentes`, `/rag` (503 without a provider) and `/availability` |
 
 ## Gateway proxy pattern
 
@@ -262,12 +231,12 @@ Security rules **by design** in the proxy (not accidental):
   `document-service` (`GET /api/v1/documents/{id}/anexos/{file_id}/download`), which
   revalidates the user's clearance before requesting the file from
   `storage-service` — the object store is never reached directly from outside.
-- **`mcp-server` scoped down**: only `/api/v1/assistant/*` is routed; the raw
-  MCP catalog/protocol (`/api/v1/mcp`, `/mcp`) is deliberately kept out of the
-  gateway — the assistant is the only entry point for external clients.
-- **`knowledge-service` scoped down**: only `/search`, `/antecedentes` and `/rag`
-  are routed; `/ingest` is an internal endpoint consumed only by the service's own
-  event-driven worker.
+- **`mcp-server` scoped down**: only `/api/v1/mcp/` is routed (catalog, invoke,
+  proposals, and the streamable transport). Invoking a write that way returns a
+  signed proposal; executing it requires that token, bound to the person and their
+  time window.
+- **`knowledge-service` scoped down**: only `/search`, `/antecedentes`, `/rag` and
+  `/availability` are routed.
 
 ## Asynchronous orchestration — Redis Streams
 
@@ -287,7 +256,6 @@ sequenceDiagram
     participant WF as workflow-service
     participant SIG as signature-service
     participant NOT as notification-service
-    participant KNO as knowledge-service
 
     U->>DOC: POST /api/v1/documents (register incoming)
     DOC->>DOC: assigns tracking number (SELECT FOR UPDATE)
@@ -301,9 +269,6 @@ sequenceDiagram
     and
         R->>NOT: document.created
         NOT->>NOT: sends alert to the recipient
-    and
-        R->>KNO: document.created
-        KNO->>KNO: generates embeddings, indexes for RAG (fail-closed by ACL)
     end
 ```
 

@@ -10,11 +10,13 @@
 -->
 
 <!--
-  AsistenteEntidadCard.svelte — Tarjeta «Asistente y búsqueda semántica» de
+  AsistenteEntidadCard.svelte — Tarjeta «Capa de conocimiento» de
   /admin/parametros (C-1, ADR-037).
 
-  La ENTIDAD decide si activa el asistente conversacional y la búsqueda por
-  conocimiento (es la responsable del tratamiento de sus datos). Edita solo quien
+  La ENTIDAD decide si activa la capa de conocimiento: búsqueda por conocimiento,
+  antecedentes y, si hay generación, la ayuda de redacción con citas (es la
+  responsable del tratamiento de sus datos). La bandera conserva su nombre
+  `asistente_habilitado`, pero ya no hay asistente conversacional (ADR-046 §6). Edita solo quien
   tiene USUA_PERM_ADMIN nivel >= 3, igual que el backend (`PUT /config/asistente`),
   que re-valida siempre.
 
@@ -34,8 +36,6 @@
   /** @type {string|null} */
   export let loadError = null;
   export let canEdit = false;
-  /** @type {{asistente?: string, modelo?: string, rag?: string, embeddings?: string, embeddings_local?: boolean}|null} */
-  export let proveedores = null;
 
   let declaracion = false;
   let motivo = "";
@@ -56,20 +56,21 @@
   // Encender exige la declaración; apagar no tiene fricción.
   $: encendiendo = draft && habilitado !== true;
   $: puedeAplicar = !unchanged && (!encendiendo || declaracion);
-  $: nombreProveedor = proveedores?.asistente ?? "el proveedor del asistente";
-  $: sinIndexarAlApagar = proveedores?.embeddings_local === false;
 
   /** @param {any} body */
   function mensajeAsistente(body) {
     switch (codigoError(body)) {
       case "declaracion_requerida":
-        return "Para activar el asistente debe marcar la declaración de contrato de transmisión de datos.";
+        return "Para activar la capa de conocimiento debe marcar la declaración de contrato de transmisión de datos.";
       case "politica_no_publicada":
-        return "Antes de activar el asistente debe publicar la política de tratamiento de datos: fije la clave «Política de tratamiento de datos: versión» en la pestaña Parámetros de esta pantalla.";
+        return "Antes de activar la capa de conocimiento debe publicar la política de tratamiento de datos: fije la clave «Política de tratamiento de datos: versión» en la pestaña Parámetros de esta pantalla.";
       case "tenant_not_found":
         return "No se encontró la entidad.";
       default:
-        return mensajeError(body, "No se pudo cambiar la configuración del asistente.");
+        return mensajeError(
+          body,
+          "No se pudo cambiar la configuración de la capa de conocimiento.",
+        );
     }
   }
 
@@ -100,10 +101,10 @@
       if (typeof body?.aviso === "string" && body.aviso.trim()) aviso = body.aviso;
       notifySuccess(
         body?.cambiado === false
-          ? "El asistente ya estaba en ese estado."
+          ? "La capa de conocimiento ya estaba en ese estado."
           : body?.habilitado
-            ? "Asistente activado para la entidad."
-            : "Asistente desactivado para la entidad.",
+            ? "Capa de conocimiento activada para la entidad."
+            : "Capa de conocimiento desactivada para la entidad.",
       );
       await invalidateAll();
     } catch {
@@ -115,7 +116,7 @@
 </script>
 
 <section class="asistente-card" aria-labelledby="asistente-card-title" data-testid="asistente-card">
-  <h2 id="asistente-card-title" class="asistente-card__title">Asistente y búsqueda semántica</h2>
+  <h2 id="asistente-card-title" class="asistente-card__title">Capa de conocimiento</h2>
 
   {#if loadError}
     <div class="asistente-card__error" role="alert">
@@ -131,45 +132,20 @@
 
   <ul class="asistente-card__notas">
     <li>
-      Activarlo habilita el asistente conversacional, la búsqueda semántica y de antecedentes, y la
-      ayuda de redacción con citas. Cada persona, además, necesita el permiso
+      Activarlo habilita la búsqueda por conocimiento y de antecedentes y, si la entidad tiene
+      generación disponible, la ayuda de redacción con citas. No hay asistente conversacional. Cada
+      persona, además, necesita el permiso
       <code>PERM_CONOCIMIENTO</code> (se asigna en Administración &gt; Grupos).
       <code>PERM_CONOCIMIENTO</code> se concedió a los grupos que ya tenían algún permiso; revise a quién
       se le dio.
     </li>
     <li data-testid="asistente-egreso">
-      Al activarlo, el texto de las consultas y el contenido no reservado que el asistente lee
-      —incluidos datos personales— se envía a {nombreProveedor} (EE. UU.), que actúa como encargado del
-      tratamiento. El contenido marcado Reservado o Clasificado se sustituye por un aviso. Lo que usted
-      escriba o dicte se envía tal cual.
-    </li>
-    <li>
-      Lo ya indexado se conserva al apagarlo, pero no se sirve. Apagar no detiene la indexación.
-      {#if sinIndexarAlApagar}
-        <span data-testid="asistente-aviso-indexacion"
-          >Con el asistente apagado no se indexa lo que se radica, y lo omitido no se reindexa al
-          reactivarlo.</span
-        >
-      {/if}
+      Docuboto no llama a modelos de lenguaje: sin un proveedor de conocimiento, la búsqueda usa el
+      índice de texto completo de la entidad y no se genera texto. Transmitir contenido a un
+      proveedor de conocimiento es una decisión aparte, con su propia declaración por nivel de
+      clasificación.
     </li>
   </ul>
-
-  {#if proveedores}
-    <dl class="asistente-card__proveedores" data-testid="asistente-proveedores">
-      <dt>Asistente conversacional</dt>
-      <dd>{proveedores.asistente ?? "—"}{proveedores.modelo ? ` (${proveedores.modelo})` : ""}</dd>
-      <dt>Respuestas con citas</dt>
-      <dd>{proveedores.rag ?? "—"}</dd>
-      <dt>Embeddings</dt>
-      <dd>
-        {proveedores.embeddings ?? "—"}{proveedores.embeddings_local === true
-          ? " (local, no sale de la entidad)"
-          : proveedores.embeddings_local === false
-            ? " (externo)"
-            : ""}
-      </dd>
-    </dl>
-  {/if}
 
   {#if !loadError}
     <div class="asistente-card__control">
@@ -182,7 +158,7 @@
           disabled={!canEdit || saving}
           aria-describedby="asistente-card-ayuda"
         />
-        <span>Activar el asistente en esta entidad</span>
+        <span>Activar la capa de conocimiento en esta entidad</span>
       </label>
       {#if canEdit}
         <Button
@@ -198,8 +174,8 @@
         <label class="asistente-card__switch" for="asistente-declaracion">
           <input id="asistente-declaracion" type="checkbox" bind:checked={declaracion} />
           <span
-            >Declaro que la entidad tiene contrato de transmisión de datos con el proveedor del
-            asistente y una política de tratamiento que cubre esta finalidad</span
+            >Declaro que la entidad tiene contrato de transmisión de datos con su proveedor de
+            conocimiento y una política de tratamiento que cubre esta finalidad</span
           >
         </label>
         <label class="asistente-card__motivo" for="asistente-motivo">
@@ -278,22 +254,6 @@
         inline-size: 1.25rem;
         block-size: 1.25rem;
         accent-color: var(--op-primary);
-      }
-    }
-
-    &__proveedores {
-      margin: 0;
-      display: grid;
-      grid-template-columns: max-content 1fr;
-      gap: var(--op-space-1) var(--op-space-3);
-      color: var(--op-text-secondary);
-
-      dt {
-        font-weight: var(--op-weight-bold);
-        color: var(--op-text);
-      }
-      dd {
-        margin: 0;
       }
     }
 

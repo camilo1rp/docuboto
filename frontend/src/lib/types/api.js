@@ -575,9 +575,11 @@
  */
 
 /**
- * POST /api/v1/knowledge/rag — respuesta del RAG generativo con citas (E21 Inc.3).
- * `answer`/`modelo`/`suggestion_id` son `null` cuando no hubo generación (Patrón A,
- * fallback honesto): el llamante NUNCA debe ofrecer insertar en ese caso.
+ * Forma de respuesta de POST /api/v1/knowledge/rag cuando hay proveedor PPI.
+ * En despliegue local (ADR-046) el endpoint responde 503 `rag_unavailable`: no
+ * hay generación en Docuboto. Si un proveedor externo responde, `answer` /
+ * `modelo` / `suggestion_id` pueden ser `null` (Patrón A); el llamante NUNCA
+ * debe ofrecer insertar en ese caso.
  *
  * @typedef {object} RagResponse
  * @property {string|null}     answer

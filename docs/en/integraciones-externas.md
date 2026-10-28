@@ -89,20 +89,16 @@ The MCP layer is thus **complete** (tools + resources + prompts + both transport
 
 ---
 
-## 5. Knowledge layer — real embeddings/LLM — `knowledge-service`
+## 5. Knowledge layer — FTS gateway / external PPI — `knowledge-service`
 
 | | |
 |---|---|
-| Current state | **Real, local** embedding by default (`EMBEDDING_PROVIDER=local_st`, multilingual sentence-transformers, dim 384); deterministic `stub` for tests only. pgvector + retrieval with ACL pre-filtering already work. |
-| Swap point | `services/knowledge-service/app/services/embeddings.py` (`embed`). |
-| Selector | `EMBEDDING_PROVIDER` / `EMBEDDING_DIM` (config). |
-| Decision | ADR-006 (configurable AI provider, local by default). |
+| Current state | knowledge-service **no longer hosts embeddings** ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)). FTS gateway to document-service (`/search`, `/antecedentes`); `/rag` returns `503` without an external PPI provider; `/availability` reports the mode. No pgvector, no ingest consumer, no `kb_suggestions`. |
+| Intelligence | When a PPI is configured, intelligence comes from that external provider; the local fallback is document-service FTS (Docuboto calls no models). |
+| Gate | `asistente_habilitado` + `PERM_CONOCIMIENTO` ([ADR-037](adr/ADR-037-asistente-activable-por-entidad.md)). |
+| Decision | [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md) (withdraws the local model layer); [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md) (PPI); ADR-006 remains historical for the original pluggable design. |
 
-**To enable real embeddings/RAG:**
-1. Connect an embeddings model (e.g. local `sentence-transformers` or an API) by implementing `embed(text) -> list[float]`; adjust `EMBEDDING_DIM` and the `vector(N)` column (migration) to the model's dimension.
-2. For grounded RAG with citations and TRD/dependencia suggestions (advisory), connect a **pluggable** LLM (ADR-006); keep the **ACL pre-filtering** (`acl @>`) before retrieval.
-3. It is an **advisory/derived** layer: it is not a source of truth. **There is no per-entity opt-in (OMI-04)**: ingestion and the AI provider are installation-wide; if an entity must not feed the index, the service has to be turned off for the whole installation. A per-entity switch (`knowledge.habilitado`) awaits a product decision (it would change today's behaviour: a `false` default would stop ingestion for existing entities).
-4. **Generation residency**: `AI_PROVIDER=ollama_local` is only treated as sovereign when the `OLLAMA_URL` host is loopback, private-network, a container hostname or `*.local`; with a public host, RAG excludes every chunk of level >= Reserved from the context (AREA-11-12).
+**What left Docuboto (ADR-046):** there is no `embeddings.py`, `EMBEDDING_PROVIDER`, own pgvector index, or local LLM. Enabling generation/semantic RAG means configuring an external PPI, not plugging a model into knowledge-service.
 
 ---
 
@@ -169,7 +165,7 @@ the translator** from the source system into that format.
 | WORM (Object Lock) | storage-service | S3 client | RustFS with Object Lock (ADR-027) |
 | PDF/A | storage-service | normalization | veraPDF |
 | MCP protocol (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | done (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
-| Embeddings/RAG | knowledge-service | `embeddings.py` | model/LLM |
+| Knowledge FTS / PPI | knowledge-service | gateway to document-service (+ external PPI when configured) | external PPI (optional); no local models |
 | Postal operator | document-service | `postal_provider.py` | API credentials |
 | Migration from Orfeo | — | **out of scope** | external translator into `POST /api/v1/import` |
 

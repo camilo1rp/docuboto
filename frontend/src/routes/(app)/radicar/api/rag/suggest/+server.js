@@ -8,22 +8,15 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * /radicar/api/rag/suggest — Proxy SSR al RAG generativo con citas (D-05, ADR-011,
- * E21 Inc.3, F6 frontend).
- *
- * Ayuda de redacción para el paso de metadatos de radicación: sugiere un texto
- * fundamentado en antecedentes para el cuerpo del documento (RichEditor). El
- * frontend NUNCA inserta `answer` sin verificar que trae citas — eso lo hace
- * `RagSuggestButton.svelte` con `$lib/utils/ragInsert.js`; este proxy solo
- * reenvía la respuesta íntegra de `knowledge-service` (incluida su `advisory`).
+ * /radicar/api/rag/suggest — Proxy SSR a POST /knowledge/rag (D-05, ADR-011).
+ * Ayuda de redacción en metadatos de radicación. En local (ADR-046) el backend
+ * responde 503 `rag_unavailable` sin proveedor PPI; con proveedor, la forma es
+ * `RagResponse`. El frontend NUNCA inserta `answer` sin citas
+ * (`RagSuggestButton` + `ragInsert.js`); este proxy solo reenvía.
  *
  * POST → { query: string, top_k?: number }
- *   Respuesta: RagResponse de knowledge-service (answer, citations[], proveedor,
- *   modelo, confianza, suggestion_id, advisory) o { error, detail, status }.
  *
- * Degradación: si knowledge-service no responde, este proxy devuelve 503 — el
- * componente que lo consume debe tratarlo como "sugerencia no disponible" y NUNCA
- * bloquear el flujo de radicación (regla dura #3 de la tarea).
+ * 503 = "sugerencia no disponible"; NUNCA bloquea el flujo de radicación.
  */
 
 import { json } from "@sveltejs/kit";

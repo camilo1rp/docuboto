@@ -88,7 +88,7 @@ def _on_conflict_de_la_dlq(texto: str) -> list[str]:
 
 def test_todo_on_conflict_de_la_dlq_incluye_el_grupo() -> None:
     repos = _fuentes("*/app/repositories/dead_letter_repository.py")
-    assert len(repos) >= 4, "deben ser los 4 consumidores: workflow, signature, notification, knowledge"
+    assert len(repos) >= 3, "deben ser los 3 consumidores: workflow, signature, notification"
     for repo in repos:
         cl = _on_conflict_de_la_dlq(repo.read_text())
         assert cl, f"{repo}: no se halló el INSERT con ON CONFLICT"
@@ -252,7 +252,6 @@ _NOMBRES = {
     "workflow-service": "workflow",
     "signature-service": "signature",
     "notification-service": "notification",
-    "knowledge-service": "knowledge",
 }
 
 

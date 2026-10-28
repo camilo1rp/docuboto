@@ -586,7 +586,6 @@
     <AsistenteEntidadCard
       habilitado={data.asistenteHabilitado ?? null}
       loadError={data.asistenteError ?? null}
-      proveedores={data.asistenteProveedores ?? null}
       canEdit={canWriteParams}
     />
 

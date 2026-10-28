@@ -40,7 +40,7 @@ const { default: AppLayout } = await import("./AppLayout.svelte");
 const { initSession, clearSession } = await import("$lib/stores/auth.js");
 const { resetFavorites } = await import("$lib/stores/favorites.js");
 
-function sessionWith({ permissions = [], asistente_habilitado, nivel } = {}) {
+function sessionWith({ permissions = [] } = {}) {
   return {
     sub: "u-1",
     email: "op@orpyca.com",
@@ -49,8 +49,6 @@ function sessionWith({ permissions = [], asistente_habilitado, nivel } = {}) {
     roles: [],
     tenant_slug: "icetex",
     permissions,
-    ...(asistente_habilitado === undefined ? {} : { asistente_habilitado }),
-    ...(nivel === undefined ? {} : { permission_levels: { PERM_CONOCIMIENTO: nivel } }),
   };
 }
 
@@ -228,7 +226,7 @@ describe("AppLayout — el atajo «/» no saca el foco de un diálogo modal", ()
   it("con un [aria-modal] abierto, «/» no mueve el foco", async () => {
     render(AppLayout);
 
-    // Lo que abre el asistente, el drawer de navegación o cualquier Modal:
+    // El drawer de navegación o cualquier Modal:
     // dentro de un diálogo modal el foco NO puede salir, y «/» lo mandaba al
     // buscador del topbar — un sitio que el diálogo declara inexistente para
     // quien navega con teclado o con lector de pantalla.
@@ -249,42 +247,5 @@ describe("AppLayout — el atajo «/» no saca el foco de un diálogo modal", ()
     await tick();
 
     expect(document.activeElement).toBe(dentro);
-  });
-});
-
-describe("AppLayout — asistente por entidad y permiso (ADR-037)", () => {
-  const BOTON = { name: "Abrir asistente conversacional" };
-  const DOCK = { name: "Asistente conversacional", hidden: true };
-  beforeEach(() => {
-    window.localStorage.clear();
-    resetFavorites();
-  });
-  afterEach(() => clearSession());
-
-  it("bandera y PERM_CONOCIMIENTO >= 1: el botón abre el dock (control positivo)", async () => {
-    initSession(sessionWith({ asistente_habilitado: true, nivel: 1 }));
-    render(AppLayout);
-    await fireEvent.click(screen.getByRole("button", BOTON));
-    expect(screen.getByRole("dialog", DOCK)).toBeInTheDocument();
-  });
-
-  it("bandera sin PERM_CONOCIMIENTO: ni botón ni dock", () => {
-    initSession(sessionWith({ asistente_habilitado: true }));
-    render(AppLayout);
-    expect(screen.queryByRole("button", BOTON)).toBeNull();
-    expect(screen.queryByRole("dialog", DOCK)).toBeNull();
-  });
-
-  it("PERM_CONOCIMIENTO sin bandera de la entidad: ni botón ni dock", () => {
-    initSession(sessionWith({ asistente_habilitado: false, nivel: 2 }));
-    render(AppLayout);
-    expect(screen.queryByRole("button", BOTON)).toBeNull();
-    expect(screen.queryByRole("dialog", DOCK)).toBeNull();
-  });
-
-  it("bandera ausente: apagado", () => {
-    initSession(sessionWith({ nivel: 1 }));
-    render(AppLayout);
-    expect(screen.queryByRole("button", BOTON)).toBeNull();
   });
 });

@@ -8,7 +8,8 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * /busqueda — pestañas Semántica y Antecedentes solo con asistente activo de la entidad
+ * /busqueda — pestañas de conocimiento (`semantica`) y Antecedentes solo con
+ * la capa de conocimiento activa en la entidad
  * Y PERM_CONOCIMIENTO >= 1 (C-1, ADR-037). Sin ellas, `?tab=semantica` cae a `exacta`
  * SIN llamar a knowledge.
  */
@@ -98,6 +99,6 @@ describe("load de /busqueda — gate del conocimiento", () => {
       { asistente_habilitado: true, permission_levels: { PERM_CONOCIMIENTO: 1 } },
       "?tab=semantica&sq=contrato",
     );
-    expect(data.semanticaError).toMatch(/entidad no tiene activado/);
+    expect(data.semanticaError).toMatch(/entidad no tiene activada la capa de conocimiento/);
   });
 });

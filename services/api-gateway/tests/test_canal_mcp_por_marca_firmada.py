@@ -101,7 +101,7 @@ async def test_el_gateway_firma_la_ip_real_con_el_secreto_de_origen(test_client)
     """AREA-11-08: el mcp-server verifica la IP SIN poseer el secreto maestro.
 
     Sin la firma, `ip_real_firmada` devolvía None y todas las llamadas del
-    asistente caían de nuevo en el cubo por IP del contenedor del mcp-server.
+    mcp-server caían de nuevo en el cubo por IP de su contenedor.
     """
     await _canal_que_recibe_el_upstream(test_client, {})
     _, http_client, _ = test_client
@@ -133,30 +133,6 @@ async def test_la_idempotency_key_de_la_propuesta_llega_al_servicio(test_client)
 
     reenviadas = {k.lower(): v for k, v in http_client.build_request.call_args.kwargs["headers"].items()}
     assert reenviadas.get("idempotency-key") == "jti-de-la-propuesta"
-
-
-# -- CC-02 (AREA-11-11): la aceptación de la sugerencia del RAG está enrutada -----
-
-
-def test_aceptar_sugerencia_se_enruta_a_knowledge_y_ingest_sigue_cerrado():
-    """Sin la entrada en la tabla el endpoint existe en el servicio y es inalcanzable
-    (404 del gateway) — la clase de defecto «pieza correcta que nadie puede llamar»."""
-    from types import SimpleNamespace
-
-    from app.routers.proxy import _route_to_upstream
-
-    class _Estado(SimpleNamespace):
-        def __getattr__(self, nombre):  # los demás servicios: cualquier otro destino
-            return f"http://otro/{nombre}"
-
-    estado = _Estado(knowledge_service_url="http://knowledge:8011")
-    sid = "0b1c2d3e-0000-4000-8000-000000000001"
-
-    assert (
-        _route_to_upstream(f"/api/v1/knowledge/suggestions/{sid}/aceptar", estado)
-        == "http://knowledge:8011"
-    )
-    assert _route_to_upstream("/api/v1/knowledge/ingest", estado) is None
 
 
 # -- B9-4: la marca se ata al tenant del TOKEN, no a una cabecera del cliente -----

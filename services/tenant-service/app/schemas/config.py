@@ -56,33 +56,21 @@ class ParamUpdate(BaseModel):
 
 
 class AsistenteUpdate(BaseModel):
-    """Cuerpo de ``PUT /config/asistente``: encender o apagar el asistente (ADR-037).
+    """Cuerpo de ``PUT /config/asistente``: encender o apagar el conocimiento (ADR-037).
 
-    Encender es una transmisión de datos a un encargado (Anthropic para el asistente, el
-    proveedor de ``rag`` si es externo): exige ``declaracion_transmision: true`` y que la
-    entidad tenga publicada su política de tratamiento. Apagar no pide nada.
+    Encender exige ``declaracion_transmision: true`` y que la entidad tenga publicada su
+    política de tratamiento. Apagar no pide nada.
     """
 
     habilitado: bool
     #: La entidad declara que la política de tratamiento publicada cubre la transmisión
-    #: de datos a los proveedores que muestra ``GET /config/asistente``. Solo se exige al
+    #: de datos al proveedor de inteligencia (ADR-045). Solo se exige al
     #: ENCENDER (``422 declaracion_requerida`` si falta).
     declaracion_transmision: bool = False
     motivo: str | None = Field(default=None, max_length=500)
-
-
-class ProveedoresAsistente(BaseModel):
-    """Proveedores efectivos del asistente, para que quien lo enciende sepa a quién transmite."""
-
-    asistente: str
-    modelo: str
-    rag: str
-    embeddings: str
-    embeddings_local: bool
 
 
 class AsistenteResponse(BaseModel):
     habilitado: bool
     #: ``False`` cuando el valor pedido ya era el vigente (no hubo acto ni asiento).
     cambiado: bool = False
-    proveedores: ProveedoresAsistente

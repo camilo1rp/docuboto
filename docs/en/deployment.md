@@ -508,7 +508,7 @@ The identity the gateway signs for each service is **single-use**: it carries a 
 containers, the `service_completed_successfully` dependencies and file-based secrets do not translate
 by themselves. The supported route is Docker Compose (Option 1) or Swarm. If you scale replicas on any
 orchestrator, **review the in-memory state first**: the api-gateway limiter counts in Redis, but the
-assistant history, the MCP proposals' `jti` consumption and other caches are per process.
+MCP proposals' `jti` consumption and other caches are per process.
 
 ### Service scalability
 
@@ -797,17 +797,17 @@ kibana:
 
 ### Metrics with Prometheus
 
-Six services expose `GET /metrics` (text format 0.0.4) on their **own port**: `auth-service:8001`,
-`archive-service:8004`, `workflow-service:8006`, `notification-service:8007`, `signature-service:8008` and
-`knowledge-service:8011`. The gateway, tenant, document, storage, mcp and whisper do not expose it. The exporter is
+Five services expose `GET /metrics` (text format 0.0.4) on their **own port**: `auth-service:8001`,
+`archive-service:8004`, `workflow-service:8006`, `notification-service:8007` and
+`signature-service:8008`. The gateway, tenant, document, storage, knowledge and mcp do not expose it. The exporter is
 in-house (`orpycamcp_common.metricas`, ADR-041): no `prometheus_client`, **no tenant or identity label**, and lazy
 measurement (cache of `METRICS_TTL_SECONDS`, 30 s by default, 10 s deadline).
 
 | Family | Service | Meaning |
 |---|---|---|
-| `orpycamcp_signal_measured{signal}` | all six | `1` = the last measurement was complete in every tenant; `0` = **not verified** |
-| `orpycamcp_signal_last_success_timestamp_seconds{signal}` | all six | epoch of the last complete measurement |
-| `orpycamcp_dlq_pending_events` | workflow, signature, notification, knowledge | pending events in the service's own dead-letter group |
+| `orpycamcp_signal_measured{signal}` | all five | `1` = the last measurement was complete in every tenant; `0` = **not verified** |
+| `orpycamcp_signal_last_success_timestamp_seconds{signal}` | all five | epoch of the last complete measurement |
+| `orpycamcp_dlq_pending_events` | workflow, signature, notification | pending events in the service's own dead-letter group |
 | `orpycamcp_dlq_oldest_pending_timestamp_seconds` | same | oldest pending event (absent if none) |
 | `orpycamcp_worm_exhausted_artifacts{artifact,phase}` | archive | WORM artifacts whose retry was exhausted |
 | `orpycamcp_audit_chain_breaks`, `_declared_breaks`, `_verification_ok`, `_last_verification_timestamp_seconds` | auth | last **complete** `verify_audit_chains` run |
@@ -838,7 +838,6 @@ scrape_configs:
           - workflow-service:8006
           - notification-service:8007
           - signature-service:8008
-          - knowledge-service:8011
 ```
 
 **The audit chain is measured by the last job, not by the scrape.** `orpycamcp_audit_chain_*` comes from
@@ -939,16 +938,6 @@ emitted by the SSR itself**: do not duplicate them here, because `add_header` do
 not replace the backend's, and two different values of the same header behave
 differently per browser.
 
-### Voice dictation (whisper) outside the production manifest
-
-`whisper-service` (profile `assistant`, starts off) is **not in `infra/docker-compose.prod.yml` in v1, on
-purpose**: `mcp-server` does not set `STT_PROVIDER`, so the default `disabled` applies and dictation is
-off; no piece is missing. Declaring it under `profiles: [assistant]` would cost an interpolation side
-effect: Compose interpolates the whole file, inactive profiles included, forcing every operator to
-define `WHISPER_INTERNAL_TOKEN` even without dictation. When an entity asks for it, add the service with
-its token **and** `STT_PROVIDER` on `mcp-server`; a guard (`test_stt_en_prod_tiene_quien_lo_sirva`)
-fails if dictation is switched on without the service.
-
 ### Security audit
 
 `docker scan` has been **removed** from the Docker CLI. The pipeline scans every
@@ -959,7 +948,7 @@ immutable SHA tag (never `latest`):
 
 ```bash
 trivy image --severity CRITICAL --ignore-unfixed "$ORPYCA_REGISTRY/api-gateway:$ORPYCA_TAG"
-trivy image --severity CRITICAL --ignore-unfixed pgvector/pgvector:pg15
+trivy image --severity CRITICAL --ignore-unfixed postgres:15-bookworm
 ```
 
 Dependencies are audited separately (`dependency-audit`: `pip-audit` over every

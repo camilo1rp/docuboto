@@ -144,7 +144,6 @@ CON_GATE = {
 EXENTOS = {
     ("archive", "acquire_tenant"),
     ("document", "acquire_tenant"),
-    ("knowledge", "acquire_tenant"),
     ("notification", "acquire_tenant"),
     ("signature", "acquire_tenant"),
     ("workflow", "acquire_tenant"),

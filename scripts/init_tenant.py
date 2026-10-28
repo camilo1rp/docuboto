@@ -48,20 +48,18 @@ BASE = Path(__file__).parent.parent
 #                  and migrations/tenant/*.sql  (schema tenant_{slug}).
 # Las GLOBALES se aplican SIEMPRE antes que las de tenant (ver main()), lo que
 # importa porque instalan extensiones de las que dependen tablas por-tenant:
-# `document-service/001_extensions.sql` (pg_trgm/unaccent → FTS) y
-# `knowledge-service/001_pgvector.sql` (pgvector → columnas `vector(384)` de
-# `knowledge_chunk`). Omitirlas hacía fallar la provisión de esos servicios.
+# `document-service/001_extensions.sql` (pg_trgm/unaccent → FTS). Omitirlas hacía
+# fallar la provisión de ese servicio.
 GLOBAL_MIGRATIONS = [
     BASE / "services" / "auth-service"   / "migrations" / "global",
     BASE / "services" / "tenant-service" / "migrations" / "global",
     BASE / "services" / "document-service"  / "migrations" / "global",
-    BASE / "services" / "knowledge-service" / "migrations" / "global",
 ]
 
 # ORDEN: `auth-service` primero (RBAC/usuarios) y `tenant-service` a continuación
 # por ser fundacional (dependencias, parámetros, catálogos, PINAR); los servicios
 # de dominio después; `knowledge-service` al final, por ser una capa DERIVADA
-# (índice advisorio, no fuente de verdad — ADR-006).
+# (no fuente de verdad — ADR-046).
 #
 # Esta lista debe cubrir TODO servicio con `migrations/tenant/`. Al añadir un
 # servicio nuevo, añadirlo también aquí: una omisión no da error: el tenant se

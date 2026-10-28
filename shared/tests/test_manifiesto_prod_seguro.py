@@ -25,7 +25,6 @@ host y se comprueban con `scripts/preflight-prod.sh`.
 5. `TRUSTED_PROXIES` por defecto no incluye el gateway de la red Docker, la
    plantilla de nginx cubre los tres hosts y `edge` los resuelve por alias.
 6. `infra/.env.example` cubre todas las variables del manifiesto.
-7. Si el dictado (STT) se enciende en producción, quien lo sirve existe.
 """
 
 from __future__ import annotations
@@ -310,13 +309,3 @@ def test_env_example_cubre_el_manifiesto() -> None:
     assert not ausentes, f"variables del manifiesto ausentes de infra/.env.example: {ausentes}"
     obligatorias = sorted(n for n, o in refs.items() if ":?" in o and n not in activas)
     assert not obligatorias, f"obligatorias (`:?`) que .env.example no trae ACTIVAS: {obligatorias}"
-
-
-def test_stt_en_prod_tiene_quien_lo_sirva() -> None:
-    """Si `mcp-server` enciende el dictado, `whisper-service` tiene que existir."""
-    svcs = servicios(COMPOSE_PROD)
-    stt = str(svcs["mcp-server"].get("environment", {}).get("STT_PROVIDER", "disabled"))
-    if stt.strip() not in {"disabled", ""} and "disabled" not in stt:
-        assert "whisper-service" in svcs, (
-            f"STT_PROVIDER={stt} en producción sin `whisper-service` en el manifiesto"
-        )

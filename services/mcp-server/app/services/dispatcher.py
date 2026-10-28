@@ -179,7 +179,7 @@ async def dispatch(
     tenant_slug: str | None,
     idempotency_key: str | None = None,
 ) -> httpx.Response:
-    """Prepara y envía. Se conserva porque es lo que consumen los tres transportes."""
+    """Prepara y envía. Se conserva porque es lo que consumen todos los transportes."""
     prepared = build_request(tool, args)
     return await execute(
         client,

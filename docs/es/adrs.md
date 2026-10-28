@@ -26,7 +26,7 @@ Los archivos completos están en `docs/es/adr/`.
 | [ADR-017](adr/ADR-017-archivo-fisico.md) | Archivo físico: ubicación (dirección recursiva) ≠ unidad de conservación (contenedor móvil), patrón ArchivesSpace | Aceptado |
 | [ADR-018](adr/ADR-018-interoperabilidad-webhooks.md) | Interoperabilidad saliente por webhooks HTTP firmados (HMAC-SHA256) sobre el bus de eventos, suscritos por tenant | Aceptado |
 | [ADR-019](adr/ADR-019-capa-mcp.md) | Capa MCP como fachada fina cliente del gateway (catálogo de tools declarativo, sin lógica ni BD) | Aceptado |
-| [ADR-020](adr/ADR-020-sistema-diseno-orpyca-asistente.md) | Sistema de diseño Orpyca (tokens Sass + custom properties, branding por tenant) y asistente conversacional (texto/voz) como traductor a tools MCP con IA local opt-in | Propuesto |
+| [ADR-020](adr/ADR-020-sistema-diseno-orpyca-asistente.md) | Sistema de diseño Orpyca (tokens Sass + custom properties, branding por tenant). El asistente conversacional (texto/voz) quedó **fuera de alcance** al enmendarse por [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md) | Propuesto (asistente retirado) |
 | [ADR-021](adr/ADR-021-reclamacion-deadletter-eventos.md) | Reclamación de PEL y dead-letter por grupo consumidor en Redis Streams (signature/workflow/notification-service) | Aceptado |
 | [ADR-022](adr/ADR-022-indice-electronico-v2-metadatos.md) | Perfil v2 del índice electrónico — metadatos RT-15 por documento (formato, tamaño, foliación) | Aceptado |
 | [ADR-023](adr/ADR-023-worm-object-lock-preservacion.md) | WORM / Object-Lock de preservación (MinIO) y hoja de ruta AIP/PREMIS | Aceptado (Increment A) |

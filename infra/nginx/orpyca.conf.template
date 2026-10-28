@@ -160,10 +160,8 @@ server {
 
         proxy_connect_timeout 5s;
         proxy_send_timeout    120s;
-        # 120 s cubre las importaciones y exportaciones grandes. El asistente
-        # conversacional (E18) tiene su propio timeout de 180 s en el gateway;
-        # si lo publicas por aquí, sube este valor por encima o el usuario verá
-        # un 504 en vez del error real.
+        # 120 s cubre las importaciones y exportaciones grandes y las
+        # invocaciones MCP largas a través del gateway.
         proxy_read_timeout    120s;
     }
 }

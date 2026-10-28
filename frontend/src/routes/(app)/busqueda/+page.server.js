@@ -20,7 +20,7 @@
  * Endpoints reales:
  *   - Exacta:       GET  /api/v1/search — q (≥2 chars), doc_type, status,
  *     date_from, date_to, dest_dept_code, ubicacion_dept_code, page, size.
- *   - Semántica:     POST /api/v1/knowledge/search — { query, top_k } →
+ *   - Conocimiento (`semantica`): POST /api/v1/knowledge/search — { query, top_k } →
  *     `list[SearchHit]` ({ id, source_type, source_ref, texto, metadata, score }).
  *   - Antecedentes:  POST /api/v1/knowledge/antecedentes — { query|radicado_ref,
  *     top_k } (XOR) → { antecedentes: [{source_type, source_ref, snippet, score}],
@@ -52,7 +52,7 @@ import { mensajeConocimiento, tabsBusquedaPermitidas } from "$lib/utils/asistent
 // Las pestañas válidas se calculan por usuario (C-1, ADR-037): ver `tabsBusquedaPermitidas`.
 
 /**
- * Carga SSR de la pestaña Semántica: POST /api/v1/knowledge/search.
+ * Carga SSR de la pestaña de conocimiento (`?tab=semantica`): POST /api/v1/knowledge/search.
  * @param {{token: string, tenant: string, userId: string, query: string, topK: number}} args
  */
 async function loadSemantica({ token, tenant, userId, query, topK }) {

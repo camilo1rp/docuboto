@@ -405,7 +405,7 @@ def _motivo(tool: Tool, identidad: Identity) -> str:
     confundirlas manda a la persona a la puerta equivocada.
     """
     if catalog.es_de_conocimiento(tool) and not identidad.asistente_habilitado:
-        return "su entidad no tiene activado el asistente ni la búsqueda semántica"
+        return "su entidad no tiene activada la capa de conocimiento"
     if tool.permission and tool.permission not in identidad.permissions:
         return f"requiere el permiso {tool.permission}, que su cuenta no tiene"
     nivel = identidad.levels.get(tool.permission or "", 0)
@@ -464,7 +464,7 @@ async def build_scope(
         # contrato. Lo que sí importa es que quien LEE el marco encuentre las
         # dos cosas en el mismo sitio, porque para quien pregunta «¿puedo pedir
         # esto?» la distinción entre «te falta permiso» y «este canal no lo
-        # hace» es irrelevante — y eso se resuelve en `marco_a_texto`.
+        # hace» es irrelevante.
         "no_ofrecidas": [dict(x) for x in NO_OFRECIDAS],
         "limites_declarados": list(LIMITES_DECLARADOS),
     }
@@ -485,46 +485,3 @@ async def build_scope(
         marco["usuario"]["dependencias_disponibles"] = len(contexto.get("available_depts") or [])
 
     return marco
-
-
-def marco_a_texto(marco: dict[str, Any]) -> str:
-    """El marco en prosa, para inyectarlo en el prompt del asistente.
-
-    Va como texto y no como JSON a propósito: es una instrucción de trabajo para
-    el modelo, no un dato que deba reproducir. Y se redacta aquí, no en el
-    catálogo ni en el modelo, para que lo que se le dice al asistente y lo que se
-    le enseña a la persona salgan de la misma fuente.
-    """
-    lineas: list[str] = ["ALCANCE DE ESTE USUARIO (calculado ahora, no negociable):"]
-
-    if marco.get("puede_hacer"):
-        lineas.append("Puede EJECUTAR estas acciones (siempre con confirmación previa):")
-        lineas += [f"- {e['operacion']}" for e in marco["puede_hacer"]]
-    else:
-        lineas.append("No puede ejecutar ninguna acción de escritura.")
-
-    if marco.get("puede_consultar"):
-        lineas.append("Puede CONSULTAR:")
-        lineas += [f"- {e['operacion']}" for e in marco["puede_consultar"]]
-
-    negados = [*marco.get("no_puede", []), *marco.get("no_ofrecidas", [])]
-    if negados:
-        lineas.append(
-            "NO puede lo siguiente. Si lo pide, dilo de inmediato con su motivo y su vía "
-            "alternativa, y NO intentes la acción ni inicies trabajo hacia ella:"
-        )
-        for e in negados:
-            via = f" Vía alternativa: {e['via_alternativa']}" if e.get("via_alternativa") else ""
-            lineas.append(f"- {e['operacion']} — {e['motivo']}.{via}")
-
-    acceso = marco.get("acceso")
-    if acceso:
-        lineas.append(acceso["explicacion"])
-
-    if marco.get("limites_declarados"):
-        lineas.append(
-            "Precisiones que NO debes afirmar porque el sistema no las distingue:"
-        )
-        lineas += [f"- {t}" for t in marco["limites_declarados"]]
-
-    return "\n".join(lineas)

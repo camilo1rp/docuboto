@@ -22,19 +22,16 @@
   │  52px    │                                  │
   │ colaps.) │                                  │
   └──────────┴──────────────────────────────────┘
-  + AssistantDock (panel flotante derecho, Fase 3)
   + Overlay drawer en móvil
 
   Responsivo:
   - ≤768px: el sidebar se oculta; el botón de menú abre un drawer overlay.
-  - El dock del asistente ocupa toda la pantalla en móvil (<600px).
 -->
 <script>
   import { onMount, tick } from "svelte";
   import { goto } from "$app/navigation";
   import SidebarNav from "./SidebarNav.svelte";
   import BreadcrumbBar from "./BreadcrumbBar.svelte";
-  import AssistantDock from "./AssistantDock.svelte";
   import DependencySwitcher from "$lib/components/features/perfil/DependencySwitcher.svelte";
   import {
     sidebarCollapsed,
@@ -43,18 +40,11 @@
     toggleMobileSidebar,
     closeMobileSidebar,
   } from "$lib/stores/ui.js";
-  import { sessionUser, puedeConsultarConocimiento } from "$lib/stores/auth.js";
+  import { sessionUser } from "$lib/stores/auth.js";
   import { ROUTES } from "$lib/utils/config.js";
 
   /** Título de la página actual (usado en el topbar y <title>) */
   export let pageTitle = "";
-
-  // Dock del asistente
-  let assistantOpen = false;
-
-  function toggleAssistant() {
-    assistantOpen = !assistantOpen;
-  }
 
   // ── Búsqueda global (§9: "barra prominente y siempre accesible") ─────────
   // No llama al gateway desde aquí: navega a /busqueda?q=..., que ya
@@ -96,8 +86,8 @@
       (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
     if (isTyping) return;
 
-    // Y tampoco secuestra el foco cuando hay algo modal abierto —el asistente,
-    // el drawer de navegación, cualquier Modal—. La comprobación se hace por
+    // Y tampoco secuestra el foco cuando hay algo modal abierto —el drawer de
+    // navegación, cualquier Modal—. La comprobación se hace por
     // `aria-modal` en el DOM y no por una bandera de este componente: lo modal
     // lo declara quien se abre, y una lista de banderas mantenida aquí se
     // quedaría corta con el próximo que aparezca.
@@ -272,19 +262,6 @@
 
     <!-- Acciones derechas del topbar -->
     <div class="app-layout__topbar-actions" class:is-hidden-mobile={searchExpandedMobile}>
-      <!-- Botón asistente: solo con asistente activo de la entidad Y PERM_CONOCIMIENTO (ADR-037) -->
-      {#if $puedeConsultarConocimiento}
-        <button
-          class="app-layout__action-btn"
-          type="button"
-          aria-label="Abrir asistente conversacional"
-          aria-pressed={assistantOpen}
-          on:click={toggleAssistant}
-        >
-          <i class="fas fa-robot" aria-hidden="true"></i>
-        </button>
-      {/if}
-
       <!-- Conmutador de dependencia activa (E08/ADR-013) — visible en
            cualquier pantalla; oculto si el usuario solo tiene una
            dependencia o si el contexto no cargó (best-effort, ver
@@ -400,11 +377,6 @@
   </div>
 </div>
 
-<!-- Dock del asistente (Fase 3 — placeholder por ahora) -->
-{#if $puedeConsultarConocimiento}
-  <AssistantDock open={assistantOpen} onClose={() => (assistantOpen = false)} />
-{/if}
-
 <style lang="scss">
   @use "$styles/_tokens" as t;
 
@@ -452,7 +424,7 @@
       cursor: pointer;
       color: var(--op-text-secondary);
       // Objetivo táctil >=44px (v1.0 A11y) — hamburguesa (única entrada a la
-      // navegación en móvil), asistente y logout son controles independientes.
+      // navegación en móvil) y logout son controles independientes.
       width: 44px;
       height: 44px;
       display: flex;

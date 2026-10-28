@@ -21,10 +21,6 @@ cd orfeo_mcp
 # 2. Start the full infrastructure
 docker compose --profile dev up -d
 
-# 2.bis (optional) In-house voice dictation: it downloads a transcription model
-# and uses CPU, which is why it starts switched off (ADR-020).
-docker compose --profile assistant up -d whisper-service
-
 # 3. Verify the services are running
 docker compose ps
 ```
@@ -228,15 +224,16 @@ or rejected first.
 
 > **Registering a draft**: on confirmation the screen asks for the **document type** (and, for an outgoing document, the **origin department** among your active ones) plus the type's own metadata; with no active department assigned, "Radicar" is not offered. Stored metadata is then readable in the `/bandeja` detail and in the expediente record.
 
-### Query the conversational assistant
+### Search knowledge (full-text fallback, ADR-046)
 
-> **The assistant and semantic search are opt-in per entity (ADR-037).** New entities are born with the assistant **off**: the entity administrator (`USUA_PERM_ADMIN` level 3) switches it on in **/admin/parametros** (or with `PUT /api/v1/config/asistente {"habilitado": true}`); until then everything below answers `403 asistente_deshabilitado`. Each person also needs the **`PERM_CONOCIMIENTO`** permission (level 1 queries; level 2 also accepts a suggestion), granted per group in **/admin/grupos**. Entities that already existed at migration time were left on, with their groups holding the permission. Switching it off does not stop indexing: whatever is registered while it is off is already indexed on re-enabling.
+> **The knowledge layer is opt-in per entity (ADR-037).** New entities are born with it **off**: the entity administrator (`USUA_PERM_ADMIN` level 3) switches it on in **/admin/parametros** (or with `PUT /api/v1/config/asistente {"habilitado": true}`); until then knowledge routes answer `403 asistente_deshabilitado`. Each person also needs the **`PERM_CONOCIMIENTO`** permission (level 1 queries), granted per group in **/admin/grupos**. Docuboto does not call language models: `/search` and `/antecedentes` reuse document-service full-text search; `/rag` answers `503 rag_unavailable` until a PPI provider is configured.
 
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/assistant/chat' \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"message": "Which incoming radicados do I have pending this week?"}'
-# Response: natural-language text with citations to the radicados consulted (RAG, read-only)
+curl -X POST 'http://localhost:19080/api/v1/knowledge/search' \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"radicados pendientes","top_k":5}'
+# Response: hits from the local full-text index (same shape as document search)
 ```
 
 ### File through the public window (automatic verification, C16)

@@ -8,7 +8,7 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Identidad del llamante: una sola resolución para los tres transportes.
+Identidad del llamante: una sola resolución para todos los transportes.
 
 **El problema que cierra este módulo.** Había tres caminos distintos para la misma
 pregunta —«¿quién es y qué puede hacer?»— y dos de ellos no funcionaban:
@@ -20,7 +20,7 @@ pregunta —«¿quién es y qué puede hacer?»— y dos de ellos no funcionaban
    (bien: sería forjable). Llegaba siempre vacía, así que **toda tool con permiso
    quedaba invisible salvo para ROOT**. Solo aparecía poblada en los tests, que la
    fabricaban a mano y por eso no detectaban nada.
-2. `services/assistant.py` sí lo hacía bien: `GET /api/v1/auth/me` con el token
+2. El asistente conversacional (retirado en D0, ADR-046 §6) sí lo hacía bien: `GET /api/v1/auth/me` con el token
    del usuario, que devuelve `permissions` **y** `permission_levels`.
 
 Este módulo generaliza (2) y elimina (1). La identidad sale siempre del token

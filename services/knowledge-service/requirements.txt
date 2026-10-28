@@ -3,25 +3,8 @@ uvicorn[standard]>=0.29.0
 pydantic-settings>=2.2.0
 asyncpg>=0.29.0
 httpx>=0.27.0
-# E21: worker de ingesta event-driven consume orpycamcp.document.events (Redis Streams).
+# Registro de nonces de la identidad firmada (orpycamcp_common.identidad, ADR-036).
 redis>=5.0.0
-# E21 Inc.1 — NOTA: el proveedor de embeddings local/soberano (`EMBEDDING_PROVIDER=local_st`,
-# `LocalSentenceTransformerProvider`) vive en `requirements-ml.txt`, NO aquí. Es una capa
-# OPCIONAL de imagen (`--build-arg WITH_ML`, default 1) porque arrastra torch (~1,5 GB aun
-# en variante CPU). El código NO cambia: `embeddings.py` importa `sentence_transformers` de
-# forma PEREZOSA (dentro de `_ensure_loaded`), así que el servicio arranca y opera sin la
-# capa ML mientras `EMBEDDING_PROVIDER` no sea `local_st`. Los proveedores `stub` y `ollama`
-# solo necesitan la stdlib y httpx (ya arriba).
-#
-# El DEFAULT de `config.py` sigue siendo `local_st` (soberano) y el default de `WITH_ML`
-# sigue siendo 1: una instalación tenant local se construye y despliega sin cambio alguno.
-# Solo el `docker-compose.yml` de ESTE repo de desarrollo pasa `WITH_ML=0` + override de
-# entorno, por ser una máquina que no puede ejecutar modelos locales.
-# E21 Inc.3: proveedor de generación `anthropic` (RAG con Citations API nativa,
-# app/services/llm.py::AnthropicLLMProvider). Import PEREZOSO (solo si
-# AI_PROVIDER=anthropic) — los demás proveedores (default `ollama_local`,
-# `ollama_cloud`, `openai_compatible`) usan httpx (ya en requirements) directo.
-anthropic>=0.40.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-timeout>=2.4.0

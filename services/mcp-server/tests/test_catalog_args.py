@@ -12,11 +12,6 @@ Validación de argumentos contra el catálogo (`coerce_args`).
 
 Es la barrera real: `additionalProperties: False` del JSON Schema es advisory
 para el modelo y no lo aplica nadie del lado del servidor.
-
-Nota de alcance: en este bloque `coerce_args` todavía no está en el camino de
-despacho —el asistente conserva su whitelist propia hasta que el dispatcher la
-consuma—, así que se prueba directamente. Sin estos tests, la función estaría
-escrita y sin verificar, que es la peor de las dos situaciones.
 """
 
 from __future__ import annotations

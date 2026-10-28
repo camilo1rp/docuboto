@@ -8,7 +8,8 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * semantica-server.test.js — proxy SSR de búsqueda semántica (D-05, Fase 6).
+ * semantica-server.test.js — proxy SSR de búsqueda por conocimiento (ruta
+ * histórica `/semantica`; D-05, Fase 6).
  *
  * Cubre: guard 401, allowlist campo a campo (`acl` nunca sale del cliente),
  * top_k acotado, y normalización de `list[SearchHit]` a `{ results }`.

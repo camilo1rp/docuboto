@@ -28,12 +28,11 @@ const config = {
     // ── Content-Security-Policy ───────────────────────────────────────────
     //
     // No había ninguna. La única barrera contra XSS era `sanitizeHtml.js`,
-    // aplicado en las tres superficies que hacen `{@html}`: las observaciones
-    // del radicado en el drawer de la bandeja, el cuerpo de los borradores y
-    // las plantillas, y los turnos del asistente conversacional. Es una lista
-    // de permitidos y funciona — pero es una sola capa, escrita a mano, sobre
-    // contenido que en dos de esos tres casos viene de otra persona (el
-    // remitente de un documento) o de un modelo de lenguaje. Un fallo del
+    // aplicado en las superficies que hacen `{@html}`: las observaciones del
+    // radicado en el drawer de la bandeja y el cuerpo de los borradores y las
+    // plantillas. Es una lista de permitidos y funciona — pero es una sola
+    // capa, escrita a mano, sobre contenido que puede venir de otra persona
+    // (el remitente de un documento). Un fallo del
     // saneador es ejecución de guion con la sesión del funcionario, y las
     // cookies son `httpOnly` pero el guion no las necesita: puede pedirle al
     // gateway lo que quiera desde el propio navegador.

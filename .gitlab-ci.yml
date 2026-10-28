@@ -133,7 +133,6 @@ test-unit:
           - signature-service
           - knowledge-service
           - mcp-server
-          - whisper-service
   before_script:
     - pip install --quiet ./shared
     # Desde el `.lock`, no desde `requirements.txt`: es lo que instala el
@@ -187,7 +186,7 @@ test-integration:
   image: python:3.11-slim
   interruptible: true
   services:
-    - name: pgvector/pgvector:pg15
+    - name: postgres:15-bookworm
       alias: postgres
   variables:
     POSTGRES_USER: orpycamcp
@@ -202,7 +201,6 @@ test-integration:
           - document-service
           - archive-service
           - storage-service
-          - knowledge-service
           - signature-service
           - workflow-service
   before_script:
@@ -369,8 +367,6 @@ test-security-smoke:
         TESTS: "tests/test_gateway.py -k 'internal or canal'"
       - SERVICE: storage-service
         TESTS: "tests/test_internal_token_gate.py tests/test_aip_internal_gate.py tests/test_eventos_internal_gate.py tests/test_purge_worm_gate.py"
-      - SERVICE: whisper-service
-        TESTS: "tests/test_transcribir_no_esta_abierto_a_la_red.py"
   before_script:
     - pip install --quiet ./shared
     - pip install --quiet -r "services/$SERVICE/requirements.lock"
@@ -699,8 +695,7 @@ dependency-audit:
       fi
   script:
     # `pip-audit` sin `-r` audita el entorno del propio job, no las dependencias del
-    # proyecto: se auditan los `.lock` (lo que instalan los Dockerfile), incluido
-    # el `requirements-ml.lock` de knowledge-service.
+    # proyecto: se auditan los `.lock` (lo que instalan los Dockerfile).
     - |
       set -u
       for lock in services/*/requirements*.lock; do

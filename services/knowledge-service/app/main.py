@@ -9,124 +9,39 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import deadletter, events, identidad, request_log
+from orpycamcp_common import identidad, request_log
 
-from app.core.clearance import url_es_local
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
-from app.core.redis_client import close_redis, init_redis
-from app.jobs.reconciliacion_nivel import bucle_de_reconciliacion
-from app.routers.admin_deadletter import router as admin_deadletter_router
 from app.routers.health import router as health_router
 from app.routers.knowledge import router as knowledge_router
-from app.routers.metrics import router as metrics_router
-from app.services.embeddings import get_provider
-from app.workers import document_consumer
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
 
 
-def _assert_embedding_dim_matches_provider() -> None:
-    """Guard FAIL-CLOSED de arranque (E21 Inc.1): `knowledge_chunk.embedding` es
-    UNA columna `vector(EMBEDDING_DIM)` por schema (migración 007) — si el
-    proveedor configurado (`EMBEDDING_PROVIDER`) produce una dimensión distinta,
-    cada INSERT/UPSERT fallaría en tiempo de request (o peor, silenciosamente
-    corrompería el índice ANN si pgvector permitiera la mezcla). Se verifica UNA
-    vez al arrancar, no por-request: aborta el proceso antes de aceptar tráfico
-    en vez de fallar tarde y de forma dispersa.
-
-    Para `local_st`/`ollama` esto FUERZA la carga (lazy) del modelo/la primera
-    llamada aquí mismo — es el costo de arranque aceptado por diseño (ver
-    docstring de `LocalSentenceTransformerProvider`); nunca ocurre en tests
-    (la suite fuerza `EMBEDDING_PROVIDER=stub` y nunca ejecuta este lifespan,
-    ver `tests/conftest.py`).
-    """
-    provider = get_provider()
-    if provider.dim != settings.embedding_dim:
-        raise RuntimeError(
-            f"embedding_provider={settings.embedding_provider!r} (modelo "
-            f"{provider.model_id!r}) produce vectores de dimensión {provider.dim}, "
-            f"pero EMBEDDING_DIM={settings.embedding_dim} (columna "
-            "knowledge_chunk.embedding, migración 007). Arranque abortado "
-            "(fail-closed) — ajusta EMBEDDING_DIM o el proveedor."
-        )
-    logger.info(
-        "embedding provider=%s modelo=%s dim=%d (OK, coincide con EMBEDDING_DIM)",
-        settings.embedding_provider,
-        provider.model_id,
-        provider.dim,
-    )
-
-
-def _warn_if_ollama_url_not_local() -> None:
-    """Aviso de arranque cuando `OLLAMA_URL` no es local.
-
-    La residencia de `ollama_local` ya NO depende de este aviso: `is_generatable`
-    exige que el host de `OLLAMA_URL` sea local (`url_es_local`) y, si no lo es,
-    excluye del contexto del RAG todo chunk de nivel >= RESERVADA (AREA-11-12,
-    fail-closed). El warning queda para que el operador entienda por qué el RAG
-    cae a Patrón A con material reservado. Para `EMBEDDING_PROVIDER=ollama` la
-    ingesta de nivel >= 2 ya estaba bloqueada por nombre (`is_embeddable`)."""
-    if settings.ai_provider != "ollama_local" and settings.embedding_provider != "ollama":
-        return
-    if url_es_local(settings.ollama_url):
-        return
-    logger.warning(
-        "OLLAMA_URL=%r no es un endpoint LOCAL/privado: el material nivel >= "
-        "RESERVADA NO se enviará a ese host (el RAG lo excluye del contexto y cae "
-        "a Patrón A). Para usarlo con material reservado, apunta OLLAMA_URL a un "
-        "host loopback, de la red privada, de contenedor o *.local operado por el "
-        "propio despliegue (E21, barrera dura de soberanía).",
-        settings.ollama_url,
-    )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("knowledge-service starting up")
-    _assert_embedding_dim_matches_provider()
-    _warn_if_ollama_url_not_local()
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
-    await init_redis(settings.redis_url)
-    # Ingesta event-driven (E21): auto-puebla el índice pgvector consumiendo
-    # orpycamcp.document.events (patrón exacto de workflow-service main.py).
-    consumer_task = events.spawn_supervised(
-        document_consumer.run, name="knowledge", logger=logger
-    )
-    # B10: barrido que sube el nivel de los fragmentos desactualizados (la lectura ya usa
-    # el nivel vivo; esto purga el material de proveedor externo que no puede seguir).
-    reconcile_task = events.spawn_supervised(
-        bucle_de_reconciliacion, name="knowledge-nivel", logger=logger
-    )
     yield
     logger.info("knowledge-service shutting down")
-    for tarea in (consumer_task, reconcile_task):
-        tarea.cancel()
-    for tarea in (consumer_task, reconcile_task):
-        try:
-            await tarea
-        except asyncio.CancelledError:
-            pass
     await close_pool()
-    await close_redis()
 
 
 app = FastAPI(
     title="OrpycaMCP — Knowledge Service",
     description=(
-        "Capa de conocimiento ADVISORIA y derivada (E21, ADR-006): recuperación "
-        "semántica (pgvector) con pre-filtrado ACL. La ingesta y el proveedor de IA son "
-        "GLOBALES de la instalación (no hay opt-in por entidad, OMI-04); no es fuente "
-        "de verdad. Embeddings con proveedor pluggable (local_st por defecto)."
+        "Pasarela de conocimiento (ADR-045, ADR-046). Sin proveedor (`local`), buscar y "
+        "antecedentes responden con la búsqueda de texto completo de document-service, "
+        "consultada como el usuario, y no hay generación. No llama a ningún modelo."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -141,7 +56,4 @@ app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="knowledge-service")
 
 app.include_router(knowledge_router)
-app.include_router(admin_deadletter_router)
-deadletter.instalar_manejador_radicados_ausente(app)
 app.include_router(health_router)
-app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)

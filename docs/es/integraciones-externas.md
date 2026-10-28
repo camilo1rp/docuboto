@@ -89,20 +89,16 @@ La capa MCP queda así **completa** (tools + resources + prompts + ambos transpo
 
 ---
 
-## 5. Capa de conocimiento — embeddings/LLM reales — `knowledge-service`
+## 5. Capa de conocimiento — pasarela FTS / PPI externo — `knowledge-service`
 
 | | |
 |---|---|
-| Estado actual | Embedding **real y local** por defecto (`EMBEDDING_PROVIDER=local_st`, sentence-transformers multilingüe, dim 384); `stub` determinista solo para pruebas. pgvector + recuperación con pre-filtrado ACL ya funcionan. |
-| Punto de swap | `services/knowledge-service/app/services/embeddings.py` (`embed`). |
-| Selector | `EMBEDDING_PROVIDER` / `EMBEDDING_DIM` (config). |
-| Decisión | ADR-006 (proveedor de IA configurable, local por defecto). |
+| Estado actual | knowledge-service **ya no aloja embeddings** ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)). Pasarela FTS hacia document-service (`/search`, `/antecedentes`); `/rag` responde `503` sin un proveedor PPI externo; `/availability` reporta el modo. Sin pgvector, sin consumidor de ingesta, sin `kb_suggestions`. |
+| Inteligencia | Cuando hay PPI configurado, la inteligencia viene de ese proveedor externo; el respaldo local es FTS de document-service (no modelos en Docuboto). |
+| Gate | `asistente_habilitado` + `PERM_CONOCIMIENTO` ([ADR-037](adr/ADR-037-asistente-activable-por-entidad.md)). |
+| Decisión | [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md) (retira la capa local de modelos); [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md) (PPI); ADR-006 queda histórico para el diseño pluggable original. |
 
-**Para activar embeddings/RAG reales:**
-1. Conectar un modelo de embeddings (p. ej. `sentence-transformers` local o una API) implementando `embed(text) -> list[float]`; ajustar `EMBEDDING_DIM` y la columna `vector(N)` (migración) a la dimensión del modelo.
-2. Para RAG anclado con citas y sugerencias TRD/dependencia (advisorias), conectar un LLM **pluggable** (ADR-006); mantener el **pre-filtrado ACL** (`acl @>`) antes de recuperar.
-3. Es una capa **advisoria/derivada**: no es fuente de verdad. **No hay opt-in por entidad (OMI-04)**: la ingesta y el proveedor de IA son globales de la instalación; si una entidad no debe alimentar el índice, hoy hay que apagar el servicio para toda la instalación. Un parámetro por entidad (`knowledge.habilitado`) está pendiente de decisión de producto (cambiaría el comportamiento actual: default `false` apagaría la ingesta de las entidades existentes).
-4. **Residencia de la generación**: `AI_PROVIDER=ollama_local` solo se trata como soberano si el host de `OLLAMA_URL` es loopback, de red privada, de contenedor o `*.local`; con un host público, el RAG excluye del contexto todo chunk de nivel >= Reservada (AREA-11-12).
+**Qué quedó fuera de Docuboto (ADR-046):** no hay `embeddings.py`, `EMBEDDING_PROVIDER`, índice pgvector propio ni LLM local. Activar generación/RAG semántico es configurar un PPI externo, no enchufar un modelo dentro de knowledge-service.
 
 ---
 
@@ -170,7 +166,7 @@ fuera es el traductor** desde el sistema de origen hacia ese formato.
 | WORM (Object Lock) | storage-service | cliente S3 | RustFS con Object Lock (ADR-027) |
 | PDF/A | storage-service | normalización | veraPDF |
 | Protocolo MCP (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | hecho (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
-| Embeddings/RAG | knowledge-service | `embeddings.py` | modelo/LLM |
+| Conocimiento FTS / PPI | knowledge-service | pasarela a document-service (+ PPI externo si está configurado) | PPI externo (opcional); sin modelos locales |
 | Operador postal | document-service | `postal_provider.py` | credenciales API |
 | Migración desde Orfeo | — | **fuera de alcance** | traductor externo hacia `POST /api/v1/import` |
 

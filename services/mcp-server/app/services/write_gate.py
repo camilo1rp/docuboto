@@ -8,7 +8,7 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-El gate de escritura, uno solo para los tres transportes.
+El gate de escritura, uno solo para todos los transportes.
 
 Antes había tres comportamientos distintos según por dónde entraras: el router
 HTTP exigía una cabecera, el binding MCP la daba por puesta, y el asistente

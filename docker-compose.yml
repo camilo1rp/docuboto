@@ -16,10 +16,6 @@ volumes:
   objectstore-data:
   keycloak-data:
   redis-data:
-  # El modelo de Whisper se baja al primer arranque y se queda aquí: empaquetarlo
-  # en la imagen la ataría a un modelo concreto y la haría crecer cientos de MB
-  # para quien luego elija otro.
-  whisper-models:
 
 # Migraciones al arrancar en DESARROLLO (C19, ADR-041): cada servicio con base de
 # datos espera a su `migrate-<servicio>`, un contenedor de un solo uso que corre
@@ -99,9 +95,10 @@ services:
   # ─── Infrastructure ───────────────────────────────────────────────────────────
 
   postgres:
-    # pgvector/pgvector:pg15 = PostgreSQL 15 + extensión pgvector (capa de conocimiento E21).
-    # Mismo major (15) que la imagen anterior (postgres:15-alpine) → compatible con el volumen existente.
-    image: pgvector/pgvector:0.8.7-pg15-bookworm@sha256:47af0b65960b14f1c6945aa4ccae37836c632e9a6fe0eea9160936e616e5b2e9
+    # Debian (bookworm), no alpine: la imagen anterior (pgvector) también era
+    # bookworm, y cambiar de libc cambia la colación de los índices de un volumen
+    # existente. Sin pgvector desde D0 (ADR-046 §4): ningún servicio lo usa.
+    image: postgres:15-bookworm@sha256:daeac543477e189e334f159133f4be6dae739b005cec2dfb9d482509fed05465
     container_name: orpycamcp-postgres
     environment:
       POSTGRES_USER: orpycamcp
@@ -285,11 +282,6 @@ services:
       - "127.0.0.1:19009:8009"
     environment:
       - GATEWAY_URL=http://api-gateway:8080
-      # Asistente conversacional (E18). SIN la clave, el asistente degrada
-      # honestamente a 503 assistant_unavailable (el catálogo MCP sigue OK).
-      # La clave NUNCA se versiona: se toma del entorno del host (o .env no
-      # versionado). Modelo por defecto: claude-opus-4-8 (config.py).
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # Clave de firma de las propuestas de escritura. Sin ella el servicio NO
       # arranca: una firma con clave vacía la reproduce cualquiera, y el gate
       # quedaría decorativo. En desarrollo se fija aquí, como el resto de
@@ -297,14 +289,8 @@ services:
       # `${VAR:?}`, que aborta el despliegue si falta.
       - MCP_PROPOSAL_SECRET=${MCP_PROPOSAL_SECRET:-orpycamcp_dev_proposal_secret}
       # Firma de la marca de origen del canal (AREA-11-04) y verificación de la IP real
-      # que firma el gateway (AREA-11-08). Sin él, el asistente asienta canal 'api'.
+      # que firma el gateway (AREA-11-08). Sin él, el mcp-server asienta canal 'api'.
       - MCP_ORIGIN_SECRET=${MCP_ORIGIN_SECRET:-orpycamcp_mcp_origin_dev}
-      # STT (ADR-020): `disabled` por defecto — no hay «stub» honesto de
-      # transcripción, así que sin proveedor el endpoint se NIEGA en vez de
-      # aproximar lo que se dijo. `whisper` exige levantar el perfil `assistant`.
-      - STT_PROVIDER=${STT_PROVIDER:-disabled}
-      - WHISPER_URL=${WHISPER_URL:-http://whisper-service:8012}
-      - WHISPER_INTERNAL_TOKEN=${WHISPER_INTERNAL_TOKEN:-orpycamcp_whisper_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:
@@ -427,57 +413,15 @@ services:
     mem_limit: 2g
     memswap_limit: 2g
 
-  whisper-service:
-    # Transcripción de voz EN LA PROPIA ENTIDAD (ADR-020, épica de dictado
-    # soberano). Existe porque el reconocedor del navegador NO cumple la
-    # decisión de soberanía: en Chrome y Edge la Web Speech API clásica manda el
-    # audio a un servicio de Google, así que `VoiceInput` solo se ofrece cuando
-    # el navegador reconoce en el dispositivo. Para el resto, la voz llega aquí y
-    # no sale.
-    #
-    # ARRANCA DESACTIVADO (perfil `assistant`), como decidió ADR-020 para los
-    # servicios pesados de inferencia: una instalación mínima corre sin él y sin
-    # descargar ningún modelo, y `POST /api/v1/assistant/transcribe` responde 503
-    # explicando cómo activarlo.
-    #
-    #     docker compose --profile assistant up -d whisper-service
-    #
-    # NO se enruta por el gateway: es interno, solo le habla el mcp-server —
-    # mismo criterio que storage-service, que sirve bytes únicamente al mediador
-    # de document-service (D-02). Superficie de red que nadie necesita es
-    # superficie que alguien acabará usando.
-    build:
-      context: .
-      dockerfile: services/whisper-service/Dockerfile
-    container_name: orpycamcp-whisper
-    environment:
-      - WHISPER_MODEL=${WHISPER_MODEL:-small}
-      - WHISPER_DEVICE=${WHISPER_DEVICE:-cpu}
-      - WHISPER_COMPUTE_TYPE=${WHISPER_COMPUTE_TYPE:-int8}
-      - WHISPER_LANGUAGE=${WHISPER_LANGUAGE:-es}
-      - INTERNAL_SERVICE_TOKEN=${WHISPER_INTERNAL_TOKEN:-orpycamcp_whisper_internal_dev}
-      - LOG_LEVEL=info
-    volumes:
-      - whisper-models:/models
-    networks:
-      - orpycamcp-net
-    profiles:
-      - assistant
-    restart: unless-stopped
-
   knowledge-service:
-    # Capa de conocimiento (E21, ADR-006): pgvector por tenant, advisoria/derivada.
-    # Contexto en la raíz para incluir shared/ (ADR-010): el worker de ingesta
-    # consume orpycamcp.document.events y audita con orpycamcp_common.
+    # Capa de conocimiento (E21, ADR-046): sin modelos. /search y /antecedentes
+    # consultan la búsqueda de texto completo de document-service; /rag responde
+    # 503 `rag_unavailable` mientras no haya proveedor.
+    # Contexto en la raíz para incluir shared/ (ADR-010).
     image: orpycamcp/knowledge-service:dev
     build:
       context: .
       dockerfile: services/knowledge-service/Dockerfile
-      args:
-        # Esta máquina de desarrollo NO puede ejecutar modelos de lenguaje locales, así que
-        # se omite la capa ML (torch CPU, ~1,5 GB). El Dockerfile trae WITH_ML=1 por defecto:
-        # una instalación tenant local se construye completa sin tocar nada de esto.
-        WITH_ML: "0"
     container_name: orpycamcp-knowledge
     ports:
       - "127.0.0.1:19011:8011"
@@ -485,33 +429,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
       - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
-      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
-      # --- E21: proveedores, SOLO override de esta máquina de desarrollo ------------------
-      # Los defaults de `app/core/config.py` siguen siendo los SOBERANOS (`local_st` +
-      # `ollama_local`) y no se tocan: un despliegue tenant local no necesita ninguna de
-      # estas variables. Aquí se sobreescriben porque este equipo no puede correr modelos.
-      #
-      # Embeddings: `stub` es un hashing vectorizer con signo sobre 384 cubetas
-      # (`embeddings.py::_stub_embed`) — recuperación LÉXICA real, sin modelo ni red. Su
-      # dimensión ya coincide con EMBEDDING_DIM=384 (`vector(384)` + HNSW, migración 007),
-      # así que NO requiere migración. Es LOCAL/soberano
-      # (`clearance.py::LOCAL_EMBEDDING_PROVIDERS`), luego el material clasificado se sigue
-      # indexando. Lo que no captura son sinónimos/paráfrasis: eso lo aporta `local_st`.
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-stub}
-      # Generación: Ollama Cloud (mismos parámetros que sgdINTI/ai-service). El cómputo
-      # pesado sale de esta máquina. `OllamaLLMProvider` ya envía Authorization: Bearer.
-      # BARRERA DURA (`clearance.py::LOCAL_LLM_PROVIDERS = {"ollama_local"}`): al ser un
-      # proveedor EXTERNO, el material nivel>=RESERVADA NUNCA se le envía, sin override
-      # posible. El RAG generativo responde solo sobre material público/no reservado.
-      - AI_PROVIDER=${AI_PROVIDER:-ollama_cloud}
-      - OLLAMA_CLOUD_URL=${OLLAMA_CLOUD_URL:-https://ollama.com}
-      - OLLAMA_CLOUD_API_KEY=${OLLAMA_CLOUD_API_KEY:-}
-      - MODEL_GENERATION=${MODEL_GENERATION:-gpt-oss:120b}
-      # NOTA: INTERNAL_SERVICE_TOKEN se deja SIN definir a propósito ⇒ el endpoint HTTP
-      # /ingest sigue fail-closed (D-02 / RF-SEG-08). La ingesta del ejemplo entra por el
-      # worker event-driven (consumer de orpycamcp.document.events), que es interno y no
-      # usa ese header (ver `app/services/ingestion.py`).
     networks:
       - orpycamcp-net
     depends_on:
@@ -612,11 +530,6 @@ services:
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
-      # Proveedores efectivos del asistente que muestra GET /config/asistente: los mismos
-      # valores que recibe knowledge-service (ADR-037).
-      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-stub}
-      - AI_PROVIDER=${AI_PROVIDER:-ollama_cloud}
-      - ASSISTANT_MODEL=${ASSISTANT_MODEL:-claude-opus-4-8}
     networks:
       - orpycamcp-net
     depends_on:

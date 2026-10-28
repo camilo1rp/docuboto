@@ -67,7 +67,7 @@ export function estadoDe(usuario) {
  *
  * Se localiza por los **id del formulario de Keycloak** (`#username`,
  * `#password`, `#kc-login`), que es la copia que sí funcionaba
- * (`asistente-dock.spec.js`). No es una preferencia de estilo: el nombre
+ * (`asistente-dock.spec.js`, retirada con el asistente en ADR-046 §6). No es una preferencia de estilo: el nombre
  * accesible de esa página lo fija un tema de terceros que puede cambiar de
  * idioma —hoy sale en inglés— mientras los id son su contrato estable.
  *

@@ -87,16 +87,11 @@ describe("mensajeConocimiento", () => {
   const anidado = (error) => ({ detail: { error, detail: "texto del backend", status: 403 } });
   it("asistente_deshabilitado nombra a la entidad y dónde activarlo", () => {
     expect(mensajeConocimiento(anidado("asistente_deshabilitado"), "x")).toMatch(
-      /entidad.*activado/,
+      /entidad.*activad/,
     );
   });
   it("forbidden nombra PERM_CONOCIMIENTO", () => {
     expect(mensajeConocimiento(anidado("forbidden"), "x")).toMatch(/PERM_CONOCIMIENTO/);
-  });
-  it("forbidden con permiso:false deja el texto del backend (otro permiso)", () => {
-    expect(mensajeConocimiento(anidado("forbidden"), "x", { permiso: false })).toBe(
-      "texto del backend",
-    );
   });
   it("asistente_estado_no_disponible es un aviso de reintento", () => {
     expect(mensajeConocimiento(anidado("asistente_estado_no_disponible"), "x")).toMatch(

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 #   everything else → 'api'
 #
 # The mark exists because everything the mcp-server does on behalf of a person
-# (the assistant confirming a radicado, a transfer) reaches the gateway through
+# (an MCP client confirming a radicado, a transfer) reaches the gateway through
 # `/api/v1/<domain>` and used to be recorded as 'api', indistinguishable from a
 # direct call. A client without the signing secret cannot forge it; with a bad or
 # expired signature the canal falls back to 'api' (the safe side).

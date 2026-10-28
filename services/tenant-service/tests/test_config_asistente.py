@@ -214,26 +214,15 @@ async def test_cuerpo_invalido_422(ctx) -> None:
     assert est.updates == []
 
 
-# --- A1/A2: proveedores, política publicada y declaración de transmisión ----------------------
+# --- A1/A2: política publicada y declaración de transmisión ----------------------
 
 
 @pytest.mark.asyncio
-async def test_get_trae_los_proveedores_efectivos(ctx, monkeypatch) -> None:
-    from app.core.config import settings
-
+async def test_get_no_trae_proveedores(ctx) -> None:
+    """Sin capa local de modelos (ADR-046) no hay proveedores que mostrar."""
     client, _, _ = ctx
-    monkeypatch.setattr(settings, "embedding_provider", "ollama")
-    monkeypatch.setattr(settings, "ai_provider", "ollama_cloud")
     body = (await client.get(URL, headers=_HDRS)).json()
-    assert body["proveedores"] == {
-        "asistente": "anthropic",
-        "modelo": settings.assistant_model,
-        "rag": "ollama_cloud",
-        "embeddings": "ollama",
-        "embeddings_local": False,
-    }
-    monkeypatch.setattr(settings, "embedding_provider", "stub")
-    assert (await client.get(URL, headers=_HDRS)).json()["proveedores"]["embeddings_local"] is True
+    assert set(body) == {"habilitado", "cambiado"}
 
 
 @pytest.mark.asyncio
@@ -258,7 +247,7 @@ async def test_encender_sin_politica_publicada_409(ctx, politica) -> None:
 
 
 @pytest.mark.asyncio
-async def test_el_asiento_de_encender_lleva_politica_proveedores_declaracion_y_motivo(ctx) -> None:
+async def test_el_asiento_de_encender_lleva_politica_declaracion_y_motivo(ctx) -> None:
     client, est, _ = ctx
     resp = await client.put(URL, json={**ENCENDER, "motivo": "  Piloto de búsqueda  "}, headers=_HDRS)
     assert resp.status_code == 200
@@ -266,7 +255,7 @@ async def test_el_asiento_de_encender_lleva_politica_proveedores_declaracion_y_m
     assert p["politica_tratamiento_version"] == "v1.0"
     assert p["declaracion_transmision"] is True
     assert p["motivo"] == "Piloto de búsqueda"
-    assert p["proveedores"]["asistente"] == "anthropic" and "embeddings_local" in p["proveedores"]
+    assert "proveedores" not in p
 
 
 @pytest.mark.asyncio

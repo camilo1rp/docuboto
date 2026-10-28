@@ -12,8 +12,8 @@
 `/health` devolvía un `{"status": "ok"}` **fijo** y era el `healthcheck` del
 contenedor. mcp-server no tiene base de datos ni Redis: es cliente del
 api-gateway y de nada más (ADR-019), así que su única dependencia real es que el
-gateway conteste. Sin esa comprobación, la fachada MCP y el asistente
-conversacional se reportaban sanos cuando ninguna herramienta podía ejecutarse.
+gateway conteste. Sin esa comprobación, la fachada MCP se reportaba sana cuando
+ninguna herramienta podía ejecutarse.
 
 Se consulta el `/health` del gateway —su sonda de VIVACIDAD, no la de
 disponibilidad—: aquí solo se quiere saber si hay alguien al otro lado, no

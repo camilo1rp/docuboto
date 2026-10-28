@@ -9,7 +9,7 @@
 
 # knowledge-service — se construye con el contexto en la RAÍZ del repo (ADR-010),
 # para poder instalar la librería compartida orpycamcp_common desde shared/ (E21:
-# auditoría inmutable + sobre de eventos consumidos del worker de ingesta).
+# identidad firmada, gates de ADR-037 y estado de la entidad).
 #   build: { context: ., dockerfile: services/knowledge-service/Dockerfile }
 FROM python:3.11-slim
 WORKDIR /app
@@ -18,33 +18,18 @@ WORKDIR /app
 COPY shared /shared
 RUN pip install --no-cache-dir /shared
 
-# 2) Dependencias del servicio.
-#
-# WITH_ML controla la CAPA ML OPCIONAL (`sentence-transformers` → torch CPU, ~1,5 GB), que
-# respalda `EMBEDDING_PROVIDER=local_st` — el proveedor de embeddings soberano. El DEFAULT
-# es 1: `docker build` sin argumentos produce la imagen completa, así que una instalación
-# tenant local no cambia en nada.
-#
-# WITH_ML=0 produce una imagen ligera (~150 MB de deps) para máquinas que no pueden ejecutar
-# modelos locales. El CÓDIGO es idéntico en ambos casos: `embeddings.py` importa
-# `sentence_transformers` de forma perezosa (`_ensure_loaded`), nunca al importar el módulo.
-# Con WITH_ML=0 el servicio arranca y opera con `EMBEDDING_PROVIDER` = `stub` o `ollama`;
-# si se dejara en `local_st`, el guard fail-closed de `main.py::lifespan` aborta el arranque
-# con ImportError — deliberado: nunca degrada en silencio.
-ARG WITH_ML=1
+# 2) Dependencias del servicio (sin capa ML: no corre modelos, ADR-046).
 COPY services/knowledge-service/requirements.txt services/knowledge-service/requirements.lock ./
-COPY services/knowledge-service/requirements-ml.txt services/knowledge-service/requirements-ml.lock ./
-RUN pip install --no-cache-dir -r requirements.lock \
- && if [ "$WITH_ML" = "1" ]; then pip install --no-cache-dir -r requirements-ml.lock; fi
+RUN pip install --no-cache-dir -r requirements.lock
 
 # 3) Código del servicio.
 COPY services/knowledge-service/ .
 
-# Usuario NO-root. Cada uno de estos servicios procesa entrada que no controla
-# —cuerpos HTTP, XML, PDF, correo, eventos de Redis—, así que un fallo de memoria
-# o una deserialización insegura en cualquier dependencia escalaría a root DEL
-# CONTENEDOR y no solo del proceso. En auth-service pesa además que las claves de
-# cifrado (KEK del 2FA y de la firma personal) viven en su memoria.
+# Usuario NO-root. Este servicio procesa entrada que no controla (cuerpos HTTP
+# de búsqueda y antecedentes), así que un fallo de memoria o una deserialización
+# insegura en cualquier dependencia escalaría a root DEL CONTENEDOR y no solo
+# del proceso. En auth-service pesa además que las claves de cifrado (KEK del
+# 2FA y de la firma personal) viven en su memoria.
 #
 # `/app` queda de solo lectura para este usuario: el servicio no escribe en su
 # propio árbol, y lo temporal va a `/tmp`. Mismo patrón que storage-service, que

@@ -7,150 +7,225 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Tests de la capa de conocimiento (E21): embeddings stub, ingesta, búsqueda."""
+"""La pasarela en modo `local` (ADR-046, fase D0): texto completo, sin generación.
+
+document-service se simula con un ``httpx.MockTransport``: así se prueba también el
+cliente (ruta, parámetros, identidad reenviada) y no solo el mapeo de la respuesta.
+"""
+
+from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from collections.abc import Callable
 
+import httpx
 import pytest
 
-from app.services.embeddings import embed, to_pgvector
-from tests.conftest import TENANT_HEADERS, TEST_INTERNAL_TOKEN
+from app.clients import document_search
+from app.routers.knowledge import ANTECEDENTES_ADVISORY
+from tests.conftest import TENANT_HEADERS, USER_ID
 
-NOW = datetime.now(tz=UTC)
-
-
-def test_embed_deterministic_and_dim() -> None:
-    a = embed("acción de tutela", dim=64)
-    b = embed("acción de tutela", dim=64)
-    assert a == b  # determinista
-    assert len(a) == 64  # dimensión fija
-    assert embed("otro texto", dim=64) != a
-    # normalizado L2 (norma ~1) salvo texto vacío
-    import math
-
-    assert abs(math.sqrt(sum(x * x for x in a)) - 1.0) < 1e-6
+pytestmark = pytest.mark.asyncio
 
 
-def test_to_pgvector_format() -> None:
-    lit = to_pgvector([0.5, -0.25])
-    assert lit.startswith("[") and lit.endswith("]")
-    assert "0.500000" in lit
-
-
-@pytest.mark.asyncio
-async def test_ingest(client_with_conn, token_settings) -> None:
-    """Ingesta autorizada (token de servicio interno correcto) → 201."""
-    client, conn = client_with_conn
-    cid = uuid.uuid4()
-    conn.fetchrow.return_value = {
-        "id": cid,
-        "source_type": "radicado",
-        "source_ref": "2024-DEMO-E-000001",
-        "created_at": NOW,
+def _hit(tracking: str, subject: str, *, rank: float = 0.5) -> dict:
+    return {
+        "id": str(uuid.uuid4()),
+        "tracking_number": tracking,
+        "doc_type": "E",
+        "subject": subject,
+        "sender_name": "Ana",
+        "sender_entity": None,
+        "doc_class": None,
+        "dest_dept": None,
+        "status": "radicado",
+        "registered_at": "2026-10-01T10:00:00Z",
+        "rank": rank,
     }
-    resp = await client.post(
-        "/api/v1/knowledge/ingest",
-        json={
-            "source_type": "radicado",
-            "source_ref": "2024-DEMO-E-000001",
-            "texto": "Solicitud de información sobre contrato",
-            "nivel_seguridad": 1,
-            "acl": {"dependencias": [120]},
-        },
-        headers={**TENANT_HEADERS, "X-Internal-Token": TEST_INTERNAL_TOKEN},
-    )
-    assert resp.status_code == 201
-    assert resp.json()["source_ref"] == "2024-DEMO-E-000001"
-    # El INSERT recibió un literal vector y el ACL.
-    sql = conn.fetchrow.call_args.args[0]
-    assert "::public.vector" in sql and "knowledge_chunk" in sql
 
 
-@pytest.mark.asyncio
-async def test_ingest_without_token_is_rejected(client_with_conn, token_settings) -> None:
-    """D-02: ingesta sin X-Internal-Token es rechazada con 401 (header ausente)."""
-    client, _conn = client_with_conn
-    resp = await client.post(
-        "/api/v1/knowledge/ingest",
-        json={
-            "source_type": "radicado",
-            "source_ref": "2024-DEMO-E-000001",
-            "texto": "Solicitud de información sobre contrato",
-            "nivel_seguridad": 1,
-        },
-        headers=TENANT_HEADERS,  # sin X-Internal-Token
-    )
-    assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "missing_internal_token"
+@pytest.fixture
+def document_service(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[httpx.Request]]:
+    """Instala un document-service simulado; devuelve las peticiones que recibió."""
+    recibidas: list[httpx.Request] = []
+
+    def instalar(responder: Callable[[httpx.Request], httpx.Response]) -> list[httpx.Request]:
+        def handler(req: httpx.Request) -> httpx.Response:
+            recibidas.append(req)
+            return responder(req)
+
+        real = httpx.AsyncClient
+
+        def cliente(*args, **kwargs):
+            return real(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+        monkeypatch.setattr(document_search.httpx, "AsyncClient", cliente)
+        return recibidas
+
+    return instalar
 
 
-@pytest.mark.asyncio
-async def test_ingest_with_wrong_token_is_rejected(client_with_conn, token_settings) -> None:
-    """D-02: ingesta con token incorrecto es rechazada con 403."""
-    client, _conn = client_with_conn
-    resp = await client.post(
-        "/api/v1/knowledge/ingest",
-        json={
-            "source_type": "radicado",
-            "source_ref": "2024-DEMO-E-000001",
-            "texto": "Solicitud de información sobre contrato",
-            "nivel_seguridad": 1,
-        },
-        headers={**TENANT_HEADERS, "X-Internal-Token": "wrong-token"},
-    )
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "invalid_internal_token"
+def _por_q(respuestas: dict[str, list[dict]]) -> Callable[[httpx.Request], httpx.Response]:
+    def responder(req: httpx.Request) -> httpx.Response:
+        hits = respuestas.get(req.url.params["q"], [])
+        return httpx.Response(200, json={"query": None, "total": len(hits), "hits": hits, "page": 1, "size": 20})
+
+    return responder
 
 
-@pytest.mark.asyncio
-async def test_search_with_acl(client_with_conn) -> None:
-    client, conn = client_with_conn
-    conn.fetch.return_value = [
-        {
-            "id": uuid.uuid4(),
-            "source_type": "radicado",
-            "source_ref": "R-1",
-            "texto": "contrato de obra",
-            "metadata": {},
-            "score": 0.87,
-        },
-    ]
+# --- /search ------------------------------------------------------------------
+
+
+async def test_search_consulta_document_service_como_el_usuario(client_with_conn, document_service) -> None:
+    client, _ = client_with_conn
+    recibidas = document_service(_por_q({"contrato obra": [_hit("2026-E-1", "Contrato de obra", rank=0.8)]}))
+
     resp = await client.post(
         "/api/v1/knowledge/search",
-        json={"query": "contratos", "top_k": 3, "acl": {"dependencias": [120]}},
+        json={"query": "contrato obra", "top_k": 7},
+        headers={**TENANT_HEADERS, "X-Canal": "ui"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    [hit] = resp.json()
+    assert hit["source_type"] == "radicado"
+    assert hit["source_ref"] == "2026-E-1"
+    assert hit["texto"] == "Contrato de obra"
+    assert hit["score"] == 0.8
+    assert hit["origin"] == "local_index"
+    assert hit["metadata"]["doc_type"] == "E"
+
+    [req] = recibidas
+    assert req.method == "GET"
+    assert req.url.path == "/api/v1/search"
+    assert req.url.params["q"] == "contrato obra"
+    assert req.url.params["size"] == "7"
+    assert req.headers["X-User-Id"] == USER_ID
+    assert req.headers["X-Tenant-Slug"] == "demo"
+    assert req.headers["X-Canal"] == "ui"
+
+
+@pytest.mark.parametrize("respuesta", [httpx.Response(500), httpx.Response(200, json={"x": 1})])
+async def test_search_sin_document_service_es_503_no_una_lista_vacia(
+    client_with_conn, document_service, respuesta
+) -> None:
+    client, _ = client_with_conn
+    document_service(lambda _req: respuesta)
+
+    resp = await client.post("/api/v1/knowledge/search", json={"query": "contrato"}, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "search_unavailable"
+
+
+async def test_search_inalcanzable_es_503(client_with_conn, document_service) -> None:
+    client, _ = client_with_conn
+
+    def caido(_req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("sin red")
+
+    document_service(caido)
+    resp = await client.post("/api/v1/knowledge/search", json={"query": "contrato"}, headers=TENANT_HEADERS)
+    assert resp.status_code == 503
+
+
+# --- /antecedentes ----------------------------------------------------------------
+
+
+async def test_antecedentes_por_texto(client_with_conn, document_service) -> None:
+    client, _ = client_with_conn
+    document_service(_por_q({"licencia": [_hit("2026-E-2", "Licencia de construcción", rank=0.4)]}))
+
+    resp = await client.post("/api/v1/knowledge/antecedentes", json={"query": "licencia"}, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 200, resp.text
+    cuerpo = resp.json()
+    assert cuerpo["antecedentes"] == [
+        {"source_type": "radicado", "source_ref": "2026-E-2", "snippet": "Licencia de construcción", "score": 0.4}
+    ]
+    assert cuerpo["advisory"] == ANTECEDENTES_ADVISORY
+    assert cuerpo["origin"] == "local_index"
+
+
+async def test_antecedentes_por_radicado_busca_por_su_asunto_y_lo_excluye(
+    client_with_conn, document_service
+) -> None:
+    client, _ = client_with_conn
+    pivote = _hit("2026-E-9", "Solicitud de licencia de construcción")
+    otros = [_hit(f"2026-E-{i}", "Licencia de construcción", rank=0.5 - i / 100) for i in range(1, 4)]
+    consulta = "solicitud or licencia or construcción"
+    recibidas = document_service(_por_q({"2026-E-9": [pivote], consulta: [pivote, *otros]}))
+
+    resp = await client.post(
+        "/api/v1/knowledge/antecedentes", json={"radicado_ref": "2026-E-9", "top_k": 2}, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 200, resp.text
+    refs = [a["source_ref"] for a in resp.json()["antecedentes"]]
+    assert refs == ["2026-E-1", "2026-E-2"]
+    assert [r.url.params["q"] for r in recibidas] == ["2026-E-9", consulta]
+    assert recibidas[1].url.params["size"] == "3"
+
+
+async def test_antecedentes_de_un_radicado_invisible_es_404_neutro(client_with_conn, document_service) -> None:
+    """document-service ya excluyó lo que excede el clearance: «no existe» y «no puede
+    verlo» llegan igual, como lista sin el número exacto."""
+    client, _ = client_with_conn
+    document_service(_por_q({"2026-E-9": [_hit("2026-E-90", "Otro")]}))
+
+    resp = await client.post(
+        "/api/v1/knowledge/antecedentes", json={"radicado_ref": "2026-E-9"}, headers=TENANT_HEADERS
+    )
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["error"] == "antecedente_source_not_found"
+
+
+async def test_antecedentes_de_otro_source_type_es_404(client_with_conn, document_service) -> None:
+    client, _ = client_with_conn
+    recibidas = document_service(_por_q({}))
+
+    resp = await client.post(
+        "/api/v1/knowledge/antecedentes",
+        json={"radicado_ref": "EXP-1", "source_type": "expediente"},
         headers=TENANT_HEADERS,
     )
+
+    assert resp.status_code == 404
+    assert recibidas == []
+
+
+@pytest.mark.parametrize("cuerpo", [{"query": "licencia", "radicado_ref": "R-1"}, {}])
+async def test_antecedentes_exige_exactamente_uno(client_with_conn, cuerpo) -> None:
+    client, _ = client_with_conn
+    resp = await client.post("/api/v1/knowledge/antecedentes", json=cuerpo, headers=TENANT_HEADERS)
+    assert resp.status_code == 422
+
+
+# --- /rag y /availability -----------------------------------------------------------
+
+
+async def test_rag_sin_proveedor_es_503_y_no_consulta_nada(client_with_conn, document_service) -> None:
+    client, _ = client_with_conn
+    recibidas = document_service(_por_q({}))
+
+    resp = await client.post("/api/v1/knowledge/rag", json={"query": "plazo de respuesta"}, headers=TENANT_HEADERS)
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "rag_unavailable"
+    assert recibidas == []
+
+
+async def test_availability_dice_que_no_hay_generacion(client_with_conn) -> None:
+    client, _ = client_with_conn
+    resp = await client.get("/api/v1/knowledge/availability", headers=TENANT_HEADERS)
     assert resp.status_code == 200
-    body = resp.json()
-    assert body[0]["score"] == 0.87
-    # El pre-filtrado ACL entró en el WHERE.
-    sql = conn.fetch.call_args.args[0]
-    assert "acl @>" in sql and "embedding OPERATOR(public.<=>)" in sql
+    assert resp.json() == {"generation": False, "mode": "local"}
 
 
-@pytest.mark.asyncio
-async def test_search_always_enforces_clearance_server_side(client_with_conn) -> None:
-    """RF-SEG-08 / RF-BUS-04: aunque el cliente NO mande `acl`, la búsqueda acota por
-    la clasificación del chunk ≤ clearance del llamante (PUBLICA=1 sin X-User-Id)."""
-    client, conn = client_with_conn
-    conn.fetch.return_value = []
-    resp = await client.post(
-        "/api/v1/knowledge/search", json={"query": "algo"}, headers=TENANT_HEADERS
-    )
-    assert resp.status_code == 200
-    call = conn.fetch.call_args.args
-    sql = call[0]
-    assert "nivel_seguridad" in sql  # filtro de clearance server-side
-    assert call[2] == 1  # max_clearance = PUBLICA (sin identidad)
-
-
-@pytest.mark.asyncio
-async def test_search_empty(client_with_conn) -> None:
-    client, conn = client_with_conn
-    conn.fetch.return_value = []
-    resp = await client.post(
-        "/api/v1/knowledge/search", json={"query": "nada"}, headers=TENANT_HEADERS
-    )
-    assert resp.status_code == 200
-    assert resp.json() == []
+async def test_las_rutas_retiradas_ya_no_existen(client_with_conn) -> None:
+    client, _ = client_with_conn
+    ingest = await client.post("/api/v1/knowledge/ingest", json={}, headers=TENANT_HEADERS)
+    aceptar = await client.post(f"/api/v1/knowledge/suggestions/{uuid.uuid4()}/aceptar", headers=TENANT_HEADERS)
+    assert ingest.status_code == 404
+    assert aceptar.status_code == 404

@@ -9,9 +9,9 @@
 
 """La matriz de CI se deriva del árbol, no de una lista a mano (AREA-13-02, AREA-13-01).
 
-`whisper-service` tiene tests (entre ellos `test_transcribir_no_esta_abierto_a_la_red`,
-que cierra una puerta) y no figuraba en la matriz de `test-unit`; `signature-service`
-tenía `tests/integration/` versionado y no figuraba en la de `test-integration`.
+Un servicio con tests (entre ellos uno que cerraba una puerta) no figuraba en la
+matriz de `test-unit`; `signature-service` tenía `tests/integration/` versionado y
+no figuraba en la de `test-integration`.
 Una lista escrita a mano ya dejó fuera tres de once servicios del gate de tipos:
 es el mismo modo de fallo.
 
@@ -95,8 +95,7 @@ def test_el_humo_de_seguridad_corre_solo_y_cubre_las_puertas_internas() -> None:
         "el humo de seguridad no puede depender de un clic"
     )
     entradas = {e["SERVICE"]: e["TESTS"] for e in job["parallel"]["matrix"]}
-    assert {"api-gateway", "storage-service", "whisper-service"} <= set(entradas)
-    assert "test_transcribir_no_esta_abierto_a_la_red" in entradas["whisper-service"]
+    assert {"api-gateway", "storage-service"} <= set(entradas)
     assert "test_internal_token_gate" in entradas["storage-service"]
     for svc, tests in entradas.items():
         for token in tests.split():

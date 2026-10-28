@@ -21,10 +21,6 @@ cd orfeo_mcp
 # 2. Levantar la infraestructura completa
 docker compose --profile dev up -d
 
-# 2.bis (opcional) Dictado por voz dentro de la instalación: descarga un modelo
-# de transcripción y consume CPU, por eso arranca apagado (ADR-020).
-docker compose --profile assistant up -d whisper-service
-
 # 3. Verificar que los servicios estén corriendo
 docker compose ps
 ```
@@ -224,15 +220,16 @@ muestra y no deja abrir otra: hay que resolverla o rechazarla antes.
 
 > **Radicar un borrador**: al confirmar, la pantalla pide el **tipo documental** (y, en una Salida, la **dependencia de origen** entre las suyas activas) más los metadatos propios del tipo; sin una dependencia activa asignada no se ofrece «Radicar». Los metadatos guardados se leen luego en el detalle de `/bandeja` y en la ficha del expediente.
 
-### Consultar al asistente conversacional
+### Buscar en la capa de conocimiento (texto completo, ADR-046)
 
-> **El asistente y la búsqueda semántica son opt-in por entidad (ADR-037).** Las entidades nuevas nacen con el asistente **apagado**: el administrador de la entidad (`USUA_PERM_ADMIN` nivel 3) lo enciende en **/admin/parametros** (o con `PUT /api/v1/config/asistente {"habilitado": true}`); sin eso, todo lo de abajo responde `403 asistente_deshabilitado`. Además, cada persona necesita el permiso **`PERM_CONOCIMIENTO`** (nivel 1 consulta; nivel 2 también acepta una sugerencia), que se reparte por grupo en **/admin/grupos**. Las entidades que ya existían al migrar quedaron encendidas y sus grupos con el permiso. Apagarlo no detiene la indexación: lo radicado mientras estuvo apagado ya está indexado al reactivar.
+> **La capa de conocimiento es opt-in por entidad (ADR-037).** Las entidades nuevas nacen con ella **apagada**: el administrador de la entidad (`USUA_PERM_ADMIN` nivel 3) la enciende en **/admin/parametros** (o con `PUT /api/v1/config/asistente {"habilitado": true}`); sin eso, las rutas de conocimiento responden `403 asistente_deshabilitado`. Además, cada persona necesita el permiso **`PERM_CONOCIMIENTO`** (nivel 1 consulta), que se reparte por grupo en **/admin/grupos**. Docuboto no llama a modelos de lenguaje: `/search` y `/antecedentes` reutilizan la búsqueda de texto completo de document-service; `/rag` responde `503 rag_unavailable` hasta que haya un proveedor PPI configurado.
 
 ```bash
-curl -X POST 'http://localhost:19080/api/v1/assistant/chat' \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"message": "¿Qué radicados de entrada tengo pendientes esta semana?"}'
-# Respuesta: texto en lenguaje natural con citas a los radicados consultados (RAG, solo lectura)
+curl -X POST 'http://localhost:19080/api/v1/knowledge/search' \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"radicados pendientes","top_k":5}'
+# Respuesta: aciertos del índice local de texto completo (misma forma que la búsqueda de documentos)
 ```
 
 ### Radicar por la ventanilla pública (verificación automática, C16)

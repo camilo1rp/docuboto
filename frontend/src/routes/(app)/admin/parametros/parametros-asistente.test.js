@@ -8,7 +8,7 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * /admin/parametros — tarjeta «Asistente y búsqueda semántica» (C-1, ADR-037).
+ * /admin/parametros — tarjeta «Capa de conocimiento» (C-1, ADR-037).
  * Editable solo con USUA_PERM_ADMIN >= 3; el backend re-valida.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
@@ -36,14 +36,6 @@ function sesion(nivel) {
   });
 }
 
-const PROV = {
-  asistente: "anthropic",
-  modelo: "claude-x",
-  rag: "anthropic",
-  embeddings: "local-e5",
-  embeddings_local: true,
-};
-
 const datos = (extra = {}) => ({
   params: {},
   holidays: [],
@@ -60,7 +52,7 @@ afterEach(() => {
   invalidateAll.mockClear();
 });
 
-describe("/admin/parametros — tarjeta del asistente", () => {
+describe("/admin/parametros — tarjeta de la capa de conocimiento", () => {
   it.each([1, 2])("con administración %s el interruptor está deshabilitado y no hay botón", (n) => {
     sesion(n);
     render(ParametrosPage, { props: { data: datos() } });
@@ -111,7 +103,7 @@ describe("/admin/parametros — tarjeta del asistente", () => {
           JSON.stringify({
             habilitado: true,
             cambiado: true,
-            aviso: "lo radicado mientras estuvo apagado no se indexó",
+            aviso: "revise los grupos con PERM_CONOCIMIENTO",
           }),
           { status: 200 },
         ),
@@ -120,7 +112,7 @@ describe("/admin/parametros — tarjeta del asistente", () => {
     await fireEvent.click(screen.getByRole("switch"));
     await fireEvent.click(screen.getByLabelText(/Declaro que la entidad tiene contrato/));
     await fireEvent.click(screen.getByRole("button", { name: /aplicar cambio/i }));
-    expect((await screen.findByTestId("asistente-aviso")).textContent).toMatch(/no se indexó/);
+    expect((await screen.findByTestId("asistente-aviso")).textContent).toMatch(/revise los grupos/);
   });
 
   it("un 403 del servidor no se da por aplicado", async () => {
@@ -158,41 +150,17 @@ describe("/admin/parametros — tarjeta del asistente", () => {
     expect(screen.getByText("Error 500")).toBeTruthy();
   });
 
-  it("explica el egreso al proveedor sin afirmar que lo reservado no sale", () => {
+  it("describe la capa de conocimiento, sin asistente conversacional ni indexación", () => {
     sesion(3);
-    render(ParametrosPage, {
-      props: { data: datos({ asistenteProveedores: PROV }) },
-    });
+    render(ParametrosPage, { props: { data: datos() } });
     const card = screen.getByTestId("asistente-card").textContent.replace(/\s+/g, " ");
-    expect(card).toMatch(/se envía a anthropic \(EE\. UU\.\), que actúa como encargado/);
-    expect(card).toMatch(/Reservado o Clasificado se sustituye por un aviso/);
-    expect(card).toMatch(/Lo que usted escriba o dicte se envía tal cual/);
-    expect(card).toMatch(/Apagar no detiene la indexación/);
+    expect(card).toMatch(/Capa de conocimiento/);
+    expect(card).toMatch(/búsqueda por conocimiento y de antecedentes/);
+    expect(card).toMatch(/Docuboto no llama a modelos de lenguaje/);
     expect(card).toMatch(/PERM_CONOCIMIENTO se concedió a los grupos que ya tenían algún permiso/);
-    expect(card).not.toMatch(/no se envía fuera|barrera de residencia|radicados sin indexar/);
-  });
-
-  it("pinta los proveedores antes de encender", () => {
-    sesion(3);
-    render(ParametrosPage, { props: { data: datos({ asistenteProveedores: PROV }) } });
-    const dl = screen.getByTestId("asistente-proveedores").textContent;
-    expect(dl).toMatch(/anthropic \(claude-x\)/);
-    expect(dl).toMatch(/local, no sale de la entidad/);
-  });
-
-  it("avisa que lo omitido no se reindexa solo si los embeddings NO son locales", () => {
-    sesion(3);
-    const { unmount } = render(ParametrosPage, {
-      props: {
-        data: datos({ asistenteProveedores: { ...PROV, embeddings_local: false } }),
-      },
-    });
-    expect(
-      screen.getByTestId("asistente-aviso-indexacion").textContent.replace(/\s+/g, " "),
-    ).toMatch(/no se reindexa al reactivarlo/);
-    unmount();
-    render(ParametrosPage, { props: { data: datos({ asistenteProveedores: PROV }) } });
-    expect(screen.queryByTestId("asistente-aviso-indexacion")).toBeNull();
+    expect(screen.getByRole("switch", { name: /Activar la capa de conocimiento/ })).toBeTruthy();
+    expect(card).not.toMatch(/asistente conversacional,|indexa|embeddings|anthropic|EE\. UU\./i);
+    expect(screen.queryByTestId("asistente-proveedores")).toBeNull();
   });
 
   it("apagar no pide declaración y envía solo {habilitado:false}", async () => {

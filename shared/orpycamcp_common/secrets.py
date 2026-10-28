@@ -92,9 +92,7 @@ def reject_published_values(secretos: dict[str, str], *, servicio: str) -> None:
     consumidor legítimo por HTTP —el alta la hace `scripts/init_tenant.py`
     escribiendo directo a `public.tenants`—, así que el gate D-02 es
     fail-closed por ausencia: sin token configurado se rechaza TODA llamada y
-    el registro de instituciones queda inalcanzable desde la red. Es el mismo
-    criterio que knowledge-service documenta en `docker-compose.yml` para su
-    `/ingest`.
+    el registro de instituciones queda inalcanzable desde la red.
 
     Exigir presencia ahí invierte el modo de fallo: obliga a poner un secreto
     para poder ARRANCAR, y un secreto que se pone solo para arrancar es un

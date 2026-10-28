@@ -80,7 +80,6 @@ async def test_client(mock_redis, mock_http_client):
         app.state.signature_service_url = settings.signature_service_url
         app.state.mcp_service_url = settings.mcp_service_url
         app.state.knowledge_service_url = settings.knowledge_service_url
-        app.state.assistant_proxy_timeout = settings.assistant_proxy_timeout
         app.state.rate_limit_per_ip = 100
         app.state.rate_limit_global = 1000
         app.state.max_request_body_bytes = settings.max_request_body_bytes
