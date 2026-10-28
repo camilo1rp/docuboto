@@ -11,7 +11,7 @@ Thank you for your interest in improving OrpycaMCP!
 
 ## Reglas de contribución / Contribution Rules
 
-1. **Código en inglés** — identificadores, comentarios, mensajes de commit
+1. **Código en inglés** — identificadores, comentarios, mensajes de commit. Todo nombre **nuevo** va en inglés: tablas, columnas, valores de `CHECK`, rutas, eventos, acciones de auditoría, permisos, variables de entorno, servicios y perfiles de Compose. Los nombres en español que ya existen se quedan hasta que se toquen por otro motivo. Los términos archivísticos colombianos sin equivalente en inglés (radicado, expediente, TRD, TVD, FUID) pueden usarse como sustantivos dentro de un nombre en inglés
 2. **Documentación** — completa en español en `docs/es/`; `docs/en/` es una selección traducida. Los ADR, el plan de pruebas, los flujos MCP y la plantilla de política de tratamiento son solo en español (lista en `shared/tests/test_la_documentacion_dice_lo_que_hay.py`)
 3. **Tests obligatorios** — al menos un test por endpoint nuevo
 4. **Tipos anotados** — Python 3.11+ type hints en todas las funciones

@@ -112,6 +112,7 @@ plugins:
             ADR-043 Retención legal por motivo, préstamo identificado y soporte citado: ADR-043 Legal retention by reason, identified loan and cited support
             ADR-044 Identidad de un solo uso y search_path sin public: ADR-044 Single-use identity and a public-free search_path
             ADR-045 Pasarela de inteligencia y protocolo PPI: ADR-045 Intelligence gateway and the PPI protocol
+            ADR-046 La capa de conocimiento no llama a modelos: ADR-046 The knowledge layer calls no models
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -185,6 +186,7 @@ nav:
     - ADR-043 Retención legal por motivo, préstamo identificado y soporte citado: adr/ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md
     - ADR-044 Identidad de un solo uso y search_path sin public: adr/ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md
     - ADR-045 Pasarela de inteligencia y protocolo PPI: adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md
+    - ADR-046 La capa de conocimiento no llama a modelos: adr/ADR-046-conocimiento-sin-modelos.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

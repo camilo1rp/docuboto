@@ -6,7 +6,10 @@
 > decision is [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)
 > (Proposed), written in Spanish like every ADR, and the protocol is PPI v1 (draft) in
 > `docs/contratos/ppi/`. Updated as of 2026-10-27, with the ADR-045 revision that lets each
-> entity choose which levels leave.
+> entity choose which levels leave. [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)
+> (Proposed, 2026-10-28) proposes that knowledge-service call no models: `local` becomes
+> document-service full-text search, with no generation. Where this plan says "local index",
+> read that fallback.
 
 ## Purpose
 
@@ -50,16 +53,16 @@ with the entity, and talks to Docuboto only through PPI. Docuboto stays the syst
 - **document-service.** Internal routes for a record and for attachment bytes, which
   re-check the level and leave an access-trail entry. Two new outbox events: attachment
   added and record changed.
-- **tenant-service.** `GET`/`PUT /api/v1/config/inteligencia` with a transmission
+- **tenant-service.** `GET`/`PUT /api/v1/config/intelligence` with a transmission
   declaration naming the provider and its subprocessors, plus a withdraw act. Switching
-  to `ppi` enables PÚBLICA. `PUT /api/v1/config/inteligencia/niveles` enables RESERVADA or
+  to `ppi` enables PÚBLICA. `PUT /api/v1/config/intelligence/levels` enables RESERVADA or
   CLASIFICADA one level at a time, with a declaration naming that level's model route,
   models and subprocessors from `capabilities`. Disabling a level is immediate and orders
   deletion of what was sent at that level.
 - **`scripts/init_tenant.py`.** Creates one client-credentials Keycloak client per entity.
   It is not added to `ALLOWED_AZP`.
 - **Frontend.** An "Ask" panel in the inbox detail drawer and an admin screen.
-- **Infra.** A vendor-neutral `inteligencia` Compose profile on an internal network.
+- **Infra.** A vendor-neutral `intelligence` Compose profile on an internal network.
 - **New permissions.** None.
 - **Success criteria** match the provider's D1 gate:
   - cited answers or `insufficient_evidence`;
@@ -74,7 +77,7 @@ with the entity, and talks to Docuboto only through PPI. Docuboto stays the syst
 
 ## D2 — Intake triage
 
-- **The `sugerencias` inbox.**
+- **The `suggestions` inbox.**
   - Closed kinds.
   - Idempotent on (provider, ref).
   - States: pendiente, aceptada, rechazada, superada, expirada.
@@ -82,13 +85,13 @@ with the entity, and talks to Docuboto only through PPI. Docuboto stays the syst
 - **Accepting a suggestion.** It needs three things: the flag, `PERM_CONOCIMIENTO` level 2,
   and the target operation's own permission. Acceptance mints a write-gate proposal in
   mcp-server, shown with `ProposalCard`. A signed suggestion header puts
-  `correlacion.sugerencia` in the audit entry. Decisions go back to the provider through
+  `correlacion.suggestion` in the audit entry. Decisions go back to the provider through
   an outbox.
 - **Due-date fixes, needed with or without a provider.**
   - A default term per document type.
   - The e-mail poller gets a tenant-service client.
   - An audited operation to set or correct a due date, under a new permission
-    `PERM_VENCIMIENTO`.
+    `PERM_DUE_DATE`.
   - workflow-service aligns the active step's due date.
 - **Frontend.** Suggestion panels, inbox badges and an editable due date.
 - **Success criteria** match the provider's D2 gate:

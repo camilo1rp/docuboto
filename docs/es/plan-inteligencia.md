@@ -4,7 +4,10 @@
 > de arquitectura es [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)
 > (Propuesto) y el protocolo es PPI v1, en borrador, en `docs/contratos/ppi/`.
 > Actualizado al 2026-10-27, con la revisión de ADR-045 que deja a cada entidad decidir
-> qué niveles salen.
+> qué niveles salen. [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md) (Propuesto, 2026-10-28)
+> propone que knowledge-service no llame a modelos: `local` pasa a ser la búsqueda de texto
+> completo de document-service, sin generación. Donde este plan dice «envoltorio de lo
+> actual» o «índice local», léase ese respaldo.
 
 ## Para qué
 
@@ -54,7 +57,7 @@ respuesta es «evidencia insuficiente». Si el proveedor no está, responde el �
 |---|---|
 | knowledge-service (la pasarela) | **Puerto de proveedor** con dos implementaciones: `local` (envoltorio de lo actual) y `ppi` (cliente HTTP de PPI v1). |
 | | **Punto de paso único** de todo envío al proveedor, con la función «¿puede salir?» (nivel vivo entre los niveles habilitados de la entidad y envío no suspendido) en `app/core/clearance.py`. Ningún otro módulo usa el cliente PPI. |
-| | **Consumidor `inteligencia-pasarela`** sobre `orpycamcp.document.events` y `orpycamcp.workflow.events`, con reclamación de la PEL y dead-letter (ADR-021). Empuja altas y cambios, y ordena borrados por reclasificación hacia un nivel no habilitado, anulación, purga y nivel deshabilitado. |
+| | **Consumidor `intelligence-gateway`** sobre `orpycamcp.document.events` y `orpycamcp.workflow.events`, con reclamación de la PEL y dead-letter (ADR-021). Empuja altas y cambios, y ordena borrados por reclasificación hacia un nivel no habilitado, anulación, purga y nivel deshabilitado. |
 | | **Traducción a PPI**: radicado → `record` con una lista cerrada de campos (número, fecha, tipo E/S/I, tipo documental, dependencia, asunto, remitente, vencimiento oficial, estado), y anexo → `attachment` por localizador. Los metadatos JSONB no salen. |
 | | **Libro de envíos** de solo inserción y **reconciliación periódica** contra el nivel vivo y contra el inventario PPI (`GET /v1/ingest/inventory`). |
 | | **Carga inicial y reanudación**: al pasar a `ppi`, o al volver a encender la bandera, empuja lo pendiente de los niveles habilitados por lotes reanudables con cursor. |
@@ -65,15 +68,15 @@ respuesta es «evidencia insuficiente». Si el proveedor no está, responde el �
 | | **Métricas** sin etiqueta de tenant (ADR-041): envíos, rechazos de barrera, respaldos activados y suspensiones. |
 | document-service | **Dos rutas internas** (`X-Internal-Token`): el registro de un radicado y los bytes de un anexo (mediados por storage-service, como D-02). Ambas comprueban en el `WHERE` que el nivel esté entre los habilitados y dejan constancia en el historial de acceso del radicado («transmitido al proveedor de inteligencia»). |
 | | **Eventos nuevos por el outbox** (`042_eventos_salientes`): anexo añadido y datos del radicado cambiados. |
-| tenant-service | **`GET` y `PUT /api/v1/config/inteligencia`** (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento `tenant.inteligencia_cambiada` en una transacción). Pasar a `ppi` exige bandera encendida, política publicada y `declaracion_transmision` con el proveedor y sus subencargados tal como los declara `capabilities`, y habilita PÚBLICA. |
-| | **`PUT /api/v1/config/inteligencia/niveles`** (mismo patrón y asiento `tenant.inteligencia_nivel_habilitado`): habilita RESERVADA o CLASIFICADA, nivel por nivel, con una declaración que nombra la ruta de modelos, los modelos y los subencargados de ese nivel según `capabilities`. Deshabilitar es inmediato y ordena el borrado de lo transmitido de ese nivel (`POST /v1/ingest/purge` con `levels`, PPI 1.1.0). |
-| | **`POST /api/v1/config/inteligencia/retirar`**: pide al proveedor el borrado de todo lo de la entidad (`POST /v1/ingest/purge`) y deja asiento. |
-| auth-service | `/auth/me` publica `inteligencia_proveedor` junto a `asistente_habilitado`, para que la UI decida qué mostrar. `ALLOWED_AZP` **no cambia**. |
+| tenant-service | **`GET` y `PUT /api/v1/config/intelligence`** (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento `tenant.intelligence_changed` en una transacción). Pasar a `ppi` exige bandera encendida, política publicada y `transmission_statement` con el proveedor y sus subencargados tal como los declara `capabilities`, y habilita PÚBLICA. |
+| | **`PUT /api/v1/config/intelligence/levels`** (mismo patrón y asiento `tenant.intelligence_level_enabled`): habilita RESERVADA o CLASIFICADA, nivel por nivel, con una declaración que nombra la ruta de modelos, los modelos y los subencargados de ese nivel según `capabilities`. Deshabilitar es inmediato y ordena el borrado de lo transmitido de ese nivel (`POST /v1/ingest/purge` con `levels`, PPI 1.1.0). |
+| | **`POST /api/v1/config/intelligence/withdraw`**: pide al proveedor el borrado de todo lo de la entidad (`POST /v1/ingest/purge`) y deja asiento. |
+| auth-service | `/auth/me` publica `intelligence_provider` junto a `asistente_habilitado`, para que la UI decida qué mostrar. `ALLOWED_AZP` **no cambia**. |
 | `scripts/init_tenant.py` | **Paso nuevo e idempotente** que crea el cliente de servicio de la entidad en el realm (confidencial, solo `client_credentials`), guarda su secreto cifrado con la KEK e imprime el par *(issuer, client_id)* que registra el proveedor. Se puede correr para una entidad existente. |
-| api-gateway | Enruta `/api/v1/config/inteligencia*`. **No** enruta ninguna ruta interna de la pasarela. |
+| api-gateway | Enruta `/api/v1/config/intelligence*`. **No** enruta ninguna ruta interna de la pasarela. |
 | frontend | **Panel «Preguntar»** en el drawer de detalle de la bandeja (`frontend/src/routes/(app)/bandeja/+page.svelte`): solo con bandera, `PERM_CONOCIMIENTO` y radicado de un nivel habilitado. Muestra las citas con enlace al anexo y la página, dice cuándo responde el índice local y avisa de que la pregunta y el radicado se transmiten, y por qué ruta. |
 | | **Pantalla de administración** «Inteligencia»: proveedor, subencargados y enrutamiento según `capabilities`, declaración, niveles habilitados con la ruta de cada uno, estado (suspendido o activo) y retiro de datos. |
-| infra | **Perfil de Compose `inteligencia`** en `docker-compose.yml` e `infra/docker-compose.prod.yml`: red `internal: true` compartida solo por knowledge-service y `proveedor-inteligencia`, imagen `INTELIGENCIA_IMAGEN` sin valor por defecto (por digest en producción, ADR-033) y sin puertos. `scripts/preflight-prod.sh` rechaza la imagen sin digest. |
+| infra | **Perfil de Compose `intelligence`** en `docker-compose.yml` e `infra/docker-compose.prod.yml`: red `internal: true` compartida solo por knowledge-service y `intelligence-provider`, imagen `INTELLIGENCE_IMAGE` sin valor por defecto (por digest en producción, ADR-033) y sin puertos. `scripts/preflight-prod.sh` rechaza la imagen sin digest. |
 
 ### Permisos nuevos
 
@@ -84,11 +87,11 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
 
 | Servicio | Migración | Contenido |
 |---|---|---|
-| tenant-service (global) | siguiente número libre | `public.tenants.inteligencia_proveedor TEXT NOT NULL DEFAULT 'local'` con `CHECK (… IN ('local','ppi'))`. Todas las entidades quedan en `local`. |
-| tenant-service (global) | siguiente número libre | `public.tenants.inteligencia_niveles SMALLINT[] NOT NULL DEFAULT '{1}'`, con `CHECK` de niveles válidos. |
-| knowledge-service (tenant) | siguiente número libre | `inteligencia_envios`: libro de envíos de solo inserción, con trigger que niega `UPDATE` y `DELETE`. |
-| knowledge-service (tenant) | siguiente número libre | `inteligencia_credenciales`: secretos cifrados con la KEK y AAD de entidad y finalidad (cliente de servicio, claves HMAC de retorno, clave de seudónimo). |
-| knowledge-service (tenant) | siguiente número libre | `inteligencia_estado`: huella de `capabilities` aceptada, suspensión y cursor de la carga inicial. |
+| tenant-service (global) | siguiente número libre | `public.tenants.intelligence_provider TEXT NOT NULL DEFAULT 'local'` con `CHECK (… IN ('local','ppi'))`. Todas las entidades quedan en `local`. |
+| tenant-service (global) | siguiente número libre | `public.tenants.intelligence_levels SMALLINT[] NOT NULL DEFAULT '{1}'`, con `CHECK` de niveles válidos. |
+| knowledge-service (tenant) | siguiente número libre | `intelligence_send_log`: libro de envíos de solo inserción, con trigger que niega `UPDATE` y `DELETE`. |
+| knowledge-service (tenant) | siguiente número libre | `intelligence_credentials`: secretos cifrados con la KEK y AAD de entidad y finalidad (cliente de servicio, claves HMAC de retorno, clave de seudónimo). |
+| knowledge-service (tenant) | siguiente número libre | `intelligence_state`: huella de `capabilities` aceptada, suspensión y cursor de la carga inicial. |
 
 ### Eventos
 
@@ -109,14 +112,14 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
 - **El cliente de la entidad no es credencial de la API.** El cliente creado por
   `init_tenant.py` no aparece en `ALLOWED_AZP` y solo tiene cuenta de servicio.
 - **El perfil aísla al proveedor.** Un guardián de compose comprueba que
-  `proveedor-inteligencia` solo está en la red `inteligencia`, que esa red es
+  `intelligence-provider` solo está en la red `intelligence`, que esa red es
   `internal: true`, que no publica puertos y que su imagen viene de variable.
 - **La especificación PPI cumple su contrato.** Los ejemplos de
   `docs/contratos/ppi/examples/manifest.json` dan el resultado declarado contra su
   esquema. La carpeta solo tiene `.md`, `.json` y `.yaml`, bajo la AGPL del
   repositorio. (Requiere añadir `jsonschema` a las dependencias de prueba de
   `shared`.)
-- `test_conocimiento_mira_la_bandera.py` y `test_toda_ruta_lleva_gate` se extienden a las
+- `test_knowledge_checks_flag.py` y `test_toda_ruta_lleva_gate` se extienden a las
   rutas nuevas.
 
 ### Criterios de éxito (equivalen al hito D1 del proveedor)
@@ -158,30 +161,30 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
 
 | Servicio | Cambio |
 |---|---|
-| knowledge-service | **Ruta interna de retorno `recommend`** (HMAC por entidad). Guarda en `sugerencias` de forma idempotente por `(proveedor, ref)`. Rechaza la clase desconocida, el código fuera de vocabulario, el radicado cuyo nivel ya no está habilitado o la versión vieja. Registra los «ninguna» explícitos con su motivo para medir cobertura. |
-| | **Rutas de la bandeja**: listar por radicado (`PERM_CONOCIMIENTO` nivel 1 y clearance en el `WHERE`), `aceptar` y `rechazar` (bandera, `PERM_CONOCIMIENTO` nivel 2 y permiso propio de la operación de destino; rechazar lleva motivo de catálogo cerrado). |
-| | **Reglas de vida**: `superada` cuando llega un reemplazo o cambia el valor oficial; `expirada` por plazo, cierre, anulación o subida de nivel. |
+| knowledge-service | **Ruta interna de retorno `recommend`** (HMAC por entidad). Guarda en `suggestions` de forma idempotente por `(provider, ref)`. Rechaza la clase desconocida, el código fuera de vocabulario, el radicado cuyo nivel ya no está habilitado o la versión vieja. Registra los «ninguna» explícitos con su motivo para medir cobertura. |
+| | **Rutas de la bandeja**: listar por radicado (`PERM_CONOCIMIENTO` nivel 1 y clearance en el `WHERE`), `accept` y `reject` (bandera, `PERM_CONOCIMIENTO` nivel 2 y permiso propio de la operación de destino; rechazar lleva motivo de catálogo cerrado). |
+| | **Reglas de vida**: `superseded` cuando llega un reemplazo o cambia el valor oficial; `expired` por plazo, cierre, anulación o subida de nivel. |
 | | **Outbox de decisiones** hacia `POST /v1/decisions`, con reintentos, bajo la barrera y el interruptor. |
 | | **Vocabularios**: tipos documentales activos (archive) y dependencias activas por código (tenant-service), leídos por rutas internas y redeclarados en la conexión PPI cuando cambian. |
 | mcp-server | **Ruta interna para acuñar una propuesta** a nombre del funcionario (`X-Internal-Token` e identidad firmada de la persona). La llama la pasarela al aceptar, y el token lleva dentro la referencia de la sugerencia. |
 | | **Al ejecutar** esa propuesta: cabecera firmada con la sugerencia (mismo mecanismo que `X-Origen-Canal`) y aviso del resultado a la pasarela. |
 | | **Tools nuevas** en el catálogo: fijar o corregir el vencimiento, y conciliar la ficha provisional o vincular actores (`/api/v1/terceros/…`). |
-| shared (`orpycamcp_common`) | **Firma y verificación** de la cabecera de sugerencia (`identidad`), `ContextVar` de sugerencia (`request_log`) y bloque `correlacion.sugerencia` con identificador, proveedor y modelos en `audit.append`. El canal sigue siendo `mcp` y el `CHECK` de `canal` no cambia. |
-| api-gateway | Reenvía la cabecera de sugerencia **solo** si su firma verifica, igual que `X-Origen-Canal`. Enruta `/api/v1/knowledge/sugerencias*`. |
+| shared (`orpycamcp_common`) | **Firma y verificación** de la cabecera de sugerencia (`identidad`), `ContextVar` de sugerencia (`request_log`) y bloque `correlacion.suggestion` con identificador, proveedor y modelos en `audit.append`. El canal sigue siendo `mcp` y el `CHECK` de `canal` no cambia. |
+| api-gateway | Reenvía la cabecera de sugerencia **solo** si su firma verifica, igual que `X-Origen-Canal`. Enruta `/api/v1/knowledge/suggestions*`. |
 | document-service | **Plazo por defecto**: si un radicado de Entrada llega sin `response_days`, toma el plazo por defecto de su tipo documental. Aplica a ventanilla, correo manual y automático, y lotes. El importador conserva el vencimiento que traiga el paquete. |
 | | **El sondeo de correo construye `DocumentService` con cliente de tenant-service.** Hoy lo hace con `None` (`email_sondeo.py:216`), y calcular el plazo lanzaría `RuntimeError`. |
-| | **Operación auditada para fijar o corregir el vencimiento** (`PUT /api/v1/documents/{id}/vencimiento`, con fecha o días hábiles, y motivo). Lleva `PERM_VENCIMIENTO` nivel 3, clearance en el `WHERE`, `FOR UPDATE` y asiento con `antes`, `despues`, `motivo` y `origen` (manual o sugerencia). Emite por el outbox el evento de vencimiento cambiado. |
-| archive-service | `tipos_documentales.plazo_respuesta_dias` (días hábiles, opcional) en la administración de tipos documentales. Es configuración de cada entidad, no una ley escrita en el código: el término legal (Ley 1755 de 2015, art. 14 [confirmar]) lo pone la entidad. |
+| | **Operación auditada para fijar o corregir el vencimiento** (`PUT /api/v1/documents/{id}/due-date`, con fecha o días hábiles, y motivo). Lleva `PERM_DUE_DATE` nivel 3, clearance en el `WHERE`, `FOR UPDATE` y asiento con `antes`, `despues`, `motivo` y `origen` (manual o sugerencia). Emite por el outbox el evento de vencimiento cambiado. |
+| archive-service | `tipos_documentales.default_response_days` (días hábiles, opcional) en la administración de tipos documentales. Es configuración de cada entidad, no una ley escrita en el código: el término legal (Ley 1755 de 2015, art. 14 [confirmar]) lo pone la entidad. |
 | workflow-service | Consume el evento de vencimiento cambiado y alinea `due_at` del paso activo. |
 | | Corrige los dos hallazgos de [endurecimiento](#endurecimiento-encontrado-al-leer-el-codigo) que afectan a esta fase: `_publish` y la regla en el asiento del reparto. |
-| auth-service | Permiso nuevo `PERM_VENCIMIENTO`, con su concesión inicial (pregunta abierta). |
+| auth-service | Permiso nuevo `PERM_DUE_DATE`, con su concesión inicial (pregunta abierta). |
 | frontend | **Panel de sugerencias** en el drawer de la bandeja: por clase, con evidencia citada; «Aceptar» abre `ProposalCard` y «Rechazar» pide motivo. |
 | | **Insignias en la lista de la bandeja**: sugerencias pendientes por radicado. |
 | | **Campo de vencimiento** editable con motivo, y **plazo por defecto** en la administración de tipos documentales. |
 
 ### Permisos nuevos
 
-- **`PERM_VENCIMIENTO`** (nivel 3: fijar o corregir el vencimiento). Va aparte de
+- **`PERM_DUE_DATE`** (nivel 3: fijar o corregir el vencimiento). Va aparte de
   `PERM_RADI` porque ampliar el propio plazo es un conflicto de interés. Queda abierto si
   ampliarlo exige además una segunda persona (ADR-045, pregunta 3).
 - Decidir una sugerencia **no** es un permiso nuevo: es `PERM_CONOCIMIENTO` nivel 2
@@ -191,16 +194,16 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
 
 | Servicio | Contenido |
 |---|---|
-| knowledge-service (tenant) | `sugerencias`: clases y estados con `CHECK`, `UNIQUE (proveedor, ref)`, trigger de transiciones (solo desde `pendiente`, terminales inmutables) e índices por radicado y estado. |
-| knowledge-service (tenant) | `sugerencias_decisiones_salientes` (outbox) y `inteligencia_triage` (último «ninguna» por radicado y clase, con su motivo). |
-| archive-service (tenant) | `tipos_documentales.plazo_respuesta_dias INT NULL CHECK (… BETWEEN 1 AND 3650)`. |
-| auth-service (tenant) | Alta de `PERM_VENCIMIENTO`, con la concesión inicial que se decida. |
+| knowledge-service (tenant) | `suggestions`: clases y estados con `CHECK`, `UNIQUE (provider, ref)`, trigger de transiciones (solo desde `pending`, terminales inmutables) e índices por radicado y estado. |
+| knowledge-service (tenant) | `suggestion_decisions_outbox` (outbox) y `intelligence_triage` (último «ninguna» por radicado y clase, con su motivo). |
+| archive-service (tenant) | `tipos_documentales.default_response_days INT NULL CHECK (… BETWEEN 1 AND 3650)`. |
+| auth-service (tenant) | Alta de `PERM_DUE_DATE`, con la concesión inicial que se decida. |
 
 ### Eventos
 
 - **Nuevo**: vencimiento del radicado cambiado (document-service, por outbox). Lo
   consumen workflow-service y la pasarela.
-- La pasarela usa «datos del radicado cambiados» (D1) para marcar `superada` una
+- La pasarela usa «datos del radicado cambiados» (D1) para marcar `superseded` una
   sugerencia cuyo valor oficial fijó una persona.
 
 ### Guardianes de la fase
@@ -212,7 +215,7 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
   válida.
 - **Las clases son cerradas y coinciden** en el `CHECK`, la constante, la UI y la
   traducción a `kind` de PPI.
-- **Transiciones**: solo desde `pendiente`; recibir dos veces el mismo `(proveedor, ref)`
+- **Transiciones**: solo desde `pending`; recibir dos veces el mismo `(provider, ref)`
   no duplica.
 - **Ningún radicado de Entrada con plazo por defecto nace sin vencimiento**, por ventanilla,
   por correo (manual y automático) ni por lote.
@@ -227,7 +230,7 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
       recibe sugerencias de tipificación, plazo, reparto y antecedentes dentro del p95
       acordado, visibles con su insignia en la bandeja.
 - [ ] Los funcionarios aceptan o rechazan en Docuboto. Cada aceptación aparece en la cadena
-      de `audit_log` con la persona como actor y `correlacion.sugerencia` con
+      de `audit_log` con la persona como actor y `correlacion.suggestion` con
       identificador, proveedor y modelo. Lo comprueba `verify_audit_chains` más una
       consulta.
 - [ ] La auditoría de Docuboto no muestra ningún cambio de estado hecho por el proveedor:
@@ -238,7 +241,7 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
       conjunto sale del historial ya transmitido (radicados cerrados), sin una
       exportación aparte.
 - [ ] Al menos el 95 % de lo que entra con un nivel habilitado recibe sugerencias o un «ninguna» explícito
-      con motivo, medido sobre `inteligencia_triage`.
+      con motivo, medido sobre `intelligence_triage`.
 - [ ] Apagar la inteligencia en Docuboto (bandera o `local`) detiene toda llamada y todo
       egreso hacia el proveedor.
 - [ ] Firma de una persona responsable, registrada en el changelog.
@@ -256,7 +259,7 @@ funcionario, que sigue su circuito normal de revisión, visto bueno y firma.
 | Servicio | Cambio |
 |---|---|
 | knowledge-service | **Ruta «pedir borrador»**: bandera, `PERM_CONOCIMIENTO` nivel 1 y radicado de un nivel habilitado. Lanza `POST /v1/runs` (`draft_reply`) bajo la barrera, con el radicado y sus anexos como alcance. |
-| | El resultado llega como recomendación `draft` y se guarda como sugerencia `borrador_respuesta`. |
+| | El resultado llega como recomendación `draft` y se guarda como sugerencia `reply_draft`. |
 | | Al aceptar, acuña la propuesta de `crear_borrador` con `radicado_padre_id` y el cuerpo sugerido. `crear_respuesta_vinculada` queda como opción, porque consume un número de radicado (pregunta abierta). |
 | mcp-server | La tool `crear_borrador` expone `radicado_padre_id`. `BorradorCreate` ya lo admite (`schemas/borrador.py`), pero la tool no lo ofrece hoy. |
 | frontend | **Botón «Pedir borrador»** y **vista del borrador sugerido** con sus citas. El cuerpo se pinta como texto, nunca como HTML: lo redactó un modelo a partir de texto de un tercero. Al aceptar se abre `ProposalCard`, y el borrador se abre en el editor de borradores. |
@@ -265,7 +268,7 @@ funcionario, que sigue su circuito normal de revisión, visto bueno y firma.
 
 - **Permisos**: ninguno. Crear el borrador exige el permiso propio de `crear_borrador`
   (`PERM_RADI`) o de `crear_respuesta_vinculada` (`PERM_RESPUESTA_VINCULADA`).
-- **Migraciones**: ninguna. La clase `borrador_respuesta` ya está en el `CHECK` desde D2.
+- **Migraciones**: ninguna. La clase `reply_draft` ya está en el `CHECK` desde D2.
 - **Eventos**: ninguno nuevo.
 
 ### Guardianes de la fase
@@ -298,7 +301,7 @@ lo que miren.
 | **Ningún proveedor se nombra en el código** | Ni `services/`, ni `frontend/src`, ni `shared/`, ni `scripts/`, ni los compose ni `infra/` nombran a un proveedor de inteligencia. | La lista prohibida se guarda como **huellas SHA-256** de los nombres normalizados, para que el guardián tampoco los nombre; se compara token a token. Exentos: `docs/` (los ADR y este plan pueden contar la historia) y los ajustes de modelos que ADR-006 ya admite. |
 | **Nada de un nivel no habilitado llega a un proveedor** | Ningún camino envía un radicado de un nivel que la entidad no habilitó: registro, anexo, alcance de consulta, tarea `run`, descarga por localizador y outbox de decisiones. | Transporte falso que falla ante cualquier petición con un nivel no habilitado. Incluye la carrera de una reclasificación entre el evento y el envío. Un control AST asegura que solo el punto de paso usa el cliente PPI. |
 | **Con el interruptor apagado no hay llamadas ni egreso** | Con la bandera apagada, o la entidad en `local`, ni el consumidor, ni buscar, ni preguntar, ni la carga inicial, ni la reconciliación, ni el outbox de decisiones, ni `run` llaman al proveedor. | Transporte falso que falla ante cualquier petición. En compose, el proveedor solo está en una red `internal: true`. |
-| **Toda aceptación queda auditada con su sugerencia** | Cada sugerencia `aceptada` tiene un asiento de la operación de destino con la persona como actor y `correlacion.sugerencia` (identificador, proveedor, modelos), unido por el `jti` al asiento `inteligencia.sugerencia_aceptada` de la pasarela. | Prueba de integración del recorrido completo, más un control que recorre las sugerencias aceptadas de un tenant de prueba y busca su asiento. |
+| **Toda aceptación queda auditada con su sugerencia** | Cada sugerencia `accepted` tiene un asiento de la operación de destino con la persona como actor y `correlacion.suggestion` (identificador, proveedor, modelos), unido por el `jti` al asiento `intelligence.suggestion_accepted` de la pasarela. | Prueba de integración del recorrido completo, más un control que recorre las sugerencias aceptadas de un tenant de prueba y busca su asiento. |
 
 ---
 
@@ -365,7 +368,7 @@ Las del responsable de producto están en
 [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md#preguntas-abiertas-para-el-responsable-de-producto).
 Este plan añade cuatro:
 
-1. **Concesión inicial de `PERM_VENCIMIENTO`**: ¿a los grupos que ya tienen `PERM_RADI`
+1. **Concesión inicial de `PERM_DUE_DATE`**: ¿a los grupos que ya tienen `PERM_RADI`
    nivel 3, o a ninguno, para que el administrador la reparta a conciencia como en
    ADR-037?
 2. **p95 de D2**: ¿cuánto puede tardar una sugerencia desde la radicación? Lo acuerdan la
