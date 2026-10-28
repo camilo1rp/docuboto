@@ -62,7 +62,10 @@ with the entity, and talks to Docuboto only through PPI. Docuboto stays the syst
 - **`scripts/init_tenant.py`.** Creates one client-credentials Keycloak client per entity.
   It is not added to `ALLOWED_AZP`.
 - **Frontend.** An "Ask" panel in the inbox detail drawer and an admin screen.
-- **Infra.** A vendor-neutral `intelligence` Compose profile on an internal network.
+- **Infra.** A vendor-neutral `intelligence` Compose profile that starts no provider
+  service. It switches knowledge-service to `ppi` and attaches it to the external
+  `ppi` network, created once per host with `--internal`. The provider is its own
+  Compose project with its own release.
 - **New permissions.** None.
 - **Success criteria** match the provider's D1 gate:
   - cited answers or `insufficient_evidence`;

@@ -5,6 +5,7 @@
 **Autores**: Camilo Romero; borrador para revisión del responsable de producto y del mantenedor
 **Revisión 2026-10-27 (niveles por entidad)**: el proveedor interno corre dentro de la instalación y bajo contrato con la entidad, así que es un encargado, no un tercero externo. Cada entidad decide qué niveles le transmite (por defecto solo PÚBLICA), y el proveedor declara en su `capabilities` firmada con qué modelos procesa cada nivel. Cambian la condición 3, §2, §3, §4, §5, §9 y las consecuencias. El resto queda igual.
 **Revisión 2026-10-28 (nombres en inglés)**: los identificadores nuevos que propone este ADR pasan a inglés, como pide la regla 1 de contribución: tablas (`suggestions`, `intelligence_send_log`…), columnas (`intelligence_provider`, `intelligence_levels`), clases y estados de sugerencia, rutas (`/api/v1/config/intelligence`), acciones de auditoría, el grupo consumidor, el perfil y el servicio de Compose, y `PERM_DUE_DATE`. Las decisiones no cambian.
+**Revisión 2026-10-28 (empaquetado)**: §8 se alinea con el empaquetado que acordó el proveedor: dos proyectos Compose en el mismo host, una red externa `ppi` y un perfil `intelligence` que no arranca ningún servicio del proveedor. Se resuelve la pregunta abierta 7.
 **Enmendado por**: [ADR-046](ADR-046-conocimiento-sin-modelos.md) (propuesto): knowledge-service no llama a modelos; `local` pasa a ser la búsqueda de texto completo de document-service, sin generación ni índice propio, y lo generado solo llega por `suggestions`. Afecta a §1, §3, §5 y §6.
 **Relacionados**: [ADR-006](ADR-006-proveedor-ia-configurable.md) (proveedor de IA; **se enmienda**), [ADR-037](ADR-037-asistente-activable-por-entidad.md) (bandera por entidad y `PERM_CONOCIMIENTO`; esta decisión vive bajo ella), [ADR-019](ADR-019-capa-mcp.md) (capa MCP y gate de escritura), [ADR-018](ADR-018-interoperabilidad-webhooks.md) (webhooks; no se usan aquí), [ADR-021](ADR-021-reclamacion-deadletter-eventos.md) (consumidores y dead-letter), [ADR-036](ADR-036-identidad-atada-a-metodo-y-ruta.md) y [ADR-044](ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md) (firma con nonce de un solo uso), [ADR-043](ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md) §5 (contrato SQL entre servicios), [ADR-008](ADR-008-auditoria-inmutable.md) (auditoría)
 
@@ -147,13 +148,11 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 
 ### 8. Empaquetado: un perfil de Compose neutral
 
-- **El perfil `intelligence`** define:
-  - una red **interna** (`internal: true`) a la que se conectan solo la pasarela y la puerta de entrada del proveedor;
-  - el servicio `intelligence-provider`, con la imagen en una variable sin valor por defecto (`INTELLIGENCE_IMAGE`, fijada por digest en producción como manda ADR-033) y sin puertos publicados.
-
-  Ningún nombre de proveedor aparece en el compose.
+- **Dos proyectos Compose, nunca uno.** Docuboto y el proveedor se despliegan como dos proyectos en el mismo host (`docker compose -p docuboto`, y el del proveedor con su propio nombre), cada uno desde su repositorio y con su versión. Ninguno incluye ni extiende el compose del otro. Cada uno se publica, se despliega y se revierte por su cuenta, y el único contrato de compatibilidad entre los dos es el semver de PPI.
+- **Una red externa `ppi`.** Se crea una vez por host, fuera de los dos proyectos, con `docker network create --internal ppi`. Del lado de Docuboto solo se conecta la pasarela (knowledge-service). Qué servicios conecta el proveedor es asunto suyo.
+- **El perfil `intelligence` no arranca ningún servicio del proveedor.** Solo pasa la pasarela a su implementación `ppi`, la conecta a la red `ppi` y le da la URL del proveedor (`PPI_PROVIDER_URL`, sin valor por defecto). Ningún nombre de proveedor aparece en el compose.
 - **Aislamiento por red.** El proveedor no se conecta a la red de Docuboto: no alcanza Postgres, Redis ni el almacén de objetos. Su salida a modelos alojados es asunto suyo, por su propia red y su propio proxy.
-- **Lo que hay detrás es del proveedor.** Sus trabajadores, su base y su pasarela de modelos son su propio proyecto Compose.
+- **Lo que hay detrás es del proveedor.** Su imagen, su fijación por digest, sus trabajadores, su base y su pasarela de modelos son su propio proyecto Compose.
 - **Sin el perfil, Docuboto funciona como hoy**, con `local`.
 
 ### 9. Relación con otros ADR
@@ -218,6 +217,6 @@ Pendiente de confirmación de asesoría jurídica:
 4. **Qué significa aceptar un antecedente.** ¿Vincular el radicado al expediente del antecedente, crear una relación entre radicados (hoy no existe) o solo marcarlo como útil?
 5. **Retirar los datos al pasar a `local`.** ¿Es automático o un acto aparte del administrador? Propuesta: acto aparte.
 6. **Metadatos JSONB.** ¿Sale algún campo de las plantillas de metadatos en v1? Propuesta: ninguno.
-7. **Imagen del perfil.** ¿La imagen configurable del perfil es la API del proveedor, o una puerta de entrada fina delante de su proyecto Compose? Hay que acordarlo con el proveedor.
+7. ~~**Imagen del perfil.**~~ Resuelta el 2026-10-28 (§8): el perfil no arranca ningún servicio del proveedor; cada programa es su propio proyecto Compose y se encuentran en la red externa `ppi`, como fija el ADR 0009a del proveedor (decisión 12).
 8. **Base jurídica de los niveles altos.** ¿Permiten la Ley 1712 de 2014 (arts. 18 y 19) y el Decreto 103 de 2015 que un encargado contratado, y sus subencargados alojados, procesen información RESERVADA y CLASIFICADA? ¿Qué exige la Ley 1581 de 2012 (y el Decreto 1074 de 2015) para la transmisión internacional? La revisión de 2026-10-27 parte de que sí se permite en planes sin retención; si asesoría jurídica dice otra cosa, el nivel pasa a ruta local o se deshabilita, sin cambiar el diseño.
 9. **Borrado por nivel.** PPI 1.1.0 añade `levels` opcional a `POST /v1/ingest/purge`. ¿Lo exige la pasarela para deshabilitar un nivel, o borra radicado por radicado cuando el proveedor solo habla 1.0?
