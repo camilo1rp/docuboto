@@ -4,11 +4,13 @@
 **Fecha**: 2026-10-27
 **Autores**: Camilo Romero; borrador para revisión del responsable de producto y del mantenedor
 **Revisión 2026-10-27 (niveles por entidad)**: el proveedor interno corre dentro de la instalación y bajo contrato con la entidad, así que es un encargado, no un tercero externo. Cada entidad decide qué niveles le transmite (por defecto solo PÚBLICA), y el proveedor declara en su `capabilities` firmada con qué modelos procesa cada nivel. Cambian la condición 3, §2, §3, §4, §5, §9 y las consecuencias. El resto queda igual.
+**Revisión 2026-10-28 (nombres en inglés)**: los identificadores nuevos que propone este ADR pasan a inglés, como pide la regla 1 de contribución: tablas (`suggestions`, `intelligence_send_log`…), columnas (`intelligence_provider`, `intelligence_levels`), clases y estados de sugerencia, rutas (`/api/v1/config/intelligence`), acciones de auditoría, el grupo consumidor, el perfil y el servicio de Compose, y `PERM_DUE_DATE`. Las decisiones no cambian.
+**Enmendado por**: [ADR-046](ADR-046-conocimiento-sin-modelos.md) (propuesto): knowledge-service no llama a modelos; `local` pasa a ser la búsqueda de texto completo de document-service, sin generación ni índice propio, y lo generado solo llega por `suggestions`. Afecta a §1, §3, §5 y §6.
 **Relacionados**: [ADR-006](ADR-006-proveedor-ia-configurable.md) (proveedor de IA; **se enmienda**), [ADR-037](ADR-037-asistente-activable-por-entidad.md) (bandera por entidad y `PERM_CONOCIMIENTO`; esta decisión vive bajo ella), [ADR-019](ADR-019-capa-mcp.md) (capa MCP y gate de escritura), [ADR-018](ADR-018-interoperabilidad-webhooks.md) (webhooks; no se usan aquí), [ADR-021](ADR-021-reclamacion-deadletter-eventos.md) (consumidores y dead-letter), [ADR-036](ADR-036-identidad-atada-a-metodo-y-ruta.md) y [ADR-044](ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md) (firma con nonce de un solo uso), [ADR-043](ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md) §5 (contrato SQL entre servicios), [ADR-008](ADR-008-auditoria-inmutable.md) (auditoría)
 
 ---
 
-> **Nada de lo que este ADR decide está construido.** Las piezas nuevas —la pasarela, el puerto de proveedor, la bandeja `sugerencias`, el perfil `inteligencia`, las rutas internas y los eventos nuevos— son **propuestas**. Lo que ya existe se cita en «Punto de partida» con su archivo, verificado contra el código del commit `7510257`. El plan por fases está en [Plan de inteligencia](../plan-inteligencia.md) y la especificación del protocolo en `docs/contratos/ppi/`.
+> **Nada de lo que este ADR decide está construido.** Las piezas nuevas —la pasarela, el puerto de proveedor, la bandeja `suggestions`, el perfil `intelligence`, las rutas internas y los eventos nuevos— son **propuestas**. Lo que ya existe se cita en «Punto de partida» con su archivo, verificado contra el código del commit `7510257`. El plan por fases está en [Plan de inteligencia](../plan-inteligencia.md) y la especificación del protocolo en `docs/contratos/ppi/`.
 
 ## Contexto
 
@@ -51,7 +53,7 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 
 ### 2. Modelo de empuje: Docuboto manda, el proveedor no lee
 
-- **Grupo consumidor propio.** La pasarela lee `orpycamcp.document.events` y `orpycamcp.workflow.events` con su propio grupo (`inteligencia-pasarela`), distinto de `knowledge-ingest`. Usa el mismo patrón de reclamación de la PEL y dead-letter de ADR-021.
+- **Grupo consumidor propio.** La pasarela lee `orpycamcp.document.events` y `orpycamcp.workflow.events` con su propio grupo (`intelligence-gateway`), distinto de `knowledge-ingest`. Usa el mismo patrón de reclamación de la PEL y dead-letter de ADR-021.
 - **Qué empuja.** Por cada radicado elegible empuja:
   - un **registro**: una lista cerrada de campos declarada en la pasarela (número, fecha de radicación, tipo E/S/I, tipo documental, dependencia, asunto, remitente, vencimiento oficial y estado). Los metadatos JSONB libres (ADR-007) no salen en v1;
   - sus **anexos**, como bytes o como localizador más SHA-256.
@@ -71,16 +73,16 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 
 ### 4. Configuración por entidad, bajo ADR-037
 
-- **Elección por entidad.** Una columna nueva `public.tenants.inteligencia_proveedor` (`local` | `ppi`, por defecto `local`) la cambia el administrador de la entidad con `PUT /api/v1/config/inteligencia` en tenant-service. El patrón es el de `PUT /config/asistente`: `USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento en una transacción.
+- **Elección por entidad.** Una columna nueva `public.tenants.intelligence_provider` (`local` | `ppi`, por defecto `local`) la cambia el administrador de la entidad con `PUT /api/v1/config/intelligence` en tenant-service. El patrón es el de `PUT /config/asistente`: `USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento en una transacción.
 - **Pasar a `ppi` es un acto con fricción.** Exige:
   - la bandera de ADR-037 encendida;
   - la política de tratamiento publicada;
-  - la `declaracion_transmision` del administrador. La declaración **nombra al proveedor y a sus subencargados** tal como vienen en la declaración `capabilities` firmada del proveedor; el nombre es un dato que viene del proveedor, no del código.
+  - la `transmission_statement` del administrador. La declaración **nombra al proveedor y a sus subencargados** tal como vienen en la declaración `capabilities` firmada del proveedor; el nombre es un dato que viene del proveedor, no del código.
 
-  El asiento `tenant.inteligencia_cambiada` guarda la declaración, la huella SHA-256 de la `capabilities` vigente y la versión de la política. Volver a `local` es inmediato y sin fricción, igual que apagar la bandera.
-- **Niveles habilitados.** Una columna nueva `public.tenants.inteligencia_niveles` (lista de niveles, por defecto solo PÚBLICA) dice qué niveles se transmiten. Pasar a `ppi` habilita PÚBLICA. Habilitar RESERVADA o CLASIFICADA es otro acto con fricción, nivel por nivel, por `PUT /api/v1/config/inteligencia/niveles` con el mismo patrón (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento):
+  El asiento `tenant.intelligence_changed` guarda la declaración, la huella SHA-256 de la `capabilities` vigente y la versión de la política. Volver a `local` es inmediato y sin fricción, igual que apagar la bandera.
+- **Niveles habilitados.** Una columna nueva `public.tenants.intelligence_levels` (lista de niveles, por defecto solo PÚBLICA) dice qué niveles se transmiten. Pasar a `ppi` habilita PÚBLICA. Habilitar RESERVADA o CLASIFICADA es otro acto con fricción, nivel por nivel, por `PUT /api/v1/config/intelligence/levels` con el mismo patrón (`USUA_PERM_ADMIN` nivel 3, `FOR UPDATE` y asiento):
   - la declaración del administrador nombra, para ese nivel, la ruta de modelos (alojados o locales), los modelos y los subencargados tal como los da la `capabilities` firmada;
-  - el asiento `tenant.inteligencia_nivel_habilitado` guarda la declaración, el nivel y la huella de `capabilities`.
+  - el asiento `tenant.intelligence_level_enabled` guarda la declaración, el nivel y la huella de `capabilities`.
 
   Deshabilitar un nivel es inmediato y sin fricción: corta los envíos de ese nivel y ordena al proveedor el borrado de lo ya transmitido de ese nivel.
 - **Un cambio del proveedor suspende el envío.** Si la huella de `capabilities` cambia (otro subencargado, otro enrutamiento por nivel), la pasarela suspende todo envío de esa entidad hasta que su administrador vuelva a declarar cada nivel habilitado.
@@ -106,26 +108,26 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
   Lo que no pasa se descarta, deja traza y dispara un borrado en el proveedor. Una afirmación que se queda sin citas se retira, y una respuesta que se queda sin afirmaciones se presenta como `insufficient_evidence`. Nunca se muestra una afirmación sin cita.
 - **Respaldo.** Si el proveedor no responde, excede su plazo, devuelve 5xx o tiene el envío suspendido (§4), la consulta la atiende `local`, y la UI dice «respuesta del índice local». La respuesta local se basa en asunto y remitente, no en el cuerpo ni en los anexos.
 
-### 6. La bandeja de sugerencias (`sugerencias`)
+### 6. La bandeja de sugerencias (`suggestions`)
 
 - **Una tabla nueva**, no `kb_suggestions`. Cambia el sentido (la origina el proveedor, no una persona), el ciclo de vida y quién puede decidir. `kb_suggestions` sigue como traza de lo que genera `local`.
 - **Clases cerradas**, con `CHECK` y una constante compartida con su guardián. La clase del proveedor se traduce en la pasarela:
 
-| `sugerencias.tipo` | `kind` de PPI | Operación del catálogo al aceptar | Permiso propio de esa operación |
+| `suggestions.kind` | `kind` de PPI | Operación del catálogo al aceptar | Permiso propio de esa operación |
 |---|---|---|---|
-| `tipificacion` | `classify` | `tipificar_radicado` | `PERM_RADI` nivel 3 |
-| `plazo` | `deadline` | operación nueva para fijar o corregir el vencimiento (plan D2) | permiso nuevo `PERM_VENCIMIENTO` (plan D2) |
-| `asignacion_traslado` | `route` | `asignar_radicado` sin paso activo; `trasladar_radicado` con paso activo | `PERM_TRAMITAR` nivel 1, más la tenencia que esas operaciones ya exigen |
-| `antecedentes` | `relate` | `vincular_radicado` al expediente del antecedente (pregunta abierta 4) | `USUA_PERM_EXPEDIENTE` nivel 2 |
-| `vinculo_tercero` | `link_party` | conciliar la ficha provisional o vincular actores (`/api/v1/terceros/…`); hoy sin tool en el catálogo (plan D2) | `PERM_RADI` nivel 3 |
-| `borrador_respuesta` | `draft` | `crear_respuesta_vinculada` o `crear_borrador` (plan D3) | `PERM_RESPUESTA_VINCULADA` o `PERM_RADI` |
+| `document_type` | `classify` | `tipificar_radicado` | `PERM_RADI` nivel 3 |
+| `due_date` | `deadline` | operación nueva para fijar o corregir el vencimiento (plan D2) | permiso nuevo `PERM_DUE_DATE` (plan D2) |
+| `routing` | `route` | `asignar_radicado` sin paso activo; `trasladar_radicado` con paso activo | `PERM_TRAMITAR` nivel 1, más la tenencia que esas operaciones ya exigen |
+| `related_records` | `relate` | `vincular_radicado` al expediente del antecedente (pregunta abierta 4) | `USUA_PERM_EXPEDIENTE` nivel 2 |
+| `party_link` | `link_party` | conciliar la ficha provisional o vincular actores (`/api/v1/terceros/…`); hoy sin tool en el catálogo (plan D2) | `PERM_RADI` nivel 3 |
+| `reply_draft` | `draft` | `crear_respuesta_vinculada` o `crear_borrador` (plan D3) | `PERM_RESPUESTA_VINCULADA` o `PERM_RADI` |
 
-- **Idempotente por `(proveedor, ref)`**, con `UNIQUE`. Recibir dos veces la misma recomendación no crea dos sugerencias.
-- **Estados**: `pendiente`, `aceptada`, `rechazada`, `superada` y `expirada`. Solo `pendiente` se mueve, y un trigger niega toda otra transición, como hace ADR-039 con el nivel.
-  - `aceptada`: la operación se ejecutó con éxito.
-  - `rechazada`: el funcionario la rechazó, con motivo de un catálogo cerrado.
-  - `superada`: llegó otra que la reemplaza (`supersedes`), o un funcionario fijó el valor oficial por otra vía.
-  - `expirada`: venció su plazo, el radicado se cerró o se anuló, o su nivel subió.
+- **Idempotente por `(provider, ref)`**, con `UNIQUE`. Recibir dos veces la misma recomendación no crea dos sugerencias.
+- **Estados**: `pending`, `accepted`, `rejected`, `superseded` y `expired`. Solo `pending` se mueve, y un trigger niega toda otra transición, como hace ADR-039 con el nivel.
+  - `accepted`: la operación se ejecutó con éxito.
+  - `rejected`: el funcionario la rechazó, con motivo de un catálogo cerrado.
+  - `superseded`: llegó otra que la reemplaza (`supersedes`), o un funcionario fijó el valor oficial por otra vía.
+  - `expired`: venció su plazo, el radicado se cerró o se anuló, o su nivel subió.
 - **Un «ninguna» explícito no crea sugerencia.** Cuando el proveedor dice que no tiene nada que recomendar para un radicado y una clase, con su motivo (`no_recommendation` en PPI), la pasarela lo guarda como estado de triage del radicado. Así se distingue «no procesado» de «procesado, sin sugerencia» y se puede medir la cobertura.
 - **Se muestra con las reglas del radicado**: la sugerencia solo la ve quien puede ver el radicado (clearance en el `WHERE`), y solo con la bandera encendida y `PERM_CONOCIMIENTO`.
 - **El valor oficial manda.** Una sugerencia de plazo o de tipo es una diferencia propuesta, nunca un hecho guardado.
@@ -140,14 +142,14 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
   Rechazar exige lo mismo: rechazar también es decidir, y quien no puede ejecutar la operación no debería quitarla de la vista de quien sí puede.
 - **La propuesta se acuña al aceptar, no al recibir.** Como vence a los 120 s, la sugerencia guarda la recomendación y, cuando el funcionario pulsa «Aceptar», la pasarela pide a mcp-server una propuesta firmada (`write_gate.preparar`) de la operación del catálogo, a nombre de ese funcionario. La UI la muestra con `ProposalCard` (`frontend/src/lib/components/layout/ProposalCard.svelte`). El texto de la tarjeta lo redacta el catálogo, no el proveedor.
 - **Se ejecuta como el funcionario.** Al confirmar, la operación corre con su identidad por el gate de siempre. No hay escritura con la cuenta del proveedor ni con un actor de sistema.
-- **La auditoría lo ata.** El asiento de la operación lleva en `correlacion`, además de `request_id` e `idempotency_key`, el bloque `sugerencia` con su identificador, el proveedor y los modelos. Llega en una cabecera que mcp-server firma con el mismo mecanismo que `X-Origen-Canal` (`identidad.firmar_origen`) y que el gateway solo reenvía si la firma verifica. **No se añade un canal**: el acto entra por el gate, el canal sigue siendo `mcp` y el `CHECK` no cambia. La pasarela asienta además `inteligencia.sugerencia_aceptada` con el `jti` de la propuesta, de modo que los dos asientos se unen por él.
+- **La auditoría lo ata.** El asiento de la operación lleva en `correlacion`, además de `request_id` e `idempotency_key`, el bloque `suggestion` con su identificador, el proveedor y los modelos. Llega en una cabecera que mcp-server firma con el mismo mecanismo que `X-Origen-Canal` (`identidad.firmar_origen`) y que el gateway solo reenvía si la firma verifica. **No se añade un canal**: el acto entra por el gate, el canal sigue siendo `mcp` y el `CHECK` no cambia. La pasarela asienta además `intelligence.suggestion_accepted` con el `jti` de la propuesta, de modo que los dos asientos se unen por él.
 - **La decisión vuelve al proveedor.** Aceptada (con el valor aplicado), rechazada (con su motivo), superada o expirada, cada decisión sale por un outbox de la pasarela con reintentos y bajo la misma barrera y el mismo interruptor. El proveedor la usa para aprender.
 
 ### 8. Empaquetado: un perfil de Compose neutral
 
-- **El perfil `inteligencia`** define:
+- **El perfil `intelligence`** define:
   - una red **interna** (`internal: true`) a la que se conectan solo la pasarela y la puerta de entrada del proveedor;
-  - el servicio `proveedor-inteligencia`, con la imagen en una variable sin valor por defecto (`INTELIGENCIA_IMAGEN`, fijada por digest en producción como manda ADR-033) y sin puertos publicados.
+  - el servicio `intelligence-provider`, con la imagen en una variable sin valor por defecto (`INTELLIGENCE_IMAGE`, fijada por digest en producción como manda ADR-033) y sin puertos publicados.
 
   Ningún nombre de proveedor aparece en el compose.
 - **Aislamiento por red.** El proveedor no se conecta a la red de Docuboto: no alcanza Postgres, Redis ni el almacén de objetos. Su salida a modelos alojados es asunto suyo, por su propia red y su propio proxy.
@@ -180,7 +182,7 @@ Pendiente de confirmación de asesoría jurídica:
 - **El proveedor tira de Docuboto con una cuenta de servicio de la API.** Descartado: Docuboto dejaría de decidir registro a registro qué sale, y la cuenta tendría credencial sobre toda la API.
 - **Reusar `kb_suggestions` como bandeja.** Descartado: es la traza de una generación pedida por una persona, aceptable solo por ella (§6).
 - **Cliente de Keycloak para las llamadas del proveedor.** Descartado (§4): lo vuelve credencial de la API y no firma el cuerpo.
-- **Un canal de auditoría nuevo (`inteligencia`).** Descartado: el acto lo ejecuta la persona por el gate, y el canal dice por dónde entró. Lo que distingue el acto es `correlacion.sugerencia`, y cambiar el `CHECK` global no aporta información nueva.
+- **Un canal de auditoría nuevo (`intelligence`).** Descartado: el acto lo ejecuta la persona por el gate, y el canal dice por dónde entró. Lo que distingue el acto es `correlacion.suggestion`, y cambiar el `CHECK` global no aporta información nueva.
 
 ## Consecuencias
 
@@ -205,14 +207,14 @@ Pendiente de confirmación de asesoría jurídica:
 ## Residuos declarados
 
 - **El borrado en el proveedor es asíncrono.** Entre una reclasificación hacia arriba y el borrado confirmado hay una ventana. La re-comprobación viva (§5) impide que lo reclasificado se muestre en ella, y la reconciliación (§2) da la evidencia.
-- **El consumo de `jti` vive en el proceso** (ya declarado en `proposals.py`). Una aceptación duplicada contra dos réplicas dentro de los 120 s depende de la idempotencia de la operación de destino. La bandeja la acota: una sugerencia solo pasa una vez de `pendiente` a `aceptada`.
+- **El consumo de `jti` vive en el proceso** (ya declarado en `proposals.py`). Una aceptación duplicada contra dos réplicas dentro de los 120 s depende de la idempotencia de la operación de destino. La bandeja la acota: una sugerencia solo pasa una vez de `pending` a `accepted`.
 - **La lectura SQL de `radicados` desde knowledge** se declara en ADR-043 §5 al aceptar este ADR.
 
 ## Preguntas abiertas para el responsable de producto
 
-1. **Plazo de vida de una sugerencia `pendiente`** antes de `expirada`. Propuesta: 30 días, o el cierre del trámite si llega antes.
+1. **Plazo de vida de una sugerencia `pending`** antes de `expired`. Propuesta: 30 días, o el cierre del trámite si llega antes.
 2. **«Aceptar con cambios».** ¿Se permite corregir el valor sugerido (otra fecha, otra dependencia) dentro de la misma aceptación, o se rechaza y se hace a mano?
-3. **Ampliar un plazo propio.** ¿Corregir un vencimiento hacia más tarde exige una segunda persona, como bajar de CLASIFICADA (ADR-039), o basta `PERM_VENCIMIENTO` con motivo?
+3. **Ampliar un plazo propio.** ¿Corregir un vencimiento hacia más tarde exige una segunda persona, como bajar de CLASIFICADA (ADR-039), o basta `PERM_DUE_DATE` con motivo?
 4. **Qué significa aceptar un antecedente.** ¿Vincular el radicado al expediente del antecedente, crear una relación entre radicados (hoy no existe) o solo marcarlo como útil?
 5. **Retirar los datos al pasar a `local`.** ¿Es automático o un acto aparte del administrador? Propuesta: acto aparte.
 6. **Metadatos JSONB.** ¿Sale algún campo de las plantillas de metadatos en v1? Propuesta: ninguno.

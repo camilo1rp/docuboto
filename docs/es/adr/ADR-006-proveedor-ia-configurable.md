@@ -3,6 +3,7 @@
 **Estado**: Propuesto
 **Fecha**: 2026-06-14
 **Autores**: Giampiero (mantenedor principal)
+**Enmendado por**: [ADR-045](ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md) (proveedor por entidad) y [ADR-046](ADR-046-conocimiento-sin-modelos.md) (propuesto): si ADR-046 se acepta, este ADR deja de aplicar a la capa de conocimiento, que no llama a modelos. Su CC-03 sigue vigente para el asistente.
 
 ---
 
