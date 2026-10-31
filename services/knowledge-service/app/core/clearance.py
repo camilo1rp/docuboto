@@ -128,6 +128,22 @@ def require_permission(perm_name: str, min_crud: int = 1):
     return _dep
 
 
+def motivo_interruptor(*, bandera: bool, proveedor: str, suspendido: bool) -> str | None:
+    """None si la entidad tiene el envío encendido. Si no, un motivo cerrado.
+
+    El interruptor es la bandera, el proveedor ``ppi`` y el envío no suspendido.
+    No mira el radicado: un borrado (anulación, purga, nivel ya no habilitado)
+    también se queda en cero llamadas cuando el interruptor está apagado.
+    """
+    if not bandera:
+        return "bandera"
+    if proveedor != "ppi":
+        return "local"
+    if suspendido:
+        return "suspendido"
+    return None
+
+
 def motivo_salida(
     *,
     bandera: bool,
@@ -143,12 +159,10 @@ def motivo_salida(
     habilitados niegan. No mira el nivel que traía el evento: quien llama pasa
     el nivel que acaba de leer.
     """
-    if not bandera:
-        return "bandera"
-    if proveedor != "ppi":
-        return "local"
-    if suspendido:
-        return "suspendido"
+    if (motivo := motivo_interruptor(
+        bandera=bandera, proveedor=proveedor, suspendido=suspendido
+    )) is not None:
+        return motivo
     if nivel_vivo is None:
         return "ausente"
     try:

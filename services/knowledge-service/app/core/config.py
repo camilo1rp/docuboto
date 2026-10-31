@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     document_service_url: str = "http://document-service:8003"
     service_port: int = 8011
     log_level: str = "info"
+    # El consumidor lee los dos streams de dominio. La URL vacía no es un
+    # destino: el punto de paso no llama a nadie hasta el perfil intelligence.
+    redis_url: str = "redis://redis:6379/0"
+    ppi_provider_url: str = ""
 
 
 settings = Settings()

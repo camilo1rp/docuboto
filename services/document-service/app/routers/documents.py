@@ -743,6 +743,7 @@ async def update_document(
     request: Request,
     response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
+    redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
     """Actualiza campos mutables — `tracking_number` es inmutable.
 
@@ -772,7 +773,7 @@ async def update_document(
                 "status": 422,
             },
         )
-    service = _build_service(conn, _tenant_slug(request))
+    service = _build_service(conn, _tenant_slug(request), redis=redis)
     actor = _get_registered_by(request)
     if usa_alias(payload.dest_dept_code, payload.dest_dept):
         marcar_alias_deprecado(response, "PATCH /documents/{id}")

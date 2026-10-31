@@ -36,6 +36,11 @@ class ClientePpi:
         self._transporte = transporte
         self._base_url = limpio
 
+    @property
+    def destino(self) -> str:
+        """URL del ingest. Es lo que anota el libro de envíos."""
+        return f"{self._base_url}{RUTA_INGEST}"
+
     async def enviar(self, cuerpo: dict[str, Any]) -> Any:
         return await self._transporte.request(
             "POST",
