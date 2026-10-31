@@ -955,7 +955,7 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
             # clasificación ni se puede aprobar. La Jurídica recibe las peticiones.
             "dependencias_productoras": [902],
         },
-        buscar_en="/api/v1/trd?size=100",
+        buscar_en="/api/v1/trd?size=100&incluir_en_tramite=true",
         clave="code",
         valor="DEM-100",
     )
@@ -1017,7 +1017,9 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
                 {"tercero_id": remitente["id"], "rol": "remitente", "principal": True}
             ],
             "origin_dept": DEPENDENCIAS[0][2],
+            "origin_dept_code": DEPENDENCIAS[0][0],
             "dest_dept": DEPENDENCIAS[1][2],
+            "dest_dept_code": DEPENDENCIAS[1][0],
             "pages": 2,
             "observations": "Radicado de demostración. Solicita certificación de tiempo laborado.",
             "response_days": 15,
@@ -1106,6 +1108,7 @@ async def sembrar(api: Api, user_id: str) -> dict[str, Any]:
             "radicado_id": entrada["id"],
             "tracking_number": entrada["tracking_number"],
             "to_dept": DEPENDENCIAS[1][2],
+            "to_dept_code": DEPENDENCIAS[1][0],
             "assigned_to": user_id,
             "notes": f"Asignación de demostración {MARCA}",
             "doc_type": "E",

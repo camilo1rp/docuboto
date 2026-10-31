@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import HTTPException, Request, status
@@ -67,6 +68,20 @@ def _schema(slug: str) -> str:
             },
         )
     return _schema_de(slug)
+
+
+@asynccontextmanager
+async def acquire_tenant(slug: str) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Conexión con search_path al tenant. La usa el consumidor, no una petición."""
+    if not slug_valido(slug):
+        raise ValueError("slug")
+    schema = _schema_de(slug)
+    async with get_pool().acquire() as conn:
+        await conn.execute(f'SET search_path = "{schema}"')
+        try:
+            yield conn
+        finally:
+            await conn.execute("SET search_path = public")
 
 
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:

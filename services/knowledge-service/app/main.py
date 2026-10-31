@@ -9,17 +9,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import identidad, request_log
+from orpycamcp_common import events, identidad, request_log
 
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
+from app.core.redis_client import close_redis, init_redis
 from app.routers.health import router as health_router
 from app.routers.knowledge import router as knowledge_router
+from app.workers import intelligence_consumer
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
@@ -29,8 +32,18 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("knowledge-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
+    await init_redis(settings.redis_url)
+    consumidor = events.spawn_supervised(
+        intelligence_consumer.run, name="intelligence-gateway", logger=logger
+    )
     yield
     logger.info("knowledge-service shutting down")
+    consumidor.cancel()
+    try:
+        await consumidor
+    except asyncio.CancelledError:
+        pass
+    await close_redis()
     await close_pool()
 
 

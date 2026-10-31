@@ -793,6 +793,40 @@ async def test_update_document(
 
 
 @pytest.mark.asyncio
+async def test_update_encola_document_radicado_updated(
+    client_with_conn: tuple[AsyncClient, AsyncMock],
+) -> None:
+    """Un cambio de datos deja `document.radicado.updated` en la misma transacción."""
+    client, mock_conn = client_with_conn
+    doc_id = uuid.uuid4()
+    antes = make_radicado_record(doc_id=doc_id, subject="Asunto anterior")
+    despues = make_radicado_record(doc_id=doc_id, subject="Asunto actualizado")
+
+    async def fetchrow(sql: object, *_args: object, **_kwargs: object) -> dict:
+        texto = str(sql)
+        if "UPDATE radicados" in texto:
+            return despues
+        if "FROM radicados" in texto:
+            return antes
+        return despues
+
+    mock_conn.fetchrow.side_effect = fetchrow
+    mock_conn.fetch.return_value = []
+
+    response = await client.patch(
+        f"/api/v1/documents/{doc_id}",
+        json={"subject": "Asunto actualizado"},
+        headers=TENANT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert any(
+        "document.radicado.updated" in str(call.args)
+        for call in mock_conn.execute.await_args_list
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("valor", ["distributed", "closed", "in_progress", "registered", None])
 async def test_patch_con_status_es_422_status_managed_by_workflow(
     client_with_conn: tuple[AsyncClient, AsyncMock], valor: str | None

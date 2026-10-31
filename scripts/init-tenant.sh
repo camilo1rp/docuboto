@@ -121,6 +121,27 @@ echo "  PostgreSQL OK"
 # y un bind-mount de escritura dejaría los archivos como root:root en el host.
 # ---------------------------------------------------------------------------
 
+# El cliente de servicio (ADR-045 §4) se crea contra la API de administración
+# de Keycloak y su secreto se cifra con INTELLIGENCE_CREDENTIAL_KEK. En el
+# manifiesto de desarrollo los valores son los de esa pila. En cualquier otro
+# manifiesto tienen que venir del entorno: un default publicado en producción
+# sería una clave conocida.
+if [ "$COMPOSE_FILE" = "docker-compose.yml" ]; then
+    KEYCLOAK_URL="${KEYCLOAK_URL:-http://keycloak:8080}"
+    KEYCLOAK_ISSUER="${KEYCLOAK_ISSUER:-http://localhost:19180/realms/orpycamcp}"
+    KEYCLOAK_ADMIN="${KEYCLOAK_ADMIN:-admin}"
+    KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-orpycamcp_dev}"
+    # base64 de 32 bytes, solo para la pila de desarrollo. No vale en producción.
+    _KEK_DEV="b3JweWNhbWNwX2ludGVsbGlnZW5jZV9rZWtfZGV2ISE="
+    INTELLIGENCE_CREDENTIAL_KEK="${INTELLIGENCE_CREDENTIAL_KEK:-$_KEK_DEV}"
+else
+    KEYCLOAK_URL="${KEYCLOAK_URL:-http://keycloak:8080}"
+    : "${KEYCLOAK_ISSUER:?KEYCLOAK_ISSUER no está definido}"
+    : "${KEYCLOAK_ADMIN:?KEYCLOAK_ADMIN no está definido}"
+    : "${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD no está definido}"
+    : "${INTELLIGENCE_CREDENTIAL_KEK:?defina INTELLIGENCE_CREDENTIAL_KEK}"
+fi
+
 echo ""
 echo "Inicializando tenant: slug=$SLUG | nombre=$NAME | código=$CODE"
 echo ""
@@ -130,6 +151,12 @@ echo ""
     -v "$PROJECT_ROOT/scripts:/scripts:ro" \
     -v "$PROJECT_ROOT/services:/services:ro" \
     -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
+    -e "KEYCLOAK_URL=${KEYCLOAK_URL}" \
+    -e "KEYCLOAK_REALM=${KEYCLOAK_REALM:-orpycamcp}" \
+    -e "KEYCLOAK_ISSUER=${KEYCLOAK_ISSUER}" \
+    -e "KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN}" \
+    -e "KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}" \
+    -e "INTELLIGENCE_CREDENTIAL_KEK=${INTELLIGENCE_CREDENTIAL_KEK}" \
     auth-service \
     python /scripts/init_tenant.py \
         --slug  "$SLUG" \

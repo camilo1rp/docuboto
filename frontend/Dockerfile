@@ -16,9 +16,23 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+# El lockfile se generó en otra plataforma y npm no instala el binario
+# nativo de Rollup para esta libc y esta arquitectura (npm/cli#4828).
+# Sin ese paquete, `npm run build` aborta al cargar Vite.
+RUN npm install \
+    && rollup_ver="$(node -p "require('./node_modules/rollup/package.json').version")" \
+    && arch="$(node -p process.arch)" \
+    && npm install --no-save --no-package-lock "@rollup/rollup-linux-${arch}-musl@${rollup_ver}"
 
 COPY . .
+# Rollup 4.64.6 deja en el bundle la rama de Svelte 5 de
+# `@sveltejs/kit` (`state.svelte.js`). En el SSR de Svelte 4, `onMount`
+# se imprime como `function onMount() {\n}` y la expresión
+# `/function \w+\(\) \{\}/` no la reconoce: `is_legacy` queda en falso y
+# cada página que importa `$app/stores` revienta con
+# `ReferenceError: $state is not defined` (sveltejs/kit#17425). Kit 2 ya
+# no acepta el arreglo. Se admite el espacio en blanco antes de compilar.
+RUN node scripts/patch-sveltekit-legacy-check.mjs
 RUN npm run build
 
 # --- Production stage ---

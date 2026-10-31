@@ -857,12 +857,23 @@ class DocumentService:
         en `borrador.documento_sha256`, que es donde la necesita el circuito de
         firma (RF-PRO-09).
         """
-        await self._repo.crear_anexo_producido(
-            radicado_id,
-            file_id=file_id,
-            filename=filename,
-            file_size=file_size,
-        )
+        async with self._conn.transaction():
+            await self._repo.crear_anexo_producido(
+                radicado_id,
+                file_id=file_id,
+                filename=filename,
+                file_size=file_size,
+            )
+            pendiente = await outbox.encolar(
+                self._conn,
+                stream=_STREAM,
+                event_type="document.anexo.added",
+                tenant_slug=self._slug,
+                actor=None,
+                dedup_key=f"{radicado_id}:anexo:{file_id}",
+                payload={"id": str(radicado_id), "file_id": str(file_id)},
+            )
+        await outbox.enviar(self._conn, self._redis, pendiente)
 
     async def list_anexos(
         self, document_id: uuid.UUID, max_clearance: int
@@ -1416,6 +1427,7 @@ class DocumentService:
         misma comprobación que hace `create`, y a propósito: un radicado retipificado
         tiene que ser indistinguible de uno radicado así desde el principio.
         """
+        pendiente = None
         async with self._conn.transaction():
             previo = await self._repo.get_by_id(document_id, max_clearance)
             if previo is None:
@@ -1517,6 +1529,21 @@ class DocumentService:
                 payload={"cambios": cambios},
                 canal=audit.CANAL_PETICION,
             )
+            if cambios:
+                pendiente = await outbox.encolar(
+                    self._conn,
+                    stream=_STREAM,
+                    event_type="document.radicado.updated",
+                    tenant_slug=self._slug,
+                    actor=str(actor) if actor else None,
+                    dedup_key=f"{radicado.tracking_number}:updated:{uuid.uuid4()}",
+                    payload={
+                        "id": str(radicado.id),
+                        "tracking_number": radicado.tracking_number,
+                    },
+                )
+        if pendiente is not None:
+            await outbox.enviar(self._conn, self._redis, pendiente)
         return _to_response(radicado)
 
 

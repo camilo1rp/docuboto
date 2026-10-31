@@ -11,7 +11,8 @@
 init_tenant.py — Inicializar un nuevo tenant en OrpycaMCP.
 
 Aplica migraciones globales (public schema) y por-tenant para todos los servicios,
-luego registra el tenant en public.tenants.
+registra el tenant en public.tenants y crea su cliente de servicio de inteligencia
+en el realm (ADR-045 §4). Ese cliente no entra en ALLOWED_AZP.
 
 Lo aplicado se anota en el libro único `public.schema_migrations`, compartido con
 `services/*/migrations/runner.py` (ver `orpycamcp_common.migrations`). Antes cada
@@ -30,8 +31,10 @@ import argparse
 import asyncio
 import os
 import re
+import secrets
 import sys
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 from orpycamcp_common import migrations as ledger
@@ -214,6 +217,275 @@ async def register_tenant(
 
 
 # ---------------------------------------------------------------------------
+# Cliente de servicio de inteligencia (ADR-045 §4)
+#
+# Confidencial y solo client_credentials. Su token se presenta al proveedor,
+# nunca a Docuboto: no se añade a ALLOWED_AZP. El secreto se guarda cifrado;
+# este paso imprime el par (issuer, client_id) y nunca el secreto.
+# Reejecutarlo no rota el secreto si la fila ya existe.
+# ---------------------------------------------------------------------------
+
+FINALIDAD_CLIENTE = "service_client"
+SLOT_CLIENTE = 1
+
+
+def esquema_de(slug: str) -> str:
+    """`tenant_{slug}` con guiones pasados a guion bajo. El slug ya está acotado."""
+    if not re.match(r"^[a-z0-9-]+$", slug):
+        raise ValueError("slug fuera de forma")
+    return "tenant_" + slug.replace("-", "_")
+
+
+def id_cliente_inteligencia(slug: str) -> str:
+    """Identificador estable del cliente de esa entidad en el realm."""
+    esquema_de(slug)
+    return f"intelligence-{slug}"
+
+
+def cuerpo_cliente_servicio(client_id: str, secret: str) -> dict[str, Any]:
+    """Representación de Keycloak: cuenta de servicio, sin flujos de usuario."""
+    return {
+        "clientId": client_id,
+        "enabled": True,
+        "protocol": "openid-connect",
+        "publicClient": False,
+        "bearerOnly": False,
+        "standardFlowEnabled": False,
+        "implicitFlowEnabled": False,
+        "directAccessGrantsEnabled": False,
+        "serviceAccountsEnabled": True,
+        "secret": secret,
+    }
+
+
+def aad_credencial(slug: str, finalidad: str, slot: int) -> bytes:
+    """AAD atada a la entidad, la finalidad y la ranura. Una fila copiada no descifra."""
+    return f"tenant:{slug}:intelligence:{finalidad}:{slot}".encode()
+
+
+def issuer_publico(keycloak_url: str, realm: str, issuer: str | None) -> str:
+    """Issuer que el proveedor registra. Si no hay uno público, se deriva de la URL."""
+    if issuer and issuer.strip():
+        return issuer.strip().rstrip("/")
+    return f"{keycloak_url.rstrip('/')}/realms/{realm}"
+
+
+def _error_keycloak(metodo: str, ruta: str, status: int) -> RuntimeError:
+    """El mensaje nombra el fallo y no el cuerpo: el cuerpo puede hacer eco del secreto."""
+    return RuntimeError(f"Keycloak respondió {status} en {metodo} {ruta}")
+
+
+async def _json_o_fallo(
+    http: Any,
+    metodo: str,
+    url: str,
+    *,
+    headers: dict[str, str],
+    params: dict[str, str] | None = None,
+    json: dict[str, Any] | None = None,
+    ok: tuple[int, ...] = (200,),
+) -> Any:
+    resp = await http.request(metodo, url, headers=headers, params=params, json=json)
+    if resp.status_code not in ok:
+        raise _error_keycloak(metodo, url, resp.status_code)
+    if resp.status_code == 204 or not resp.content:
+        return None
+    return resp.json()
+
+
+async def token_admin(
+    http: Any, *, keycloak_url: str, admin_user: str, admin_password: str
+) -> str:
+    """Token de la API de administración. No es un token de la API de Docuboto."""
+    url = f"{keycloak_url.rstrip('/')}/realms/master/protocol/openid-connect/token"
+    resp = await http.request(
+        "POST",
+        url,
+        data={
+            "grant_type": "password",
+            "client_id": "admin-cli",
+            "username": admin_user,
+            "password": admin_password,
+        },
+    )
+    if resp.status_code != 200:
+        raise _error_keycloak("POST", url, resp.status_code)
+    token = resp.json().get("access_token")
+    if not token:
+        raise RuntimeError("Keycloak no devolvió access_token de administración")
+    return token
+
+
+async def asegurar_cliente_servicio(
+    http: Any,
+    *,
+    keycloak_url: str,
+    realm: str,
+    token: str,
+    client_id: str,
+    secret_nuevo: str,
+) -> str:
+    """Crea el cliente si falta y devuelve el secreto que Keycloak conserva.
+
+    Si el cliente ya existe, no se le pone `secret_nuevo`: se lee el que ya tiene.
+    En los dos casos se dejan los flujos de usuario apagados.
+    """
+    base = keycloak_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {token}"}
+    lista_url = f"{base}/admin/realms/{realm}/clients"
+
+    async def buscar() -> dict[str, Any] | None:
+        lista = await _json_o_fallo(
+            http, "GET", lista_url, headers=headers, params={"clientId": client_id}
+        )
+        encontrados = [c for c in lista if c.get("clientId") == client_id]
+        return encontrados[0] if encontrados else None
+
+    cliente = await buscar()
+    if cliente is None:
+        alta = f"{base}/admin/realms/{realm}/clients"
+        resp = await http.request(
+            "POST",
+            alta,
+            headers=headers,
+            json=cuerpo_cliente_servicio(client_id, secret_nuevo),
+        )
+        if resp.status_code == 409:
+            cliente = await buscar()
+        elif resp.status_code not in (201, 204):
+            raise _error_keycloak("POST", alta, resp.status_code)
+        else:
+            cliente = await buscar()
+        if cliente is None:
+            raise RuntimeError(f"Keycloak no muestra el cliente {client_id} tras crearlo")
+
+    uuid = cliente.get("id")
+    if not uuid:
+        raise RuntimeError("Keycloak devolvió el cliente sin id")
+    flags = cuerpo_cliente_servicio(client_id, secret_nuevo)
+    flags.pop("secret")
+    cliente.update(flags)
+    cliente.pop("secret", None)
+    put_url = f"{base}/admin/realms/{realm}/clients/{uuid}"
+    await _json_o_fallo(http, "PUT", put_url, headers=headers, json=cliente, ok=(200, 204))
+
+    secreto_url = f"{base}/admin/realms/{realm}/clients/{uuid}/client-secret"
+    secreto = await _json_o_fallo(http, "GET", secreto_url, headers=headers)
+    valor = (secreto or {}).get("value")
+    if not valor:
+        raise RuntimeError("Keycloak no devolvió el secreto del cliente de servicio")
+    return valor
+
+
+async def aprovisionar_cliente_inteligencia(
+    conn: Any,
+    slug: str,
+    *,
+    key: bytes,
+    keycloak_url: str,
+    realm: str,
+    admin_user: str,
+    admin_password: str,
+    issuer: str | None = None,
+    http: Any | None = None,
+) -> str:
+    """Crea el cliente y guarda el secreto, o no hace nada si la fila ya existe.
+
+    Devuelve la línea que se imprime: issuer y client_id, sin el secreto.
+    """
+    from orpycamcp_common.kek import seal
+
+    client_id = id_cliente_inteligencia(slug)
+    publicado = issuer_publico(keycloak_url, realm, issuer)
+    esquema = esquema_de(slug)
+    await conn.execute(f'SET search_path = "{esquema}"')
+    try:
+        fila = await conn.fetchrow(
+            "SELECT client_id FROM intelligence_credentials WHERE purpose = $1 AND slot = $2",
+            FINALIDAD_CLIENTE,
+            SLOT_CLIENTE,
+        )
+        if fila is not None:
+            guardado = fila["client_id"]
+            if guardado != client_id:
+                raise RuntimeError(
+                    f"la fila service_client guarda {guardado}, no {client_id}"
+                )
+            return f"[intelligence] ya existía — issuer={publicado} client_id={client_id}"
+
+        import httpx
+
+        secreto_nuevo = secrets.token_urlsafe(32)
+        propio = http is None
+        cliente_http = http if http is not None else httpx.AsyncClient(timeout=30.0)
+        try:
+            try:
+                token = await token_admin(
+                    cliente_http,
+                    keycloak_url=keycloak_url,
+                    admin_user=admin_user,
+                    admin_password=admin_password,
+                )
+                secreto = await asegurar_cliente_servicio(
+                    cliente_http,
+                    keycloak_url=keycloak_url,
+                    realm=realm,
+                    token=token,
+                    client_id=client_id,
+                    secret_nuevo=secreto_nuevo,
+                )
+            except RuntimeError:
+                raise
+            except httpx.HTTPError:
+                raise RuntimeError(
+                    "Keycloak no respondió. El esquema del tenant ya quedó aplicado."
+                ) from None
+        finally:
+            if propio:
+                await cliente_http.aclose()
+
+        ciphertext, nonce = seal(
+            secreto.encode(),
+            key=key,
+            aad=aad_credencial(slug, FINALIDAD_CLIENTE, SLOT_CLIENTE),
+        )
+        await conn.execute(
+            """
+            INSERT INTO intelligence_credentials
+                (purpose, slot, client_id, ciphertext, nonce, kek_version)
+            VALUES ($1, $2, $3, $4, $5, 1)
+            """,
+            FINALIDAD_CLIENTE,
+            SLOT_CLIENTE,
+            client_id,
+            ciphertext,
+            nonce,
+        )
+    finally:
+        await conn.execute("SET search_path = public")
+    return f"[intelligence] cliente de servicio — issuer={publicado} client_id={client_id}"
+
+
+def _exigir_entorno(nombre: str) -> str:
+    valor = os.environ.get(nombre, "").strip()
+    if not valor:
+        print(f"ERROR: {nombre} no está definido", file=sys.stderr)
+        sys.exit(1)
+    return valor
+
+
+def _kek_credencial() -> bytes:
+    from orpycamcp_common.kek import decode_aes256
+
+    cruda = _exigir_entorno("INTELLIGENCE_CREDENTIAL_KEK")
+    try:
+        return decode_aes256(cruda, "INTELLIGENCE_CREDENTIAL_KEK")
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -255,6 +527,28 @@ async def main(slug: str, name: str, code: str) -> None:
 
             print("\n── Registro en public.tenants ────────────────────────────────")
             await register_tenant(conn, slug, name, code)
+
+            print("\n── Cliente de servicio de inteligencia ───────────────────────")
+            try:
+                linea = await aprovisionar_cliente_inteligencia(
+                    conn,
+                    slug,
+                    key=_kek_credencial(),
+                    keycloak_url=_exigir_entorno("KEYCLOAK_URL"),
+                    realm=os.environ.get("KEYCLOAK_REALM", "orpycamcp").strip() or "orpycamcp",
+                    admin_user=_exigir_entorno("KEYCLOAK_ADMIN"),
+                    admin_password=_exigir_entorno("KEYCLOAK_ADMIN_PASSWORD"),
+                    issuer=os.environ.get("KEYCLOAK_ISSUER"),
+                )
+            except RuntimeError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                print(
+                    "El esquema del tenant ya quedó aplicado. Vuelva a correr el mismo "
+                    "comando cuando Keycloak responda: este paso no rota un secreto ya guardado.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from None
+            print(f"  {linea}")
 
             print(f"\n✓ Tenant '{slug}' inicializado correctamente.\n")
     finally:
