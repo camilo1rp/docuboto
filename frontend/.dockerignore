@@ -1,0 +1,13 @@
+# El contexto de este build es `frontend/`, así que el `.dockerignore` de la
+# raíz no aplica. El Dockerfile hace `npm install` y después `COPY . .`:
+# si el host tiene `node_modules` (darwin), ese directorio pisa el árbol
+# que acaba de instalar Alpine y Rollup busca
+# `@rollup/rollup-linux-arm64-musl`, que no está en el árbol de macOS.
+# `npm run build` termina entonces con exit 1.
+node_modules
+.svelte-kit
+build
+.env
+.env.*
+!.env.example
+*.log
