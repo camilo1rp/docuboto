@@ -68,8 +68,10 @@ class Settings(BaseSettings):
 
     # Clientes del realm (claim `azp`) cuyos tokens se aceptan como credencial de
     # API, separados por comas. Lista VACÍA = no se acepta ninguno (fail-closed).
-    # Añade aquí cualquier cliente real nuevo del realm (p. ej. un cliente de
-    # servicio para integraciones) o sus tokens darán 401.
+    # Un cliente real nuevo del realm, que sí deba entrar a la API, se añade aquí
+    # o sus tokens dan 401. El cliente `intelligence-{slug}` que crea
+    # `scripts/init_tenant.py` no entra: su token solo se presenta al proveedor
+    # (ADR-045 §4).
     allowed_azp: str = "orpycamcp-frontend,api-gateway"
 
     @property
