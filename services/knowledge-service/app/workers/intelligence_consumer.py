@@ -24,7 +24,6 @@ import logging
 import time
 from typing import Any
 
-import httpx
 import redis.exceptions as redis_exc
 from orpycamcp_common import events
 from orpycamcp_common.tenant import slug_valido
@@ -34,6 +33,7 @@ from app.core.config import settings
 from app.core.consumidor import CONOCIDOS, atender, cargar_pagina
 from app.core.database import acquire_tenant, get_pool
 from app.core.redis_client import get_redis
+from app.core.salida_http import TransporteHttp
 
 try:
     from orpycamcp_common import audit as _audit
@@ -67,21 +67,6 @@ VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, now())
 ON CONFLICT (origin_group, event_id) DO NOTHING
 RETURNING event_id
 """
-
-
-class _Http:
-    def __init__(self) -> None:
-        self._http = httpx.AsyncClient(timeout=30.0)
-
-    async def request(self, method: str, url: str, *, json: dict[str, Any]) -> Any:
-        respuesta = await self._http.request(method, url, json=json)
-        respuesta.raise_for_status()
-        if not respuesta.content:
-            return None
-        return respuesta.json()
-
-    async def cerrar(self) -> None:
-        await self._http.aclose()
 
 
 async def _handle(data: dict[str, Any], cliente: Any) -> None:
@@ -188,7 +173,7 @@ async def _reclamar(redis: Any, cliente: Any) -> None:
 async def run() -> None:
     """Bucle del consumidor. Cancelar la tarea lo detiene."""
     redis = get_redis()
-    transporte = _Http()
+    transporte = TransporteHttp()
     cliente = paso.destino_de(settings.ppi_provider_url, transporte)
     try:
         for stream in STREAMS:

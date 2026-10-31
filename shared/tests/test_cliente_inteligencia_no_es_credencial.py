@@ -47,9 +47,15 @@ def _admitidos() -> set[str]:
     return {c.strip() for c in m.group(1).split(",") if c.strip()}
 
 
+_MISMO = object()
+
+
 class _Conn:
-    def __init__(self, fila: dict[str, Any] | None) -> None:
+    def __init__(
+        self, fila: dict[str, Any] | None, *, seudonimo: Any = _MISMO
+    ) -> None:
         self.fila = fila
+        self.seudonimo = seudonimo
         self.sql: list[str] = []
         self.args: list[tuple[Any, ...]] = []
 
@@ -61,6 +67,8 @@ class _Conn:
     async def fetchrow(self, sql: str, *args: Any) -> Any:
         self.sql.append(sql)
         self.args.append(args)
+        if args and args[0] == "pseudonym" and self.seudonimo is not _MISMO:
+            return self.seudonimo
         return self.fila
 
 
@@ -144,6 +152,40 @@ async def test_reejecutar_no_toca_keycloak_ni_rota_el_secreto() -> None:
 
 
 @pytest.mark.asyncio
+async def test_si_falta_el_seudonimo_lo_sella_sin_tocar_keycloak() -> None:
+    kek = pytest.importorskip("orpycamcp_common.kek")
+    mod = _modulo()
+    conn = _Conn({"client_id": "intelligence-demo"}, seudonimo=None)
+    http = _Http()
+    await mod.aprovisionar_cliente_inteligencia(
+        conn,
+        "demo",
+        key=b"\x33" * 32,
+        keycloak_url="http://keycloak:8080",
+        realm="orpycamcp",
+        admin_user="admin",
+        admin_password="no-se-usa",
+        issuer="http://localhost:19180/realms/orpycamcp",
+        http=http,
+    )
+    assert http.llamadas == []
+    inserts = [
+        args
+        for sql, args in zip(conn.sql, conn.args)
+        if "INSERT INTO intelligence_credentials" in sql
+    ]
+    assert len(inserts) == 1
+    assert inserts[0][0] == "pseudonym"
+    claro = kek.unseal(
+        inserts[0][2],
+        nonce=inserts[0][3],
+        key=b"\x33" * 32,
+        aad=mod.aad_credencial("demo", "pseudonym", 1),
+    )
+    assert len(claro) == 32
+
+
+@pytest.mark.asyncio
 async def test_el_secreto_se_guarda_cifrado_y_no_sale_en_la_linea() -> None:
     kek = pytest.importorskip("orpycamcp_common.kek")
     mod = _modulo()
@@ -169,9 +211,8 @@ async def test_el_secreto_se_guarda_cifrado_y_no_sale_en_la_linea() -> None:
         for sql, args in zip(conn.sql, conn.args)
         if "INSERT INTO intelligence_credentials" in sql
     ]
-    assert len(inserts) == 1
+    assert [fila[0] for fila in inserts] == ["service_client", "pseudonym"]
     args = inserts[0]
-    assert args[0] == "service_client"
     assert args[2] == "intelligence-demo"
     claro = kek.unseal(
         args[3],
@@ -180,6 +221,14 @@ async def test_el_secreto_se_guarda_cifrado_y_no_sale_en_la_linea() -> None:
         aad=mod.aad_credencial("demo", "service_client", 1),
     )
     assert claro == b"secreto-que-no-se-imprime"
+    clave = inserts[1]
+    claro_clave = kek.unseal(
+        clave[2],
+        nonce=clave[3],
+        key=b"\x22" * 32,
+        aad=mod.aad_credencial("demo", "pseudonym", 1),
+    )
+    assert len(claro_clave) == 32
     with pytest.raises(Exception):
         kek.unseal(
             args[3],

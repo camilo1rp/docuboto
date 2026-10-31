@@ -32,6 +32,8 @@ from orpycamcp_common.tenant import slug_valido
 
 from app.clients.ppi import ClientePpi
 from app.core.clearance import motivo_interruptor, motivo_salida
+from app.core.seudonimo import abrir as abrir_seudonimo
+from app.core.seudonimo import referenciar
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,8 @@ class _Salida(Protocol):
 
     async def enviar(self, cuerpo: dict[str, Any]) -> Any: ...
 
+    async def consultar(self, cuerpo: dict[str, Any], *, timeout: float) -> Any: ...
+
 
 class _SinDestino:
     """No hay URL de proveedor. Llamar es un fallo, no un envío silencioso."""
@@ -89,6 +93,9 @@ class _SinDestino:
     destino = ""
 
     async def enviar(self, cuerpo: dict[str, Any]) -> Any:
+        raise RuntimeError("PPI_PROVIDER_URL no está definido")
+
+    async def consultar(self, cuerpo: dict[str, Any], *, timeout: float) -> Any:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
 
@@ -103,6 +110,15 @@ def destino_de(base_url: str, transporte: Any) -> _Salida:
 class Decision:
     sale: bool
     motivo: str
+
+
+@dataclass(frozen=True)
+class Respuesta:
+    """Resultado de una consulta. ``cuerpo`` solo viene si el proveedor respondió."""
+
+    sale: bool
+    motivo: str
+    cuerpo: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -141,6 +157,18 @@ def _con_metadata(fila: Any) -> bool:
         return bool(fila["intelligence_send_metadata"])
     except (KeyError, TypeError):
         return False
+
+
+def codigo_clearance(usuario: int, habilitados: tuple[int, ...]) -> str | None:
+    """El código más alto que esta persona puede ver y la entidad transmite."""
+    try:
+        tope = int(usuario)
+    except (TypeError, ValueError):
+        return None
+    visibles = [n for n in habilitados if n in _SENSIBILIDAD and n <= tope]
+    if not visibles:
+        return None
+    return _SENSIBILIDAD[max(visibles)]
 
 
 def _nivel_libro(nivel: Any) -> int | None:
@@ -346,3 +374,59 @@ async def borrar(
     }
     await _enviar_y_anotar(conn, cliente, "purge", str(radicado_id), nivel, lote)
     return Decision(True, "ok")
+
+
+async def consultar(
+    conn: Any,
+    slug: str,
+    cliente: _Salida,
+    *,
+    modo: str,
+    texto: str,
+    actor: uuid.UUID,
+    clearance: int,
+    limite: int,
+    plazo: float,
+    alcance: uuid.UUID | None = None,
+) -> Respuesta:
+    """Pregunta al proveedor si el interruptor está encendido.
+
+    El seudónimo se calcula aquí. Quien llama no puede pasar el id crudo.
+    Un fallo de transporte, un plazo vencido o una clave ausente no lanzan:
+    la pasarela responde con el índice local.
+    """
+    politica = await leer_politica(conn, slug)
+    if not politica.completa or politica.motivo is not None:
+        return Respuesta(False, politica.motivo or "registro", None)
+    if not getattr(cliente, "destino", ""):
+        return Respuesta(False, "destino", None)
+    if modo not in ("search", "ask"):
+        return Respuesta(False, "modo", None)
+    limpio = texto.strip()
+    if not limpio or not (1 <= limite <= 50) or plazo <= 0:
+        return Respuesta(False, "texto", None)
+    codigo = codigo_clearance(clearance, politica.niveles)
+    if codigo is None:
+        return Respuesta(False, "clearance", None)
+    clave = await abrir_seudonimo(conn, slug)
+    if clave is None:
+        return Respuesta(False, "seudonimo", None)
+
+    cuerpo: dict[str, Any] = {
+        "mode": modo,
+        "text": limpio[:4000],
+        "on_behalf_of": referenciar(clave, actor),
+        "clearance": codigo,
+        "limit": limite,
+        "language": "es",
+    }
+    if alcance is not None:
+        cuerpo["scope"] = {"record_ref": str(alcance), "include_children": True}
+    try:
+        recibido = await cliente.consultar(cuerpo, timeout=plazo)
+    except Exception:
+        logger.warning("la consulta al proveedor falló")
+        return Respuesta(False, "proveedor", None)
+    if not isinstance(recibido, dict):
+        return Respuesta(False, "proveedor", None)
+    return Respuesta(True, "ok", recibido)

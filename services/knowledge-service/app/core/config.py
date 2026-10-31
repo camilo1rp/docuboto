@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # destino: el punto de paso no llama a nadie hasta el perfil intelligence.
     redis_url: str = "redis://redis:6379/0"
     ppi_provider_url: str = ""
+    # KEK que abre la clave de seudónimo. Vacía: no hay consulta al proveedor.
+    intelligence_credential_kek: str = ""
 
 
 settings = Settings()

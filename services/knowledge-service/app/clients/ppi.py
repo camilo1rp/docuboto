@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 RUTA_INGEST = "/v1/ingest"
+RUTA_QUERY = "/v1/query"
 
 
 class Transporte(Protocol):
@@ -46,4 +47,13 @@ class ClientePpi:
             "POST",
             f"{self._base_url}{RUTA_INGEST}",
             json=cuerpo,
+        )
+
+    async def consultar(self, cuerpo: dict[str, Any], *, timeout: float) -> Any:
+        """POST /v1/query. El plazo es de esta llamada, no el del envío."""
+        return await self._transporte.request(
+            "POST",
+            f"{self._base_url}{RUTA_QUERY}",
+            json=cuerpo,
+            timeout=timeout,
         )

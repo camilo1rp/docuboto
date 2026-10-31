@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from orpycamcp_common import events, identidad, request_log
 
+from app.core import salida_http
 from app.core.config import settings
 from app.core.database import close_pool, create_pool
 from app.core.redis_client import close_redis, init_redis
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await consumidor
     except asyncio.CancelledError:
         pass
+    await salida_http.cerrar_consulta()
     await close_redis()
     await close_pool()
 
@@ -52,7 +54,8 @@ app = FastAPI(
     description=(
         "Pasarela de conocimiento (ADR-045, ADR-046). Sin proveedor (`local`), buscar y "
         "antecedentes responden con la búsqueda de texto completo de document-service, "
-        "consultada como el usuario, y no hay generación. No llama a ningún modelo."
+        "consultada como el usuario, y no hay generación. Con `ppi`, buscar y preguntar "
+        "delegan; si el proveedor no responde, vuelve el índice local."
     ),
     version="2.0.0",
     lifespan=lifespan,

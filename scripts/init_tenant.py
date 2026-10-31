@@ -227,6 +227,8 @@ async def register_tenant(
 
 FINALIDAD_CLIENTE = "service_client"
 SLOT_CLIENTE = 1
+FINALIDAD_SEUDONIMO = "pseudonym"
+SLOT_SEUDONIMO = 1
 
 
 def esquema_de(slug: str) -> str:
@@ -261,6 +263,39 @@ def cuerpo_cliente_servicio(client_id: str, secret: str) -> dict[str, Any]:
 def aad_credencial(slug: str, finalidad: str, slot: int) -> bytes:
     """AAD atada a la entidad, la finalidad y la ranura. Una fila copiada no descifra."""
     return f"tenant:{slug}:intelligence:{finalidad}:{slot}".encode()
+
+
+async def asegurar_clave_seudonimo(conn: Any, slug: str, *, key: bytes) -> None:
+    """Sella una clave HMAC nueva si la ranura de seudónimo está vacía.
+
+    Reejecutar no la rota. El id de quien consulta se sustituye por el HMAC
+    de esta clave; sin ella la pasarela no pregunta al proveedor.
+    """
+    from orpycamcp_common.kek import seal
+
+    fila = await conn.fetchrow(
+        "SELECT purpose FROM intelligence_credentials WHERE purpose = $1 AND slot = $2",
+        FINALIDAD_SEUDONIMO,
+        SLOT_SEUDONIMO,
+    )
+    if fila is not None:
+        return
+    ciphertext, nonce = seal(
+        secrets.token_bytes(32),
+        key=key,
+        aad=aad_credencial(slug, FINALIDAD_SEUDONIMO, SLOT_SEUDONIMO),
+    )
+    await conn.execute(
+        """
+        INSERT INTO intelligence_credentials
+            (purpose, slot, client_id, ciphertext, nonce, kek_version)
+        VALUES ($1, $2, NULL, $3, $4, 1)
+        """,
+        FINALIDAD_SEUDONIMO,
+        SLOT_SEUDONIMO,
+        ciphertext,
+        nonce,
+    )
 
 
 def issuer_publico(keycloak_url: str, realm: str, issuer: str | None) -> str:
@@ -411,6 +446,7 @@ async def aprovisionar_cliente_inteligencia(
                 raise RuntimeError(
                     f"la fila service_client guarda {guardado}, no {client_id}"
                 )
+            await asegurar_clave_seudonimo(conn, slug, key=key)
             return f"[intelligence] ya existía — issuer={publicado} client_id={client_id}"
 
         import httpx
@@ -461,6 +497,7 @@ async def aprovisionar_cliente_inteligencia(
             ciphertext,
             nonce,
         )
+        await asegurar_clave_seudonimo(conn, slug, key=key)
     finally:
         await conn.execute("SET search_path = public")
     return f"[intelligence] cliente de servicio — issuer={publicado} client_id={client_id}"
