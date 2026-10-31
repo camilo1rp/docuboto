@@ -21,6 +21,7 @@ La conexión debe tener el ``search_path`` ya fijado al schema del tenant (lo ha
 
 import logging
 import uuid
+from collections.abc import Iterable
 
 import asyncpg
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -125,6 +126,60 @@ def require_permission(perm_name: str, min_crud: int = 1):
             )
 
     return _dep
+
+
+def motivo_salida(
+    *,
+    bandera: bool,
+    proveedor: str,
+    niveles_habilitados: Iterable[int],
+    suspendido: bool,
+    nivel_vivo: int | None,
+) -> str | None:
+    """None si el registro puede salir ahora. Si no, un motivo cerrado.
+
+    Fail-closed (ADR-045 §3 y §4). El interruptor apagado (bandera o ``local``),
+    el envío suspendido, un radicado ausente y un nivel vivo fuera de los
+    habilitados niegan. No mira el nivel que traía el evento: quien llama pasa
+    el nivel que acaba de leer.
+    """
+    if not bandera:
+        return "bandera"
+    if proveedor != "ppi":
+        return "local"
+    if suspendido:
+        return "suspendido"
+    if nivel_vivo is None:
+        return "ausente"
+    try:
+        nivel = int(nivel_vivo)
+        habilitados = {int(n) for n in niveles_habilitados}
+    except (TypeError, ValueError):
+        return "nivel"
+    if nivel not in (1, 2, 3) or nivel not in habilitados:
+        return "nivel"
+    return None
+
+
+def puede_salir(
+    *,
+    bandera: bool,
+    proveedor: str,
+    niveles_habilitados: Iterable[int],
+    suspendido: bool,
+    nivel_vivo: int | None,
+) -> bool:
+    """¿Puede salir este registro hacia el proveedor, ahora?"""
+    return (
+        motivo_salida(
+            bandera=bandera,
+            proveedor=proveedor,
+            niveles_habilitados=niveles_habilitados,
+            suspendido=suspendido,
+            nivel_vivo=nivel_vivo,
+        )
+        is None
+    )
 
 
 async def get_actor(request: Request) -> uuid.UUID:
