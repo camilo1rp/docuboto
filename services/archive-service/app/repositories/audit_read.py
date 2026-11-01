@@ -55,6 +55,7 @@ _OBJECT_TYPES = ("expediente", "expediente_indice")
 _ACCIONES_ACCESO_RADICADO = (
     "document.radicado_consultado",
     "document.anexo_descargado",
+    "document.contenido_transmitido",
 )
 
 

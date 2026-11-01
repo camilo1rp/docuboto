@@ -235,8 +235,10 @@ async def test_la_primera_declaracion_valida_fija_la_huella_y_declara(
     assert cuerpo["protocol_version"] == PPI_VERSION
     assert cuerpo["sensitivity_levels"] == [{"code": "public", "label": "Pública"}]
     assert cuerpo["vocabularies"] == {"document_types": [], "units": []}
-    assert cuerpo["callbacks"]["recommend_url"] == "https://host.example/ppi/v1/recommendations"
-    assert cuerpo["callbacks"]["content_url"] == "https://host.example/ppi/v1/content"
+    assert cuerpo["callbacks"]["recommend_url"] == (
+        "https://host.example/ppi/v1/demo/recommendations"
+    )
+    assert cuerpo["callbacks"]["content_url"] == "https://host.example/ppi/v1/demo/content"
     assert cuerpo["callbacks"]["keys"][0]["kid"] == "return-1"
     assert len(base64.b64decode(cuerpo["callbacks"]["keys"][0]["secret_base64"])) == 32
     assert transporte.llamadas[0][0] == "GET"

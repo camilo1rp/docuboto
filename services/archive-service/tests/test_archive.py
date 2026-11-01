@@ -2135,5 +2135,9 @@ async def test_historial_acceso_lists_paginated_and_scoped_by_tenant(
     # La lista de acciones es de ADMISIÓN y acotada a lecturas: un radicado
     # acumula además creación, anulación y reclasificación, y volcarlas aquí
     # convertiría el «historial de acceso» en un historial de todo.
-    assert set(acciones) == {"document.radicado_consultado", "document.anexo_descargado"}
+    assert set(acciones) == {
+        "document.radicado_consultado",
+        "document.anexo_descargado",
+        "document.contenido_transmitido",
+    }
     assert isinstance(trackings, list)

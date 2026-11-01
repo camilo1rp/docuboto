@@ -24,9 +24,9 @@ import re
 import secrets
 from typing import Any
 
-from orpycamcp_common.kek import decode_aes256, seal, unseal
+from orpycamcp_common.kek import decode_aes256, seal
 
-from app.core import paso
+from app.core import clave_retorno, paso
 from app.core.config import settings
 from app.core.firma_capabilities import verificar
 from app.core.salida_http import PPI_VERSION
@@ -42,9 +42,9 @@ except ImportError:  # pragma: no cover
     _AUDIT = False
 
 _SERVICIO = "knowledge-service"
-_KID = "return-1"
-_FINALIDAD = "hmac_return"
-_SLOT = 1
+_KID = clave_retorno.KID
+_FINALIDAD = clave_retorno.FINALIDAD
+_SLOT = clave_retorno.SLOT
 _NIVELES = (
     (1, "public", "Pública"),
     (2, "reserved", "Reservada"),
@@ -71,13 +71,6 @@ UPDATE intelligence_state
    SET send_suspended = true, updated_at = now()
  WHERE id = 1
    AND NOT send_suspended
-"""
-
-_LEER_RETORNO = """
--- conexion:retorno
-SELECT ciphertext, nonce, kek_version
-  FROM intelligence_credentials
- WHERE purpose = $1 AND slot = $2
 """
 
 _GUARDAR_RETORNO = """
@@ -142,8 +135,8 @@ async def _declarar(conn: Any, slug: str, cliente: Any, niveles: tuple[int, ...]
         "sensitivity_levels": declarados,
         "vocabularies": {"document_types": [], "units": []},
         "callbacks": {
-            "recommend_url": f"{base}/ppi/v1/recommendations",
-            "content_url": f"{base}/ppi/v1/content",
+            "recommend_url": f"{base}/ppi/v1/{slug}/recommendations",
+            "content_url": f"{base}/ppi/v1/{slug}/content",
             "keys": [
                 {
                     "kid": _KID,
@@ -167,21 +160,13 @@ async def _secreto_retorno(conn: Any, slug: str) -> bytes | None:
     except Exception:
         logger.warning("no se pudo abrir la KEK de la clave de retorno")
         return None
-    aad = f"tenant:{slug}:intelligence:{_FINALIDAD}:{_SLOT}".encode()
-    fila = await conn.fetchrow(_LEER_RETORNO, _FINALIDAD, _SLOT)
+    fila = await conn.fetchrow(clave_retorno.LEER, _FINALIDAD, _SLOT)
     if fila is None:
-        ciphertext, nonce = seal(secrets.token_bytes(32), key=kek, aad=aad)
+        ciphertext, nonce = seal(
+            secrets.token_bytes(32), key=kek, aad=clave_retorno.aad(slug, _SLOT)
+        )
         await conn.execute(_GUARDAR_RETORNO, _FINALIDAD, _SLOT, ciphertext, nonce)
-        fila = await conn.fetchrow(_LEER_RETORNO, _FINALIDAD, _SLOT)
-    if fila is None:
-        return None
-    try:
-        if int(fila["kek_version"]) != 1:
-            return None
-        return unseal(bytes(fila["ciphertext"]), nonce=bytes(fila["nonce"]), key=kek, aad=aad)
-    except Exception:
-        logger.warning("no se pudo abrir la clave de retorno")
-        return None
+    return await clave_retorno.abrir(conn, slug, _SLOT)
 
 
 async def _suspender(

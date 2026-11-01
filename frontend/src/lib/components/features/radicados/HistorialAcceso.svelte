@@ -53,6 +53,7 @@
   const ETIQUETA = {
     "document.radicado_consultado": "consultó la ficha",
     "document.anexo_descargado": "descargó un anexo",
+    "document.contenido_transmitido": "transmitido al proveedor de inteligencia",
   };
 
   async function cargar() {
@@ -107,7 +108,7 @@
       <EmptyState
         icon="fas fa-eye-slash"
         title="Todavía no lo ha consultado nadie"
-        description="Se registran las lecturas de la ficha y las descargas de anexos hechas por personas, no las del propio sistema."
+        description="Se registran las lecturas de la ficha, las descargas de anexos y cada transmisión al proveedor de inteligencia."
       />
     {:else}
       <ul class="hist__lista">

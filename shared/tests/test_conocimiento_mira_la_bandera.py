@@ -118,11 +118,23 @@ def test_toda_ruta_de_knowledge_mira_la_bandera_y_las_de_consulta_el_permiso() -
 def test_ninguna_otra_ruta_de_consulta_de_knowledge_queda_fuera() -> None:
     """Un router nuevo de consulta en el servicio tiene que decidir su postura aquí."""
     routers = {p.name for p in KNOWLEDGE.parent.glob("*.py")} - {"__init__.py"}
-    assert routers == {"knowledge.py", "health.py"}, (
+    assert routers == {"knowledge.py", "health.py", "retorno.py"}, (
         f"routers nuevos en knowledge-service: {sorted(routers)}. Si consultan la base de "
         "conocimiento deben llevar require_asistente_habilitado + PERM_CONOCIMIENTO; añádelo "
         "a las comprobaciones de este archivo."
     )
+
+
+def test_el_retorno_se_firma_y_no_consulta() -> None:
+    """El callback del proveedor no es una consulta del funcionario."""
+    fuente = (KNOWLEDGE.parent / "retorno.py").read_text()
+    rutas = _rutas(fuente)
+    assert rutas, "el retorno no declara rutas"
+    for fn in rutas:
+        nombres = _nombres(_decoradores(fn))
+        assert "exigir_firma_proveedor" in nombres
+        assert "require_permission" not in nombres
+        assert "require_asistente_habilitado" not in nombres
 
 
 def test_control_positivo_knowledge_detecta_la_ruta_sin_gate() -> None:

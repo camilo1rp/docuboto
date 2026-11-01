@@ -446,8 +446,9 @@ class HistorialAccesoEntry(BaseModel):
     #: decir menos es aceptable, inventar un nombre no.
     actor_nombre: str | None = None
     canal: str
-    #: `document.radicado_consultado` (leyó el metadato) o
-    #: `document.anexo_descargado` (bajó un fichero). Son hechos distintos y la
-    #: pantalla los distingue: ver la ficha no es llevarse el documento.
+    #: `document.radicado_consultado` (leyó el metadato),
+    #: `document.anexo_descargado` (bajó un fichero) o
+    #: `document.contenido_transmitido` (salió hacia el proveedor de
+    #: inteligencia). Son hechos distintos y la pantalla los distingue.
     action: str
     object_ref: str

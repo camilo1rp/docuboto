@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Búsqueda de texto completo que respalda `/search` y `/antecedentes` en modo
     # `local` (ADR-046 §2): se consulta como el usuario, con su identidad firmada.
     document_service_url: str = "http://document-service:8003"
+    # El mismo secreto que document-service exige en sus rutas internas.
+    # Vacío: el retorno no pide bytes.
+    document_internal_token: str = ""
     service_port: int = 8011
     log_level: str = "info"
     # El consumidor lee los dos streams de dominio. La URL vacía no es un
