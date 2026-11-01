@@ -21,6 +21,8 @@ from typing import Any, Protocol
 RUTA_INGEST = "/v1/ingest"
 RUTA_QUERY = "/v1/query"
 RUTA_INVENTARIO = "/v1/ingest/inventory"
+RUTA_CAPACIDADES = "/v1/capabilities"
+RUTA_CONEXION = "/v1/connection"
 
 
 class Transporte(Protocol):
@@ -68,4 +70,19 @@ class ClientePpi:
             "GET",
             f"{self._base_url}{RUTA_INVENTARIO}",
             params=params,
+        )
+
+    async def capacidades(self) -> Any:
+        """GET /v1/capabilities. La declaración firmada de esta entidad."""
+        return await self._transporte.request(
+            "GET",
+            f"{self._base_url}{RUTA_CAPACIDADES}",
+        )
+
+    async def declarar(self, cuerpo: dict[str, Any]) -> Any:
+        """PUT /v1/connection. Niveles, vocabularios, retorno y claves."""
+        return await self._transporte.request(
+            "PUT",
+            f"{self._base_url}{RUTA_CONEXION}",
+            json=cuerpo,
         )

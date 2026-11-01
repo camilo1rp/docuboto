@@ -88,6 +88,10 @@ class _Salida(Protocol):
 
     async def inventario(self, *, cursor: str | None, limite: int) -> Any: ...
 
+    async def capacidades(self) -> Any: ...
+
+    async def declarar(self, cuerpo: dict[str, Any]) -> Any: ...
+
 
 class _SinDestino:
     """No hay URL de proveedor. Llamar es un fallo, no un envío silencioso."""
@@ -101,6 +105,12 @@ class _SinDestino:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
     async def inventario(self, *, cursor: str | None, limite: int) -> Any:
+        raise RuntimeError("PPI_PROVIDER_URL no está definido")
+
+    async def capacidades(self) -> Any:
+        raise RuntimeError("PPI_PROVIDER_URL no está definido")
+
+    async def declarar(self, cuerpo: dict[str, Any]) -> Any:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
 
@@ -498,3 +508,43 @@ async def expulsar(
     }
     await _enviar_y_anotar(conn, cliente, "purge", external_ref, None, lote)
     return Decision(True, "ok")
+
+
+async def _salida_abierta(conn: Any, slug: str, cliente: _Salida) -> str | None:
+    """None si se puede llamar. Si no, el motivo, sin tocar al proveedor."""
+    politica = await leer_politica(conn, slug)
+    if not politica.completa or politica.motivo is not None:
+        return politica.motivo or "registro"
+    if not getattr(cliente, "destino", ""):
+        return "destino"
+    return None
+
+
+async def capacidades(conn: Any, slug: str, cliente: _Salida) -> Respuesta:
+    """La declaración firmada. Con el interruptor apagado no llama."""
+    motivo = await _salida_abierta(conn, slug, cliente)
+    if motivo is not None:
+        return Respuesta(False, motivo, None)
+    try:
+        recibido = await cliente.capacidades()
+    except Exception:
+        logger.warning("la declaración no respondió")
+        return Respuesta(False, "proveedor", None)
+    if not isinstance(recibido, dict):
+        return Respuesta(False, "proveedor", None)
+    return Respuesta(True, "ok", recibido)
+
+
+async def declarar(conn: Any, slug: str, cliente: _Salida, cuerpo: dict[str, Any]) -> Respuesta:
+    """Guarda la conexión. Con el interruptor apagado no llama."""
+    motivo = await _salida_abierta(conn, slug, cliente)
+    if motivo is not None:
+        return Respuesta(False, motivo, None)
+    try:
+        recibido = await cliente.declarar(cuerpo)
+    except Exception:
+        logger.warning("la conexión no quedó declarada")
+        return Respuesta(False, "proveedor", None)
+    if not isinstance(recibido, dict):
+        return Respuesta(False, "proveedor", None)
+    return Respuesta(True, "ok", recibido)
