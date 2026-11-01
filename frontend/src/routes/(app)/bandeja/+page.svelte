@@ -43,7 +43,14 @@
   import { crearContextoDependencias } from "$lib/stores/dependencias.js";
   import { mapaNombres } from "$lib/utils/dependenciaNombre.js";
   import { formatearFecha, formatearFechaHora } from "$lib/utils/fecha.js";
-  import { permissions, permissionLevels, userId, sessionUser } from "$lib/stores/auth.js";
+  import {
+    permissions,
+    permissionLevels,
+    userId,
+    sessionUser,
+    puedeConsultarConocimiento,
+  } from "$lib/stores/auth.js";
+  import PreguntarPanel from "$lib/components/features/conocimiento/PreguntarPanel.svelte";
   import { notifyError, notifySuccess } from "$lib/stores/notifications.js";
   // Las llamadas al gateway se realizan a través de los endpoints locales /bandeja/api[/id]
   // que leen la cookie httpOnly en el servidor — el token nunca llega al cliente (D-05).
@@ -1755,6 +1762,14 @@
         <h4 id="detail-subject-heading" class="doc-detail__section-title">Asunto</h4>
         <p class="doc-detail__subject">{selectedDoc.subject}</p>
       </section>
+
+      {#if $puedeConsultarConocimiento}
+        <PreguntarPanel
+          radicadoId={selectedDoc.id}
+          nivel={Number(selectedDoc.nivel_seguridad ?? 0)}
+          anexos={selectedDoc.anexos ?? []}
+        />
+      {/if}
 
       <!-- Metadatos principales -->
       <section class="doc-detail__section" aria-labelledby="detail-meta-heading">

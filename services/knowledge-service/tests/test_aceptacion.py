@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from app.core.aceptacion import Declaracion, aceptar, vista
+from app.core.aceptacion import Declaracion, aceptar, rutas_de, vista
 
 SHA = "ab" * 32
 OTRA = "cd" * 32
@@ -38,6 +38,33 @@ def _statement() -> dict[str, Any]:
             }
         ],
     }
+
+
+def test_rutas_de_deja_solo_el_nivel_habilitado() -> None:
+    statement = _statement()
+    statement["routing"].append(
+        {
+            "level": "reserved",
+            "hosting": "hosted",
+            "model_aliases": ["triage-large"],
+            "subprocessors": ["model-host-a"],
+            "prompt_and_output_retention": "none",
+            "trains_on_customer_data": False,
+        }
+    )
+    normal = vista(statement)
+    assert normal is not None
+    assert rutas_de(normal, [1]) == [
+        {
+            "level": 1,
+            "hosting": "installation",
+            "model_aliases": ["triage-small"],
+            "subprocessors": [],
+        }
+    ]
+    reservada = rutas_de(normal, [2])
+    assert reservada[0]["level"] == 2
+    assert reservada[0]["subprocessors"] == [{"id": "model-host-a", "name": "Example Model Host"}]
 
 
 def test_una_ruta_a_medias_no_es_vista() -> None:

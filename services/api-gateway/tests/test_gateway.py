@@ -570,11 +570,13 @@ async def test_route_to_upstream_domain_prefixes():
         # `/mcp`) justo para que quepa por esta tabla, en vez de abrirle al proxy
         # una forma de ruta fuera de `/api/v1/...`.
         "/api/v1/mcp/stream": "http://mcp:8009",
-        # E21 / ADR-046: búsqueda, antecedentes, rag y disponibilidad de generación.
+        # E21 / ADR-046 / ADR-045: búsqueda, antecedentes, rag, disponibilidad
+        # y la ruta que el panel «Preguntar» nombra antes de transmitir.
         "/api/v1/knowledge/search": "http://knowledge:8011",
         "/api/v1/knowledge/antecedentes": "http://knowledge:8011",
         "/api/v1/knowledge/rag": "http://knowledge:8011",
         "/api/v1/knowledge/availability": "http://knowledge:8011",
+        "/api/v1/knowledge/transmission": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
         # del storage-service se expone (el frontend sube directo);
         # /preservacion/ se admite SUBRUTA A SUBRUTA (AREA-08-16): plan,

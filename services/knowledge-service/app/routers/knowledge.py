@@ -14,7 +14,8 @@ completo de document-service, consultada como el usuario, y `/rag` responde
 503 ``rag_unavailable``. Con `ppi`, buscar y preguntar delegan: cada cita se
 rechequea y, si el proveedor no responde, vuelve el índice local.
 `/availability` le dice al frontend si hay generación antes de mostrar
-«Sugerir texto».
+«Sugerir texto». `/transmission` nombra la ruta de cada nivel habilitado
+para que el panel «Preguntar» avise antes de que salga el texto.
 
 La bandera de la entidad y ``PERM_CONOCIMIENTO`` (ADR-037) gobiernan todas las rutas.
 """
@@ -29,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.clients import document_search
-from app.core import consulta, paso
+from app.core import aceptacion, consulta, paso
 from app.core.clearance import get_actor, require_asistente_habilitado, require_permission
 from app.core.config import settings
 from app.core.database import get_tenant_conn
@@ -279,6 +280,9 @@ class RagCitation(BaseModel):
     source_type: str
     source_ref: str
     score: float = 0.0
+    page: int | None = None
+    attachment_ref: str | None = None
+    record_id: uuid.UUID | None = None
 
 
 class RagResponse(BaseModel):
@@ -338,19 +342,33 @@ async def rag(
         )
     return RagResponse(
         answer=resultado.answer,
-        citations=[
-            RagCitation(
-                cited_text=cita.texto,
-                source_type="radicado",
-                source_ref=cita.tracking,
-                score=cita.score,
-            )
-            for cita in resultado.citas
-        ],
+        citations=[_cita_delegada(cita) for cita in resultado.citas],
         origin="ppi",
         status=resultado.status,
         advisory=resultado.advisory,
     )
+
+
+def _cita_delegada(cita: consulta.Hallazgo) -> RagCitation:
+    pagina = cita.page if isinstance(cita.page, int) and cita.page >= 1 else None
+    crudo = cita.attachment_ref
+    anexo = crudo if isinstance(crudo, str) and crudo else None
+    return RagCitation(
+        cited_text=cita.texto,
+        source_type="radicado",
+        source_ref=cita.tracking,
+        score=cita.score,
+        page=pagina,
+        attachment_ref=anexo,
+        record_id=cita.id,
+    )
+
+
+def _identificador(valor: Any) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(valor))
+    except (TypeError, ValueError):
+        return None
 
 
 async def _citas_locales(request: Request, texto: str, limite: int) -> list[RagCitation]:
@@ -364,6 +382,7 @@ async def _citas_locales(request: Request, texto: str, limite: int) -> list[RagC
             source_type="radicado",
             source_ref=h["tracking_number"],
             score=float(h.get("rank") or 0.0),
+            record_id=_identificador(h.get("id")),
         )
         for h in hits
     ]
@@ -400,4 +419,73 @@ async def availability(
     return AvailabilityResponse(
         generation=politica.completa and politica.motivo is None,
         mode="ppi" if en_ppi else "local",
+    )
+
+
+class TransmissionParty(BaseModel):
+    id: str
+    name: str
+
+
+class TransmissionLevel(BaseModel):
+    level: Literal[1, 2, 3]
+    hosting: Literal["installation", "hosted"]
+    model_aliases: list[str]
+    subprocessors: list[TransmissionParty]
+
+
+class TransmissionResponse(BaseModel):
+    transmits: bool
+    provider: TransmissionParty | None = None
+    levels: list[TransmissionLevel] = Field(default_factory=list)
+
+
+def _ruta_no_disponible() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "error": "ruta_no_disponible",
+            "detail": "No se pudo leer la ruta por la que saldría la pregunta",
+            "status": 503,
+        },
+    )
+
+
+@router.get(
+    "/transmission",
+    response_model=TransmissionResponse,
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_CONOCIMIENTO")),
+        Depends(get_actor),
+    ],
+)
+async def transmission(
+    request: Request,
+    conn: Any = Depends(get_tenant_conn),
+) -> TransmissionResponse:
+    """La ruta de cada nivel habilitado, sin transmitir registros.
+
+    Con el interruptor apagado no llama al proveedor. Si está encendido y la
+    declaración firmada no se puede leer, responde 503: el panel no ofrece la
+    pregunta si no puede nombrar la ruta.
+    """
+    try:
+        politica = await paso.leer_politica(conn, _slug(request))
+    except Exception:
+        return TransmissionResponse(transmits=False)
+    if not politica.completa or politica.motivo is not None:
+        return TransmissionResponse(transmits=False)
+    declaracion = await aceptacion.leer(_cliente())
+    vista = declaracion.vista
+    if not declaracion.ok or not isinstance(vista, dict):
+        raise _ruta_no_disponible()
+    filas = aceptacion.rutas_de(vista, politica.niveles)
+    proveedor = vista.get("provider")
+    if not filas or not isinstance(proveedor, dict):
+        return TransmissionResponse(transmits=False)
+    return TransmissionResponse(
+        transmits=True,
+        provider=TransmissionParty(id=proveedor["id"], name=proveedor["name"]),
+        levels=[TransmissionLevel(**fila) for fila in filas],
     )

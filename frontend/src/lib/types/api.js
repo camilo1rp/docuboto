@@ -572,6 +572,9 @@
  * @property {string} source_type
  * @property {string} source_ref  — tracking_number del radicado fuente
  * @property {number} score
+ * @property {number|null} [page] — página del anexo citado; null si no hay páginas
+ * @property {string|null} [attachment_ref] — id del anexo citado
+ * @property {string|null} [record_id] — id del radicado citado
  */
 
 /**

@@ -455,10 +455,12 @@ async def test_rag_si_el_proveedor_falla_incluye_el_indice_local(
     async def falla(*_args: Any, **_kwargs: Any) -> consulta.Pregunta:
         return consulta.Pregunta(True, True, "unavailable", None, (), NO_DISPONIBLE)
 
+    ident = uuid.UUID("11111111-1111-4111-8111-111111111111")
+
     async def local(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         return [
             {
-                "id": str(uuid.uuid4()),
+                "id": str(ident),
                 "tracking_number": "2026-E-7",
                 "subject": "Plazo de respuesta",
                 "rank": 0.4,
@@ -485,6 +487,46 @@ async def test_rag_si_el_proveedor_falla_incluye_el_indice_local(
             "source_type": "radicado",
             "source_ref": "2026-E-7",
             "score": 0.4,
+            "page": None,
+            "attachment_ref": None,
+            "record_id": str(ident),
+        }
+    ]
+
+
+async def test_rag_publica_la_pagina_y_el_anexo(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _conn = client_with_conn
+    ident = uuid.UUID("11111111-1111-4111-8111-111111111111")
+    anexo = "22222222-2222-4222-8222-222222222222"
+
+    async def responde(*_args: Any, **_kwargs: Any) -> consulta.Pregunta:
+        from app.core.rechequeo import Hallazgo
+
+        cita = Hallazgo(ident, "2026-E-1", "quince días", 0.8, 3, anexo)
+        return consulta.Pregunta(
+            True, False, "answered", "El plazo es de quince días.", (cita,), "ok"
+        )
+
+    monkeypatch.setattr(rutas.consulta, "preguntar", responde)
+    resp = await client.post(
+        "/api/v1/knowledge/rag",
+        json={"query": "cuál es el plazo", "record_ref": str(ident)},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    cuerpo = resp.json()
+    assert cuerpo["origin"] == "ppi"
+    assert cuerpo["citations"] == [
+        {
+            "cited_text": "quince días",
+            "source_type": "radicado",
+            "source_ref": "2026-E-1",
+            "score": 0.8,
+            "page": 3,
+            "attachment_ref": anexo,
+            "record_id": str(ident),
         }
     ]
 

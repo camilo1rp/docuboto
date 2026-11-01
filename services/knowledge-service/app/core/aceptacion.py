@@ -17,6 +17,7 @@ Un nivel que la entidad no transmite no cuenta, aunque quede una fila vieja.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,6 +108,58 @@ def vista(statement: dict[str, Any]) -> dict[str, Any] | None:
         "subprocessors": subencargados,
         "routing": routing,
     }
+
+
+def rutas_de(normal: dict[str, Any], habilitados: Iterable[int]) -> list[dict[str, Any]]:
+    """La ruta de cada nivel que la entidad transmite, con el nombre del subencargado.
+
+    Un nivel habilitado que la declaración no trae no aparece: no hay ruta que nombrar.
+    """
+    permitidos: set[int] = set()
+    for valor in habilitados:
+        try:
+            numero = int(valor)
+        except (TypeError, ValueError):
+            continue
+        if numero in (1, 2, 3):
+            permitidos.add(numero)
+    crudos = normal.get("subprocessors")
+    rutas = normal.get("routing")
+    if not isinstance(crudos, list) or not isinstance(rutas, list):
+        return []
+    nombres: dict[str, str] = {}
+    for fila in crudos:
+        if isinstance(fila, dict) and isinstance(fila.get("id"), str):
+            nombres[fila["id"]] = str(fila.get("name") or "")
+    salida: list[dict[str, Any]] = []
+    for fila in rutas:
+        if not isinstance(fila, dict):
+            return []
+        numero = _NIVELES.get(fila.get("level"))
+        if numero not in permitidos:
+            continue
+        alias = fila.get("model_aliases")
+        sub_ids = fila.get("subprocessors")
+        hosting = fila.get("hosting")
+        if hosting not in _HOSTING or not isinstance(alias, list) or not alias:
+            return []
+        if not isinstance(sub_ids, list):
+            return []
+        subencargados: list[dict[str, str]] = []
+        for sid in sub_ids:
+            nombre = nombres.get(sid) if isinstance(sid, str) else None
+            if not nombre:
+                return []
+            subencargados.append({"id": sid, "name": nombre})
+        salida.append(
+            {
+                "level": numero,
+                "hosting": hosting,
+                "model_aliases": list(alias),
+                "subprocessors": subencargados,
+            }
+        )
+    return salida
 
 
 async def leer(cliente: Any) -> Declaracion:

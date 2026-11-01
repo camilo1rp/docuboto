@@ -198,13 +198,14 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # a esa ventana. Con `X-Confirm-Write` —un booleano que cualquiera
         # fabricaba— enrutar esto habría sido abrir la escritura al exterior.
         ("/api/v1/mcp/", app_state.mcp_service_url),
-        # knowledge-service (E21, ADR-046) — SOLO /search y /antecedentes (texto
-        # completo de document-service), /rag (503 `rag_unavailable` sin
-        # proveedor) y /availability (¿hay generación para la entidad?).
+        # knowledge-service (E21, ADR-046, ADR-045) — /search y /antecedentes
+        # (texto completo), /rag, /availability y /transmission (la ruta por
+        # la que el panel «Preguntar» avisa antes de enviar).
         ("/api/v1/knowledge/search", app_state.knowledge_service_url),
         ("/api/v1/knowledge/antecedentes", app_state.knowledge_service_url),
         ("/api/v1/knowledge/rag", app_state.knowledge_service_url),
         ("/api/v1/knowledge/availability", app_state.knowledge_service_url),
+        ("/api/v1/knowledge/transmission", app_state.knowledge_service_url),
     ]
     # Límite de segmento: un prefijo sin barra final casa solo la ruta exacta o
     # sus subrutas (`/preservacion/eventos` NO casa `/preservacion/eventos-x`).
