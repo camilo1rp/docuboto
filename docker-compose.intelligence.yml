@@ -1,0 +1,19 @@
+# Fragmento intelligence (ADR-045 §8).
+#
+# No define servicios. No lo incluye el manifiesto base: se suma con
+# `-f docker-compose.intelligence.yml`. La red se crea una vez por host,
+# fuera de este proyecto y del del proveedor:
+#   docker network create --internal ppi
+# PPI_PROVIDER_URL no tiene valor por defecto.
+
+services:
+  knowledge-service:
+    environment:
+      - PPI_PROVIDER_URL=${PPI_PROVIDER_URL:?URL del proveedor en la red ppi}
+    networks:
+      - ppi
+
+networks:
+  ppi:
+    external: true
+    name: ppi

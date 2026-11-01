@@ -97,10 +97,14 @@ It only removes code, and it stops today's default of sending content to ollama.
 - **Frontend.** An "Ask" panel in the inbox detail drawer and an admin screen. On `local`,
   the admin screen shows how many records the provider still holds, and the switch to
   `local` offers "withdraw the data too" as a checkbox.
-- **Infra.** A vendor-neutral `intelligence` Compose profile that starts no provider
-  service. It switches knowledge-service to `ppi` and attaches it to the external
-  `ppi` network, created once per host with `--internal`. The provider is its own
-  Compose project with its own release.
+- **Infra.** A vendor-neutral `intelligence` Compose fragment
+  (`docker-compose.intelligence.yml`, and `infra/docker-compose.intelligence.yml`
+  in production), added with `-f` rather than `include`. Compose merges an `include`
+  even when its profile is off, and then `up` requires the network. The fragment
+  starts no provider service. It attaches knowledge-service to the external `ppi`
+  network, created once per host with `--internal`, and sets `PPI_PROVIDER_URL`
+  with no default. Without the fragment, startup is unchanged. The provider is its
+  own Compose project with its own release.
 - **New permissions.** None.
 - **Success criteria** match the provider's D1 gate:
   - cited answers or `insufficient_evidence`;
