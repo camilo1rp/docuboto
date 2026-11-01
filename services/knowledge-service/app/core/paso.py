@@ -86,6 +86,8 @@ class _Salida(Protocol):
 
     async def consultar(self, cuerpo: dict[str, Any], *, timeout: float) -> Any: ...
 
+    async def inventario(self, *, cursor: str | None, limite: int) -> Any: ...
+
 
 class _SinDestino:
     """No hay URL de proveedor. Llamar es un fallo, no un envío silencioso."""
@@ -96,6 +98,9 @@ class _SinDestino:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
     async def consultar(self, cuerpo: dict[str, Any], *, timeout: float) -> Any:
+        raise RuntimeError("PPI_PROVIDER_URL no está definido")
+
+    async def inventario(self, *, cursor: str | None, limite: int) -> Any:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
 
@@ -430,3 +435,66 @@ async def consultar(
     if not isinstance(recibido, dict):
         return Respuesta(False, "proveedor", None)
     return Respuesta(True, "ok", recibido)
+
+
+_RAZONES = frozenset({"reclassified", "annulled", "purged", "withdrawn", "host_request"})
+
+
+async def inventario(
+    conn: Any,
+    slug: str,
+    cliente: _Salida,
+    *,
+    cursor: str | None,
+    limite: int,
+) -> Respuesta:
+    """Una página del inventario. Con el interruptor apagado no llama."""
+    politica = await leer_politica(conn, slug)
+    if not politica.completa or politica.motivo is not None:
+        return Respuesta(False, politica.motivo or "registro", None)
+    if not getattr(cliente, "destino", ""):
+        return Respuesta(False, "destino", None)
+    if not 1 <= limite <= 1000:
+        return Respuesta(False, "limite", None)
+    try:
+        recibido = await cliente.inventario(cursor=cursor, limite=limite)
+    except Exception:
+        logger.warning("el inventario no respondió")
+        return Respuesta(False, "proveedor", None)
+    if not isinstance(recibido, dict):
+        return Respuesta(False, "proveedor", None)
+    return Respuesta(True, "ok", recibido)
+
+
+async def expulsar(
+    conn: Any,
+    slug: str,
+    external_ref: str,
+    cliente: _Salida,
+    *,
+    razon: str,
+) -> Decision:
+    """Borra una referencia que ya no debe estar, sin releer el radicado.
+
+    La usa la reconciliación cuando el inventario trae un nivel que la
+    entidad no transmite. Con el interruptor apagado no hay llamada.
+    """
+    politica = await leer_politica(conn, slug)
+    if not politica.completa or politica.motivo is not None:
+        return Decision(False, politica.motivo or "registro")
+    if razon not in _RAZONES or not external_ref or len(external_ref) > 200:
+        return Decision(False, "ref")
+    lote = {
+        "items": [
+            {
+                "type": "deletion",
+                "deletion": {
+                    "external_ref": external_ref,
+                    "reason": razon,
+                    "include_children": True,
+                },
+            }
+        ]
+    }
+    await _enviar_y_anotar(conn, cliente, "purge", external_ref, None, lote)
+    return Decision(True, "ok")

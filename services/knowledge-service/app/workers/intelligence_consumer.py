@@ -13,7 +13,8 @@ Lee ``orpycamcp.document.events`` y ``orpycamcp.workflow.events``. Confirma
 el mensaje solo cuando la decisión es cerrada. Un fallo de transporte o de
 base deja el mensaje en la PEL; al quinto intento pasa al dead-letter y a
 ``evento_dead_letter``. Cada 30 segundos avanza una página de la carga
-inicial de las entidades con el proveedor encendido.
+inicial de las entidades con el proveedor encendido. En el mismo
+barrido reconcilia el libro y una página del inventario.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from app.core import paso
 from app.core.config import settings
 from app.core.consumidor import CONOCIDOS, atender, cargar_pagina
 from app.core.database import acquire_tenant, get_pool
+from app.core.reconciliacion import reconciliar
 from app.core.redis_client import get_redis
 from app.core.salida_http import TransporteHttp
 
@@ -95,6 +97,17 @@ async def _cargar(cliente: Any) -> None:
             raise
         except Exception:
             logger.warning("la carga inicial de %s no avanzó", slug, exc_info=True)
+
+
+async def _reconciliar(cliente: Any) -> None:
+    for slug in await _entidades():
+        try:
+            async with acquire_tenant(slug) as conn:
+                await reconciliar(conn, slug, cliente)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("la reconciliación de %s no avanzó", slug, exc_info=True)
 
 
 async def _persist_dead_letter(envelope: dict[str, Any], failure_meta: dict[str, Any]) -> None:
@@ -225,6 +238,12 @@ async def run() -> None:
                     raise
                 except Exception:
                     logger.warning("falló la carga inicial", exc_info=True)
+                try:
+                    await _reconciliar(cliente)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("falló la reconciliación", exc_info=True)
                 ultima = ahora
     finally:
         await transporte.cerrar()

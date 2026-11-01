@@ -34,13 +34,15 @@ class TransporteHttp:
         method: str,
         url: str,
         *,
-        json: dict[str, Any],
+        json: dict[str, Any] | None = None,
         timeout: float | None = None,
+        params: dict[str, Any] | None = None,
     ) -> Any:
-        kwargs: dict[str, Any] = {
-            "json": json,
-            "headers": {"PPI-Version": PPI_VERSION},
-        }
+        kwargs: dict[str, Any] = {"headers": {"PPI-Version": PPI_VERSION}}
+        if json is not None:
+            kwargs["json"] = json
+        if params:
+            kwargs["params"] = params
         if timeout is not None:
             kwargs["timeout"] = timeout
         respuesta = await self._http.request(method, url, **kwargs)
