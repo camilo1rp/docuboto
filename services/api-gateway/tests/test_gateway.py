@@ -534,6 +534,8 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/config/intelligence": "http://tenant:8002",
         "/api/v1/config/intelligence/levels": "http://tenant:8002",
         "/api/v1/config/intelligence/withdraw": "http://tenant:8002",
+        "/api/v1/config/intelligence/capabilities": "http://tenant:8002",
+        "/api/v1/config/intelligence/inventory": "http://tenant:8002",
         "/api/v1/catalogos/tipos-anexo": "http://tenant:8002",
         "/api/v1/metadata/templates": "http://document:8003",
         # RF-RAD-05: el catálogo de destinatarios y la cascada DIVIPOLA. La
@@ -620,6 +622,7 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/api/v1/internal/documentos/radicados/abc", state) is None
     assert _route_to_upstream("/api/v1/internal/intelligence/capabilities", state) is None
     assert _route_to_upstream("/api/v1/internal/intelligence/purge", state) is None
+    assert _route_to_upstream("/api/v1/internal/intelligence/inventory", state) is None
     assert _route_to_upstream("/api/v1/assistant/message", state) is None
     assert _route_to_upstream("/api/v1/assistant/transcribe", state) is None
     # D-02: la descarga directa de storage-service YA NO se enruta — pasa

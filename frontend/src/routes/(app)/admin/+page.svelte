@@ -196,6 +196,15 @@
       implemented: true,
     },
     {
+      label: "Inteligencia",
+      description: "Proveedor, niveles que se transmiten y retiro de los datos.",
+      icon: "fas fa-brain",
+      href: "/admin/inteligencia",
+      permission: "USUA_PERM_ADMIN",
+      minLevel: 3,
+      implemented: true,
+    },
+    {
       label: "Auditoría",
       description: "Consulta del registro de auditoría inmutable (audit_log).",
       icon: "fas fa-clipboard-list",

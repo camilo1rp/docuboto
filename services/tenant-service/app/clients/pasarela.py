@@ -25,6 +25,7 @@ from app.core.config import settings
 _CAPACIDADES = "/api/v1/internal/intelligence/capabilities"
 _ACEPTACION = "/api/v1/internal/intelligence/acceptance"
 _PURGA = "/api/v1/internal/intelligence/purge"
+_INVENTARIO = "/api/v1/internal/intelligence/inventory"
 
 
 class PasarelaError(Exception):
@@ -41,6 +42,11 @@ async def capacidades(slug: str) -> dict[str, Any]:
 async def aceptar(slug: str, nivel: int, sha256: str) -> None:
     """Registra que el administrador aceptó esa huella para el nivel."""
     await _pedir("POST", _ACEPTACION, slug, json={"level": nivel, "sha256": sha256})
+
+
+async def inventario(slug: str) -> dict[str, Any]:
+    """Cuántos radicados conserva el proveedor. También con la entidad en local."""
+    return await _pedir("GET", _INVENTARIO, slug)
 
 
 async def purgar(

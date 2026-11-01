@@ -17,11 +17,13 @@ El borrado de un radicado no usa esa misma pregunta: con el interruptor
 encendido, un radicado anulado, purgado o de un nivel ya no habilitado ordena
 borrar. Con el interruptor apagado esa llamada no sale.
 
-Dos llamadas no transmiten registros y por eso no miran el interruptor: leer
+Tres llamadas no transmiten registros y por eso no miran el interruptor: leer
 la declaración firmada (el administrador la nombra antes de pasar a ``ppi`` y
-otra vez con el envío suspendido) y ordenar el borrado de lo ya transmitido
-(al deshabilitar un nivel, o al retirar los datos con la entidad en ``local``).
-Cada llamada que ocurre deja una fila en el libro de envíos.
+otra vez con el envío suspendido), ordenar el borrado de lo ya transmitido
+(al deshabilitar un nivel, o al retirar los datos con la entidad en ``local``)
+y contar los radicados que el proveedor aún conserva, para la pantalla de
+administración. El borrado deja una fila en el libro de envíos. La lectura de
+la declaración y el conteo no.
 """
 
 from __future__ import annotations
@@ -492,6 +494,67 @@ async def inventario(
     if not isinstance(recibido, dict):
         return Respuesta(False, "proveedor", None)
     return Respuesta(True, "ok", recibido)
+
+
+_PAGINAS_INVENTARIO = 20
+_LIMITE_INVENTARIO = 1000
+_TIPOS_INVENTARIO = frozenset({"record", "attachment"})
+
+
+async def contar_radicados(
+    cliente: _Salida, *, tope_paginas: int = _PAGINAS_INVENTARIO
+) -> Respuesta:
+    """Cuántos radicados conserva el proveedor. No mira el interruptor.
+
+    La pantalla de administración lo muestra con la entidad en ``local``,
+    para que el retiro no se olvide. No transmite registros y no escribe el
+    libro. Recorre el inventario de a mil y se detiene a las 20 páginas: si
+    queda cursor, ``complete`` es falso y ``records`` es un mínimo.
+    """
+    if not getattr(cliente, "destino", ""):
+        return Respuesta(False, "destino", None)
+    if tope_paginas < 1:
+        return Respuesta(False, "limite", None)
+    cursor: str | None = None
+    vistos: set[str] = set()
+    total = 0
+    for _ in range(tope_paginas):
+        try:
+            recibido = await cliente.inventario(cursor=cursor, limite=_LIMITE_INVENTARIO)
+        except Exception:
+            logger.warning("no se pudo contar el inventario")
+            return Respuesta(False, "proveedor", None)
+        pagina = _pagina_inventario(recibido)
+        if pagina is None:
+            return Respuesta(False, "proveedor", None)
+        items, siguiente = pagina
+        total += sum(1 for item in items if item.get("type") == "record")
+        if siguiente is None:
+            return Respuesta(True, "ok", {"records": total, "complete": True})
+        if siguiente in vistos:
+            return Respuesta(False, "proveedor", None)
+        vistos.add(siguiente)
+        cursor = siguiente
+    return Respuesta(True, "ok", {"records": total, "complete": False})
+
+
+def _pagina_inventario(recibido: Any) -> tuple[list[dict[str, Any]], str | None] | None:
+    if not isinstance(recibido, dict) or "items" not in recibido or "next_cursor" not in recibido:
+        return None
+    items = recibido["items"]
+    cursor = recibido["next_cursor"]
+    if not isinstance(items, list):
+        return None
+    if cursor is not None and not isinstance(cursor, str):
+        return None
+    if isinstance(cursor, str) and (not cursor or len(cursor) > 512):
+        return None
+    filas: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("type") not in _TIPOS_INVENTARIO:
+            return None
+        filas.append(item)
+    return filas, cursor
 
 
 async def expulsar(

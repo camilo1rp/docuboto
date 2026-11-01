@@ -138,7 +138,8 @@ def test_las_metricas_y_la_configuracion_interna_no_son_una_consulta() -> None:
     assert "require_asistente_habilitado" not in metricas
     interna = (KNOWLEDGE.parent / "inteligencia.py").read_text()
     rutas = _rutas(interna)
-    assert len(rutas) == 3
+    # capabilities, acceptance, purge y el conteo del inventario.
+    assert len(rutas) == 4
     for fn in rutas:
         nombres = _nombres(_decoradores(fn))
         assert "require_asistente_habilitado" not in nombres

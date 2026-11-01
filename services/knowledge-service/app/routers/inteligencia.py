@@ -115,6 +115,28 @@ async def purge(
     return {"accepted": resultado.sale, "purge_ref": ref, "motivo": resultado.motivo}
 
 
+@router.get("/inventory")
+async def inventory(
+    request: Request,
+    _conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, object]:
+    """Cuántos radicados conserva el proveedor. También con la entidad en local.
+
+    No transmite registros. Si no se puede leer, 503: la pantalla lo dice en
+    vez de mostrar un cero.
+    """
+    _slug(request)
+    resultado = await paso.contar_radicados(_cliente())
+    cuerpo = resultado.cuerpo
+    if not resultado.sale or not isinstance(cuerpo, dict):
+        raise _falla(
+            503,
+            "inventario_no_disponible",
+            "No se pudo leer cuántos radicados conserva el proveedor",
+        )
+    return {"records": cuerpo["records"], "complete": cuerpo["complete"]}
+
+
 def _slug(request: Request) -> str:
     """El slug que ``get_tenant_conn`` ya validó para esta petición."""
     slug = request.headers.get("X-Tenant-Slug", "")

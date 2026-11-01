@@ -78,6 +78,16 @@ describe("admin/+layout.server.js", () => {
     expect(await destino("/admin", { permissions: [] })).toBeNull();
   });
 
+  it("inteligencia exige administración nivel 3", async () => {
+    const base = { permissions: ["USUA_PERM_ADMIN"] };
+    expect(
+      await destino("/admin/inteligencia", { ...base, permission_levels: { USUA_PERM_ADMIN: 2 } }),
+    ).toBe("303 /403");
+    expect(
+      await destino("/admin/inteligencia", { ...base, permission_levels: { USUA_PERM_ADMIN: 3 } }),
+    ).toBeNull();
+  });
+
   it("área no declarada: fail-closed con USUA_PERM_ADMIN", async () => {
     expect(permisosRequeridosAdmin("/admin/inventada")).toEqual([ADMIN_DEFAULT_PERMISSION]);
     expect(await destino("/admin/inventada", { permissions: ["PERM_RADI"] })).toBe("303 /403");

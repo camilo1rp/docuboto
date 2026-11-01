@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import ValidationError
 
 from app.clients import pasarela
 from app.core import audit as audit_core
@@ -37,6 +38,8 @@ from app.schemas.config import (
     HolidayCreate,
     HolidayResponse,
     HolidaySeedRequest,
+    IntelligenceCapabilities,
+    IntelligenceInventory,
     IntelligenceLevelUpdate,
     IntelligenceResponse,
     IntelligenceUpdate,
@@ -672,6 +675,60 @@ async def get_intelligence(
     if fila is None:
         raise _falla(404, "tenant_not_found", "La entidad no existe")
     return _respuesta(fila, await repo.envio_suspendido())
+
+
+@router.get(
+    "/config/intelligence/capabilities",
+    response_model=IntelligenceCapabilities,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def get_intelligence_capabilities(request: Request) -> IntelligenceCapabilities:
+    """Proveedor, subencargados y ruta de cada nivel, ya comprobados.
+
+    No cambia nada y no transmite registros. Sin esta lectura el administrador
+    no puede redactar la declaración.
+    """
+    vista = await _vista(request.headers.get("X-Tenant-Slug", ""))
+    try:
+        return IntelligenceCapabilities.model_validate(
+            {
+                "provider": vista["provider"],
+                "subprocessors": vista["subprocessors"],
+                "routing": vista["routing"],
+            }
+        )
+    except (KeyError, TypeError, ValidationError):
+        raise _falla(
+            503,
+            "capacidades_no_disponibles",
+            "No se pudo leer la declaración del proveedor",
+        ) from None
+
+
+@router.get(
+    "/config/intelligence/inventory",
+    response_model=IntelligenceInventory,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def get_intelligence_inventory(request: Request) -> IntelligenceInventory:
+    """Cuántos radicados conserva el proveedor. También con la entidad en local."""
+    slug = request.headers.get("X-Tenant-Slug", "")
+    try:
+        cuerpo = await pasarela.inventario(slug)
+    except pasarela.PasarelaError:
+        raise _falla(
+            503,
+            "inventario_no_disponible",
+            "No se pudo leer cuántos radicados conserva el proveedor",
+        ) from None
+    try:
+        return IntelligenceInventory.model_validate(cuerpo)
+    except ValidationError:
+        raise _falla(
+            503,
+            "inventario_no_disponible",
+            "No se pudo leer cuántos radicados conserva el proveedor",
+        ) from None
 
 
 @router.put(

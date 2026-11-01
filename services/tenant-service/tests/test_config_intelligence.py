@@ -132,6 +132,7 @@ async def ctx() -> AsyncGenerator[tuple[Any, ...], None]:
     capacidades = AsyncMock(return_value=VISTA)
     aceptar = AsyncMock()
     purgar = AsyncMock(return_value={"accepted": True, "purge_ref": "p-1"})
+    inventario = AsyncMock(return_value={"records": 0, "complete": True})
 
     async def override() -> AsyncGenerator[AsyncMock, None]:
         yield conn
@@ -141,6 +142,7 @@ async def ctx() -> AsyncGenerator[tuple[Any, ...], None]:
         patch("app.clients.pasarela.capacidades", new=capacidades),
         patch("app.clients.pasarela.aceptar", new=aceptar),
         patch("app.clients.pasarela.purgar", new=purgar),
+        patch("app.clients.pasarela.inventario", new=inventario),
         patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")) as append,
     ):
         transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -149,6 +151,7 @@ async def ctx() -> AsyncGenerator[tuple[Any, ...], None]:
             ac.capacidades = capacidades  # type: ignore[attr-defined]
             ac.aceptar = aceptar  # type: ignore[attr-defined]
             ac.purgar = purgar  # type: ignore[attr-defined]
+            ac.inventario = inventario  # type: ignore[attr-defined]
             yield ac, est, capacidades, aceptar, purgar
     app.dependency_overrides.clear()
 
@@ -373,3 +376,50 @@ async def test_un_slug_en_el_cuerpo_no_cuenta(ctx) -> None:
     assert est.updates[0][0] == "demo"
     asiento = client.audit_append.await_args_list[0]  # type: ignore[attr-defined]
     assert asiento.kwargs["tenant_slug"] == "demo"
+
+
+@pytest.mark.asyncio
+async def test_capabilities_nombra_proveedor_y_rutas(ctx) -> None:
+    client, est, *_ = ctx
+    resp = await client.get(f"{URL}/capabilities", headers=_HDRS)
+    assert resp.status_code == 200
+    cuerpo = resp.json()
+    assert cuerpo["provider"]["id"] == "example-provider"
+    assert cuerpo["routing"][0]["level"] == "public"
+    assert "sha256" not in cuerpo
+    est.nivel = 2
+    assert (await client.get(f"{URL}/capabilities", headers=_HDRS)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_capabilities_caida_no_inventa_nombres(ctx) -> None:
+    client, *_ = ctx
+    client.capacidades.side_effect = PasarelaError(  # type: ignore[attr-defined]
+        503, "pasarela_no_disponible"
+    )
+    resp = await client.get(f"{URL}/capabilities", headers=_HDRS)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "capacidades_no_disponibles"
+
+
+@pytest.mark.asyncio
+async def test_inventario_en_local_cuenta_radicados(ctx) -> None:
+    client, est, *_ = ctx
+    client.inventario.return_value = {"records": 4, "complete": False}  # type: ignore[attr-defined]
+    resp = await client.get(f"{URL}/inventory", headers=_HDRS)
+    assert resp.status_code == 200
+    assert resp.json() == {"records": 4, "complete": False}
+    assert est.fila["intelligence_provider"] == "local"
+    est.nivel = 1
+    assert (await client.get(f"{URL}/inventory", headers=_HDRS)).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_inventario_ilegible_no_dice_cero(ctx) -> None:
+    client, *_ = ctx
+    client.inventario.side_effect = PasarelaError(  # type: ignore[attr-defined]
+        503, "pasarela_no_disponible"
+    )
+    resp = await client.get(f"{URL}/inventory", headers=_HDRS)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["error"] == "inventario_no_disponible"

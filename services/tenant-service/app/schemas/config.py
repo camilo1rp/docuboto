@@ -107,3 +107,35 @@ class IntelligenceResponse(BaseModel):
 
 class WithdrawResponse(BaseModel):
     purge_ref: str
+
+
+class IntelligenceParty(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+
+
+class IntelligenceRoute(BaseModel):
+    """Una fila de la declaración firmada, tal como la devuelve la pasarela."""
+
+    level: Literal["public", "reserved", "classified"]
+    hosting: Literal["installation", "hosted"]
+    model_aliases: list[str] = Field(min_length=1)
+    subprocessors: list[str]
+    prompt_and_output_retention: Literal["none", "limited"]
+    trains_on_customer_data: bool
+
+
+class IntelligenceCapabilities(BaseModel):
+    """Lo que el administrador tiene que nombrar. Sin la firma."""
+
+    provider: IntelligenceParty
+    subprocessors: list[IntelligenceParty]
+    routing: list[IntelligenceRoute]
+
+
+class IntelligenceInventory(BaseModel):
+    """Radicados que el proveedor aún conserva. ``complete`` es falso si el
+    recorrido se detuvo antes del final."""
+
+    records: int = Field(ge=0)
+    complete: bool
