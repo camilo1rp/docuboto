@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from app.core import consumidor
 from app.core.consumidor import atender, cargar_pagina
 from app.core.paso import destino_de
 from app.workers.intelligence_consumer import GROUP, STREAMS
@@ -121,8 +122,33 @@ def _cliente(transporte: _Transporte) -> Any:
     return destino_de("http://ppi.internal", transporte)
 
 
+def _usar(monkeypatch: pytest.MonkeyPatch, conn: _Conn) -> None:
+    """El registro que devolvería document-service, a partir de la fila de prueba."""
+
+    async def leer(_slug: str, radicado_id: uuid.UUID) -> dict[str, Any] | None:
+        if conn.datos.get("fila_ausente") or conn.datos.get("status") == "anulado":
+            return None
+        if conn._nivel(radicado_id) not in set(conn.datos.get("niveles", [1])):
+            return None
+        fila = conn.datos.get("fila")
+        if fila is None:
+            for candidata in conn.datos.get("pagina") or []:
+                if candidata["id"] == radicado_id:
+                    fila = candidata
+                    break
+        if fila is None:
+            return None
+        cuerpo = dict(fila)
+        cuerpo["anexos"] = list(conn.datos.get("anexos") or [])
+        return cuerpo
+
+    monkeypatch.setattr(consumidor.documento, "leer_registro", leer)
+
+
 @pytest.mark.asyncio
-async def test_un_alta_publica_sale_aunque_el_sobre_diga_otra_cosa() -> None:
+async def test_un_alta_publica_sale_aunque_el_sobre_diga_otra_cosa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transporte = _Transporte()
     conn = _Conn(
         fila=_fila(RADICADO, datetime(2026, 10, 31, 15, 1, tzinfo=UTC)),
@@ -138,6 +164,7 @@ async def test_un_alta_publica_sale_aunque_el_sobre_diga_otra_cosa() -> None:
             }
         ],
     )
+    _usar(monkeypatch, conn)
     decision = await atender(
         conn,
         "demo",
@@ -171,12 +198,15 @@ async def test_en_local_un_alta_no_llama() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reclasificar_a_un_nivel_apagado_borra_sin_contenido() -> None:
+async def test_reclasificar_a_un_nivel_apagado_borra_sin_contenido(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transporte = _Transporte()
     conn = _Conn(
         nivel=2,
         fila=_fila(RADICADO, datetime(2026, 10, 31, 15, 1, tzinfo=UTC)),
     )
+    _usar(monkeypatch, conn)
     decision = await atender(
         conn,
         "demo",
@@ -194,9 +224,12 @@ async def test_reclasificar_a_un_nivel_apagado_borra_sin_contenido() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reclasificar_dentro_de_lo_habilitado_empuja() -> None:
+async def test_reclasificar_dentro_de_lo_habilitado_empuja(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transporte = _Transporte()
     conn = _Conn(fila=_fila(RADICADO, datetime(2026, 10, 31, 15, 1, tzinfo=UTC)))
+    _usar(monkeypatch, conn)
     decision = await atender(
         conn,
         "demo",
@@ -228,9 +261,12 @@ async def test_anular_o_purgar_ordena_borrar(tipo: str, razon: str, extra: dict[
 
 
 @pytest.mark.asyncio
-async def test_un_paso_de_tramite_usa_el_id_del_radicado() -> None:
+async def test_un_paso_de_tramite_usa_el_id_del_radicado(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transporte = _Transporte()
     conn = _Conn(fila=_fila(RADICADO, datetime(2026, 10, 31, 15, 1, tzinfo=UTC)))
+    _usar(monkeypatch, conn)
     decision = await atender(
         conn,
         "demo",
@@ -256,7 +292,9 @@ async def test_un_evento_ajeno_no_toca_la_base_ni_el_proveedor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_la_carga_salta_el_nivel_apagado_y_deja_el_cursor() -> None:
+async def test_la_carga_salta_el_nivel_apagado_y_deja_el_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transporte = _Transporte()
     primero = datetime(2026, 10, 31, 15, 1, tzinfo=UTC)
     segundo = datetime(2026, 10, 31, 16, 0, tzinfo=UTC)
@@ -264,6 +302,7 @@ async def test_la_carga_salta_el_nivel_apagado_y_deja_el_cursor() -> None:
         niveles_por_id={RADICADO: 1, OTRO: 2},
         pagina=[_fila(RADICADO, primero), _fila(OTRO, segundo)],
     )
+    _usar(monkeypatch, conn)
     hechos = await cargar_pagina(conn, "demo", _cliente(transporte))
     assert hechos == 2
     assert len(transporte.cuerpos) == 1

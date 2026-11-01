@@ -32,4 +32,5 @@ export const ACCESO_ACCION_LABELS = {
   "document.radicado_consultado": "Lectura del documento",
   "document.anexo_descargado": "Descarga de un anexo",
   "document.contenido_transmitido": "Transmitido al proveedor de inteligencia",
+  "document.registro_transmitido": "Transmitido al proveedor de inteligencia",
 };

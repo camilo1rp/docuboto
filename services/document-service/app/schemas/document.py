@@ -448,7 +448,8 @@ class HistorialAccesoEntry(BaseModel):
     canal: str
     #: `document.radicado_consultado` (leyó el metadato),
     #: `document.anexo_descargado` (bajó un fichero) o
-    #: `document.contenido_transmitido` (salió hacia el proveedor de
-    #: inteligencia). Son hechos distintos y la pantalla los distingue.
+    #: `document.contenido_transmitido` (salieron los bytes) o
+    #: `document.registro_transmitido` (salió el registro). Los dos son
+    #: transmisión al proveedor de inteligencia, y la pantalla los dice así.
     action: str
     object_ref: str

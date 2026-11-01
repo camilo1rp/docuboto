@@ -54,6 +54,7 @@
     "document.radicado_consultado": "consultó la ficha",
     "document.anexo_descargado": "descargó un anexo",
     "document.contenido_transmitido": "transmitido al proveedor de inteligencia",
+    "document.registro_transmitido": "transmitido al proveedor de inteligencia",
   };
 
   async function cargar() {

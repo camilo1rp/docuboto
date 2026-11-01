@@ -33,6 +33,7 @@ describe("etiquetas del historial de acceso", () => {
       "document.radicado_consultado",
       "document.anexo_descargado",
       "document.contenido_transmitido",
+      "document.registro_transmitido",
     ]) {
       expect(ACCESO_ACCION_LABELS[accion], accion).toBeTruthy();
     }

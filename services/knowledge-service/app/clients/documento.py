@@ -7,15 +7,16 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Bytes de un anexo, mediados por document-service.
+"""Registro y bytes, mediados por document-service.
 
-La ruta interna comprueba de nuevo el nivel habilitado. Este cliente no
-habla con el almacén: sin el token interno no llama.
+Las dos rutas internas vuelven a comprobar el nivel habilitado. Este
+cliente no habla con el almacén: sin el token interno no llama.
 """
 
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import httpx
 
@@ -30,13 +31,37 @@ class DocumentoError(Exception):
     """document-service no entregó un cuerpo usable."""
 
 
-async def leer_anexo(slug: str, anexo_id: uuid.UUID) -> bytes | None:
-    """Los bytes, None si document-service responde 404, o lanza."""
+def _cabeceras(slug: str) -> dict[str, str]:
     token = settings.document_internal_token.strip()
     if not token:
         raise DocumentoError("sin token")
+    return {"X-Tenant-Slug": slug, "X-Internal-Token": token}
+
+
+async def leer_registro(slug: str, radicado_id: uuid.UUID) -> dict[str, Any] | None:
+    """La fila oficial, None si document-service responde 404, o lanza."""
+    ruta = f"/api/v1/internal/documentos/radicados/{radicado_id}"
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.document_service_url, timeout=10.0
+        ) as client:
+            resp = await client.get(ruta, headers=_cabeceras(slug))
+    except httpx.HTTPError as exc:
+        raise DocumentoError("red") from exc
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise DocumentoError("documento")
+    cuerpo = resp.json()
+    if not isinstance(cuerpo, dict):
+        raise DocumentoError("documento")
+    return cuerpo
+
+
+async def leer_anexo(slug: str, anexo_id: uuid.UUID) -> bytes | None:
+    """Los bytes, None si document-service responde 404, o lanza."""
     ruta = f"/api/v1/internal/documentos/anexos/{anexo_id}/contenido"
-    headers = {"X-Tenant-Slug": slug, "X-Internal-Token": token}
+    headers = _cabeceras(slug)
     try:
         async with httpx.AsyncClient(
             base_url=settings.document_service_url, timeout=30.0

@@ -303,6 +303,26 @@ async def test_el_cliente_pide_el_anexo_con_el_token(monkeypatch: pytest.MonkeyP
     assert vistas[0].url.path.endswith(f"/anexos/{ANEXO}/contenido")
 
 
+async def test_el_cliente_pide_el_registro_con_el_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    vistas: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        vistas.append(req)
+        return httpx.Response(200, json={"id": str(ANEXO), "anexos": []})
+
+    real = httpx.AsyncClient
+
+    def cliente(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        return real(*args, transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(documento.httpx, "AsyncClient", cliente)
+    monkeypatch.setattr(settings, "document_internal_token", "secreto-interno")
+    cuerpo = await documento.leer_registro("demo", ANEXO)
+    assert cuerpo is not None and cuerpo["anexos"] == []
+    assert vistas[0].headers["x-internal-token"] == "secreto-interno"
+    assert vistas[0].url.path.endswith(f"/radicados/{ANEXO}")
+
+
 async def test_sin_token_interno_no_llama(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "document_internal_token", "")
 

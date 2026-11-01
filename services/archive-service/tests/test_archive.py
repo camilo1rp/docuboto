@@ -2139,5 +2139,6 @@ async def test_historial_acceso_lists_paginated_and_scoped_by_tenant(
         "document.radicado_consultado",
         "document.anexo_descargado",
         "document.contenido_transmitido",
+        "document.registro_transmitido",
     }
     assert isinstance(trackings, list)

@@ -96,6 +96,7 @@ async def test_solo_las_acciones_de_ACCESO_del_radicado_no_todo_su_ciclo_de_vida
         "document.radicado_consultado",
         "document.anexo_descargado",
         "document.contenido_transmitido",
+        "document.registro_transmitido",
     }
     # Ni la creación ni la anulación son accesos.
     assert "document.radicado_created" not in acciones

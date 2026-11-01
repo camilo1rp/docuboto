@@ -612,6 +612,7 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/api/v1/knowledge/admin/deadletter/", state) is None
     assert _route_to_upstream("/api/v1/knowledge", state) is None
     assert _route_to_upstream("/ppi/v1/demo/content", state) is None
+    assert _route_to_upstream("/api/v1/internal/documentos/radicados/abc", state) is None
     assert _route_to_upstream("/api/v1/assistant/message", state) is None
     assert _route_to_upstream("/api/v1/assistant/transcribe", state) is None
     # D-02: la descarga directa de storage-service YA NO se enruta — pasa
