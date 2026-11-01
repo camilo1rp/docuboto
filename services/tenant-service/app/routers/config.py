@@ -15,13 +15,17 @@ de respuesta los consume para cualquier usuario radicador, no solo administrador
 """
 
 import re
+import logging
 import uuid
 from datetime import date, timedelta
+from typing import Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.clients import pasarela
 from app.core import audit as audit_core
+from app.core import declaracion
 from app.core.authz import require_permission
 from app.core.calendar import add_business_days, colombian_holidays
 from app.core.database import get_tenant_conn
@@ -33,11 +37,16 @@ from app.schemas.config import (
     HolidayCreate,
     HolidayResponse,
     HolidaySeedRequest,
+    IntelligenceLevelUpdate,
+    IntelligenceResponse,
+    IntelligenceUpdate,
     ParamResponse,
     ParamUpdate,
+    WithdrawResponse,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["config"])
+logger = logging.getLogger(__name__)
 
 
 # --- festivos ---------------------------------------------------------------
@@ -480,3 +489,450 @@ async def set_asistente(
             canal=audit_core.CANAL_PETICION,
         )
     return AsistenteResponse(habilitado=payload.habilitado, cambiado=True)
+
+
+def _falla(code: int, error: str, detail: str, **extra: object) -> HTTPException:
+    cuerpo: dict[str, object] = {"error": error, "detail": detail, "status": code, **extra}
+    return HTTPException(status_code=code, detail=cuerpo)
+
+
+def _niveles(raw: object) -> list[int]:
+    if not isinstance(raw, (list, tuple)):
+        return []
+    salida: list[int] = []
+    for valor in raw:
+        try:
+            numero = int(valor)
+        except (TypeError, ValueError):
+            continue
+        if numero in (1, 2, 3) and numero not in salida:
+            salida.append(numero)
+    return sorted(salida)
+
+
+def _texto(valor: str | None) -> str:
+    return (valor or "").strip()
+
+
+def _respuesta(
+    fila: Any,
+    suspended: bool,
+    *,
+    changed: bool = False,
+    purge: Literal["accepted", "pending", "not_applicable"] = "not_applicable",
+) -> IntelligenceResponse:
+    provider = fila["intelligence_provider"]
+    if provider not in ("local", "ppi"):
+        provider = "local"
+    return IntelligenceResponse(
+        provider=provider,
+        levels=_niveles(fila["intelligence_levels"]),
+        send_metadata=bool(fila["intelligence_send_metadata"]),
+        suspended=suspended,
+        changed=changed,
+        purge=purge,
+    )
+
+
+async def _vista(slug: str) -> dict[str, Any]:
+    try:
+        return await pasarela.capacidades(slug)
+    except pasarela.PasarelaError as exc:
+        if exc.status == 409:
+            raise _falla(
+                409,
+                "capacidades_invalidas",
+                "La declaración del proveedor no se pudo comprobar",
+            ) from None
+        raise _falla(
+            503,
+            "capacidades_no_disponibles",
+            "No se pudo leer la declaración del proveedor",
+        ) from None
+
+
+async def _politica(repo: ConfigRepository) -> str:
+    valor = await repo.get_param("politica_tratamiento_version")
+    version = valor.strip() if isinstance(valor, str) and valor.strip() else None
+    if version is None:
+        raise _falla(
+            409,
+            "politica_no_publicada",
+            "La entidad no ha publicado su política de tratamiento de datos "
+            "(Ley 1581, art. 17); publíquela antes de transmitir",
+        )
+    return version
+
+
+def _nombres(texto: str, exigidos: list[str]) -> None:
+    if not texto:
+        raise _falla(
+            422,
+            "declaracion_requerida",
+            "Falta la declaración del administrador",
+        )
+    faltantes = declaracion.faltan(texto, exigidos)
+    if faltantes:
+        raise _falla(
+            422,
+            "declaracion_incompleta",
+            "La declaración no nombra lo que declara el proveedor",
+            faltan=faltantes,
+        )
+
+
+def _ruta(vista: dict[str, Any], nivel: int, etiqueta: str) -> dict[str, Any]:
+    fila = declaracion.fila_de(vista, nivel)
+    if fila is None:
+        raise _falla(
+            409,
+            "nivel_no_declarado",
+            f"El proveedor no declara la ruta de {etiqueta}",
+        )
+    if not declaracion.ruta_admitida(fila):
+        raise _falla(
+            409,
+            "ruta_no_admitida",
+            f"La ruta de {etiqueta} conserva o entrena con los datos",
+        )
+    return fila
+
+
+async def _registrar(slug: str, nivel: int, sha: object) -> None:
+    """Anota la huella ya confirmada. Si falla, el cambio de columna sigue."""
+    if not isinstance(sha, str) or len(sha) != 64:
+        raise _falla(
+            503,
+            "capacidades_no_disponibles",
+            "No se pudo leer la declaración del proveedor",
+        )
+    try:
+        await pasarela.aceptar(slug, nivel, sha)
+    except pasarela.PasarelaError as exc:
+        if exc.error == "declaracion_distinta":
+            raise _falla(
+                409,
+                "declaracion_distinta",
+                "La declaración del proveedor cambió. Léala de nuevo y declare otra vez",
+            ) from None
+        logger.warning("no se pudo registrar la declaración aceptada")
+        raise _falla(
+            503,
+            "declaracion_no_registrada",
+            "El cambio quedó guardado, pero la pasarela no registró la declaración. "
+            "Vuelva a enviarla",
+        ) from None
+
+
+async def _purgar(
+    slug: str, actor: uuid.UUID | None, *, reason: str, levels: list[int] | None
+) -> bool:
+    if actor is None:
+        return False
+    try:
+        cuerpo = await pasarela.purgar(slug, actor=actor, reason=reason, levels=levels)
+    except pasarela.PasarelaError:
+        logger.warning("el borrado en el proveedor no quedó pedido")
+        return False
+    return bool(cuerpo.get("accepted")) and isinstance(cuerpo.get("purge_ref"), str)
+
+
+async def _asiento(
+    conn: asyncpg.Connection,
+    *,
+    slug: str,
+    action: str,
+    actor: uuid.UUID | None,
+    payload: dict[str, object],
+) -> None:
+    await audit_core.append(
+        conn,
+        tenant_slug=slug,
+        action=action,
+        object_type="tenant",
+        object_ref=slug,
+        actor=actor,
+        canal=audit_core.CANAL_PETICION,
+        payload=payload,
+    )
+
+
+@router.get(
+    "/config/intelligence",
+    response_model=IntelligenceResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def get_intelligence(
+    request: Request, conn: asyncpg.Connection = Depends(get_tenant_conn)
+) -> IntelligenceResponse:
+    """Proveedor, niveles y metadatos de la entidad (ADR-045 §4)."""
+    slug = request.headers.get("X-Tenant-Slug", "")
+    repo = ConfigRepository(conn)
+    fila = await repo.get_intelligence(slug)
+    if fila is None:
+        raise _falla(404, "tenant_not_found", "La entidad no existe")
+    return _respuesta(fila, await repo.envio_suspendido())
+
+
+@router.put(
+    "/config/intelligence",
+    response_model=IntelligenceResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def set_intelligence(
+    payload: IntelligenceUpdate,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> IntelligenceResponse:
+    """Elige ``local`` o ``ppi``, y enciende o apaga los metadatos de plantilla.
+
+    Pasar a ``ppi`` exige la bandera, la política publicada y una declaración
+    que nombra al proveedor y a sus subencargados. Habilita solo PÚBLICA.
+    Volver a ``local`` no pide nada y no borra lo ya transmitido.
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    repo = ConfigRepository(conn)
+    actor = audit_core.actor_from(request)
+    texto = _texto(payload.transmission_statement)
+    registrar: tuple[int, str] | None = None
+    async with conn.transaction():
+        fila = await repo.lock_intelligence(slug)
+        if fila is None:
+            raise _falla(404, "tenant_not_found", "La entidad no existe")
+        antes = str(fila["intelligence_provider"])
+        quiere = payload.provider if payload.provider is not None else antes
+        meta_antes = bool(fila["intelligence_send_metadata"])
+        meta = payload.send_metadata if payload.send_metadata is not None else meta_antes
+        niveles = _niveles(fila["intelligence_levels"])
+        cambio_proveedor = quiere != antes
+        cambio_meta = meta != meta_antes
+        if quiere != "ppi":
+            if texto and not cambio_proveedor:
+                raise _falla(
+                    422,
+                    "declaracion_no_aplica",
+                    "La declaración solo aplica con el proveedor ppi",
+                )
+            texto = ""
+        redeclara = quiere == "ppi" and antes == "ppi" and bool(texto)
+        if not cambio_proveedor and not cambio_meta and not redeclara:
+            return _respuesta(fila, await repo.envio_suspendido())
+        version: str | None = None
+        sha: str | None = None
+        if quiere == "ppi" and (cambio_proveedor or redeclara):
+            if not fila["asistente_habilitado"]:
+                raise _falla(
+                    409,
+                    "bandera_apagada",
+                    "Encienda el conocimiento de la entidad antes de usar ppi",
+                )
+            if not texto:
+                raise _falla(
+                    422,
+                    "declaracion_requerida",
+                    "Falta la declaración del administrador",
+                )
+            version = await _politica(repo)
+            vista = await _vista(slug)
+            _nombres(texto, declaracion.exigidos_proveedor(vista))
+            _ruta(vista, 1, "PÚBLICA")
+            sha = vista.get("sha256") if isinstance(vista.get("sha256"), str) else None
+            if not isinstance(sha, str) or len(sha) != 64:
+                raise _falla(
+                    503,
+                    "capacidades_no_disponibles",
+                    "No se pudo leer la declaración del proveedor",
+                )
+            if cambio_proveedor:
+                niveles = [1]
+        if cambio_proveedor or cambio_meta or niveles != _niveles(fila["intelligence_levels"]):
+            await repo.set_intelligence(
+                slug, provider=quiere, levels=niveles, send_metadata=meta
+            )
+        if cambio_proveedor or redeclara:
+            await _asiento(
+                conn,
+                slug=slug,
+                action="tenant.intelligence_changed",
+                actor=actor,
+                payload={
+                    "antes": antes,
+                    "despues": quiere,
+                    "transmission_statement": texto or None,
+                    "capabilities_sha256": sha,
+                    "politica_tratamiento_version": version,
+                    "levels_antes": _niveles(fila["intelligence_levels"]),
+                    "levels_despues": niveles,
+                },
+            )
+        if cambio_meta:
+            await _asiento(
+                conn,
+                slug=slug,
+                action="tenant.intelligence_metadata_changed",
+                actor=actor,
+                payload={"antes": meta_antes, "despues": meta},
+            )
+        if sha is not None:
+            registrar = (1, sha)
+        fila = {
+            "intelligence_provider": quiere,
+            "intelligence_levels": niveles,
+            "intelligence_send_metadata": meta,
+        }
+    if registrar is not None:
+        await _registrar(slug, registrar[0], registrar[1])
+    return _respuesta(fila, await repo.envio_suspendido(), changed=True)
+
+
+@router.put(
+    "/config/intelligence/levels",
+    response_model=IntelligenceResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def set_intelligence_level(
+    payload: IntelligenceLevelUpdate,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> IntelligenceResponse:
+    """Habilita o deshabilita RESERVADA o CLASIFICADA, un nivel por vez.
+
+    Habilitar nombra la ruta, los modelos y los subencargados de ese nivel.
+    Deshabilitar es inmediato y ordena el borrado de lo ya transmitido.
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    repo = ConfigRepository(conn)
+    actor = audit_core.actor_from(request)
+    texto = _texto(payload.statement)
+    etiqueta = "RESERVADA" if payload.level == 2 else "CLASIFICADA"
+    registrar: tuple[int, str] | None = None
+    purgar = False
+    async with conn.transaction():
+        fila = await repo.lock_intelligence(slug)
+        if fila is None:
+            raise _falla(404, "tenant_not_found", "La entidad no existe")
+        niveles = _niveles(fila["intelligence_levels"])
+        ya = payload.level in niveles
+        if payload.enabled == ya and not (payload.enabled and texto):
+            return _respuesta(fila, await repo.envio_suspendido())
+        version: str | None = None
+        sha: str | None = None
+        if payload.enabled:
+            if fila["intelligence_provider"] != "ppi":
+                raise _falla(
+                    409,
+                    "proveedor_local",
+                    "Habilitar un nivel exige que la entidad use ppi",
+                )
+            if not fila["asistente_habilitado"]:
+                raise _falla(
+                    409,
+                    "bandera_apagada",
+                    "Encienda el conocimiento de la entidad antes de habilitar el nivel",
+                )
+            version = await _politica(repo)
+            vista = await _vista(slug)
+            exigidos = declaracion.exigidos_nivel(vista, payload.level)
+            if exigidos is None:
+                raise _falla(
+                    409,
+                    "nivel_no_declarado",
+                    f"El proveedor no declara la ruta de {etiqueta}",
+                )
+            _ruta(vista, payload.level, etiqueta)
+            _nombres(texto, exigidos)
+            sha = vista.get("sha256") if isinstance(vista.get("sha256"), str) else None
+            if not isinstance(sha, str) or len(sha) != 64:
+                raise _falla(
+                    503,
+                    "capacidades_no_disponibles",
+                    "No se pudo leer la declaración del proveedor",
+                )
+            nuevos = sorted(set(niveles) | {payload.level})
+        else:
+            nuevos = [nivel for nivel in niveles if nivel != payload.level]
+            texto = ""
+            purgar = True
+        if nuevos != niveles:
+            await repo.set_intelligence(
+                slug,
+                provider=str(fila["intelligence_provider"]),
+                levels=nuevos,
+                send_metadata=bool(fila["intelligence_send_metadata"]),
+            )
+        await _asiento(
+            conn,
+            slug=slug,
+            action="tenant.intelligence_level_enabled",
+            actor=actor,
+            payload={
+                "level": payload.level,
+                "antes": ya,
+                "despues": payload.enabled,
+                "transmission_statement": texto or None,
+                "capabilities_sha256": sha,
+                "politica_tratamiento_version": version,
+            },
+        )
+        if sha is not None:
+            registrar = (payload.level, sha)
+        fila = {
+            "intelligence_provider": fila["intelligence_provider"],
+            "intelligence_levels": nuevos,
+            "intelligence_send_metadata": fila["intelligence_send_metadata"],
+        }
+    if registrar is not None:
+        await _registrar(slug, registrar[0], registrar[1])
+    purge: Literal["accepted", "pending", "not_applicable"] = "not_applicable"
+    if purgar:
+        ok = await _purgar(slug, actor, reason="host_request", levels=[payload.level])
+        purge = "accepted" if ok else "pending"
+    return _respuesta(fila, await repo.envio_suspendido(), changed=True, purge=purge)
+
+
+@router.post(
+    "/config/intelligence/withdraw",
+    response_model=WithdrawResponse,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=3))],
+)
+async def withdraw_intelligence(
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> WithdrawResponse:
+    """Pide al proveedor el borrado de todo lo de la entidad y deja asiento.
+
+    No cambia el proveedor. El asiento se escribe solo si el proveedor acepta.
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    repo = ConfigRepository(conn)
+    actor = audit_core.actor_from(request)
+    async with conn.transaction():
+        fila = await repo.lock_intelligence(slug)
+        if fila is None:
+            raise _falla(404, "tenant_not_found", "La entidad no existe")
+    if actor is None:
+        raise _falla(403, "forbidden", "Falta la identidad del administrador")
+    try:
+        cuerpo = await pasarela.purgar(slug, actor=actor, reason="withdrawn", levels=None)
+    except pasarela.PasarelaError:
+        raise _falla(
+            502,
+            "purga_no_aceptada",
+            "El proveedor no aceptó el borrado. No quedó asiento",
+        ) from None
+    ref = cuerpo.get("purge_ref")
+    if not cuerpo.get("accepted") or not isinstance(ref, str) or not ref:
+        raise _falla(
+            502,
+            "purga_no_aceptada",
+            "El proveedor no aceptó el borrado. No quedó asiento",
+        )
+    async with conn.transaction():
+        await _asiento(
+            conn,
+            slug=slug,
+            action="tenant.intelligence_withdrawn",
+            actor=actor,
+            payload={"purge_ref": ref},
+        )
+    return WithdrawResponse(purge_ref=ref)

@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     ppi_capabilities_kid: str = ""
     # Origen público de las dos URL de retorno. Vacío: no se declara la conexión.
     ppi_callback_base_url: str = ""
+    # Vacío: las rutas internas que usa el acto de configuración rechazan
+    # toda llamada. No es el token de document-service.
+    intelligence_internal_token: str = ""
 
 
 settings = Settings()

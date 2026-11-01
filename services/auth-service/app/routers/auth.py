@@ -16,6 +16,7 @@ from orpycamcp_common.tenant import (
     ERROR_ESTADO_NO_DISPONIBLE,
     ERRORES_ENTIDAD,
     asistente_habilitado,
+    intelligence_provider,
 )
 
 from app.core.database import get_db_conn, get_optional_tenant_conn
@@ -292,16 +293,22 @@ async def me(
     # consultan tenant-service). Falla cerrado: sin tenant o con el registro caído,
     # apagado — `/me` no se rompe por esto.
     asistente = False
+    proveedor = "local"
     if conn is not None and user_info.tenant_slug:
         try:
             asistente = await asistente_habilitado(conn, user_info.tenant_slug)
         except Exception:  # noqa: BLE001 — no poder saberlo se responde como «apagado»
             logger.warning("no se pudo leer asistente_habilitado en /me", exc_info=True)
+        try:
+            proveedor = await intelligence_provider(conn, user_info.tenant_slug)
+        except Exception:  # noqa: BLE001 — no poder saberlo se responde como «local»
+            logger.warning("no se pudo leer intelligence_provider en /me", exc_info=True)
 
     return user_info.model_copy(
         update={
             "permissions": permissions,
             "permission_levels": permission_levels,
             "asistente_habilitado": asistente,
+            "intelligence_provider": proveedor,
         }
     )

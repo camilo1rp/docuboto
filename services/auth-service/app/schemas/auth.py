@@ -74,6 +74,12 @@ class UserInfoResponse(BaseModel):
     vuelve a leerlo de la base en cada consulta. Fail-closed: ``False`` sin
     contexto de tenant o si el registro no responde.
     """
+    intelligence_provider: Literal["local", "ppi"] = "local"
+    """Proveedor de inteligencia de la entidad (ADR-045). ``local`` si no se pudo leer.
+
+    La UI lo usa para decidir qué mostrar. knowledge-service vuelve a leer la
+    columna en cada envío. ``ALLOWED_AZP`` no cambia.
+    """
     permission_levels: dict[str, int] = Field(default_factory=dict)
     """CRUD level (0-5) per permission name — same keys as ``permissions``, added
     so consumers can distinguish read from write access (RF-SEG-03) instead of

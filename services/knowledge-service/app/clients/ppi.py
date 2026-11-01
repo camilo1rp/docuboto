@@ -21,6 +21,7 @@ from typing import Any, Protocol
 RUTA_INGEST = "/v1/ingest"
 RUTA_QUERY = "/v1/query"
 RUTA_INVENTARIO = "/v1/ingest/inventory"
+RUTA_PURGA = "/v1/ingest/purge"
 RUTA_CAPACIDADES = "/v1/capabilities"
 RUTA_CONEXION = "/v1/connection"
 
@@ -84,5 +85,18 @@ class ClientePpi:
         return await self._transporte.request(
             "PUT",
             f"{self._base_url}{RUTA_CONEXION}",
+            json=cuerpo,
+        )
+
+    @property
+    def destino_purga(self) -> str:
+        """URL del borrado por niveles o de toda la entidad. La anota el libro."""
+        return f"{self._base_url}{RUTA_PURGA}"
+
+    async def purgar(self, cuerpo: dict[str, Any]) -> Any:
+        """POST /v1/ingest/purge. Borra lo que el proveedor conserva."""
+        return await self._transporte.request(
+            "POST",
+            self.destino_purga,
             json=cuerpo,
         )

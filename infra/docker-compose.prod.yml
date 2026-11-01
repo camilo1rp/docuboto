@@ -470,6 +470,9 @@ services:
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Vacío: pasar a ppi responde que la pasarela no está configurada.
+      KNOWLEDGE_SERVICE_URL: http://knowledge-service:8011
+      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
     networks:
       - orpycamcp-net
     expose:
@@ -893,6 +896,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
     networks:
       - orpycamcp-net
     expose:

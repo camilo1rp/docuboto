@@ -190,6 +190,9 @@ export function clearSession() {
  * @property {boolean} [asistente_habilitado]
  *   La entidad activó el asistente (ADR-037). `false` si el backend no pudo
  *   comprobarlo o no lo trae.
+ * @property {"local"|"ppi"} [intelligence_provider]
+ *   Proveedor de inteligencia de la entidad (ADR-045). `local` si /auth/me
+ *   no lo trae o no responde.
  * @property {{user_id: string, active_depe_id: number|null, available_depts: Array<object>}|null} [context]
  *   Contexto de dependencia activa (E08/ADR-013) — cargado por
  *   `(app)/+layout.server.js`, consumido por `DependencySwitcher.svelte`.

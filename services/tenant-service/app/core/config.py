@@ -49,5 +49,11 @@ class Settings(BaseSettings):
     # `app/core/internal_auth.py` para el razonamiento completo.
     internal_service_token: str = ""
 
+    # Acto de configuración de la pasarela (ADR-045 §4). Vacío: pasar a `ppi`,
+    # habilitar un nivel o retirar datos responde que la pasarela no está
+    # configurada. No es una URL del proveedor.
+    knowledge_service_url: str = "http://knowledge-service:8011"
+    intelligence_internal_token: str = ""
+
 
 settings = Settings()

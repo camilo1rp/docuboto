@@ -13,10 +13,15 @@ Relee la bandera, el proveedor, la suspensión y el nivel vivo en el momento de
 enviar. El nivel que traía el evento no se usa. Si no puede salir, no hay
 llamada. La sensibilidad del cuerpo que sí sale es la del nivel releído.
 
-El borrado no usa esa misma pregunta: con el interruptor encendido, un
-radicado anulado, purgado o de un nivel ya no habilitado ordena borrar. Con
-el interruptor apagado no hay ninguna llamada. Cada llamada que ocurre deja
-una fila en el libro de envíos.
+El borrado de un radicado no usa esa misma pregunta: con el interruptor
+encendido, un radicado anulado, purgado o de un nivel ya no habilitado ordena
+borrar. Con el interruptor apagado esa llamada no sale.
+
+Dos llamadas no transmiten registros y por eso no miran el interruptor: leer
+la declaración firmada (el administrador la nombra antes de pasar a ``ppi`` y
+otra vez con el envío suspendido) y ordenar el borrado de lo ya transmitido
+(al deshabilitar un nivel, o al retirar los datos con la entidad en ``local``).
+Cada llamada que ocurre deja una fila en el libro de envíos.
 """
 
 from __future__ import annotations
@@ -93,6 +98,11 @@ class _Salida(Protocol):
 
     async def declarar(self, cuerpo: dict[str, Any]) -> Any: ...
 
+    @property
+    def destino_purga(self) -> str: ...
+
+    async def purgar(self, cuerpo: dict[str, Any]) -> Any: ...
+
 
 class _SinDestino:
     """No hay URL de proveedor. Llamar es un fallo, no un envío silencioso."""
@@ -112,6 +122,11 @@ class _SinDestino:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
     async def declarar(self, cuerpo: dict[str, Any]) -> Any:
+        raise RuntimeError("PPI_PROVIDER_URL no está definido")
+
+    destino_purga = ""
+
+    async def purgar(self, cuerpo: dict[str, Any]) -> Any:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
 
@@ -551,3 +566,109 @@ async def declarar(conn: Any, slug: str, cliente: _Salida, cuerpo: dict[str, Any
     if not isinstance(recibido, dict):
         return Respuesta(False, "proveedor", None)
     return Respuesta(True, "ok", recibido)
+
+
+async def leer_declaracion(cliente: _Salida) -> Respuesta:
+    """La declaración firmada, también con el interruptor apagado.
+
+    No transmite registros. La pide el acto de configuración, antes de pasar
+    a ``ppi`` y otra vez cuando el envío está suspendido. Sin URL no llama.
+    """
+    if not getattr(cliente, "destino", ""):
+        return Respuesta(False, "destino", None)
+    try:
+        recibido = await cliente.capacidades()
+    except Exception:
+        logger.warning("la declaración no respondió")
+        return Respuesta(False, "proveedor", None)
+    if not isinstance(recibido, dict):
+        return Respuesta(False, "proveedor", None)
+    return Respuesta(True, "ok", recibido)
+
+
+_CODIGO = {1: "public", 2: "reserved", 3: "classified"}
+
+
+async def purgar(
+    conn: Any,
+    slug: str,
+    cliente: _Salida,
+    *,
+    razon: str,
+    actor: uuid.UUID,
+    niveles: tuple[int, ...] | None,
+) -> Respuesta:
+    """Ordena el borrado de lo ya transmitido. No mira el interruptor.
+
+    Sin ``niveles`` borra todo lo de la entidad (``withdrawn``). Con niveles,
+    solo esos (``host_request``). El seudónimo del administrador va en
+    ``requested_by``. Sin URL, sin clave o con el proveedor caído no lanza:
+    quien llama decide si el acto quedó pendiente.
+    """
+    if not getattr(cliente, "destino", ""):
+        return Respuesta(False, "destino", None)
+    destino = getattr(cliente, "destino_purga", "")
+    if not isinstance(destino, str) or not destino:
+        return Respuesta(False, "destino", None)
+    filas = _filas_purga(razon, niveles)
+    if filas is None:
+        return Respuesta(False, "nivel", None)
+    clave = await abrir_seudonimo(conn, slug)
+    if clave is None:
+        return Respuesta(False, "seudonimo", None)
+    cuerpo: dict[str, Any] = {"reason": razon, "requested_by": referenciar(clave, actor)}
+    if niveles:
+        cuerpo["levels"] = [_CODIGO[nivel] for nivel, _ref in filas]
+    try:
+        recibido = await cliente.purgar(cuerpo)
+    except Exception:
+        logger.warning("el borrado en el proveedor no quedó aceptado")
+        await _anotar_purga(conn, filas, cuerpo, destino, "error")
+        return Respuesta(False, "proveedor", None)
+    if not isinstance(recibido, dict) or not isinstance(recibido.get("purge_ref"), str):
+        await _anotar_purga(conn, filas, cuerpo, destino, "error")
+        return Respuesta(False, "proveedor", None)
+    if not await _anotar_purga(conn, filas, cuerpo, destino, "accepted"):
+        return Respuesta(False, "libro", None)
+    return Respuesta(True, "ok", {"purge_ref": recibido["purge_ref"]})
+
+
+def _filas_purga(razon: str, niveles: tuple[int, ...] | None) -> list[tuple[int, str]] | None:
+    if niveles is None:
+        if razon != "withdrawn":
+            return None
+        return [(1, "tenant")]
+    if razon != "host_request" or not niveles:
+        return None
+    vistos: list[int] = []
+    filas: list[tuple[int, str]] = []
+    for nivel in niveles:
+        if nivel not in _CODIGO or nivel in vistos:
+            return None
+        vistos.append(nivel)
+        filas.append((nivel, f"level:{_CODIGO[nivel]}"))
+    return filas
+
+
+async def _anotar_purga(
+    conn: Any,
+    filas: list[tuple[int, str]],
+    cuerpo: dict[str, Any],
+    destino: str,
+    result: str,
+) -> bool:
+    for nivel, ref in filas:
+        try:
+            await _anotar(
+                conn,
+                operation="purge",
+                record_ref=ref,
+                level=nivel,
+                cuerpo=cuerpo,
+                destino=destino,
+                result=result,
+            )
+        except Exception:
+            logger.warning("el libro no registró el borrado", exc_info=True)
+            return False
+    return True

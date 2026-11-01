@@ -158,3 +158,50 @@ class ConfigRepository:
         await self._conn.execute(
             "UPDATE public.tenants SET asistente_habilitado = $2 WHERE slug = $1", slug, habilitado
         )
+
+    # --- inteligencia por entidad (ADR-045 §4) --------------------------------
+    async def get_intelligence(self, slug: str) -> asyncpg.Record | None:
+        return await self._conn.fetchrow(_INTELIGENCIA, slug)
+
+    async def lock_intelligence(self, slug: str) -> asyncpg.Record | None:
+        """Fila bloqueada ``FOR UPDATE``. None si la entidad no existe."""
+        return await self._conn.fetchrow(_INTELIGENCIA_LOCK, slug)
+
+    async def set_intelligence(
+        self,
+        slug: str,
+        *,
+        provider: str,
+        levels: list[int],
+        send_metadata: bool,
+    ) -> None:
+        await self._conn.execute(
+            """
+            UPDATE public.tenants
+               SET intelligence_provider = $2,
+                   intelligence_levels = $3::smallint[],
+                   intelligence_send_metadata = $4
+             WHERE slug = $1
+            """,
+            slug,
+            provider,
+            levels,
+            send_metadata,
+        )
+
+    async def envio_suspendido(self) -> bool:
+        """True si la pasarela suspendió el envío. Sin fila, no está suspendido."""
+        valor = await self._conn.fetchval(
+            "SELECT send_suspended FROM intelligence_state WHERE id = 1"
+        )
+        return bool(valor)
+
+
+_INTELIGENCIA = """
+SELECT asistente_habilitado, intelligence_provider, intelligence_levels,
+       intelligence_send_metadata
+  FROM public.tenants
+ WHERE slug = $1
+"""
+
+_INTELIGENCIA_LOCK = _INTELIGENCIA + " FOR UPDATE"
