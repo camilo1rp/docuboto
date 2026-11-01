@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 from orpycamcp_common.rbac import resolve_caller_clearance
 
-from app.core import paso
+from app.core import medidor, paso
 from app.core.rechequeo import (
     Afirmacion,
     Descarte,
@@ -91,6 +91,7 @@ class _Intento:
     cuerpo: dict[str, Any] | None
     clearance: int
     habilitados: tuple[int, ...]
+    respaldo: bool = False
 
 
 async def buscar(
@@ -115,14 +116,18 @@ async def buscar(
         plazo=PLAZO_BUSCAR,
     )
     if not intento.delegar or intento.cuerpo is None:
+        if intento.respaldo:
+            await _anotar_respaldo(conn)
         return Busqueda(False)
     hits = intento.cuerpo.get("hits")
     if not isinstance(hits, list):
+        await _anotar_respaldo(conn)
         return Busqueda(False)
     try:
         vivos = await leer_vivos(conn, _ids(hits, "citation"))
     except Exception:
         logger.warning("no se pudo rechequear la búsqueda; responde el índice local")
+        await _anotar_respaldo(conn)
         return Busqueda(False)
     utiles, descartes = filtrar_busqueda(
         hits,
@@ -158,19 +163,23 @@ async def preguntar(
     if not intento.delegar:
         return _PREGUNTA_LOCAL
     if intento.cuerpo is None:
+        await _anotar_respaldo(conn)
         return _PREGUNTA_FALLO
     estado = intento.cuerpo.get("status")
     if estado not in ("answered", "insufficient_evidence"):
+        await _anotar_respaldo(conn)
         return _PREGUNTA_FALLO
     claims = intento.cuerpo.get("claims")
     if not isinstance(claims, list):
         claims = [] if estado == "insufficient_evidence" else None
     if claims is None:
+        await _anotar_respaldo(conn)
         return _PREGUNTA_FALLO
     try:
         vivos = await leer_vivos(conn, _ids_de_afirmaciones(claims))
     except Exception:
         logger.warning("no se pudo rechequear la respuesta; responde el índice local")
+        await _anotar_respaldo(conn)
         return _PREGUNTA_FALLO
     afirmaciones, descartes = filtrar_pregunta(
         claims,
@@ -222,12 +231,18 @@ async def _intentar(
         logger.warning("no se pudo leer la política; responde el índice local")
         return vacio
     if not politica.completa or politica.motivo is not None:
-        return vacio
+        return _Intento(
+            False,
+            None,
+            1,
+            politica.niveles if politica.completa else (),
+            politica.completa and politica.motivo == "suspendido",
+        )
     try:
         clearance = await resolve_caller_clearance(conn, actor)
     except Exception:
         logger.warning("no se pudo leer el clearance; responde el índice local")
-        return _Intento(True, None, 1, politica.niveles)
+        return _Intento(True, None, 1, politica.niveles, True)
     respuesta = await paso.consultar(
         conn,
         slug,
@@ -241,10 +256,14 @@ async def _intentar(
         alcance=alcance,
     )
     if not respuesta.sale or not isinstance(respuesta.cuerpo, dict):
-        return _Intento(True, None, clearance, politica.niveles)
+        return _Intento(True, None, clearance, politica.niveles, True)
     if respuesta.cuerpo.get("mode") != modo:
-        return _Intento(True, None, clearance, politica.niveles)
+        return _Intento(True, None, clearance, politica.niveles, True)
     return _Intento(True, respuesta.cuerpo, clearance, politica.niveles)
+
+
+async def _anotar_respaldo(conn: Any) -> None:
+    await medidor.anotar(conn, medidor.RESPALDO, medidor.RAZON_RESPALDO)
 
 
 def _respuesta(afirmaciones: list[Afirmacion]) -> Pregunta:

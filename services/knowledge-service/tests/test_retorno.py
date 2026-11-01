@@ -102,6 +102,11 @@ class _Conn:
         self.anexo = _FILA if anexo is _OMITIDO else anexo
         self.credencial = credencial
         self.sql: list[str] = []
+        self.escrituras: list[tuple[Any, ...]] = []
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        self.escrituras.append(args)
+        return "OK"
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
         self.sql.append(sql)
@@ -224,24 +229,24 @@ async def test_un_nivel_no_habilitado_da_410_sin_pedir_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reservada = {"sha256": SHA, "nivel_seguridad": 2, "status": "radicado"}
-    pedidos = _montar(
-        monkeypatch, _Conn(credencial=_credencial(), anexo=reservada), _Redis(), OCTETOS
-    )
+    conn = _Conn(credencial=_credencial(), anexo=reservada)
+    pedidos = _montar(monkeypatch, conn, _Redis(), OCTETOS)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-de-nivel-02"))
     assert resp.status_code == 410
     assert resp.json()["code"] == "gone"
     assert pedidos == []
+    assert conn.escrituras == [("barrier", "nivel")]
 
 
 async def test_en_local_no_pide_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
-    pedidos = _montar(
-        monkeypatch, _Conn(proveedor="local", credencial=_credencial()), _Redis(), OCTETOS
-    )
+    conn = _Conn(proveedor="local", credencial=_credencial())
+    pedidos = _montar(monkeypatch, conn, _Redis(), OCTETOS)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-en-local-01"))
     assert resp.status_code == 410
     assert pedidos == []
+    assert conn.escrituras == []
 
 
 async def test_un_localizador_desconocido_da_404(monkeypatch: pytest.MonkeyPatch) -> None:

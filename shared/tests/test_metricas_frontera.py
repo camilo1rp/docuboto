@@ -15,7 +15,8 @@ enruta y ninguna familia puede llevar identidad.
 
 Mutaciones que deben caer (descritas, no ejecutadas):
 
-* añadir `metrics.py` a un séptimo servicio → `test_el_conjunto_de_servicios_con_metrics_es_el_admitido`;
+* añadir `metrics.py` a un servicio que no está en la lista →
+  `test_el_conjunto_de_servicios_con_metrics_es_el_admitido`;
 * una segunda ruta (o un POST) en un `metrics.py` → `test_cada_metrics_declara_solo_get_metrics`
   (de eso depende que `test_toda_ruta_lleva_gate` lo pueda eximir);
 * una etiqueta `tenant`/`slug`/`user_id` en `FAMILIAS` → `test_ninguna_familia_lleva_identidad`;
@@ -42,6 +43,7 @@ ADMITIDOS = {
     "workflow-service": {"dlq"},
     "signature-service": {"dlq"},
     "notification-service": {"dlq"},
+    "knowledge-service": {"intelligence"},
 }
 
 

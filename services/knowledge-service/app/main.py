@@ -23,6 +23,7 @@ from app.core.database import close_pool, create_pool
 from app.core.redis_client import close_redis, init_redis
 from app.routers.health import router as health_router
 from app.routers.knowledge import router as knowledge_router
+from app.routers.metrics import router as metrics_router
 from app.routers.retorno import Problema, respuesta_problema
 from app.routers.retorno import router as retorno_router
 from app.workers import intelligence_consumer
@@ -77,3 +78,4 @@ app.add_exception_handler(Problema, respuesta_problema)
 app.include_router(knowledge_router)
 app.include_router(retorno_router)
 app.include_router(health_router)
+app.include_router(metrics_router)  # ADR-041: GET /metrics, nunca vía gateway

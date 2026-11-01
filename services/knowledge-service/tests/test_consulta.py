@@ -77,8 +77,10 @@ class _Conn:
         self.niveles = [1] if niveles is None else niveles
         self.bandera = bandera
         self.suspendido = suspendido
+        self.escrituras: list[tuple[Any, ...]] = []
 
     async def execute(self, sql: str, *args: Any) -> str:
+        self.escrituras.append(args)
         return "OK"
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
@@ -176,8 +178,9 @@ def test_una_afirmacion_sin_citas_vivas_no_se_muestra() -> None:
 async def test_en_local_no_hay_llamada(monkeypatch: pytest.MonkeyPatch) -> None:
     _kek(monkeypatch)
     transporte = _Transporte()
+    conn = _Conn(credencial=_credencial(), filas=[], proveedor="local")
     resultado = await consulta.buscar(
-        _Conn(credencial=_credencial(), filas=[], proveedor="local"),
+        conn,
         "demo",
         _cliente(transporte),
         texto="contrato",
@@ -186,6 +189,7 @@ async def test_en_local_no_hay_llamada(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert resultado.delegada is False
     assert transporte.llamadas == []
+    assert conn.escrituras == []
 
 
 async def test_la_consulta_lleva_seudonimo_y_clearance_acotado(
@@ -256,8 +260,9 @@ async def test_si_el_proveedor_no_responde_buscar_vuelve_al_indice(
 ) -> None:
     _kek(monkeypatch)
     transporte = _Transporte(error=TimeoutError("plazo"))
+    conn = _Conn(credencial=_credencial(), filas=[])
     resultado = await consulta.buscar(
-        _Conn(credencial=_credencial(), filas=[]),
+        conn,
         "demo",
         _cliente(transporte),
         texto="contrato",
@@ -266,6 +271,7 @@ async def test_si_el_proveedor_no_responde_buscar_vuelve_al_indice(
     )
     assert resultado.delegada is False
     assert len(transporte.llamadas) == 1
+    assert conn.escrituras == [("fallback", "local")]
 
 
 async def test_sin_clave_de_seudonimo_no_hay_llamada(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -349,8 +355,9 @@ async def test_preguntar_si_el_proveedor_falla_pide_el_respaldo(
 ) -> None:
     _kek(monkeypatch)
     transporte = _Transporte(error=RuntimeError("500"))
+    conn = _Conn(credencial=_credencial(), filas=[])
     resultado = await consulta.preguntar(
-        _Conn(credencial=_credencial(), filas=[]),
+        conn,
         "demo",
         _cliente(transporte),
         texto="¿cuál es el plazo?",
@@ -360,13 +367,15 @@ async def test_preguntar_si_el_proveedor_falla_pide_el_respaldo(
     assert resultado.delegada is True
     assert resultado.fallo is True
     assert resultado.advisory == NO_DISPONIBLE
+    assert conn.escrituras == [("fallback", "local")]
 
 
 async def test_en_local_preguntar_no_delega(monkeypatch: pytest.MonkeyPatch) -> None:
     _kek(monkeypatch)
     transporte = _Transporte()
+    conn = _Conn(credencial=_credencial(), filas=[], proveedor="local")
     resultado = await consulta.preguntar(
-        _Conn(credencial=_credencial(), filas=[], proveedor="local"),
+        conn,
         "demo",
         _cliente(transporte),
         texto="¿cuál es el plazo?",
@@ -375,6 +384,38 @@ async def test_en_local_preguntar_no_delega(monkeypatch: pytest.MonkeyPatch) -> 
     )
     assert resultado.delegada is False
     assert transporte.llamadas == []
+    assert conn.escrituras == []
+
+
+async def test_suspendido_buscar_anota_el_respaldo(monkeypatch: pytest.MonkeyPatch) -> None:
+    _kek(monkeypatch)
+    transporte = _Transporte()
+    conn = _Conn(credencial=_credencial(), filas=[], suspendido=True)
+    resultado = await consulta.buscar(
+        conn, "demo", _cliente(transporte), texto="contrato", limite=5, actor=ACTOR
+    )
+    assert resultado.delegada is False
+    assert transporte.llamadas == []
+    assert conn.escrituras == [("fallback", "local")]
+
+
+async def test_suspendido_preguntar_no_cuenta_como_respaldo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _kek(monkeypatch)
+    transporte = _Transporte()
+    conn = _Conn(credencial=_credencial(), filas=[], suspendido=True)
+    resultado = await consulta.preguntar(
+        conn,
+        "demo",
+        _cliente(transporte),
+        texto="¿cuál es el plazo?",
+        limite=5,
+        actor=ACTOR,
+    )
+    assert resultado.delegada is False
+    assert resultado.fallo is False
+    assert conn.escrituras == []
 
 
 async def test_search_publica_el_origen_cuando_delega(

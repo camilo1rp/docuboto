@@ -31,6 +31,7 @@ from typing import Any, Protocol
 from orpycamcp_common.tenant import slug_valido
 
 from app.clients.ppi import ClientePpi
+from app.core import medidor
 from app.core.clearance import motivo_interruptor, motivo_salida
 from app.core.seudonimo import abrir as abrir_seudonimo
 from app.core.seudonimo import referenciar
@@ -327,6 +328,8 @@ async def enviar(
         nivel_vivo=nivel,
     )
     if motivo is not None:
+        if motivo in medidor.RAZONES_BARRERA:
+            await medidor.anotar(conn, medidor.BARRERA, motivo)
         return Decision(False, motivo)
 
     sensibilidad = _SENSIBILIDAD[int(nivel)]

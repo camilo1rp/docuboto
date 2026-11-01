@@ -141,8 +141,8 @@ def test_render_rechaza_lo_que_no_esta_en_el_registro(muestra: Muestra) -> None:
         metricas.render([muestra])
 
 
-def test_control_positivo_el_registro_tiene_las_nueve_familias() -> None:
-    assert len(FAMILIAS) == 9
+def test_control_positivo_el_registro_tiene_las_familias_admitidas() -> None:
+    assert len(FAMILIAS) == 13
     for nombre in FAMILIAS:
         assert nombre.startswith("orpycamcp_")
 

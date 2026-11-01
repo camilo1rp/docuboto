@@ -21,8 +21,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from app.core import paso
-from app.core.clearance import puede_salir
+from app.core import medidor, paso
+from app.core.clearance import motivo_salida
 
 _LOCALIZADOR = re.compile(
     r"^att:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):([0-9a-f]{64})$"
@@ -77,6 +77,8 @@ async def resolver(conn: Any, slug: str, locator: str) -> Pieza | Rechazo:
         return Rechazo(400, "invalid_request", "El pedido no tiene la forma acordada")
     politica = await paso.leer_politica(conn, slug)
     if not politica.completa or politica.motivo is not None:
+        if politica.completa and politica.motivo in medidor.RAZONES_BARRERA:
+            await medidor.anotar(conn, medidor.BARRERA, politica.motivo)
         return Rechazo(410, "gone", "Ya no se transmite")
     fila = await conn.fetchrow(_ANEXO, uuid.UUID(hallado.group(1)))
     if fila is None:
@@ -85,12 +87,15 @@ async def resolver(conn: Any, slug: str, locator: str) -> Pieza | Rechazo:
     if huella != hallado.group(2):
         return Rechazo(410, "gone", "Ya no se transmite")
     nivel = None if str(fila["status"]) == "anulado" else fila["nivel_seguridad"]
-    if not puede_salir(
+    motivo = motivo_salida(
         bandera=politica.bandera,
         proveedor=politica.proveedor,
         niveles_habilitados=politica.niveles,
         suspendido=politica.suspendido,
         nivel_vivo=nivel,
-    ):
+    )
+    if motivo is not None:
+        if motivo in medidor.RAZONES_BARRERA:
+            await medidor.anotar(conn, medidor.BARRERA, motivo)
         return Rechazo(410, "gone", "Ya no se transmite")
     return Pieza(uuid.UUID(hallado.group(1)), huella)

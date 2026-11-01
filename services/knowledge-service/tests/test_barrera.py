@@ -194,7 +194,12 @@ async def test_sin_permiso_de_salida_no_hay_llamada(cambios: dict[str, Any], mot
     decision = await enviar(conn, "demo", RADICADO, cliente, _cuerpo())
     assert decision.sale is False
     assert decision.motivo == motivo
-    assert conn.escrituras == []
+    anotadas = [args for sql, args in conn.escrituras if "intelligence_meter" in sql]
+    if motivo in {"suspendido", "ausente", "nivel"}:
+        assert anotadas == [("barrier", motivo)]
+    else:
+        assert anotadas == []
+    assert not any("intelligence_send_log" in sql for sql, _args in conn.escrituras)
 
 
 @pytest.mark.asyncio
