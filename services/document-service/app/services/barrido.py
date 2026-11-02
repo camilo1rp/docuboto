@@ -195,7 +195,9 @@ async def drenar_callbacks_diferidos(conn: asyncpg.Connection, slug: str, redis:
     return cerrados
 
 
-async def barrer_tenant(slug: str, redis: Any | None = None) -> dict[str, int]:
+async def barrer_tenant(
+    slug: str, redis: Any | None = None, http: Any | None = None
+) -> dict[str, int]:
     """Las cinco fases sobre un tenant. Cada una aislada de las otras."""
     resumen = {
         "huerfanos": 0,
@@ -218,7 +220,13 @@ async def barrer_tenant(slug: str, redis: Any | None = None) -> dict[str, int]:
                 await conn.fetchval(
                     "SELECT pg_advisory_unlock($1::int, hashtext(current_schema()))", _ESPACIO_LOCK_PURGA
                 )
-        batch = BatchService(conn, slug)
+        from app.clients.tenant_client import TenantServiceClient
+
+        # El cliente permite calcular el plazo por defecto al reanudar un lote.
+        # Sin él, una Entrada con plazo configurado falla el ítem en vez de
+        # nacer sin vencimiento.
+        cliente = TenantServiceClient(http) if http is not None else None
+        batch = BatchService(conn, slug, cliente)
         # 2. lotes interrumpidos
         try:
             resumen["lotes_reanudados"] = await batch.reanudar_interrumpidos(
@@ -255,12 +263,14 @@ async def barrer_tenant(slug: str, redis: Any | None = None) -> dict[str, int]:
     return resumen
 
 
-async def barrer_una_vez(redis: Any | None = None) -> dict[str, dict[str, int]]:
+async def barrer_una_vez(
+    redis: Any | None = None, http: Any | None = None
+) -> dict[str, dict[str, int]]:
     """Una pasada por todos los tenants activos. Devuelve el resumen por slug."""
     resumen: dict[str, dict[str, int]] = {}
     for slug in await tenants_activos(get_pool()):
         try:
-            resumen[slug] = await barrer_tenant(slug, redis)
+            resumen[slug] = await barrer_tenant(slug, redis, http)
         except asyncpg.UndefinedTableError:
             # Tenant sin las migraciones de este servicio: nada que barrer.
             logger.debug("barrido: tenant=%s sin tablas de document-service", slug)
@@ -269,13 +279,13 @@ async def barrer_una_vez(redis: Any | None = None) -> dict[str, dict[str, int]]:
     return resumen
 
 
-async def bucle_de_barrido(redis: Any | None = None) -> None:
+async def bucle_de_barrido(redis: Any | None = None, http: Any | None = None) -> None:
     """Tarea de fondo del `lifespan`: espera un poco y barre cada intervalo."""
     canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
     await asyncio.sleep(settings.barrido_retraso_inicial_segundos)
     while True:
         try:
-            await barrer_una_vez(redis)
+            await barrer_una_vez(redis, http)
         except asyncio.CancelledError:
             raise
         except Exception:

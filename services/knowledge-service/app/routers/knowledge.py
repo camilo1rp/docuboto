@@ -7,12 +7,15 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Pasarela de conocimiento en modo `local`: sin modelos (ADR-046, fase D0).
+"""Pasarela de conocimiento (ADR-045, ADR-046).
 
-`/search` y `/antecedentes` responden con la búsqueda de texto completo de
-document-service, consultada como el usuario (`app/clients/document_search.py`).
-`/rag` responde 503 ``rag_unavailable``: sin proveedor no hay generación, y
-`/availability` se lo dice al frontend antes de que muestre «Sugerir texto».
+Sin proveedor, `/search` y `/antecedentes` responden con la búsqueda de texto
+completo de document-service, consultada como el usuario, y `/rag` responde
+503 ``rag_unavailable``. Con `ppi`, buscar y preguntar delegan: cada cita se
+rechequea y, si el proveedor no responde, vuelve el índice local.
+`/availability` le dice al frontend si hay generación antes de mostrar
+«Sugerir texto». `/transmission` nombra la ruta de cada nivel habilitado
+para que el panel «Preguntar» avise antes de que salga el texto.
 
 La bandera de la entidad y ``PERM_CONOCIMIENTO`` (ADR-037) gobiernan todas las rutas.
 """
@@ -27,7 +30,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.clients import document_search
+from app.core import aceptacion, consulta, paso
 from app.core.clearance import get_actor, require_asistente_habilitado, require_permission
+from app.core.config import settings
+from app.core.database import get_tenant_conn
+from app.core.salida_http import transporte_de_consulta
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 
@@ -38,6 +45,7 @@ LOCAL_INDEX = "local_index"
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=2)
     top_k: int = Field(default=5, ge=1, le=50)
+    record_ref: uuid.UUID | None = None
 
 
 class SearchHit(BaseModel):
@@ -47,7 +55,7 @@ class SearchHit(BaseModel):
     texto: str
     metadata: dict[str, Any]
     score: float
-    origin: Literal["local_index"] = LOCAL_INDEX
+    origin: Literal["local_index", "ppi"] = LOCAL_INDEX
 
 
 def _a_search_hit(hit: dict[str, Any]) -> SearchHit:
@@ -73,15 +81,54 @@ def _a_search_hit(hit: dict[str, Any]) -> SearchHit:
         Depends(get_actor),
     ],
 )
-async def search(payload: SearchRequest, request: Request) -> list[SearchHit]:
+async def search(
+    payload: SearchRequest,
+    request: Request,
+    conn: Any = Depends(get_tenant_conn),
+) -> list[SearchHit]:
+    delegada = await consulta.buscar(
+        conn,
+        _slug(request),
+        _cliente(),
+        texto=payload.query,
+        limite=payload.top_k,
+        actor=await get_actor(request),
+        alcance=payload.record_ref,
+    )
+    if delegada.delegada:
+        return [_hit_delegado(h) for h in delegada.hallazgos]
     hits = await document_search.search(request, q=payload.query, size=payload.top_k)
     return [_a_search_hit(h) for h in hits]
+
+
+def _hit_delegado(hallazgo: consulta.Hallazgo) -> SearchHit:
+    return SearchHit(
+        id=hallazgo.id,
+        source_type="radicado",
+        source_ref=hallazgo.tracking,
+        texto=hallazgo.texto,
+        metadata={"page": hallazgo.page, "attachment_ref": hallazgo.attachment_ref},
+        score=hallazgo.score,
+        origin="ppi",
+    )
+
+
+def _slug(request: Request) -> str:
+    return request.headers.get("X-Tenant-Slug") or ""
+
+
+def _cliente() -> Any:
+    return paso.destino_de(settings.ppi_provider_url, transporte_de_consulta())
 
 
 ANTECEDENTES_ADVISORY = (
     "Resultados del índice local (búsqueda de texto completo de los radicados): son "
     "pistas a confirmar, no la fuente autoritativa. Verifique cada hecho contra el "
     "radicado fuente (`source_ref`) antes de afirmarlo."
+)
+ANTECEDENTES_ADVISORY_PPI = (
+    "Resultados del proveedor de inteligencia, ya rechequeados contra el registro. "
+    "Verifique cada hecho contra el radicado fuente (`source_ref`) antes de afirmarlo."
 )
 
 
@@ -112,7 +159,7 @@ class Antecedente(BaseModel):
 class AntecedentesResponse(BaseModel):
     antecedentes: list[Antecedente]
     advisory: str = ANTECEDENTES_ADVISORY
-    origin: Literal["local_index"] = LOCAL_INDEX
+    origin: Literal["local_index", "ppi"] = LOCAL_INDEX
 
 
 def _antecedentes_source_not_found() -> HTTPException:
@@ -153,8 +200,14 @@ def _consulta_desde_asunto(asunto: str) -> str:
         Depends(get_actor),
     ],
 )
-async def antecedentes(payload: AntecedentesRequest, request: Request) -> AntecedentesResponse:
+async def antecedentes(
+    payload: AntecedentesRequest,
+    request: Request,
+    conn: Any = Depends(get_tenant_conn),
+) -> AntecedentesResponse:
     """Antecedentes por texto o por radicado, citados con su ``source_ref``."""
+    excluir: str | None = None
+    texto: str | None = payload.query
     if payload.radicado_ref is not None:
         if payload.source_type != "radicado":
             raise _antecedentes_source_not_found()
@@ -164,15 +217,44 @@ async def antecedentes(payload: AntecedentesRequest, request: Request) -> Antece
         )
         if pivote is None:
             raise _antecedentes_source_not_found()
-        consulta = _consulta_desde_asunto(pivote["subject"])
-        if not consulta:
+        texto = _consulta_desde_asunto(pivote["subject"])
+        if not texto:
             return AntecedentesResponse(antecedentes=[])
+        excluir = str(pivote["id"])
+
+    assert texto is not None  # query, o el asunto del pivote
+    actor = await get_actor(request)
+    limite = payload.top_k + 1 if excluir is not None else payload.top_k
+    delegada = await consulta.buscar(
+        conn,
+        _slug(request),
+        _cliente(),
+        texto=texto,
+        limite=limite,
+        actor=actor,
+    )
+    if delegada.delegada:
+        hallazgos = [h for h in delegada.hallazgos if str(h.id) != excluir][: payload.top_k]
+        return AntecedentesResponse(
+            antecedentes=[
+                Antecedente(
+                    source_type="radicado",
+                    source_ref=h.tracking,
+                    snippet=h.texto,
+                    score=h.score,
+                )
+                for h in hallazgos
+            ],
+            advisory=ANTECEDENTES_ADVISORY_PPI,
+            origin="ppi",
+        )
+
+    if excluir is not None:
         # top_k + 1: el propio pivote suele ser el mejor resultado y se excluye.
-        hits = await document_search.search(request, q=consulta, size=payload.top_k + 1)
-        hits = [h for h in hits if str(h["id"]) != str(pivote["id"])][: payload.top_k]
+        hits = await document_search.search(request, q=texto, size=payload.top_k + 1)
+        hits = [h for h in hits if str(h["id"]) != excluir][: payload.top_k]
     else:
-        assert payload.query is not None  # garantizado por el validador XOR
-        hits = await document_search.search(request, q=payload.query, size=payload.top_k)
+        hits = await document_search.search(request, q=texto, size=payload.top_k)
 
     return AntecedentesResponse(
         antecedentes=[
@@ -190,20 +272,29 @@ async def antecedentes(payload: AntecedentesRequest, request: Request) -> Antece
 class RagRequest(BaseModel):
     query: str = Field(..., min_length=2)
     top_k: int = Field(default=5, ge=1, le=20)
+    record_ref: uuid.UUID | None = None
 
 
-@router.post(
-    "/rag",
-    dependencies=[
-        Depends(require_asistente_habilitado),
-        Depends(require_permission("PERM_CONOCIMIENTO")),
-        Depends(get_actor),
-    ],
-)
-async def rag(payload: RagRequest) -> None:
-    """Sin proveedor no hay generación: 503 honesto, nunca una respuesta simulada
-    (RF-FIR-15). Con `ppi` (D1) la pasarela delegará esta consulta al proveedor."""
-    raise HTTPException(
+class RagCitation(BaseModel):
+    cited_text: str
+    source_type: str
+    source_ref: str
+    score: float = 0.0
+    page: int | None = None
+    attachment_ref: str | None = None
+    record_id: uuid.UUID | None = None
+
+
+class RagResponse(BaseModel):
+    answer: str | None
+    citations: list[RagCitation]
+    origin: Literal["local_index", "ppi"]
+    status: Literal["answered", "insufficient_evidence", "unavailable"]
+    advisory: str
+
+
+def _rag_no_disponible() -> HTTPException:
+    return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={
             "error": "rag_unavailable",
@@ -211,6 +302,90 @@ async def rag(payload: RagRequest) -> None:
             "status": 503,
         },
     )
+
+
+@router.post(
+    "/rag",
+    response_model=RagResponse,
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_CONOCIMIENTO")),
+        Depends(get_actor),
+    ],
+)
+async def rag(
+    payload: RagRequest,
+    request: Request,
+    conn: Any = Depends(get_tenant_conn),
+) -> RagResponse:
+    """Sin proveedor no hay generación: 503 honesto, nunca una respuesta simulada
+    (RF-FIR-15). Con `ppi`, delega. Si el proveedor no responde, el cuerpo dice
+    que no hay respuesta e incluye los hallazgos del índice local."""
+    resultado = await consulta.preguntar(
+        conn,
+        _slug(request),
+        _cliente(),
+        texto=payload.query,
+        limite=payload.top_k,
+        actor=await get_actor(request),
+        alcance=payload.record_ref,
+    )
+    if not resultado.delegada:
+        raise _rag_no_disponible()
+    if resultado.fallo:
+        return RagResponse(
+            answer=None,
+            citations=await _citas_locales(request, payload.query, payload.top_k),
+            origin=LOCAL_INDEX,
+            status="unavailable",
+            advisory=resultado.advisory,
+        )
+    return RagResponse(
+        answer=resultado.answer,
+        citations=[_cita_delegada(cita) for cita in resultado.citas],
+        origin="ppi",
+        status=resultado.status,
+        advisory=resultado.advisory,
+    )
+
+
+def _cita_delegada(cita: consulta.Hallazgo) -> RagCitation:
+    pagina = cita.page if isinstance(cita.page, int) and cita.page >= 1 else None
+    crudo = cita.attachment_ref
+    anexo = crudo if isinstance(crudo, str) and crudo else None
+    return RagCitation(
+        cited_text=cita.texto,
+        source_type="radicado",
+        source_ref=cita.tracking,
+        score=cita.score,
+        page=pagina,
+        attachment_ref=anexo,
+        record_id=cita.id,
+    )
+
+
+def _identificador(valor: Any) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(valor))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _citas_locales(request: Request, texto: str, limite: int) -> list[RagCitation]:
+    try:
+        hits = await document_search.search(request, q=texto, size=limite)
+    except HTTPException:
+        return []
+    return [
+        RagCitation(
+            cited_text=h["subject"],
+            source_type="radicado",
+            source_ref=h["tracking_number"],
+            score=float(h.get("rank") or 0.0),
+            record_id=_identificador(h.get("id")),
+        )
+        for h in hits
+    ]
 
 
 class AvailabilityResponse(BaseModel):
@@ -227,10 +402,90 @@ class AvailabilityResponse(BaseModel):
         Depends(get_actor),
     ],
 )
-async def availability() -> AvailabilityResponse:
+async def availability(
+    request: Request,
+    conn: Any = Depends(get_tenant_conn),
+) -> AvailabilityResponse:
     """¿Hay generación para la entidad? Responde sin llamar a ningún proveedor.
 
-    En D0 toda entidad está en `local`, sin generación; el frontend oculta
-    «Sugerir texto» en vez de mostrar el botón y fallar.
+    Genera solo con el interruptor encendido (`ppi`, bandera, sin suspensión).
+    Si no se puede leer, dice que no hay generación.
     """
-    return AvailabilityResponse(generation=False, mode="local")
+    try:
+        politica = await paso.leer_politica(conn, _slug(request))
+    except Exception:
+        return AvailabilityResponse(generation=False, mode="local")
+    en_ppi = politica.completa and politica.bandera and politica.proveedor == "ppi"
+    return AvailabilityResponse(
+        generation=politica.completa and politica.motivo is None,
+        mode="ppi" if en_ppi else "local",
+    )
+
+
+class TransmissionParty(BaseModel):
+    id: str
+    name: str
+
+
+class TransmissionLevel(BaseModel):
+    level: Literal[1, 2, 3]
+    hosting: Literal["installation", "hosted"]
+    model_aliases: list[str]
+    subprocessors: list[TransmissionParty]
+
+
+class TransmissionResponse(BaseModel):
+    transmits: bool
+    provider: TransmissionParty | None = None
+    levels: list[TransmissionLevel] = Field(default_factory=list)
+
+
+def _ruta_no_disponible() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "error": "ruta_no_disponible",
+            "detail": "No se pudo leer la ruta por la que saldría la pregunta",
+            "status": 503,
+        },
+    )
+
+
+@router.get(
+    "/transmission",
+    response_model=TransmissionResponse,
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_CONOCIMIENTO")),
+        Depends(get_actor),
+    ],
+)
+async def transmission(
+    request: Request,
+    conn: Any = Depends(get_tenant_conn),
+) -> TransmissionResponse:
+    """La ruta de cada nivel habilitado, sin transmitir registros.
+
+    Con el interruptor apagado no llama al proveedor. Si está encendido y la
+    declaración firmada no se puede leer, responde 503: el panel no ofrece la
+    pregunta si no puede nombrar la ruta.
+    """
+    try:
+        politica = await paso.leer_politica(conn, _slug(request))
+    except Exception:
+        return TransmissionResponse(transmits=False)
+    if not politica.completa or politica.motivo is not None:
+        return TransmissionResponse(transmits=False)
+    declaracion = await aceptacion.leer(_cliente())
+    vista = declaracion.vista
+    if not declaracion.ok or not isinstance(vista, dict):
+        raise _ruta_no_disponible()
+    filas = aceptacion.rutas_de(vista, politica.niveles)
+    proveedor = vista.get("provider")
+    if not filas or not isinstance(proveedor, dict):
+        return TransmissionResponse(transmits=False)
+    return TransmissionResponse(
+        transmits=True,
+        provider=TransmissionParty(id=proveedor["id"], name=proveedor["name"]),
+        levels=[TransmissionLevel(**fila) for fila in filas],
+    )

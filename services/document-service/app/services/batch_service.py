@@ -61,13 +61,14 @@ lo encoló siga vivo:
 
 import json
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import asyncpg
 from orpycamcp_common import audit
 
 from app.core.constants import SYSTEM_RECONCILER_ID
-from app.core.tipos import exigir_tipo_documental
+from app.core.tipos import exigir_tipo_documental, plazo_por_defecto
 from app.repositories.borrador_repository import BorradorRepository
 from app.repositories.metadata_repository import MetadataRepository
 from app.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
@@ -107,9 +108,15 @@ class LoteError(Exception):
 class BatchService:
     """Service for batch document operations."""
 
-    def __init__(self, conn: asyncpg.Connection, tenant_slug: str) -> None:
+    def __init__(
+        self,
+        conn: asyncpg.Connection,
+        tenant_slug: str,
+        tenant_client: Any = None,
+    ) -> None:
         self.conn = conn
         self.tenant_slug = tenant_slug
+        self._tenant_client = tenant_client
 
     async def create_batch_documents(self, request: BatchDocumentsRequest, user_id: UUID) -> UUID:
         """
@@ -296,6 +303,22 @@ class BatchService:
                     if doc_data.origin_dept_code is not None:
                         origin_dept = await self._nombre_dependencia(doc_data.origin_dept_code)
 
+                    # Entrada sin días: el plazo por defecto del tipo. Antes del
+                    # consecutivo, para que un calendario caído no gaste número.
+                    due_date = None
+                    if doc_data.doc_type == "E":
+                        dias = await plazo_por_defecto(self.conn, doc_data.doc_class)
+                        if dias is not None:
+                            if self._tenant_client is None:
+                                raise RuntimeError(
+                                    "tenant_client requerido para calcular el plazo"
+                                )
+                            due_date = await self._tenant_client.calculate_due_date(
+                                tenant_slug=self.tenant_slug,
+                                from_date=datetime.now(tz=_zona_de_radicacion()).date(),
+                                business_days=dias,
+                            )
+
                     # Límite de origen de la Salida: espejo de `DocumentService.create`
                     # (el lote no es puerta lateral). El ítem falla ANTES de gastar el
                     # consecutivo si el responsable del lote no tiene URD activa ahí.
@@ -336,9 +359,9 @@ class BatchService:
                          sender_name, sender_entity, pages, observations, status,
                          year, sequence, tenant_code, registered_by,
                          origin_dept, origin_dept_code, dest_dept_code,
-                         metadata_template_id)
+                         metadata_template_id, due_date, termino_inicial)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'registered',
-                                $10, $11, $12, $13, $14, $15, $16, $17)
+                                $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)
                         RETURNING id, nivel_seguridad
                         """,
                         tracking_number,
@@ -374,6 +397,7 @@ class BatchService:
                         doc_data.origin_dept_code,
                         doc_data.dest_dept_code,
                         metadata_template_id,
+                        due_date,
                     )
                     radicado_id = radicado["id"]
 

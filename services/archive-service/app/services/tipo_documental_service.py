@@ -68,6 +68,7 @@ class TipoDocumentalService:
                     "activo": row["activo"],
                     "admite_ventanilla_publica": row["admite_ventanilla_publica"],
                     "publicable": row["publicable"],
+                    "default_response_days": row["default_response_days"],
                 },
                 canal=audit.CANAL_PETICION,
             )

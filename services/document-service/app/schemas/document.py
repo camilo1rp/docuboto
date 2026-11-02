@@ -96,7 +96,8 @@ class DocumentCreate(BaseModel):
     # libre, que es interno. Opcional; solo con nivel >= 2.
     clasificacion_norma: str | None = Field(default=None, max_length=160)
     # Plazo de respuesta en DÍAS HÁBILES (RF-RAD-04). Si se indica, document-service
-    # calcula la fecha de vencimiento vía tenant-service; si se omite, no hay plazo.
+    # calcula la fecha de vencimiento vía tenant-service. Si una Entrada lo omite
+    # y su tipo documental tiene plazo por defecto, usa ese. Si no, no hay plazo.
     response_days: int | None = Field(default=None, ge=1, le=3650)
     # Metadatos variables del tipo documental (E03, ADR-007). Si el doc_class tiene
     # una plantilla activa, se validan contra su JSON Schema antes de radicar.
@@ -379,6 +380,26 @@ class ReclassifyResponse(BaseModel):
     nivel_seguridad: int
 
 
+class DueDateRequest(BaseModel):
+    """Fecha o días hábiles, y el motivo. Nunca los dos plazos a la vez."""
+
+    motivo: str = Field(..., min_length=10, max_length=500)
+    due_date: date | None = None
+    business_days: int | None = Field(default=None, ge=1, le=3650)
+
+    @model_validator(mode="after")
+    def un_plazo(self) -> "DueDateRequest":
+        if (self.due_date is None) == (self.business_days is None):
+            raise ValueError("indique la fecha o los días hábiles")
+        return self
+
+
+class DueDateResponse(BaseModel):
+    id: uuid.UUID
+    tracking_number: str
+    due_date: date
+
+
 class IndiceClasificadoItem(BaseModel):
     """Una fila del índice de información clasificada y reservada (Ley 1712 art. 20).
 
@@ -446,8 +467,10 @@ class HistorialAccesoEntry(BaseModel):
     #: decir menos es aceptable, inventar un nombre no.
     actor_nombre: str | None = None
     canal: str
-    #: `document.radicado_consultado` (leyó el metadato) o
-    #: `document.anexo_descargado` (bajó un fichero). Son hechos distintos y la
-    #: pantalla los distingue: ver la ficha no es llevarse el documento.
+    #: `document.radicado_consultado` (leyó el metadato),
+    #: `document.anexo_descargado` (bajó un fichero) o
+    #: `document.contenido_transmitido` (salieron los bytes) o
+    #: `document.registro_transmitido` (salió el registro). Los dos son
+    #: transmisión al proveedor de inteligencia, y la pantalla los dice así.
     action: str
     object_ref: str

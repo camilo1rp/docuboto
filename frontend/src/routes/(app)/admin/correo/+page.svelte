@@ -106,6 +106,9 @@
       carpeta_origen: "INBOX",
       carpeta_radicados: "Radicados",
       dependencia_destino: "",
+      dest_dept_code: "",
+      doc_class: "",
+      responsable_user_id: "",
       modo: "asistida",
     };
   }
@@ -133,6 +136,19 @@
       if (!pideContrasena) delete cuerpo.password;
       for (const clave of ["usuario_login", "host", "dependencia_destino"]) {
         if (!cuerpo[clave]) delete cuerpo[clave];
+      }
+      if (cuerpo.modo === "automatica") {
+        if (!cuerpo.dest_dept_code || !cuerpo.doc_class || !cuerpo.responsable_user_id) {
+          notifyError(
+            "Una cuenta automática necesita la dependencia, el tipo y el responsable.",
+          );
+          return;
+        }
+        cuerpo.dest_dept_code = Number(cuerpo.dest_dept_code);
+      } else {
+        delete cuerpo.dest_dept_code;
+        delete cuerpo.doc_class;
+        delete cuerpo.responsable_user_id;
       }
       const res = await fetch("/admin/correo/api/cuentas", {
         method: "POST",
@@ -324,6 +340,13 @@
               {#if cuenta.dependencia_destino}
                 <dt>Reparte a</dt>
                 <dd>{cuenta.dependencia_destino}</dd>
+              {/if}
+              {#if cuenta.modo === "automatica" && cuenta.dest_dept_code}
+                <dt>Radica como</dt>
+                <dd>
+                  tipo <code class="op-dato">{cuenta.doc_class}</code>, dependencia
+                  <code class="op-dato">{cuenta.dest_dept_code}</code>
+                </dd>
               {/if}
             </dl>
 
@@ -567,6 +590,26 @@
           </span>
         </label>
       </fieldset>
+      {#if formCuenta.modo === "automatica"}
+        <label class="form__campo">
+          <span>Código de la dependencia</span>
+          <input class="input" type="number" min="1" bind:value={formCuenta.dest_dept_code} />
+          <small>La dependencia que recibe la Entrada. Se elige del organigrama.</small>
+        </label>
+        <label class="form__campo">
+          <span>Código del tipo documental</span>
+          <input class="input" bind:value={formCuenta.doc_class} maxlength="50" />
+          <small>El código del catálogo, no el nombre. Una Entrada no nace sin tipo.</small>
+        </label>
+        <label class="form__campo">
+          <span>Funcionario responsable</span>
+          <input class="input" bind:value={formCuenta.responsable_user_id} />
+          <small>
+            Identificador de quien responde de lo que entre sin revisión, y bajo cuya autoría se
+            registran los anexos.
+          </small>
+        </label>
+      {/if}
     </div>
   {/if}
   <svelte:fragment slot="footer">

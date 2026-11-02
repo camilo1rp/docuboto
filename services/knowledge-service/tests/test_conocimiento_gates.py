@@ -32,6 +32,7 @@ RUTAS = [
     ("POST", "/api/v1/knowledge/antecedentes", {"query": "contratos"}, 200),
     ("POST", "/api/v1/knowledge/rag", {"query": "contratos"}, 503),
     ("GET", "/api/v1/knowledge/availability", None, 200),
+    ("GET", "/api/v1/knowledge/transmission", None, 200),
 ]
 IDS = [r[1].rsplit("/", 1)[1] for r in RUTAS]
 

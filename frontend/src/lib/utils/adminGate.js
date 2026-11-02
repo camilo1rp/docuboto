@@ -35,6 +35,8 @@ export const ADMIN_AREA_PERMISSIONS = {
   dependencias: ["USUA_PERM_ADMIN"],
   catalogos: ["USUA_PERM_ADMIN"],
   parametros: ["USUA_PERM_ADMIN"],
+  // ADR-045 §4: leer y cambiar el proveedor exigen USUA_PERM_ADMIN nivel 3.
+  inteligencia: ["USUA_PERM_ADMIN"],
   auditoria: ["USUA_PERM_ADMIN"],
   notificaciones: ["USUA_PERM_ADMIN"],
   pinar: ["USUA_PERM_ADMIN"],
@@ -60,6 +62,7 @@ export const ADMIN_AREA_PERMISSIONS = {
  */
 export const ADMIN_AREA_MIN_LEVEL = {
   preservacion: { USUA_PERM_ADMIN: 3 },
+  inteligencia: { USUA_PERM_ADMIN: 3 },
 };
 
 /**

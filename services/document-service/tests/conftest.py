@@ -113,6 +113,15 @@ class FakeTenantClient:
 
 def _make_mock_conn() -> AsyncMock:
     conn = AsyncMock()
+
+    async def _fetchval(query, *args, **kwargs):
+        # El plazo por defecto se consulta en toda Entrada sin días. El doble
+        # genérico responde 1 a todo, y 1 sería un plazo: aquí no hay.
+        if isinstance(query, str) and "default_response_days" in query:
+            return None
+        return conn.fetchval.return_value
+
+    conn.fetchval.side_effect = _fetchval
     conn.fetchval.return_value = 1
     # Tag de comando de un UPDATE de una fila: `set_classification` lo lee (`_filas`) para
     # saber si el UPDATE aplicó; `None` se leería como «0 filas» (fail-closed).

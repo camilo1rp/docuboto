@@ -1,5 +1,12 @@
 name: orpyca-mcp
 
+# Pasarela en la red ppi (ADR-045 §8). El fragmento NO se incluye aquí: Compose
+# lo mezclaría siempre y `up` exigiría la red aunque no uses la pasarela.
+# No define servicios. Activarlo:
+#   docker network create --internal ppi
+#   PPI_PROVIDER_URL=http://host:puerto docker compose \
+#     -f infra/docker-compose.prod.yml -f infra/docker-compose.intelligence.yml up -d
+
 # OrpycaMCP — Docker Compose (Production)
 #
 # SECURITY CHECKLIST before deploy:
@@ -470,6 +477,9 @@ services:
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Vacío: pasar a ppi responde que la pasarela no está configurada.
+      KNOWLEDGE_SERVICE_URL: http://knowledge-service:8011
+      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
     networks:
       - orpycamcp-net
     expose:
@@ -893,6 +903,8 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
+      # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
     networks:
       - orpycamcp-net
     expose:

@@ -46,7 +46,7 @@ async def test_un_tenant_que_falla_no_frena_a_los_demas(monkeypatch) -> None:
     monkeypatch.setattr(barrido, "tenants_activos", AsyncMock(return_value=["a", "b", "c"]))
     vistos: list[str] = []
 
-    async def _barrer(slug, redis=None):
+    async def _barrer(slug, redis=None, http=None):
         vistos.append(slug)
         if slug == "a":
             raise RuntimeError("boom")

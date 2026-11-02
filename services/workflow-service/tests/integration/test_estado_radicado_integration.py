@@ -79,7 +79,9 @@ class _ServicioConRadicador(WorkflowService):
     de [B]) no se ve afectado, y uno que quiere probar el rechazo lo hace con un
     radicado de OTRO radicador o con `llamar_sin_arnes`."""
 
-    async def _create_step(self, payload: Any, assigned_by: uuid.UUID, *, sistema: bool = False) -> Any:
+    async def _create_step(
+        self, payload: Any, assigned_by: uuid.UUID, *, sistema: bool = False, **extra: Any
+    ) -> Any:
         if not sistema:
             # Solo lo que el actor alcanza: el arnés no debe «radicar» un reservado
             # a nombre de quien no puede verlo.
@@ -92,7 +94,9 @@ class _ServicioConRadicador(WorkflowService):
                 assigned_by,
                 nivel,
             )
-        return await super()._create_step(payload, assigned_by, sistema=sistema)
+        return await super()._create_step(
+            payload, assigned_by, sistema=sistema, **extra
+        )
 
 
 @pytest_asyncio.fixture

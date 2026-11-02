@@ -26,7 +26,7 @@ import { render, screen } from "@testing-library/svelte";
 const { default: AdminPage } = await import("./+page.svelte");
 const { initSession, clearSession } = await import("$lib/stores/auth.js");
 
-function sessionWith({ permissions = [], roles = [] } = {}) {
+function sessionWith({ permissions = [], roles = [], permission_levels = {} } = {}) {
   return {
     sub: "u-1",
     email: "admin@orpyca.com",
@@ -35,6 +35,7 @@ function sessionWith({ permissions = [], roles = [] } = {}) {
     roles,
     tenant_slug: "icetex",
     permissions,
+    permission_levels,
   };
 }
 
@@ -113,10 +114,33 @@ describe("/admin — con USUA_PERM_ADMIN", () => {
   // TRD/CCD y Metadatos NO comparten USUA_PERM_ADMIN — su gate real es
   // USUA_PERM_TRD (revisión UX 2026-08-02, punto 2: ambas ofrecían la
   // tarjeta a un USUA_PERM_ADMIN sin USUA_PERM_TRD, que aterrizaba en 403).
+  it("Inteligencia no aparece sin administración nivel 3", () => {
+    render(AdminPage);
+    expect(screen.queryByRole("link", { name: /Inteligencia/ })).toBeNull();
+  });
+
   it("TRD/CCD y Metadatos NO aparecen con solo USUA_PERM_ADMIN", () => {
     render(AdminPage);
     expect(screen.queryByText("TRD / CCD")).toBeNull();
     expect(screen.queryByText("Metadatos")).toBeNull();
+  });
+});
+
+describe("/admin — Inteligencia, administración nivel 3", () => {
+  beforeEach(() => {
+    clearSession();
+    initSession(
+      sessionWith({
+        permissions: ["USUA_PERM_ADMIN"],
+        permission_levels: { USUA_PERM_ADMIN: 3 },
+      }),
+    );
+  });
+
+  it("la tarjeta enlaza a /admin/inteligencia", () => {
+    render(AdminPage);
+    const link = screen.getByRole("link", { name: /Inteligencia/ });
+    expect(link.getAttribute("href")).toBe("/admin/inteligencia");
   });
 });
 

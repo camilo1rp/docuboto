@@ -105,7 +105,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             from app.services.email_sondeo import bucle_de_sondeo
 
             app.state.tarea_sondeo = asyncio.create_task(
-                bucle_de_sondeo(app.state.db_pool, settings.email_sondeo_tenant_slug)
+                bucle_de_sondeo(
+                    app.state.db_pool,
+                    settings.email_sondeo_tenant_slug,
+                    app.state.http_client,
+                )
             )
         else:
             logger.warning(
@@ -120,7 +124,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.barrido_enabled:
         from app.services.barrido import bucle_de_barrido
 
-        app.state.tarea_barrido = asyncio.create_task(bucle_de_barrido(app.state.redis))
+        app.state.tarea_barrido = asyncio.create_task(
+            bucle_de_barrido(app.state.redis, app.state.http_client)
+        )
 
     yield
     logger.info("document-service shutting down")

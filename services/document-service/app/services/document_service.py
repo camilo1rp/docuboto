@@ -26,7 +26,7 @@ from __future__ import annotations
 import builtins
 import logging
 import uuid
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -40,7 +40,7 @@ from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
 from app.core.datos_minimos import exigir_o_422
 from app.core.dependencias import normalizar_dependencia
-from app.core.tipos import exigir_tipo_documental
+from app.core.tipos import exigir_tipo_documental, plazo_por_defecto
 from app.models.document import Anexo, Radicado
 from app.repositories.audit_read import AuditReadRepository
 from app.repositories.borrador_repository import BorradorRepository
@@ -168,8 +168,29 @@ def _zona_de_radicacion() -> tzinfo:
         return UTC
 
 
+def _dia_de_radicacion(valor: datetime | date | None) -> date | None:
+    """Día de calendario del instante, en la zona de radicación."""
+    if valor is None:
+        return None
+    if isinstance(valor, datetime):
+        if valor.tzinfo is None:
+            valor = valor.replace(tzinfo=UTC)
+        return valor.astimezone(_zona_de_radicacion()).date()
+    return valor
+
+
 class ReclassifyForbiddenError(Exception):
     """El llamante intenta asignar un nivel de seguridad superior a su propio clearance."""
+
+
+class PlazoError(Exception):
+    """La corrección del vencimiento no cumple una regla del acto."""
+
+    def __init__(self, codigo: str, detalle: str, status_code: int) -> None:
+        super().__init__(detalle)
+        self.codigo = codigo
+        self.detalle = detalle
+        self.status_code = status_code
 
 
 class TipoDocumentalNoPublicableError(Exception):
@@ -363,16 +384,20 @@ class DocumentService:
                 )
 
         # RF-RAD-04: la fecha de vencimiento se calcula en días hábiles desde la
-        # radicación. El calendario lo resuelve tenant-service (E14) vía HTTP;
-        # sin response_days el radicado no tiene plazo.
+        # radicación. El calendario lo resuelve tenant-service (E14) vía HTTP.
+        # Una Entrada sin días toma el plazo por defecto de su tipo documental.
+        # Quien indica días gana. Salida e Interno no heredan ese plazo.
         due_date: date | None = None
-        if payload.response_days is not None:
+        dias = payload.response_days
+        if dias is None and payload.doc_type == "E":
+            dias = await plazo_por_defecto(self._conn, payload.doc_class)
+        if dias is not None:
             if self._tenant_client is None:
                 raise RuntimeError("tenant_client requerido para calcular el plazo")
             due_date = await self._tenant_client.calculate_due_date(
                 tenant_slug=self._slug,
                 from_date=now.date(),
-                business_days=payload.response_days,
+                business_days=dias,
             )
 
         # Metadatos (E03, ADR-007): si el tipo documental (doc_class) tiene una
@@ -1080,6 +1105,173 @@ class DocumentService:
             canal=canal,
         )
         return [RespuestaItem(**dict(r)) for r in rows]
+
+    async def fijar_vencimiento(
+        self,
+        document_id: uuid.UUID,
+        *,
+        motivo: str,
+        actor: uuid.UUID | None,
+        due_date: date | None = None,
+        business_days: int | None = None,
+        origen: str = "manual",
+    ) -> dict:
+        """Corrige el vencimiento de un radicado y deja asiento.
+
+        La fecha y los días hábiles se excluyen: llega uno. Los días se cuentan
+        desde la radicación, con el calendario del tenant. Acortar siempre se
+        permite. Ampliar (la fecha nueva es posterior a la vigente) se niega si
+        quien pide es el asignado del paso activo, o si la fecha pasa del doble
+        del tramo entre la radicación y el término inicial. Ese término se fija
+        una vez, en el alta, y esta corrección no lo mueve.
+
+        `origen` lo decide quien llama. La ruta pública usa `manual`: un cliente
+        no puede declararse `sugerencia`.
+        """
+        if origen not in ("manual", "sugerencia"):
+            raise PlazoError("origen_invalido", "El origen del acto no es válido.", 422)
+        if (due_date is None) == (business_days is None):
+            raise PlazoError(
+                "plazo_ambiguo",
+                "Indique la fecha o los días hábiles.",
+                422,
+            )
+        actor_str = str(actor) if actor else None
+        clearance = await resolve_caller_clearance(self._conn, actor)
+
+        async with self._conn.transaction():
+            fila = await self._conn.fetchrow(
+                """
+                SELECT id, tracking_number, due_date, termino_inicial, registered_at
+                  FROM radicados
+                 WHERE id = $1 AND nivel_seguridad <= $2
+                 FOR UPDATE
+                """,
+                document_id,
+                clearance,
+            )
+            if fila is None:
+                raise DocumentNotFoundError(str(document_id))
+
+            if business_days is not None:
+                if self._tenant_client is None:
+                    raise PlazoError(
+                        "calendario_no_disponible",
+                        "No hay calendario para calcular los días hábiles.",
+                        502,
+                    )
+                nueva = await self._tenant_client.calculate_due_date(
+                    tenant_slug=self._slug,
+                    from_date=_dia_de_radicacion(fila["registered_at"]),
+                    business_days=business_days,
+                )
+            else:
+                nueva = due_date
+            assert nueva is not None
+
+            antes: date | None = fila["due_date"]
+            if antes == nueva:
+                return {
+                    "id": fila["id"],
+                    "tracking_number": fila["tracking_number"],
+                    "due_date": nueva,
+                }
+
+            if antes is not None and nueva > antes:
+                asignado = await self._conn.fetchval(
+                    """
+                    SELECT 1 FROM flow_steps
+                     WHERE radicado_id = $1
+                       AND status IN ('pending', 'in_progress')
+                       AND assigned_to = $2
+                     LIMIT 1
+                    """,
+                    document_id,
+                    actor,
+                )
+                if asignado:
+                    raise PlazoError(
+                        "ampliacion_del_asignado",
+                        "Quien tiene el radicado asignado no puede ampliar su plazo.",
+                        403,
+                    )
+                self._rechazar_si_pasa_del_doble(fila, nueva)
+
+            cambio = await self._conn.fetchrow(
+                """
+                UPDATE radicados
+                   SET due_date = $2,
+                       termino_inicial = COALESCE(termino_inicial, due_date, $2),
+                       updated_at = now()
+                 WHERE id = $1 AND nivel_seguridad <= $3
+                 RETURNING due_date
+                """,
+                document_id,
+                nueva,
+                clearance,
+            )
+            if cambio is None:
+                raise DocumentNotFoundError(str(document_id))
+            sello = await audit.append(
+                self._conn,
+                tenant_slug=self._slug,
+                service=_SERVICE,
+                action="document.vencimiento_cambiado",
+                object_type="radicado",
+                object_ref=fila["tracking_number"],
+                actor=actor_str,
+                canal=audit.CANAL_PETICION,
+                payload={
+                    "antes": antes.isoformat() if antes else None,
+                    "despues": nueva.isoformat(),
+                    "motivo": motivo,
+                    "origen": origen,
+                },
+            )
+            pendiente = await outbox.encolar(
+                self._conn,
+                stream=_STREAM,
+                event_type=outbox.VENCIMIENTO_CAMBIADO,
+                tenant_slug=self._slug,
+                actor=actor_str,
+                dedup_key=f"{fila['tracking_number']}:{nueva.isoformat()}:{str(sello)[:16]}",
+                payload={
+                    "id": str(fila["id"]),
+                    "tracking_number": fila["tracking_number"],
+                    "due_date": nueva.isoformat(),
+                    "antes": antes.isoformat() if antes else None,
+                    "origen": origen,
+                },
+            )
+
+        await outbox.enviar(self._conn, self._redis, pendiente)
+        return {
+            "id": fila["id"],
+            "tracking_number": fila["tracking_number"],
+            "due_date": nueva,
+        }
+
+    @staticmethod
+    def _rechazar_si_pasa_del_doble(fila: Any, nueva: date) -> None:
+        """422 si la fecha nueva supera el doble del tramo inicial.
+
+        El tramo es de calendario: el término inicial ya salió de días hábiles,
+        y doblar ese tramo equivale, sin festivos, a doblar los días hábiles.
+        """
+        termino = fila["termino_inicial"] or fila["due_date"]
+        registrado = _dia_de_radicacion(fila["registered_at"])
+        if termino is None or registrado is None:
+            return
+        span = (termino - registrado).days
+        if span < 0:
+            span = 0
+        tope = registrado + timedelta(days=span * 2)
+        if nueva > tope:
+            raise PlazoError(
+                "supera_el_doble",
+                "La ampliación no puede pasar del doble del término inicial.",
+                422,
+            )
 
     async def reclassify(
         self,

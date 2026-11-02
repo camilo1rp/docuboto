@@ -59,3 +59,24 @@ async def exigir_tipo_documental(conn: asyncpg.Connection, code: str | None) -> 
                 "status": 422,
             },
         )
+
+
+async def plazo_por_defecto(conn: asyncpg.Connection, code: str | None) -> int | None:
+    """Días hábiles del tipo activo, o `None` si no tiene plazo por defecto.
+
+    Solo lo consulta quien radica una Entrada sin `response_days`. El importador
+    no pasa por aquí: conserva el vencimiento del paquete, aunque sea ninguno.
+    """
+    if not code:
+        return None
+    dias = await conn.fetchval(
+        """
+        SELECT default_response_days
+          FROM tipos_documentales
+         WHERE code = $1 AND activo
+        """,
+        code,
+    )
+    if dias is None:
+        return None
+    return int(dias)

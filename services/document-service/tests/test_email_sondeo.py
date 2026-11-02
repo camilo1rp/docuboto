@@ -171,6 +171,95 @@ async def test_una_cuenta_caida_no_impide_sondear_las_demas(monkeypatch) -> None
     assert r.cuentas_vistas == 2
 
 
+class _Bandeja:
+    """Sustituye el servicio de bandeja y recuerda con qué datos se radicó."""
+
+    def __init__(self, *args, **kwargs):
+        self._repo = self
+        self.reservas = 0
+        self.datos = None
+        self._pendientes = kwargs.pop("pendientes", None)
+
+    async def sincronizar(self, *args, **kwargs):
+        return {"nuevos": 1, "en_bandeja": 1, "hay_mas": False, "carpeta": "INBOX"}
+
+    async def bandeja(self, *args, **kwargs):
+        if self._pendientes is not None:
+            return self._pendientes
+        return [{"id": uuid.uuid4(), "reservado_vigente": False}]
+
+    async def reservar(self, *args, **kwargs):
+        self.reservas += 1
+
+    async def radicar(self, *args, **kwargs):
+        self.datos = kwargs["datos"]
+        return {"tracking_number": "2026-DEMO-E-000009"}
+
+
+def _parche_bandeja(monkeypatch, bandeja):
+    monkeypatch.setattr(
+        "app.services.email_sondeo.EmailBandejaService", lambda *a, **k: bandeja
+    )
+    monkeypatch.setattr(
+        "app.services.document_service.DocumentService", lambda *a, **k: object()
+    )
+
+
+@pytest.mark.asyncio
+async def test_el_modo_automatico_radica_con_tipo_y_dependencia(monkeypatch) -> None:
+    cuenta = _cuenta(
+        modo="automatica",
+        responsable_user_id=RESPONSABLE,
+        dest_dept_code=7,
+        doc_class="OFICIO",
+        dependencia_destino="Ventanilla",
+    )
+    bandeja = _Bandeja()
+    _parche_bandeja(monkeypatch, bandeja)
+    r = await SondeoDeCorreo("demo").una_vuelta(ConexionFalsa([cuenta]), ahora=0.0)
+    assert r.radicados == ["2026-DEMO-E-000009"]
+    assert bandeja.reservas == 1
+    assert bandeja.datos == {
+        "dest_dept_code": 7,
+        "doc_class": "OFICIO",
+        "dest_dept": "Ventanilla",
+    }
+
+
+@pytest.mark.asyncio
+async def test_sin_tipo_no_reserva_el_correo(monkeypatch) -> None:
+    cuenta = _cuenta(modo="automatica", responsable_user_id=RESPONSABLE)
+    bandeja = _Bandeja()
+    _parche_bandeja(monkeypatch, bandeja)
+    r = await SondeoDeCorreo("demo").una_vuelta(ConexionFalsa([cuenta]), ahora=0.0)
+    assert r.radicados == []
+    assert r.fallos == 1
+    assert bandeja.reservas == 0
+
+
+def test_la_cuenta_automatica_exige_tipo_y_dependencia() -> None:
+    from pydantic import ValidationError
+
+    from app.schemas.email_cuenta import CuentaCrear
+
+    base = {
+        "nombre": "Buzón",
+        "tipo": "institucional",
+        "proveedor": "imap",
+        "direccion": "buzon@entidad.gov.co",
+        "auth_tipo": "password",
+        "password": "x",
+        "usa_ssl": False,
+        "modo": "automatica",
+        "responsable_user_id": RESPONSABLE,
+    }
+    with pytest.raises(ValidationError):
+        CuentaCrear(**base)
+    cuenta = CuentaCrear(**base, dest_dept_code=4, doc_class="OFICIO")
+    assert cuenta.dest_dept_code == 4
+    assert cuenta.doc_class == "OFICIO"
+
+
 def test_la_consulta_de_candidatas_excluye_lo_que_no_puede_sondear() -> None:
     """Las cuentas PERSONALES quedan fuera, y no es un olvido.
 

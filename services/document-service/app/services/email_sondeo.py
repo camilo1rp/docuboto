@@ -28,10 +28,11 @@ correspondencia fuera de horario y quiere encontrarla ya en la bandeja.
    credenciales solo llena el registro y puede bloquear la cuenta en el
    proveedor. La espera se reinicia en cuanto vuelve a funcionar.
 
-3. **No radicar sin responsable.** En modo automático nadie pulsa, así que la
-   cuenta declara bajo qué funcionario radica (`responsable_user_id`, migración
-   024). No es un tecnicismo: es quien responde de lo que entre por ese buzón sin
-   revisión previa (Ac. AGN 060/2001 arts. 2 y 13).
+3. **No radicar sin responsable, tipo ni dependencia.** En modo automático nadie
+   pulsa, así que la cuenta declara bajo qué funcionario radica
+   (`responsable_user_id`, migración 024), el código de la dependencia y el del
+   tipo documental (migración 053). Sin esos dos, una Entrada no puede nacer
+   (Ac. AGN 060/2001 §5.2) y reservar el correo solo lo retendría para fallar.
 
 El worker es **opt-in** (`EMAIL_SONDEO_ENABLED`) y arranca desactivado: un
 proceso que se conecta solo a buzones y crea documentos oficiales no debe
@@ -44,6 +45,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 import asyncpg
 from orpycamcp_common.request_log import canal_de_fondo
@@ -62,6 +64,19 @@ _ESPACIO_LOCK = 0x4D41494C  # "MAIL"
 
 ESPERA_BASE_SEGUNDOS = 60
 ESPERA_MAXIMA_SEGUNDOS = 3600
+
+
+def _datos_de_cuenta_automatica(fila: Any) -> dict[str, Any] | None:
+    """Tipo y dependencia que la cuenta declaró, o None si falta alguno."""
+    codigo = fila["dest_dept_code"] if "dest_dept_code" in fila else None
+    clase = fila["doc_class"] if "doc_class" in fila else None
+    if codigo in (None, "") or not clase:
+        return None
+    datos: dict[str, Any] = {"dest_dept_code": int(codigo), "doc_class": str(clase)}
+    nombre = fila["dependencia_destino"] if "dependencia_destino" in fila else None
+    if nombre:
+        datos["dest_dept"] = nombre
+    return datos
 
 
 @dataclass
@@ -93,8 +108,9 @@ class ResultadoSondeo:
 class SondeoDeCorreo:
     """Recorre las cuentas activas de un tenant y las pone al día."""
 
-    def __init__(self, tenant_slug: str) -> None:
+    def __init__(self, tenant_slug: str, tenant_client: Any = None) -> None:
         self._tenant = tenant_slug
+        self._tenant_client = tenant_client
         self._estados: dict[uuid.UUID, EstadoCuenta] = {}
 
     async def una_vuelta(self, conn: asyncpg.Connection, *, ahora: float) -> ResultadoSondeo:
@@ -131,7 +147,8 @@ class SondeoDeCorreo:
         """
         return await conn.fetch(
             """
-            SELECT id, nombre, modo, responsable_user_id, carpeta_origen
+            SELECT id, nombre, modo, responsable_user_id, carpeta_origen,
+                   dest_dept_code, doc_class, dependencia_destino
               FROM email_cuenta
              WHERE activa = true
                AND tipo = 'institucional'
@@ -193,8 +210,19 @@ class SondeoDeCorreo:
 
         responsable = fila["responsable_user_id"]
         pendientes = await servicio._repo.bandeja(fila["id"], limite=25)
+        datos = _datos_de_cuenta_automatica(fila)
         for correo in pendientes:
             if correo["reservado_vigente"]:
+                continue
+            if datos is None:
+                # Sin tipo o sin dependencia la radicación falla siempre. No se
+                # reserva: la reserva retendría el correo quince minutos para
+                # volver a fallar igual.
+                resultado.fallos += 1
+                logger.warning(
+                    "la cuenta «%s» es automática y no declara tipo ni dependencia",
+                    fila["nombre"],
+                )
                 continue
             try:
                 # `es_admin=True` como en `radicar`, y por lo mismo: el recorte de
@@ -212,8 +240,8 @@ class SondeoDeCorreo:
                     actor=responsable,
                     es_admin=True,
                     password=None,
-                    datos={},
-                    servicio=DocumentService(conn, self._tenant, None, None),
+                    datos=datos,
+                    servicio=DocumentService(conn, self._tenant, self._tenant_client, None),
                 )
             except ErrorDeCuenta as exc:
                 # Un correo que no se puede radicar no detiene a los demás: queda
@@ -255,15 +283,19 @@ class SondeoDeCorreo:
         return cuenta_id.int & 0x7FFFFFFF
 
 
-async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str) -> None:
+async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str, http: Any) -> None:
     """Corre indefinidamente. Pensado para `asyncio.create_task` en el lifespan.
 
     Cada excepción inesperada se registra y el bucle **continúa**: un worker que
     muere en silencio deja la ingesta parada sin que nadie se entere, y el
     síntoma sería «no llega correo», indistinguible de un buzón vacío.
     """
+    from app.clients.tenant_client import TenantServiceClient
+
     canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
-    sondeo = SondeoDeCorreo(tenant_slug)
+    # Sin el cliente, una Entrada con plazo por defecto revienta al calcular
+    # la fecha (el calendario vive en tenant-service).
+    sondeo = SondeoDeCorreo(tenant_slug, TenantServiceClient(http))
     intervalo = max(30, settings.email_sondeo_intervalo_segundos)
     logger.info("sondeo de correo activo para «%s» cada %ss", tenant_slug, intervalo)
     while True:

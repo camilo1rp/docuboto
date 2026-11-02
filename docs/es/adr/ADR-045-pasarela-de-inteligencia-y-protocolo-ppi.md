@@ -6,12 +6,13 @@
 **Revisión 2026-10-27 (niveles por entidad)**: el proveedor interno corre dentro de la instalación y bajo contrato con la entidad, así que es un encargado, no un tercero externo. Cada entidad decide qué niveles le transmite (por defecto solo PÚBLICA), y el proveedor declara en su `capabilities` firmada con qué modelos procesa cada nivel. Cambian la condición 3, §2, §3, §4, §5, §9 y las consecuencias. El resto queda igual.
 **Revisión 2026-10-28 (nombres en inglés)**: los identificadores nuevos que propone este ADR pasan a inglés, como pide la regla 1 de contribución: tablas (`suggestions`, `intelligence_send_log`…), columnas (`intelligence_provider`, `intelligence_levels`), clases y estados de sugerencia, rutas (`/api/v1/config/intelligence`), acciones de auditoría, el grupo consumidor, el perfil y el servicio de Compose, y `PERM_DUE_DATE`. Las decisiones no cambian.
 **Revisión 2026-10-28 (empaquetado)**: §8 se alinea con el empaquetado que acordó el proveedor: dos proyectos Compose en el mismo host, una red externa `ppi` y un perfil `intelligence` que no arranca ningún servicio del proveedor. Se resuelve la pregunta abierta 7.
+**Revisión 2026-11-01 (fragmento)**: §8 deja el perfil. Compose 5 mezcla un `include` aunque su `profiles` esté apagado, y el arranque normal exigiría la red `ppi`. El opt-in es un segundo archivo, sumado con `-f`.
 **Enmendado por**: [ADR-046](ADR-046-conocimiento-sin-modelos.md) (propuesto): knowledge-service no llama a modelos; `local` pasa a ser la búsqueda de texto completo de document-service, sin generación ni índice propio, y lo generado solo llega por `suggestions`. Afecta a §1, §3, §5 y §6.
 **Relacionados**: [ADR-006](ADR-006-proveedor-ia-configurable.md) (proveedor de IA; **se enmienda**), [ADR-037](ADR-037-asistente-activable-por-entidad.md) (bandera por entidad y `PERM_CONOCIMIENTO`; esta decisión vive bajo ella), [ADR-019](ADR-019-capa-mcp.md) (capa MCP y gate de escritura), [ADR-018](ADR-018-interoperabilidad-webhooks.md) (webhooks; no se usan aquí), [ADR-021](ADR-021-reclamacion-deadletter-eventos.md) (consumidores y dead-letter), [ADR-036](ADR-036-identidad-atada-a-metodo-y-ruta.md) y [ADR-044](ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md) (firma con nonce de un solo uso), [ADR-043](ADR-043-retencion-legal-por-motivo-prestamo-identificado-y-soporte-citado.md) §5 (contrato SQL entre servicios), [ADR-008](ADR-008-auditoria-inmutable.md) (auditoría)
 
 ---
 
-> **Nada de lo que este ADR decide está construido.** Las piezas nuevas —la pasarela, el puerto de proveedor, la bandeja `suggestions`, el perfil `intelligence`, las rutas internas y los eventos nuevos— son **propuestas**. Lo que ya existe se cita en «Punto de partida» con su archivo, verificado contra el código del commit `7510257`. El plan por fases está en [Plan de inteligencia](../plan-inteligencia.md) y la especificación del protocolo en `docs/contratos/ppi/`.
+> **Nada de lo que este ADR decide está construido.** Las piezas nuevas —la pasarela, el puerto de proveedor, la bandeja `suggestions`, el fragmento `intelligence`, las rutas internas y los eventos nuevos— son **propuestas**. Lo que ya existe se cita en «Punto de partida» con su archivo, verificado contra el código del commit `7510257`. El plan por fases está en [Plan de inteligencia](../plan-inteligencia.md) y la especificación del protocolo en `docs/contratos/ppi/`.
 
 ## Contexto
 
@@ -157,14 +158,14 @@ El índice `local` se sigue alimentando siempre, como hoy (ADR-037): es el respa
 - **La auditoría lo ata.** El asiento de la operación lleva en `correlacion`, además de `request_id` e `idempotency_key`, el bloque `suggestion` con su identificador, el proveedor y los modelos. Llega en una cabecera que mcp-server firma con el mismo mecanismo que `X-Origen-Canal` (`identidad.firmar_origen`) y que el gateway solo reenvía si la firma verifica. **No se añade un canal**: el acto entra por el gate, el canal sigue siendo `mcp` y el `CHECK` no cambia. La pasarela asienta además `intelligence.suggestion_accepted` con el `jti` de la propuesta, de modo que los dos asientos se unen por él.
 - **La decisión vuelve al proveedor.** Aceptada (con el valor aplicado), rechazada (con su motivo), superada o expirada, cada decisión sale por un outbox de la pasarela con reintentos y bajo la misma barrera y el mismo interruptor. El proveedor la usa para aprender.
 
-### 8. Empaquetado: un perfil de Compose neutral
+### 8. Empaquetado: un fragmento de Compose neutral
 
 - **Dos proyectos Compose, nunca uno.** Docuboto y el proveedor se despliegan como dos proyectos en el mismo host (`docker compose -p docuboto`, y el del proveedor con su propio nombre), cada uno desde su repositorio y con su versión. Ninguno incluye ni extiende el compose del otro. Cada uno se publica, se despliega y se revierte por su cuenta, y el único contrato de compatibilidad entre los dos es el semver de PPI.
 - **Una red externa `ppi`.** Se crea una vez por host, fuera de los dos proyectos, con `docker network create --internal ppi`. Del lado de Docuboto solo se conecta la pasarela (knowledge-service). Qué servicios conecta el proveedor es asunto suyo.
-- **El perfil `intelligence` no arranca ningún servicio del proveedor.** Solo pasa la pasarela a su implementación `ppi`, la conecta a la red `ppi` y le da la URL del proveedor (`PPI_PROVIDER_URL`, sin valor por defecto). Ningún nombre de proveedor aparece en el compose.
+- **El fragmento `intelligence` no arranca ningún servicio del proveedor.** No va en el `include` del manifiesto base: Compose lo mezclaría siempre y `up` exigiría la red. Se suma con `-f docker-compose.intelligence.yml` (en producción, `-f infra/docker-compose.intelligence.yml`). Conecta la pasarela a la red `ppi` y le da la URL del proveedor (`PPI_PROVIDER_URL`, sin valor por defecto). Ningún nombre de proveedor aparece en el compose.
 - **Aislamiento por red.** El proveedor no se conecta a la red de Docuboto: no alcanza Postgres, Redis ni el almacén de objetos. Su salida a modelos alojados es asunto suyo, por su propia red y su propio proxy.
 - **Lo que hay detrás es del proveedor.** Su imagen, su fijación por digest, sus trabajadores, su base y su pasarela de modelos son su propio proyecto Compose.
-- **Sin el perfil, Docuboto funciona como hoy**, con `local`.
+- **Sin el fragmento, Docuboto funciona como hoy**, con `local`.
 
 ### 9. Relación con otros ADR
 

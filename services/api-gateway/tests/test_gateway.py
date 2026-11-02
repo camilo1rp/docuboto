@@ -531,6 +531,11 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/dependencias/by-codigo/120": "http://tenant:8002",
         "/api/v1/business-days/calculate": "http://tenant:8002",
         "/api/v1/config/params": "http://tenant:8002",
+        "/api/v1/config/intelligence": "http://tenant:8002",
+        "/api/v1/config/intelligence/levels": "http://tenant:8002",
+        "/api/v1/config/intelligence/withdraw": "http://tenant:8002",
+        "/api/v1/config/intelligence/capabilities": "http://tenant:8002",
+        "/api/v1/config/intelligence/inventory": "http://tenant:8002",
         "/api/v1/catalogos/tipos-anexo": "http://tenant:8002",
         "/api/v1/metadata/templates": "http://document:8003",
         # RF-RAD-05: el catálogo de destinatarios y la cascada DIVIPOLA. La
@@ -567,11 +572,13 @@ async def test_route_to_upstream_domain_prefixes():
         # `/mcp`) justo para que quepa por esta tabla, en vez de abrirle al proxy
         # una forma de ruta fuera de `/api/v1/...`.
         "/api/v1/mcp/stream": "http://mcp:8009",
-        # E21 / ADR-046: búsqueda, antecedentes, rag y disponibilidad de generación.
+        # E21 / ADR-046 / ADR-045: búsqueda, antecedentes, rag, disponibilidad
+        # y la ruta que el panel «Preguntar» nombra antes de transmitir.
         "/api/v1/knowledge/search": "http://knowledge:8011",
         "/api/v1/knowledge/antecedentes": "http://knowledge:8011",
         "/api/v1/knowledge/rag": "http://knowledge:8011",
         "/api/v1/knowledge/availability": "http://knowledge:8011",
+        "/api/v1/knowledge/transmission": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
         # del storage-service se expone (el frontend sube directo);
         # /preservacion/ se admite SUBRUTA A SUBRUTA (AREA-08-16): plan,
@@ -611,6 +618,11 @@ async def test_route_to_upstream_domain_prefixes():
     assert _route_to_upstream("/api/v1/knowledge/suggestions/abc/aceptar", state) is None
     assert _route_to_upstream("/api/v1/knowledge/admin/deadletter/", state) is None
     assert _route_to_upstream("/api/v1/knowledge", state) is None
+    assert _route_to_upstream("/ppi/v1/demo/content", state) is None
+    assert _route_to_upstream("/api/v1/internal/documentos/radicados/abc", state) is None
+    assert _route_to_upstream("/api/v1/internal/intelligence/capabilities", state) is None
+    assert _route_to_upstream("/api/v1/internal/intelligence/purge", state) is None
+    assert _route_to_upstream("/api/v1/internal/intelligence/inventory", state) is None
     assert _route_to_upstream("/api/v1/assistant/message", state) is None
     assert _route_to_upstream("/api/v1/assistant/transcribe", state) is None
     # D-02: la descarga directa de storage-service YA NO se enruta — pasa

@@ -74,3 +74,68 @@ class AsistenteResponse(BaseModel):
     habilitado: bool
     #: ``False`` cuando el valor pedido ya era el vigente (no hubo acto ni asiento).
     cambiado: bool = False
+
+
+class IntelligenceUpdate(BaseModel):
+    """Cuerpo de ``PUT /config/intelligence`` (ADR-045 §4).
+
+    Pasar a ``ppi`` exige ``transmission_statement``. Volver a ``local`` no.
+    ``send_metadata`` es el interruptor de los metadatos de plantilla.
+    """
+
+    provider: Literal["local", "ppi"] | None = None
+    send_metadata: bool | None = None
+    transmission_statement: str | None = Field(default=None, max_length=4000)
+
+
+class IntelligenceLevelUpdate(BaseModel):
+    """Habilita o deshabilita RESERVADA (2) o CLASIFICADA (3)."""
+
+    level: Literal[2, 3]
+    enabled: bool
+    statement: str | None = Field(default=None, max_length=4000)
+
+
+class IntelligenceResponse(BaseModel):
+    provider: Literal["local", "ppi"]
+    levels: list[int]
+    send_metadata: bool
+    suspended: bool
+    changed: bool = False
+    purge: Literal["accepted", "pending", "not_applicable"] = "not_applicable"
+
+
+class WithdrawResponse(BaseModel):
+    purge_ref: str
+
+
+class IntelligenceParty(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+
+
+class IntelligenceRoute(BaseModel):
+    """Una fila de la declaración firmada, tal como la devuelve la pasarela."""
+
+    level: Literal["public", "reserved", "classified"]
+    hosting: Literal["installation", "hosted"]
+    model_aliases: list[str] = Field(min_length=1)
+    subprocessors: list[str]
+    prompt_and_output_retention: Literal["none", "limited"]
+    trains_on_customer_data: bool
+
+
+class IntelligenceCapabilities(BaseModel):
+    """Lo que el administrador tiene que nombrar. Sin la firma."""
+
+    provider: IntelligenceParty
+    subprocessors: list[IntelligenceParty]
+    routing: list[IntelligenceRoute]
+
+
+class IntelligenceInventory(BaseModel):
+    """Radicados que el proveedor aún conserva. ``complete`` es falso si el
+    recorrido se detuvo antes del final."""
+
+    records: int = Field(ge=0)
+    complete: bool

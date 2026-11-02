@@ -67,6 +67,32 @@ _PAYLOAD = {
 
 
 @pytest.mark.asyncio
+async def test_el_asiento_del_reparto_nombra_la_regla() -> None:
+    """Una sugerencia y una regla automática tienen que poder distinguirse.
+
+    El nombre de la regla solo estaba en un log. El asiento `workflow.assign`
+    es lo que queda cuando el log ya no está.
+    """
+    conn = _conn()
+    regla = _rule_row()
+    conn.fetchval.return_value = 1
+    conn.fetch.return_value = [regla]
+    conn.fetchrow.return_value = make_step_record(action="assign")
+
+    await auto_distribute(conn, "demo", _PAYLOAD)
+
+    cargas = [
+        json.loads(arg)
+        for call in conn.execute.await_args_list
+        for arg in call.args
+        if isinstance(arg, str) and arg.startswith("{") and "regla_id" in arg
+    ]
+    assert len(cargas) == 1
+    assert cargas[0]["regla_id"] == str(regla["id"])
+    assert cargas[0]["regla_nombre"] == "Entradas a Jurídica"
+
+
+@pytest.mark.asyncio
 async def test_auto_distribute_assigns_on_match() -> None:
     conn = _conn()
     conn.fetchval.return_value = 1  # get_next_step_number (sin pasos previos)

@@ -37,6 +37,8 @@ def _fetchval_catalogo(*, tipos: set[str], plantilla_sql: str = "metadata_templa
     """
 
     async def _fv(sql: str, *args: object):
+        if "default_response_days" in sql:
+            return None
         if "FROM tipos_documentales" in sql:
             return "Nombre" if args and args[0] in tipos else None
         return 1  # RBAC, consecutivo, hash previo del asiento

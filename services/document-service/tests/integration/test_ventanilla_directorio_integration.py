@@ -104,7 +104,8 @@ async def _preparar_ventanilla(conn: asyncpg.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS tipos_documentales ("
         "  code text PRIMARY KEY, nombre text NOT NULL,"
         "  activo boolean NOT NULL DEFAULT true,"
-        "  admite_ventanilla_publica boolean NOT NULL DEFAULT false)"
+        "  admite_ventanilla_publica boolean NOT NULL DEFAULT false,"
+        "  default_response_days int NULL)"
     )
     await conn.execute(
         "INSERT INTO tipos_documentales (code, nombre, activo, admite_ventanilla_publica) "

@@ -151,6 +151,7 @@ PERMISOS_DEMO = (
     "SGD_PERM_ESTADISTICA",     # reportes y tablero
     # Conocimiento (ADR-037, ADR-046): además exige que la entidad lo active
     "PERM_CONOCIMIENTO",        # buscar y antecedentes (1) / aceptar una sugerencia (2)
+    "PERM_DUE_DATE",            # corregir el vencimiento (nivel 3)
 )
 
 # El clearance NO se hereda de los permisos: es un eje aparte (RF-SEG-08) y su

@@ -29,7 +29,7 @@ from app.schemas.auth import UserInfoResponse
 pytestmark = pytest.mark.asyncio
 
 
-def _conn(bandera: object) -> AsyncMock:
+def _conn(bandera: object, proveedor: object = "local") -> AsyncMock:
     conn = AsyncMock()
     conn.fetchrow.return_value = None  # usuario no aprovisionado: la bandera es de la entidad
     sql_vistas: list[str] = []
@@ -40,6 +40,10 @@ def _conn(bandera: object) -> AsyncMock:
             if isinstance(bandera, Exception):
                 raise bandera
             return bandera
+        if "intelligence_provider" in sql:
+            if isinstance(proveedor, Exception):
+                raise proveedor
+            return proveedor
         return False
 
     conn.fetchval.side_effect = _fetchval
@@ -86,6 +90,18 @@ async def test_me_si_la_lectura_falla_es_false_y_no_rompe(client: AsyncClient) -
     body = await _me(client, _conn(RuntimeError("registro caído")))
     assert body["asistente_habilitado"] is False
     assert "permissions" in body
+
+
+async def test_me_publica_ppi_y_cualquier_otro_valor_es_local(client: AsyncClient) -> None:
+    assert (await _me(client, _conn(True, "ppi")))["intelligence_provider"] == "ppi"
+    assert (await _me(client, _conn(True, "local")))["intelligence_provider"] == "local"
+    assert (await _me(client, _conn(True, "otro")))["intelligence_provider"] == "local"
+
+
+async def test_me_si_el_proveedor_no_se_lee_es_local(client: AsyncClient) -> None:
+    body = await _me(client, _conn(True, RuntimeError("registro caído")))
+    assert body["intelligence_provider"] == "local"
+    assert body["asistente_habilitado"] is True
 
 
 async def test_me_lee_la_bandera_de_la_entidad_del_token(client: AsyncClient) -> None:

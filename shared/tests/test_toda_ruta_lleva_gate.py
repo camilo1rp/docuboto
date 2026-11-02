@@ -49,6 +49,7 @@ GATES = frozenset({
     "require_internal_token",
     "_require_internal_token",
     "require_public_interop",
+    "exigir_firma_proveedor",
 })
 _METODOS = frozenset({"get", "post", "put", "patch", "delete"})
 # `metrics.py` (C18, ADR-041) está exento SOLO si declara únicamente `GET /metrics`: esa

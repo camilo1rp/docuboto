@@ -1555,6 +1555,42 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
 
 
 @pytest.mark.asyncio
+async def test_un_fallo_al_publicar_queda_registrado_y_no_revierte() -> None:
+    """Redis caído no deshace el paso, y el fallo no puede desaparecer."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.services.workflow_service import WorkflowService
+
+    svc = WorkflowService(AsyncMock(), "demo")
+    step = SimpleNamespace(
+        id=uuid.uuid4(),
+        radicado_id=uuid.uuid4(),
+        tracking_number="2026-DEMO-E-000001",
+        step_number=1,
+        from_dept="A",
+        to_dept="B",
+        from_dept_code=1,
+        to_dept_code=2,
+        action="assign",
+        status="pending",
+        assigned_by=None,
+    )
+    with (
+        patch(
+            "app.services.workflow_service.events.emit",
+            AsyncMock(side_effect=ConnectionError("redis caído")),
+        ),
+        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=1)),
+        patch("app.services.workflow_service.logger") as log,
+    ):
+        await svc._publish("workflow.step.created", step)
+    log.warning.assert_called_once()
+    assert log.warning.call_args.kwargs["exc_info"] is True
+
+
+@pytest.mark.asyncio
 async def test_estado_cambiado_y_overdue_declaran_nivel_seguridad() -> None:
     """Los otros dos productores (`_emitir_cambios`, `scan_overdue`) también llevan el nivel."""
     from types import SimpleNamespace

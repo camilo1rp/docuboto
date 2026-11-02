@@ -36,12 +36,26 @@ class Settings(BaseSettings):
     # Búsqueda de texto completo que respalda `/search` y `/antecedentes` en modo
     # `local` (ADR-046 §2): se consulta como el usuario, con su identidad firmada.
     document_service_url: str = "http://document-service:8003"
+    # El mismo secreto que document-service exige en sus rutas internas.
+    # Vacío: el retorno no pide bytes.
+    document_internal_token: str = ""
     service_port: int = 8011
     log_level: str = "info"
     # El consumidor lee los dos streams de dominio. La URL vacía no es un
     # destino: el punto de paso no llama a nadie hasta el perfil intelligence.
     redis_url: str = "redis://redis:6379/0"
     ppi_provider_url: str = ""
+    # KEK que abre la clave de seudónimo y la de retorno. Vacía: no hay consulta
+    # al proveedor ni declaración de la conexión.
+    intelligence_credential_kek: str = ""
+    # Clave pública fijada para comprobar la declaración. Vacía: no se lee.
+    ppi_capabilities_public_key: str = ""
+    ppi_capabilities_kid: str = ""
+    # Origen público de las dos URL de retorno. Vacío: no se declara la conexión.
+    ppi_callback_base_url: str = ""
+    # Vacío: las rutas internas que usa el acto de configuración rechazan
+    # toda llamada. No es el token de document-service.
+    intelligence_internal_token: str = ""
 
 
 settings = Settings()

@@ -27,6 +27,8 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from orpycamcp_common import audit
 
 from app.clients import storage_client
@@ -382,4 +384,205 @@ async def huella_radicado(
         "anexo_id": str(anexo["id"]),
         "file_id": str(anexo["file_id"]),
         "huella_sha256": huella.lower(),
+    }
+
+
+_CONTENIDO = """
+-- contenido:anexo
+SELECT a.file_id, r.tracking_number, r.nivel_seguridad
+  FROM anexos a
+  JOIN radicados r ON r.id = a.radicado_id
+ WHERE a.id = $1
+   AND r.status <> 'anulado'
+   AND r.nivel_seguridad = ANY($2::smallint[])
+"""
+
+_REGISTRO = """
+-- registro:radicado
+SELECT id, tracking_number, doc_type, subject, doc_class, dest_dept_code,
+       status, registered_at, due_date, sender_name, sender_entity,
+       metadata, updated_at, nivel_seguridad
+  FROM radicados
+ WHERE id = $1
+   AND status <> 'anulado'
+   AND nivel_seguridad = ANY($2::smallint[])
+"""
+
+_ANEXOS = """
+-- registro:anexos
+SELECT a.id, a.filename, a.mime_type, a.file_size, a.es_principal, a.folios,
+       f.sha256
+  FROM anexos a
+  JOIN files f ON f.id = a.file_id
+ WHERE a.radicado_id = $1
+"""
+
+
+async def _niveles(conn: asyncpg.Connection, slug: str) -> list[int]:
+    politica = await conn.fetchrow(
+        "SELECT intelligence_levels FROM public.tenants WHERE slug = $1",
+        slug,
+    )
+    if politica is None:
+        return []
+    return [int(n) for n in (politica["intelligence_levels"] or [])]
+
+
+def _iso(valor: object) -> str | None:
+    if valor is None:
+        return None
+    texto = valor.isoformat() if hasattr(valor, "isoformat") else str(valor)
+    return texto
+
+
+def _traza_transmision(
+    conn: asyncpg.Connection,
+    *,
+    slug: str,
+    numero: str,
+    action: str,
+    payload: dict[str, object],
+) -> object:
+    return audit.append(
+        conn,
+        tenant_slug=slug,
+        service="document-service",
+        action=action,
+        object_type="radicado",
+        object_ref=numero,
+        actor="system",
+        canal="system",
+        payload=payload,
+    )
+
+
+@router.get(
+    "/anexos/{anexo_id}/contenido",
+    summary="Bytes de un anexo que la entidad sigue transmitiendo",
+)
+async def contenido_anexo(
+    anexo_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> StreamingResponse:
+    """Los bytes, si el nivel vivo del radicado sigue habilitado.
+
+    El `WHERE` niega el anulado y el nivel que la entidad ya no transmite.
+    Deja en el historial de acceso que el contenido se transmitió al
+    proveedor de inteligencia.
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    fila = await conn.fetchrow(_CONTENIDO, anexo_id, await _niveles(conn, slug))
+    if fila is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "document_not_found", "detail": "No hay ese anexo", "status": 404},
+        )
+    try:
+        stream = await storage_client.open_content_stream(
+            tenant_slug=slug, file_id=fila["file_id"]
+        )
+    except storage_client.StorageContentError as exc:
+        logger.warning("el contenido de %s no salió del almacén", anexo_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "storage_unavailable",
+                "detail": "El almacén no respondió",
+                "status": 503,
+            },
+        ) from exc
+    if stream is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "document_not_found", "detail": "No hay ese anexo", "status": 404},
+        )
+    try:
+        await _traza_transmision(
+            conn,
+            slug=slug,
+            numero=str(fila["tracking_number"]),
+            action="document.contenido_transmitido",
+            payload={
+                "detalle": "transmitido al proveedor de inteligencia",
+                "anexo_id": str(anexo_id),
+                "nivel_seguridad": int(fila["nivel_seguridad"]),
+            },
+        )
+    except Exception:
+        logger.warning("no se pudo dejar la traza de la transmisión", exc_info=True)
+    return StreamingResponse(
+        stream.aiter_bytes(),
+        media_type="application/octet-stream",
+        background=BackgroundTask(stream.aclose),
+    )
+
+
+@router.get(
+    "/radicados/{radicado_id}",
+    summary="Registro de un radicado que la entidad sigue transmitiendo",
+)
+async def registro_radicado(
+    radicado_id: uuid.UUID,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> dict[str, object]:
+    """La fila oficial y sus anexos, si el nivel vivo sigue habilitado.
+
+    El `WHERE` niega el anulado y el nivel que la entidad ya no transmite.
+    Deja en el historial de acceso que el registro se transmitió al
+    proveedor de inteligencia.
+    """
+    slug = request.headers.get("X-Tenant-Slug", "")
+    fila = await conn.fetchrow(_REGISTRO, radicado_id, await _niveles(conn, slug))
+    if fila is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "document_not_found",
+                "detail": "No hay ese radicado",
+                "status": 404,
+            },
+        )
+    anexos = await conn.fetch(_ANEXOS, radicado_id)
+    try:
+        await _traza_transmision(
+            conn,
+            slug=slug,
+            numero=str(fila["tracking_number"]),
+            action="document.registro_transmitido",
+            payload={
+                "detalle": "transmitido al proveedor de inteligencia",
+                "radicado_id": str(radicado_id),
+                "nivel_seguridad": int(fila["nivel_seguridad"]),
+            },
+        )
+    except Exception:
+        logger.warning("no se pudo dejar la traza de la transmisión", exc_info=True)
+    return {
+        "id": str(fila["id"]),
+        "tracking_number": fila["tracking_number"],
+        "doc_type": fila["doc_type"],
+        "subject": fila["subject"],
+        "doc_class": fila["doc_class"],
+        "dest_dept_code": fila["dest_dept_code"],
+        "status": fila["status"],
+        "registered_at": _iso(fila["registered_at"]),
+        "due_date": _iso(fila["due_date"]),
+        "sender_name": fila["sender_name"],
+        "sender_entity": fila["sender_entity"],
+        "metadata": fila["metadata"] if isinstance(fila["metadata"], dict) else {},
+        "updated_at": _iso(fila["updated_at"]),
+        "anexos": [
+            {
+                "id": str(anexo["id"]),
+                "filename": anexo["filename"],
+                "mime_type": anexo["mime_type"],
+                "file_size": anexo["file_size"],
+                "es_principal": bool(anexo["es_principal"]),
+                "folios": anexo["folios"],
+                "sha256": anexo["sha256"],
+            }
+            for anexo in anexos
+        ],
     }

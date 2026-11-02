@@ -37,7 +37,10 @@ _RAICES = (
     RAIZ / "scripts",
     RAIZ / "infra",
 )
-_SUELTOS = (RAIZ / "docker-compose.yml",)
+_SUELTOS = (
+    RAIZ / "docker-compose.yml",
+    RAIZ / "docker-compose.intelligence.yml",
+)
 _SUFIJOS = {
     ".py", ".js", ".mjs", ".cjs", ".svelte", ".sql", ".yml", ".yaml", ".sh", ".json", ".toml",
 }

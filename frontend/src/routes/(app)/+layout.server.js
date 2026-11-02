@@ -100,6 +100,8 @@ export async function load({ cookies, url, fetch }) {
   user.permisosDegradados = false;
   // Asistente por entidad (ADR-037): apagado salvo que /auth/me diga `true`.
   user.asistente_habilitado = false;
+  // Proveedor de inteligencia (ADR-045): `local` salvo que /auth/me diga `ppi`.
+  user.intelligence_provider = "local";
   try {
     const meData = await fetch(`${API_V1}/auth/me`, {
       headers: {
@@ -131,6 +133,7 @@ export async function load({ cookies, url, fetch }) {
       user.user_id = me.user_id ?? user.sub;
       // Solo `true` estricto: el backend ya entrega `false` si no pudo leerla.
       user.asistente_habilitado = me.asistente_habilitado === true;
+      user.intelligence_provider = me.intelligence_provider === "ppi" ? "ppi" : "local";
       // Si el backend enriquece el nombre/email, actualizar
       if (me.name) user.name = me.name;
       if (me.email) user.email = me.email;

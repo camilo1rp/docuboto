@@ -49,6 +49,8 @@ _JOIN_ACTOR = "LEFT JOIN auth_users u ON u.id::text = a.actor"
 _ACCIONES_ACCESO = (
     "document.radicado_consultado",
     "document.anexo_descargado",
+    "document.contenido_transmitido",
+    "document.registro_transmitido",
 )
 
 

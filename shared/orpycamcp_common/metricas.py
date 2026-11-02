@@ -19,7 +19,9 @@ Tres reglas que este módulo hace cumplir (no son convención):
 1. **Frontera por admisión.** :data:`FAMILIAS` es el registro ÚNICO: lo que no
    está aquí no se puede emitir, y una etiqueta solo admite los valores de su
    conjunto cerrado. Ninguna familia lleva etiqueta de tenant, slug, usuario,
-   radicado ni id: el exportador publica agregados, nunca identidad.
+   radicado ni id: el exportador publica agregados, nunca identidad. La señal
+   ``intelligence`` suma envíos, rechazos de barrera, respaldos y suspensiones
+   (ADR-045) con el mismo criterio.
 2. **«No verificado» no es 0.** Si la medición de una señal falla en CUALQUIER
    tenant (tabla ausente, timeout, error SQL, valor fuera del registro) se
    emite ``orpycamcp_signal_measured{signal=…} 0`` y NINGUNA serie de valor de
@@ -63,7 +65,7 @@ PLAZO_POR_DEFECTO_S = 10.0
 # Cabeceras que añaden proxies (nginx, gateway). Prometheus no las envía.
 CABECERAS_DE_PROXY = ("x-forwarded-for", "forwarded", "x-real-ip")
 
-SENALES = frozenset({"dlq", "worm", "audit_chain"})
+SENALES = frozenset({"dlq", "worm", "audit_chain", "intelligence"})
 ARTEFACTOS_WORM = frozenset(
     {
         "expediente_indice",
@@ -92,7 +94,7 @@ def _f(nombre: str, ayuda: str, **etiquetas: frozenset[str]) -> tuple[str, Famil
     return nombre, Familia(nombre, ayuda, dict(etiquetas))
 
 
-#: Registro único de las nueve familias (ADR-041). Orden = orden de emisión.
+#: Registro único (ADR-041). Orden = orden de emisión.
 FAMILIAS: dict[str, Familia] = dict(
     [
         _f(
@@ -136,6 +138,25 @@ FAMILIAS: dict[str, Familia] = dict(
         _f(
             "orpycamcp_audit_chain_last_verification_timestamp_seconds",
             "Epoch en que termino la ultima corrida completa de verificacion de la cadena.",
+        ),
+        _f(
+            "orpycamcp_intelligence_sends",
+            "Filas del libro de envios, por operacion y resultado, sumadas sobre entidades.",
+            operation=frozenset({"push", "purge"}),
+            result=frozenset({"accepted", "error"}),
+        ),
+        _f(
+            "orpycamcp_intelligence_barrier_denials",
+            "Rechazos de la barrera con el envio encendido, por motivo, sumados sobre entidades.",
+            reason=frozenset({"suspendido", "ausente", "nivel"}),
+        ),
+        _f(
+            "orpycamcp_intelligence_fallbacks",
+            "Veces que el indice local respondio porque el proveedor no pudo.",
+        ),
+        _f(
+            "orpycamcp_intelligence_suspensions",
+            "Entidades con el envio suspendido ahora.",
         ),
     ]
 )

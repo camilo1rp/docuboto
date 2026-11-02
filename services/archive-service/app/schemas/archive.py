@@ -1393,6 +1393,9 @@ class TipoDocumentalCreate(BaseModel):
     #: del público, Ley 1755): recibir por la ventanilla no implica difundir.
     #: Opt-in; cambiarla exige `USUA_PERM_TRD` nivel 3 (decisión de difusión).
     publicable: bool = False
+    #: Días hábiles que toma una Entrada de este tipo cuando llega sin plazo.
+    #: NULL: no hay plazo por defecto. Lo fija la entidad, no una ley del código.
+    default_response_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class TipoDocumentalUpdate(BaseModel):
@@ -1403,6 +1406,7 @@ class TipoDocumentalUpdate(BaseModel):
     activo: bool | None = None
     admite_ventanilla_publica: bool | None = None
     publicable: bool | None = None
+    default_response_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class TipoDocumentalResponse(BaseModel):
@@ -1417,6 +1421,7 @@ class TipoDocumentalResponse(BaseModel):
     activo: bool
     admite_ventanilla_publica: bool
     publicable: bool = False
+    default_response_days: int | None = None
     created_at: datetime
     #: Solo en la respuesta de un PATCH que pasa `publicable` de true a false:
     #: cuántos radicados de este tipo siguen publicados (no se despublican solos;

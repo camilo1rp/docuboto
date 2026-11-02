@@ -184,6 +184,20 @@ async def asistente_habilitado(conn: asyncpg.Connection, slug: str) -> bool:
     )
 
 
+async def intelligence_provider(conn: asyncpg.Connection, slug: str) -> str:
+    """``ppi`` o ``local`` (ADR-045 §4). Cualquier otra cosa, o un fallo de forma, es ``local``.
+
+    No captura excepciones: ``/auth/me`` responde ``local`` si el registro no
+    responde. Sin caché: el cambio de proveedor tiene que verse enseguida.
+    """
+    if not slug_valido(slug):
+        return "local"
+    valor = await conn.fetchval(
+        "SELECT intelligence_provider FROM public.tenants WHERE slug = $1", slug
+    )
+    return "ppi" if valor == "ppi" else "local"
+
+
 #: Cuerpos de error comunes de la bandera de la capa de conocimiento (ADR-037):
 #: (HTTP, error, detalle). Los códigos `asistente_*` conservan el nombre histórico.
 ERROR_ASISTENTE_DESHABILITADO: tuple[int, str, str] = (

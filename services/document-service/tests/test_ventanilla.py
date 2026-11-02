@@ -53,6 +53,8 @@ def _fetchval_por_consulta(tipo: str | None = "Derecho de petición", codigo: st
 
     async def _fetchval(sql, *args, **kw):
         bajo = sql.lower()
+        if "default_response_days" in bajo:
+            return None
         if "tipos_documentales" in bajo:
             return tipo
         if "verification_code" in bajo:

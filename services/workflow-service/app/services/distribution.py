@@ -186,6 +186,8 @@ async def auto_distribute(
             assigned_by=SYSTEM_USER,
             # Actor de sistema: sin clearance ni tenencia que comprobar (ADR-028).
             sistema=True,
+            regla_id=result.rule_id,
+            regla_nombre=result.rule_name,
         )
     except YaDistribuidoError:
         # RN-8, comprobado DENTRO del cerrojo del radicado: otra entrega del mismo

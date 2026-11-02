@@ -3,6 +3,13 @@
 
 name: docuboto
 
+# Pasarela en la red ppi (ADR-045 §8). El fragmento NO se incluye aquí: Compose
+# lo mezclaría siempre y `up` exigiría la red aunque no uses la pasarela.
+# No define servicios. Activarlo:
+#   docker network create --internal ppi
+#   PPI_PROVIDER_URL=http://host:puerto docker compose \
+#     -f docker-compose.yml -f docker-compose.intelligence.yml up -d
+
 networks:
   orpycamcp-net:
     driver: bridge
@@ -430,6 +437,9 @@ services:
       - MIGRATIONS_DATABASE_URL=postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db
       - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
+      # Acto de configuración: tenant-service llama estas rutas. Vacío las cierra.
+      - INTELLIGENCE_INTERNAL_TOKEN=${INTELLIGENCE_INTERNAL_TOKEN:-orpycamcp_intelligence_internal_dev}
+      # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
     networks:
       - orpycamcp-net
     depends_on:
@@ -530,6 +540,8 @@ services:
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
+      - KNOWLEDGE_SERVICE_URL=http://knowledge-service:8011
+      - INTELLIGENCE_INTERNAL_TOKEN=${INTELLIGENCE_INTERNAL_TOKEN:-orpycamcp_intelligence_internal_dev}
     networks:
       - orpycamcp-net
     depends_on:

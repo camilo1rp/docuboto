@@ -11,7 +11,7 @@
 
 Empuja altas y cambios. Ordena borrar cuando el evento es anulación o purga,
 o cuando una reclasificación deja el nivel fuera de los habilitados. El
-cuerpo sale de la fila vigente, no del sobre: el punto de paso vuelve a
+cuerpo lo pide document-service, no el sobre: el punto de paso vuelve a
 leer el nivel antes de llamar.
 
 La carga inicial recorre los radicados de niveles habilitados por
@@ -27,6 +27,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from app.clients import documento
 from app.core import paso, traduccion
 from app.core.paso import Decision
 
@@ -55,24 +56,6 @@ CONOCIDOS = EMPUJE | BORRADO | {RECLASIFICADO}
 # página sigue pendiente. Un registro que no puede salir (nivel, ausente,
 # cuerpo) sí se salta, para no trabar el resto.
 _PARAR = frozenset({"bandera", "local", "suspendido", "registro"})
-
-_FILA = """
--- fila-oficial
-SELECT id, tracking_number, doc_type, subject, doc_class, dest_dept_code,
-       status, registered_at, due_date, sender_name, sender_entity,
-       metadata, updated_at
-  FROM radicados
- WHERE id = $1
-"""
-
-_ANEXOS = """
--- anexos-del-radicado
-SELECT a.id, a.filename, a.mime_type, a.file_size, a.es_principal, a.folios,
-       f.sha256
-  FROM anexos a
-  JOIN files f ON f.id = a.file_id
- WHERE a.radicado_id = $1
-"""
 
 _CURSOR = """
 -- cursor-carga
@@ -138,13 +121,12 @@ def _leer_cursor(texto: str | None) -> tuple[datetime, uuid.UUID]:
         return _EPOCA, _NULO
 
 
-async def _cuerpo(conn: Any, radicado_id: uuid.UUID, fila: Any | None = None) -> dict[str, Any]:
-    if fila is None:
-        fila = await conn.fetchrow(_FILA, radicado_id)
-    if fila is None:
+async def _cuerpo(slug: str, radicado_id: uuid.UUID) -> dict[str, Any]:
+    """El lote sale de document-service. 404 es «ausente»; otro fallo sube."""
+    registro = await documento.leer_registro(slug, radicado_id)
+    if not isinstance(registro, dict):
         raise ValueError("ausente")
-    anexos = await conn.fetch(_ANEXOS, fila["id"])
-    return traduccion.lote(fila, anexos)
+    return traduccion.lote(registro, registro.get("anexos") or [])
 
 
 async def _empujar(
@@ -152,10 +134,14 @@ async def _empujar(
     slug: str,
     radicado_id: uuid.UUID,
     cliente: Any,
-    fila: Any | None = None,
+    _fila: Any | None = None,
 ) -> Decision:
+    """El cuerpo lo pide document-service. La fila de la página no se reenvía."""
+    politica = await paso.leer_politica(conn, slug)
+    if not politica.completa or politica.motivo is not None:
+        return Decision(False, politica.motivo or "registro")
     try:
-        cuerpo = await _cuerpo(conn, radicado_id, fila)
+        cuerpo = await _cuerpo(slug, radicado_id)
     except ValueError as exc:
         if str(exc) == "ausente":
             return Decision(False, "ausente")

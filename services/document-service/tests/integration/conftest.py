@@ -340,7 +340,9 @@ CREATE TABLE IF NOT EXISTS tipos_documentales (
     activo BOOLEAN NOT NULL DEFAULT true,
     admite_ventanilla_publica BOOLEAN NOT NULL DEFAULT false,
     -- C-4/C10 (archive 071): marca PROPIA del tipo para publicar de oficio. Opt-in.
-    publicable BOOLEAN NOT NULL DEFAULT false
+    publicable BOOLEAN NOT NULL DEFAULT false,
+    -- D2 (archive 077): días hábiles si una Entrada llega sin plazo. NULL = ninguno.
+    default_response_days INT NULL
 );
 CREATE TABLE IF NOT EXISTS urd_usuaroldep (
     user_id UUID NOT NULL, depe_id INTEGER NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE

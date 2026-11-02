@@ -232,10 +232,22 @@ describe("(app)/+layout.server.js — asistente por entidad (ADR-037)", () => {
     }
   });
 
+  it("intelligence_provider: solo ppi pasa; el resto queda en local", async () => {
+    const ppi = await load(
+      evento(fetchQue({ "/auth/me": () => json({ intelligence_provider: "ppi" }) })),
+    );
+    expect(ppi.user.intelligence_provider).toBe("ppi");
+    for (const me of [{ intelligence_provider: "local" }, {}, { intelligence_provider: "PPI" }]) {
+      const { user } = await load(evento(fetchQue({ "/auth/me": () => json(me) })));
+      expect(user.intelligence_provider).toBe("local");
+    }
+  });
+
   it("con /auth/me caído: apagado (fail-closed)", async () => {
     const { user } = await load(
       evento(fetchQue({ "/auth/me": () => new Response("", { status: 503 }) })),
     );
     expect(user.asistente_habilitado).toBe(false);
+    expect(user.intelligence_provider).toBe("local");
   });
 });

@@ -117,7 +117,7 @@ respuesta es «evidencia insuficiente». Si el proveedor no está, responde el �
 | api-gateway | Enruta `/api/v1/config/intelligence*`. **No** enruta ninguna ruta interna de la pasarela. |
 | frontend | **Panel «Preguntar»** en el drawer de detalle de la bandeja (`frontend/src/routes/(app)/bandeja/+page.svelte`): solo con bandera, `PERM_CONOCIMIENTO` y radicado de un nivel habilitado. Muestra las citas con enlace al anexo y la página, dice cuándo responde el índice local y avisa de que la pregunta y el radicado se transmiten, y por qué ruta. |
 | | **Pantalla de administración** «Inteligencia»: proveedor, subencargados y enrutamiento según `capabilities`, declaración, niveles habilitados con la ruta de cada uno, estado (suspendido o activo) y retiro de datos. En `local` muestra cuántos radicados conserva el proveedor (inventario PPI), y la confirmación del cambio a `local` ofrece «retirar también los datos». |
-| infra | **Perfil de Compose `intelligence`** en `docker-compose.yml` e `infra/docker-compose.prod.yml`: no arranca ningún servicio del proveedor. Pasa knowledge-service a `ppi`, lo conecta a la red externa `ppi` (`docker network create --internal ppi`, creada una vez por host fuera de los dos proyectos) y le da `PPI_PROVIDER_URL` sin valor por defecto. El proveedor es otro proyecto Compose con su propia versión (ADR-045 §8). |
+| infra | **Fragmento de Compose `intelligence`** (`docker-compose.intelligence.yml` e `infra/docker-compose.intelligence.yml`), sumado con `-f` y no con `include`: Compose mezcla un `include` aunque el perfil esté apagado, y entonces `up` exige la red. No arranca ningún servicio del proveedor. Conecta knowledge-service a la red externa `ppi` (`docker network create --internal ppi`, creada una vez por host fuera de los dos proyectos) y le da `PPI_PROVIDER_URL` sin valor por defecto. Sin el fragmento, el arranque es el de hoy. El proveedor es otro proyecto Compose con su propia versión (ADR-045 §8). |
 
 ### Permisos nuevos
 
@@ -153,10 +153,10 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
   nonce repetido da 401, y un localizador de un nivel no habilitado da 410.
 - **El cliente de la entidad no es credencial de la API.** El cliente creado por
   `init_tenant.py` no aparece en `ALLOWED_AZP` y solo tiene cuenta de servicio.
-- **El perfil no arranca al proveedor.** Un guardián de compose comprueba que el perfil
-  `intelligence` no define servicios nuevos, que solo knowledge-service se conecta a la
-  red `ppi`, que esa red es `external` y que `PPI_PROVIDER_URL` no tiene valor por
-  defecto.
+- **El fragmento no arranca al proveedor.** Un guardián de compose comprueba que el
+  fragmento `intelligence` no define servicios nuevos, que el manifiesto base no lo
+  incluye, que solo knowledge-service se conecta a la red `ppi`, que esa red es
+  `external` y que `PPI_PROVIDER_URL` no tiene valor por defecto.
 - **La especificación PPI cumple su contrato.** Los ejemplos de
   `docs/contratos/ppi/examples/manifest.json` dan el resultado declarado contra su
   esquema. La carpeta solo tiene `.md`, `.json` y `.yaml`, bajo la AGPL del
@@ -418,7 +418,7 @@ lado del proveedor; los demás aparecieron al preparar este plan.
    2. punto de paso y barrera, con sus guardianes **antes** de cualquier envío real;
    3. consumidor y carga inicial;
    4. delegación con respaldo;
-   5. panel «Preguntar», configuración y perfil de Compose.
+   5. panel «Preguntar», configuración y fragmento de Compose.
 3. **Los arreglos de plazo de D2** (plazo por defecto, operación de vencimiento, sondeo
    de correo) no dependen del proveedor y pueden adelantarse.
 4. **El resto de D2** necesita D1 y, del lado del proveedor, la entrega de
