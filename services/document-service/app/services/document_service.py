@@ -40,7 +40,7 @@ from app.core.clearance import resolve_caller_clearance
 from app.core.config import settings
 from app.core.datos_minimos import exigir_o_422
 from app.core.dependencias import normalizar_dependencia
-from app.core.tipos import exigir_tipo_documental
+from app.core.tipos import exigir_tipo_documental, plazo_por_defecto
 from app.models.document import Anexo, Radicado
 from app.repositories.audit_read import AuditReadRepository
 from app.repositories.borrador_repository import BorradorRepository
@@ -363,16 +363,20 @@ class DocumentService:
                 )
 
         # RF-RAD-04: la fecha de vencimiento se calcula en días hábiles desde la
-        # radicación. El calendario lo resuelve tenant-service (E14) vía HTTP;
-        # sin response_days el radicado no tiene plazo.
+        # radicación. El calendario lo resuelve tenant-service (E14) vía HTTP.
+        # Una Entrada sin días toma el plazo por defecto de su tipo documental.
+        # Quien indica días gana. Salida e Interno no heredan ese plazo.
         due_date: date | None = None
-        if payload.response_days is not None:
+        dias = payload.response_days
+        if dias is None and payload.doc_type == "E":
+            dias = await plazo_por_defecto(self._conn, payload.doc_class)
+        if dias is not None:
             if self._tenant_client is None:
                 raise RuntimeError("tenant_client requerido para calcular el plazo")
             due_date = await self._tenant_client.calculate_due_date(
                 tenant_slug=self._slug,
                 from_date=now.date(),
-                business_days=payload.response_days,
+                business_days=dias,
             )
 
         # Metadatos (E03, ADR-007): si el tipo documental (doc_class) tiene una

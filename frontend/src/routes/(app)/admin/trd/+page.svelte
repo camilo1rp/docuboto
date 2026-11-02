@@ -531,8 +531,10 @@
   let tVentanilla = false;
   let tPublicable = false;
   let tMetadataTemplate = "";
+  let tPlazo = "";
   let tCodeError = "";
   let tNombreError = "";
+  let tPlazoError = "";
 
   function openTipoCreate() {
     tCode = "";
@@ -542,14 +544,31 @@
     tVentanilla = false;
     tPublicable = false;
     tMetadataTemplate = "";
+    tPlazo = "";
     tCodeError = "";
     tNombreError = "";
+    tPlazoError = "";
     tipoCreateOpen = true;
+  }
+
+  /** @param {string} texto @returns {number|null|false} */
+  function plazoONada(texto) {
+    const limpio = String(texto ?? "").trim();
+    if (!limpio) return null;
+    const dias = Number(limpio);
+    if (!Number.isInteger(dias) || dias < 1 || dias > 3650) return false;
+    return dias;
   }
 
   async function crearTipo() {
     tCodeError = "";
     tNombreError = "";
+    tPlazoError = "";
+    const plazo = plazoONada(tPlazo);
+    if (plazo === false) {
+      tPlazoError = "Indique días hábiles entre 1 y 3650, o déjelo vacío.";
+      return;
+    }
     if (!tCode.trim()) {
       tCodeError = "El código es obligatorio.";
       return;
@@ -572,6 +591,7 @@
           // Marca propia (Ley 1712), solo nivel 3: sin él ni se envía.
           ...(canWriteLevel3 && tPublicable ? { publicable: true } : {}),
           metadata_template: tMetadataTemplate.trim() || null,
+          default_response_days: plazo,
           activo: true,
         }),
       });
@@ -597,6 +617,8 @@
   let etPublicable = false;
   let etPublicableOriginal = false;
   let etMetadataTemplate = "";
+  let etPlazo = "";
+  let etPlazoError = "";
   let etActivo = true;
 
   function openTipoEdit(tipo) {
@@ -608,12 +630,21 @@
     etPublicable = !!tipo.publicable;
     etPublicableOriginal = !!tipo.publicable;
     etMetadataTemplate = tipo.metadata_template ?? "";
+    etPlazo =
+      tipo.default_response_days == null ? "" : String(tipo.default_response_days);
+    etPlazoError = "";
     etActivo = tipo.activo !== false;
     tipoEditOpen = true;
   }
 
   async function guardarTipo() {
     if (!tipoEditTarget) return;
+    etPlazoError = "";
+    const plazo = plazoONada(etPlazo);
+    if (plazo === false) {
+      etPlazoError = "Indique días hábiles entre 1 y 3650, o déjelo vacío.";
+      return;
+    }
     actionLoading = true;
     try {
       const res = await fetch(`/admin/trd/api/tipos/${tipoEditTarget.id}`, {
@@ -627,6 +658,7 @@
           // Solo si cambió: cambiarla (o reactivar un tipo publicable) exige nivel 3.
           ...(etPublicable !== etPublicableOriginal ? { publicable: etPublicable } : {}),
           metadata_template: etMetadataTemplate.trim() || null,
+          default_response_days: plazo,
           activo: etActivo,
         }),
       });
@@ -1049,6 +1081,7 @@
         <th scope="col">Obligatorio</th>
         <th scope="col">Ventanilla pública</th>
         <th scope="col">Publicable (Ley 1712)</th>
+        <th scope="col">Plazo por defecto</th>
         <th scope="col">Estado</th>
       </svelte:fragment>
 
@@ -1059,6 +1092,7 @@
         <td>{item.obligatorio ? "Sí" : "No"}</td>
         <td>{item.admite_ventanilla_publica ? "Sí" : "No"}</td>
         <td>{item.publicable ? "Sí" : "No"}</td>
+        <td>{item.default_response_days == null ? "—" : `${item.default_response_days} días`}</td>
         <td>
           <StatusChip
             status={item.activo ? "success" : "neutral"}
@@ -1135,6 +1169,14 @@
             bind:value={tMetadataTemplate}
             hint="Identificador libre (tipo_documental) usado en /admin/metadatos para la plantilla de documento."
           />
+          <FormField
+            id="tipo-plazo"
+            label="Plazo por defecto (días hábiles)"
+            type="number"
+            bind:value={tPlazo}
+            error={tPlazoError}
+            hint="Si una Entrada de este tipo llega sin plazo, toma estos días. Vacío: no hay plazo."
+          />
         </form>
       </svelte:fragment>
       <svelte:fragment slot="create-footer">
@@ -1180,6 +1222,14 @@
             id="tipo-edit-metadata-template"
             label="Plantilla de metadatos asociada"
             bind:value={etMetadataTemplate}
+          />
+          <FormField
+            id="tipo-edit-plazo"
+            label="Plazo por defecto (días hábiles)"
+            type="number"
+            bind:value={etPlazo}
+            error={etPlazoError}
+            hint="Si una Entrada de este tipo llega sin plazo, toma estos días. Vacío: no hay plazo."
           />
           <label class="trd-form__check">
             <input

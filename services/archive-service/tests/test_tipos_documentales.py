@@ -31,6 +31,7 @@ def _tipo_row(tipo_id: uuid.UUID, **kw) -> dict:
         "admite_ventanilla_publica": False,
         # C-4/C10: marca PROPIA de difusión, también opt-in y distinta de la anterior.
         "publicable": False,
+        "default_response_days": None,
         "created_at": datetime.now(tz=UTC),
     }
     base.update(kw)
@@ -616,3 +617,45 @@ async def test_reactivar_un_tipo_publicable_exige_nivel_3(client_with_conn) -> N
             f"/api/v1/tipos-documentales/{tid}", json=cuerpo, headers=TENANT_HEADERS
         )
         assert ok.status_code == 200, (cuerpo, ok.text)
+
+
+@pytest.mark.asyncio
+async def test_el_plazo_por_defecto_viaja_en_el_alta_y_se_puede_quitar(client_with_conn) -> None:
+    """Días hábiles del tipo: la entidad los pone, y NULL los quita."""
+    client, mock_conn = client_with_conn
+    tid = uuid.uuid4()
+    mock_conn.fetchval.return_value = True
+    mock_conn.fetchrow.return_value = _tipo_row(tid, default_response_days=15)
+
+    alta = await client.post(
+        "/api/v1/tipos-documentales",
+        json={"code": "RES", "nombre": "Resolución", "default_response_days": 15},
+        headers=TENANT_HEADERS,
+    )
+    assert alta.status_code == 201, alta.text
+    assert alta.json()["default_response_days"] == 15
+    insert = next(
+        c.args
+        for c in mock_conn.fetchrow.call_args_list
+        if "INSERT INTO tipos_documentales" in c.args[0]
+    )
+    assert 15 in insert[1:]
+
+    fuera = await client.post(
+        "/api/v1/tipos-documentales",
+        json={"code": "RES", "nombre": "Resolución", "default_response_days": 0},
+        headers=TENANT_HEADERS,
+    )
+    assert fuera.status_code == 422
+
+    mock_conn.fetchrow.side_effect = [
+        _tipo_row(tid, default_response_days=15),
+        _tipo_row(tid, default_response_days=None),
+    ]
+    baja = await client.patch(
+        f"/api/v1/tipos-documentales/{tid}",
+        json={"default_response_days": None},
+        headers=TENANT_HEADERS,
+    )
+    assert baja.status_code == 200, baja.text
+    assert baja.json()["default_response_days"] is None

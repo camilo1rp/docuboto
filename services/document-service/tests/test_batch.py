@@ -304,6 +304,8 @@ async def test_process_batch_documents_emits_one_audit_entry_per_radicado() -> N
             return created_by
         if "FROM dependencias WHERE codigo" in query:
             return "Dirección General"
+        if "default_response_days" in query:
+            return None
         if "FROM tipos_documentales" in query:  # catálogo de tipos (B6)
             return "Tipo"
         if "SELECT code FROM public.tenants" in query:
@@ -405,6 +407,8 @@ async def test_process_batch_documents_item_failure_marks_failed_outside_tx() ->
             return created_by
         if "FROM dependencias WHERE codigo" in query:
             return "Dirección General"
+        if "default_response_days" in query:
+            return None
         if "FROM tipos_documentales" in query:  # catálogo de tipos (B6)
             return "Tipo"
         if "SELECT code FROM public.tenants" in query:
@@ -504,7 +508,7 @@ class TestLaTareaDeFondoNoUsaLaConexionDelRequest:
         usados: list[object] = []
 
         class ServicioEspia:
-            def __init__(self, conn, slug):
+            def __init__(self, conn, slug, tenant_client=None):
                 usados.append(conn)
 
             async def process_batch_documents(self, job_id):
@@ -537,7 +541,7 @@ class TestLaTareaDeFondoNoUsaLaConexionDelRequest:
             yield conexion
 
         class ServicioQueRevienta:
-            def __init__(self, conn, slug):
+            def __init__(self, conn, slug, tenant_client=None):
                 pass
 
             async def process_batch_documents(self, job_id):

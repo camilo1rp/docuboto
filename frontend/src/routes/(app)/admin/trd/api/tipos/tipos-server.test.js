@@ -97,6 +97,8 @@ describe("POST /admin/trd/api/tipos", () => {
       admite_ventanilla_publica: false,
       // Opt-in de la Ley 1712 (C-4), independiente de la ventanilla.
       publicable: false,
+      // Sin días en el alta: el tipo no impone plazo.
+      default_response_days: null,
     });
   });
 });
@@ -262,5 +264,48 @@ describe("`publicable` (Ley 1712) es una marca PROPIA, distinta de la ventanilla
       expect(res.status).toBe(status);
       expect(await res.json()).toEqual(cuerpo);
     }
+  });
+});
+
+describe("el plazo por defecto llega al gateway y no se inventa al editar", () => {
+  it("al CREAR manda los días, y vacío significa que no hay plazo", async () => {
+    const enviados = [];
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviados.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ id: TIPO_ID }), { status: 201 });
+    });
+    const llamar = (body) =>
+      createTipo({ locals: SESSION_LOCALS, request: { json: async () => body } });
+
+    const ok = await llamar({ code: "DP", nombre: "Petición", default_response_days: 15 });
+    expect(ok.status).toBe(201);
+    expect(enviados[0].default_response_days).toBe(15);
+
+    await llamar({ code: "OF", nombre: "Oficio" });
+    expect(enviados[1].default_response_days).toBe(null);
+
+    const mal = await llamar({ code: "X", nombre: "X", default_response_days: 0 });
+    expect(mal.status).toBe(400);
+    expect(enviados).toHaveLength(2);
+  });
+
+  it("al EDITAR viaja si viene, incluido null para quitarlo, y no se inventa", async () => {
+    const enviados = [];
+    globalThis.fetch = vi.fn(async (_u, init) => {
+      enviados.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ id: TIPO_ID }), { status: 200 });
+    });
+    const llamar = (body) =>
+      updateTipo({
+        locals: SESSION_LOCALS,
+        params: { id: TIPO_ID },
+        request: { json: async () => body },
+      });
+    await llamar({ default_response_days: 30 });
+    await llamar({ default_response_days: null });
+    await llamar({ nombre: "Otro" });
+    expect(enviados[0].default_response_days).toBe(30);
+    expect(enviados[1].default_response_days).toBe(null);
+    expect("default_response_days" in enviados[2]).toBe(false);
   });
 });

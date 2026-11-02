@@ -98,7 +98,10 @@ async def test_la_pasada_entrega_el_redis_a_cada_tenant(monkeypatch) -> None:
     monkeypatch.setattr(barrido, "barrer_tenant", barrer)
     redis = object()
     await barrido.barrer_una_vez(redis)
-    assert [c.args for c in barrer.await_args_list] == [("a", redis), ("b", redis)]
+    assert [c.args for c in barrer.await_args_list] == [
+        ("a", redis, None),
+        ("b", redis, None),
+    ]
 
 
 @pytest.mark.asyncio
@@ -111,11 +114,11 @@ async def test_el_bucle_entrega_el_redis_a_la_pasada(monkeypatch) -> None:
     redis = object()
     with pytest.raises(asyncio.CancelledError):
         await barrido.bucle_de_barrido(redis)
-    pasada.assert_awaited_once_with(redis)
+    pasada.assert_awaited_once_with(redis, None)
 
 
 def test_el_lifespan_entrega_el_redis_al_bucle_de_barrido() -> None:
     """El lifespan arranca el bucle en un `create_task` que ningún test de unidad ejecuta
     (necesita Postgres y Redis): se comprueba el SITIO de la llamada."""
     fuente = inspect.getsource(app_main.lifespan)
-    assert "bucle_de_barrido(app.state.redis)" in fuente
+    assert "bucle_de_barrido(app.state.redis, app.state.http_client)" in fuente

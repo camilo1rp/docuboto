@@ -20,6 +20,17 @@ import { API_V1 } from "$lib/utils/config.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Días hábiles del tipo, o null para no poner plazo. Ausente en el alta = null. */
+function plazoDelCuerpo(body) {
+  const valor = body?.default_response_days;
+  if (valor === undefined || valor === null || valor === "") return { dias: null };
+  const dias = Number(valor);
+  if (!Number.isInteger(dias) || dias < 1 || dias > 3650) {
+    return { error: "Indique días hábiles entre 1 y 3650, o vacío para quitar el plazo." };
+  }
+  return { dias };
+}
+
 function headersFor(locals, withContentType = false) {
   const tenant = locals.user?.tenant_slug ?? "";
   const userId = locals.user?.sub ?? "";
@@ -79,6 +90,10 @@ export async function POST({ locals, request }) {
   // `publicable` (Ley 1712, C-4) es una marca PROPIA, distinta de
   // `admite_ventanilla_publica`; marcarla exige nivel 3 en el backend.
   const publicable = body?.publicable;
+  const plazo = plazoDelCuerpo(body);
+  if (plazo.error) {
+    return json({ error: "validation_error", detail: plazo.error }, { status: 400 });
+  }
 
   if (typeof code !== "string" || !code.trim()) {
     return json(
@@ -112,6 +127,7 @@ export async function POST({ locals, request }) {
       typeof metadata_template === "string" && metadata_template.trim()
         ? metadata_template.trim()
         : null,
+    default_response_days: plazo.dias,
     activo: activo !== false,
   };
 

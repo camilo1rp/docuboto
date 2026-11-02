@@ -127,6 +127,8 @@ def _conn_lote(item: dict, plantilla: dict | None) -> tuple[AsyncMock, list[str]
             return uuid.uuid4()
         if "FROM dependencias WHERE codigo" in query:
             return "Dirección General"
+        if "default_response_days" in query:
+            return None
         if "FROM tipos_documentales" in query:  # catálogo de tipos (B6)
             return "Tipo"
         if "SELECT code FROM public.tenants" in query:
@@ -142,7 +144,8 @@ def _conn_lote(item: dict, plantilla: dict | None) -> tuple[AsyncMock, list[str]
         if "FROM metadata_templates" in query:
             return plantilla
         if "INSERT INTO radicados" in query:
-            estados.append(f"insert_tpl={a[-1]}")
+            # El último argumento es due_date; la plantilla va justo antes.
+            estados.append(f"insert_tpl={a[-2]}")
             return {"id": uuid.uuid4(), "nivel_seguridad": 1}
         if "SELECT total_items" in query:
             return {"total_items": 1, "processed_items": 1, "failed_items": 0}

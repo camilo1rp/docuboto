@@ -19,6 +19,17 @@ import { API_V1 } from "$lib/utils/config.server.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** @param {Record<string, unknown>} body */
+function plazoDelCuerpo(body) {
+  const valor = body.default_response_days;
+  if (valor === null || valor === "") return { dias: null };
+  const dias = Number(valor);
+  if (!Number.isInteger(dias) || dias < 1 || dias > 3650) {
+    return { error: "Indique días hábiles entre 1 y 3650, o vacío para quitar el plazo." };
+  }
+  return { dias };
+}
+
 function headersFor(locals, withContentType = false) {
   const tenant = locals.user?.tenant_slug ?? "";
   const userId = locals.user?.sub ?? "";
@@ -52,6 +63,11 @@ export async function PATCH({ locals, params, request }) {
   const { nombre, trd_serie_id, obligatorio, metadata_template, activo } = body ?? {};
   const admiteVentanilla = body?.admite_ventanilla_publica;
   const publicable = body?.publicable;
+  const traePlazo = Object.prototype.hasOwnProperty.call(body ?? {}, "default_response_days");
+  const plazo = traePlazo ? plazoDelCuerpo(body) : null;
+  if (plazo?.error) {
+    return json({ error: "validation_error", detail: plazo.error }, { status: 400 });
+  }
   if (
     trd_serie_id !== undefined &&
     trd_serie_id !== null &&
@@ -78,6 +94,7 @@ export async function PATCH({ locals, params, request }) {
         : null;
   }
   if (typeof activo === "boolean") payload.activo = activo;
+  if (traePlazo) payload.default_response_days = plazo.dias;
 
   try {
     const res = await fetch(`${API_V1}/tipos-documentales/${encodeURIComponent(id)}`, {

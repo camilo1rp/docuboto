@@ -96,7 +96,8 @@ class DocumentCreate(BaseModel):
     # libre, que es interno. Opcional; solo con nivel >= 2.
     clasificacion_norma: str | None = Field(default=None, max_length=160)
     # Plazo de respuesta en DÍAS HÁBILES (RF-RAD-04). Si se indica, document-service
-    # calcula la fecha de vencimiento vía tenant-service; si se omite, no hay plazo.
+    # calcula la fecha de vencimiento vía tenant-service. Si una Entrada lo omite
+    # y su tipo documental tiene plazo por defecto, usa ese. Si no, no hay plazo.
     response_days: int | None = Field(default=None, ge=1, le=3650)
     # Metadatos variables del tipo documental (E03, ADR-007). Si el doc_class tiene
     # una plantilla activa, se validan contra su JSON Schema antes de radicar.

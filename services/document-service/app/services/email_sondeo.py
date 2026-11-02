@@ -44,6 +44,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
+from typing import Any
 
 import asyncpg
 from orpycamcp_common.request_log import canal_de_fondo
@@ -93,8 +94,9 @@ class ResultadoSondeo:
 class SondeoDeCorreo:
     """Recorre las cuentas activas de un tenant y las pone al día."""
 
-    def __init__(self, tenant_slug: str) -> None:
+    def __init__(self, tenant_slug: str, tenant_client: Any = None) -> None:
         self._tenant = tenant_slug
+        self._tenant_client = tenant_client
         self._estados: dict[uuid.UUID, EstadoCuenta] = {}
 
     async def una_vuelta(self, conn: asyncpg.Connection, *, ahora: float) -> ResultadoSondeo:
@@ -213,7 +215,7 @@ class SondeoDeCorreo:
                     es_admin=True,
                     password=None,
                     datos={},
-                    servicio=DocumentService(conn, self._tenant, None, None),
+                    servicio=DocumentService(conn, self._tenant, self._tenant_client, None),
                 )
             except ErrorDeCuenta as exc:
                 # Un correo que no se puede radicar no detiene a los demás: queda
@@ -255,15 +257,19 @@ class SondeoDeCorreo:
         return cuenta_id.int & 0x7FFFFFFF
 
 
-async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str) -> None:
+async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str, http: Any) -> None:
     """Corre indefinidamente. Pensado para `asyncio.create_task` en el lifespan.
 
     Cada excepción inesperada se registra y el bucle **continúa**: un worker que
     muere en silencio deja la ingesta parada sin que nadie se entere, y el
     síntoma sería «no llega correo», indistinguible de un buzón vacío.
     """
+    from app.clients.tenant_client import TenantServiceClient
+
     canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
-    sondeo = SondeoDeCorreo(tenant_slug)
+    # Sin el cliente, una Entrada con plazo por defecto revienta al calcular
+    # la fecha (el calendario vive en tenant-service).
+    sondeo = SondeoDeCorreo(tenant_slug, TenantServiceClient(http))
     intervalo = max(30, settings.email_sondeo_intervalo_segundos)
     logger.info("sondeo de correo activo para «%s» cada %ss", tenant_slug, intervalo)
     while True:

@@ -277,6 +277,7 @@ describe("/admin/trd — tipo documental publicable (C-4)", () => {
     await fireEvent.click(screen.getByRole("tab", { name: "Tipos documentales" }));
     expect(screen.getByRole("columnheader", { name: "Publicable (Ley 1712)" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Ventanilla pública" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Plazo por defecto" })).toBeInTheDocument();
   });
 
   it("nivel 3: casilla Publicable habilitada y «Activo» habilitado", async () => {
@@ -285,6 +286,7 @@ describe("/admin/trd — tipo documental publicable (C-4)", () => {
     await abrirEdicion();
     expect(screen.getByRole("checkbox", { name: /Publicable \(Ley 1712\)/ })).toBeEnabled();
     expect(screen.getByRole("checkbox", { name: /^Activo/ })).toBeEnabled();
+    expect(screen.getByLabelText(/Plazo por defecto/)).toBeInTheDocument();
   });
 
   it("nivel 1: Publicable deshabilitada y reactivar un tipo publicable inactivo, también", async () => {
