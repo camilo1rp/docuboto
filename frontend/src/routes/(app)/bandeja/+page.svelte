@@ -337,6 +337,10 @@
   let reclasificarCausalError = "";
   let reclasificarPlazoError = "";
   let reclasificarLoading = false;
+  let plazoFecha = "";
+  let plazoDias = "";
+  let plazoMotivo = "";
+  let plazoLoading = false;
 
   // C-2 (ADR-039): solicitud de desclasificación VIVA del radicado abierto en el
   // drawer (la más reciente con `estado_efectivo` pendiente), o `null`.
@@ -509,6 +513,9 @@
     // `selectedDoc` en el resto del componente.
     selectedDoc = /** @type {import('$lib/types/api.js').DocumentResponse} */ (doc);
     drawerOpen = true;
+    plazoFecha = "";
+    plazoDias = "";
+    plazoMotivo = "";
     anulacionStatus = null;
     hasActiveStep = null;
     currentStep = null;
@@ -1102,6 +1109,53 @@
     tick().then(() => tituloEl?.focus());
   }
 
+  /** Fecha o días hábiles, más el motivo. El proxy no acepta `origen`. */
+  async function corregirPlazo() {
+    if (!selectedDoc || plazoLoading) return;
+    const fecha = String(plazoFecha ?? "").trim();
+    const dias =
+      plazoDias === null || plazoDias === undefined || plazoDias === ""
+        ? ""
+        : String(plazoDias).trim();
+    if ((fecha === "") === (dias === "")) {
+      notifyError("Indique la fecha o los días hábiles.");
+      return;
+    }
+    if (plazoMotivo.trim().length < 10) {
+      notifyError("El motivo debe tener al menos 10 caracteres.");
+      return;
+    }
+    /** @type {Record<string, unknown>} */
+    const cuerpo = { motivo: plazoMotivo.trim() };
+    if (fecha) cuerpo.due_date = fecha;
+    else cuerpo.business_days = Number(dias);
+    plazoLoading = true;
+    try {
+      const res = await fetch(
+        `/bandeja/api/${encodeURIComponent(selectedDoc.id)}/due-date`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(cuerpo),
+        },
+      );
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        notifyError(result.detail || "No se pudo corregir el vencimiento.");
+        return;
+      }
+      selectedDoc = { ...selectedDoc, due_date: result.due_date };
+      plazoFecha = "";
+      plazoDias = "";
+      plazoMotivo = "";
+      notifySuccess("Vencimiento actualizado.");
+    } catch {
+      notifyError("No se pudo conectar al servidor.");
+    } finally {
+      plazoLoading = false;
+    }
+  }
+
   /**
    * Envía la reclasificación al proxy SSR.
    * POST /bandeja/api/[id]/security-level → PATCH /api/v1/documents/{id}/security-level.
@@ -1386,6 +1440,10 @@
   // umbral real: ofrecer el botón con permiso de lectura produciría un 403 al
   // pulsarlo, y pedir de más lo escondería a quien sí puede.
   $: canPublicar = ($permissionLevels["PERM_RECLASIFICAR"] ?? 0) >= 3;
+  // Corregir el vencimiento es PERM_DUE_DATE nivel 3, aparte de radicar: la
+  // pantalla no ofrece el acto a quien el backend va a rechazar.
+  $: canCorregirPlazo =
+    $permissions.includes("PERM_DUE_DATE") && ($permissionLevels["PERM_DUE_DATE"] ?? 0) >= 3;
   // Disposición final (RF-MET-08, Fase 4 cierre desfase API↔UI): mismo permiso
   // que gatea GET/PATCH /documents/{id}/disposition en el backend.
   $: canDisposicion = $permissions.includes("USUA_PERM_EXPEDIENTE");
@@ -1794,10 +1852,37 @@
             >
           </dd>
 
-          {#if selectedDoc.due_date}
+          {#if selectedDoc.due_date || canCorregirPlazo}
             <dt>Fecha de vencimiento</dt>
             <dd>
-              <time datetime={selectedDoc.due_date} class="due-date">{selectedDoc.due_date}</time>
+              {#if selectedDoc.due_date}
+                <time datetime={selectedDoc.due_date} class="due-date">{selectedDoc.due_date}</time>
+              {:else}
+                Sin plazo
+              {/if}
+              {#if canCorregirPlazo}
+                <form
+                  class="doc-detail__plazo"
+                  data-testid="corregir-vencimiento"
+                  on:submit|preventDefault={corregirPlazo}
+                >
+                  <label>
+                    Nueva fecha
+                    <input type="date" bind:value={plazoFecha} />
+                  </label>
+                  <label>
+                    Días hábiles
+                    <input type="number" min="1" max="3650" bind:value={plazoDias} />
+                  </label>
+                  <label>
+                    Motivo
+                    <input bind:value={plazoMotivo} maxlength="500" />
+                  </label>
+                  <Button type="submit" size="sm" loading={plazoLoading}>
+                    Guardar vencimiento
+                  </Button>
+                </form>
+              {/if}
             </dd>
           {/if}
 
@@ -2667,6 +2752,14 @@
 </Modal>
 
 <style lang="scss">
+  .doc-detail__plazo {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--op-space-2);
+    align-items: end;
+    margin-top: var(--op-space-2);
+  }
+
   // ---------------------------------------------------------------------------
   // Bandeja principal
   // ---------------------------------------------------------------------------

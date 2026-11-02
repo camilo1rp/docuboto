@@ -359,9 +359,9 @@ class BatchService:
                          sender_name, sender_entity, pages, observations, status,
                          year, sequence, tenant_code, registered_by,
                          origin_dept, origin_dept_code, dest_dept_code,
-                         metadata_template_id, due_date)
+                         metadata_template_id, due_date, termino_inicial)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'registered',
-                                $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                                $10, $11, $12, $13, $14, $15, $16, $17, $18, $18)
                         RETURNING id, nivel_seguridad
                         """,
                         tracking_number,

@@ -123,6 +123,7 @@ async def enviar(
 
 
 RECLASIFICADO = "document.radicado.reclassified"
+VENCIMIENTO_CAMBIADO = "document.radicado.due_date_changed"
 
 
 async def _con_nivel_vivo(conn: asyncpg.Connection, payload: dict[str, Any]) -> dict[str, Any]:

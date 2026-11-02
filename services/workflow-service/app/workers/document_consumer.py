@@ -11,8 +11,10 @@
 Worker: consume `orpycamcp.document.events` y distribuye automáticamente (E05).
 
 Por cada `document.radicado.created` evalúa las reglas del tenant y autoasigna
-el radicado (distribution.auto_distribute). Usa el sobre canónico de
-orpycamcp_common y un grupo de consumidores propio.
+el radicado (distribution.auto_distribute). Por cada
+`document.radicado.due_date_changed` copia la fecha al `due_at` de los pasos
+activos. Usa el sobre canónico de orpycamcp_common y un grupo de consumidores
+propio.
 
 Dead-letter / reclamación (R-4, ADR-021 Fase 2):
   - Barrido periódico de la PEL con `reclaim_stale` (cadencia 30 s).
@@ -30,6 +32,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import UTC, date, datetime, time as hora
 
 import redis.exceptions as redis_exc
 from orpycamcp_common import events
@@ -53,6 +56,7 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 DOCUMENT_STREAM = "orpycamcp.document.events"
+VENCIMIENTO_CAMBIADO = "document.radicado.due_date_changed"
 DEADLETTER_STREAM = "orpycamcp.workflow.deadletter"
 # Sourced from app.core.constants (single source of truth shared with
 # app/jobs/deadletter_retention.py and app/routers/admin_deadletter.py) — see
@@ -88,16 +92,46 @@ async def apply_distribution(conn, tenant_slug: str, payload: dict) -> str | Non
     return await auto_distribute(conn, tenant_slug, payload)
 
 
+async def alinear_vencimiento(conn, payload: dict) -> None:
+    """Copia el vencimiento del radicado al `due_at` de los pasos activos.
+
+    Los pasos ya cerrados conservan el plazo con el que se tramitaron. El
+    instante es el final de ese día en UTC: el radicado guarda una fecha, y el
+    paso un instante.
+    """
+    rid = payload.get("id")
+    if not rid:
+        return
+    crudo = payload.get("due_date")
+    due = None
+    if crudo:
+        dia = date.fromisoformat(crudo)
+        due = datetime.combine(dia, hora(23, 59), tzinfo=UTC)
+    await conn.execute(
+        """
+        UPDATE flow_steps
+           SET due_at = $2
+         WHERE radicado_id = $1
+           AND status IN ('pending', 'in_progress')
+        """,
+        rid,
+        due,
+    )
+
+
 async def _handle(data: dict) -> None:
     envelope = events.parse_fields(data)
-    if envelope.get("event_type") != "document.radicado.created":
-        return
+    tipo = envelope.get("event_type")
     tenant_slug = envelope.get("tenant_slug")
     payload = envelope.get("payload") or {}
     if not tenant_slug or not payload.get("id"):
         return
-    async with acquire_tenant(tenant_slug) as conn:
-        await apply_distribution(conn, tenant_slug, payload)
+    if tipo == "document.radicado.created":
+        async with acquire_tenant(tenant_slug) as conn:
+            await apply_distribution(conn, tenant_slug, payload)
+    elif tipo == VENCIMIENTO_CAMBIADO:
+        async with acquire_tenant(tenant_slug) as conn:
+            await alinear_vencimiento(conn, payload)
 
 
 async def _persist_dead_letter(envelope: dict, failure_meta: dict) -> None:

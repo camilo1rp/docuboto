@@ -89,6 +89,8 @@ export async function load({ cookies, parent, fetch }) {
   // NO se afirma nada (`null`): un aviso falso sería peor que ninguno.
   /** @type {boolean|null} */
   let sinAprobadorDesclasificacion = null;
+  /** @type {boolean|null} */
+  let sinQuienCorrijaPlazo = null;
   if (Array.isArray(groups) && groups.length > 0) {
     const lecturas = await Promise.allSettled(
       groups.map(async (/** @type {any} */ g) => {
@@ -111,11 +113,23 @@ export async function load({ cookies, parent, fetch }) {
           ),
       );
       sinAprobadorDesclasificacion = !hay;
+      const hayPlazo = lecturas.some(
+        (l) =>
+          l.status === "fulfilled" &&
+          Array.isArray(l.value) &&
+          l.value.some(
+            (/** @type {any} */ p) =>
+              (p.nombre === "PERM_DUE_DATE" || p.permission === "PERM_DUE_DATE") &&
+              Number(p.crud ?? 0) >= 3,
+          ),
+      );
+      sinQuienCorrijaPlazo = !hayPlazo;
     }
   }
 
   return {
     sinAprobadorDesclasificacion,
+    sinQuienCorrijaPlazo,
     groups,
     permissions,
     securityLevels,

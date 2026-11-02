@@ -57,6 +57,8 @@ from app.schemas.document import (
     HistorialAccesoEntry,
     PublicacionRequest,
     PublicacionResponse,
+    DueDateRequest,
+    DueDateResponse,
     ReclassifyRequest,
     ReclassifyResponse,
 )
@@ -68,6 +70,7 @@ from app.services.document_service import (
     DocumentService,
     InvalidDependenciaError,
     InvalidTenantError,
+    PlazoError,
     ReclassifyForbiddenError,
     TipoDocumentalNoPublicableError,
 )
@@ -727,6 +730,63 @@ async def reclassify_security_level(
                 "error": "reclassify_forbidden",
                 "detail": "No puede clasificar por encima de su propio nivel de acceso",
                 "status": 403,
+            },
+        )
+
+
+@router.put(
+    "/{document_id}/due-date",
+    response_model=DueDateResponse,
+    summary="Corrige el vencimiento de un radicado",
+    # Nivel 3, y un permiso distinto de PERM_RADI: ampliar el plazo del radicado
+    # que uno mismo tramita es un conflicto. No se hereda de radicar.
+    dependencies=[Depends(require_permission("PERM_DUE_DATE", min_crud=3))],
+)
+async def cambiar_vencimiento(
+    document_id: uuid.UUID,
+    payload: DueDateRequest,
+    request: Request,
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+    tenant_client: TenantServiceClient = Depends(get_tenant_client),
+    redis: Any = Depends(get_redis),
+) -> DueDateResponse:
+    """Fija la fecha o la calcula en días hábiles desde la radicación.
+
+    El origen del asiento es siempre `manual`. Acortar se permite. Ampliar se
+    niega al asignado del paso activo y cuando la fecha pasa del doble del
+    término inicial. El clearance viaja en el WHERE: sin él, la respuesta es 404.
+    """
+    service = _build_service(conn, _tenant_slug(request), tenant_client, redis)
+    try:
+        result = await service.fijar_vencimiento(
+            document_id,
+            motivo=payload.motivo,
+            actor=_get_registered_by(request),
+            due_date=payload.due_date,
+            business_days=payload.business_days,
+        )
+        return DueDateResponse(**result)
+    except DocumentNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "document_not_found",
+                "detail": "No existe el radicado solicitado",
+                "status": 404,
+            },
+        )
+    except PlazoError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"error": exc.codigo, "detail": exc.detalle, "status": exc.status_code},
+        )
+    except TenantServiceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "tenant_service_unavailable",
+                "detail": str(exc),
+                "status": 502,
             },
         )
 

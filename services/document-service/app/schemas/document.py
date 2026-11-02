@@ -380,6 +380,26 @@ class ReclassifyResponse(BaseModel):
     nivel_seguridad: int
 
 
+class DueDateRequest(BaseModel):
+    """Fecha o días hábiles, y el motivo. Nunca los dos plazos a la vez."""
+
+    motivo: str = Field(..., min_length=10, max_length=500)
+    due_date: date | None = None
+    business_days: int | None = Field(default=None, ge=1, le=3650)
+
+    @model_validator(mode="after")
+    def un_plazo(self) -> "DueDateRequest":
+        if (self.due_date is None) == (self.business_days is None):
+            raise ValueError("indique la fecha o los días hábiles")
+        return self
+
+
+class DueDateResponse(BaseModel):
+    id: uuid.UUID
+    tracking_number: str
+    due_date: date
+
+
 class IndiceClasificadoItem(BaseModel):
     """Una fila del índice de información clasificada y reservada (Ley 1712 art. 20).
 

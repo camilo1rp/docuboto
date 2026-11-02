@@ -355,6 +355,16 @@
 </svelte:head>
 
 <div class="grupos-page">
+  {#if data.sinQuienCorrijaPlazo === true}
+    <p class="grupos-page__aviso" role="alert">
+      <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+      <span>
+        Ningún grupo tiene <code>PERM_DUE_DATE</code> con nivel 3: nadie puede
+        corregir el vencimiento de un radicado. Asigne ese nivel a quien deba
+        fijarlo.
+      </span>
+    </p>
+  {/if}
   {#if data.sinAprobadorDesclasificacion === true}
     <p class="grupos-page__aviso" role="alert">
       <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
