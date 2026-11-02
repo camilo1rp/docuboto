@@ -112,6 +112,8 @@ class EmailCuentaService:
             "carpeta_radicados": datos.carpeta_radicados,
             "dependencia_destino": datos.dependencia_destino,
             "tipo_documental_id": datos.tipo_documental_id,
+            "dest_dept_code": datos.dest_dept_code,
+            "doc_class": datos.doc_class,
             "modo": datos.modo,
             "responsable_user_id": datos.responsable_user_id,
             "acuse_al_remitente": datos.acuse_al_remitente,

@@ -28,10 +28,11 @@ correspondencia fuera de horario y quiere encontrarla ya en la bandeja.
    credenciales solo llena el registro y puede bloquear la cuenta en el
    proveedor. La espera se reinicia en cuanto vuelve a funcionar.
 
-3. **No radicar sin responsable.** En modo automático nadie pulsa, así que la
-   cuenta declara bajo qué funcionario radica (`responsable_user_id`, migración
-   024). No es un tecnicismo: es quien responde de lo que entre por ese buzón sin
-   revisión previa (Ac. AGN 060/2001 arts. 2 y 13).
+3. **No radicar sin responsable, tipo ni dependencia.** En modo automático nadie
+   pulsa, así que la cuenta declara bajo qué funcionario radica
+   (`responsable_user_id`, migración 024), el código de la dependencia y el del
+   tipo documental (migración 053). Sin esos dos, una Entrada no puede nacer
+   (Ac. AGN 060/2001 §5.2) y reservar el correo solo lo retendría para fallar.
 
 El worker es **opt-in** (`EMAIL_SONDEO_ENABLED`) y arranca desactivado: un
 proceso que se conecta solo a buzones y crea documentos oficiales no debe
@@ -63,6 +64,19 @@ _ESPACIO_LOCK = 0x4D41494C  # "MAIL"
 
 ESPERA_BASE_SEGUNDOS = 60
 ESPERA_MAXIMA_SEGUNDOS = 3600
+
+
+def _datos_de_cuenta_automatica(fila: Any) -> dict[str, Any] | None:
+    """Tipo y dependencia que la cuenta declaró, o None si falta alguno."""
+    codigo = fila["dest_dept_code"] if "dest_dept_code" in fila else None
+    clase = fila["doc_class"] if "doc_class" in fila else None
+    if codigo in (None, "") or not clase:
+        return None
+    datos: dict[str, Any] = {"dest_dept_code": int(codigo), "doc_class": str(clase)}
+    nombre = fila["dependencia_destino"] if "dependencia_destino" in fila else None
+    if nombre:
+        datos["dest_dept"] = nombre
+    return datos
 
 
 @dataclass
@@ -133,7 +147,8 @@ class SondeoDeCorreo:
         """
         return await conn.fetch(
             """
-            SELECT id, nombre, modo, responsable_user_id, carpeta_origen
+            SELECT id, nombre, modo, responsable_user_id, carpeta_origen,
+                   dest_dept_code, doc_class, dependencia_destino
               FROM email_cuenta
              WHERE activa = true
                AND tipo = 'institucional'
@@ -195,8 +210,19 @@ class SondeoDeCorreo:
 
         responsable = fila["responsable_user_id"]
         pendientes = await servicio._repo.bandeja(fila["id"], limite=25)
+        datos = _datos_de_cuenta_automatica(fila)
         for correo in pendientes:
             if correo["reservado_vigente"]:
+                continue
+            if datos is None:
+                # Sin tipo o sin dependencia la radicación falla siempre. No se
+                # reserva: la reserva retendría el correo quince minutos para
+                # volver a fallar igual.
+                resultado.fallos += 1
+                logger.warning(
+                    "la cuenta «%s» es automática y no declara tipo ni dependencia",
+                    fila["nombre"],
+                )
                 continue
             try:
                 # `es_admin=True` como en `radicar`, y por lo mismo: el recorte de
@@ -214,7 +240,7 @@ class SondeoDeCorreo:
                     actor=responsable,
                     es_admin=True,
                     password=None,
-                    datos={},
+                    datos=datos,
                     servicio=DocumentService(conn, self._tenant, self._tenant_client, None),
                 )
             except ErrorDeCuenta as exc:

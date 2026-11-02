@@ -142,6 +142,10 @@ class CuentaCrear(BaseModel):
 
     dependencia_destino: str | None = Field(default=None, max_length=255)
     tipo_documental_id: UUID | None = None
+    # Lo que una Entrada no puede inventar (Ac. 060/2001 §5.2). En modo
+    # automático no hay formulario: salen de la cuenta.
+    dest_dept_code: int | None = Field(default=None, ge=1)
+    doc_class: str | None = Field(default=None, min_length=1, max_length=50)
     modo: str = Field(default="asistida", pattern="^(asistida|automatica)$")
     propietario_user_id: UUID | None = None
     # Funcionario bajo cuya autoría radica una cuenta automática (Ac. 060/2001
@@ -192,6 +196,14 @@ class CuentaCrear(BaseModel):
                 "Una cuenta que radica automáticamente necesita un funcionario "
                 "responsable: es quien responde de lo que entre por ese buzón sin "
                 "revisión previa, y bajo cuya autoría se registran los anexos"
+            )
+        if self.modo == "automatica" and (
+            self.dest_dept_code is None or not self.doc_class
+        ):
+            raise ValueError(
+                "Una cuenta que radica automáticamente necesita el código de la "
+                "dependencia y el del tipo documental: una Entrada no puede nacer "
+                "sin ellos"
             )
         if self.auth_tipo == "oauth2" and not self.app_oauth_id:
             raise ValueError(
@@ -256,6 +268,8 @@ class CuentaActualizar(BaseModel):
     carpeta_radicados: str | None = Field(default=None, min_length=1, max_length=255)
     dependencia_destino: str | None = Field(default=None, max_length=255)
     tipo_documental_id: UUID | None = None
+    dest_dept_code: int | None = Field(default=None, ge=1)
+    doc_class: str | None = Field(default=None, min_length=1, max_length=50)
     modo: str | None = Field(default=None, pattern="^(asistida|automatica)$")
     responsable_user_id: UUID | None = None
     acuse_al_remitente: bool | None = None
@@ -278,6 +292,8 @@ class CuentaResponse(BaseModel):
     carpeta_radicados: str
     dependencia_destino: str | None
     tipo_documental_id: UUID | None
+    dest_dept_code: int | None = None
+    doc_class: str | None = None
     modo: str
     activa: bool
     acuse_al_remitente: bool
