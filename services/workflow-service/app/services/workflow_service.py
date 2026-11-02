@@ -243,15 +243,29 @@ class WorkflowService:
                 logger.warning("No se pudo emitir %s", _EVT_ESTADO, exc_info=True)
 
     async def assign(
-        self, payload: FlowStepCreate, assigned_by: uuid.UUID, *, sistema: bool = False
+        self,
+        payload: FlowStepCreate,
+        assigned_by: uuid.UUID,
+        *,
+        sistema: bool = False,
+        regla_id: uuid.UUID | None = None,
+        regla_nombre: str | None = None,
     ) -> FlowStepResponse:
         """Create the first step or re-assign a radicado to a dependencia.
 
         `sistema=True` SOLO lo pasa el reparto automático al radicar
         (`distribution.auto_distribute`): el actor de sistema no es un usuario, no
         tiene clearance ni tenencia que comprobar. Ninguna ruta HTTP puede pasarlo.
+        `regla_id` y `regla_nombre` quedan en el asiento cuando el reparto lo
+        decidió una regla, para distinguirlo de una sugerencia o de un acto manual.
         """
-        step = await self._create_step(payload, assigned_by, sistema=sistema)
+        step = await self._create_step(
+            payload,
+            assigned_by,
+            sistema=sistema,
+            regla_id=regla_id,
+            regla_nombre=regla_nombre,
+        )
         await self._publish(_EVT_CREATED, step)
         await self._emitir_cambios(assigned_by)
         return _to_response(step)
@@ -1229,7 +1243,13 @@ class WorkflowService:
         return activo.to_dept, activo.to_dept_code
 
     async def _create_step(
-        self, payload: FlowStepCreate, assigned_by: uuid.UUID, *, sistema: bool = False
+        self,
+        payload: FlowStepCreate,
+        assigned_by: uuid.UUID,
+        *,
+        sistema: bool = False,
+        regla_id: uuid.UUID | None = None,
+        regla_nombre: str | None = None,
     ) -> FlowStep:
         self._iniciar_acto()
         # Clearance REAL del actor (RF-SEG-08): abrir o mover un paso sobre un
@@ -1354,6 +1374,11 @@ class WorkflowService:
                     "to_dept_code": to_dept_code,
                     "from_dept_code": from_dept_code,
                     **({"estado_radicado": estado} if estado else {}),
+                    **(
+                        {"regla_id": str(regla_id), "regla_nombre": regla_nombre}
+                        if regla_id
+                        else {}
+                    ),
                 },
                 canal=audit.CANAL_PETICION,
             )
@@ -1388,7 +1413,14 @@ class WorkflowService:
                 },
             )
         except Exception:
-            pass
+            # El paso ya está en la base. Tragarse el fallo dejaba a notification
+            # y a la pasarela sin el evento y sin una línea que lo dijera.
+            logger.warning(
+                "No se pudo publicar %s del paso %s; el cambio quedó en la base",
+                event_type,
+                getattr(step, "id", None),
+                exc_info=True,
+            )
 
     async def _nivel_payload(self, radicado_id: uuid.UUID) -> dict[str, int]:
         """`nivel_seguridad` del radicado en el sobre del evento (vacío si no consta).
