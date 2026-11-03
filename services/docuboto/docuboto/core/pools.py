@@ -16,6 +16,8 @@ import importlib
 import asyncpg
 import redis.asyncio as aioredis
 
+from docuboto.core.config import settings
+
 _MODULOS_DB = (
     "auth.core.database",
     "tenant.core.database",
@@ -34,6 +36,15 @@ _MODULOS_REDIS = (
     "signature.core.redis_client",
     "knowledge.core.redis_client",
 )
+
+
+async def crear_pool() -> asyncpg.Pool:
+    return await asyncpg.create_pool(
+        dsn=settings.database_url_asyncpg,
+        min_size=settings.db_pool_min_size,
+        max_size=settings.db_pool_max_size,
+        command_timeout=settings.db_command_timeout,
+    )
 
 
 def bind_pool(pool: asyncpg.Pool) -> None:

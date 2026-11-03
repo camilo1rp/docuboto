@@ -10,8 +10,8 @@
 """Retorno del proveedor (ADR-045 §4).
 
 `POST /ppi/v1/{slug}/content` no pasa por el gateway. La firma HMAC de la
-entidad es el gate: ventana de 300 s y nonce de un solo uso en Redis. Si
-la firma cuadra, el localizador vuelve a pasar la barrera y los bytes
+entidad es el gate: ventana de 300 s y nonce de un solo uso en `ppi_nonces`.
+Si la firma cuadra, el localizador vuelve a pasar la barrera y los bytes
 salen de document-service.
 """
 
@@ -31,7 +31,6 @@ from knowledge.clients import documento
 from knowledge.clients.documento import DocumentoError
 from knowledge.core import clave_retorno, contenido, database
 from knowledge.core.firma_retorno import comprobar, plazo_nonce
-from knowledge.core.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -95,12 +94,16 @@ async def exigir_firma_proveedor(request: Request, slug: str) -> None:
     marca = request.headers.get("PPI-Timestamp", "").strip()
     nonce = request.headers.get("PPI-Nonce", "").strip()
     try:
-        primero = await get_redis().set(
-            f"orpycamcp:ppi:nonce:{slug}:{nonce}",
-            "1",
-            nx=True,
-            ex=plazo_nonce(marca, ahora),
-        )
+        async with database.acquire_tenant(slug) as conn:
+            await conn.execute("DELETE FROM ppi_nonces WHERE expira_at < now()")
+            primero = await conn.fetchval(
+                "INSERT INTO ppi_nonces (nonce, expira_at) "
+                "VALUES ($1, now() + make_interval(secs => $2::int)) "
+                "ON CONFLICT (nonce) DO NOTHING "
+                "RETURNING nonce",
+                nonce,
+                plazo_nonce(marca, ahora),
+            )
     except Exception:
         logger.warning("no se pudo reclamar el nonce")
         raise _rechazar(503, "unavailable", "No se pudo comprobar el nonce") from None

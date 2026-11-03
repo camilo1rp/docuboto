@@ -32,7 +32,6 @@ from knowledge.core.clave_retorno import aad
 from knowledge.core.config import settings
 from knowledge.core.firma_retorno import comprobar
 from knowledge.main import app
-from knowledge.routers import retorno as ruta
 
 KEK = b"\x44" * 32
 SECRETO = b"\x11" * 32
@@ -70,22 +69,6 @@ def _firmar(
     }
 
 
-class _Redis:
-    def __init__(self, error: BaseException | None = None) -> None:
-        self.error = error
-        self.claves: set[str] = set()
-
-    async def set(
-        self, key: str, value: str, nx: bool = False, ex: int | None = None
-    ) -> bool | None:
-        if self.error is not None:
-            raise self.error
-        if nx and key in self.claves:
-            return None
-        self.claves.add(key)
-        return True
-
-
 class _Conn:
     def __init__(
         self,
@@ -95,18 +78,34 @@ class _Conn:
         suspendido: bool = False,
         anexo: Any = _OMITIDO,
         credencial: dict[str, Any] | None = None,
+        error_nonce: BaseException | None = None,
     ) -> None:
         self.proveedor = proveedor
         self.niveles = [1] if niveles is None else niveles
         self.suspendido = suspendido
         self.anexo = _FILA if anexo is _OMITIDO else anexo
         self.credencial = credencial
+        self.error_nonce = error_nonce
         self.sql: list[str] = []
         self.escrituras: list[tuple[Any, ...]] = []
+        self.nonces: set[str] = set()
 
     async def execute(self, sql: str, *args: Any) -> str:
+        if "ppi_nonces" in sql and "DELETE" in sql:
+            return "DELETE 0"
         self.escrituras.append(args)
         return "OK"
+
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        if "ppi_nonces" in sql:
+            if self.error_nonce is not None:
+                raise self.error_nonce
+            nonce = args[0]
+            if nonce in self.nonces:
+                return None
+            self.nonces.add(nonce)
+            return nonce
+        raise AssertionError(sql)
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
         self.sql.append(sql)
@@ -133,7 +132,7 @@ def _credencial() -> dict[str, Any]:
 
 
 def _montar(
-    monkeypatch: pytest.MonkeyPatch, conn: _Conn, redis: _Redis, octetos: Any
+    monkeypatch: pytest.MonkeyPatch, conn: _Conn, octetos: Any
 ) -> list[uuid.UUID]:
     pedidos: list[uuid.UUID] = []
 
@@ -150,8 +149,7 @@ def _montar(
 
     monkeypatch.setattr(settings, "intelligence_credential_kek", base64.b64encode(KEK).decode())
     monkeypatch.setattr(database, "acquire_tenant", _adquirir)
-    monkeypatch.setattr(ruta, "get_redis", lambda: redis)
-    monkeypatch.setattr(ruta.documento, "leer_anexo", _leer)
+    monkeypatch.setattr(documento, "leer_anexo", _leer)
     return pedidos
 
 
@@ -183,7 +181,7 @@ def test_una_firma_valida_cuadra_y_otra_clave_no() -> None:
 
 async def test_sirve_los_bytes_con_su_huella(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _Conn(credencial=_credencial())
-    pedidos = _montar(monkeypatch, conn, _Redis(), OCTETOS)
+    pedidos = _montar(monkeypatch, conn, OCTETOS)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo))
     assert resp.status_code == 200
@@ -193,30 +191,29 @@ async def test_sirve_los_bytes_con_su_huella(monkeypatch: pytest.MonkeyPatch) ->
 
 
 async def test_una_firma_mala_no_pide_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
-    redis = _Redis()
-    pedidos = _montar(monkeypatch, _Conn(credencial=_credencial()), redis, OCTETOS)
+    conn = _Conn(credencial=_credencial())
+    pedidos = _montar(monkeypatch, conn, OCTETOS)
     cuerpo = _pedido()
     cabeceras = _firmar(cuerpo)
     cabeceras["PPI-Signature"] = "v1=aaaa"
     resp = await _post(cuerpo, cabeceras)
     assert resp.status_code == 401
     assert resp.json()["code"] == "signature_invalid"
-    assert redis.claves == set()
+    assert conn.nonces == set()
     assert pedidos == []
 
 
 async def test_un_instante_viejo_no_reclama_el_nonce(monkeypatch: pytest.MonkeyPatch) -> None:
-    redis = _Redis()
-    _montar(monkeypatch, _Conn(credencial=_credencial()), redis, OCTETOS)
+    conn = _Conn(credencial=_credencial())
+    _montar(monkeypatch, conn, OCTETOS)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, marca=int(time.time()) - 400))
     assert resp.status_code == 401
-    assert redis.claves == set()
+    assert conn.nonces == set()
 
 
 async def test_el_nonce_repetido_se_rechaza(monkeypatch: pytest.MonkeyPatch) -> None:
-    redis = _Redis()
-    _montar(monkeypatch, _Conn(credencial=_credencial()), redis, OCTETOS)
+    _montar(monkeypatch, _Conn(credencial=_credencial()), OCTETOS)
     cuerpo = _pedido()
     cabeceras = _firmar(cuerpo, nonce="nonce-repetido-01")
     assert (await _post(cuerpo, cabeceras)).status_code == 200
@@ -230,7 +227,7 @@ async def test_un_nivel_no_habilitado_da_410_sin_pedir_bytes(
 ) -> None:
     reservada = {"sha256": SHA, "nivel_seguridad": 2, "status": "radicado"}
     conn = _Conn(credencial=_credencial(), anexo=reservada)
-    pedidos = _montar(monkeypatch, conn, _Redis(), OCTETOS)
+    pedidos = _montar(monkeypatch, conn, OCTETOS)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-de-nivel-02"))
     assert resp.status_code == 410
@@ -241,7 +238,7 @@ async def test_un_nivel_no_habilitado_da_410_sin_pedir_bytes(
 
 async def test_en_local_no_pide_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _Conn(proveedor="local", credencial=_credencial())
-    pedidos = _montar(monkeypatch, conn, _Redis(), OCTETOS)
+    pedidos = _montar(monkeypatch, conn, OCTETOS)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-en-local-01"))
     assert resp.status_code == 410
@@ -250,7 +247,7 @@ async def test_en_local_no_pide_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_un_localizador_desconocido_da_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    _montar(monkeypatch, _Conn(credencial=_credencial(), anexo=None), _Redis(), OCTETOS)
+    _montar(monkeypatch, _Conn(credencial=_credencial(), anexo=None), OCTETOS)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-ausente-01"))
     assert resp.status_code == 404
@@ -258,7 +255,7 @@ async def test_un_localizador_desconocido_da_404(monkeypatch: pytest.MonkeyPatch
 
 
 async def test_si_los_bytes_no_cuadran_no_salen(monkeypatch: pytest.MonkeyPatch) -> None:
-    _montar(monkeypatch, _Conn(credencial=_credencial()), _Redis(), b"otros")
+    _montar(monkeypatch, _Conn(credencial=_credencial()), b"otros")
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-distinto-1"))
     assert resp.status_code == 409
@@ -267,25 +264,25 @@ async def test_si_los_bytes_no_cuadran_no_salen(monkeypatch: pytest.MonkeyPatch)
 
 
 async def test_si_document_no_lo_tiene_es_410(monkeypatch: pytest.MonkeyPatch) -> None:
-    _montar(monkeypatch, _Conn(credencial=_credencial()), _Redis(), None)
+    _montar(monkeypatch, _Conn(credencial=_credencial()), None)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-borrado-01"))
     assert resp.status_code == 410
 
 
 async def test_si_document_falla_es_503(monkeypatch: pytest.MonkeyPatch) -> None:
-    _montar(monkeypatch, _Conn(credencial=_credencial()), _Redis(), DocumentoError("red"))
+    _montar(monkeypatch, _Conn(credencial=_credencial()), DocumentoError("red"))
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-caido-0001"))
     assert resp.status_code == 503
     assert resp.json()["code"] == "unavailable"
 
 
-async def test_si_redis_no_responde_no_sirve(monkeypatch: pytest.MonkeyPatch) -> None:
-    redis = _Redis(error=ConnectionError("redis"))
-    _montar(monkeypatch, _Conn(credencial=_credencial()), redis, OCTETOS)
+async def test_si_la_tabla_no_responde_no_sirve(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _Conn(credencial=_credencial(), error_nonce=ConnectionError("db"))
+    _montar(monkeypatch, conn, OCTETOS)
     cuerpo = _pedido()
-    resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-sin-redis1"))
+    resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-sin-tabla1"))
     assert resp.status_code == 503
 
 

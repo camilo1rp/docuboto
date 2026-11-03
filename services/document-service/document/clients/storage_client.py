@@ -29,7 +29,7 @@ from __future__ import annotations
 import base64
 import binascii
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -44,6 +44,15 @@ from document.core.config import settings
 _RUTA_UPLOAD = "/api/v1/storage/upload"
 
 _CHUNK_SIZE = 65536
+
+_Guardar = Callable[..., Awaitable[dict[str, Any]]]
+_guardar: _Guardar | None = None
+
+
+def registrar_almacen(fn: _Guardar | None) -> None:
+    """The composition root binds `storage.api.guardar`. `None` clears the hook."""
+    global _guardar
+    _guardar = fn
 
 
 class StorageContentError(Exception):
@@ -128,6 +137,15 @@ async def upload_bytes(
     el objeto aterriza en el bucket de ESE tenant. Lanza `StorageContentError`
     ante fallo de red o HTTP != 2xx (el servicio de import lo traduce a error del
     ítem sin dejar estado parcial en BD)."""
+    if _guardar is not None:
+        cuerpo = await _guardar(
+            tenant_slug=tenant_slug,
+            filename=filename,
+            mime_type=mime_type,
+            content=data,
+            uploaded_by=uploaded_by,
+        )
+        return ArchivoSubido.desde_respuesta(cuerpo)
     headers = cabeceras_internas(tenant_slug=tenant_slug)
     files = {"file": (filename, data, mime_type or "application/octet-stream")}
     async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=60.0) as client:

@@ -131,11 +131,50 @@ def test_el_lifespan_no_arranca_intelligence() -> None:
     assert "signature_consumer" in texto
     assert "registrar_apertura_de_flujo" in texto
     assert "abrir_al_radicar" in texto
+    assert "registrar_almacen" in texto
+    assert "bucle_trabajo" in texto
+    assert "_format_migration_loop" not in texto
+    assert "renovacion_lta" not in texto
+
+
+def test_el_worker_hace_el_trabajo_pesado() -> None:
+    texto = (RAIZ / "services/docuboto/docuboto/core/lifespan_worker.py").read_text(
+        encoding="utf-8"
+    )
+    assert "intelligence_consumer" not in texto
+    assert "_format_migration_loop" in texto
+    assert "renovacion_lta" in texto
+    assert "bucle_trabajo" in texto
+    assert "rechazar_claves_de_cifrado" in texto
+    assert "validate_kek" not in texto
+    assert "_CLAVES_DE_CIFRADO" in texto
+
+
+def test_el_nonce_ppi_vive_en_tabla() -> None:
+    texto = ruta_src("knowledge-service", "routers/retorno.py").read_text(encoding="utf-8")
+    assert "ppi_nonces" in texto
+    assert "orpycamcp:ppi:nonce" not in texto
+    assert (RAIZ / "services/knowledge-service/migrations/tenant/021_ppi_nonces.sql").is_file()
+    assert (RAIZ / "services/document-service/migrations/tenant/054_trabajo_fuera.sql").is_file()
+    admin = ruta_src("document-service", "routers/trabajo.py").read_text(encoding="utf-8")
+    assert "reintentar" in admin
+    assert "USUA_PERM_ADMIN" in admin
 
 
 def test_el_dockerfile_vive_fuera_de_services() -> None:
     assert (RAIZ / "infra" / "Dockerfile.app").is_file()
+    assert (RAIZ / "infra" / "Dockerfile.worker").is_file()
     assert not (RAIZ / "services" / "docuboto" / "Dockerfile").exists()
+
+
+def test_la_imagen_app_no_lleva_jre() -> None:
+    app = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8")
+    worker = (RAIZ / "infra" / "Dockerfile.worker").read_text(encoding="utf-8")
+    for marca in ("openjdk", "default-jre", "verapdf"):
+        assert marca not in app.lower(), marca
+    assert "openjdk" in worker
+    assert "verapdf" in worker.lower()
+    assert "docuboto.worker:app" in worker
 
 
 def test_compose_dev_levanta_un_proceso_por_defecto() -> None:
@@ -145,6 +184,10 @@ def test_compose_dev_levanta_un_proceso_por_defecto() -> None:
     assert app.get("profiles") in (None, []), "app no lleva perfil: es el default"
     build = app.get("build") or {}
     assert build.get("dockerfile") == "infra/Dockerfile.app"
+    worker = svcs["worker"]
+    assert worker.get("profiles") in (None, []), "worker no lleva perfil: es el default"
+    wbuild = worker.get("build") or {}
+    assert wbuild.get("dockerfile") == "infra/Dockerfile.worker"
     for nombre in _DOMINIO:
         perfiles = svcs[nombre].get("profiles") or []
         assert perfiles == ["split"], f"{nombre} debe quedar en el perfil split: {perfiles}"
@@ -197,3 +240,32 @@ def test_el_gateway_apunta_al_proceso() -> None:
                 pares[k] = v
     faltan = [k for k in _GATEWAY_URLS if pares.get(k) != "http://app:8000"]
     assert not faltan, f"el gateway no apunta a app:8000: {faltan} → { {k: pares.get(k) for k in faltan} }"
+
+
+_KEK_WORKER = (
+    "TOTP_ENCRYPTION_KEY",
+    "SIGNING_KEY_ENCRYPTION_KEY",
+    "EMAIL_ENCRYPTION_KEY",
+    "WEBHOOK_SECRET_KEK",
+    "INTELLIGENCE_CREDENTIAL_KEK",
+)
+
+
+def _claves_entorno(svc: dict) -> set[str]:
+    entorno = svc.get("environment") or []
+    if isinstance(entorno, dict):
+        return set(entorno)
+    claves: set[str] = set()
+    for item in entorno:
+        if isinstance(item, str) and "=" in item:
+            claves.add(item.split("=", 1)[0])
+    return claves
+
+
+def test_el_worker_no_recibe_claves_de_cifrado() -> None:
+    for manifiesto in (COMPOSE_DEV, RAIZ / "infra" / "docker-compose.prod.yml"):
+        svcs = servicios(manifiesto)
+        assert "worker" in svcs, f"falta worker en {manifiesto.name}"
+        claves = _claves_entorno(svcs["worker"])
+        filtradas = [k for k in _KEK_WORKER if k in claves]
+        assert not filtradas, f"{manifiesto.name}: worker no debe recibir {filtradas}"

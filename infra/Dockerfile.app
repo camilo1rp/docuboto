@@ -12,6 +12,8 @@
 # y un Dockerfile ahí forzaría imagen de producción y fila en la matriz de CI
 # antes de que el registro publique `app`.
 #
+# Sin JRE: el trabajo pesado de PDF/A vive en `infra/Dockerfile.worker`.
+#
 #   build: { context: ., dockerfile: infra/Dockerfile.app }
 FROM python:3.11-slim
 

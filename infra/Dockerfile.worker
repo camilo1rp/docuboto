@@ -1,0 +1,106 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+# Worker process: same packages as `infra/Dockerfile.app`, plus the JRE and
+# veraPDF CLI. The app image stays without Java. Build context is the repo root.
+#
+#   build: { context: ., dockerfile: infra/Dockerfile.worker }
+FROM python:3.11-slim AS app-base
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libjpeg62-turbo \
+        libffi8 fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY shared /shared
+RUN pip install --no-cache-dir /shared
+
+COPY services/docuboto/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY services/auth-service/auth /app/auth
+COPY services/tenant-service/tenant /app/tenant
+COPY services/document-service/document /app/document
+COPY services/archive-service/archive /app/archive
+COPY services/storage-service/storage /app/storage
+COPY services/workflow-service/workflow /app/workflow
+COPY services/notification-service/notification /app/notification
+COPY services/signature-service/signature /app/signature
+COPY services/knowledge-service/knowledge /app/knowledge
+COPY services/docuboto/docuboto /app/docuboto
+
+ENV PYTHONPATH=/app
+
+RUN groupadd --system orpycamcp \
+    && useradd --system --gid orpycamcp --home-dir /app --shell /usr/sbin/nologin orpycamcp \
+    && chown -R orpycamcp:orpycamcp /app
+
+# veraPDF installer in a separate stage so curl/unzip/JDK of the installer
+# never land in the final image. Same flow as storage-service production.
+FROM python:3.11-slim AS verapdf-builder
+ARG VERAPDF_INSTALLER_URL=https://software.verapdf.org/releases/verapdf-installer.zip
+ARG JAVA_PACKAGE=openjdk-21-jre-headless
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        "$JAVA_PACKAGE" curl unzip ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp/verapdf-install
+
+RUN cat > auto-install.xml <<'XML_EOF'
+<AutomatedInstallation langpack="eng">
+    <com.izforge.izpack.panels.htmlhello.HTMLHelloPanel id="welcome"/>
+    <com.izforge.izpack.panels.target.TargetPanel id="install_dir">
+        <installpath>/opt/verapdf</installpath>
+    </com.izforge.izpack.panels.target.TargetPanel>
+    <com.izforge.izpack.panels.packs.PacksPanel id="sdk_pack_select">
+        <pack index="0" name="veraPDF GUI" selected="true"/>
+        <pack index="1" name="veraPDF CLI" selected="true"/>
+        <pack index="2" name="veraPDF Validation model" selected="false"/>
+        <pack index="3" name="veraPDF Documentation" selected="false"/>
+        <pack index="4" name="veraPDF Sample Plugins" selected="false"/>
+    </com.izforge.izpack.panels.packs.PacksPanel>
+    <com.izforge.izpack.panels.install.InstallPanel id="install"/>
+    <com.izforge.izpack.panels.finish.FinishPanel id="finish"/>
+</AutomatedInstallation>
+XML_EOF
+
+RUN curl -fsSL "$VERAPDF_INSTALLER_URL" -o verapdf-installer.zip \
+    && unzip -q verapdf-installer.zip \
+    && cd verapdf-greenfield-*/ \
+    && chmod +x verapdf-install \
+    && ./verapdf-install ../auto-install.xml \
+    && cd .. \
+    && rm -rf verapdf-installer.zip verapdf-greenfield-*/ \
+    && chmod -R a+rX /opt/verapdf \
+    && test -x /opt/verapdf/verapdf
+
+FROM app-base
+ARG JAVA_PACKAGE=openjdk-21-jre-headless
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends "$JAVA_PACKAGE" ghostscript \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=verapdf-builder /opt/verapdf /opt/verapdf
+
+ENV RENDER_ENGINE=weasyprint \
+    VERAPDF_BINARY=/opt/verapdf/verapdf \
+    PDFA_VALIDATOR=verapdf \
+    PRESERVATION_PDFA_VALIDATION_ENABLED=true \
+    GHOSTSCRIPT_BINARY=/usr/bin/gs \
+    FORMAT_MIGRATOR=ghostscript
+
+USER orpycamcp
+
+CMD ["uvicorn", "docuboto.worker:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8000"]

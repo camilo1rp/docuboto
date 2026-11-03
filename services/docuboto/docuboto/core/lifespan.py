@@ -18,7 +18,6 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import asyncpg
 import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI
@@ -34,31 +33,24 @@ from auth.jobs.signing_key_maintenance import maintenance_loop
 from auth.routers.auth import set_auth_service
 from auth.services.auth_service import AuthService
 from docuboto.core.config import settings
-from docuboto.core.pools import bind_pool, bind_redis, unbind_pool, unbind_redis
+from docuboto.core.pools import bind_pool, bind_redis, crear_pool, unbind_pool, unbind_redis
+from docuboto.core.trabajo import COLA_APP
+from docuboto.core.trabajo import bucle as bucle_trabajo
 from document.api import registrar_apertura_de_flujo
+from document.clients.storage_client import registrar_almacen
 from document.core import altcha
 from document.services.barrido import bucle_de_barrido
 from document.services.email_sondeo import bucle_de_sondeo
 from notification.core import webhook_secrets
 from notification.workers import stream_worker
 from signature.core.config import variables_retiradas_presentes
-from signature.jobs import renovacion_lta
 from signature.workers import document_consumer as signature_consumer
+from storage.api import guardar as guardar_en_almacen
 from storage.core.minio_client import init_minio
-from storage.main import _format_migration_loop
 from workflow.api import abrir_al_radicar
 from workflow.workers import document_consumer as workflow_consumer
 
 logger = logging.getLogger(__name__)
-
-
-async def _crear_pool() -> asyncpg.Pool:
-    return await asyncpg.create_pool(
-        dsn=settings.database_url_asyncpg,
-        min_size=settings.db_pool_min_size,
-        max_size=settings.db_pool_max_size,
-        command_timeout=settings.db_command_timeout,
-    )
 
 
 @asynccontextmanager
@@ -106,10 +98,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("PRESERVATION CONFIG WARNING: %s", warning)
 
     logger.info("docuboto starting up")
-    pool = await _crear_pool()
+    pool = await crear_pool()
     bind_pool(pool)
     app.state.db_pool = pool
     registrar_apertura_de_flujo(abrir_al_radicar)
+    registrar_almacen(guardar_en_almacen)
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     bind_redis(redis_client)
@@ -132,8 +125,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     tareas: list[asyncio.Task[None]] = []
     if settings.auth.signing_key_maintenance_enabled:
         tareas.append(asyncio.create_task(maintenance_loop(pool)))
-    if settings.storage.format_migration_enabled:
-        tareas.append(asyncio.create_task(_format_migration_loop()))
     if settings.archive.indice_reconciliation_enabled:
         tareas.append(asyncio.create_task(_indice_reconciliation_loop()))
     if settings.archive.acta_reconciliation_enabled:
@@ -163,10 +154,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     tareas.append(
         events.spawn_supervised(signature_consumer.run, name="signature", logger=logger)
     )
-    if settings.signature.lta_renovacion_intervalo_s > 0:
-        tareas.append(
-            events.spawn_supervised(renovacion_lta.run, name="renovacion-lta", logger=logger)
-        )
+    tareas.append(asyncio.create_task(bucle_trabajo(COLA_APP)))
     request_log.canal_de_fondo()
 
     yield
@@ -182,4 +170,5 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await pool.close()
     unbind_pool()
     registrar_apertura_de_flujo(None)
+    registrar_almacen(None)
     app.state.db_pool = None

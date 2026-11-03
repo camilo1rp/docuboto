@@ -110,7 +110,7 @@ def test_los_defectos_declarados_siguen_existiendo() -> None:
 
 def test_imagenes_de_terceros_con_tag_y_digest() -> None:
     """Tag legible Y digest: el tag solo se puede mover en el registro, el digest no."""
-    propios = {*servicios_propios(), "frontend", "app"}
+    propios = {*servicios_propios(), "frontend", "app", "worker"}
     mal: list[str] = []
     terceros = 0
     for nombre, s in servicios(COMPOSE_PROD).items():

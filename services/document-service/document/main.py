@@ -58,6 +58,7 @@ from document.routers.respuesta import router as respuesta_router
 from document.routers.search import router as search_router
 from document.routers.signatures import router as signatures_router
 from document.routers.terceros import router as terceros_router
+from document.routers.trabajo import router as trabajo_router
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -190,6 +191,7 @@ DOMAIN_ROUTERS = (
     respuesta_router,
     borradores_router,
     internal_router,
+    trabajo_router,
 )
 for _router in DOMAIN_ROUTERS:
     app.include_router(_router)

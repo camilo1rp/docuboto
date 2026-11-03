@@ -566,6 +566,11 @@ build-images:
       escanear "$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA"
       docker push "$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA"
       docker push "$CI_REGISTRY_IMAGE/app:latest"
+      docker build -f infra/Dockerfile.worker -t "$CI_REGISTRY_IMAGE/worker:$CI_COMMIT_SHA" \
+                                             -t "$CI_REGISTRY_IMAGE/worker:latest" .
+      escanear "$CI_REGISTRY_IMAGE/worker:$CI_COMMIT_SHA"
+      docker push "$CI_REGISTRY_IMAGE/worker:$CI_COMMIT_SHA"
+      docker push "$CI_REGISTRY_IMAGE/worker:latest"
       docker build -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA" \
                                           -t "$CI_REGISTRY_IMAGE/frontend:latest" frontend
       escanear "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA"

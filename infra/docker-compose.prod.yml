@@ -447,6 +447,86 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  worker:
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/worker:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DOCUMENT_SERVICE_URL: http://app:8000
+      STORAGE_SERVICE_URL: http://app:8000
+      SIGNATURE_SERVICE_URL: http://app:8000
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_USE_SSL: "false"
+      PRESERVATION_ENABLED: "true"
+      PDFA_PROFILE: ${PDFA_PROFILE:-2b}
+      FORMAT_MIGRATION_ENABLED: ${FORMAT_MIGRATION_ENABLED:-true}
+      SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
+      SIGNER_PROVIDER: ${SIGNER_PROVIDER:-xades_local}
+      SIGNER_CERT_DIR: /run/secrets/signing
+      SIGNER_TIMESTAMP_ENABLED: ${SIGNER_TIMESTAMP_ENABLED:-true}
+      TSA_URL: ${TSA_URL:-}
+      TSA_CERT_DIR: /run/secrets/tsa
+      TSA_ESSCERTID_CORTE: ${TSA_ESSCERTID_CORTE:-2026-10-04T00:00:00Z}
+      SIGNER_LT_ENABLED: ${SIGNER_LT_ENABLED:-false}
+      SIGNER_LT_REQUIRE: ${SIGNER_LT_REQUIRE:-false}
+      SIGNER_OCSP_ENABLED: ${SIGNER_OCSP_ENABLED:-true}
+      SIGNER_OCSP_REQUIRE: ${SIGNER_OCSP_REQUIRE:-false}
+    volumes:
+      - ../secrets/signing:/run/secrets/signing:ro
+      - ../secrets/tsa:/run/secrets/tsa:ro
+    networks:
+      - orpycamcp-net
+    depends_on:
+      migrate-auth:
+        condition: service_completed_successfully
+      migrate-tenant:
+        condition: service_completed_successfully
+      migrate-document:
+        condition: service_completed_successfully
+      migrate-storage:
+        condition: service_completed_successfully
+      migrate-workflow:
+        condition: service_completed_successfully
+      migrate-archive:
+        condition: service_completed_successfully
+      migrate-notification:
+        condition: service_completed_successfully
+      migrate-signature:
+        condition: service_completed_successfully
+      migrate-knowledge:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api-gateway:
     # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.

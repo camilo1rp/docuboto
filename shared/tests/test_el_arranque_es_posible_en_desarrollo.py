@@ -80,6 +80,17 @@ def _secretos_exigidos() -> dict[str, set[str]]:
     extra = SERVICIOS / "docuboto" / "docuboto" / "main.py"
     if extra.is_file():
         mains.append(extra)
+    worker = SERVICIOS / "docuboto" / "docuboto" / "worker.py"
+    if worker.is_file():
+        partes = [worker.read_text(encoding="utf-8")]
+        lw = worker.parent / "core" / "lifespan_worker.py"
+        if lw.is_file():
+            partes.append(lw.read_text(encoding="utf-8"))
+        claves: set[str] = set()
+        for bloque in _LLAMADA.findall("\n".join(partes)):
+            claves.update(_CLAVE.findall(bloque))
+        if claves:
+            exigidos["worker"] = claves
     for main in sorted(set(mains)):
         servicio = main.parents[1].name
         partes = [main.read_text(encoding="utf-8")]
