@@ -34,7 +34,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-CADENA = Path(__file__).resolve().parents[1] / "app" / "services" / "cadena_service.py"
+CADENA = Path(__file__).resolve().parents[1] / "signature" / "services" / "cadena_service.py"
 
 # Lo que NUNCA puede alimentar una clave llamada `hash_documento`: cualquier
 # cosa que salga de firmar. `sign_result`, `signed`, `personal_signed`...

@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.jobs import indice_reconciliation
+from archive.jobs import indice_reconciliation
 
 
 def _mock_conn() -> AsyncMock:
@@ -60,7 +60,7 @@ async def test_reconciliar_worm_delegates_to_index_service() -> None:
     row = _worm_pending_row()
 
     with patch(
-        "app.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
+        "archive.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
         new=AsyncMock(return_value="protegido"),
     ) as mock_proteger:
         resultado = await indice_reconciliation._reconciliar_worm(conn, "demo", row)
@@ -94,10 +94,10 @@ async def test_run_once_worm_aggregates_across_tenants_and_respects_advisory_loc
         yield conns[slug]
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
             new=AsyncMock(return_value="protegido"),
         ),
     ):
@@ -136,10 +136,10 @@ async def test_run_once_worm_isolates_per_index_failure() -> None:
         return "protegido"
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
             new=AsyncMock(side_effect=_side_effect),
         ),
     ):
@@ -168,10 +168,10 @@ async def test_run_once_worm_counts_agotado_outcome() -> None:
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.proteger_worm_indice",
             new=AsyncMock(return_value="agotado"),
         ),
     ):

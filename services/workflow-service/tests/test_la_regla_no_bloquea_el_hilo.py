@@ -17,7 +17,7 @@ propósito bloqueaba el hilo que distribuye todo el trabajo.
 
 import time
 
-from app.services.rules_engine import eval_condition
+from workflow.services.rules_engine import eval_condition
 
 #: Expresión de retroceso desmedido para ESTE motor, comprobada midiendo.
 #:

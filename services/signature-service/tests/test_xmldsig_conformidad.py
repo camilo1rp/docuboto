@@ -44,10 +44,10 @@ from signxml import CanonicalizationMethod
 from signxml.exceptions import InvalidDigest
 from signxml.xades import XAdESSignatureConfiguration, XAdESVerifier
 
-from app.core import tsa
-from app.providers import local
-from app.providers.base import PreparedDoc, SignerRef
-from app.providers.local import LocalSigner, XmldsigNoConformeError, verify_xades
+from signature.core import tsa
+from signature.providers import local
+from signature.providers.base import PreparedDoc, SignerRef
+from signature.providers.local import LocalSigner, XmldsigNoConformeError, verify_xades
 
 DS = "http://www.w3.org/2000/09/xmldsig#"
 _NS = {"ds": DS}
@@ -102,7 +102,7 @@ def _pem_cert(cert: x509.Certificate) -> bytes:
 def _tsa_local(monkeypatch: pytest.MonkeyPatch) -> None:
     key, cert = _cert("tsa-b7", tsa_eku=True)
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem_cert(cert), key_pem=_pem_key(key), key_password=None),
     )
 
@@ -386,7 +386,7 @@ _NS_LTA = {**_NS, "xades": _X, "x141": _X141}
 
 
 async def _firmar_lta(monkeypatch: pytest.MonkeyPatch):
-    from app.core.config import settings
+    from signature.core.config import settings
     from tests.test_sign_xml_xades import (
         _build_crl,
         _ca_cert_pem,

@@ -27,7 +27,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 SCRIPT = RAIZ / "scripts" / "init_tenant.py"
 GLOBAL = RAIZ / "services/tenant-service/migrations/global/006_tenants_intelligence.sql"
 TENANT = RAIZ / "services/knowledge-service/migrations/tenant/016_intelligence.sql"
-CONFIG = (RAIZ / "services/auth-service/app/core/config.py").read_text(encoding="utf-8")
+CONFIG = (RAIZ / "services/auth-service/auth/core/config.py").read_text(encoding="utf-8")
 
 
 def _modulo() -> Any:

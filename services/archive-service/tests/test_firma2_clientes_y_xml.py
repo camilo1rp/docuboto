@@ -26,9 +26,9 @@ from datetime import UTC, date, datetime
 import httpx
 import pytest
 
-from app.clients import signature_client, storage_client
-from app.core.config import settings
-from app.services.constancia_firma_excepcion import (
+from archive.clients import signature_client, storage_client
+from archive.core.config import settings
+from archive.services.constancia_firma_excepcion import (
     HuellaFundamento,
     Identidad,
     build_constancia_xml,
@@ -44,7 +44,7 @@ from app.services.constancia_firma_excepcion import (
     sha256_c14n,
     sha256_hex,
 )
-from app.services.transferencia_service import _cn_de
+from archive.services.transferencia_service import _cn_de
 
 _SIG = "tok-firma"
 _STO = "tok-storage"

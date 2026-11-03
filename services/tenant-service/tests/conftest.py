@@ -25,8 +25,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_conn
-from app.main import app
+from tenant.core.database import get_db_conn
+from tenant.main import app
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -91,7 +91,7 @@ def _configure_internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
     la forma que se olvida. Solo lo consume el router de tenants; para los demás
     (dependencias, catálogos, PINAR…) es inerte.
     """
-    from app.core import config as cfg_module
+    from tenant.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
 
@@ -123,7 +123,7 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
 
     # El alta y el cambio de estado de una entidad asientan en `public.audit_log`
     # (Canal A); el asiento se intercepta aquí y se expone en `mock_conn.audit_append`.
-    with patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")) as audit_append:
+    with patch("tenant.core.audit._audit.append", new=AsyncMock(return_value="h")) as audit_append:
         mock_conn.audit_append = audit_append
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn

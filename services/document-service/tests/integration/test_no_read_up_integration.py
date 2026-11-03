@@ -25,10 +25,10 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.anulacion_repository import AnulacionRepository
-from app.repositories.postal_repository import PostalRepository
-from app.repositories.signature_repository import SignatureRepository
+from document.core.database import tenant_schema
+from document.repositories.anulacion_repository import AnulacionRepository
+from document.repositories.postal_repository import PostalRepository
+from document.repositories.signature_repository import SignatureRepository
 
 pytestmark = pytest.mark.integration
 

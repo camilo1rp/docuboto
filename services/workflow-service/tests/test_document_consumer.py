@@ -33,7 +33,7 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
     no hay entradas nuevas en el stream.  El bucle debe continuar de inmediato, sin
     registrar ningún mensaje de error y sin backoff innecesario.
     """
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
 
@@ -46,7 +46,7 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
         patch("asyncio.sleep", AsyncMock()) as mock_sleep,
         patch.object(document_consumer, "logger") as mock_logger,
     ):
@@ -71,7 +71,7 @@ async def test_run_xack_solo_en_exito() -> None:
     Cuando el handler procesa el mensaje sin lanzar excepción, el bucle debe
     acusar recibo (xack) para liberar el mensaje de la PEL.
     """
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     msg_id = b"1700000000000-0"
@@ -85,7 +85,7 @@ async def test_run_xack_solo_en_exito() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
         patch.object(
             document_consumer,
             "_handle",
@@ -104,7 +104,7 @@ async def test_run_xack_solo_en_exito() -> None:
 @pytest.mark.asyncio
 async def test_run_reclaim_invocado_despues_del_intervalo() -> None:
     """run() llama events.reclaim_stale cuando RECLAIM_INTERVAL ha transcurrido."""
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -116,9 +116,9 @@ async def test_run_reclaim_invocado_despues_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.reclaim_stale", mock_reclaim),
+        patch("workflow.workers.document_consumer.time") as mock_time,
     ):
         mock_time.monotonic.side_effect = [0.0, document_consumer.RECLAIM_INTERVAL + 1.0]
         with pytest.raises(asyncio.CancelledError):
@@ -137,7 +137,7 @@ async def test_run_xack_no_se_llama_si_handle_falla() -> None:
     y, tras max_deliveries, lo escalará al dead-letter stream con traza durable.
     El bucle debe continuar (no crashear) y salir limpiamente con CancelledError.
     """
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     msg_id = b"1700000000000-0"
@@ -152,7 +152,7 @@ async def test_run_xack_no_se_llama_si_handle_falla() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
         patch.object(
             document_consumer,
             "_handle",
@@ -176,7 +176,7 @@ async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
     """events.trim_deadletter es llamado con DEADLETTER_STREAM y max_age_ms correcto
     cuando DLQ_TRIM_INTERVAL ha transcurrido.
     """
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -188,10 +188,10 @@ async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.document_consumer.events.trim_deadletter", mock_trim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.trim_deadletter", mock_trim),
+        patch("workflow.workers.document_consumer.time") as mock_time,
     ):
         mock_time.monotonic.side_effect = [
             0.0,
@@ -210,7 +210,7 @@ async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
 @pytest.mark.asyncio
 async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
     """events.trim_deadletter NO se llama si DLQ_TRIM_INTERVAL aún no ha transcurrido."""
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -222,10 +222,10 @@ async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.document_consumer.events.trim_deadletter", mock_trim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.trim_deadletter", mock_trim),
+        patch("workflow.workers.document_consumer.time") as mock_time,
     ):
         mock_time.monotonic.side_effect = [0.0, 5.0]
         with pytest.raises(asyncio.CancelledError):
@@ -237,7 +237,7 @@ async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
 @pytest.mark.asyncio
 async def test_run_fallo_en_trim_dlq_no_tumba_el_loop() -> None:
     """Un error en trim_deadletter se registra como WARNING; el loop no crashea."""
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -247,13 +247,13 @@ async def test_run_fallo_en_trim_dlq_no_tumba_el_loop() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.reclaim_stale", AsyncMock()),
         patch(
-            "app.workers.document_consumer.events.trim_deadletter",
+            "workflow.workers.document_consumer.events.trim_deadletter",
             AsyncMock(side_effect=RuntimeError("redis conn error")),
         ),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("workflow.workers.document_consumer.time") as mock_time,
         patch.object(document_consumer, "logger") as mock_logger,
     ):
         mock_time.monotonic.side_effect = [

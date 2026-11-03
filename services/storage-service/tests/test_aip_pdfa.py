@@ -30,9 +30,9 @@ from pathlib import Path
 
 import pytest
 
-import app.core.config as config_module
-from app.services.aip_builder import validate_premis_xml
-from app.services.pdfa import PdfaResult, StubPdfaValidator, get_pdfa_validator, run_pdfa_validation
+import storage.core.config as config_module
+from storage.services.aip_builder import validate_premis_xml
+from storage.services.pdfa import PdfaResult, StubPdfaValidator, get_pdfa_validator, run_pdfa_validation
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_SLUG,
@@ -167,7 +167,7 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
     # `resp.json()["premis_xml"]`, que es el mock `"<premis/>"` de la fila y
     # por tanto no probaría nada. Espejo negativo del caso activado (abajo):
     # sin `pdfa_results`, el evento no aparece.
-    from app.services.aip_builder import AipDocMaterial, build_bag
+    from storage.services.aip_builder import AipDocMaterial, build_bag
 
     artifact = build_bag(
         expediente_id="EXP-1",
@@ -244,8 +244,8 @@ async def test_pdfa_validation_enabled_stub_emits_no_evaluado_and_aip_still_pack
     assert pdfa_call.args[3] == "no_evaluado"  # HONESTO: no implica conformidad
 
     # --- PREMIS: evento `validation` con eventOutcome "not evaluated" ---
-    from app.services.aip_builder import AipDocMaterial, build_bag
-    from app.services.pdfa import PdfaResult as _PdfaResult
+    from storage.services.aip_builder import AipDocMaterial, build_bag
+    from storage.services.pdfa import PdfaResult as _PdfaResult
 
     material = AipDocMaterial(
         document_id="R-1",

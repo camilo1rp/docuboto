@@ -33,7 +33,7 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
@@ -58,8 +58,8 @@ async def _tercero_con_documento(
 async def _radicar_con(
     conn: asyncpg.Connection, slug: str, tercero_id: uuid.UUID, asunto: str
 ) -> uuid.UUID:
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     doc = await DocumentService(conn, slug).create(
         DocumentCreate(
@@ -86,7 +86,7 @@ async def test_la_fusion_no_toca_ni_una_fila_de_radicado_actor(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "José Pérez Gómez")
     muere = await _tercero(conn, "JOSE PEREZ GOMEZ")
@@ -118,7 +118,7 @@ async def test_el_superviviente_HEREDA_los_radicados_al_leer(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "Ana Ríos")
     muere = await _tercero(conn, "ANA RIOS")
@@ -143,7 +143,7 @@ async def test_una_ficha_fusionada_desaparece_del_buscador(
     """O el duplicado que alguien acaba de resolver reaparecería al radicar."""
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "Luis Mora")
     muere = await _tercero(conn, "LUIS MORA")
@@ -167,7 +167,7 @@ async def test_no_se_encadenan_fusiones(
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from fastapi import HTTPException
 
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     a = await _tercero(conn, "Uno")
     b = await _tercero(conn, "Dos")
@@ -192,7 +192,7 @@ async def test_los_duplicados_se_detectan_sin_tildes_y_sin_mayusculas(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     vive = await _tercero(conn, "María Ángel")
     muere = await _tercero(conn, "MARIA ANGEL")
@@ -224,7 +224,7 @@ async def test_dos_documentos_DISTINTOS_no_son_un_duplicado(
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from fastapi import HTTPException
 
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     a = await _tercero_con_documento(conn, "Juan Ruiz", "111")
     b = await _tercero_con_documento(conn, "Juan Ruiz", "222")
@@ -263,7 +263,7 @@ async def test_si_solo_UNA_tiene_documento_la_fusion_sigue_siendo_posible(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     a = await _tercero_con_documento(conn, "Luis Paz", "777")
     b = await _tercero(conn, "Luis Paz")

@@ -26,8 +26,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.jobs import format_migration
-from app.jobs.format_migration import run_once
+from storage.jobs import format_migration
+from storage.jobs.format_migration import run_once
 
 
 async def _nada(*_a, **_k):
@@ -249,7 +249,7 @@ async def test_sin_convertidor_la_barrida_se_corta_ENTERA() -> None:
     """La causa es del despliegue y no va a cambiar a mitad del recorrido:
     intentarlo archivo por archivo gastaría una descarga por cada uno para
     llegar al mismo 503."""
-    from app.services.format_migration_service import MigradorNoDisponibleError
+    from storage.services.format_migration_service import MigradorNoDisponibleError
 
     conn = AsyncMock()
     pool = _pool_con(conn)

@@ -28,8 +28,8 @@ from datetime import UTC, date, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.fisico_repository import FisicoRepository
+from archive.core.database import tenant_schema
+from archive.repositories.fisico_repository import FisicoRepository
 
 from ._auth_minimo import crear_tablas_auth
 

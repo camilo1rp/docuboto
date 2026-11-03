@@ -31,11 +31,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.disposition import CT_DISPOSITION_CODES
-from app.repositories.aip_repository import AipRepository
-from app.repositories.index_repository import IndexRepository
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.services.index_service import IndexService
+from archive.core.disposition import CT_DISPOSITION_CODES
+from archive.repositories.aip_repository import AipRepository
+from archive.repositories.index_repository import IndexRepository
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.services.index_service import IndexService
 from tests.conftest import TENANT_HEADERS
 
 TENANT = "demo"

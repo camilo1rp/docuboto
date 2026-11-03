@@ -23,15 +23,15 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.core.config import settings
-from app.core.database import tenant_schema
-from app.core.signing_keys import (
+from auth.core.config import settings
+from auth.core.database import tenant_schema
+from auth.core.signing_keys import (
     build_aad,
     encrypt_private_key,
     generate_keypair,
     private_key_to_pem,
 )
-from app.jobs import signing_key_maintenance as job
+from auth.jobs import signing_key_maintenance as job
 from tests.integration.conftest import DSN, RUN_INTEGRATION, ensure_audit_log
 
 pytestmark = [

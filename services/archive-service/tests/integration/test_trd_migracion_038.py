@@ -31,8 +31,8 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
-from app.schemas.archive import (
+from archive.core.database import tenant_schema
+from archive.schemas.archive import (
     ExpedienteCreate,
     TrdSerieAprobar,
     TrdSerieConvalidar,
@@ -41,7 +41,7 @@ from app.schemas.archive import (
     TrdSerieRegistrarRusd,
     TrdSerieVersionCreate,
 )
-from app.services.archive_service import ArchiveService
+from archive.services.archive_service import ArchiveService
 
 from .conftest import convalidate_for_test
 
@@ -62,7 +62,7 @@ async def test_devolver_borra_acta_comite_y_permite_editar_de_nuevo(
     """Hallazgo #1: `aprobada -> borrador` con motivo, y la aprobación queda
     VOID (acta_comite/fecha_aprobacion_comite se limpian) -- el contenido se
     puede volver a editar (PATCH) porque el trigger ya no lo bloquea."""
-    from app.schemas.archive import TrdSerieUpdate
+    from archive.schemas.archive import TrdSerieUpdate
 
     slug, conn = tenant_con_organigrama
     archive = ArchiveService(conn, slug)

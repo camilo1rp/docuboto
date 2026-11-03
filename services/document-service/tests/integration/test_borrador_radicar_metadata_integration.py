@@ -25,11 +25,11 @@ import uuid
 
 import pytest
 
-from app.core.database import tenant_schema
-from app.schemas.borrador import BorradorCreate, BorradorRadicar
-from app.services.borrador_service import BorradorService
-from app.services.document_service import DocumentService
-from app.services.metadata_service import MetadataValidationError
+from document.core.database import tenant_schema
+from document.schemas.borrador import BorradorCreate, BorradorRadicar
+from document.services.borrador_service import BorradorService
+from document.services.document_service import DocumentService
+from document.services.metadata_service import MetadataValidationError
 
 pytestmark = pytest.mark.integration
 

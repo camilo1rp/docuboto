@@ -89,7 +89,7 @@ graph TB
 docuboto/
 ├── services/                 # One directory per microservice (11)
 │   └── <service>/
-│       ├── app/              # FastAPI application (layout in §4)
+│       ├── <module>/         # FastAPI package (layout in §4)
 │       ├── migrations/       # runner.py + global/ + tenant/ SQL files
 │       ├── tests/            # pytest, one file per router/behavior
 │       ├── Dockerfile        # non-root user, read-only /app
@@ -146,7 +146,9 @@ Every Python service follows the same layered layout (see
 [`docs/templates/service-template/`](docs/templates/service-template/)):
 
 ```
-app/
+<module>/             # document, workflow, archive, storage, auth, tenant,
+                      # notification, signature, knowledge.
+                      # api-gateway and mcp-server still use app/
 ├── main.py           # App factory: lifespan (pools, clients, workers), middleware, routers
 ├── core/             # config (pydantic-settings), database, auth/clearance glue, constants
 ├── routers/          # HTTP layer — one file per resource; permission gates as dependencies

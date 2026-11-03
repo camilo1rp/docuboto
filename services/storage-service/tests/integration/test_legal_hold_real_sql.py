@@ -25,11 +25,11 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.preservacion_worm_repository import PreservacionWormRepository
-from app.schemas.preservacion import HoldFijarRequest, HoldLevantarRequest
-from app.services import legal_hold_service as lhs
-from app.services.legal_hold_service import LegalHoldService
+from storage.core.database import tenant_schema
+from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
+from storage.schemas.preservacion import HoldFijarRequest, HoldLevantarRequest
+from storage.services import legal_hold_service as lhs
+from storage.services.legal_hold_service import LegalHoldService
 
 pytestmark = pytest.mark.integration
 

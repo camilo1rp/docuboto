@@ -33,8 +33,8 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.transferencia_repository import TransferenciaRepository
+from archive.core.database import tenant_schema
+from archive.repositories.transferencia_repository import TransferenciaRepository
 
 pytestmark = pytest.mark.asyncio
 

@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-from app.services.estado_radicado import ESTADOS_TERMINALES, derivar_estado_radicado
+from workflow.services.estado_radicado import ESTADOS_TERMINALES, derivar_estado_radicado
 from tests.conftest import (
     RADICADO_ID,
     STEP_ID,

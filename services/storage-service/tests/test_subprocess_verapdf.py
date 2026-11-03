@@ -39,8 +39,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.pdfa import subprocess_verapdf
-from app.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
+from storage.services.pdfa import subprocess_verapdf
+from storage.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
 
 _BINARY = "/opt/verapdf/verapdf"
 

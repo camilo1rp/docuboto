@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.core import conservacion
-from app.core.database import get_db_conn
+from storage.core import conservacion
+from storage.core.database import get_db_conn
 from tests.test_estado_entidad_puerta import _Conn, _fila, _request
 
 _TOKEN = "tok-conservacion"

@@ -23,9 +23,9 @@ from typing import Any
 
 import pytest
 
-from app.clients.ppi import ClientePpi
-from app.core.clearance import puede_salir
-from app.core.paso import destino_de, enviar
+from knowledge.clients.ppi import ClientePpi
+from knowledge.core.clearance import puede_salir
+from knowledge.core.paso import destino_de, enviar
 
 RADICADO = uuid.UUID("00000000-0000-4000-8000-0000000000b2")
 

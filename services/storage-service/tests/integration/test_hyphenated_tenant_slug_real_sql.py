@@ -39,9 +39,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.file_repository import FileRepository
-from app.services.storage_service import StorageService
+from storage.core.database import tenant_schema
+from storage.repositories.file_repository import FileRepository
+from storage.services.storage_service import StorageService
 
 from .conftest import DSN
 
@@ -110,7 +110,7 @@ async def test_storage_service_upload_end_to_end_with_hyphenated_tenant(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     """`StorageService.upload` (el camino REAL que ejercita `POST
-    /storage/upload`, ver `app/routers/storage.py::upload_file`) de punta a
+    /storage/upload`, ver `storage/routers/storage.py::upload_file`) de punta a
     punta para un tenant con slug guionado. MinIO mockeado -- lo que se
     prueba aquí es que `FileRepository` (envuelto por `StorageService`) ya
     no rechaza el slug crudo, y que la fila aterriza en el schema correcto,
@@ -121,7 +121,7 @@ async def test_storage_service_upload_end_to_end_with_hyphenated_tenant(
     mock_minio = _make_mock_minio()
     service = StorageService(conn, slug)  # no debe lanzar InvalidTenantSlugError
 
-    with patch("app.services.storage_service.get_minio", return_value=mock_minio):
+    with patch("storage.services.storage_service.get_minio", return_value=mock_minio):
         response, created, schedule_pdfa = await service.upload(
             filename="contrato.docx",
             mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

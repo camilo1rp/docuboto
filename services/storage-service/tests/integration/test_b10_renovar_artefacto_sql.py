@@ -24,11 +24,11 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
-import app.services.preservation_worm_service as svc_module
-from app.repositories.preservacion_repository import PreservacionRepository
-from app.repositories.preservacion_worm_repository import PreservacionWormRepository
-from app.schemas.preservacion import RenovarArtefactoRequest
-from app.services.preservation_worm_service import PreservationWormService
+import storage.services.preservation_worm_service as svc_module
+from storage.repositories.preservacion_repository import PreservacionRepository
+from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
+from storage.schemas.preservacion import RenovarArtefactoRequest
+from storage.services.preservation_worm_service import PreservationWormService
 
 pytestmark = pytest.mark.integration
 
@@ -197,7 +197,7 @@ async def test_sin_worm_en_el_anterior_solo_asienta_premis(tenant_ctx) -> None:
 async def test_renovar_retencion_extiende_tambien_el_xml_renovado(tenant_ctx) -> None:
     """SEG #3 / ARCH H5: el XML vigente (`firma_lta_renovada`) no puede salir de COMPLIANCE antes
     que el índice del que hereda. Mutación: quitar `_extender_cadena_renovada` -> cae."""
-    from app.schemas.preservacion import RenovarRetencionRequest
+    from storage.schemas.preservacion import RenovarRetencionRequest
 
     slug, conn = tenant_ctx
     req, fila = await _escenario(conn, slug)
@@ -221,7 +221,7 @@ async def test_renovar_retencion_extiende_tambien_el_xml_renovado(tenant_ctx) ->
 async def test_la_cascada_corre_aunque_la_raiz_ya_este_al_dia(tenant_ctx) -> None:
     """Una pasada que extendió la raíz y se cortó antes de la cascada no se reintenta (archive
     solo mira la raíz): la siguiente llamada, con la raíz en no-op, tiene que cerrar la cascada."""
-    from app.schemas.preservacion import RenovarRetencionRequest
+    from storage.schemas.preservacion import RenovarRetencionRequest
 
     slug, conn = tenant_ctx
     req, fila = await _escenario(conn, slug)
@@ -261,7 +261,7 @@ async def test_la_segunda_renovacion_hereda_el_mayor_retain_until_de_la_cadena(t
 
 @pytest.mark.asyncio
 async def test_el_anterior_que_no_es_artefacto_de_firma_se_rechaza(tenant_ctx) -> None:
-    from app.services.preservation_worm_service import ArtefactoNoEsDeFirmaError
+    from storage.services.preservation_worm_service import ArtefactoNoEsDeFirmaError
 
     slug, conn = tenant_ctx
     req, _ = await _escenario(conn, slug, tipo="aip")
@@ -274,7 +274,7 @@ async def test_el_anterior_que_no_es_artefacto_de_firma_se_rechaza(tenant_ctx) -
 
 @pytest.mark.asyncio
 async def test_el_nuevo_que_no_es_xml_se_rechaza(tenant_ctx) -> None:
-    from app.services.preservation_worm_service import ArtefactoNoEsDeFirmaError
+    from storage.services.preservation_worm_service import ArtefactoNoEsDeFirmaError
 
     slug, conn = tenant_ctx
     req, _ = await _escenario(conn, slug, mime_nuevo="application/pdf")

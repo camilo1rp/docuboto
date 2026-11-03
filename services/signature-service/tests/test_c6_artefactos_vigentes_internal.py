@@ -23,9 +23,9 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.core import conservacion
-from app.core import database as db
-from app.core.config import settings
+from signature.core import conservacion
+from signature.core import database as db
+from signature.core.config import settings
 
 RUTA = "/api/v1/signature/internal/artefactos-vigentes"
 TOKEN = "token-interno-de-prueba"

@@ -17,7 +17,7 @@ y con un objeto o una lista anidados no había texto que adivinar. Ahora lleva
 
 import pytest
 
-from app.services.metadata_service import MetadataValidationError, validate_metadata
+from document.services.metadata_service import MetadataValidationError, validate_metadata
 
 SCHEMA = {
     "type": "object",

@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.document_service import AnexoNoDisponibleError, DocumentService
+from document.services.document_service import AnexoNoDisponibleError, DocumentService
 from tests.test_documents import _CREATE_PAYLOAD, TENANT_HEADERS  # noqa: F401
 
 

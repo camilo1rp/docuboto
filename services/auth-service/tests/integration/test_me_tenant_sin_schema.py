@@ -26,9 +26,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_optional_tenant_conn, tenant_schema
-from app.main import app
-from app.schemas.auth import UserInfoResponse
+from auth.core.database import get_optional_tenant_conn, tenant_schema
+from auth.main import app
+from auth.schemas.auth import UserInfoResponse
 from tests.integration.conftest import DSN, RUN_INTEGRATION
 
 pytestmark = [
@@ -53,12 +53,12 @@ async def _me(slug: str) -> tuple[int, dict]:
         user_id="kc-sub-b7", username="x", email="x@y.co", tenant_slug=slug, roles=[]
     )
     with patch(
-        "app.services.auth_service.AuthService.get_current_user",
+        "auth.services.auth_service.AuthService.get_current_user",
         new_callable=AsyncMock,
         return_value=info,
     ):
-        from app.routers.auth import set_auth_service
-        from app.services.auth_service import AuthService
+        from auth.routers.auth import set_auth_service
+        from auth.services.auth_service import AuthService
 
         set_auth_service(AuthService())
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

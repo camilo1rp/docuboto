@@ -15,9 +15,9 @@ from typing import Any
 
 import pytest
 
-from app.core.aceptacion import Declaracion
-from app.core.paso import Politica
-from app.routers import knowledge as rutas
+from knowledge.core.aceptacion import Declaracion
+from knowledge.core.paso import Politica
+from knowledge.routers import knowledge as rutas
 from tests.conftest import TENANT_HEADERS
 
 _APAGADA = {"transmits": False, "provider": None, "levels": []}

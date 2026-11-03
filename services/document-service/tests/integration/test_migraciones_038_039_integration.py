@@ -22,7 +22,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 from migrations import runner
 
 pytestmark = pytest.mark.integration

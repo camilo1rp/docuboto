@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.email_cuenta_service import ErrorDeCuenta
-from app.services.email_sondeo import (
+from document.services.email_cuenta_service import ErrorDeCuenta
+from document.services.email_sondeo import (
     ESPERA_BASE_SEGUNDOS,
     ESPERA_MAXIMA_SEGUNDOS,
     EstadoCuenta,
@@ -94,7 +94,7 @@ async def test_un_fallo_aplaza_la_cuenta_y_el_exito_lo_reinicia(monkeypatch) -> 
 
     fallo = AsyncMock(side_effect=ErrorDeCuenta("conexion_fallida", "no conecta", status=502))
     monkeypatch.setattr(
-        "app.services.email_bandeja_service.EmailBandejaService.sincronizar", fallo
+        "document.services.email_bandeja_service.EmailBandejaService.sincronizar", fallo
     )
     r = await sondeo.una_vuelta(conn, ahora=0.0)
     assert r.fallos == 1
@@ -110,7 +110,7 @@ async def test_un_fallo_aplaza_la_cuenta_y_el_exito_lo_reinicia(monkeypatch) -> 
 
     # Cuando toca y funciona, la espera se reinicia del todo.
     monkeypatch.setattr(
-        "app.services.email_bandeja_service.EmailBandejaService.sincronizar",
+        "document.services.email_bandeja_service.EmailBandejaService.sincronizar",
         AsyncMock(return_value={"nuevos": 2, "en_bandeja": 2, "hay_mas": False, "carpeta": "INBOX"}),
     )
     r3 = await sondeo.una_vuelta(conn, ahora=estado.proximo_intento + 1)
@@ -129,7 +129,7 @@ async def test_si_otra_replica_tiene_la_cuenta_se_pasa_de_largo(monkeypatch) -> 
     conn = ConexionFalsa([_cuenta()], lock_concedido=False)
     sincronizar = AsyncMock()
     monkeypatch.setattr(
-        "app.services.email_bandeja_service.EmailBandejaService.sincronizar", sincronizar
+        "document.services.email_bandeja_service.EmailBandejaService.sincronizar", sincronizar
     )
 
     r = await SondeoDeCorreo("demo").una_vuelta(conn, ahora=0.0)
@@ -143,7 +143,7 @@ async def test_el_lock_se_suelta_aunque_la_cuenta_falle(monkeypatch) -> None:
     réplicas, y el síntoma es «ese buzón dejó de traer correo»."""
     conn = ConexionFalsa([_cuenta()])
     monkeypatch.setattr(
-        "app.services.email_bandeja_service.EmailBandejaService.sincronizar",
+        "document.services.email_bandeja_service.EmailBandejaService.sincronizar",
         AsyncMock(side_effect=ErrorDeCuenta("x", "y", status=502)),
     )
     await SondeoDeCorreo("demo").una_vuelta(conn, ahora=0.0)
@@ -163,7 +163,7 @@ async def test_una_cuenta_caida_no_impide_sondear_las_demas(monkeypatch) -> None
         return {"nuevos": 3, "en_bandeja": 3, "hay_mas": False, "carpeta": "INBOX"}
 
     monkeypatch.setattr(
-        "app.services.email_bandeja_service.EmailBandejaService.sincronizar", _sincronizar
+        "document.services.email_bandeja_service.EmailBandejaService.sincronizar", _sincronizar
     )
     r = await SondeoDeCorreo("demo").una_vuelta(conn, ahora=0.0)
     assert r.fallos == 1
@@ -198,10 +198,10 @@ class _Bandeja:
 
 def _parche_bandeja(monkeypatch, bandeja):
     monkeypatch.setattr(
-        "app.services.email_sondeo.EmailBandejaService", lambda *a, **k: bandeja
+        "document.services.email_sondeo.EmailBandejaService", lambda *a, **k: bandeja
     )
     monkeypatch.setattr(
-        "app.services.document_service.DocumentService", lambda *a, **k: object()
+        "document.services.document_service.DocumentService", lambda *a, **k: object()
     )
 
 
@@ -240,7 +240,7 @@ async def test_sin_tipo_no_reserva_el_correo(monkeypatch) -> None:
 def test_la_cuenta_automatica_exige_tipo_y_dependencia() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.email_cuenta import CuentaCrear
+    from document.schemas.email_cuenta import CuentaCrear
 
     base = {
         "nombre": "Buzón",

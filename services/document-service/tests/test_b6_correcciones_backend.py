@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.document import CLAVES_RESERVADAS, DocumentCreate, DocumentUpdate
+from document.schemas.document import CLAVES_RESERVADAS, DocumentCreate, DocumentUpdate
 from tests.conftest import TENANT_HEADERS, FakeTenantClient, make_radicado_record
 
 _USER = str(uuid.uuid4())
@@ -103,7 +103,7 @@ async def test_retipificar_a_tipo_inexistente_es_422_sin_escribir(client_with_co
 async def test_el_lote_no_radica_un_tipo_inexistente() -> None:
     from fastapi import HTTPException
 
-    from app.core.tipos import exigir_tipo_documental
+    from document.core.tipos import exigir_tipo_documental
 
     conn = AsyncMock()
     conn.fetchval.side_effect = _fetchval_catalogo(tipos=set())
@@ -120,7 +120,7 @@ def test_el_batch_valida_el_catalogo() -> None:
     """El lote es una puerta más: el cableado, no solo la pieza."""
     from pathlib import Path
 
-    fuente = (Path(__file__).parents[1] / "app/services/batch_service.py").read_text()
+    fuente = (Path(__file__).parents[1] / "document/services/batch_service.py").read_text()
     assert "exigir_tipo_documental(self.conn, doc_data.doc_class)" in fuente
 
 
@@ -128,8 +128,8 @@ def test_la_ventanilla_y_create_comparten_la_consulta_del_catalogo() -> None:
     """Un solo sitio: ni `_validar_tipo` ni `create` escriben ya su propio SELECT."""
     import inspect
 
-    from app.services.document_service import DocumentService
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.document_service import DocumentService
+    from document.services.ventanilla_service import VentanillaService
 
     assert "tipos_documentales" not in inspect.getsource(VentanillaService._validar_tipo)
     assert "tipos_documentales" not in inspect.getsource(DocumentService)
@@ -162,8 +162,8 @@ def test_el_patch_de_metadata_rechaza_las_reservadas(clave: str) -> None:
 
 @pytest.mark.parametrize("clave", sorted(CLAVES_RESERVADAS))
 def test_borrador_y_respuesta_usan_la_misma_lista(clave: str) -> None:
-    from app.schemas.borrador import BorradorRadicar
-    from app.schemas.respuesta import RespuestaRapidaCreate
+    from document.schemas.borrador import BorradorRadicar
+    from document.schemas.respuesta import RespuestaRapidaCreate
 
     with pytest.raises(ValidationError):
         BorradorRadicar(metadata={clave: "x"})
@@ -188,7 +188,7 @@ def test_el_sistema_pone_canal_y_consentimiento_por_procedencia() -> None:
     """La ventanilla (legítima) las manda por `procedencia`, no en `metadata`."""
     import inspect
 
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.ventanilla_service import VentanillaService
 
     src = inspect.getsource(VentanillaService.radicar)
     assert "procedencia=procedencia" in src
@@ -203,7 +203,7 @@ def test_el_sistema_pone_canal_y_consentimiento_por_procedencia() -> None:
 
 @pytest.mark.asyncio
 async def test_el_asiento_de_creacion_lleva_from_borrador(client_with_conn) -> None:
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     _c, conn = client_with_conn
     conn.fetchrow.side_effect = [None, {"code": "DEMO"}, make_radicado_record()]
@@ -225,7 +225,7 @@ async def test_el_asiento_de_creacion_lleva_from_borrador(client_with_conn) -> N
 
 @pytest.mark.asyncio
 async def test_sin_borrador_el_asiento_no_inventa_from_borrador(client_with_conn) -> None:
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     _c, conn = client_with_conn
     conn.fetchrow.side_effect = [None, {"code": "DEMO"}, make_radicado_record()]
@@ -303,7 +303,7 @@ async def test_create_limita_el_origen_de_la_salida_a_las_dependencias_del_actor
     """UNA fuente (`DocumentService.create`) para todas las puertas."""
     from fastapi import HTTPException
 
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     conn = AsyncMock()
     conn.fetch.return_value = [{"depe_id": d} for d in propias]
@@ -345,7 +345,7 @@ def test_las_puertas_de_salida_delegan_en_create_y_el_borrador_no_duplica() -> N
 async def test_el_lote_limita_el_origen_de_la_salida() -> None:
     from pathlib import Path
 
-    fuente = (Path(__file__).parents[1] / "app/services/batch_service.py").read_text()
+    fuente = (Path(__file__).parents[1] / "document/services/batch_service.py").read_text()
     assert 'doc_data.doc_type == "S"' in fuente
     assert "origen_fuera_de_sus_dependencias" in fuente
 
@@ -368,7 +368,7 @@ async def test_reenviar_el_mismo_tipo_ya_inactivo_en_el_patch_no_da_422(client_w
 
 
 def test_import_mueve_las_claves_reservadas_a_procedencia_origen() -> None:
-    from app.services.import_service import _sin_claves_reservadas
+    from document.services.import_service import _sin_claves_reservadas
 
     out = _sin_claves_reservadas(
         {"canal": "ventanilla", "consentimiento": {"x": 1}, "from_borrador": "b", "otra": 2}
@@ -386,7 +386,7 @@ def test_import_mueve_las_claves_reservadas_a_procedencia_origen() -> None:
 
 @pytest.mark.asyncio
 async def test_import_insert_no_guarda_claves_reservadas_de_primer_nivel() -> None:
-    from app.services.import_service import ImportService
+    from document.services.import_service import ImportService
 
     svc = ImportService(AsyncMock(), "demo")
     svc._tenant_code = "OTRO"
@@ -420,8 +420,8 @@ async def test_metadata_invalida_falla_antes_de_renderizar_y_subir(
     client_with_conn, monkeypatch
 ) -> None:
     """El 422 llega ANTES de `_producir` (render + subida): ningún binario huérfano."""
-    from app.services import borrador_service as svc
-    from app.services.metadata_service import MetadataValidationError
+    from document.services import borrador_service as svc
+    from document.services.metadata_service import MetadataValidationError
 
     async def _minimos(self, row, registered_by, datos=None):
         return "Oficio", 1, 1
@@ -436,7 +436,7 @@ async def test_metadata_invalida_falla_antes_de_renderizar_y_subir(
     conn.fetch.return_value = []
     conn.fetchrow.side_effect = [_CLEARANCE, _borrador_row(bid, cuerpo="Texto")]
     with patch(
-        "app.services.document_service.DocumentService.validar_tipo_y_metadata",
+        "document.services.document_service.DocumentService.validar_tipo_y_metadata",
         AsyncMock(side_effect=MetadataValidationError("falta x", field="x")),
     ):
         resp = await client.post(

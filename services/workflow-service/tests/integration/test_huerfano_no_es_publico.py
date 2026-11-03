@@ -24,9 +24,9 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.visto_bueno_repository import VistoBuenoRepository
-from app.repositories.workflow_repository import WorkflowRepository
+from workflow.core.database import tenant_schema
+from workflow.repositories.visto_bueno_repository import VistoBuenoRepository
+from workflow.repositories.workflow_repository import WorkflowRepository
 
 pytestmark = pytest.mark.integration
 

@@ -35,6 +35,8 @@ que son el lado receptor y no tienen nada que firmar.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 import re
 from pathlib import Path
@@ -58,7 +60,7 @@ def _funciones_que_emiten() -> list[tuple[Path, str, str]]:
     """(archivo, función, código) de cada función que mete `X-User-Id` en unas
     cabeceras salientes."""
     hallazgos: list[tuple[Path, str, str]] = []
-    for archivo in sorted(SERVICIOS.glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(SERVICIOS, "*/app/**/*.py")):
         texto = archivo.read_text(encoding="utf-8")
         if "X-User-Id" not in texto:
             continue
@@ -343,7 +345,7 @@ _LEE_CABECERA_DE_NONCE = re.compile(r"X-Identity-(Signature|Ts|Nonce)", re.IGNOR
 
 def _lecturas_de_cabeceras_de_identidad() -> list[str]:
     hallazgos: list[str] = []
-    for archivo in sorted(SERVICIOS.glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(SERVICIOS, "*/app/**/*.py")):
         for n, linea in enumerate(archivo.read_text(encoding="utf-8").splitlines(), 1):
             if linea.lstrip().startswith("#"):
                 continue

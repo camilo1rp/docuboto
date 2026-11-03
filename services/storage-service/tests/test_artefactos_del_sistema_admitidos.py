@@ -26,7 +26,7 @@ sistema produce se declaran, y si uno falta el test cae — no el usuario.
 
 from __future__ import annotations
 
-from app.core.config import settings
+from storage.core.config import settings
 
 #: Formatos que el sistema PRODUCE y necesita guardar por el endpoint interno.
 #: Cada entrada dice quién lo genera: si mañana alguien retira un productor,

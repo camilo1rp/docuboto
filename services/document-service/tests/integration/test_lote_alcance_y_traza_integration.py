@@ -20,9 +20,9 @@ import uuid
 
 import pytest
 
-from app.core.constants import SYSTEM_RECONCILER_ID
-from app.core.database import acquire_tenant
-from app.services.batch_service import BatchService, LoteError
+from document.core.constants import SYSTEM_RECONCILER_ID
+from document.core.database import acquire_tenant
+from document.services.batch_service import BatchService, LoteError
 from tests.integration.test_lote_documentos_integration import (
     _tenant_registrado,
     pool_del_proceso,  # noqa: F401 — fixture, se usa por `usefixtures`

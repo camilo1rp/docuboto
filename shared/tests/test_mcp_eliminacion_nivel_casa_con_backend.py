@@ -27,7 +27,7 @@ from pathlib import Path
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _CATALOGO = _RAIZ / "services" / "mcp-server" / "app" / "tools" / "catalog.py"
-_ROUTER = _RAIZ / "services" / "archive-service" / "app" / "routers" / "eliminacion.py"
+_ROUTER = _RAIZ / "services" / "archive-service" / "archive" / "routers" / "eliminacion.py"
 _PREFIJO = "/api/v1/eliminacion"
 
 

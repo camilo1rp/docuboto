@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.models.flow import FlowStep
+from workflow.models.flow import FlowStep
 from tests.conftest import RADICADO_ID, TENANT_HEADERS, TRACKING_NUMBER, make_step_record
 
 _ASSIGN_PAYLOAD = {
@@ -237,7 +237,7 @@ async def test_codigo_y_nombre_discordantes_422_y_el_texto_del_cliente_no_se_gua
 # El ORIGEN lo deriva el servidor del paso activo
 # ---------------------------------------------------------------------------
 
-_REPO = "app.services.workflow_service.WorkflowRepository"
+_REPO = "workflow.services.workflow_service.WorkflowRepository"
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,7 @@ Principio común: el contrato (firmas de función / endpoints REST) **no cambia*
 | | |
 |---|---|
 | Estado actual | Firma **electrónica** nativa (SHA-256 + identidad + sello). Detecta alteración; **no** es firma digital cualificada. |
-| Punto de swap | `services/signature-service/app/services/signer.py` (funciones `firmar` / `verificar`). |
+| Punto de swap | `services/signature-service/signature/services/signer.py` (funciones `firmar` / `verificar`). |
 | Selector | `SIGNER_PROVIDER` (config; `nativa` por defecto). |
 | Norma | Decreto 2364/2012 (electrónica) → certificada para trámites que exijan firma **digital**. |
 
@@ -107,7 +107,7 @@ La capa MCP queda así **completa** (tools + resources + prompts + ambos transpo
 | | |
 |---|---|
 | Estado actual | Proveedor **stub** (guía determinista, sin API real). |
-| Punto de swap | `services/document-service/app/services/postal_provider.py` (`generar_guia`). |
+| Punto de swap | `services/document-service/document/services/postal_provider.py` (`generar_guia`). |
 
 **Para activar el operador real:** implementar `generar_guia(operador, radicado_id)` (y, si aplica, la consulta de estado) contra la API del operador con sus credenciales; el estado de entrega ya se actualiza vía `POST /api/v1/envios/{id}/estado` (callback/sondeo).
 

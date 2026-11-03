@@ -29,9 +29,9 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
-from app.repositories.archive_repository import ArchiveRepository
-from app.services.archive_service import ArchiveService
+from archive.core.database import tenant_schema
+from archive.repositories.archive_repository import ArchiveRepository
+from archive.services.archive_service import ArchiveService
 
 from .test_eliminacion_atomicity import AYER, _avalar_por_sql, _estado
 from .test_eliminacion_lote_estados import _publicar

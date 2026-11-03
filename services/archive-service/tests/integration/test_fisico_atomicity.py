@@ -39,14 +39,14 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.core.database import tenant_schema
-from app.schemas.fisico import (
+from archive.core.database import tenant_schema
+from archive.schemas.fisico import (
     ExpedienteUnidadLink,
     PrestamoCreate,
     UbicacionCreate,
     UnidadCreate,
 )
-from app.services.fisico_service import FisicoService
+from archive.services.fisico_service import FisicoService
 
 from ._auth_minimo import crear_tablas_auth
 

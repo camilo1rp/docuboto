@@ -36,9 +36,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from app.core import tsa as tsa_module
-from app.core.config import settings
-from app.core.tsa import TsaUnavailableError, sello_acreditado
+from signature.core import tsa as tsa_module
+from signature.core.config import settings
+from signature.core.tsa import TsaUnavailableError, sello_acreditado
 
 URL = "https://tsa.operador.test/timestamp"
 SELLADO = b"bytes-que-se-quieren-sellar"

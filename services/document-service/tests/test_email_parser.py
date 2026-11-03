@@ -11,7 +11,7 @@
 
 from email.message import EmailMessage
 
-from app.clients.email_parser import leer
+from document.clients.email_parser import leer
 
 RESPALDO = "orpyca-local:cuenta/INBOX/1/7"
 

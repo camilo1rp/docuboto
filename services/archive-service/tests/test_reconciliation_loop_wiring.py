@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Cableado de los bucles de reconciliación de `app/main.py` (AREA-13-05).
+"""Cableado de los bucles de reconciliación de `archive/main.py` (AREA-13-05).
 
 Las piezas (`run_once*`) tienen su cobertura; lo que nadie probaba es el CABLEADO:
 que las fases de un bucle estén en `try` independientes (un fallo de la fase 1 no
@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app import main
+from archive import main
 
 _FASES_INDICE = [
     "_reconcile_indices_once",

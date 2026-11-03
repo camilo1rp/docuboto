@@ -24,9 +24,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
-from app.repositories.tercero_repository import TerceroRepository
-from app.services.tercero_service import TerceroService
+from document.core.database import tenant_schema
+from document.repositories.tercero_repository import TerceroRepository
+from document.services.tercero_service import TerceroService
 from tests.integration.conftest import _require_dsn
 from tests.integration.test_ficha_provisional_integration import (
     _anonimo,

@@ -20,9 +20,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import ValidationError
 
-from app.core.config import settings
-from app.schemas.archive import ExpedienteCreate
-from app.services.retention_math import base_worm
+from archive.core.config import settings
+from archive.schemas.archive import ExpedienteCreate
+from archive.services.retention_math import base_worm
 from tests.conftest import TENANT_HEADERS, make_expediente_record, make_radicado_link_record
 from tests.test_transferencias import _indice_row, _transfer_row
 
@@ -80,7 +80,7 @@ async def test_fixity_fallida_registra_evento_premis_de_fallo_solo_con_conteos(
         [{"document_id": doc_id, "valor_huella": "b" * 64}],
     ]
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
     ) as post:
         resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
 
@@ -105,7 +105,7 @@ async def test_otro_409_no_registra_evento_de_fixity(client_with_conn) -> None:
         _indice_row(estado="borrador"),
     ]
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
     ) as post:
         resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
     assert resp.status_code == 409

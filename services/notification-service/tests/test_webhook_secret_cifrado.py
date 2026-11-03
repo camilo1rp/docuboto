@@ -24,9 +24,9 @@ import httpx
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from app.core import webhook_secrets
-from app.core.config import settings
-from app.services import webhook_service
+from notification.core import webhook_secrets
+from notification.core.config import settings
+from notification.services import webhook_service
 from tests.conftest import TEST_WEBHOOK_KEK_V2, USER
 
 SECRETO = "s3cr3t-HMAC-muy-reconocible"
@@ -104,7 +104,7 @@ def test_el_aad_ata_tenant_y_webhook() -> None:
 
 
 def test_slug_from_schema_es_inverso_de_tenant_schema() -> None:
-    from app.core.database import tenant_schema
+    from notification.core.database import tenant_schema
 
     for slug in ("icetex", "mi-tenant", "a-b-c", "x1-y2"):
         assert webhook_secrets.slug_from_schema(tenant_schema(slug)) == slug
@@ -156,7 +156,7 @@ async def test_secreto_demasiado_largo_no_se_devuelve_en_el_422(client, db_conn)
 @pytest.mark.asyncio
 async def test_crear_guarda_cifrado_y_no_devuelve_el_secreto(client, db_conn, monkeypatch) -> None:
     audit = AsyncMock()
-    monkeypatch.setattr("app.routers.webhooks._audit.append", audit)
+    monkeypatch.setattr("notification.routers.webhooks._audit.append", audit)
     db_conn.fetchrow.side_effect = lambda sql, wid, url, et, *_: {
         "id": wid, "url": url, "event_types": et, "active": True, "created_at": NOW,
     }
@@ -187,7 +187,7 @@ async def test_crear_guarda_cifrado_y_no_devuelve_el_secreto(client, db_conn, mo
 
 @pytest.mark.asyncio
 async def test_crear_sin_secreto_no_cifra(client, db_conn, monkeypatch) -> None:
-    monkeypatch.setattr("app.routers.webhooks._audit.append", AsyncMock())
+    monkeypatch.setattr("notification.routers.webhooks._audit.append", AsyncMock())
     db_conn.fetchrow.side_effect = lambda sql, wid, url, et, *_: {
         "id": wid, "url": url, "event_types": et, "active": True, "created_at": NOW,
     }
@@ -201,7 +201,7 @@ async def test_crear_sin_secreto_no_cifra(client, db_conn, monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_crear_con_secreto_sin_kek_es_503_y_no_escribe(client, db_conn, monkeypatch) -> None:
-    monkeypatch.setattr("app.routers.webhooks._audit.append", AsyncMock())
+    monkeypatch.setattr("notification.routers.webhooks._audit.append", AsyncMock())
     settings.webhook_secret_kek = ""
     resp = await client.post(
         "/api/v1/webhooks",
@@ -249,7 +249,7 @@ async def _entregar(sub: dict, tenant: str = "mi-tenant") -> tuple[bool, list[ht
 @pytest.fixture
 def _dns(monkeypatch) -> None:
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
 
@@ -314,9 +314,9 @@ async def test_dispatch_pasa_el_tenant_del_sobre_al_aad(monkeypatch, _dns) -> No
         async def __aexit__(self, *a):
             return False
 
-    monkeypatch.setattr("app.services.webhook_service.acquire_tenant", lambda slug: _Acq())
+    monkeypatch.setattr("notification.services.webhook_service.acquire_tenant", lambda slug: _Acq())
     monkeypatch.setattr(
-        "app.services.webhook_service.WebhookRepository.active_for_event",
+        "notification.services.webhook_service.WebhookRepository.active_for_event",
         AsyncMock(return_value=[sub]),
     )
     vistas: list[httpx.Request] = []
@@ -325,7 +325,7 @@ async def test_dispatch_pasa_el_tenant_del_sobre_al_aad(monkeypatch, _dns) -> No
     def _cli(**kw):
         return real(transport=httpx.MockTransport(lambda r: (vistas.append(r), httpx.Response(200))[1]))
 
-    monkeypatch.setattr("app.services.webhook_service.httpx.AsyncClient", _cli)
+    monkeypatch.setattr("notification.services.webhook_service.httpx.AsyncClient", _cli)
     env = {"tenant_slug": "mi-tenant", "event_type": "x.y", "payload": {"a": 1}}
     assert await webhook_service.dispatch(env) == 1
     assert len(vistas) == 1 and "X-OrpycaMCP-Signature" in vistas[0].headers

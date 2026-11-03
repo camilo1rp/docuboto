@@ -17,7 +17,7 @@ Quien administra una entidad es un rol de NEGOCIO, no de infraestructura.
 
 import pytest
 
-from app.schemas.email_cuenta import CuentaCrear
+from document.schemas.email_cuenta import CuentaCrear
 
 
 def _cuenta(**kw):
@@ -86,7 +86,7 @@ def test_la_conexion_imap_lleva_plazo_maximo():
     """
     import inspect
 
-    from app.clients.imap_adaptador import ImapAdaptador
+    from document.clients.imap_adaptador import ImapAdaptador
 
     assert ImapAdaptador._PLAZO_CONEXION > 0
     fuente = inspect.getsource(ImapAdaptador._abrir)

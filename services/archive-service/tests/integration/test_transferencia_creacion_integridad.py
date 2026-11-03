@@ -37,16 +37,16 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.schemas.fisico import ExpedienteUnidadLink, UbicacionCreate, UnidadCreate
-from app.schemas.transferencia import (
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.schemas.fisico import ExpedienteUnidadLink, UbicacionCreate, UnidadCreate
+from archive.schemas.transferencia import (
     TransferenciaCreate,
     TransferenciaRechazo,
     TransferenciaResponse,
 )
-from app.services.fisico_service import FisicoService
-from app.services.transferencia_service import TransferenciaService
+from archive.services.fisico_service import FisicoService
+from archive.services.transferencia_service import TransferenciaService
 
 from .conftest import DSN
 from .test_atomicity import _labeled, _seed_expediente_closed

@@ -27,7 +27,7 @@ import json
 
 import pytest
 
-from app.core import altcha
+from document.core import altcha
 
 CLAVE = b"orpycamcp-altcha-vector-key-0123456789"
 AHORA = 1_800_000_000

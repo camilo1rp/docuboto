@@ -31,9 +31,9 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.constants import DLQ_GROUP
-from app.main import app
-from app.routers import metrics as m
+from workflow.core.constants import DLQ_GROUP
+from workflow.main import app
+from workflow.routers import metrics as m
 
 
 class _Conn:

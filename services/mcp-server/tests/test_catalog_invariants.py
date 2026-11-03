@@ -102,7 +102,7 @@ def test_el_permiso_de_radicacion_es_el_que_gatea_el_endpoint() -> None:
     assert radicar is not None, "la tool de radicación desapareció del catálogo"
     assert radicar.permission == "PERM_RADI", (
         "POST /api/v1/documents está gateado con PERM_RADI "
-        "(document-service/app/routers/documents.py)"
+        "(document-service/document/routers/documents.py)"
     )
 
 

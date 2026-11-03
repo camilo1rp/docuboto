@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.workers import document_consumer as consumer
+from workflow.workers import document_consumer as consumer
 
 
 class _Ctx:

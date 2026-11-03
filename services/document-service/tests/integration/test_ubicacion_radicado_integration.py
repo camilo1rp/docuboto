@@ -25,10 +25,10 @@ from datetime import date
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.document_repository import DocumentRepository
-from app.repositories.export_repository import ExportRepository
-from app.repositories.report_repository import ReportRepository
+from document.core.database import tenant_schema
+from document.repositories.document_repository import DocumentRepository
+from document.repositories.export_repository import ExportRepository
+from document.repositories.report_repository import ReportRepository
 from migrations import runner
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -204,7 +204,7 @@ async def test_el_export_lleva_la_ubicacion_como_dato_informativo(tenant_ctx) ->
 
 
 async def test_el_patch_de_dest_dept_mueve_la_ubicacion_solo_si_el_flujo_no_la_movio(tenant_ctx) -> None:
-    from app.schemas.document import DocumentUpdate
+    from document.schemas.document import DocumentUpdate
 
     slug, conn = await _en_tenant(tenant_ctx)
     repo = DocumentRepository(conn, slug)
@@ -238,8 +238,8 @@ async def test_el_patch_de_dest_dept_no_deja_el_codigo_de_otra_dependencia(tenan
     """El par (nombre, código) lo escribe el catálogo (ADR-032) y llega ENTERO al UPDATE."""
     from fastapi import HTTPException
 
-    from app.schemas.document import DocumentUpdate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentUpdate
+    from document.services.document_service import DocumentService
 
     slug, conn = await _en_tenant(tenant_ctx)
     await _dependencias(conn)
@@ -261,13 +261,13 @@ async def test_el_patch_de_dest_dept_no_deja_el_codigo_de_otra_dependencia(tenan
 
 
 async def test_el_patch_de_dest_dept_en_un_radicado_cerrado_se_rechaza(tenant_ctx) -> None:
-    from app.schemas.document import DocumentUpdate
-    from app.services.document_service import DestDeptImmutableError
+    from document.schemas.document import DocumentUpdate
+    from document.services.document_service import DestDeptImmutableError
 
     slug, conn = await _en_tenant(tenant_ctx)
     await _dependencias(conn)
     rid = await _rad(conn, dest=("Tecnología", 300), status="closed")
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
     svc = DocumentService(conn, slug)
     with pytest.raises(DestDeptImmutableError):
         await svc.update(rid, DocumentUpdate(dest_dept="Archivo"), PUBLICA, uuid.uuid4())

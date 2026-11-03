@@ -30,16 +30,16 @@ from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import NameOID
 from fastapi import HTTPException
 
-from app.core.config import settings
-from app.core.signing_keys import (
+from auth.core.config import settings
+from auth.core.signing_keys import (
     build_aad,
     encrypt_private_key,
     generate_keypair,
     private_key_to_pem,
 )
-from app.core.totp import _hotp, current_timestep, encrypt_secret
-from app.core.totp import build_aad as build_totp_aad
-from app.services.signing_key_service import SigningKeyService
+from auth.core.totp import _hotp, current_timestep, encrypt_secret
+from auth.core.totp import build_aad as build_totp_aad
+from auth.services.signing_key_service import SigningKeyService
 from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [
@@ -60,8 +60,8 @@ def _config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "signing_key_encryption_key", _KEK)
     monkeypatch.setattr(settings, "totp_encryption_key", _KEK)
     # Sin asientos: el slug de prueba no debe ensuciar el `audit_log` vivo.
-    monkeypatch.setattr("app.services.signing_key_service._AUDIT_AVAILABLE", False)
-    monkeypatch.setattr("app.services.totp_service._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("auth.services.signing_key_service._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("auth.services.totp_service._AUDIT_AVAILABLE", False)
 
 
 async def _sembrar(conn: asyncpg.Connection) -> tuple[uuid.UUID, str, object]:
@@ -138,7 +138,7 @@ async def test_firma_que_no_verifica_revierte_el_consumo_del_totp(
     antes = await _last_timestep(conn, user_id)
     code = _hotp(_TOTP_SECRET, current_timestep())
 
-    monkeypatch.setattr("app.services.signing_key_service.sign_digest", lambda _k, _d: os.urandom(256))
+    monkeypatch.setattr("auth.services.signing_key_service.sign_digest", lambda _k, _d: os.urandom(256))
     with pytest.raises(HTTPException) as exc:
         await SigningKeyService(conn).load_and_sign_digest(
             user_id, _SLUG, _digest(), code, cert_fingerprint=fp
@@ -151,8 +151,8 @@ async def test_firma_que_no_verifica_revierte_el_consumo_del_totp(
     monkeypatch.undo()
     monkeypatch.setattr(settings, "signing_key_encryption_key", _KEK)
     monkeypatch.setattr(settings, "totp_encryption_key", _KEK)
-    monkeypatch.setattr("app.services.signing_key_service._AUDIT_AVAILABLE", False)
-    monkeypatch.setattr("app.services.totp_service._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("auth.services.signing_key_service._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("auth.services.totp_service._AUDIT_AVAILABLE", False)
     res = await SigningKeyService(conn).load_and_sign_digest(
         user_id, _SLUG, _digest(), code, cert_fingerprint=fp
     )

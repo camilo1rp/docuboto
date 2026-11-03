@@ -54,7 +54,7 @@ async def test_dos_fixity_fallidas_dejan_claves_de_intento_1_y_2(client_with_con
     tid, exp_id = uuid.uuid4(), uuid.uuid4()
     contador = [0]
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
     ) as post:
         for _ in range(2):
             resp = await _recibir_con_fixity_fallida(client, mock_conn, tid, exp_id, contador)
@@ -80,7 +80,7 @@ async def test_el_contador_y_el_asiento_failed_van_en_la_misma_tx(client_with_co
     contador = [0]
 
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
     ):
         resp = await _recibir_con_fixity_fallida(client, mock_conn, tid, exp_id, contador)
         assert resp.status_code == 409

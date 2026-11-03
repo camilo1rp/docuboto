@@ -48,7 +48,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.repositories.workflow_repository import _holder_condition, _nivel_poseedor_condition
+from workflow.repositories.workflow_repository import _holder_condition, _nivel_poseedor_condition
 from tests.conftest import (
     RADICADO_ID,
     STEP_ID,
@@ -918,7 +918,7 @@ async def test_execute_transaction_audit_failure_aborta_la_transaccion(
     # llega al cliente confirmando una transacción de trámite sin traza forense.
     with (
         patch(
-            "app.services.workflow_service.audit.append",
+            "workflow.services.workflow_service.audit.append",
             new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
         ),
         pytest.raises(RuntimeError, match="audit_log no disponible"),
@@ -1126,7 +1126,7 @@ async def test_devolver_audit_failure_aborta_la_devolucion(
 
     with (
         patch(
-            "app.services.workflow_service.audit.append",
+            "workflow.services.workflow_service.audit.append",
             new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
         ),
         pytest.raises(RuntimeError, match="audit_log no disponible"),
@@ -1155,7 +1155,7 @@ async def test_devolver_not_current_holder_is_neutral_404(
 
     # `es_poseedor` (una sola definición de poseedor, `_holder_condition`) dice que no.
     with patch(
-        "app.services.workflow_service.WorkflowRepository.es_poseedor",
+        "workflow.services.workflow_service.WorkflowRepository.es_poseedor",
         new=AsyncMock(return_value=False),
     ):
         resp = await client.post(
@@ -1246,7 +1246,7 @@ async def test_rollback_by_non_holder_is_neutral_no_active_step(
     mock_conn.fetchrow.return_value = current  # solo se consulta el paso activo
 
     with patch(
-        "app.services.workflow_service.WorkflowRepository.es_poseedor",
+        "workflow.services.workflow_service.WorkflowRepository.es_poseedor",
         new=AsyncMock(return_value=False),
     ):
         response = await client.post(
@@ -1424,7 +1424,7 @@ async def test_reassign_cascade_audit_failure_aborta_la_reasignacion(
 
     with (
         patch(
-            "app.services.workflow_service.audit.append",
+            "workflow.services.workflow_service.audit.append",
             new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
         ),
         pytest.raises(RuntimeError, match="audit_log no disponible"),
@@ -1517,7 +1517,7 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from app.services.workflow_service import WorkflowService
+    from workflow.services.workflow_service import WorkflowService
 
     svc = WorkflowService(AsyncMock(), "demo")
     step = SimpleNamespace(
@@ -1535,8 +1535,8 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
     )
     emit = AsyncMock()
     with (
-        patch("app.services.workflow_service.events.emit", emit),
-        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch("workflow.services.workflow_service.events.emit", emit),
+        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=3)),
     ):
         await svc._publish("workflow.step.created", step)
@@ -1546,8 +1546,8 @@ async def test_los_eventos_de_workflow_declaran_nivel_seguridad() -> None:
     # Sin nivel resoluble el campo se omite (notification lo trata como clasificado).
     emit.reset_mock()
     with (
-        patch("app.services.workflow_service.events.emit", emit),
-        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch("workflow.services.workflow_service.events.emit", emit),
+        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=None)),
     ):
         await svc._publish("workflow.step.created", step)
@@ -1560,7 +1560,7 @@ async def test_un_fallo_al_publicar_queda_registrado_y_no_revierte() -> None:
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from app.services.workflow_service import WorkflowService
+    from workflow.services.workflow_service import WorkflowService
 
     svc = WorkflowService(AsyncMock(), "demo")
     step = SimpleNamespace(
@@ -1578,12 +1578,12 @@ async def test_un_fallo_al_publicar_queda_registrado_y_no_revierte() -> None:
     )
     with (
         patch(
-            "app.services.workflow_service.events.emit",
+            "workflow.services.workflow_service.events.emit",
             AsyncMock(side_effect=ConnectionError("redis caído")),
         ),
-        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=1)),
-        patch("app.services.workflow_service.logger") as log,
+        patch("workflow.services.workflow_service.logger") as log,
     ):
         await svc._publish("workflow.step.created", step)
     log.warning.assert_called_once()
@@ -1596,7 +1596,7 @@ async def test_estado_cambiado_y_overdue_declaran_nivel_seguridad() -> None:
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from app.services.workflow_service import WorkflowService
+    from workflow.services.workflow_service import WorkflowService
 
     svc = WorkflowService(AsyncMock(), "demo")
     rid = uuid.uuid4()
@@ -1611,8 +1611,8 @@ async def test_estado_cambiado_y_overdue_declaran_nivel_seguridad() -> None:
         to_dept_code=2, assigned_to=None, due_at=None,
     )
     with (
-        patch("app.services.workflow_service.events.emit", emit),
-        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch("workflow.services.workflow_service.events.emit", emit),
+        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
         patch.object(svc._repo, "nivel_radicado", new=AsyncMock(return_value=2)),
         patch.object(svc._repo, "list_overdue_unnotified", new=AsyncMock(return_value=[overdue])),
         patch.object(svc._repo, "mark_overdue_notified", new=AsyncMock()),

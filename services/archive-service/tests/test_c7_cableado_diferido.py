@@ -25,10 +25,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.clients.storage_client import AipPackagingOutcome, WormProtectionOutcome
-from app.services.index_service import IndexService
-from app.services.retention_math import RetencionDiferida
-from app.services.valoracion_service import ValoracionHoldError
+from archive.clients.storage_client import AipPackagingOutcome, WormProtectionOutcome
+from archive.services.index_service import IndexService
+from archive.services.retention_math import RetencionDiferida
+from archive.services.valoracion_service import ValoracionHoldError
 from tests.conftest import USER_ID
 from tests.test_aip_wiring_service import _mock_conn as _aip_conn
 from tests.test_aip_wiring_service_pdfa_profile import (
@@ -56,13 +56,13 @@ async def _proteger_indice(resolver_value=None, *, side_effect=None):
     index._index.bump_worm_reconcile_intento = AsyncMock()
     with (
         patch(
-            "app.clients.storage_client.proteger_indice_worm",
+            "archive.clients.storage_client.proteger_indice_worm",
             new=AsyncMock(
                 return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4())
             ),
         ) as publico,
         patch(
-            "app.clients.storage_client.proteger_indice_worm_internal",
+            "archive.clients.storage_client.proteger_indice_worm_internal",
             new=AsyncMock(
                 return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4())
             ),
@@ -129,7 +129,7 @@ async def _empaquetar(retention):
     service._aip.bump_intento = AsyncMock()
     with (
         patch(
-            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [{"file_id": str(uuid.uuid4()), "filename": "o.pdf"}]
@@ -137,10 +137,10 @@ async def _empaquetar(retention):
             ),
         ),
         patch(
-            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as storage,
-        patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()),
+        patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
     ):
         res = await service.intentar_empaquetar(exp.id)
     return res, storage, service

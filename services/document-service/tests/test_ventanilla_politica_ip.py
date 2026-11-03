@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from orpycamcp_common import identidad
 
-from app.core.politica import huella_politica
-from app.services.document_service import DocumentService
+from document.core.politica import huella_politica
+from document.services.document_service import DocumentService
 from tests.test_ventanilla import (
     BASE,
     _cuerpo,

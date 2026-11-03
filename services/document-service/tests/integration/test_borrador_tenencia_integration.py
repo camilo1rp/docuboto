@@ -27,12 +27,12 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
 #: Ac. AGN 060/2001 §5.2: el borrador no guarda tipo ni dependencias; se aportan al radicar.
-from app.schemas.borrador import BorradorRadicar  # noqa: E402
+from document.schemas.borrador import BorradorRadicar  # noqa: E402
 
 _DATOS = BorradorRadicar(tipo_documental="Oficio", origin_dept_code=1, dest_dept_code=1)
 
@@ -51,10 +51,10 @@ class _SinCircuito:
 
 
 async def _padre_y_borrador(tenant_ctx, *, con_padre: bool = True):
-    from app.schemas.borrador import BorradorCreate
-    from app.schemas.document import DocumentCreate
-    from app.services.borrador_service import BorradorService
-    from app.services.document_service import DocumentService
+    from document.schemas.borrador import BorradorCreate
+    from document.schemas.document import DocumentCreate
+    from document.services.borrador_service import BorradorService
+    from document.services.document_service import DocumentService
 
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
@@ -84,7 +84,7 @@ async def _paso(conn, padre_id, n, status, *, asignado=None, dept="Jurídica") -
 
 
 async def _puede_editar(servicio, conn, b, actor) -> bool:
-    from app.schemas.borrador import BorradorUpdate
+    from document.schemas.borrador import BorradorUpdate
 
     antes = await conn.fetchval("SELECT updated_at FROM borrador WHERE id = $1", b.id)
     try:
@@ -211,7 +211,7 @@ async def _aprobar_directo(conn, b) -> None:
 async def _intenta_radicar(slug, conn, servicio, b, actor) -> bool:
     """`True` si radicó; si no, exige el 404 neutro y que NADA haya cambiado
     (ni número consumido ni borrador tocado)."""
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     radicados = await conn.fetchval("SELECT count(*) FROM radicados")
     # B6: el origen de una Salida debe ser una dependencia del actor (URD activa).
@@ -264,7 +264,7 @@ async def test_editar_no_toca_un_borrador_que_se_radico_entre_la_guarda_y_el_upd
 ) -> None:
     """TOCTOU: `_require_editable` lo vio editable; antes del UPDATE se radicó. El
     UPDATE lleva `estado <> 'radicado'` y la respuesta es el 409, no una edición."""
-    from app.schemas.borrador import BorradorUpdate
+    from document.schemas.borrador import BorradorUpdate
 
     _, conn, servicio, _, b = await _padre_y_borrador(tenant_ctx, con_padre=False)
     visto_antes = await servicio._repo.get_borrador(b.id, 3)

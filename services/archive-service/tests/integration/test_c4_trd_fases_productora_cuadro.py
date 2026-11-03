@@ -34,8 +34,8 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
-from app.schemas.archive import (
+from archive.core.database import tenant_schema
+from archive.schemas.archive import (
     TipoDocumentalCreate,
     TipoDocumentalUpdate,
     TrdSerieAprobar,
@@ -43,8 +43,8 @@ from app.schemas.archive import (
     TrdSerieCreate,
     TrdSerieVersionCreate,
 )
-from app.services.archive_service import ArchiveService
-from app.services.tipo_documental_service import TipoDocumentalService
+from archive.services.archive_service import ArchiveService
+from archive.services.tipo_documental_service import TipoDocumentalService
 
 pytestmark = pytest.mark.integration
 
@@ -712,7 +712,7 @@ async def test_dos_cambios_concurrentes_no_pueden_formar_tres_niveles(tenant_con
 async def test_la_dependencia_comprobada_queda_bloqueada_hasta_el_commit(tenant_con_organigrama) -> None:
     import asyncio
 
-    from app.repositories.archive_repository import ArchiveRepository
+    from archive.repositories.archive_repository import ArchiveRepository
     from tests.integration.conftest import _require_dsn
 
     slug, conn = tenant_con_organigrama

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from knowledge.main import app
 
 pytestmark = pytest.mark.asyncio
 
@@ -44,7 +44,7 @@ def _pool_que(resultado=None, error=None):
 
 
 async def test_health_es_vivacidad_y_no_toca_nada() -> None:
-    with patch("app.routers.health.get_pool") as pool:
+    with patch("knowledge.routers.health.get_pool") as pool:
         respuesta = await _get("/health")
         assert pool.call_count == 0
 
@@ -53,7 +53,7 @@ async def test_health_es_vivacidad_y_no_toca_nada() -> None:
 
 
 async def test_ready_comprueba_la_base() -> None:
-    with patch("app.routers.health.get_pool", return_value=_pool_que(1)):
+    with patch("knowledge.routers.health.get_pool", return_value=_pool_que(1)):
         respuesta = await _get("/health/ready")
 
     assert respuesta.status_code == 200
@@ -61,7 +61,7 @@ async def test_ready_comprueba_la_base() -> None:
 
 
 async def test_ready_devuelve_503_sin_base_de_datos() -> None:
-    with patch("app.routers.health.get_pool", return_value=_pool_que(error=OSError("caída"))):
+    with patch("knowledge.routers.health.get_pool", return_value=_pool_que(error=OSError("caída"))):
         respuesta = await _get("/health/ready")
 
     assert respuesta.status_code == 503
@@ -70,7 +70,7 @@ async def test_ready_devuelve_503_sin_base_de_datos() -> None:
 
 async def test_ready_no_publica_el_motivo_del_fallo() -> None:
     fallo = OSError("connect failed: postgres:5432")
-    with patch("app.routers.health.get_pool", return_value=_pool_que(error=fallo)):
+    with patch("knowledge.routers.health.get_pool", return_value=_pool_que(error=fallo)):
         cuerpo = (await _get("/health/ready")).text
 
     assert "postgres:5432" not in cuerpo

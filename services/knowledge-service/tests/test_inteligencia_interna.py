@@ -16,9 +16,9 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from app.core.config import settings
-from app.core.internal_auth import require_internal_token
-from app.routers import inteligencia
+from knowledge.core.config import settings
+from knowledge.core.internal_auth import require_internal_token
+from knowledge.routers import inteligencia
 
 
 class _Peticion:

@@ -41,12 +41,12 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.core.database import get_tenant_conn
-from app.core.http_clients import OtpEmailDeliveryError, SignerEmailError, SignerIdentity
-from app.core.otp import hmac_otp
-from app.main import app
-from app.services import cadena_service
+from signature.core.config import settings
+from signature.core.database import get_tenant_conn
+from signature.core.http_clients import OtpEmailDeliveryError, SignerEmailError, SignerIdentity
+from signature.core.otp import hmac_otp
+from signature.main import app
+from signature.services import cadena_service
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import FIRMANTE2, SOL_ID, _exec_sig, _make_conn, _turno_row
 
@@ -123,7 +123,7 @@ def _clear() -> None:
 def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     """No-ops _audit.append and returns the mock so tests can assert on payload."""
     mock_append = AsyncMock(return_value="fakehash")
-    monkeypatch.setattr("app.services.cadena_service._audit.append", mock_append)
+    monkeypatch.setattr("signature.services.cadena_service._audit.append", mock_append)
     return mock_append
 
 
@@ -141,8 +141,8 @@ def _patch_email(
         else AsyncMock(return_value=SignerIdentity(email=email, user_id=str(user_id)))
     )
     mock_send = AsyncMock(side_effect=send_email_error) if send_email_error else AsyncMock(return_value=None)
-    monkeypatch.setattr("app.services.cadena_service.get_signer_identity", mock_get)
-    monkeypatch.setattr("app.services.cadena_service.send_otp_email", mock_send)
+    monkeypatch.setattr("signature.services.cadena_service.get_signer_identity", mock_get)
+    monkeypatch.setattr("signature.services.cadena_service.send_otp_email", mock_send)
     return mock_get, mock_send
 
 
@@ -1099,7 +1099,7 @@ async def test_create_challenge_solicitud_no_pendiente_returns_409(
 def test_firmar_request_rejects_non_6_digit_otp() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.cadena import FirmarRequest
+    from signature.schemas.cadena import FirmarRequest
 
     with pytest.raises(ValidationError):
         FirmarRequest(challenge_id=uuid.uuid4(), otp="12a456")
@@ -1110,7 +1110,7 @@ def test_firmar_request_rejects_non_6_digit_otp() -> None:
 def test_lote_request_requires_items_with_challenge_and_otp() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.cadena import LoteRequest
+    from signature.schemas.cadena import LoteRequest
 
     with pytest.raises(ValidationError):
         LoteRequest(items=[])
@@ -1127,7 +1127,7 @@ def test_otp_validator_tracks_configured_otp_longitud(monkeypatch: pytest.Monkey
     would reject every OTP it itself emits (config-trap)."""
     from pydantic import ValidationError
 
-    from app.schemas.cadena import FirmarRequest
+    from signature.schemas.cadena import FirmarRequest
 
     monkeypatch.setattr(settings, "otp_longitud", 8)
     # An 8-digit code is now accepted...

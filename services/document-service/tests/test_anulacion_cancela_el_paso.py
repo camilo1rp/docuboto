@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
-from app.repositories.anulacion_repository import AnulacionRepository
+from document.repositories.anulacion_repository import AnulacionRepository
 
 RID, AID, DECIDE = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
@@ -101,8 +101,8 @@ async def test_la_decision_concurrente_da_409_anulacion_ya_decidida_y_no_500() -
     decisión que no se aplicó)."""
     from fastapi import HTTPException
 
-    from app.schemas.anulacion import AnulacionDecision
-    from app.services.anulacion_service import AnulacionService
+    from document.schemas.anulacion import AnulacionDecision
+    from document.services.anulacion_service import AnulacionService
 
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=AsyncMock())

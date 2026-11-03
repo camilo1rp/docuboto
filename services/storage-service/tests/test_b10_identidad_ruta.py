@@ -20,7 +20,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common import identidad
 
-from app.main import app
+from storage.main import app
 
 SECRETO = "secreto-de-prueba-b10-ruta"
 USER = "11111111-1111-1111-1111-111111111111"

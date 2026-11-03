@@ -31,8 +31,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app.core.config as config_module
-from app.core.minio_client import RetencionNoVerificadaError
+import storage.core.config as config_module
+from storage.core.minio_client import RetencionNoVerificadaError
 from tests.conftest import (
     INTERNAL_HEADERS,
     make_file_record,

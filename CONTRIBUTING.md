@@ -55,7 +55,7 @@ docker compose exec document-service pytest tests/ -v
 
 4. **Code quality gates** (enforced before merge):
    - `ruff check` — no import issues, style violations
-   - `mypy app/` — type checking passes
+   - `mypy <package>/` — type checking passes (`document/`, `app/` in the gateway and MCP)
    - `pytest tests/ -v` — all tests pass
    - No hardcoded secrets (.env files, API keys, credentials)
 

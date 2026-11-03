@@ -34,12 +34,12 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.schemas.fisico import ExpedienteUnidadLink, UnidadCreate
-from app.schemas.transferencia import TransferenciaCreate, TransferenciaRechazo
-from app.services.fisico_service import FisicoService
-from app.services.transferencia_service import TransferenciaService
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.schemas.fisico import ExpedienteUnidadLink, UnidadCreate
+from archive.schemas.transferencia import TransferenciaCreate, TransferenciaRechazo
+from archive.services.fisico_service import FisicoService
+from archive.services.transferencia_service import TransferenciaService
 
 from .conftest import DSN
 from .test_atomicity import _seed_expediente_closed

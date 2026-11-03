@@ -33,21 +33,21 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.clients.signature_client import (
+from archive.clients.signature_client import (
     SignedIndice,
     SignOutcome,
     SignPersonalOutcome,
     VerifyResult,
 )
-from app.clients.storage_client import WormProtectionOutcome, WormRenewalOutcome
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.schemas.archive import TrdSerieCreate
-from app.schemas.transferencia import FirmaInobtenibleRequest, RevocarFirmaInobtenibleRequest
-from app.services.archive_service import ArchiveService
-from app.services.constancia_firma_excepcion import canonicalizar, sha256_c14n, sha256_hex
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.storage_client import WormProtectionOutcome, WormRenewalOutcome
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.schemas.archive import TrdSerieCreate
+from archive.schemas.transferencia import FirmaInobtenibleRequest, RevocarFirmaInobtenibleRequest
+from archive.services.archive_service import ArchiveService
+from archive.services.constancia_firma_excepcion import canonicalizar, sha256_c14n, sha256_hex
+from archive.services.transferencia_service import TransferenciaService
 from tests.test_transferencia_acta_firma_personal import _signed_personal
 
 from .test_atomicity import _seed_transferencia_lista_para_recibir_con_documento
@@ -111,24 +111,24 @@ def _externos(*, worm: bool = False):
         # el declarante del test no es un usuario del catálogo: se le da PERM_FIRMA (el sello se
         # estampa a su nombre); el RBAC real se prueba en las pruebas del router y las de unidad
         patch(
-            "app.services.transferencia_service.check_permission", new=AsyncMock(return_value=True)
+            "archive.services.transferencia_service.check_permission", new=AsyncMock(return_value=True)
         ),
         patch(
-            "app.clients.document_client.fetch_radicado_metadata_internal",
+            "archive.clients.document_client.fetch_radicado_metadata_internal",
             new=AsyncMock(return_value={str(RAD): {"subject": "x", "tracking_number": NUMERO_RAD}}),
         ),
         patch(
-            "app.clients.document_client.fetch_anexos_internal",
+            "archive.clients.document_client.fetch_anexos_internal",
             new=AsyncMock(return_value={str(RAD): [{"file_id": str(ANEXO), "filename": "s.pdf"}]}),
         ),
         patch(
-            "app.clients.storage_client.fetch_file_hashes_internal",
+            "archive.clients.storage_client.fetch_file_hashes_internal",
             new=AsyncMock(return_value={str(ANEXO): SHA_ANEXO}),
         ),
-        patch("app.clients.signature_client.sign_xml_outcome", new=AsyncMock(side_effect=_sello)) as sx,
-        patch("app.clients.storage_client.download_signed_xml", new=AsyncMock(side_effect=_descarga)),
+        patch("archive.clients.signature_client.sign_xml_outcome", new=AsyncMock(side_effect=_sello)) as sx,
+        patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(side_effect=_descarga)),
         patch(
-            "app.clients.signature_client.sign_personal",
+            "archive.clients.signature_client.sign_personal",
             new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
         ) as sp,
     ):
@@ -137,11 +137,11 @@ def _externos(*, worm: bool = False):
         else:
             with (
                 patch(
-                    "app.services.transferencia_service.TransferenciaService.proteger_worm_firma_excepcion",
+                    "archive.services.transferencia_service.TransferenciaService.proteger_worm_firma_excepcion",
                     new=AsyncMock(return_value="protegido"),
                 ) as w,
                 patch(
-                    "app.services.transferencia_service.TransferenciaService.proteger_worm_revocacion",
+                    "archive.services.transferencia_service.TransferenciaService.proteger_worm_revocacion",
                     new=AsyncMock(return_value="protegido"),
                 ),
             ):
@@ -185,7 +185,7 @@ async def _cadena_integra(conn: asyncpg.Connection, slug: str) -> None:
 
 async def _firmar(svc: TransferenciaService, tid: uuid.UUID, actor: Actor, rol: str | None = None):
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ):
         return await svc.firmar_personal(tid, actor, "123456", "Bearer x", rol)
@@ -282,7 +282,7 @@ async def test_si_el_asiento_falla_no_queda_ni_constancia_ni_bookkeeping_worm(
     _c, tid, _e, _r = await _acta_recibida(conn, slug, "itest 07-10 atomico")
 
     with patch(
-        "app.services.transferencia_service.audit.append", new=AsyncMock(side_effect=RuntimeError("boom"))
+        "archive.services.transferencia_service.audit.append", new=AsyncMock(side_effect=RuntimeError("boom"))
     ):
         with pytest.raises(RuntimeError):
             await _declarar(TransferenciaService(conn, slug), tid, Actor(id=uuid.uuid4()))
@@ -357,7 +357,7 @@ async def test_exclusion_mutua_firma_y_excepcion_en_el_motor_en_los_dos_sentidos
 
     # sentido 2: con excepción -> no firma (servicio 409 sin quemar TOTP y motor CHECK)
     await _declarar(svc, tid, admin, _req("elabora", motivo="retiro"))
-    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as sign:
+    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as sign:
         with pytest.raises(HTTPException) as exc:
             await svc.firmar_personal(tid, elabora, "123456", "Bearer x", "elabora")
     assert exc.value.status_code == 409 and exc.value.detail["error"] == "firma_excepcion_declarada"
@@ -540,8 +540,8 @@ def _verificacion(ok: bool = True):
         motivo=None, revocacion_status="vigente", advertencias=["tsa_sin_esscertid_anterior_al_corte"],
     )
     with (
-        patch("app.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<xml/>")),
-        patch("app.clients.signature_client.verify", new=AsyncMock(return_value=res)),
+        patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<xml/>")),
+        patch("archive.clients.signature_client.verify", new=AsyncMock(return_value=res)),
     ):
         yield
 
@@ -675,7 +675,7 @@ async def test_la_proteccion_worm_de_la_constancia_espeja_y_asienta_y_la_barrida
     retain = datetime.now(tz=UTC) + timedelta(days=365 * 7)
     salida = WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=retain)
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=salida),
     ) as st:
         r1 = await svc.proteger_worm_firma_excepcion(eid, "sello", actor_id=None, origen="reconciliation")
@@ -733,7 +733,7 @@ async def test_renovar_la_constancia_extiende_asienta_y_nunca_retrocede_el_espej
     )
     nueva = datetime.now(tz=UTC) + timedelta(days=365 * 5)
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as st:
         llave = await conn.fetchval(
@@ -840,7 +840,7 @@ async def test_renovar_extiende_marca_el_espejo_asienta_y_nunca_retrocede(
 ) -> None:
     from datetime import UTC, datetime, timedelta
 
-    from app.clients.storage_client import WormRenewalOutcome
+    from archive.clients.storage_client import WormRenewalOutcome
 
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
@@ -848,7 +848,7 @@ async def test_renovar_extiende_marca_el_espejo_asienta_y_nunca_retrocede(
     nueva = datetime.now(tz=UTC) + timedelta(days=365 * 5)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as st:
         res = await svc.renovar_worm_firma_personal(fid, tid, created.id, "recibe", intentos_previos=0)
@@ -1061,7 +1061,7 @@ async def test_sin_sello_la_declaracion_y_la_revocacion_dejan_cero_filas_y_cero_
     svc = TransferenciaService(conn, slug)
     caido = SignOutcome(signed=None, transient=True)
     admin, otro = Actor(id=uuid.uuid4()), Actor(id=uuid.uuid4())
-    with _externos(), patch("app.clients.signature_client.sign_xml_outcome", new=AsyncMock(return_value=caido)):
+    with _externos(), patch("archive.clients.signature_client.sign_xml_outcome", new=AsyncMock(return_value=caido)):
         with pytest.raises(HTTPException) as e1:
             await svc.declarar_firma_inobtenible(tid, admin, _req())
     assert e1.value.status_code == 503
@@ -1069,7 +1069,7 @@ async def test_sin_sello_la_declaracion_y_la_revocacion_dejan_cero_filas_y_cero_
     assert await _n_asientos(conn, slug, "archive.acta_firma_inobtenible_declarada") == 0
 
     await _declarar(svc, tid, admin)
-    with _externos(), patch("app.clients.signature_client.sign_xml_outcome", new=AsyncMock(return_value=caido)):
+    with _externos(), patch("archive.clients.signature_client.sign_xml_outcome", new=AsyncMock(return_value=caido)):
         with pytest.raises(HTTPException) as e2:
             await svc.revocar_firma_inobtenible(tid, otro, _rev())
     assert e2.value.status_code == 503
@@ -1100,7 +1100,7 @@ async def test_el_object_lock_de_la_revocacion_se_confirma_y_destraba_la_cadena_
     retain = datetime.now(tz=UTC) + timedelta(days=365 * 7)
     salida = WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=retain)
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=salida)
+        "archive.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=salida)
     ) as st:
         res = await svc.proteger_worm_revocacion(rid, "sello", actor_id=None, origen="reconciliation")
     assert res == "protegido"
@@ -1116,7 +1116,7 @@ async def test_el_object_lock_de_la_revocacion_se_confirma_y_destraba_la_cadena_
         await svc.declarar_firma_inobtenible(tid, Actor(id=uuid.uuid4()), _req())
     assert sin_sobre.value.detail["error"] == "revocacion_sin_proteger"
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=salida)
+        "archive.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=salida)
     ) as st_sobre:
         assert await svc.proteger_worm_revocacion(rid, "sobre", actor_id=None, origen="reconciliation") == "protegido"
     assert st_sobre.await_args.kwargs["tipo"] == "acta_firma_revocacion_sobre_recibe"
@@ -1308,7 +1308,7 @@ async def test_reintentar_el_worm_repone_de_agotado_con_asiento_y_dice_el_estado
 
     # el almacén sigue sin responder (p. ej. preservación apagada): vuelve a PENDIENTE, no agotado
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm",
+        "archive.clients.storage_client.proteger_artefacto_worm",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=False, disabled=True)),
     ):
         primero = await svc.reintentar_worm_firma_excepcion(tid, eid, admin, acto="excepcion")
@@ -1324,7 +1324,7 @@ async def test_reintentar_el_worm_repone_de_agotado_con_asiento_y_dice_el_estado
     salida = WormProtectionOutcome(
         ok=True, worm_object_id=uuid.uuid4(), retain_until=datetime.now(tz=UTC) + timedelta(days=365 * 7)
     )
-    with patch("app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=salida)):
+    with patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=salida)):
         segundo = await svc.reintentar_worm_firma_excepcion(tid, eid, admin, acto="excepcion")
     assert segundo.repuestos == 0 and segundo.artefactos == {"sello": "protegido", "sobre": "protegido"}
     assert await _n_asientos(conn, slug, "archive.acta_firma_excepcion_worm_reintento_manual") == 2
@@ -1351,7 +1351,7 @@ async def test_proteger_la_revocacion_alinea_la_retencion_de_la_constancia_anter
     corta = datetime.now(tz=UTC) + timedelta(days=365 * 7)
     larga = corta + timedelta(days=200)
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=corta)),
     ):
         assert await svc.proteger_worm_firma_excepcion(c1, "sello", actor_id=None, origen="reconciliation") == "protegido"
@@ -1362,11 +1362,11 @@ async def test_proteger_la_revocacion_alinea_la_retencion_de_la_constancia_anter
 
     with (
         patch(
-            "app.clients.storage_client.proteger_artefacto_worm_internal",
+            "archive.clients.storage_client.proteger_artefacto_worm_internal",
             new=AsyncMock(return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=larga)),
         ),
         patch(
-            "app.clients.storage_client.renovar_retencion_worm_internal",
+            "archive.clients.storage_client.renovar_retencion_worm_internal",
             new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=larga, renovado=True)),
         ) as renovar,
     ):
@@ -1392,7 +1392,7 @@ async def test_proteger_la_revocacion_alinea_la_retencion_de_la_constancia_anter
 async def test_el_sobre_se_sella_se_guarda_aparte_y_solo_se_lee_mediado_con_asiento(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    from app.services.constancia_firma_excepcion import leer_sobre
+    from archive.services.constancia_firma_excepcion import leer_sobre
 
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
@@ -1489,7 +1489,7 @@ async def test_el_barrido_recoge_solo_los_sobres_sin_referencia_y_vencida_la_gra
             f'INSERT INTO "{schema}".files VALUES ($1, $2, now() - $3::interval)', fid, fname, edad
         )
     with patch(
-        "app.clients.storage_client.purgar_huerfanos_internal",
+        "archive.clients.storage_client.purgar_huerfanos_internal",
         new=AsyncMock(return_value=[{"file_id": str(huerfano), "resultado": "purgado"}]),
     ) as purga:
         res = await svc.purgar_sobres_huerfanos()

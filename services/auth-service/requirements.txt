@@ -6,7 +6,7 @@ PyJWT[crypto]>=2.10.0
 asyncpg>=0.29.0
 redis>=5.0.0
 # TOTP (RFC 6238, E06 Inc.4): AESGCM para cifrar en reposo el secreto TOTP
-# (app/core/totp.py). Ya llegaba transitivo vía PyJWT[crypto]; se declara
+# (auth/core/totp.py). Ya llegaba transitivo vía PyJWT[crypto]; se declara
 # explícito porque este servicio lo importa directamente.
 cryptography>=42.0.0
 pytest>=8.0.0

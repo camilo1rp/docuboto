@@ -26,8 +26,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.anulacion_repository import AnulacionRepository
+from document.core.database import tenant_schema
+from document.repositories.anulacion_repository import AnulacionRepository
 from migrations import runner
 
 pytestmark = pytest.mark.asyncio

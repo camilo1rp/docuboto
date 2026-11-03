@@ -25,14 +25,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.kek import decode_aes256, seal
 
-from app.clients import documento
-from app.clients.documento import DocumentoError
-from app.core import database
-from app.core.clave_retorno import aad
-from app.core.config import settings
-from app.core.firma_retorno import comprobar
-from app.main import app
-from app.routers import retorno as ruta
+from knowledge.clients import documento
+from knowledge.clients.documento import DocumentoError
+from knowledge.core import database
+from knowledge.core.clave_retorno import aad
+from knowledge.core.config import settings
+from knowledge.core.firma_retorno import comprobar
+from knowledge.main import app
+from knowledge.routers import retorno as ruta
 
 KEK = b"\x44" * 32
 SECRETO = b"\x11" * 32

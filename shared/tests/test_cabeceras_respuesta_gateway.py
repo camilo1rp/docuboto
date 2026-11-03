@@ -33,6 +33,8 @@ el único carril de CI que ve el repositorio entero.
 
 from __future__ import annotations
 
+from tests._compose import paquete_de
+
 import ast
 import re
 from pathlib import Path
@@ -88,9 +90,10 @@ def _archivos_de_servicios() -> list[Path]:
     """Todo `app/**/*.py` de cada servicio, menos el propio gateway."""
     encontrados: list[Path] = []
     for svc in sorted(_SERVICIOS.iterdir()):
-        if not (svc / "app").is_dir() or svc.name == "api-gateway":
+        pkg = paquete_de(svc)
+        if pkg is None or svc.name == "api-gateway":
             continue
-        encontrados.extend(sorted((svc / "app").rglob("*.py")))
+        encontrados.extend(sorted(pkg.rglob("*.py")))
     return encontrados
 
 

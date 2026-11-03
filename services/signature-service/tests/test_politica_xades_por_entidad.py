@@ -27,9 +27,9 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from app.core import params_entidad
-from app.core.config import settings
-from app.core.http_clients import SigningKeyStatusUnavailableError
+from signature.core import params_entidad
+from signature.core.config import settings
+from signature.core.http_clients import SigningKeyStatusUnavailableError
 from tests.conftest import USER as USER_ID
 from tests.test_cadena import _exec_sig, _make_conn, _sol_row, _turno_row
 from tests.test_cadena_2fa import _patch_audit

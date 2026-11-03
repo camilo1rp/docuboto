@@ -29,9 +29,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
-from app.repositories.file_repository import FileRepository
-from app.services.storage_service import StorageService
+from storage.core.database import tenant_schema
+from storage.repositories.file_repository import FileRepository
+from storage.services.storage_service import StorageService
 from tests.integration.conftest import DDL_VISTA_CITAS_STUB, _require_dsn
 
 pytestmark = pytest.mark.integration
@@ -95,7 +95,7 @@ def _minio(*, falla: bool = False) -> MagicMock:
 
 async def _purgar(conn, slug, fid, minio, *, desde=None):
     desde = desde or (datetime.now(tz=UTC) - timedelta(minutes=5))
-    with patch("app.services.storage_service.get_minio", return_value=minio):
+    with patch("storage.services.storage_service.get_minio", return_value=minio):
         return await StorageService(conn, slug).purge_orphan(
             fid, referencia="imp-1", motivo="importación revertida", actor=None, subido_desde=desde
         )
@@ -208,7 +208,7 @@ async def test_si_falla_el_asiento_se_revierte_el_borrado_de_la_fila(ctx) -> Non
     borrado, se vuelve a borrar sin daño en el reintento)."""
     slug, conn = ctx
     fid = await _archivo(conn, slug)
-    with patch("app.services.storage_service.audit.append", AsyncMock(side_effect=RuntimeError("boom"))):
+    with patch("storage.services.storage_service.audit.append", AsyncMock(side_effect=RuntimeError("boom"))):
         with pytest.raises(RuntimeError):
             await _purgar(conn, slug, fid, _minio())
     assert await _existe(conn, fid)
@@ -218,7 +218,7 @@ async def test_si_falla_el_asiento_se_revierte_el_borrado_de_la_fila(ctx) -> Non
 async def test_la_lista_de_referencias_cubre_cada_columna_declarada(ctx) -> None:
     """Guardián: toda tabla/columna de `REFERENCIAS_DE_ARCHIVO` que EXISTE en el tenant
     protege de verdad (una entrada mal escrita sería una referencia que nunca se ve)."""
-    from app.repositories.file_repository import REFERENCIAS_DE_ARCHIVO
+    from storage.repositories.file_repository import REFERENCIAS_DE_ARCHIVO
 
     slug, conn = ctx
     repo = FileRepository(conn, slug)
@@ -261,7 +261,7 @@ async def test_un_objeto_reutilizado_por_dedup_no_se_purga(ctx) -> None:
     autor = uuid.uuid4()
     fid = await _archivo(conn, slug, sha256=hashlib.sha256(contenido).hexdigest(), uploaded_by=autor)
     minio = _minio_completo()
-    with patch("app.services.storage_service.get_minio", return_value=minio):
+    with patch("storage.services.storage_service.get_minio", return_value=minio):
         resp, created, _ = await StorageService(conn, slug).upload(
             "otro.pdf", "application/pdf", contenido, autor
         )
@@ -302,7 +302,7 @@ async def test_carrera_purga_vs_dedup_con_dos_conexiones(ctx) -> None:
     minio = _minio_completo()
     try:
         with (
-            patch("app.services.storage_service.get_minio", return_value=minio),
+            patch("storage.services.storage_service.get_minio", return_value=minio),
             patch.object(FileRepository, "referencias", referencias_detenida),
         ):
             purga = asyncio.create_task(
@@ -362,7 +362,7 @@ async def test_area_08_09_otro_autor_no_reutiliza_el_objeto_ni_ve_el_nombre_orig
     fid = await _archivo(conn, slug, sha256=hashlib.sha256(contenido).hexdigest(), uploaded_by=dueno)
     await conn.execute("UPDATE files SET filename = 'ASUNTO-RESERVADO.pdf' WHERE id = $1", fid)
     minio = _minio_completo()
-    with patch("app.services.storage_service.get_minio", return_value=minio):
+    with patch("storage.services.storage_service.get_minio", return_value=minio):
         resp, created, _ = await StorageService(conn, slug).upload(
             "mio.pdf", "application/pdf", contenido, otro
         )
@@ -388,7 +388,7 @@ async def test_el_carril_crea_toda_tabla_ajena_que_la_purga_consulta(ctx) -> Non
     `postal_shipment.acuse_file_id`) y no la crea `_DDL_AJENAS`, `referencias()` falla
     cerrado y TODA la suite de purga cae con «referenciado» sin decir por qué (6 rojos
     reales). Aquí cae UNA prueba y con el nombre de la tabla."""
-    from app.repositories.file_repository import REFERENCIAS_DE_ARCHIVO
+    from storage.repositories.file_repository import REFERENCIAS_DE_ARCHIVO
 
     _, conn = ctx
     faltan = [t for t, _ in REFERENCIAS_DE_ARCHIVO if await conn.fetchval("SELECT to_regclass($1)", t) is None]

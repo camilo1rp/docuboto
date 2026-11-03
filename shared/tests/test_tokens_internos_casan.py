@@ -157,7 +157,7 @@ import ast
 
 RAIZ_REPO = Path(__file__).resolve().parents[2]
 CLIENTES_SIGNATURE = (
-    RAIZ_REPO / "services" / "signature-service" / "app" / "core" / "http_clients.py"
+    RAIZ_REPO / "services" / "signature-service" / "signature" / "core" / "http_clients.py"
 )
 #: La consulta que hace que el circuito de aprobacion ATE (E23, RF-PRO-09) va
 #: en la direccion contraria —document PREGUNTA a signature— y con el token de
@@ -165,7 +165,7 @@ CLIENTES_SIGNATURE = (
 #: mismo censo: la lista de ficheros del guardian se escribe por ADMISION, o el
 #: dia que alguien anade un cliente nuevo el olvido es silencioso.
 CLIENTE_DOCUMENT_A_SIGNATURE = (
-    RAIZ_REPO / "services" / "document-service" / "app" / "clients" / "signature_client.py"
+    RAIZ_REPO / "services" / "document-service" / "document" / "clients" / "signature_client.py"
 )
 FICHEROS_CLIENTE = (CLIENTES_SIGNATURE, CLIENTE_DOCUMENT_A_SIGNATURE)
 

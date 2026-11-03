@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from miniopy_async import S3Error  # type: ignore[attr-defined]
 
-import app.core.config as config_module
-from app.core.constants import SYSTEM_RECONCILER_ID
+import storage.core.config as config_module
+from storage.core.constants import SYSTEM_RECONCILER_ID
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_HEADERS,
@@ -650,7 +650,7 @@ async def test_proteger_indice_internal_second_call_is_idempotent(client_with_co
 
 
 def test_worm_lock_key_is_deterministic_and_in_range() -> None:
-    from app.services.preservation_worm_service import _worm_lock_key
+    from storage.services.preservation_worm_service import _worm_lock_key
 
     k1 = _worm_lock_key("icetex", "EXP-1")
     k2 = _worm_lock_key("icetex", "EXP-1")

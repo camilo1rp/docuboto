@@ -29,14 +29,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-import app.core.config as config_module
-import app.services.aip_service as aip_service_module
-import app.services.preservation_worm_service as worm_service_module
-from app.repositories.preservacion_repository import PreservacionRepository
-from app.repositories.preservacion_worm_repository import PreservacionWormRepository
-from app.schemas.preservacion import AipCreate, AipReempaquetarRequest, RenovarRetencionRequest
-from app.services.aip_service import AipService
-from app.services.preservation_worm_service import PreservationWormService
+import storage.core.config as config_module
+import storage.services.aip_service as aip_service_module
+import storage.services.preservation_worm_service as worm_service_module
+from storage.repositories.preservacion_repository import PreservacionRepository
+from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
+from storage.schemas.preservacion import AipCreate, AipReempaquetarRequest, RenovarRetencionRequest
+from storage.services.aip_service import AipService
+from storage.services.preservation_worm_service import PreservationWormService
 
 pytestmark = pytest.mark.integration
 

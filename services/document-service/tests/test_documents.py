@@ -46,8 +46,8 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from document.core.database import get_tenant_conn
+from document.main import app
 from tests.conftest import (
     TENANT_HEADERS,
     make_anexo_record,
@@ -1139,7 +1139,7 @@ async def test_el_recorte_publico_exige_el_acto_de_publicacion(
     chokepoint, que es el único sitio donde el recorte se decide: si alguien lo
     relaja, aquí se ve.
     """
-    from app.repositories.oai_repository import _PUBLIC
+    from document.repositories.oai_repository import _PUBLIC
 
     assert "publicable" in _PUBLIC, "el recorte público no exige el acto de publicación"
     # Las tres condiciones se exigen a la vez: la publicación no puede sacar a
@@ -1368,7 +1368,7 @@ async def test_el_contenido_servido_por_cmis_exige_el_acto_de_publicacion() -> N
     reproduce exactamente el defecto que persigue — aquí el `WHERE` llevaba una
     copia obsoleta mientras el docstring afirmaba anclar en el chokepoint.
     """
-    from app.repositories.oai_repository import OaiRepository
+    from document.repositories.oai_repository import OaiRepository
 
     conn = AsyncMock()
     conn.fetchrow.return_value = None

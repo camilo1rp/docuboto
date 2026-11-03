@@ -268,7 +268,7 @@ TOTP es factor de **posesión de dispositivo** (más fuerte que el OTP-correo), 
 - **Pertenencia antes que estado (AREA-04-09).** `firmar`, `rechazar`, `vobo` y `challenge` comprueban `no_es_firmante` antes de `solicitud_no_pendiente`: un ajeno recibe el mismo 403 sea cual sea el estado y no sondea si la cadena está abierta, firmada o rechazada.
 - **Lectura de la cadena: alcance aceptado.** `GET /signature/requests/{id}` y `GET /signature/requests?objeto_tipo&objeto_id` muestran estado y turnos a cualquiera con `PERM_FIRMA` cuyo clearance alcance el objeto, sea o no firmante. Es una decisión de producto (un jefe de área o un auditor sigue el trámite; no hay contenido, solo estado), declarada y no cambiada; restringirla a los participantes sería otra decisión.
 - **`TSA_ESSCERTID_OBLIGATORIO`** sigue sin leerse: si aparece en el entorno al arrancar, signature-service registra un error que nombra a `TSA_ESSCERTID_CORTE`.
-- **HSM/KMS: no se implementa** (pendiente de proveedor). El enganche existe en `auth-service/app/core/signing_keys.py::sign_digest`.
+- **HSM/KMS: no se implementa** (pendiente de proveedor). El enganche existe en `auth-service/auth/core/signing_keys.py::sign_digest`.
 
 ## Enmienda ADR-034 (2026-10-11) — «verificable» no era verificable por terceros
 

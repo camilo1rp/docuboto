@@ -45,14 +45,14 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from app.clients.storage_client import WormProtectionOutcome
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.schemas.archive import ExpedienteCreate, TrdSerieCreate
-from app.schemas.transferencia import TransferenciaCreate
-from app.services.archive_service import ArchiveService
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.storage_client import WormProtectionOutcome
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate
+from archive.schemas.transferencia import TransferenciaCreate
+from archive.services.archive_service import ArchiveService
+from archive.services.transferencia_service import TransferenciaService
 
 from .conftest import DSN, convalidate_for_test
 
@@ -145,7 +145,7 @@ async def test_proteger_worm_acta_commits_mark_and_audit_together(
     outcome = _ok_outcome()
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=outcome),
     ):
         resultado = await TransferenciaService(conn, slug).proteger_worm_acta(
@@ -205,7 +205,7 @@ async def test_proteger_worm_acta_failure_after_audit_append_reverts_mark(
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultado = await TransferenciaService(conn, slug).proteger_worm_acta(
@@ -257,7 +257,7 @@ async def test_proteger_worm_acta_second_call_is_idempotent(
     service = TransferenciaService(conn, slug)
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=_ok_outcome()),
     ) as mock_client:
         primero = await service.proteger_worm_acta(
@@ -310,7 +310,7 @@ async def test_concurrent_proteger_worm_acta_does_not_double_mark(
     # corrutina sale en orden no-LIFO y restaura el mock de la otra, dejándolo fugado
     # (rompía `test_clientes_llevan_token_interno` más adelante en la misma sesión).
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultados = await asyncio.gather(_attempt(), _attempt())
@@ -468,7 +468,7 @@ async def test_migration_030_is_idempotent_on_real_postgres(
     transferencia_id, row = await _seed_acta_firmada(conn, slug, "itest migracion 030 idempotente")
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultado = await TransferenciaService(conn, slug).proteger_worm_acta(

@@ -34,6 +34,8 @@ demuestra nada).
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 import importlib.util
 import re
@@ -105,7 +107,7 @@ def _rutas_de(texto: str) -> list[Ruta]:
 
 def _todas_las_rutas() -> list[Ruta]:
     rutas: list[Ruta] = []
-    for f in sorted((RAIZ / "services").glob("*/app/routers/*.py")):
+    for f in sorted(glob_src(RAIZ / "services", "*/app/routers/*.py")):
         if f.name not in _ARCHIVOS_EXENTOS:
             rutas.extend(_rutas_de(f.read_text(encoding="utf-8")))
     return rutas

@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from app.core import ocsp as ocsp_module
+from signature.core import ocsp as ocsp_module
 
 # ---------------------------------------------------------------------------
 # Helpers — certificados/CRL efímeros (nunca tocan el filesystem)

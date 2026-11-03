@@ -35,9 +35,9 @@ import pytest
 import pytest_asyncio
 from orpycamcp_common import audit
 
-from app.core.database import tenant_schema
-from app.schemas.archive import ExpedienteCreate, RadicadoLink
-from app.services.archive_service import ArchiveService
+from archive.core.database import tenant_schema
+from archive.schemas.archive import ExpedienteCreate, RadicadoLink
+from archive.services.archive_service import ArchiveService
 from tests.conftest import registrar_radicado
 
 from .conftest import DSN, huella_en_almacen

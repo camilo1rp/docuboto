@@ -22,7 +22,7 @@ import uuid
 
 import pytest
 
-from app.core.config import settings
+from archive.core.config import settings
 from tests.conftest import TENANT_SLUG
 
 TOKEN = "test-archive-internal-token-xxx"

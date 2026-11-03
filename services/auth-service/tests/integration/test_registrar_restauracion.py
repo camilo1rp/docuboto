@@ -34,7 +34,7 @@ import pytest
 import pytest_asyncio
 from orpycamcp_common import audit
 
-from app.ops import registrar_restauracion as job
+from auth.ops import registrar_restauracion as job
 
 pytestmark = pytest.mark.asyncio
 

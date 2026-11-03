@@ -22,8 +22,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.routers import webhooks as router
-from app.schemas.webhook import WebhookCreate
+from notification.routers import webhooks as router
+from notification.schemas.webhook import WebhookCreate
 
 pytestmark = [
     pytest.mark.integration,

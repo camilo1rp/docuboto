@@ -49,7 +49,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
+from workflow.core.database import tenant_schema
 from migrations import runner
 
 # Mismo cálculo que `migrations/runner.py:33` — DSN "pelado" (driver psycopg-style)

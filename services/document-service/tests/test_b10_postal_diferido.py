@@ -30,8 +30,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from orpycamcp_common.tenant import AtencionPublica
 
-from app.core.config import settings
-from app.services import postal_service
+from document.core.config import settings
+from document.services import postal_service
 from tests.test_postal_callback import (  # noqa: F401  (fixture reutilizada)
     _body,
     _cred,
@@ -45,7 +45,7 @@ _SUSPENDIDA = AtencionPublica.SOLO_LECTURA
 
 
 def _suspendida():
-    return patch("app.core.database.atencion_publica", new=AsyncMock(return_value=_SUSPENDIDA))
+    return patch("document.core.database.atencion_publica", new=AsyncMock(return_value=_SUSPENDIDA))
 
 
 @pytest.mark.asyncio

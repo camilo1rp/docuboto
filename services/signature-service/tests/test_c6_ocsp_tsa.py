@@ -32,8 +32,8 @@ import pytest
 from cryptography.hazmat.primitives import hashes
 from lxml import etree
 
-from app.core import algoritmos, ocsp, tsa
-from app.providers.local import renovar_archive_timestamp
+from signature.core import algoritmos, ocsp, tsa
+from signature.providers.local import renovar_archive_timestamp
 from tests import c6_pki as pki
 from tests.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)
     _NS_LTA,

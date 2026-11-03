@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.repositories.preservacion_worm_repository import PreservacionWormRepository
+from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
 
 
 def _repo() -> tuple[PreservacionWormRepository, AsyncMock]:

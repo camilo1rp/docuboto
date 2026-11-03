@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509 import ocsp as c_ocsp
 from cryptography.x509.oid import AuthorityInformationAccessOID, ExtendedKeyUsageOID, NameOID
 
-from app.providers.base import SignerRef
+from signature.providers.base import SignerRef
 
 URL_OCSP = "http://ocsp.c6.test/tsa"
 URL_CRL = "http://crl.c6.test/tsa.crl"
@@ -113,14 +113,14 @@ def tsa_emitida(  # noqa: ANN201
 def instalar_tsa(monkeypatch, key, cert) -> None:  # noqa: ANN001
     """La TSA con que se sellará de ahora en adelante."""
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=pem_cert(cert), key_pem=pem_key(key), key_password=None),
     )
 
 
 def declarar_ca(monkeypatch, tmp_path, *cas) -> None:  # noqa: ANN001, ANN002
     """Las CA de la TSA por configuración (el token de la TSA de pruebas no las trae)."""
-    from app.core import tsa
+    from signature.core import tsa
 
     f = tmp_path / "tsa-ca.pem"
     f.write_bytes(b"".join(pem_cert(c[1]) for c in cas))
@@ -276,7 +276,7 @@ def servir(  # noqa: ANN201
 ):
     """Sustituye ``httpx.Client`` de ``app.core.tsa``: ``get`` sirve ``crl``; ``post`` llama a ``ocsp``
     con la petición DER (o devuelve los bytes/lanza la excepción)."""
-    from app.core import tsa
+    from signature.core import tsa
 
     pedidas = Pedidas()
 

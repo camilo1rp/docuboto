@@ -27,16 +27,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.schemas.document import DocumentResponse
-from app.schemas.public import PublicVerifyResponse
-from app.services.export_service import ExportService
+from document.schemas.document import DocumentResponse
+from document.schemas.public import PublicVerifyResponse
+from document.services.export_service import ExportService
 from tests.conftest import TENANT_HEADERS, make_radicado_record
 from tests.test_export import _row
 from tests.test_search import _hit_row
 
 # Lo que NO puede aparecer en nada que salga sin autenticar.
 _CAMPOS_DE_UBICACION = ("ubicacion", "flujo_dept", "flujo_usuario")
-_APP = Path(__file__).resolve().parents[1] / "app"
+_APP = Path(__file__).resolve().parents[1] / "document"
 
 
 # --- el filtro -----------------------------------------------------------------------
@@ -176,7 +176,7 @@ async def test_el_export_lleva_la_ubicacion_y_nunca_el_poseedor() -> None:
     repo.list_anexos.return_value = []
     repo.history.return_value = []
     svc._repo = repo
-    with patch("app.services.export_service.audit.append", new=AsyncMock(return_value="h")):
+    with patch("document.services.export_service.audit.append", new=AsyncMock(return_value="h")):
         zbytes, *_ = await svc.build_export(max_clearance=1, comentario=None, year=None, doc_type=None)
 
     zf = zipfile.ZipFile(io.BytesIO(zbytes))

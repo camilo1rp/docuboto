@@ -41,15 +41,15 @@ import redis.asyncio as aioredis
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from app.core import altcha
-from app.core.config import settings
-from app.core.database import (
+from document.core import altcha
+from document.core.config import settings
+from document.core.database import (
     get_public_tenant_conn_escritura,
     get_redis,
     get_tenant_client,
     tenant_schema,
 )
-from app.main import app
+from document.main import app
 from tests.integration.conftest import _require_dsn
 from tests.integration.politica_stub import ENTIDAD
 from tests.integration.test_ficha_provisional_integration import (

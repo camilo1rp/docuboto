@@ -27,7 +27,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 MIGRACIONES = RAIZ / "services" / "archive-service" / "migrations" / "tenant"
-REPO = RAIZ / "services" / "archive-service" / "app" / "repositories" / "metricas_repository.py"
+REPO = RAIZ / "services" / "archive-service" / "archive" / "repositories" / "metricas_repository.py"
 
 _FASES = {"worm_reconcile_agotado": "reconcile", "worm_renovacion_agotado": "renewal"}
 

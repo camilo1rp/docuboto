@@ -34,11 +34,11 @@ import pytest_asyncio
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_conn, tenant_schema
-from app.main import app
-from app.schemas.workflow import FlowStepComplete, FlowStepCreate, TransactionRequest
-from app.services.estado_radicado import derivar_estado_radicado
-from app.services.workflow_service import (
+from workflow.core.database import get_db_conn, tenant_schema
+from workflow.main import app
+from workflow.schemas.workflow import FlowStepComplete, FlowStepCreate, TransactionRequest
+from workflow.services.estado_radicado import derivar_estado_radicado
+from workflow.services.workflow_service import (
     RollbackError,
     TransactionError,
     WorkflowService,
@@ -65,7 +65,7 @@ def _sin_permisos_ni_redis() -> Any:
     redis.xadd = AsyncMock(return_value="1-0")
     with (
         patch.object(WorkflowService, "_require_permission", new=AsyncMock(return_value=None)),
-        patch("app.services.workflow_service.get_redis", return_value=redis),
+        patch("workflow.services.workflow_service.get_redis", return_value=redis),
     ):
         yield redis
 
@@ -202,7 +202,7 @@ async def test_fallo_forzado_de_audit_no_deja_ni_paso_ni_estado(
 
     with (
         patch(
-            "app.services.workflow_service.audit.append",
+            "workflow.services.workflow_service.audit.append",
             new=AsyncMock(side_effect=RuntimeError("audit caído")),
         ),
         pytest.raises(RuntimeError, match="audit caído"),
@@ -614,12 +614,12 @@ async def http(ctx: Any) -> AsyncGenerator[tuple[AsyncClient, asyncpg.Connection
     app.dependency_overrides[get_db_conn] = _db
     try:
         with (
-            patch("app.core.clearance.check_permission", new=AsyncMock(return_value=True)),
-            patch("app.services.workflow_service.check_permission", new=AsyncMock(return_value=True)),
+            patch("workflow.core.clearance.check_permission", new=AsyncMock(return_value=True)),
+            patch("workflow.services.workflow_service.check_permission", new=AsyncMock(return_value=True)),
             # El clearance real vive en tablas de auth-service que este tier no
             # provisiona; aquí se concede el máximo (no es el SUT).
             patch(
-                "app.repositories.workflow_repository.resolve_caller_clearance",
+                "workflow.repositories.workflow_repository.resolve_caller_clearance",
                 new=AsyncMock(return_value=5),
             ),
         ):
@@ -922,7 +922,7 @@ async def test_estado_cambiado_no_se_emite_si_la_transaccion_revierte(
     antes = await _conteos(conn, slug)
 
     with (
-        patch("app.services.workflow_service.audit.append", new=AsyncMock(side_effect=RuntimeError("audit"))),
+        patch("workflow.services.workflow_service.audit.append", new=AsyncMock(side_effect=RuntimeError("audit"))),
         pytest.raises(RuntimeError),
     ):
         await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
@@ -941,7 +941,7 @@ async def test_cambio_de_un_acto_revertido_no_se_emite_en_el_siguiente_acto_de_l
     svc, conn, _ = ctx
     rid, actor = await _radicado(conn), await _user(conn)
     with (
-        patch("app.services.workflow_service.audit.append", new=AsyncMock(side_effect=RuntimeError("audit"))),
+        patch("workflow.services.workflow_service.audit.append", new=AsyncMock(side_effect=RuntimeError("audit"))),
         pytest.raises(RuntimeError),
     ):
         await svc.assign(_assign(rid, DEP_JUR[1], None), actor)
@@ -1348,7 +1348,7 @@ async def test_la_cascada_no_toma_un_cerrojo_advisory_por_radicado(ctx: Any) -> 
         )
         return await real(c, **kw)
 
-    with patch("app.services.workflow_service.audit.append", new=_espia):
+    with patch("workflow.services.workflow_service.audit.append", new=_espia):
         res = await svc.reassign_cascade(
             from_assigned_to=u1, from_dept=None, to_assigned_to=u2, actor=u1
         )

@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.services.tercero_service import TerceroService
+from document.services.tercero_service import TerceroService
 from tests.conftest import _make_mock_conn
 
 

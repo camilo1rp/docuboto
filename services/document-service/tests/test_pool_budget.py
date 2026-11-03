@@ -29,8 +29,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.core import database
-from app.core.config import settings
+from document.core import database
+from document.core.config import settings
 
 pytestmark = pytest.mark.asyncio
 

@@ -31,9 +31,9 @@ import pytest_asyncio
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
-from app.routers import pinar
+from tenant.core.database import get_tenant_conn
+from tenant.main import app
+from tenant.routers import pinar
 
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}
 
@@ -65,7 +65,7 @@ async def client_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
     app.dependency_overrides[get_tenant_conn] = override
     # `check_permission` deja asiento de la DENEGACIÓN en la cadena inmutable;
     # aquí se prueba el gate, no el hash (eso vive en orpycamcp_common).
-    with patch("app.core.authz.audit.append", new=AsyncMock(return_value="h")):
+    with patch("tenant.core.authz.audit.append", new=AsyncMock(return_value="h")):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, conn
     app.dependency_overrides.clear()

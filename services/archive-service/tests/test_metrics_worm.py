@@ -28,9 +28,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.metricas import ARTEFACTOS_WORM, FASES_WORM
 
-from app.main import app
-from app.repositories import metricas_repository as repo
-from app.routers import metrics as m
+from archive.main import app
+from archive.repositories import metricas_repository as repo
+from archive.routers import metrics as m
 
 
 class _Conn:

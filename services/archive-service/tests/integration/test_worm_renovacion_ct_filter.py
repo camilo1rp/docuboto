@@ -38,19 +38,19 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from app.clients.storage_client import WormRenewalOutcome
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.core.disposition import CT_DISPOSITION_CODES
-from app.repositories.aip_repository import AipRepository
-from app.repositories.index_repository import IndexRepository
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.schemas.archive import ExpedienteCreate, TrdSerieCreate
-from app.schemas.transferencia import TransferenciaCreate
-from app.services.aip_wiring_service import AipWiringService
-from app.services.archive_service import ArchiveService
-from app.services.index_service import IndexService
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.storage_client import WormRenewalOutcome
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.core.disposition import CT_DISPOSITION_CODES
+from archive.repositories.aip_repository import AipRepository
+from archive.repositories.index_repository import IndexRepository
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate
+from archive.schemas.transferencia import TransferenciaCreate
+from archive.services.aip_wiring_service import AipWiringService
+from archive.services.archive_service import ArchiveService
+from archive.services.index_service import IndexService
+from archive.services.transferencia_service import TransferenciaService
 
 from .conftest import convalidate_for_test
 
@@ -315,7 +315,7 @@ async def test_list_worm_renovacion_pending_indice_is_fail_closed_for_non_ct(
     pending_expediente_ids = {r["expediente_id"] for r in pending}
 
     # Ambos alias de Conservación Total (AGN "CT" y el alias legado
-    # "conserve", ver `app/core/disposition.py`) entran; la disposición "E"
+    # "conserve", ver `archive/core/disposition.py`) entran; la disposición "E"
     # (Eliminación) NUNCA, aunque su worm_retain_until esté igual de próximo.
     assert ct_id in pending_expediente_ids
     assert conserve_id in pending_expediente_ids
@@ -499,7 +499,7 @@ async def test_renovar_worm_indice_commits_mirror_and_audit_together(
     nueva = datetime.now(tz=UTC) + timedelta(days=9125)  # 25 años
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)
         ),
@@ -538,7 +538,7 @@ async def test_renovar_worm_acta_commits_mirror_and_audit_together(
     nueva = datetime.now(tz=UTC) + timedelta(days=9125)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)
         ),
@@ -581,7 +581,7 @@ async def test_renovar_worm_aip_commits_mirror_and_audit_together(
     nueva = datetime.now(tz=UTC) + timedelta(days=9125)  # 25 años
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)
         ),

@@ -14,7 +14,7 @@ que ``tests/test_cadena_totp.py`` — reutiliza sus helpers y los de
 ``tests/test_cadena.py``/``tests/test_cadena_2fa.py``.
 
 ``get_signing_key_status_remote``/``sign_digest_remote`` (llamadas HTTP
-directas a auth-service, ``app/core/http_clients.py``) se monkeypatchean en
+directas a auth-service, ``signature/core/http_clients.py``) se monkeypatchean en
 vez de tocar httpx real — mismo patrón que ``verify_totp`` en
 ``test_cadena_totp.py``. La firma remota se ejercita con criptografía REAL
 (un certificado de test emitido por una CA en memoria y una clave RSA real
@@ -38,10 +38,10 @@ from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.core.http_clients import SignDigestRemoteError
-from app.main import app
-from app.providers.base import SignerRef
+from signature.core.database import get_tenant_conn
+from signature.core.http_clients import SignDigestRemoteError
+from signature.main import app
+from signature.providers.base import SignerRef
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import FIRMA_ID, SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row
 from tests.test_cadena_2fa import _patch_audit
@@ -154,7 +154,7 @@ def _patch_signing_key_status(
     monkeypatch: pytest.MonkeyPatch, *, body: dict | None = None, error: Exception | None = None
 ) -> AsyncMock:
     mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=body)
-    monkeypatch.setattr("app.services.cadena_service.get_signing_key_status_remote", mock)
+    monkeypatch.setattr("signature.services.cadena_service.get_signing_key_status_remote", mock)
     return mock
 
 
@@ -197,7 +197,7 @@ def _patch_sign_digest_remote(
     # `app.services.personal_signing.sign_personal_xml` (extract-method
     # E17/F4 Incremento 1, reutilizado por `CadenaFirmaService._firmar_personal`
     # — ver su docstring) — NO desde `cadena_service` directamente.
-    monkeypatch.setattr("app.services.personal_signing.sign_digest_remote", mock)
+    monkeypatch.setattr("signature.services.personal_signing.sign_digest_remote", mock)
     return mock
 
 
@@ -230,7 +230,7 @@ async def test_sign_with_active_personal_cert_produces_xades_personal(
     # Sin TSA montada en el entorno de test — XAdES-B basta para probar la
     # rama xades_personal (el sellado de tiempo real ya se cubre en
     # test_sign_xml_xades.py, reutiliza el MISMO LocalSigner sin cambios).
-    from app.core.config import settings as signature_settings
+    from signature.core.config import settings as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
 
@@ -243,7 +243,7 @@ async def test_sign_with_active_personal_cert_produces_xades_personal(
 
     # Cola manual (no Mock.side_effect list) porque el INSERT de `firma`
     # necesita inspeccionarse por POSICIÓN de parámetro ($8=provider,
-    # $10=certificado_pem, $13=xades_level — ver app/repositories/
+    # $10=certificado_pem, $13=xades_level — ver signature/repositories/
     # firma_repository.py::FirmaRepository.insert) en vez de devolver un
     # valor fijo de la cola.
     queue = [sol, {}, turno, turno]
@@ -334,7 +334,7 @@ async def test_sign_with_anchored_personal_cert_persists_ca_fingerprint(
     # efímera en memoria, sin tocar el filesystem.
     tsa_cert_pem, tsa_key_pem = _generate_tsa_cert()
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=tsa_cert_pem, key_pem=tsa_key_pem, key_password=None),
     )
 
@@ -408,7 +408,7 @@ async def test_sign_with_active_personal_cert_no_ca_cert_pem_leaves_ca_fingerpri
     _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
 
-    from app.core.config import settings as signature_settings
+    from signature.core.config import settings as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
 
@@ -467,7 +467,7 @@ async def test_sign_without_active_cert_falls_back_to_native(
     sol_firmado = _sol_row(estado="firmado")
     turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
 
-    from app.core.config import settings
+    from signature.core.config import settings
 
     monkeypatch.setattr(settings, "firma_2fa_required", False)
 
@@ -560,7 +560,7 @@ async def test_sign_active_cert_wrong_totp_maps_auth_service_error(
             401, {"error": "totp_incorrecto", "detail": "wrong code", "status": 401}
         ),
     )
-    from app.core.config import settings as signature_settings
+    from signature.core.config import settings as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
 
@@ -593,7 +593,7 @@ async def test_sign_active_cert_status_unavailable_falls_back_to_native(
     """auth-service caído al consultar signing-key/status — fail-OPEN a la
     firma nativa (firma_personal_require_xades NO se aplica en Inc.1), nunca
     bloquea la cadena de firma por un fallo de infraestructura ajeno."""
-    from app.core.http_clients import SigningKeyStatusUnavailableError
+    from signature.core.http_clients import SigningKeyStatusUnavailableError
 
     _patch_audit(monkeypatch)
     _patch_signing_key_status(
@@ -606,7 +606,7 @@ async def test_sign_active_cert_status_unavailable_falls_back_to_native(
     sol_firmado = _sol_row(estado="firmado")
     turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
 
-    from app.core.config import settings
+    from signature.core.config import settings
 
     monkeypatch.setattr(settings, "firma_2fa_required", False)
 
@@ -650,8 +650,8 @@ async def _sign_personal_envelope_for_verify_test(
     ``LocalSigner.sign``/``CadenaFirmaService._firmar_personal`` — pero
     invocada directamente (sin HTTP, sin cadena de firma) para producir un
     ``signed_xml`` genuino que ejercite ``GET /verify`` de forma aislada."""
-    from app.providers.base import PreparedDoc, SignerRef
-    from app.providers.local import LocalSigner
+    from signature.providers.base import PreparedDoc, SignerRef
+    from signature.providers.local import LocalSigner
 
     async def _remote_sign(digest: bytes) -> bytes:
         return user_key.sign(digest, padding.PKCS1v15(), Prehashed(hashes.SHA256()))
@@ -677,7 +677,7 @@ async def _sign_personal_envelope_for_verify_test(
 async def test_verify_dispatches_xades_personal(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.core.config import settings as signature_settings
+    from signature.core.config import settings as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
     # E17/F4, Incremento 2 (A2): /verify SIEMPRE consulta revocation-status
@@ -688,7 +688,7 @@ async def test_verify_dispatches_xades_personal(
     # preservar el comportamiento previo de este test — la rama de
     # revocación tiene su propia cobertura en test_verify_revocacion_status_*.
     monkeypatch.setattr(
-        "app.routers.signature.get_signing_key_revocation_status_remote",
+        "signature.routers.signature.get_signing_key_revocation_status_remote",
         AsyncMock(return_value={"status": "vigente"}),
     )
 
@@ -757,8 +757,8 @@ async def test_verify_dispatches_xades_personal(
 async def test_verify_native_hmac_unchanged_by_this_increment(client_with_conn) -> None:
     """Retrocompat exacta: una firma 'nativa' preexistente sigue verificando
     exactamente igual (no afectada por el dispatch xades_personal)."""
-    from app.core.config import settings as signature_settings
-    from app.services import signer as native_signer
+    from signature.core.config import settings as signature_settings
+    from signature.services import signer as native_signer
 
     sello_dt = datetime(2024, 1, 1, tzinfo=UTC)
     r = native_signer.firmar(
@@ -799,8 +799,8 @@ async def test_autoverificacion_fallida_tras_el_totp_deja_asiento_en_la_cadena(
     asiento `firma.autoverificacion_fallida_tras_totp` (antes solo lo dejaba /sign-personal).
 
     Mutación: quitar el `_audit.append` de `cadena_service` (cae la última aserción)."""
-    from app.core.config import settings as signature_settings
-    from app.providers import local
+    from signature.core.config import settings as signature_settings
+    from signature.providers import local
 
     audit_mock = _patch_audit(monkeypatch)
     user_key, user_cert = _issue_user_cert()

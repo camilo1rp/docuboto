@@ -27,8 +27,8 @@ import pytest
 import pytest_asyncio
 from orpycamcp_common.tenant import EstadoEntidad, estado_entidad
 
-from app.core.database import tenant_schema
-from app.services.auth_service import AuthService
+from auth.core.database import tenant_schema
+from auth.services.auth_service import AuthService
 from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [
@@ -103,7 +103,7 @@ async def _validar(db_conn: asyncpg.Connection, slug: str):
         "exp": 4102444800,
     }
     with patch(
-        "app.services.auth_service.validate_token", new=AsyncMock(return_value=claims)
+        "auth.services.auth_service.validate_token", new=AsyncMock(return_value=claims)
     ):
         return claims, await AuthService().validate("tok", db_conn)
 

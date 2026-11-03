@@ -20,10 +20,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.config import settings
-from app.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
-from app.services import invalidacion
-from app.workers import document_consumer
+from signature.core.config import settings
+from signature.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
+from signature.services import invalidacion
+from signature.workers import document_consumer
 
 _TOKEN = "itest-internal-token-b10-contenido"
 _RUTA = "/api/v1/signature/internal/circuitos/borrador"

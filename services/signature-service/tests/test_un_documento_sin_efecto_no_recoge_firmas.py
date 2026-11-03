@@ -35,8 +35,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from signature.core.database import get_tenant_conn
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 
 SOL_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")

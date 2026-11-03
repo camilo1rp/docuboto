@@ -31,7 +31,7 @@ import pytest
 import pytest_asyncio
 from orpycamcp_common.deadletter import RadicadosAusenteError
 
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from notification.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [
     pytest.mark.integration,

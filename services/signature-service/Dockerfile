@@ -45,4 +45,4 @@ USER orpycamcp
 # —lo dice su docstring— y el de uvicorn la reponía por detrás, así que la
 # garantía escrita no se cumplía. Se apaga el de uvicorn, no el propio:
 # la traza estructurada sigue emitiéndose, sin el contenido documental.
-CMD ["uvicorn", "app.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8008"]
+CMD ["uvicorn", "signature.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8008"]

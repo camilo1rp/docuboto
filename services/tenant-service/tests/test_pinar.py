@@ -26,8 +26,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from tenant.core.database import get_tenant_conn
+from tenant.main import app
 
 # El actor imputable llega en X-User-Id; los actos de ciclo de vida lo exigen.
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}
@@ -60,7 +60,7 @@ async def client_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
     conn.fetch.return_value = []
     conn.fetchrow.return_value = None
     # TODO el PINAR —escrituras y lecturas (2026-08-28)— exige USUA_PERM_ADMIN
-    # (app/core/authz.py, gate en el propio APIRouter),
+    # (tenant/core/authz.py, gate en el propio APIRouter),
     # gate resuelto vía conn.fetchval — truthy por defecto (permiso concedido) para
     # no romper las aserciones de negocio de los tests existentes; los tests que SÍ
     # ejercen fetchval con fines de negocio (p. ej. max_version) lo sobreescriben.
@@ -76,7 +76,7 @@ async def client_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
     # La cadena hash de audit_log (E08) se prueba en orpycamcp_common; aquí basta
     # verificar QUE se llama al asiento inmutable, sin ejercer el hash real.
     with patch(
-        "app.services.pinar_service.audit.append", new=AsyncMock(return_value="h")
+        "tenant.services.pinar_service.audit.append", new=AsyncMock(return_value="h")
     ) as audit_append:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             ac.pinar_audit = audit_append  # type: ignore[attr-defined]

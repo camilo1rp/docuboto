@@ -23,8 +23,8 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from app.models.archive import TrdSerie
-from app.schemas.archive import (
+from archive.models.archive import TrdSerie
+from archive.schemas.archive import (
     TrdSerieCreate,
     TrdSerieUpdate,
     TrdSerieVersionCreate,
@@ -151,7 +151,7 @@ async def test_la_respuesta_deriva_gestion_y_gestion_mas_central(client_with_con
 
 
 def test_el_derivado_esta_documentado_como_solo_lectura_en_el_openapi() -> None:
-    from app.main import app
+    from archive.main import app
 
     props = app.openapi()["components"]["schemas"]["TrdSerieResponse"]["properties"]
     assert props["retention_years"]["readOnly"] is True
@@ -213,7 +213,7 @@ async def test_sin_fase_central_el_calendario_no_se_calcula_con_cero(client_with
 
 
 def test_el_total_para_worm_sin_fase_central_no_es_cero_sino_ninguno() -> None:
-    from app.services.retention_math import total_trd_years
+    from archive.services.retention_math import total_trd_years
 
     assert total_trd_years(3, None) is None  # el llamador pospone (fail-closed)
     assert total_trd_years(None, 10) == 10  # TVD: sin gestión es legítimo

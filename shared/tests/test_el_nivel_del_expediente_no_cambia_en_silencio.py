@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-_ARCHIVE_APP = Path(__file__).resolve().parents[2] / "services" / "archive-service" / "app"
+_ARCHIVE_APP = Path(__file__).resolve().parents[2] / "services" / "archive-service" / "archive"
 
 pytestmark = pytest.mark.skipif(
     not _ARCHIVE_APP.is_dir(), reason="el árbol de archive-service no está montado"

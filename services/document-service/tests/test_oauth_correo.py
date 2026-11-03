@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from app.core import oauth_correo
+from document.core import oauth_correo
 
 
 def _parametros(url: str) -> dict[str, str]:

@@ -36,8 +36,8 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app.schemas.fisico import PrestamoCreate
-from app.services.fisico_service import FisicoService
+from archive.schemas.fisico import PrestamoCreate
+from archive.services.fisico_service import FisicoService
 from tests.conftest import TENANT_HEADERS, TENANT_SLUG, USER_ID
 from tests.test_fisico import _audit_log_calls, _diag, _prestamo_row, _unidad_row
 
@@ -489,7 +489,7 @@ async def test_un_prestamo_que_llega_durante_la_propuesta_la_tumba(client_with_c
 
 @pytest.mark.asyncio
 async def test_transferir_un_expediente_con_unidad_prestada_es_409() -> None:
-    from app.services.transferencia_service import TransferenciaService
+    from archive.services.transferencia_service import TransferenciaService
 
     conn = AsyncMock()
     svc = TransferenciaService(conn, TENANT_SLUG)
@@ -537,7 +537,7 @@ def test_la_migracion_072_declara_las_garantias_del_motor() -> None:
 def _externo():
     from datetime import UTC, datetime
 
-    from app.schemas.fisico import PrestamoResponse
+    from archive.schemas.fisico import PrestamoResponse
 
     return PrestamoResponse(
         id=uuid.uuid4(), unidad_id=uuid.uuid4(), prestatario_tipo="externo",
@@ -551,7 +551,7 @@ def _externo():
 
 
 def test_enmascarar_oculta_documento_correo_y_telefono_pero_no_quien_ni_donde() -> None:
-    from app.schemas.fisico import enmascarar_prestatario
+    from archive.schemas.fisico import enmascarar_prestatario
 
     m = enmascarar_prestatario(_externo())
     assert m.tercero_documento_numero.endswith("4050") and "1020" not in m.tercero_documento_numero
@@ -565,7 +565,7 @@ def test_enmascarar_oculta_documento_correo_y_telefono_pero_no_quien_ni_donde() 
 async def test_los_listados_enmascaran_sin_crud_3_y_el_nivel_3_ve_completo() -> None:
     from unittest.mock import patch
 
-    from app.routers import fisico as r
+    from archive.routers import fisico as r
 
     fila = _externo()
     with patch.object(r, "check_permission", new=AsyncMock(return_value=False)):

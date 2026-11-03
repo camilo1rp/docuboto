@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from app.core import paso
-from app.core.seudonimo import referenciar
+from knowledge.core import paso
+from knowledge.core.seudonimo import referenciar
 
 ACTOR = uuid.UUID("00000000-0000-4000-8000-000000000001")
 CLAVE = b"k" * 32

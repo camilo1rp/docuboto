@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.clients.document_client import DocumentPurgaError
+from archive.clients.document_client import DocumentPurgaError
 from tests.conftest import TENANT_HEADERS, USER_ID
 
 LOTE = uuid.uuid4()
@@ -115,7 +115,7 @@ def _purga(recuento=None, error=None):
         side_effect=error,
         return_value=recuento or {"radicados_eliminados": 12, "anexos_eliminados": 30},
     )
-    return patch("app.clients.document_client.purgar_radicados_internal", mock)
+    return patch("archive.clients.document_client.purgar_radicados_internal", mock)
 
 
 def _entorno(mock_conn, *, items, acta=None, estado="avalado"):
@@ -308,7 +308,7 @@ async def test_los_documentos_se_destruyen_ANTES_que_el_expediente(client_with_c
     mock_conn.execute.side_effect = _execute
     mock_conn.fetchrow.side_effect = _fetchrow
 
-    with patch("app.clients.document_client.purgar_radicados_internal", _purgar):
+    with patch("archive.clients.document_client.purgar_radicados_internal", _purgar):
         await client.post(RUTA, headers=TENANT_HEADERS)
 
     # Lo que importa es el ORDEN RELATIVO, no la primera línea: los
@@ -363,7 +363,7 @@ async def test_con_un_expediente_fallido_el_lote_NO_se_marca_ejecutado(
             raise DocumentPurgaError("bytes vivos")
         return {"radicados_eliminados": 3, "anexos_eliminados": 4}
 
-    with patch("app.clients.document_client.purgar_radicados_internal", _purgar):
+    with patch("archive.clients.document_client.purgar_radicados_internal", _purgar):
         resp = await client.post(RUTA, headers=TENANT_HEADERS)
 
     cuerpo = resp.json()

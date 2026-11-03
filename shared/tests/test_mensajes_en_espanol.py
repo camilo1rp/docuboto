@@ -36,6 +36,8 @@ frase, no ampliar la excepción.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 import re
 from pathlib import Path
@@ -98,7 +100,7 @@ def _mensajes(ruta: Path) -> list[tuple[int, str]]:
 def _fuentes() -> list[Path]:
     return sorted(
         p
-        for p in SERVICIOS.glob("*/app/**/*.py")
+        for p in glob_src(SERVICIOS, "*/app/**/*.py")
         if "__pycache__" not in p.parts and ".venv" not in p.parts
     )
 

@@ -15,6 +15,8 @@ Python sobre un tope de 1000 candidatas. Estos guardianes impiden que la copia v
 
 from __future__ import annotations
 
+from tests._compose import paquete_de
+
 import re
 from pathlib import Path
 
@@ -37,7 +39,7 @@ _PROHIBIDO = re.compile(
 
 @pytest.mark.parametrize("svc", DLQ)
 def test_ninguna_copia_del_filtro_en_python(svc: str) -> None:
-    for fuente in (SERVICIOS / svc / "app").rglob("*.py"):
+    for fuente in (paquete_de(SERVICIOS / svc) or SERVICIOS / svc).rglob("*.py"):
         assert not _PROHIBIDO.search(fuente.read_text()), (
             f"{fuente.relative_to(RAIZ)} vuelve a filtrar la DLQ por clearance fuera de "
             "orpycamcp_common.deadletter"
@@ -46,7 +48,9 @@ def test_ninguna_copia_del_filtro_en_python(svc: str) -> None:
 
 @pytest.mark.parametrize("svc", DLQ)
 def test_el_repositorio_usa_la_fuente_unica(svc: str) -> None:
-    texto = (SERVICIOS / svc / "app" / "repositories" / "dead_letter_repository.py").read_text()
+    pkg = paquete_de(SERVICIOS / svc)
+    assert pkg is not None, svc
+    texto = (pkg / "repositories" / "dead_letter_repository.py").read_text()
     assert "from orpycamcp_common import deadletter" in texto
     # Ninguna lectura de una fila de la DLQ por id se hace sin pasar por el gate.
     assert not re.search(r"FROM evento_dead_letter\s+WHERE\s+event_id", texto)
@@ -111,7 +115,7 @@ def _mutaciones_fuera_de_lista(fuente: str) -> list[str]:
 
 @pytest.mark.parametrize("svc", DLQ)
 def test_solo_transition_status_y_purge_mutan_la_dlq(svc: str) -> None:
-    for fuente in (SERVICIOS / svc / "app").rglob("*.py"):
+    for fuente in (paquete_de(SERVICIOS / svc) or SERVICIOS / svc).rglob("*.py"):
         fuera = _mutaciones_fuera_de_lista(fuente.read_text())
         assert not fuera, (
             f"{fuente.relative_to(RAIZ)}: {fuera} mutan evento_dead_letter fuera de "
@@ -125,7 +129,9 @@ def test_quien_transiciona_antes_bloquea_con_el_gate(svc: str) -> None:
     import ast
 
     visto = 0
-    for fuente in (SERVICIOS / svc / "app" / "routers").rglob("*.py"):
+    pkg = paquete_de(SERVICIOS / svc)
+    assert pkg is not None, svc
+    for fuente in (pkg / "routers").rglob("*.py"):
         for fn in ast.walk(ast.parse(fuente.read_text())):
             if not isinstance(fn, ast.AsyncFunctionDef):
                 continue

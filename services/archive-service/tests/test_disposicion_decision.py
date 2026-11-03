@@ -304,7 +304,7 @@ async def test_si_el_asiento_no_se_puede_escribir_la_decision_NO_se_toma(
 
     with (
         patch(
-            "app.services.archive_service.audit.append",
+            "archive.services.archive_service.audit.append",
             new=AsyncMock(side_effect=RuntimeError("cadena caída")),
         ),
         pytest.raises(RuntimeError),

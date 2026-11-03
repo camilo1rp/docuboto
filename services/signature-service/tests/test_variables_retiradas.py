@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app import main
-from app.core.config import variables_retiradas_presentes
+from signature import main
+from signature.core.config import variables_retiradas_presentes
 
 
 def test_detecta_la_variable_retirada_y_nombra_a_la_sustituta() -> None:

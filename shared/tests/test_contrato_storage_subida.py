@@ -30,8 +30,8 @@ import ast
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-ESQUEMA_STORAGE = RAIZ / "services" / "storage-service" / "app" / "schemas" / "storage.py"
-CLIENTE = RAIZ / "services" / "document-service" / "app" / "clients" / "storage_client.py"
+ESQUEMA_STORAGE = RAIZ / "services" / "storage-service" / "storage" / "schemas" / "storage.py"
+CLIENTE = RAIZ / "services" / "document-service" / "document" / "clients" / "storage_client.py"
 
 
 def _campos_de(ruta: Path, clase: str) -> set[str]:
@@ -144,7 +144,7 @@ def test_el_id_del_fichero_se_traduce_y_no_se_adivina() -> None:
     Después del defecto, ningún consumidor debe volver a indexar el JSON de
     storage: el cliente devuelve `ArchivoSubido` y los llamantes usan atributos.
     """
-    documentos = RAIZ / "services" / "document-service" / "app"
+    documentos = RAIZ / "services" / "document-service" / "document"
     culpables = []
     for ruta in sorted(documentos.rglob("*.py")):
         if ruta == CLIENTE:
@@ -173,7 +173,7 @@ def test_el_id_del_fichero_se_traduce_y_no_se_adivina() -> None:
 # romperse en tiempo de ejecución con los tests en verde, que es exactamente el
 # defecto que este archivo existe para impedir.
 
-ESQUEMA_RENDER = RAIZ / "services" / "storage-service" / "app" / "schemas" / "render.py"
+ESQUEMA_RENDER = RAIZ / "services" / "storage-service" / "storage" / "schemas" / "render.py"
 
 
 def _claves_leidas_de_datos(ruta: Path) -> set[str]:

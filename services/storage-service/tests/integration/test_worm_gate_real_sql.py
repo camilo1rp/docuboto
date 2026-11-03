@@ -44,8 +44,8 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
-from app.repositories.preservacion_worm_repository import PreservacionWormRepository
+from storage.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
+from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
 
 pytestmark = pytest.mark.integration
 

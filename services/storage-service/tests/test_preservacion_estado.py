@@ -17,7 +17,7 @@ expediente: solo refleja `settings.preservation_enabled`.
 
 import pytest
 
-from app.core.config import settings
+from storage.core.config import settings
 from tests.conftest import TENANT_HEADERS
 
 

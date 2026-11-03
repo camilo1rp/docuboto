@@ -36,6 +36,8 @@ pasa por un ayudante con nombre.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import re
 from pathlib import Path
 
@@ -59,7 +61,7 @@ _ES_STR_DE_ALGO = re.compile(r"^str\(")
 def _referencias_de_expediente() -> list[tuple[str, str, str]]:
     """(archivo, tipo, expresión) de cada asiento sobre un expediente."""
     hallazgos: list[tuple[str, str, str]] = []
-    for archivo in sorted(SERVICIOS.glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(SERVICIOS, "*/app/**/*.py")):
         texto = archivo.read_text(encoding="utf-8")
         if "object_type=" not in texto:
             continue

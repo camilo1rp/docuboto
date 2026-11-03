@@ -20,7 +20,7 @@ import base64
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from app.core.email_credenciales import aad, cifrar, descifrar
+from document.core.email_credenciales import aad, cifrar, descifrar
 
 CLAVE = base64.b64encode(b"0" * 32).decode()
 OTRA_CLAVE = base64.b64encode(b"1" * 32).decode()

@@ -20,13 +20,13 @@ import httpx
 import pytest
 from orpycamcp_common.kek import seal
 
-from app.clients.ppi import ClientePpi
-from app.core import consulta
-from app.core.config import settings
-from app.core.consulta import NO_DISPONIBLE
-from app.core.rechequeo import Registro, filtrar_busqueda, filtrar_pregunta, refs_a_borrar
-from app.core.seudonimo import aad, referenciar
-from app.routers import knowledge as rutas
+from knowledge.clients.ppi import ClientePpi
+from knowledge.core import consulta
+from knowledge.core.config import settings
+from knowledge.core.consulta import NO_DISPONIBLE
+from knowledge.core.rechequeo import Registro, filtrar_busqueda, filtrar_pregunta, refs_a_borrar
+from knowledge.core.seudonimo import aad, referenciar
+from knowledge.routers import knowledge as rutas
 from tests.conftest import TENANT_HEADERS
 
 ACTOR = uuid.UUID("00000000-0000-4000-8000-0000000000a1")
@@ -425,7 +425,7 @@ async def test_search_publica_el_origen_cuando_delega(
     ident = uuid.uuid4()
 
     async def delega(*_args: Any, **_kwargs: Any) -> consulta.Busqueda:
-        from app.core.rechequeo import Hallazgo
+        from knowledge.core.rechequeo import Hallazgo
 
         return consulta.Busqueda(True, (Hallazgo(ident, "2026-E-1", "cita viva", 0.9, 2, None),))
 
@@ -502,7 +502,7 @@ async def test_rag_publica_la_pagina_y_el_anexo(
     anexo = "22222222-2222-4222-8222-222222222222"
 
     async def responde(*_args: Any, **_kwargs: Any) -> consulta.Pregunta:
-        from app.core.rechequeo import Hallazgo
+        from knowledge.core.rechequeo import Hallazgo
 
         cita = Hallazgo(ident, "2026-E-1", "quince días", 0.8, 3, anexo)
         return consulta.Pregunta(
@@ -579,7 +579,7 @@ async def test_el_transporte_declara_la_version() -> None:
         recibidas.append(req)
         return httpx.Response(200, json={"mode": "search", "hits": []})
 
-    from app.core.salida_http import PPI_VERSION, TransporteHttp
+    from knowledge.core.salida_http import PPI_VERSION, TransporteHttp
 
     transporte = TransporteHttp()
     await transporte.cerrar()

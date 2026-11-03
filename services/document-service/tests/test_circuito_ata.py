@@ -27,7 +27,7 @@ import uuid
 
 import pytest
 
-from app.clients import signature_client as signature_client_mod
+from document.clients import signature_client as signature_client_mod
 from tests.conftest import TENANT_HEADERS
 from tests.test_borradores import _CLEARANCE_ROW, _USER, _borrador_row
 
@@ -271,7 +271,7 @@ async def test_editar_tras_firmar_no_bloquea_pero_radicar_exige_firmar_de_nuevo(
 
 def _gate(payload_sha256, cuerpo_sha256, completo=True):
     """Ejerce la DECISIÓN, sin el andamiaje de una radicación completa."""
-    from app.services.borrador_service import BorradorService
+    from document.services.borrador_service import BorradorService
 
     estado = {"pendiente": False, "completo": completo, "payload_sha256": payload_sha256}
     BorradorService._gate_texto_firmado(
@@ -307,7 +307,7 @@ async def test_editar_el_texto_invalida_los_circuitos_anteriores(client_with_con
     huellas al radicar; esto evita que la bandeja siga pidiéndole a alguien
     firmar un documento que ya no existe, para después esfumarse sin motivo.
     """
-    from app.clients import signature_client as sc
+    from document.clients import signature_client as sc
 
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()
@@ -347,7 +347,7 @@ async def test_guardar_sin_cambiar_el_texto_no_tira_un_circuito_vivo(
     solo el asunto—, y tirar el circuito ahí obligaría a recoger las firmas otra
     vez sin que nadie haya tocado el documento.
     """
-    from app.clients import signature_client as sc
+    from document.clients import signature_client as sc
 
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()

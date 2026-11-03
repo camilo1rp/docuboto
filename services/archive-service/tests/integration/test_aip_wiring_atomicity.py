@@ -38,13 +38,13 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from app.clients.storage_client import AipPackagingOutcome
-from app.core.config import settings
-from app.core.database import tenant_schema
-from app.repositories.aip_repository import AipRepository
-from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate
-from app.services.aip_wiring_service import AipWiringService
-from app.services.archive_service import ArchiveService
+from archive.clients.storage_client import AipPackagingOutcome
+from archive.core.config import settings
+from archive.core.database import tenant_schema
+from archive.repositories.aip_repository import AipRepository
+from archive.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate
+from archive.services.aip_wiring_service import AipWiringService
+from archive.services.archive_service import ArchiveService
 from tests.conftest import registrar_radicado
 
 from .conftest import DSN, convalidate_for_test
@@ -150,11 +150,11 @@ def _patched_clients(anexos_by_radicado: dict, outcome: AipPackagingOutcome):
     """Dos `patch()` sin entrar todavía — usar como
     ``with p1, p2: ...`` (`_patched_clients` devuelve el PAR, no los entra)."""
     p_document = patch(
-        "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+        "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
         new=AsyncMock(return_value=anexos_by_radicado),
     )
     p_storage = patch(
-        "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+        "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
         new=AsyncMock(return_value=outcome),
     )
     return p_document, p_storage

@@ -36,7 +36,7 @@ from pathlib import Path
 import pytest
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
-APP_DIR = SERVICE_ROOT / "app"
+APP_DIR = SERVICE_ROOT / "signature"
 TENANT_MIGRATIONS = SERVICE_ROOT / "migrations" / "tenant"
 
 CAMPO = "nivel_conformidad"

@@ -16,10 +16,10 @@ import asyncpg
 import pytest
 from httpx import AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.database import get_tenant_conn
-from app.main import app
-from app.services import clearance_service as clearance_service_module
+from auth.core.authz import Caller, get_caller
+from auth.core.database import get_tenant_conn
+from auth.main import app
+from auth.services import clearance_service as clearance_service_module
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 _USER = uuid.uuid4()

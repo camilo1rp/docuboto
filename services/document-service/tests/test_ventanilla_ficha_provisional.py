@@ -26,8 +26,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.repositories.tercero_repository import TerceroRepository
-from app.services.tercero_service import TerceroService
+from document.repositories.tercero_repository import TerceroRepository
+from document.services.tercero_service import TerceroService
 from tests.test_ventanilla import (
     BASE,
     _cuerpo,
@@ -53,7 +53,7 @@ async def _radicar(client, conn, **cuerpo):
     conn.fetchval.side_effect = _fetchval_por_consulta("Petición", "cod")
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
     with patch(
-        "app.services.document_service.DocumentService.create",
+        "document.services.document_service.DocumentService.create",
         AsyncMock(return_value=_resultado_radicado()),
     ) as crear:
         resp = await client.post(BASE, **_multipart(_cuerpo(**cuerpo)))
@@ -112,6 +112,6 @@ async def test_la_respuesta_es_la_misma_con_o_sin_documento(client_with_conn, es
 @pytest.mark.asyncio
 async def test_create_es_interno_el_cliente_no_puede_pedir_provisionales() -> None:
     """`remitente_provisional` NO es un campo de `DocumentCreate`."""
-    from app.schemas.document import DocumentCreate
+    from document.schemas.document import DocumentCreate
 
     assert "remitente_provisional" not in DocumentCreate.model_fields

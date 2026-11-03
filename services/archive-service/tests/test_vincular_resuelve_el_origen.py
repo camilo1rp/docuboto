@@ -27,8 +27,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.schemas.archive import RadicadoLink
-from app.services.archive_service import ArchiveService
+from archive.schemas.archive import RadicadoLink
+from archive.services.archive_service import ArchiveService
 
 _RAD = uuid.uuid4()
 _META = {
@@ -49,7 +49,7 @@ def _servicio() -> ArchiveService:
 
 def _metadata(**kwargs):
     return patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(**kwargs),
     )
 
@@ -64,7 +64,7 @@ def _enlace(**kwargs) -> RadicadoLink:
 
 
 async def _resolver(clearance: int = 3, **kwargs):
-    with patch("app.services.archive_service.audit.append", AsyncMock()):
+    with patch("archive.services.archive_service.audit.append", AsyncMock()):
         return await _servicio()._resolver_metadatos_vinculo(
             [_enlace(**kwargs)], expediente_code="EXP-1", actor=None, clearance=clearance
         )
@@ -73,7 +73,7 @@ async def _resolver(clearance: int = 3, **kwargs):
 @pytest.mark.asyncio
 async def test_el_origen_sale_del_servicio_dueno_del_radicado() -> None:
     with _metadata(return_value=_META_COMPLETA), patch(
-        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+        "archive.services.archive_service.ArchiveService._huellas_por_radicado",
         AsyncMock(return_value={}),
     ):
         r = (await _resolver())[str(_RAD)]
@@ -88,8 +88,8 @@ async def test_se_pide_con_el_clearance_del_LLAMANTE() -> None:
     tipologia/MIME/productora de un radicado reservado a quien no podia leerlo.
     Mutacion: volver a `max_clearance=CLEARANCE_SIN_RESTRICCION` lo tumba."""
     espia = AsyncMock(return_value=_META_COMPLETA)
-    with patch("app.clients.document_client.fetch_radicado_metadata_internal", espia), patch(
-        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+    with patch("archive.clients.document_client.fetch_radicado_metadata_internal", espia), patch(
+        "archive.services.archive_service.ArchiveService._huellas_por_radicado",
         AsyncMock(return_value={}),
     ):
         await _resolver(clearance=1)
@@ -104,7 +104,7 @@ async def test_si_document_service_no_responde_el_vinculo_FALLA_CERRADO() -> Non
     503, no un vínculo con datos sin contrastar."""
     from fastapi import HTTPException
 
-    from app.clients.document_client import DocumentClientError
+    from archive.clients.document_client import DocumentClientError
 
     with _metadata(side_effect=DocumentClientError("caído")), pytest.raises(
         HTTPException

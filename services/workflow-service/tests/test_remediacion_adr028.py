@@ -25,10 +25,10 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.repositories.workflow_repository import Tenencia
-from app.schemas.workflow import FlowStepCreate
-from app.services.distribution import SYSTEM_USER, auto_distribute
-from app.services.workflow_service import WorkflowService
+from workflow.repositories.workflow_repository import Tenencia
+from workflow.schemas.workflow import FlowStepCreate
+from workflow.services.distribution import SYSTEM_USER, auto_distribute
+from workflow.services.workflow_service import WorkflowService
 from tests.conftest import (
     RADICADO_ID,
     TENANT_HEADERS,
@@ -39,7 +39,7 @@ from tests.conftest import (
 )
 
 Cliente = tuple[AsyncClient, AsyncMock, MagicMock]
-_REPO = "app.services.workflow_service.WorkflowRepository"
+_REPO = "workflow.services.workflow_service.WorkflowRepository"
 
 
 def _payload() -> FlowStepCreate:
@@ -147,8 +147,8 @@ async def test_el_reparto_automatico_se_declara_actor_de_sistema() -> None:
         }
     ]
     with (
-        patch("app.services.distribution.WorkflowRulesService.evaluate", new=AsyncMock()) as evaluar,
-        patch("app.services.distribution.WorkflowService.assign", new=AsyncMock()) as asignar,
+        patch("workflow.services.distribution.WorkflowRulesService.evaluate", new=AsyncMock()) as evaluar,
+        patch("workflow.services.distribution.WorkflowService.assign", new=AsyncMock()) as asignar,
     ):
         evaluar.return_value = MagicMock(
             matched=True,
@@ -172,7 +172,7 @@ async def test_ninguna_ruta_http_pasa_sistema_true(client_with_conn: Cliente) ->
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchval.return_value = 1
     mock_conn.fetchrow.return_value = make_step_record(action="assign")
-    with patch("app.routers.workflow.WorkflowService.assign", new=AsyncMock()) as asignar:
+    with patch("workflow.routers.workflow.WorkflowService.assign", new=AsyncMock()) as asignar:
         asignar.return_value = MagicMock()
         try:
             await client.post(
@@ -225,7 +225,7 @@ async def test_una_transaccion_que_mueve_el_paso_exige_tenencia_aunque_no_lo_dec
 
 @pytest.mark.asyncio
 async def test_los_cambios_de_un_acto_revertido_no_sobreviven_al_siguiente_acto() -> None:
-    from app.repositories.workflow_repository import EstadoCambio
+    from workflow.repositories.workflow_repository import EstadoCambio
 
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=AsyncMock())

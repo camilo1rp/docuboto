@@ -38,12 +38,12 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
-from app.repositories.document_repository import DocumentRepository
-from app.repositories.reclasificacion_repository import ReclasificacionRepository
-from app.schemas.desclasificacion import DesclasificacionRequest
-from app.services.desclasificacion_service import DesclasificacionService
-from app.services.document_service import DocumentService
+from document.core.database import tenant_schema
+from document.repositories.document_repository import DocumentRepository
+from document.repositories.reclasificacion_repository import ReclasificacionRepository
+from document.schemas.desclasificacion import DesclasificacionRequest
+from document.services.desclasificacion_service import DesclasificacionService
+from document.services.document_service import DocumentService
 from tests.integration import conftest as ic
 
 pytestmark = pytest.mark.integration
@@ -67,8 +67,8 @@ def clearance(monkeypatch) -> dict[uuid.UUID, int]:
     async def _resolver(conn, user_id):
         return por_persona.get(user_id, 1)
 
-    monkeypatch.setattr("app.services.desclasificacion_service.resolve_caller_clearance", _resolver)
-    monkeypatch.setattr("app.services.document_service.resolve_caller_clearance", _resolver)
+    monkeypatch.setattr("document.services.desclasificacion_service.resolve_caller_clearance", _resolver)
+    monkeypatch.setattr("document.services.document_service.resolve_caller_clearance", _resolver)
     return por_persona
 
 
@@ -527,7 +527,7 @@ async def test_si_falla_el_segundo_asiento_no_queda_ni_nivel_ni_aprobacion_ni_ev
     svc = _svc(conn, slug, _Redis())
     sol = await svc.solicitar(rid, _PEDIDO, ANA)
 
-    from app.services import desclasificacion_service as mod
+    from document.services import desclasificacion_service as mod
 
     real = mod.audit.append
     llamadas = {"n": 0}
@@ -561,7 +561,7 @@ async def test_si_no_se_puede_encolar_el_evento_se_revierte_la_aprobacion(
     async def _no_se_puede(*a, **k):
         raise RuntimeError("no se pudo escribir el evento")
 
-    monkeypatch.setattr("app.services.desclasificacion_service.outbox.encolar", _no_se_puede)
+    monkeypatch.setattr("document.services.desclasificacion_service.outbox.encolar", _no_se_puede)
     with pytest.raises(RuntimeError):
         await svc.aprobar(sol.id, BETO)
     assert await _nivel(conn, rid) == 3
@@ -585,7 +585,7 @@ async def test_el_patch_desde_3_es_409_y_la_base_no_llega_a_ver_el_intento(tenan
 
 @pytest.mark.asyncio
 async def test_el_patch_con_clearance_2_sobre_nivel_3_es_404_y_no_409(tenant_ctx, clearance) -> None:
-    from app.services.document_service import DocumentNotFoundError
+    from document.services.document_service import DocumentNotFoundError
 
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn)

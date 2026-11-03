@@ -23,7 +23,7 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
@@ -37,8 +37,8 @@ async def _tercero(conn: asyncpg.Connection, nombre: str) -> uuid.UUID:
 async def _radicar_con(
     conn: asyncpg.Connection, slug: str, tercero_id: uuid.UUID, asunto: str, nivel: int
 ) -> None:
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     doc = await DocumentService(conn, slug).create(
         DocumentCreate(
@@ -61,7 +61,7 @@ async def _radicar_con(
 async def _sembrar(tenant_ctx: tuple[str, asyncpg.Connection]):
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     t = await _tercero(conn, "Ana Ríos")
     absorbida = await _tercero(conn, "ANA RIOS")

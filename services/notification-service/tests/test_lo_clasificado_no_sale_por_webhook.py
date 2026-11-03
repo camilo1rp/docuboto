@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.webhook_service import dispatch, recortar_si_clasificado
+from notification.services.webhook_service import dispatch, recortar_si_clasificado
 
 
 def _sobre(nivel: int, **extra):
@@ -170,9 +170,9 @@ async def test_el_recorte_ESTA_CABLEADO_en_el_envio():
     async def _entregar(client, sub, body, tenant_slug="", **_kw):
         enviados.append(body)
 
-    with patch("app.services.webhook_service.WebhookRepository") as repo, patch(
-        "app.services.webhook_service.acquire_tenant"
-    ) as tenant, patch("app.services.webhook_service._deliver_one", _entregar):
+    with patch("notification.services.webhook_service.WebhookRepository") as repo, patch(
+        "notification.services.webhook_service.acquire_tenant"
+    ) as tenant, patch("notification.services.webhook_service._deliver_one", _entregar):
         tenant.return_value.__aenter__ = AsyncMock(return_value=object())
         tenant.return_value.__aexit__ = AsyncMock(return_value=False)
         repo.return_value.active_for_event = AsyncMock(
@@ -212,9 +212,9 @@ async def test_la_reclasificacion_con_la_forma_del_productor_sale_sin_causal_por
             "plazo_reserva_meses": 60,
         },
     }
-    with patch("app.services.webhook_service.WebhookRepository") as repo, patch(
-        "app.services.webhook_service.acquire_tenant"
-    ) as tenant, patch("app.services.webhook_service._deliver_one", _entregar):
+    with patch("notification.services.webhook_service.WebhookRepository") as repo, patch(
+        "notification.services.webhook_service.acquire_tenant"
+    ) as tenant, patch("notification.services.webhook_service._deliver_one", _entregar):
         tenant.return_value.__aenter__ = AsyncMock(return_value=object())
         tenant.return_value.__aexit__ = AsyncMock(return_value=False)
         repo.return_value.active_for_event = AsyncMock(

@@ -42,9 +42,9 @@ import uuid
 import asyncpg
 import pytest
 
-from app.schemas.archive import ExpedienteCreate
-from app.services.archive_service import ArchiveService
-from app.services.index_service import IndexService
+from archive.schemas.archive import ExpedienteCreate
+from archive.services.archive_service import ArchiveService
+from archive.services.index_service import IndexService
 
 pytestmark = pytest.mark.asyncio
 

@@ -124,7 +124,7 @@ async def test_pqrs_delega_en_la_ventanilla_y_llega_a_una_bandeja(client_with_co
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, patch
 
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
     from tests.test_ventanilla import _fetchrow_por_consulta, _fetchval_por_consulta
 
     client, mock_conn = client_with_conn

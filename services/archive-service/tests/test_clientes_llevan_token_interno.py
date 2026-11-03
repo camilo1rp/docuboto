@@ -26,8 +26,8 @@ from datetime import date
 import httpx
 import pytest
 
-from app.clients import signature_client, storage_client
-from app.core.config import settings
+from archive.clients import signature_client, storage_client
+from archive.core.config import settings
 
 _SIG = "tok-firma"
 _STO = "tok-storage"
@@ -308,7 +308,7 @@ async def test_list_eventos_pide_por_tandas_funde_sin_duplicados_y_ordena(monkey
 
 @pytest.mark.asyncio
 async def test_enviar_aviso_lleva_token_y_no_declara_el_cuerpo_como_sensible(monkeypatch) -> None:
-    from app.clients import notification_client
+    from archive.clients import notification_client
 
     peticiones: list[httpx.Request] = []
 

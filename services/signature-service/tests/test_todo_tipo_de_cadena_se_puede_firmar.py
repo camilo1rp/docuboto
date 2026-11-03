@@ -30,14 +30,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.core.constants import (
+from signature.core.constants import (
     CADENA_OBJETO_TIPOS,
     CADENA_PAYLOAD_AUTORITATIVO,
     CADENA_PAYLOAD_OBLIGATORIO,
     CADENA_SIN_HUELLA_DECLARADA,
 )
-from app.schemas.cadena import SolicitudCreate
-from app.services.cadena_service import RESOLUTOR_DE_HUELLA
+from signature.schemas.cadena import SolicitudCreate
+from signature.services.cadena_service import RESOLUTOR_DE_HUELLA
 
 FIRMANTE = "11111111-1111-1111-1111-111111111111"
 

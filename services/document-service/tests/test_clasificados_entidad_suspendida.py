@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.core import conservacion
-from app.core import database as db
+from document.core import conservacion
+from document.core import database as db
 from tests.test_estado_entidad import _Conn, _fila, _Pool, _request
 
 _TOKEN = "tok-clasificados"

@@ -27,8 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from app.core.config import settings
-from app.core.otp import hmac_otp, verify_otp
+from signature.core.config import settings
+from signature.core.otp import hmac_otp, verify_otp
 from tests.conftest import TENANT_HEADERS
 from tests.test_sign_xml_xades import _FakeFirmaTable  # tabla `firma` falsa con INSERT/SELECT
 
@@ -84,7 +84,7 @@ def test_el_mensaje_de_la_firma_nombra_entidad_y_objeto() -> None:
     """Defensa en profundidad: además de la clave por entidad, el MENSAJE que se
     autentica ata entidad, tipo y objeto (y es inequívoco: un ``|`` dentro de un
     identificador no mueve la frontera entre campos)."""
-    from app.services.signer import _mensaje_v1
+    from signature.services.signer import _mensaje_v1
 
     base = {"tenant_slug": "a", "objeto_tipo": "radicado", "objeto_id": "X"}
 
@@ -99,7 +99,7 @@ def test_el_mensaje_de_la_firma_nombra_entidad_y_objeto() -> None:
 
 def test_la_clave_del_otp_no_es_la_de_la_firma_nativa() -> None:
     """Dos propósitos, dos claves: el hash de un OTP no puede ser un MAC de firma."""
-    from app.core.secret_derivation import derive_key
+    from signature.core.secret_derivation import derive_key
 
     assert derive_key(SECRETO, purpose="otp", tenant_slug="a") != derive_key(
         SECRETO, purpose="firma_nativa", tenant_slug="a"

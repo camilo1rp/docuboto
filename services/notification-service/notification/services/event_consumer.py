@@ -1,0 +1,318 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""Event consumers for notification-service (E16).
+
+Both handlers implement the insert-then-send idempotency pattern (ADR-021 Fase 3):
+
+  1. Parse the canonical envelope.
+  2. Resolve event_id + tenant_slug; raise ValueError if either is absent — the
+     message stays in the PEL and the reclaim sweep routes it to dead-letter
+     (R1 in _persist_dead_letter handles the no-tenant_slug case).
+  3. Claim event_id in ``notification_processed_events`` via an atomic INSERT.
+     • BD failure propagates (not caught) → A-1 no-ack → PEL → reclaim sweep.
+  4. If already claimed (ON CONFLICT) → return silently (dedup skip, not loss).
+  5. Only after a successful claim: dispatch webhooks (E11) + send notification(s)
+     built from the envelope by the pure builders below.
+
+Trade-off: if the worker dies between step 3 (claim) and step 5 (send), that
+email is permanently lost.  Accepted: email is not the legal record; audit_log
+and the radicado in document-service are the authoritative sources.
+
+External effects after the claim (webhooks, email) are best-effort: any failure
+is already handled by their own retry mechanisms.  They must NOT raise exceptions
+that would propagate to stream_worker and trigger a no-ack for an event that has
+already been claimed — that would cause infinite PEL churn (the dedup would block
+reprocessing anyway).
+
+Consequence for the dead-letter admin replay (ADR-021 Fase 5 Inc.2): because
+dispatch_webhooks and send_notification never raise, a message that made it past
+the claim step (3) essentially never fails afterwards — so in practice almost
+every dead-lettered notification event never reached the claim at all (the claim
+itself raised, e.g. a transient DB error, and the message stayed in the PEL until
+max_deliveries). The DLQ replay endpoint (notification/routers/admin_deadletter.py) still
+clears any stale claim defensively via ProcessedEventsRepository.delete_one before
+resending, in case this invariant changes in the future.
+
+``build_workflow_notifications``, ``build_document_notifications`` and
+``devolucion.build_devolucion_notifications`` are PURE
+(no DB, no SMTP, no side effects): they map an envelope to zero or more
+``NotificationSend`` objects. Both the live consumer below and the DLQ replay
+endpoint call the SAME builder for a given origin stream, so the two paths can
+never diverge on what gets sent (mirrors signature-service's shared
+``apply_reclassification`` handler-core).
+"""
+
+from __future__ import annotations
+
+import logging
+
+import asyncpg
+from orpycamcp_common import events
+
+from notification.core.database import acquire_tenant
+from notification.repositories.processed_events_repository import ProcessedEventsRepository
+from notification.schemas.notification import NotificationSend
+from notification.services.buzones import resolver_buzon
+from notification.services.devolucion import (
+    EVENTO_DEVUELTO,
+    build_devolucion_notifications,
+    resolver_contexto_devolucion,
+)
+from notification.services.notification_service import send_notification
+from notification.services.webhook_service import dispatch as dispatch_webhooks
+
+logger = logging.getLogger(__name__)
+
+
+def build_workflow_notifications(
+    envelope: dict, *, buzon_destino: str
+) -> list[NotificationSend]:
+    """Pure builder: maps a workflow-stream envelope to its NotificationSend(s).
+
+    Mirrors the routing rules previously inlined in ``process_event``:
+      - ``workflow.step.created`` with ``payload.action == "assign"`` → assignment email.
+      - ``workflow.step.overdue`` → overdue-alert email.
+      - anything else → no email (empty list); webhooks still fire independently
+        in the caller, not here.
+
+    `buzon_destino` llega YA RESUELTO (ver `notification/services/buzones.py`) para que
+    este constructor siga siendo puro. Es **keyword-only y sin valor por
+    defecto a propósito**: la versión anterior interpolaba `to_dept` —el
+    NOMBRE de la dependencia, texto libre con espacios y tildes— en la parte
+    local de la dirección, y fallaba el 100% de los envíos. Un default aquí
+    dejaría a cualquier llamante conservando ese defecto en silencio.
+    """
+    tenant_slug = envelope.get("tenant_slug")
+    event_type = envelope.get("event_type")
+    payload_data = envelope.get("payload") or {}
+
+    if event_type == "workflow.step.created" and payload_data.get("action") == "assign":
+        tracking_number = payload_data.get("tracking_number", "N/A")
+        to_dept = payload_data.get("to_dept", "unknown")
+        return [
+            NotificationSend(
+                recipient_email=buzon_destino,
+                subject=f"[OrpycaMCP] Nuevo radicado asignado: {tracking_number}",
+                body=(
+                    f"Se ha asignado un nuevo radicado a su dependencia.\n\n"
+                    f"Número de radicado: {tracking_number}\n"
+                    f"Dependencia destino: {to_dept}\n"
+                    f"Inquilino: {tenant_slug}\n"
+                ),
+                tenant_slug=tenant_slug,
+            )
+        ]
+
+    if event_type == "workflow.step.overdue":
+        tracking_number = payload_data.get("tracking_number", "N/A")
+        to_dept = payload_data.get("to_dept", "unknown")
+        due_at = payload_data.get("due_at")
+        return [
+            NotificationSend(
+                recipient_email=buzon_destino,
+                subject=f"[OrpycaMCP] Trámite VENCIDO: {tracking_number}",
+                body=(
+                    f"El trámite del radicado {tracking_number} está vencido.\n\n"
+                    f"Dependencia responsable: {to_dept}\n"
+                    f"Fecha límite: {due_at or 'N/A'}\n"
+                    f"Inquilino: {tenant_slug}\n"
+                ),
+                tenant_slug=tenant_slug,
+            )
+        ]
+
+    return []
+
+
+def build_document_notifications(
+    envelope: dict, *, buzon_destino: str
+) -> list[NotificationSend]:
+    """Pure builder: maps a document-stream envelope to its NotificationSend(s).
+
+    Solo ``document.radicado.created`` produce correo; cualquier otro tipo
+    devuelve lista vacía (los webhooks se disparan aparte, en el llamante).
+
+    **`buzon_destino` es keyword-only y sin valor por defecto**, igual que en
+    `build_workflow_notifications` y por la misma razón: la dependencia se puede
+    indicar por CÓDIGO o por NOMBRE, y este constructor no puede resolver el
+    nombre —haría falta consultar la base—. Un default convertiría «no supe a
+    quién avisar» en «avisé a la ventanilla» sin que nadie se entere; sin él, un
+    llamante que lo olvide falla al escribirse.
+
+    **El defecto que esto cierra.** Antes se leía solo `dest_dept_code`, así que
+    una radicación hecha por NOMBRE de dependencia —la que produce la bandeja de
+    correo, y la de cualquier cliente que no maneje códigos— acababa en dos
+    fallos a la vez: el aviso decía «Dependencia destino: sin asignar» teniendo el
+    nombre en el mismo payload, y se enviaba a la ventanilla genérica en lugar de
+    a la dependencia competente. Es el mismo defecto que ya se corrigió en el
+    stream de flujos; el de documentos se quedó fuera.
+    """
+    tenant_slug = envelope.get("tenant_slug")
+    if envelope.get("event_type") != "document.radicado.created":
+        return []
+
+    payload_data = envelope.get("payload") or {}
+    tracking_number = payload_data.get("tracking_number", "N/A")
+    # El nombre primero: es lo que un humano reconoce. El código solo si es lo
+    # único que hay.
+    dest_dept = payload_data.get("dest_dept")
+    dest_dept_code = payload_data.get("dest_dept_code")
+    destino_legible = dest_dept or (
+        str(dest_dept_code) if dest_dept_code is not None else "sin asignar"
+    )
+
+    return [
+        NotificationSend(
+            recipient_email=buzon_destino,
+            subject=f"[OrpycaMCP] Documento radicado: {tracking_number}",
+            body=(
+                f"Se ha radicado un nuevo documento.\n\n"
+                f"Número de radicado: {tracking_number}\n"
+                f"Dependencia destino: {destino_legible}\n"
+                f"Inquilino: {tenant_slug}\n"
+            ),
+            tenant_slug=tenant_slug,
+        )
+    ]
+
+
+async def process_event(data: dict[str, str]) -> None:
+    """Consumidor del stream de workflow (orpycamcp.workflow.events).
+
+    Reacciona a ``workflow.step.created`` (asignación) y ``workflow.step.overdue``
+    (alerta de vencimiento) notificando a la dependencia responsable.
+    """
+    envelope = events.parse_fields(data)
+    event_id: str | None = envelope.get("event_id")
+    tenant_slug: str | None = envelope.get("tenant_slug")
+
+    # Events without event_id or tenant_slug cannot be deduplicated safely:
+    # raise so the message stays in the PEL → reclaim_stale → R1 in
+    # _persist_dead_letter handles the no-tenant_slug case under SYSTEM_TENANT.
+    if not event_id or not tenant_slug:
+        raise ValueError(
+            "workflow event missing event_id or tenant_slug "
+            f"(event_id={event_id!r}, tenant_slug={tenant_slug!r})"
+        )
+
+    # Claim the event_id before any external effect (insert-then-send).
+    # BD failures propagate → A-1 no-ack → the message stays in the PEL.
+    async with acquire_tenant(tenant_slug) as conn:
+        claimed = await ProcessedEventsRepository(conn).claim(event_id)
+
+    if not claimed:
+        # Already processed in a prior delivery — intentional dedup skip.
+        logger.debug(
+            "workflow event %s already processed by notification-service (dedup skip)", event_id
+        )
+        return
+
+    # Interoperabilidad (E11): best-effort webhook delivery; dispatch swallows all errors.
+    await dispatch_webhooks(envelope)
+
+    event_type = envelope.get("event_type")
+    payload_data = envelope.get("payload") or {}
+    async with acquire_tenant(tenant_slug) as conn:
+        buzon_destino = await resolver_buzon(
+            conn, payload_data.get("to_dept_code"), payload_data.get("to_dept")
+        )
+    for send in build_workflow_notifications(envelope, buzon_destino=buzon_destino):
+        await send_notification(send, event_type=event_type)
+
+
+async def construir_envios_documento(
+    conn: asyncpg.Connection, envelope: dict
+) -> list[NotificationSend]:
+    """ÚNICO núcleo que convierte un evento del stream de documentos en sus correos.
+
+    Lo llaman el consumidor vivo (``process_document_event``) y el reproceso de la DLQ
+    (``admin_deadletter._construir_envios``): así los dos caminos no pueden divergir en a
+    quién se avisa ni con qué contenido (mismo patrón que ``apply_reclassification`` en
+    signature-service).
+
+    - ``document.envio.devuelto`` (B10): resuelve contexto con I/O (``devolucion``), donde
+      el gate de clearance va en el ``WHERE`` por destinatario. Un envío o radicado
+      inexistente (purgado) se registra en el log y no manda correo; un error de base de
+      datos SE PROPAGA.
+    - ``document.radicado.created``: buzón de la dependencia destino.
+    - cualquier otro tipo: sin correo.
+    """
+    event_type = envelope.get("event_type")
+    payload_data = envelope.get("payload") or {}
+    if event_type == EVENTO_DEVUELTO:
+        shipment_id = payload_data.get("shipment_id")
+        if not shipment_id:
+            logger.warning("document.envio.devuelto sin shipment_id: no hay a quién avisar")
+            return []
+        contexto = await resolver_contexto_devolucion(conn, shipment_id)
+        if contexto is None:
+            return []
+        return build_devolucion_notifications(envelope, contexto=contexto)
+    if event_type != "document.radicado.created":
+        return []
+    # Mismo camino que el stream de flujos: el CÓDIGO enruta directo; si solo
+    # viene el nombre, se resuelve contra la base. Sin esto, radicar por nombre
+    # mandaba el aviso a la ventanilla genérica y la dependencia competente no se
+    # enteraba de su documento.
+    buzon_destino = await resolver_buzon(
+        conn, payload_data.get("dest_dept_code"), payload_data.get("dest_dept")
+    )
+    return build_document_notifications(envelope, buzon_destino=buzon_destino)
+
+
+async def process_document_event(data: dict[str, str]) -> None:
+    """Consumidor del stream de document (orpycamcp.document.events).
+
+    Reacciona a ``document.radicado.created`` (aviso a la dependencia destino) y a
+    ``document.envio.devuelto`` (aviso a la dependencia productora y a quien radicó).
+    Para cualquier otro event_type, aún despacha webhooks (E11) y consume el dedup
+    slot para garantizar exactly-once webhook delivery.
+    """
+    envelope = events.parse_fields(data)
+    event_id: str | None = envelope.get("event_id")
+    tenant_slug: str | None = envelope.get("tenant_slug")
+
+    # Events without event_id or tenant_slug cannot be deduplicated safely.
+    if not event_id or not tenant_slug:
+        raise ValueError(
+            "document event missing event_id or tenant_slug "
+            f"(event_id={event_id!r}, tenant_slug={tenant_slug!r})"
+        )
+
+    event_type = envelope.get("event_type")
+
+    # ``envio.devuelto``: el contexto se resuelve ANTES del claim. Si la base falla al
+    # resolverlo, el evento aún no está reclamado: sin ack vuelve al PEL y, agotadas las
+    # entregas, ``reclaim_stale`` lo manda a la DLQ. Resolverlo después lo perdería sin
+    # pasar por ella (el trade-off de la cabecera de este módulo). Para los demás tipos
+    # el orden no cambia.
+    sends: list[NotificationSend] | None = None
+    if event_type == EVENTO_DEVUELTO:
+        async with acquire_tenant(tenant_slug) as conn:
+            sends = await construir_envios_documento(conn, envelope)
+
+    # Claim the event_id before any external effect.
+    async with acquire_tenant(tenant_slug) as conn:
+        claimed = await ProcessedEventsRepository(conn).claim(event_id)
+
+    if not claimed:
+        logger.debug(
+            "document event %s already processed by notification-service (dedup skip)", event_id
+        )
+        return
+
+    # Interoperabilidad (E11): best-effort webhook delivery for all event types.
+    await dispatch_webhooks(envelope)
+
+    if sends is None:
+        async with acquire_tenant(tenant_slug) as conn:
+            sends = await construir_envios_documento(conn, envelope)
+    for send in sends:
+        await send_notification(send, event_type=event_type)

@@ -33,9 +33,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.constants import DLQ_GROUP
-from app.jobs import deadletter_retention
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from notification.core.constants import DLQ_GROUP
+from notification.jobs import deadletter_retention
+from notification.repositories.dead_letter_repository import DeadLetterRepository
 
 TENANT = "icetex"
 OTHER_GROUP = "workflow-service"  # another consumer sharing evento_dead_letter
@@ -151,8 +151,8 @@ async def test_purge_deadletter_aggregates_across_tenants() -> None:
         yield next(call_order)
 
     with (
-        patch("app.jobs.deadletter_retention.get_pool", return_value=mock_pool),
-        patch("app.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
+        patch("notification.jobs.deadletter_retention.get_pool", return_value=mock_pool),
+        patch("notification.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
     ):
         result = await deadletter_retention.purge_deadletter(90)
 
@@ -189,8 +189,8 @@ async def test_purge_deadletter_failure_in_one_tenant_does_not_abort() -> None:
         yield next(call_order)
 
     with (
-        patch("app.jobs.deadletter_retention.get_pool", return_value=mock_pool),
-        patch("app.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
+        patch("notification.jobs.deadletter_retention.get_pool", return_value=mock_pool),
+        patch("notification.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
     ):
         result = await deadletter_retention.purge_deadletter(90)
 
@@ -207,7 +207,7 @@ async def test_purge_deadletter_empty_tenant_list() -> None:
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_global_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.jobs.deadletter_retention.get_pool", return_value=mock_pool):
+    with patch("notification.jobs.deadletter_retention.get_pool", return_value=mock_pool):
         result = await deadletter_retention.purge_deadletter(90)
 
     assert result == {}
@@ -217,10 +217,10 @@ async def test_purge_deadletter_empty_tenant_list() -> None:
 async def test_run_once_uses_configured_days() -> None:
     """run_once calls purge_deadletter with settings.retention_deadletter_days."""
     with patch(
-        "app.jobs.deadletter_retention.purge_deadletter", new_callable=AsyncMock
+        "notification.jobs.deadletter_retention.purge_deadletter", new_callable=AsyncMock
     ) as mock_purge:
         mock_purge.return_value = {}
-        with patch("app.jobs.deadletter_retention.settings") as mock_settings:
+        with patch("notification.jobs.deadletter_retention.settings") as mock_settings:
             mock_settings.retention_deadletter_days = 45
             await deadletter_retention.run_once()
         mock_purge.assert_called_once_with(45)
@@ -233,7 +233,7 @@ async def test_run_once_uses_configured_days() -> None:
 @pytest.mark.asyncio
 async def test_worker_calls_deadletter_retention_run_once_on_daily_gate() -> None:
     """MVP-3: deadletter_retention.run_once fires on the same daily gate as MVP-1/MVP-2."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [[], asyncio.CancelledError()]
@@ -243,15 +243,15 @@ async def test_worker_calls_deadletter_retention_run_once_on_daily_gate() -> Non
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.stream_worker.retention.run_once", AsyncMock()),
-        patch("app.workers.stream_worker.events.trim_deadletter", AsyncMock()),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", AsyncMock()),
+        patch("notification.workers.stream_worker.retention.run_once", AsyncMock()),
+        patch("notification.workers.stream_worker.events.trim_deadletter", AsyncMock()),
         patch(
-            "app.workers.stream_worker.deadletter_retention.run_once",
+            "notification.workers.stream_worker.deadletter_retention.run_once",
             new_callable=AsyncMock,
         ) as mock_dlq_retention,
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.time", mock_time),
     ):
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
@@ -263,7 +263,7 @@ async def test_worker_calls_deadletter_retention_run_once_on_daily_gate() -> Non
 async def test_worker_deadletter_retention_failure_does_not_crash_loop() -> None:
     """A deadletter_retention.run_once exception logs WARNING; the loop continues
     (MVP-1 and MVP-2 already ran, and the CancelledError still shuts it down cleanly)."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [[], asyncio.CancelledError()]
@@ -273,15 +273,15 @@ async def test_worker_deadletter_retention_failure_does_not_crash_loop() -> None
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.stream_worker.retention.run_once", AsyncMock()),
-        patch("app.workers.stream_worker.events.trim_deadletter", AsyncMock()),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", AsyncMock()),
+        patch("notification.workers.stream_worker.retention.run_once", AsyncMock()),
+        patch("notification.workers.stream_worker.events.trim_deadletter", AsyncMock()),
         patch(
-            "app.workers.stream_worker.deadletter_retention.run_once",
+            "notification.workers.stream_worker.deadletter_retention.run_once",
             AsyncMock(side_effect=RuntimeError("transient DB failure")),
         ),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.time", mock_time),
         patch.object(stream_worker, "logger") as mock_logger,
     ):
         with pytest.raises(asyncio.CancelledError):

@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt import PyJWTError
 from jwt.algorithms import RSAAlgorithm
 
-from app.core import security
+from auth.core import security
 from tests.conftest import build_jwt_claims
 
 _KID = "test-key-1"
@@ -226,7 +226,7 @@ async def test_empty_allowed_azp_rejects_everything(monkeypatch: pytest.MonkeyPa
 async def test_validate_emits_expires_in(monkeypatch: pytest.MonkeyPatch) -> None:
     import time
 
-    from app.services.auth_service import AuthService
+    from auth.services.auth_service import AuthService
 
     key, jwks = _keypair_and_jwks()
     _patch_jwks(monkeypatch, jwks)

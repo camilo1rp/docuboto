@@ -30,6 +30,8 @@ este proyecto.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 from pathlib import Path
 
@@ -48,7 +50,7 @@ MENSAJE_CIEGO = "Se requiere el permiso {perm_name}\""
 def _archivos_con_gate() -> list[Path]:
     """Todo módulo que DEFINE un `require_permission`, derivado del árbol."""
     hallados = []
-    for ruta in sorted(SERVICIOS.glob("*/app/**/*.py")):
+    for ruta in sorted(glob_src(SERVICIOS, "*/app/**/*.py")):
         try:
             arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
         except SyntaxError:  # pragma: no cover — un .py roto ya falla en otro sitio
@@ -87,7 +89,7 @@ def test_no_queda_el_mensaje_ciego():
     """Control directo sobre la cadena exacta que causaba el equívoco."""
     culpables = [
         str(r.relative_to(RAIZ))
-        for r in SERVICIOS.glob("*/app/**/*.py")
+        for r in glob_src(SERVICIOS, "*/app/**/*.py")
         if MENSAJE_CIEGO in r.read_text(encoding="utf-8")
     ]
     assert not culpables, f"vuelve el mensaje que no distingue: {culpables}"

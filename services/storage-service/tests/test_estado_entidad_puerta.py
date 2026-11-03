@@ -25,8 +25,8 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_conn
-from app.main import app
+from storage.core.database import get_db_conn
+from storage.main import app
 
 
 class _Conn:

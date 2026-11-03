@@ -30,9 +30,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.core.database import get_tenant_conn
-from app.main import app
+from signature.core.config import settings
+from signature.core.database import get_tenant_conn
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 
 # Fixture IDs
@@ -431,7 +431,7 @@ async def test_batch_sign_partial_failure() -> None:
 def test_solicitud_create_rejects_invalid_sha256() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.cadena import SolicitudCreate
+    from signature.schemas.cadena import SolicitudCreate
 
     with pytest.raises(ValidationError):
         SolicitudCreate(
@@ -443,7 +443,7 @@ def test_solicitud_create_rejects_invalid_sha256() -> None:
 
 
 def test_solicitud_create_accepts_valid_sha256() -> None:
-    from app.schemas.cadena import SolicitudCreate
+    from signature.schemas.cadena import SolicitudCreate
 
     s = SolicitudCreate(
         objeto_tipo="radicado",
@@ -457,7 +457,7 @@ def test_solicitud_create_accepts_valid_sha256() -> None:
 def test_solicitud_create_rejects_empty_firmantes() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.cadena import SolicitudCreate
+    from signature.schemas.cadena import SolicitudCreate
 
     with pytest.raises(ValidationError):
         SolicitudCreate(objeto_tipo="radicado", objeto_id="x", firmantes=[])
@@ -474,7 +474,7 @@ def test_solicitud_create_rejects_empty_firmantes() -> None:
 
 def test_firmar_request_schema_ignores_firmante_id() -> None:
     """FirmarRequest has no firmante_id field — body cannot inject actor (RF-FIR-11)."""
-    from app.schemas.cadena import FirmarRequest
+    from signature.schemas.cadena import FirmarRequest
 
     req = FirmarRequest(payload_xml="<x/>", firmante_id=str(uuid.uuid4()))  # type: ignore[call-arg]
     assert not hasattr(req, "firmante_id")
@@ -1350,7 +1350,7 @@ async def test_borrador_sin_objeto_registrado_conserva_el_nivel_declarado(
     se sustituye la consulta: lo que este test comprueba es el nivel, y dejar que
     salga a la red lo convertiría en un test de integración encubierto.
     """
-    from app.services import cadena_service as _mod
+    from signature.services import cadena_service as _mod
 
     async def _huella(borrador_id: str, tenant_slug: str) -> dict:
         return {"version": 1, "cuerpo_sha256": "a" * 64}

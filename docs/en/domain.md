@@ -61,7 +61,7 @@ POST /api/v1/documents/
 - Document type invalid for the tenant's TRD: error 422
 - The assigned number **can never be modified or reassigned**
 
-**How to contribute?** `services/document-service/app/services/tracking_service.py`
+**How to contribute?** `services/document-service/document/services/tracking_service.py`
 
 #### Radicado types
 

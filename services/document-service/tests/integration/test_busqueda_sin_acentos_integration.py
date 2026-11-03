@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 

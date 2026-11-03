@@ -27,9 +27,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.schemas.postal import PostalCallbackPayload, ShipmentStatusUpdate
-from app.services import postal_service
-from app.services.postal_service import PostalService
+from document.schemas.postal import PostalCallbackPayload, ShipmentStatusUpdate
+from document.services import postal_service
+from document.services.postal_service import PostalService
 from tests.conftest import _make_fake_redis, _make_mock_conn
 
 NOW = datetime.now(tz=UTC)

@@ -24,8 +24,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.render.factory import get_document_renderer
-from app.services.render.weasyprint_renderer import WeasyPrintRenderer
+from storage.services.render.factory import get_document_renderer
+from storage.services.render.weasyprint_renderer import WeasyPrintRenderer
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS
 
 PAGINA = {
@@ -196,7 +196,7 @@ class TestConformidadReal:
         if not (os.path.isfile(binario) and os.access(binario, os.X_OK)):
             pytest.skip(f"veraPDF no disponible en {binario} (imagen de desarrollo)")
 
-        from app.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
+        from storage.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
 
         r = await WeasyPrintRenderer().render(
             "<p>Cordial saludo.</p>", pagina=PAGINA, perfil="pdf/a-2b"
@@ -232,7 +232,7 @@ class TestEndpointSellado:
         # Lo importante no es el 503: es que NO se entregue un documento vacío.
         # Un oficio que la entidad cree haber producido y no existe es peor que
         # un error visible, porque el fallo aparece cuando el ciudadano reclama.
-        from app.routers import render as router_render
+        from storage.routers import render as router_render
 
         monkeypatch.setattr(router_render, "get_document_renderer", lambda _s: None)
         resp = await client.post(
@@ -247,7 +247,7 @@ class TestEndpointSellado:
     async def test_con_renderizador_devuelve_el_pdf(self, client, monkeypatch) -> None:
         import base64
 
-        from app.routers import render as router_render
+        from storage.routers import render as router_render
 
         monkeypatch.setattr(
             router_render, "get_document_renderer", lambda _s: WeasyPrintRenderer()
@@ -265,7 +265,7 @@ class TestEndpointSellado:
 
     @pytest.mark.asyncio
     async def test_un_render_fallido_no_devuelve_bytes(self, client, monkeypatch) -> None:
-        from app.routers import render as router_render
+        from storage.routers import render as router_render
 
         monkeypatch.setattr(
             router_render, "get_document_renderer", lambda _s: WeasyPrintRenderer()

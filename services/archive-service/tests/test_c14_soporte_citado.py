@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.services.eliminacion_acta import construir_acta_xml
+from archive.services.eliminacion_acta import construir_acta_xml
 from tests.conftest import TENANT_HEADERS
 from tests.test_eliminacion_lote import _CLEARANCE, RUTA, _candidato, _lote_row, _proponer
 
@@ -94,7 +94,7 @@ async def test_sin_constancias_citadas_el_aviso_viene_vacio(client_with_conn) ->
 def test_el_sql_de_congelacion_solo_toma_vigentes_y_una_vez_por_constancia() -> None:
     import inspect
 
-    from app.repositories.archive_repository import ArchiveRepository
+    from archive.repositories.archive_repository import ArchiveRepository
 
     src = inspect.getsource(ArchiveRepository.congelar_soportes_citados)
     assert "NOT EXISTS (SELECT 1 FROM transferencia_acta_firma_excepcion_revocacion" in src
@@ -162,7 +162,7 @@ def test_el_acta_no_lleva_el_anexo() -> None:
 def _repo_transferencia(valores: list):
     from unittest.mock import AsyncMock
 
-    from app.repositories.transferencia_repository import TransferenciaRepository
+    from archive.repositories.transferencia_repository import TransferenciaRepository
 
     conn = AsyncMock()
     conn.fetchval.side_effect = valores

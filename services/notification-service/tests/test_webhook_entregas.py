@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from app.services import webhook_service
-from app.services.webhook_service import BitacoraEntregas, _error_sin_url, _origen_de
+from notification.services import webhook_service
+from notification.services.webhook_service import BitacoraEntregas, _error_sin_url, _origen_de
 from tests.conftest import USER
 
 CUERPO = b'{"payload":{"asunto":"Tutela de Juan Perez"}}'
@@ -35,7 +35,7 @@ SUB = {"id": uuid.uuid4(), "url": "https://hook.example.com/T0KEN/secreto?x=1", 
 @pytest.fixture(autouse=True)
 def _dns(monkeypatch) -> None:
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
 
@@ -118,7 +118,7 @@ async def test_un_error_de_red_se_registra_sin_la_url() -> None:
 @pytest.mark.asyncio
 async def test_destino_rechazado_deja_solo_la_fila_resultado(monkeypatch) -> None:
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 443))],
     )
     bit = _Bitacora([])

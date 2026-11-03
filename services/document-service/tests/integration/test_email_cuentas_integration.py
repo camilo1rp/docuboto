@@ -28,8 +28,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.email_cuenta_repository import EmailCuentaRepository
+from document.core.database import tenant_schema
+from document.repositories.email_cuenta_repository import EmailCuentaRepository
 
 pytestmark = pytest.mark.asyncio
 

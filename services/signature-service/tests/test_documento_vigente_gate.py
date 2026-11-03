@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
-from app.services.cadena_service import CadenaFirmaService
+from signature.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
+from signature.services.cadena_service import CadenaFirmaService
 
 HUELLA_APROBADA = "a" * 64
 HUELLA_OTRA = "b" * 64
@@ -50,7 +50,7 @@ def _servicio() -> CadenaFirmaService:
 
 
 async def _gate(sol: dict, monkeypatch, respuesta=None, error=None) -> None:
-    from app.services import cadena_service as mod
+    from signature.services import cadena_service as mod
 
     async def _huella(borrador_id: str, tenant_slug: str) -> dict:
         if error is not None:
@@ -143,7 +143,7 @@ class TestGateSincrono:
         """
         from unittest.mock import AsyncMock
 
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         productor = AsyncMock(return_value={"huella_sha256": HUELLA_APROBADA, "version": 3})
         monkeypatch.setattr(
@@ -163,7 +163,7 @@ class TestGateSincrono:
     async def test_un_tipo_sin_resolutor_no_pasa_por_aqui(self, monkeypatch) -> None:
         """Control: lo que no está en `RESOLUTOR_DE_HUELLA` no se consulta ni se niega."""
         llamadas = []
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         async def _huella(borrador_id: str, tenant_slug: str) -> dict:
             llamadas.append(borrador_id)
@@ -215,7 +215,7 @@ class TestGateConectado:
 
     @pytest.mark.asyncio
     async def test_firmar_un_borrador_modificado_da_409(self, monkeypatch) -> None:
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         sol = _sol()
         actor = uuid.uuid4()
@@ -242,7 +242,7 @@ class TestGateConectado:
         enviado por vuelta—. El gate va antes de la transacción, así que ni
         `_gate_2fa` llega a llamarse ni se abre transacción alguna.
         """
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         sol = _sol()
         actor = uuid.uuid4()

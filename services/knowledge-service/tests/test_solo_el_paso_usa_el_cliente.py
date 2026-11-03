@@ -14,7 +14,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-APP = Path(__file__).resolve().parents[1] / "app"
+APP = Path(__file__).resolve().parents[1] / "knowledge"
 PERMISO = Path("core") / "paso.py"
 
 
@@ -22,16 +22,16 @@ def _usa_el_cliente(fuente: str) -> list[str]:
     hallazgos: list[str] = []
     for nodo in ast.walk(ast.parse(fuente)):
         if isinstance(nodo, ast.ImportFrom) and nodo.module:
-            if nodo.module == "app.clients.ppi" or nodo.module.endswith(".ppi"):
+            if nodo.module == "knowledge.clients.ppi" or nodo.module.endswith(".ppi"):
                 hallazgos.append(nodo.module)
             if any(alias.name in {"ppi", "ClientePpi"} for alias in nodo.names):
-                if nodo.module == "app.clients" or nodo.module.endswith(".clients"):
+                if nodo.module == "knowledge.clients" or nodo.module.endswith(".clients"):
                     hallazgos.append(nodo.module)
         elif isinstance(nodo, ast.Import):
             for alias in nodo.names:
-                if alias.name == "app.clients.ppi" or alias.name.endswith(".ppi"):
+                if alias.name == "knowledge.clients.ppi" or alias.name.endswith(".ppi"):
                     hallazgos.append(alias.name)
-        elif isinstance(nodo, ast.Constant) and nodo.value == "app.clients.ppi":
+        elif isinstance(nodo, ast.Constant) and nodo.value == "knowledge.clients.ppi":
             hallazgos.append(nodo.value)
         elif isinstance(nodo, ast.Name) and nodo.id in {"ClientePpi", "ppi"}:
             hallazgos.append(nodo.id)
@@ -55,5 +55,5 @@ def test_el_punto_de_paso_si_lo_usa() -> None:
 
 
 def test_el_control_positivo_acusa_un_import() -> None:
-    fuente = "from app.clients.ppi import ClientePpi\n"
-    assert "app.clients.ppi" in _usa_el_cliente(fuente)
+    fuente = "from knowledge.clients.ppi import ClientePpi\n"
+    assert "knowledge.clients.ppi" in _usa_el_cliente(fuente)

@@ -266,7 +266,7 @@ test-frontend:
       - frontend/node_modules/
 
 # ─── Stage: Test — subprocess veraPDF REAL (E10 Increment C2b) ────────────────
-# `SubprocessVeraPdfValidator` (services/storage-service/app/services/pdfa/
+# `SubprocessVeraPdfValidator` (services/storage-service/storage/services/pdfa/
 # subprocess_verapdf.py) ejecuta un binario Java externo sobre PDFs subidos
 # por cualquier tenant -- input NO confiable. No hay veraPDF real disponible
 # en CI (requeriría bajar/instalar un JRE + el CLI en cada pipeline), así que

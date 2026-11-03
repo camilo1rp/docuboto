@@ -9,7 +9,7 @@
 
 """La declaración nombra lo que viene del proveedor, no un nombre del código."""
 
-from app.core.declaracion import (
+from tenant.core.declaracion import (
     exigidos_nivel,
     exigidos_proveedor,
     faltan,

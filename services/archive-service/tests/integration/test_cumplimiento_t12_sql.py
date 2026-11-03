@@ -30,15 +30,15 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.clients.signature_client import SignPersonalOutcome
-from app.clients.storage_client import WormProtectionOutcome
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.repositories.aip_repository import AipRepository
-from app.schemas.transferencia import TransferenciaCreate
-from app.services.archive_service import ArchiveService
-from app.services.index_service import IndexService
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.signature_client import SignPersonalOutcome
+from archive.clients.storage_client import WormProtectionOutcome
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.repositories.aip_repository import AipRepository
+from archive.schemas.transferencia import TransferenciaCreate
+from archive.services.archive_service import ArchiveService
+from archive.services.index_service import IndexService
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import (
     PROTEGER_WORM_FIRMA_PERSONAL_REAL,
     REGISTRAR_FIXITY_PREMIS_REAL,
@@ -357,7 +357,7 @@ async def test_area_07_01_un_indice_que_no_valida_no_se_sella(
         created.id, roto,
     )
 
-    with patch("app.clients.signature_client.sign_xml_outcome", new=AsyncMock()) as sellar:
+    with patch("archive.clients.signature_client.sign_xml_outcome", new=AsyncMock()) as sellar:
         resultado = await IndexService(conn, slug).firmar_indice_close(
             created.id, tenant_slug=slug, actor_id=str(uuid.uuid4())
         )
@@ -379,7 +379,7 @@ async def test_area_07_01_un_indice_que_no_valida_no_se_sella(
 async def test_area_07_01_el_backfill_rellena_solo_nulls_en_abiertos_y_no_toca_los_cerrados(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    from app.schemas.archive import ExpedienteCreate, RadicadoLink
+    from archive.schemas.archive import ExpedienteCreate, RadicadoLink
 
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
@@ -487,7 +487,7 @@ async def test_area_07_05_la_recepcion_guarda_el_detalle_y_el_evento_se_registra
     assert [p["transferencia_id"] for p in pendientes] == [transferencia.id]
 
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
     ) as post:
         assert await REGISTRAR_FIXITY_PREMIS_REAL(svc, transferencia.id, origen="reconciliation") == "registrado"
         # idempotente: una segunda llamada no vuelve a registrar
@@ -515,7 +515,7 @@ async def test_area_07_10_la_firma_personal_nace_pendiente_y_queda_protegida(
     await svc.recibir(transferencia.id, actor)
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ):
         firma = await svc.firmar_personal(transferencia.id, actor, "123456", "Bearer x")
@@ -530,7 +530,7 @@ async def test_area_07_10_la_firma_personal_nace_pendiente_y_queda_protegida(
         ok=True, worm_object_id=uuid.uuid4(), retain_until=datetime(2036, 10, 1, tzinfo=UTC)
     )
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=salida)
+        "archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=salida)
     ) as proteger:
         resultado = await PROTEGER_WORM_FIRMA_PERSONAL_REAL(
             svc, firma_id, actor_id=actor.audit_actor, origen="close"

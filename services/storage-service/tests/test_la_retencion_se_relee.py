@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from miniopy_async import S3Error  # type: ignore[attr-defined]
 
-from app.core.minio_client import (
+from storage.core.minio_client import (
     RetencionNoVerificadaError,
     verificar_retencion_aplicada,
 )

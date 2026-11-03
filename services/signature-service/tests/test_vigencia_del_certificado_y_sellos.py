@@ -41,18 +41,18 @@ from fastapi import HTTPException
 from lxml import etree
 from signxml import CanonicalizationMethod
 
-from app.core import tsa
-from app.core.keys import cert_fingerprint
-from app.providers import local
-from app.providers.base import PreparedDoc, SignerRef
-from app.providers.local import (
+from signature.core import tsa
+from signature.core.keys import cert_fingerprint
+from signature.providers import local
+from signature.providers.base import PreparedDoc, SignerRef
+from signature.providers.local import (
     CertificadoPersonalVencidoError,
     LocalSigner,
     SelloInstitucionalVencidoError,
     XmldsigNoConformeError,
     verify_xades,
 )
-from app.services import personal_signing
+from signature.services import personal_signing
 from tests.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)
     _DOC,
     _NS_LTA,
@@ -99,7 +99,7 @@ def _tsa_larga(monkeypatch: pytest.MonkeyPatch, dias: int) -> None:
         .sign(key, hashes.SHA256())
     )
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem_cert(cert), key_pem=_pem_key(key), key_password=None),
     )
 

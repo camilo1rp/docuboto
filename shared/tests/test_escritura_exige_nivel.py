@@ -42,6 +42,8 @@ este proyecto.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import re
 from pathlib import Path
 
@@ -227,7 +229,7 @@ def _censo_de(texto: str, clave: str) -> set[str]:
 def _censo() -> set[str]:
     """Toda escritura con gate (de endpoint o de router) y sin `min_crud`, derivada."""
     hallados: set[str] = set()
-    for ruta in sorted(SERVICIOS.glob("*/app/routers/*.py")):
+    for ruta in sorted(glob_src(SERVICIOS, "*/app/routers/*.py")):
         hallados |= _censo_de(
             ruta.read_text(encoding="utf-8"), f"{ruta.parts[-4]}::{ruta.name}"
         )
@@ -317,7 +319,7 @@ def test_administrar_rbac_exige_nivel_3() -> None:
     """AREA-01-01: las escrituras de RBAC/URD/clearance de auth-service exigen
     `USUA_PERM_ADMIN` con `min_crud=3`: ya no figuran en el censo de las que se
     pueden ejecutar a nivel de lectura, y la fuente lo declara."""
-    base = SERVICIOS / "auth-service" / "app" / "routers"
+    base = SERVICIOS / "auth-service" / "auth" / "routers"
     fuera = [
         c for c in _censo() if c.startswith("auth-service::") and c.endswith("::USUA_PERM_ADMIN")
     ]

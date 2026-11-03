@@ -27,7 +27,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
+from notification.core.config import settings
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -141,28 +141,28 @@ def db_conn() -> AsyncMock:
 
 @pytest.fixture
 def app_with_mocks(redis_mock: MagicMock, db_conn: AsyncMock):
-    from app.core.database import get_tenant_conn
+    from notification.core.database import get_tenant_conn
 
     async def _tenant_conn() -> AsyncGenerator[AsyncMock, None]:
         yield db_conn
 
     with (
-        patch("app.main.init_pool", new=AsyncMock()),
-        patch("app.main.close_pool", new=AsyncMock()),
-        patch("app.main.init_redis", new=AsyncMock(return_value=redis_mock)),
-        patch("app.main.close_redis", new=AsyncMock()),
+        patch("notification.main.init_pool", new=AsyncMock()),
+        patch("notification.main.close_pool", new=AsyncMock()),
+        patch("notification.main.init_redis", new=AsyncMock(return_value=redis_mock)),
+        patch("notification.main.close_redis", new=AsyncMock()),
         patch(
-            "app.main.stream_worker.run",
+            "notification.main.stream_worker.run",
             new=AsyncMock(side_effect=asyncio.CancelledError),
         ),
-        patch("app.core.redis_client.get_redis", return_value=redis_mock),
-        patch("app.routers.health.get_redis", return_value=redis_mock),
+        patch("notification.core.redis_client.get_redis", return_value=redis_mock),
+        patch("notification.routers.health.get_redis", return_value=redis_mock),
         patch(
-            "app.services.notification_service.acquire_tenant",
+            "notification.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(db_conn),
         ),
     ):
-        from app.main import app
+        from notification.main import app
 
         app.dependency_overrides[get_tenant_conn] = _tenant_conn
         yield app
@@ -229,8 +229,8 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     router tests, which need direct control over conn.fetchrow/fetch/execute
     without the notification/webhook-specific patches in app_with_mocks.
     """
-    from app.core.database import get_tenant_conn
-    from app.main import app
+    from notification.core.database import get_tenant_conn
+    from notification.main import app
 
     conn = _make_mock_conn()
 
@@ -246,7 +246,7 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     # RESUELVA —en vez de inventar la dirección— lo comprueba
     # `test_replay_workflow_resuelve_el_buzon_de_la_dependencia`.
     with patch(
-        "app.routers.admin_deadletter.resolver_buzon",
+        "notification.routers.admin_deadletter.resolver_buzon",
         # El código del evento manda (como el real); sin código, el buzón fijo.
         AsyncMock(
             side_effect=lambda _c, codigo, _n: (

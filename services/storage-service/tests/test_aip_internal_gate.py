@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-from app.core import config as cfg_module
+from storage.core import config as cfg_module
 from tests.conftest import TENANT_HEADERS, TEST_INTERNAL_TOKEN, make_aip_row
 
 _EXPEDIENTE_ID = "EXP-2024-0001"

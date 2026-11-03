@@ -30,22 +30,22 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.clients.document_client import DocumentClientError
-from app.clients.signature_client import (
+from archive.clients.document_client import DocumentClientError
+from archive.clients.signature_client import (
     SignedIndice,
     SignOutcome,
     SignPersonalOutcome,
     VerifyResult,
 )
-from app.core.actor import Actor
-from app.schemas.transferencia import FirmaInobtenibleRequest, RevocarFirmaInobtenibleRequest
-from app.services.constancia_firma_excepcion import (
+from archive.core.actor import Actor
+from archive.schemas.transferencia import FirmaInobtenibleRequest, RevocarFirmaInobtenibleRequest
+from archive.services.constancia_firma_excepcion import (
     canonicalizar,
     compromiso_fundamento,
     sha256_c14n,
     sha256_hex,
 )
-from app.services.transferencia_service import TransferenciaService
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import TENANT_HEADERS, USER_ID, make_expediente_record
 from tests.test_transferencia_acta_firma_personal import _personal_row, _signed_personal
 from tests.test_transferencias import _acta_firma_row, _acta_row, _transfer_row
@@ -258,12 +258,12 @@ def _externos(
     )
     with (
         patch(
-            "app.services.transferencia_service.check_permission",
+            "archive.services.transferencia_service.check_permission",
             new=AsyncMock(return_value=firma_ok),
         ),
-        patch("app.clients.document_client.fetch_radicado_metadata_internal", new=meta),
+        patch("archive.clients.document_client.fetch_radicado_metadata_internal", new=meta),
         patch(
-            "app.clients.document_client.fetch_anexos_internal",
+            "archive.clients.document_client.fetch_anexos_internal",
             new=AsyncMock(
                 return_value=anexos
                 if anexos is not None
@@ -271,22 +271,22 @@ def _externos(
             ),
         ),
         patch(
-            "app.clients.storage_client.fetch_file_hashes_internal",
+            "archive.clients.storage_client.fetch_file_hashes_internal",
             new=AsyncMock(return_value={str(ANEXO): huella_anexo} if huella_anexo else {}),
         ),
         patch(
-            "app.clients.signature_client.sign_xml_outcome", new=AsyncMock(return_value=sello)
+            "archive.clients.signature_client.sign_xml_outcome", new=AsyncMock(return_value=sello)
         ) as sign_xml,
         patch(
-            "app.clients.signature_client.sign_personal",
+            "archive.clients.signature_client.sign_personal",
             new=AsyncMock(return_value=personal or SignPersonalOutcome(signed=_signed_personal())),
         ) as sign_pers,
         patch(
-            "app.services.transferencia_service.TransferenciaService.proteger_worm_firma_excepcion",
+            "archive.services.transferencia_service.TransferenciaService.proteger_worm_firma_excepcion",
             new=AsyncMock(return_value="protegido"),
         ) as worm,
         patch(
-            "app.services.transferencia_service.TransferenciaService.proteger_worm_revocacion",
+            "archive.services.transferencia_service.TransferenciaService.proteger_worm_revocacion",
             new=AsyncMock(return_value="protegido"),
         ),
     ):
@@ -776,10 +776,10 @@ async def test_el_soporte_se_resuelve_con_el_clearance_del_declarante() -> None:
     ]
     with _externos(anexos={str(RAD): [{"file_id": str(ANEXO), "filename": "x"}]}):
         with patch(
-            "app.repositories.archive_repository.ArchiveRepository.caller_clearance",
+            "archive.repositories.archive_repository.ArchiveRepository.caller_clearance",
             new=AsyncMock(return_value=2),
         ):
-            from app.clients import document_client
+            from archive.clients import document_client
 
             await TransferenciaService(conn, TENANT).declarar_firma_inobtenible(
                 tid, Actor(id=ADMIN), _payload(referencia_anexo_id=ANEXO)
@@ -1217,7 +1217,7 @@ async def test_una_parte_con_excepcion_no_firma_y_no_quema_el_totp() -> None:
         None,  # sin firma previa
         _excepcion_row(tid, parte_id=USER_ID),  # pero con excepción VIGENTE declarada
     ]
-    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as sign:
+    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as sign:
         with pytest.raises(Exception) as exc:
             await TransferenciaService(conn, TENANT).firmar_personal(
                 tid, Actor(id=USER_ID), "123456", "Bearer x"
@@ -1232,7 +1232,7 @@ async def test_la_consulta_previa_de_la_firma_solo_cuenta_excepciones_no_revocad
     `firmar_personal` (`get_excepcion_vigente`) excluye las revocadas en el `WHERE` (no en
     Python); la de la cadena (`get_ultima_excepcion`) las incluye y toma el último eslabón."""
     conn = _conn()
-    from app.repositories.transferencia_repository import TransferenciaRepository
+    from archive.repositories.transferencia_repository import TransferenciaRepository
 
     await TransferenciaRepository(conn, TENANT).get_excepcion_vigente(uuid.uuid4(), rol="recibe")
     consulta = conn.fetchrow.call_args.args[0]
@@ -1258,7 +1258,7 @@ async def test_una_excepcion_revocada_en_la_historia_no_impide_firmar() -> None:
         _personal_row(transferencia_id=tid, firmante_id=USER_ID),
     ]
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ) as sign:
         await TransferenciaService(conn, TENANT).firmar_personal(
@@ -1283,7 +1283,7 @@ async def test_carrera_la_firma_pierde_ante_la_excepcion_y_se_dice_409() -> None
         asyncpg.CheckViolationError("excepción declarada"),
     ]
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ):
         with pytest.raises(Exception) as exc:
@@ -1355,21 +1355,21 @@ async def _verificar(
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=descarga or AsyncMock(return_value="<xml/>"),
         ),
-        patch("app.clients.signature_client.verify", new=_verify),
+        patch("archive.clients.signature_client.verify", new=_verify),
         patch(
-            "app.clients.document_client.fetch_radicado_metadata_internal",
+            "archive.clients.document_client.fetch_radicado_metadata_internal",
             new=AsyncMock(
                 return_value=visibles
                 if visibles is not None
                 else {str(RAD): {"tracking_number": NUMERO_RAD}}
             ),
         ) as meta,
-        patch("app.services.transferencia_service.settings.acta_firma_personal_require", gate),
+        patch("archive.services.transferencia_service.settings.acta_firma_personal_require", gate),
         patch(
-            "app.services.transferencia_service.check_permission",
+            "archive.services.transferencia_service.check_permission",
             new=AsyncMock(return_value=puede_ver),
         ),
     ):
@@ -1377,7 +1377,7 @@ async def _verificar(
             res = await TransferenciaService(conn, TENANT).acta_verificacion(tid, USER_ID)
         else:
             with patch(
-                "app.repositories.archive_repository.ArchiveRepository.caller_clearance",
+                "archive.repositories.archive_repository.ArchiveRepository.caller_clearance",
                 new=AsyncMock(return_value=clearance),
             ):
                 res = await TransferenciaService(conn, TENANT).acta_verificacion(tid, USER_ID)
@@ -1480,9 +1480,9 @@ async def test_una_constancia_legada_sin_firma_se_declara_y_no_se_da_por_valida(
     ]
     ok = VerifyResult(valida=True, nivel_conformidad="x", acreditado=False, motivo=None)
     with (
-        patch("app.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<xml/>")),
-        patch("app.clients.signature_client.verify", new=AsyncMock(return_value=ok)),
-        patch("app.services.transferencia_service.check_permission", new=AsyncMock(return_value=False)),
+        patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<xml/>")),
+        patch("archive.clients.signature_client.verify", new=AsyncMock(return_value=ok)),
+        patch("archive.services.transferencia_service.check_permission", new=AsyncMock(return_value=False)),
     ):
         res = await TransferenciaService(conn, TENANT).acta_verificacion(tid, USER_ID)
     assert res.constancias_sin_firma == 1 and res.valida is False
@@ -1531,11 +1531,11 @@ async def test_get_acta_nunca_devuelve_el_fundamento_ni_la_sal_ni_asienta_lectur
     conn.fetch.side_effect = [[], [_excepcion_row(tid)]]  # radicados del expediente, constancias
     with (
         patch(
-            "app.services.transferencia_service.check_permission",
+            "archive.services.transferencia_service.check_permission",
             new=AsyncMock(return_value=puede_ver),
         ) as cp,
         patch(
-            "app.clients.document_client.fetch_radicado_metadata_internal",
+            "archive.clients.document_client.fetch_radicado_metadata_internal",
             new=AsyncMock(return_value={str(RAD): {"tracking_number": NUMERO_RAD}}),
         ),
     ):
@@ -1561,7 +1561,7 @@ async def test_un_lector_anonimo_nunca_ve_el_fundamento() -> None:
     ]
     conn.fetch.side_effect = [[], [_excepcion_row(tid)]]
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         new=AsyncMock(return_value={}),  # el anónimo no ve el radicado de soporte
     ):
         res = await TransferenciaService(conn, TENANT).acta(tid, None)
@@ -1617,10 +1617,10 @@ async def _verificar_con_meta_caido():
     conn.fetch.side_effect = [[], [_excepcion_row(tid)]]
     with (
         patch(
-            "app.clients.document_client.fetch_radicado_metadata_internal",
+            "archive.clients.document_client.fetch_radicado_metadata_internal",
             new=AsyncMock(side_effect=DocumentClientError("caído")),
         ),
-        patch("app.services.transferencia_service.check_permission", new=AsyncMock(return_value=False)),
+        patch("archive.services.transferencia_service.check_permission", new=AsyncMock(return_value=False)),
     ):
         return await TransferenciaService(conn, TENANT).acta(tid, USER_ID)
 
@@ -1705,7 +1705,7 @@ async def test_el_router_devuelve_201_con_la_constancia_y_reenvia_el_bearer(
     mock_conn.fetchval.side_effect = None
     mock_conn.fetchval.return_value = None  # política: sin parámetro -> entorno 'off'
     with (
-        patch("app.core.clearance.check_permission", new=AsyncMock(return_value=True)),
+        patch("archive.core.clearance.check_permission", new=AsyncMock(return_value=True)),
         _externos(personal=SignPersonalOutcome(signed=_signed_personal())) as (_s, sign_pers, _w),
     ):
         resp = await client.post(

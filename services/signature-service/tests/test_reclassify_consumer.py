@@ -37,8 +37,8 @@ import pytest
 import redis.exceptions as redis_exc
 from orpycamcp_common import events
 
-from app.repositories.cadena_repository import CadenaRepository
-from app.workers.document_consumer import _handle
+from signature.repositories.cadena_repository import CadenaRepository
+from signature.workers.document_consumer import _handle
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -166,9 +166,9 @@ async def test_handle_reclassified_llama_actualizar_con_args_correctos() -> None
     data = _reclassified_fields(nivel_nuevo=3)
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("signature.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("signature.workers.document_consumer._audit", mock_audit),
+        patch("signature.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         await _handle(data)
 
@@ -190,9 +190,9 @@ async def test_handle_reclassified_llama_audit_cuando_filas_mayor_cero() -> None
     data = _reclassified_fields(nivel_nuevo=2)
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("signature.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("signature.workers.document_consumer._audit", mock_audit),
+        patch("signature.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         await _handle(data)
 
@@ -207,7 +207,7 @@ async def test_handle_ignora_eventos_de_otro_tipo() -> None:
     """event_type != 'document.radicado.reclassified' → acquire_tenant NO se llama."""
     data = _reclassified_fields(event_type="document.radicado.created")
 
-    with patch("app.workers.document_consumer.acquire_tenant") as mock_acq:
+    with patch("signature.workers.document_consumer.acquire_tenant") as mock_acq:
         await _handle(data)
 
     mock_acq.assert_not_called()
@@ -224,7 +224,7 @@ async def test_handle_ignora_payload_sin_nivel_nuevo() -> None:
     )
     data = events.to_fields(evt)
 
-    with patch("app.workers.document_consumer.acquire_tenant") as mock_acq:
+    with patch("signature.workers.document_consumer.acquire_tenant") as mock_acq:
         await _handle(data)
 
     mock_acq.assert_not_called()
@@ -240,7 +240,7 @@ async def test_handle_ignora_payload_sin_tracking_ni_id() -> None:
     )
     data = events.to_fields(evt)
 
-    with patch("app.workers.document_consumer.acquire_tenant") as mock_acq:
+    with patch("signature.workers.document_consumer.acquire_tenant") as mock_acq:
         await _handle(data)
 
     mock_acq.assert_not_called()
@@ -257,7 +257,7 @@ async def test_handle_ignora_payload_sin_tenant_slug() -> None:
     )
     data = events.to_fields(evt)
 
-    with patch("app.workers.document_consumer.acquire_tenant") as mock_acq:
+    with patch("signature.workers.document_consumer.acquire_tenant") as mock_acq:
         await _handle(data)
 
     mock_acq.assert_not_called()
@@ -276,9 +276,9 @@ async def test_handle_noop_no_llama_audit_cuando_filas_es_cero() -> None:
     data = _reclassified_fields(nivel_nuevo=3)
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("signature.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("signature.workers.document_consumer._audit", mock_audit),
+        patch("signature.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         await _handle(data)
 
@@ -321,9 +321,9 @@ async def test_handle_completa_como_noop_cuando_tabla_firma_no_existe() -> None:
     data = _reclassified_fields(nivel_nuevo=3)
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("signature.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("signature.workers.document_consumer._audit", mock_audit),
+        patch("signature.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         # No debe lanzar — UndefinedTableError es capturado dentro de actualizar_nivel_seguridad.
         await _handle(data)
@@ -343,7 +343,7 @@ async def test_run_no_ackea_cuando_handle_lanza() -> None:
     El xack incondicional (hallazgo A-1) perdía mensajes ante fallos transitorios
     (BD caída, timeout). Con el fix, el ack ocurre SOLO si _handle completó con éxito.
     """
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
     msg_id = b"1234567890-0"
@@ -357,7 +357,7 @@ async def test_run_no_ackea_cuando_handle_lanza() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
         patch.object(
             document_consumer, "_handle", AsyncMock(side_effect=RuntimeError("transient db error"))
         ),
@@ -376,7 +376,7 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
     no hay entradas nuevas en el stream.  El bucle debe continuar de inmediato, sin
     registrar ningún mensaje de error y sin backoff innecesario.
     """
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
 
@@ -389,7 +389,7 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
         patch("asyncio.sleep", AsyncMock()) as mock_sleep,
         patch.object(document_consumer, "logger") as mock_logger,
     ):
@@ -423,7 +423,7 @@ async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
     Primera xreadgroup: mensajes vacíos (sin procesar) → reclaim se dispara.
     Segunda xreadgroup: CancelledError → sale del bucle.
     """
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -435,9 +435,9 @@ async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.reclaim_stale", mock_reclaim),
+        patch("signature.workers.document_consumer.time") as mock_time,
     ):
         # Primer monotonic → 0.0 (init _last_reclaim)
         # Segundo monotonic → 31.0 (reclaim check — supera el intervalo de 30 s)
@@ -455,7 +455,7 @@ async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
 @pytest.mark.asyncio
 async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
     """run() NO invoca reclaim_stale si el intervalo aún no ha transcurrido."""
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -467,9 +467,9 @@ async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.reclaim_stale", mock_reclaim),
+        patch("signature.workers.document_consumer.time") as mock_time,
     ):
         # 0.0 → init; 5.0 → comprobación (solo 5 s < 30 s → sin barrido)
         mock_time.monotonic.side_effect = [0.0, 5.0]
@@ -488,7 +488,7 @@ async def test_persist_dead_letter_inserta_y_audita() -> None:
     - Si fetchrow devuelve una fila → audit.append se llama con actor='system'.
     - El payload de auditoría tiene las claves 'failure', 'envelope' y 'business'.
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from signature.workers.document_consumer import _persist_dead_letter
 
     # fetchrow devuelve una fila → INSERT real (primera vez).
     row_mock = {"event_id": "eeeeeeee-0000-0000-0000-000000000001"}
@@ -520,9 +520,9 @@ async def test_persist_dead_letter_inserta_y_audita() -> None:
     }
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("signature.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("signature.workers.document_consumer._audit", mock_audit),
+        patch("signature.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         await _persist_dead_letter(envelope, failure_meta)
 
@@ -564,7 +564,7 @@ async def test_persist_dead_letter_idempotente_no_audita_en_conflict() -> None:
     ON CONFLICT DO NOTHING.  El INSERT no devuelve fila → audit_log NO se escribe
     de nuevo → no hay doble traza.
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from signature.workers.document_consumer import _persist_dead_letter
 
     # fetchrow devuelve None → ON CONFLICT, no-op.
     conn = _make_conn(fetchrow_return=None)
@@ -580,9 +580,9 @@ async def test_persist_dead_letter_idempotente_no_audita_en_conflict() -> None:
     failure_meta = {"dead_letter_reason": "max_deliveries_exceeded"}
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("signature.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("signature.workers.document_consumer._audit", mock_audit),
+        patch("signature.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         await _persist_dead_letter(envelope, failure_meta)
 
@@ -599,7 +599,7 @@ async def test_persist_dead_letter_error_transiente_propaga() -> None:
     El helper reclaim_stale interpretará la excepción como callback fallido y
     NO ackeará → el mensaje permanece en PEL para reintento.
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from signature.workers.document_consumer import _persist_dead_letter
 
     conn = _make_conn()
     conn.fetchrow.side_effect = OSError("connection reset by peer")
@@ -613,7 +613,7 @@ async def test_persist_dead_letter_error_transiente_propaga() -> None:
     }
     failure_meta = {"dead_letter_reason": "max_deliveries_exceeded"}
 
-    with patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)):
+    with patch("signature.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)):
         with pytest.raises(OSError, match="connection reset by peer"):
             await _persist_dead_letter(envelope, failure_meta)
 
@@ -626,16 +626,16 @@ async def test_persist_dead_letter_sin_tenant_slug_retorna_sin_error() -> None:
     infinito.  La función retorna normalmente (no lanza) para que el helper pueda
     XACK el poison pill y liberar la PEL.
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from signature.workers.document_consumer import _persist_dead_letter
 
     mock_audit = AsyncMock()
     envelope = {"event_id": "abc", "actor": "user-1", "payload": {}}  # sin tenant_slug
     failure_meta = {"dead_letter_reason": "max_deliveries_exceeded"}
 
     with (
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
-        patch("app.workers.document_consumer.acquire_tenant") as mock_acq,
+        patch("signature.workers.document_consumer._audit", mock_audit),
+        patch("signature.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("signature.workers.document_consumer.acquire_tenant") as mock_acq,
     ):
         await _persist_dead_letter(envelope, failure_meta)  # no debe lanzar
 
@@ -652,7 +652,7 @@ async def test_persist_dead_letter_sin_tenant_slug_retorna_sin_error() -> None:
 @pytest.mark.asyncio
 async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
     """Un error en reclaim_stale no termina el loop; el bucle continúa y finaliza limpiamente."""
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -662,12 +662,12 @@ async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
         patch(
-            "app.workers.document_consumer.events.reclaim_stale",
+            "signature.workers.document_consumer.events.reclaim_stale",
             AsyncMock(side_effect=RuntimeError("sweep db error")),
         ),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("signature.workers.document_consumer.time") as mock_time,
     ):
         mock_time.monotonic.side_effect = [0.0, 31.0]
         with pytest.raises(asyncio.CancelledError):
@@ -687,7 +687,7 @@ async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
     """events.trim_deadletter es llamado con DEADLETTER_STREAM y max_age_ms correcto
     cuando DLQ_TRIM_INTERVAL ha transcurrido.
     """
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -699,10 +699,10 @@ async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.document_consumer.events.trim_deadletter", mock_trim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("signature.workers.document_consumer.events.trim_deadletter", mock_trim),
+        patch("signature.workers.document_consumer.time") as mock_time,
     ):
         # First monotonic: init _last_reclaim=_last_dlq_trim=0.0
         # Second monotonic: now=DLQ_TRIM_INTERVAL+1 → both reclaim and DLQ trim fire
@@ -723,7 +723,7 @@ async def test_run_invoca_trim_dlq_despues_del_intervalo() -> None:
 @pytest.mark.asyncio
 async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
     """events.trim_deadletter NO se llama si DLQ_TRIM_INTERVAL aún no ha transcurrido."""
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -735,10 +735,10 @@ async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.document_consumer.events.trim_deadletter", mock_trim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("signature.workers.document_consumer.events.trim_deadletter", mock_trim),
+        patch("signature.workers.document_consumer.time") as mock_time,
     ):
         # now=5.0 < DLQ_TRIM_INTERVAL (86400) → trim must NOT fire.
         mock_time.monotonic.side_effect = [0.0, 5.0]
@@ -751,7 +751,7 @@ async def test_run_no_invoca_trim_dlq_antes_del_intervalo() -> None:
 @pytest.mark.asyncio
 async def test_run_fallo_en_trim_dlq_no_tumba_el_loop() -> None:
     """Un error en trim_deadletter se registra como WARNING; el loop no crashea."""
-    from app.workers import document_consumer
+    from signature.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -761,13 +761,13 @@ async def test_run_fallo_en_trim_dlq_no_tumba_el_loop() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", AsyncMock()),
+        patch("signature.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("signature.workers.document_consumer.events.reclaim_stale", AsyncMock()),
         patch(
-            "app.workers.document_consumer.events.trim_deadletter",
+            "signature.workers.document_consumer.events.trim_deadletter",
             AsyncMock(side_effect=RuntimeError("redis conn error")),
         ),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("signature.workers.document_consumer.time") as mock_time,
         patch.object(document_consumer, "logger") as mock_logger,
     ):
         mock_time.monotonic.side_effect = [

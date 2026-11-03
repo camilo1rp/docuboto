@@ -28,7 +28,7 @@ from tests.conftest import (
 # --- envío manual + persistencia -------------------------------------------
 @pytest.mark.asyncio
 async def test_send_notification_manual(client: AsyncClient, db_conn) -> None:
-    with patch("app.services.notification_service.send_email", new=AsyncMock()):
+    with patch("notification.services.notification_service.send_email", new=AsyncMock()):
         response = await client.post(
             "/api/v1/notifications/send",
             json={
@@ -69,10 +69,10 @@ async def test_send_notification_failed_email_is_persisted(client: AsyncClient, 
     """
     with (
         patch(
-            "app.services.notification_service.send_email",
+            "notification.services.notification_service.send_email",
             new=AsyncMock(side_effect=RuntimeError("smtp down")),
         ),
-        patch("app.services.notification_service.asyncio.sleep", new=AsyncMock()),
+        patch("notification.services.notification_service.asyncio.sleep", new=AsyncMock()),
     ):
         response = await client.post(
             "/api/v1/notifications/send",
@@ -103,7 +103,7 @@ async def test_sensible_notification_sends_real_body_but_persists_redacted(
     debe contener el código.
     """
     otp_body = "Código: 123456\n\nVálido por 5 minutos."
-    with patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send:
+    with patch("notification.services.notification_service.send_email", new=AsyncMock()) as mock_send:
         response = await client.post(
             "/api/v1/notifications/send",
             json={
@@ -136,7 +136,7 @@ async def test_non_sensible_notification_persists_real_body(
     client: AsyncClient, db_conn
 ) -> None:
     """Retrocompatibilidad: `sensible` ausente/False -> body real persistido (como hoy)."""
-    with patch("app.services.notification_service.send_email", new=AsyncMock()):
+    with patch("notification.services.notification_service.send_email", new=AsyncMock()):
         response = await client.post(
             "/api/v1/notifications/send",
             json={
@@ -157,10 +157,10 @@ async def test_non_sensible_notification_persists_real_body(
 # --- reintentos SMTP (unitario) --------------------------------------------
 @pytest.mark.asyncio
 async def test_send_with_retries_succeeds_first_try() -> None:
-    from app.schemas.notification import NotificationSend
-    from app.services.notification_service import _send_with_retries
+    from notification.schemas.notification import NotificationSend
+    from notification.services.notification_service import _send_with_retries
 
-    with patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send:
+    with patch("notification.services.notification_service.send_email", new=AsyncMock()) as mock_send:
         status, attempts, last_error = await _send_with_retries(
             NotificationSend(recipient_email="u@x.co", subject="S", body="B")
         )
@@ -171,14 +171,14 @@ async def test_send_with_retries_succeeds_first_try() -> None:
 
 @pytest.mark.asyncio
 async def test_send_with_retries_recovers_after_failures() -> None:
-    from app.schemas.notification import NotificationSend
-    from app.services.notification_service import _send_with_retries
+    from notification.schemas.notification import NotificationSend
+    from notification.services.notification_service import _send_with_retries
 
     # Falla dos veces, tercer intento OK (SMTP_MAX_ATTEMPTS=3 por defecto).
     send = AsyncMock(side_effect=[RuntimeError("x"), RuntimeError("y"), None])
     with (
-        patch("app.services.notification_service.send_email", new=send),
-        patch("app.services.notification_service.asyncio.sleep", new=AsyncMock()) as sl,
+        patch("notification.services.notification_service.send_email", new=send),
+        patch("notification.services.notification_service.asyncio.sleep", new=AsyncMock()) as sl,
     ):
         status, attempts, last_error = await _send_with_retries(
             NotificationSend(recipient_email="u@x.co", subject="S", body="B")
@@ -193,13 +193,13 @@ async def test_send_with_retries_recovers_after_failures() -> None:
 
 @pytest.mark.asyncio
 async def test_send_with_retries_exhausts_and_fails() -> None:
-    from app.schemas.notification import NotificationSend
-    from app.services.notification_service import _send_with_retries
+    from notification.schemas.notification import NotificationSend
+    from notification.services.notification_service import _send_with_retries
 
     send = AsyncMock(side_effect=RuntimeError("smtp down"))
     with (
-        patch("app.services.notification_service.send_email", new=send),
-        patch("app.services.notification_service.asyncio.sleep", new=AsyncMock()),
+        patch("notification.services.notification_service.send_email", new=send),
+        patch("notification.services.notification_service.asyncio.sleep", new=AsyncMock()),
     ):
         status, attempts, last_error = await _send_with_retries(
             NotificationSend(recipient_email="u@x.co", subject="S", body="B")
@@ -337,17 +337,17 @@ async def test_process_workflow_event() -> None:
     # conn: used by notification_service.acquire_tenant for persistence.
     conn = make_db_conn()
     with (
-        patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch("notification.services.notification_service.send_email", new=AsyncMock()) as mock_send,
         patch(
-            "app.services.event_consumer.acquire_tenant",
+            "notification.services.event_consumer.acquire_tenant",
             return_value=_FakeAcquire(conn_dedup),
         ),
         patch(
-            "app.services.notification_service.acquire_tenant",
+            "notification.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(conn),
         ),
     ):
-        from app.services.event_consumer import process_event
+        from notification.services.event_consumer import process_event
 
         event = events.build_event(
             "workflow.step.created",
@@ -374,17 +374,17 @@ async def test_process_workflow_overdue_event() -> None:
 
     conn = make_db_conn()
     with (
-        patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch("notification.services.notification_service.send_email", new=AsyncMock()) as mock_send,
         patch(
-            "app.services.event_consumer.acquire_tenant",
+            "notification.services.event_consumer.acquire_tenant",
             return_value=_FakeAcquire(conn_dedup),
         ),
         patch(
-            "app.services.notification_service.acquire_tenant",
+            "notification.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(conn),
         ),
     ):
-        from app.services.event_consumer import process_event
+        from notification.services.event_consumer import process_event
 
         event = events.build_event(
             "workflow.step.overdue",
@@ -412,17 +412,17 @@ async def test_process_document_event() -> None:
 
     conn = make_db_conn()
     with (
-        patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch("notification.services.notification_service.send_email", new=AsyncMock()) as mock_send,
         patch(
-            "app.services.event_consumer.acquire_tenant",
+            "notification.services.event_consumer.acquire_tenant",
             return_value=_FakeAcquire(conn_dedup),
         ),
         patch(
-            "app.services.notification_service.acquire_tenant",
+            "notification.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(conn),
         ),
     ):
-        from app.services.event_consumer import process_document_event
+        from notification.services.event_consumer import process_document_event
 
         event = events.build_event(
             "document.radicado.created",
@@ -449,13 +449,13 @@ async def test_process_document_event_ignores_other_types() -> None:
     conn_dedup.fetchrow.side_effect = _fetchrow_dedup_y_dependencia
 
     with (
-        patch("app.services.notification_service.send_email", new=AsyncMock()) as mock_send,
+        patch("notification.services.notification_service.send_email", new=AsyncMock()) as mock_send,
         patch(
-            "app.services.event_consumer.acquire_tenant",
+            "notification.services.event_consumer.acquire_tenant",
             return_value=_FakeAcquire(conn_dedup),
         ),
     ):
-        from app.services.event_consumer import process_document_event
+        from notification.services.event_consumer import process_document_event
 
         event = events.build_event("document.radicado.updated", tenant_slug="icetex", payload={})
         await process_document_event(events.to_fields(event))
@@ -473,7 +473,7 @@ async def test_health_es_vivacidad_y_no_abre_conexiones(client: AsyncClient) -> 
     con lo que el orquestador reiniciaba el servicio: no arregla Redis y sí
     pierde el trabajo en vuelo.
     """
-    with patch("app.routers.health.aiosmtplib.SMTP") as smtp:
+    with patch("notification.routers.health.aiosmtplib.SMTP") as smtp:
         response = await client.get("/health")
         assert smtp.call_count == 0, "la vivacidad no abre SMTP"
 
@@ -500,8 +500,8 @@ async def test_ready_comprueba_las_dependencias(client: AsyncClient) -> None:
     smtp_instance.quit = AsyncMock()
 
     with (
-        patch("app.routers.health.aiosmtplib.SMTP", return_value=smtp_instance),
-        patch("app.routers.health.get_pool", return_value=_pool_falso()),
+        patch("notification.routers.health.aiosmtplib.SMTP", return_value=smtp_instance),
+        patch("notification.routers.health.get_pool", return_value=_pool_falso()),
     ):
         response = await client.get("/health/ready")
 
@@ -520,8 +520,8 @@ async def test_ready_con_smtp_caido_sigue_disponible(client: AsyncClient) -> Non
     webhooks, que sí funcionan.
     """
     with (
-        patch("app.routers.health.aiosmtplib.SMTP", side_effect=OSError("sin ruta")),
-        patch("app.routers.health.get_pool", return_value=_pool_falso()),
+        patch("notification.routers.health.aiosmtplib.SMTP", side_effect=OSError("sin ruta")),
+        patch("notification.routers.health.get_pool", return_value=_pool_falso()),
     ):
         response = await client.get("/health/ready")
 
@@ -533,7 +533,7 @@ async def test_ready_con_smtp_caido_sigue_disponible(client: AsyncClient) -> Non
 async def test_ready_no_publica_el_servidor_de_correo(client: AsyncClient) -> None:
     """Se reportaba `f"error: {exc}"`, con el nombre y el puerto dentro."""
     with patch(
-        "app.routers.health.aiosmtplib.SMTP",
+        "notification.routers.health.aiosmtplib.SMTP",
         side_effect=OSError("connect failed: smtp.entidad.gov.co:587"),
     ):
         cuerpo = (await client.get("/health/ready")).text

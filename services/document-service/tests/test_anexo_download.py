@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.clients import storage_client
+from document.clients import storage_client
 from tests.conftest import TENANT_HEADERS, make_anexo_record
 
 DOC_ID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
@@ -269,7 +269,7 @@ async def test_download_anexo_storage_error_is_503(client_with_conn, monkeypatch
 async def test_download_anexo_deja_asiento_de_descarga(client_with_conn, monkeypatch) -> None:
     # El acceso al CONTENIDO (más fuerte que la lectura del metadato) debe
     # auditarse: canal auditable + actor real -> asiento document.anexo_descargado.
-    from app.services import document_service as _svc
+    from document.services import document_service as _svc
 
     client, mock_conn = client_with_conn
     anexo_row = make_anexo_record(radicado_id=DOC_ID)
@@ -301,7 +301,7 @@ async def test_download_anexo_deja_asiento_de_descarga(client_with_conn, monkeyp
 @pytest.mark.asyncio
 async def test_download_anexo_sin_canal_no_audita(client_with_conn, monkeypatch) -> None:
     # Sin canal auditable (default 'system') no se registra la descarga.
-    from app.services import document_service as _svc
+    from document.services import document_service as _svc
 
     client, mock_conn = client_with_conn
     anexo_row = make_anexo_record(radicado_id=DOC_ID)

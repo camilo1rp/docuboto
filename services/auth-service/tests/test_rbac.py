@@ -17,11 +17,11 @@ import asyncpg
 import pytest
 from httpx import AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.database import get_tenant_conn
-from app.main import app
-from app.services import rbac_service as rbac_service_module
-from app.services.rbac_service import has_permission
+from auth.core.authz import Caller, get_caller
+from auth.core.database import get_tenant_conn
+from auth.main import app
+from auth.services import rbac_service as rbac_service_module
+from auth.services.rbac_service import has_permission
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 
@@ -636,7 +636,7 @@ async def test_create_user_without_tenant_slug_fails_closed(
     # request.headers.get("X-Tenant-Slug") resuelve "demo" vía get_tenant_conn
     # (exigido para llegar al handler); se fuerza el caso límite invocando el
     # servicio directamente para probar el guard fail-closed en aislamiento.
-    from app.services.rbac_service import RBACService
+    from auth.services.rbac_service import RBACService
 
     service = RBACService(conn)
     with pytest.raises(RuntimeError, match="tenant_slug"):

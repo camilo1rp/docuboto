@@ -31,12 +31,12 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.core.database import tenant_schema
-from app.repositories.valoracion_repository import ValoracionRepository
-from app.schemas.archive import TvdAgrupacionCreate
-from app.schemas.retencion_legal import ValoracionTvdRequest
-from app.services.archive_service import ArchiveService
-from app.services.valoracion_service import ValoracionService
+from archive.core.database import tenant_schema
+from archive.repositories.valoracion_repository import ValoracionRepository
+from archive.schemas.archive import TvdAgrupacionCreate
+from archive.schemas.retencion_legal import ValoracionTvdRequest
+from archive.services.archive_service import ArchiveService
+from archive.services.valoracion_service import ValoracionService
 
 pytestmark = pytest.mark.integration
 
@@ -184,8 +184,8 @@ async def test_registrar_amarra_solo_los_expedientes_de_esa_version_y_sin_valora
     svc = ValoracionService(conn, slug)
     fijar, levantar = _storage()
     with (
-        patch("app.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("app.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
+        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
     ):
         res = await svc.registrar_valoracion(a.id, _PAYLOAD, actor=uuid.uuid4())
 
@@ -237,7 +237,7 @@ async def test_el_acto_y_su_asiento_son_atomicos(tenant_ctx: tuple[str, asyncpg.
     tvd = await _tvd(conn, slug)
     exp = await _expediente(conn)
     await _hold(conn, exp, tvd.id)
-    with patch("app.services.valoracion_service.audit.append", new=AsyncMock(side_effect=RuntimeError)):
+    with patch("archive.services.valoracion_service.audit.append", new=AsyncMock(side_effect=RuntimeError)):
         with pytest.raises(RuntimeError):
             await ValoracionService(conn, slug).registrar_valoracion(
                 tvd.id, _PAYLOAD, actor=uuid.uuid4()
@@ -264,8 +264,8 @@ async def test_no_se_aplica_con_un_artefacto_pendiente(
     svc = ValoracionService(conn, slug)
     fijar, levantar = _storage()
     with (
-        patch("app.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("app.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
+        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
     ):
         await svc.registrar_valoracion(tvd.id, _PAYLOAD, actor=uuid.uuid4())
         assert await svc.aplicar_expediente(exp) == "esperando"
@@ -296,8 +296,8 @@ async def test_aplicar_ct_propaga_la_fecha_al_espejo_local_del_aip(
     )
     fijar, levantar = _storage()
     with (
-        patch("app.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("app.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
+        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
     ):
         await ValoracionService(conn, slug).registrar_valoracion(tvd.id, _PAYLOAD, actor=uuid.uuid4())
     assert await conn.fetchval(
@@ -315,8 +315,8 @@ async def test_la_cadena_de_auditoria_queda_integra(
     await _hold(conn, exp, tvd.id)
     fijar, levantar = _storage()
     with (
-        patch("app.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("app.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
+        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
     ):
         await ValoracionService(conn, slug).registrar_valoracion(tvd.id, _PAYLOAD, actor=uuid.uuid4())
     acciones = [r["action"] for r in await conn.fetch(

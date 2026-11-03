@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.services.postal_provider import generar_guia
+from document.services.postal_provider import generar_guia
 from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
@@ -305,7 +305,7 @@ def test_la_consulta_de_envios_trae_el_numero_de_radicado() -> None:
     dato lo ponía el propio test. Quitar `r.tracking_number` del `_COLS_S` debe
     poner esto en rojo, y es lo único que lo garantiza.
     """
-    from app.repositories.postal_repository import _COLS_S
+    from document.repositories.postal_repository import _COLS_S
 
     assert "r.tracking_number" in _COLS_S
 

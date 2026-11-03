@@ -22,7 +22,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.tenant import AtencionPublica
 
-from app.main import app
+from document.main import app
 
 OAI = "{http://www.openarchives.org/OAI/2.0/}"
 DC = "{http://purl.org/dc/elements/1.1/}"
@@ -44,7 +44,7 @@ def _rad(tn: str = "2026-DEMO-E-000001", subject: str = "Acta pública", doc_typ
 def _entidad_operativa():
     """ADR-035: estos tests ejercen el protocolo, no el estado (eso lo cubre
     `test_estado_entidad.py`), así que la entidad se da por operativa."""
-    with patch("app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
+    with patch("document.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
         yield
 
 
@@ -242,7 +242,7 @@ async def test_nonexistent_tenant_is_400_not_500(oai_ctx: tuple[AsyncClient, Asy
     (400 badArgument), NO revienta en 500 (oráculo de existencia)."""
     client, conn = oai_ctx
     with patch(
-        "app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
+        "document.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
     ):
         resp = await client.get(_url(verb="Identify"))
     assert resp.status_code == 400
@@ -391,6 +391,6 @@ async def test_get_record_reserved_ead_is_iddoesnotexist(
 
 @pytest.fixture(autouse=True)
 def _habilitar_interop(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import config as cfg_module
+    from document.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)

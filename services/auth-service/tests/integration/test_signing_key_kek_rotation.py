@@ -25,16 +25,16 @@ import asyncpg
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from app.core.config import settings
-from app.core.database import tenant_schema
-from app.core.signing_keys import (
+from auth.core.config import settings
+from auth.core.database import tenant_schema
+from auth.core.signing_keys import (
     build_aad,
     decrypt_private_key,
     encrypt_private_key,
     generate_keypair,
     private_key_to_pem,
 )
-from app.ops.rewrap_signing_keys import _rewrap_all, _rewrap_tenant
+from auth.ops.rewrap_signing_keys import _rewrap_all, _rewrap_tenant
 from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [

@@ -33,13 +33,13 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.format_migration_service import (
+from storage.services.format_migration_service import (
     FixityMismatchError,
     FormatMigrationService,
     MigradorNoDisponibleError,
 )
-from app.services.migracion.types import MigracionResult
-from app.services.pdfa.types import PdfaResult
+from storage.services.migracion.types import MigracionResult
+from storage.services.pdfa.types import PdfaResult
 
 ORIGEN_BYTES = b"%PDF-1.4 original"
 DERIVADO_BYTES = b"%PDF-1.4 derivado PDF/A"
@@ -113,7 +113,7 @@ def _migrador(outcome="migrado", contenido=DERIVADO_BYTES, motivo=None):
     )
     doble = AsyncMock()
     doble.migrar = AsyncMock(return_value=resultado)
-    return patch("app.services.format_migration_service.get_format_migrator", return_value=doble)
+    return patch("storage.services.format_migration_service.get_format_migrator", return_value=doble)
 
 
 def _validador(outcome="conformant"):
@@ -121,7 +121,7 @@ def _validador(outcome="conformant"):
     doble.validate = AsyncMock(
         return_value=PdfaResult(outcome=outcome, profile="2b", validator_agent="veraPDF")
     )
-    return patch("app.services.format_migration_service.get_pdfa_validator", return_value=doble)
+    return patch("storage.services.format_migration_service.get_pdfa_validator", return_value=doble)
 
 
 def _entorno(servicio, record):
@@ -162,7 +162,7 @@ async def test_sin_convertidor_NO_se_inventa_una_copia_de_preservacion() -> None
     servicio = _servicio()
     subir = AsyncMock()
 
-    with patch("app.services.format_migration_service.get_format_migrator", return_value=None):
+    with patch("storage.services.format_migration_service.get_format_migrator", return_value=None):
         with pytest.raises(MigradorNoDisponibleError):
             await servicio.migrar_a_pdfa(
                 uuid.uuid4(), perfil="2b", actor=None, descargar=_descargar_ok, subir=subir
@@ -304,7 +304,7 @@ def test_sin_binario_la_fabrica_devuelve_None_y_no_un_stub() -> None:
     """El punto entero del módulo. La factory gemela del validador degrada a un
     stub honesto porque «no evaluado» es un resultado real; aquí no existe el
     equivalente, así que la ausencia se propaga como `None` hasta el 503."""
-    from app.services.migracion.factory import get_format_migrator
+    from storage.services.migracion.factory import get_format_migrator
 
     assert get_format_migrator(_Settings(format_migrator="none")) is None
     assert get_format_migrator(_Settings(format_migrator="ghostscript")) is None
@@ -323,7 +323,7 @@ def test_sin_binario_la_fabrica_devuelve_None_y_no_un_stub() -> None:
 
 
 def test_un_migrador_desconocido_no_migra_en_vez_de_reventar() -> None:
-    from app.services.migracion.factory import get_format_migrator
+    from storage.services.migracion.factory import get_format_migrator
 
     assert get_format_migrator(_Settings(format_migrator="inventado")) is None
 
@@ -334,7 +334,7 @@ async def test_el_perfil_se_valida_contra_una_lista_CERRADA() -> None:
     puede llegar a los argumentos del subprocess. Y las variantes `a`/`u` se
     rechazan a propósito — exigen texto etiquetado o Unicode garantizado, que
     una conversión automática no puede prometer."""
-    from app.services.migracion.subprocess_ghostscript import SubprocessGhostscriptMigrator
+    from storage.services.migracion.subprocess_ghostscript import SubprocessGhostscriptMigrator
 
     migrador = SubprocessGhostscriptMigrator(binary="/bin/true")
     for perfil in ("2a", "3u", "../etc/passwd", ""):
@@ -355,7 +355,7 @@ async def test_el_convertidor_corre_con_dSAFER() -> None:
     documento y pasaría a ser un programa con acceso al contenedor."""
     from unittest.mock import MagicMock
 
-    from app.services.migracion.subprocess_ghostscript import SubprocessGhostscriptMigrator
+    from storage.services.migracion.subprocess_ghostscript import SubprocessGhostscriptMigrator
 
     capturado = {}
 

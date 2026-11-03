@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from app.core import config as cfg_module
-from app.routers import internal
+from document.core import config as cfg_module
+from document.routers import internal
 from tests.conftest import TENANT_SLUG
 
 TOKEN = "test-document-internal-token-xxx"

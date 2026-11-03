@@ -33,9 +33,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.constants import DLQ_GROUP
-from app.jobs import deadletter_retention
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from workflow.core.constants import DLQ_GROUP
+from workflow.jobs import deadletter_retention
+from workflow.repositories.dead_letter_repository import DeadLetterRepository
 
 TENANT = "demo"
 OTHER_GROUP = "signature-service"  # the other consumer sharing evento_dead_letter
@@ -148,8 +148,8 @@ async def test_purge_deadletter_aggregates_across_tenants() -> None:
         yield next(call_order)
 
     with (
-        patch("app.jobs.deadletter_retention.get_pool", return_value=mock_pool),
-        patch("app.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
+        patch("workflow.jobs.deadletter_retention.get_pool", return_value=mock_pool),
+        patch("workflow.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
     ):
         result = await deadletter_retention.purge_deadletter(90)
 
@@ -187,8 +187,8 @@ async def test_purge_deadletter_failure_in_one_tenant_does_not_abort() -> None:
         yield next(call_order)
 
     with (
-        patch("app.jobs.deadletter_retention.get_pool", return_value=mock_pool),
-        patch("app.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
+        patch("workflow.jobs.deadletter_retention.get_pool", return_value=mock_pool),
+        patch("workflow.jobs.deadletter_retention.acquire_tenant", fake_acquire_tenant),
     ):
         result = await deadletter_retention.purge_deadletter(90)
 
@@ -205,7 +205,7 @@ async def test_purge_deadletter_empty_tenant_list() -> None:
     mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_global_conn)
     mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.jobs.deadletter_retention.get_pool", return_value=mock_pool):
+    with patch("workflow.jobs.deadletter_retention.get_pool", return_value=mock_pool):
         result = await deadletter_retention.purge_deadletter(90)
 
     assert result == {}
@@ -215,10 +215,10 @@ async def test_purge_deadletter_empty_tenant_list() -> None:
 async def test_run_once_uses_configured_days() -> None:
     """run_once calls purge_deadletter with settings.retention_deadletter_days."""
     with patch(
-        "app.jobs.deadletter_retention.purge_deadletter", new_callable=AsyncMock
+        "workflow.jobs.deadletter_retention.purge_deadletter", new_callable=AsyncMock
     ) as mock_purge:
         mock_purge.return_value = {}
-        with patch("app.jobs.deadletter_retention.settings") as mock_settings:
+        with patch("workflow.jobs.deadletter_retention.settings") as mock_settings:
             mock_settings.retention_deadletter_days = 45
             await deadletter_retention.run_once()
         mock_purge.assert_called_once_with(45)
@@ -231,7 +231,7 @@ async def test_run_once_uses_configured_days() -> None:
 @pytest.mark.asyncio
 async def test_worker_calls_run_once_after_interval() -> None:
     """After DLQ_TRIM_INTERVAL seconds the worker calls deadletter_retention.run_once."""
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     redis_mock = AsyncMock()
     # Iteration 1: xreadgroup returns nothing — the loop body is a no-op except the
@@ -255,11 +255,11 @@ async def test_worker_calls_run_once_after_interval() -> None:
     document_consumer.DLQ_TRIM_INTERVAL = 0.0  # trigger immediately
 
     with (
-        patch("app.workers.document_consumer.get_redis", return_value=redis_mock),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.trim_deadletter", AsyncMock()),
+        patch("workflow.workers.document_consumer.get_redis", return_value=redis_mock),
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.trim_deadletter", AsyncMock()),
         patch(
-            "app.workers.document_consumer.deadletter_retention.run_once",
+            "workflow.workers.document_consumer.deadletter_retention.run_once",
             side_effect=fake_run_once,
         ),
     ):
@@ -273,7 +273,7 @@ async def test_worker_calls_run_once_after_interval() -> None:
 @pytest.mark.asyncio
 async def test_worker_run_once_failure_does_not_crash_loop() -> None:
     """A run_once exception logs WARNING and the loop continues (does not propagate)."""
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     redis_mock = AsyncMock()
     # Three iterations: (1) run_once raises and is swallowed, (2) run_once succeeds and
@@ -297,11 +297,11 @@ async def test_worker_run_once_failure_does_not_crash_loop() -> None:
     document_consumer.DLQ_TRIM_INTERVAL = 0.0
 
     with (
-        patch("app.workers.document_consumer.get_redis", return_value=redis_mock),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.trim_deadletter", AsyncMock()),
+        patch("workflow.workers.document_consumer.get_redis", return_value=redis_mock),
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.trim_deadletter", AsyncMock()),
         patch(
-            "app.workers.document_consumer.deadletter_retention.run_once",
+            "workflow.workers.document_consumer.deadletter_retention.run_once",
             side_effect=fake_run_once_then_continue,
         ),
     ):

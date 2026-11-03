@@ -30,8 +30,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.core.database import _schema as tenant_schema
-from app.repositories.firma_repository import FirmaRepository
+from signature.core.database import _schema as tenant_schema
+from signature.repositories.firma_repository import FirmaRepository
 
 pytestmark = pytest.mark.asyncio
 

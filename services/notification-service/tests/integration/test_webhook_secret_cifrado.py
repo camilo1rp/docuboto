@@ -28,14 +28,14 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from app.core import webhook_secrets
-from app.core.config import settings
-from app.ops import cifrar_webhook_secrets as cifrar
-from app.ops import rewrap_webhook_secrets as rewrap
-from app.repositories.webhook_repository import WebhookRepository
-from app.routers import webhooks as router
-from app.schemas.webhook import WebhookCreate
-from app.services import webhook_service
+from notification.core import webhook_secrets
+from notification.core.config import settings
+from notification.ops import cifrar_webhook_secrets as cifrar
+from notification.ops import rewrap_webhook_secrets as rewrap
+from notification.repositories.webhook_repository import WebhookRepository
+from notification.routers import webhooks as router
+from notification.schemas.webhook import WebhookCreate
+from notification.services import webhook_service
 from tests.conftest import TEST_WEBHOOK_KEK_V2
 
 pytestmark = [
@@ -104,7 +104,7 @@ def audit(monkeypatch: pytest.MonkeyPatch) -> _Audit:
 @pytest.fixture
 def _dns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
 

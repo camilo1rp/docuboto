@@ -33,9 +33,9 @@ import pytest
 from lxml import etree
 from signxml.xades import XAdESVerifier
 
-from app.core import tsa
-from app.providers.base import SignerRef
-from app.providers.local import renovar_archive_timestamp, verify_xades
+from signature.core import tsa
+from signature.providers.base import SignerRef
+from signature.providers.local import renovar_archive_timestamp, verify_xades
 from tests.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)
     _NS_LTA,
     _cert,
@@ -128,7 +128,7 @@ async def test_una_tsa_distinta_exige_estar_anclada(monkeypatch: pytest.MonkeyPa
     doc, _cert_sello, _ca = await _firmar_lta(monkeypatch)
     otra_key, otra_cert = _cert("tsa-nueva", tsa_eku=True)
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem_cert(otra_cert), key_pem=_pem_key(otra_key), key_password=None),
     )
     renovada = renovar_archive_timestamp(doc.signed_xml)

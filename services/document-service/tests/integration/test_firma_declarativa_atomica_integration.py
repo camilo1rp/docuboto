@@ -19,9 +19,9 @@ import uuid
 import asyncpg
 import pytest
 
-from app.clients import storage_client
-from app.core.database import tenant_schema
-from app.schemas.signature import SignatureCreate
+from document.clients import storage_client
+from document.core.database import tenant_schema
+from document.schemas.signature import SignatureCreate
 
 pytestmark = pytest.mark.integration
 
@@ -29,8 +29,8 @@ _HUELLA = "e" * 64
 
 
 async def _anexo(tenant_ctx: tuple[str, asyncpg.Connection]):
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
@@ -57,7 +57,7 @@ def _storage(monkeypatch) -> None:
 async def test_un_post_valido_deja_exactamente_un_asiento(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch
 ) -> None:
-    from app.services.signature_service import SignatureService
+    from document.services.signature_service import SignatureService
 
     _storage(monkeypatch)
     slug, conn, doc, anexo_id = await _anexo(tenant_ctx)
@@ -82,8 +82,8 @@ async def test_un_post_valido_deja_exactamente_un_asiento(
 async def test_si_el_asiento_falla_la_firma_se_revierte(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch
 ) -> None:
-    from app.services import signature_service
-    from app.services.signature_service import SignatureService
+    from document.services import signature_service
+    from document.services.signature_service import SignatureService
 
     _storage(monkeypatch)
     slug, conn, doc, anexo_id = await _anexo(tenant_ctx)
@@ -110,9 +110,9 @@ async def test_el_anexo_de_otro_radicado_no_se_firma_por_este(
     """`a.radicado_id = $2` va en el WHERE: firmar el anexo A bajo el radicado B es 404."""
     from fastapi import HTTPException
 
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
-    from app.services.signature_service import SignatureService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
+    from document.services.signature_service import SignatureService
 
     _storage(monkeypatch)
     slug, conn, _doc, anexo_id = await _anexo(tenant_ctx)
@@ -137,7 +137,7 @@ async def test_el_anexo_de_un_radicado_reservado_es_404_neutro(
 ) -> None:
     from fastapi import HTTPException
 
-    from app.services.signature_service import SignatureService
+    from document.services.signature_service import SignatureService
 
     llamadas: list = []
 
@@ -174,8 +174,8 @@ async def test_la_firma_heredada_con_huella_del_cliente_no_verifica(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch
 ) -> None:
     """Las filas anteriores al endurecimiento no pueden seguir dando `valid=true`."""
-    from app.repositories.signature_repository import SignatureRepository
-    from app.services.signature_service import SignatureService
+    from document.repositories.signature_repository import SignatureRepository
+    from document.services.signature_service import SignatureService
 
     _storage(monkeypatch)
     slug, conn, doc, anexo_id = await _anexo(tenant_ctx)

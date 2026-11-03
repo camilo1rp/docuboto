@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-import app.core.config as cfg
+import storage.core.config as cfg
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_HEADERS,
@@ -37,7 +37,7 @@ _URL = "/api/v1/preservacion/export-zip-internal"
 
 
 def test_export_item_rejects_zip_slip() -> None:
-    from app.schemas.preservacion import ExportExtraFile, ExportZipItem
+    from storage.schemas.preservacion import ExportExtraFile, ExportZipItem
 
     for bad in ("../../etc/passwd", "a/../../b", "docs/../../x"):
         with pytest.raises(ValidationError):
@@ -193,7 +193,7 @@ async def test_export_413_when_real_bytes_exceed_cap_and_cleans(
 async def test_export_507_when_disk_insufficient(client_with_conn, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
     monkeypatch.setattr(
-        "app.services.export_service.shutil.disk_usage",
+        "storage.services.export_service.shutil.disk_usage",
         lambda _p: shutil._ntuple_diskusage(100, 99, 1),
     )
     client, conn, _ = client_with_conn
@@ -216,7 +216,7 @@ async def test_export_peak_memory_is_bounded_for_large_attachment(
     monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
     monkeypatch.setattr(cfg.settings, "export_min_free_bytes", 0)
     monkeypatch.setattr(
-        "app.services.export_service.shutil.disk_usage",
+        "storage.services.export_service.shutil.disk_usage",
         lambda _p: shutil._ntuple_diskusage(10**12, 0, 10**12),
     )
     client, conn, minio = client_with_conn
@@ -283,7 +283,7 @@ async def test_export_409_fixity_mismatch_aborts_before_serving_and_audits(
     async def _append(_conn, **kw):
         registrados.append(kw)
 
-    monkeypatch.setattr("app.services.export_service.audit.append", _append)
+    monkeypatch.setattr("storage.services.export_service.audit.append", _append)
     client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, sha256=_sha(b"ORIGINAL"))]
@@ -305,7 +305,7 @@ async def test_en_hilo_espera_al_hilo_si_cancelan() -> None:
     import threading
     import time
 
-    from app.services.export_service import _en_hilo
+    from storage.services.export_service import _en_hilo
 
     terminado = threading.Event()
 

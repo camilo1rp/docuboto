@@ -20,8 +20,8 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.ops.purge_revoked_signing_keys import _purge_tenant
-from app.repositories.signing_key_repository import SigningKeyRepository
+from auth.ops.purge_revoked_signing_keys import _purge_tenant
+from auth.repositories.signing_key_repository import SigningKeyRepository
 from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [

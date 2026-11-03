@@ -46,7 +46,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import _schema as tenant_schema
+from signature.core.database import _schema as tenant_schema
 from migrations import runner
 
 # Mismo cálculo que `migrations/runner.py` — DSN "pelado" para conectar con

@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.config import settings
-from app.core.keys import SealNotFoundError, load_seal
+from signature.core.config import settings
+from signature.core.keys import SealNotFoundError, load_seal
 
 
 def _write_pair(dir_path) -> None:

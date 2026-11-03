@@ -25,10 +25,10 @@ import uuid
 import httpx
 import pytest
 
-from app.clients import storage_client
-from app.repositories.borrador_repository import BorradorRepository
-from app.repositories.tercero_repository import TerceroRepository
-from app.schemas.borrador import BorradorResponse
+from document.clients import storage_client
+from document.repositories.borrador_repository import BorradorRepository
+from document.repositories.tercero_repository import TerceroRepository
+from document.schemas.borrador import BorradorResponse
 from tests.conftest import TENANT_HEADERS
 from tests.test_borradores import _borrador_row
 
@@ -218,7 +218,7 @@ async def test_canal_no_auditable_no_deja_asiento(
 async def test_si_el_asiento_falla_la_consulta_no_se_degrada(
     client_with_conn, monkeypatch
 ) -> None:
-    from app.services import tercero_service
+    from document.services import tercero_service
 
     async def _falla(*a, **k):
         raise RuntimeError("audit caído")

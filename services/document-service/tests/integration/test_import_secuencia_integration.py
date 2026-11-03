@@ -25,10 +25,10 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.schemas.document import DocumentCreate
-from app.services.document_service import DocumentService
-from app.services.import_service import ImportService, PackageValidationError
+from document.core.database import tenant_schema
+from document.schemas.document import DocumentCreate
+from document.services.document_service import DocumentService
+from document.services.import_service import ImportService, PackageValidationError
 from tests.test_import import _pkg
 
 pytestmark = pytest.mark.integration
@@ -37,7 +37,7 @@ _ANIO = datetime.now(tz=UTC).year
 
 
 async def _importar(conn: asyncpg.Connection, slug: str, tracking: str) -> dict:
-    with patch("app.services.import_service.storage_client.upload_bytes", new=AsyncMock()):
+    with patch("document.services.import_service.storage_client.upload_bytes", new=AsyncMock()):
         return await ImportService(conn, slug).import_package(
             zip_bytes=_pkg([{"tracking": tracking}]), max_clearance=3, actor=None
         )

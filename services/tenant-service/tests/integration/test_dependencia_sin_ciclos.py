@@ -36,7 +36,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.repositories.dependencias_repository import DependenciaRepository
+from tenant.repositories.dependencias_repository import DependenciaRepository
 from migrations import runner
 
 pytestmark = pytest.mark.skipif(

@@ -30,7 +30,7 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit as audit_lib
 
-from app.repositories.audit_query_repository import AuditQueryRepository
+from auth.repositories.audit_query_repository import AuditQueryRepository
 from tests.integration.conftest import RUN_INTEGRATION, ensure_audit_log
 
 pytestmark = pytest.mark.skipif(

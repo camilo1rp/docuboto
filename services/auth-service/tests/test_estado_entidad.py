@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.core import database as db
+from auth.core import database as db
 
 
 class _Conn:
@@ -127,7 +127,7 @@ async def test_una_entidad_operativa_recibe_su_conexion(monkeypatch: pytest.Monk
 async def test_validate_dice_desconocido_si_el_registro_cae_o_no_hay_conexion() -> None:
     from unittest.mock import AsyncMock, patch
 
-    from app.services.auth_service import AuthService
+    from auth.services.auth_service import AuthService
 
     claims = {
         "user_id": "kc-x",
@@ -138,7 +138,7 @@ async def test_validate_dice_desconocido_si_el_registro_cae_o_no_hay_conexion() 
         "exp": 4102444800,
     }
     caida = _Conn(None, error=RuntimeError("registro caído"))
-    with patch("app.services.auth_service.validate_token", new=AsyncMock(return_value=claims)):
+    with patch("auth.services.auth_service.validate_token", new=AsyncMock(return_value=claims)):
         con_error = await AuthService().validate("tok", caida)  # type: ignore[arg-type]
         sin_conn = await AuthService().validate("tok", None)
 
@@ -149,10 +149,10 @@ async def test_validate_dice_desconocido_si_el_registro_cae_o_no_hay_conexion() 
 async def test_validate_sin_tenant_no_emite_estado() -> None:
     from unittest.mock import AsyncMock, patch
 
-    from app.services.auth_service import AuthService
+    from auth.services.auth_service import AuthService
 
     claims = {"user_id": "kc-x", "username": "u", "roles": [], "exp": 4102444800}
-    with patch("app.services.auth_service.validate_token", new=AsyncMock(return_value=claims)):
+    with patch("auth.services.auth_service.validate_token", new=AsyncMock(return_value=claims)):
         resp = await AuthService().validate("tok", None)
 
     assert resp.tenant_estado is None

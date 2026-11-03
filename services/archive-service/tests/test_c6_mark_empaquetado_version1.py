@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.repositories.aip_repository import AipRepository
+from archive.repositories.aip_repository import AipRepository
 
 pytestmark = pytest.mark.asyncio
 

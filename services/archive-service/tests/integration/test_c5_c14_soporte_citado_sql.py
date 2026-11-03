@@ -36,11 +36,11 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.repositories.archive_repository import ArchiveRepository
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.services.transferencia_service import TransferenciaService
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.repositories.archive_repository import ArchiveRepository
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.services.transferencia_service import TransferenciaService
 
 from .conftest import _require_dsn
 from .test_firma_inobtenible_sql import (

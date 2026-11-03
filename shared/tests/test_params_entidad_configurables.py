@@ -34,7 +34,7 @@ import re
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-FUENTE = RAIZ / "services" / "document-service" / "app" / "services" / "contexto_combinacion.py"
+FUENTE = RAIZ / "services" / "document-service" / "document" / "services" / "contexto_combinacion.py"
 MIGRACION = RAIZ / "services" / "tenant-service" / "migrations" / "tenant" / "009_params_entidad.sql"
 
 

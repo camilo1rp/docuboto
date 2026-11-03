@@ -26,6 +26,8 @@ calificados. Este guardián lo hace imposible de olvidar:
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import re
 from pathlib import Path
 
@@ -226,7 +228,7 @@ def _ficheros_de_ejecucion() -> list[Path]:
     tenant. Las `migrations/global/` corren con `public` y quedan fuera; los tests, también
     (sus fixtures usan fuentes sintéticas)."""
     ficheros: list[Path] = []
-    ficheros += list(SERVICIOS.glob("*/app/**/*.py"))
+    ficheros += list(glob_src(SERVICIOS, "*/app/**/*.py"))
     ficheros += list((RAIZ / "shared" / "orpycamcp_common").glob("*.py"))
     ficheros += list((RAIZ / "scripts").glob("*.py"))
     ficheros += list(SERVICIOS.glob("*/migrations/tenant/*.sql"))

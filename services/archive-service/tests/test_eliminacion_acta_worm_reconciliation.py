@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.jobs import indice_reconciliation
+from archive.jobs import indice_reconciliation
 from tests.test_eliminacion_acta import LOTE, _acta_row, _WormFallo, _WormOk
 
 
@@ -60,9 +60,9 @@ def _barrer(conn: AsyncMock, *, worm):
         yield conn
 
     return (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=_pool(["demo"])),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", _adquirir),
-        patch("app.clients.storage_client.proteger_artefacto_worm", AsyncMock(return_value=worm)),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=_pool(["demo"])),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", _adquirir),
+        patch("archive.clients.storage_client.proteger_artefacto_worm", AsyncMock(return_value=worm)),
     )
 
 
@@ -90,7 +90,7 @@ async def test_la_barrida_protege_el_acta_firmada_sin_candado() -> None:
     assert kwargs["expediente_id"] == str(LOTE)
     assert kwargs["tipo"] == "acta_eliminacion"
     # Atribuida al principal de sistema, no a una persona.
-    from app.core.constants import SYSTEM_RECONCILER_ID
+    from archive.core.constants import SYSTEM_RECONCILER_ID
 
     assert kwargs["actor_id"] == str(SYSTEM_RECONCILER_ID)
     # Y con su propio namespace de advisory lock.

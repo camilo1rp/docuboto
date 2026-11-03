@@ -35,9 +35,9 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.schemas.document import DocumentCreate
-from app.services.document_service import DocumentService
+from document.core.database import tenant_schema
+from document.schemas.document import DocumentCreate
+from document.services.document_service import DocumentService
 from tests.integration.politica_stub import ENTIDAD, TenantConPolitica
 
 pytestmark = pytest.mark.integration
@@ -47,7 +47,7 @@ def _clearance_3(monkeypatch) -> None:
     async def _c(conn, user_id):
         return 3
 
-    monkeypatch.setattr("app.services.document_service.resolve_caller_clearance", _c)
+    monkeypatch.setattr("document.services.document_service.resolve_caller_clearance", _c)
 
 
 async def _en(tenant_ctx) -> tuple[str, asyncpg.Connection]:
@@ -91,8 +91,8 @@ async def _anexo(conn, radicado_id) -> uuid.UUID:
 
 @pytest.mark.asyncio
 async def test_un_anexo_no_marcado_no_se_sirve(tenant_ctx) -> None:
-    from app.repositories.document_repository import DocumentRepository
-    from app.repositories.oai_repository import OaiRepository
+    from document.repositories.document_repository import DocumentRepository
+    from document.repositories.oai_repository import OaiRepository
 
     slug, conn = await _en(tenant_ctx)
     await _tipo_publicable(conn)
@@ -117,7 +117,7 @@ async def test_un_anexo_no_marcado_no_se_sirve(tenant_ctx) -> None:
 
 @pytest.mark.asyncio
 async def test_set_anexos_deja_un_estado_conocido_y_rechaza_ajenos(tenant_ctx) -> None:
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     a, b = await _radicado(conn, slug), await _radicado(conn, slug)
@@ -134,7 +134,7 @@ async def test_set_anexos_deja_un_estado_conocido_y_rechaza_ajenos(tenant_ctx) -
 
 @pytest.mark.asyncio
 async def test_el_acto_de_publicar_con_un_anexo_ajeno_revierte_entero(tenant_ctx) -> None:
-    from app.services.document_service import AnexoNoDisponibleError
+    from document.services.document_service import AnexoNoDisponibleError
 
     slug, conn = await _en(tenant_ctx)
     await _tipo_publicable(conn)
@@ -154,7 +154,7 @@ async def test_el_acto_de_publicar_con_un_anexo_ajeno_revierte_entero(tenant_ctx
 
 @pytest.mark.asyncio
 async def test_un_radicado_de_ventanilla_no_se_publica_de_oficio(tenant_ctx) -> None:
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     # Nace en nivel 1 por el DEFAULT, pero es información de un tercero (Ley 1581).
@@ -173,7 +173,7 @@ async def test_solo_un_tipo_publicable_permite_publicar_de_oficio(tenant_ctx) ->
 
     `EXISTS` y no `NOT EXISTS`: el radicado sin tipo o con un tipo desconocido NO se publica.
     Mutación: `NOT EXISTS` (o quitar `t.publicable`) vuelve verde lo que aquí debe ser None."""
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     await conn.execute(
@@ -198,7 +198,7 @@ async def test_solo_un_tipo_publicable_permite_publicar_de_oficio(tenant_ctx) ->
 
 @pytest.mark.asyncio
 async def test_un_tipo_inactivo_aunque_este_marcado_no_publica(tenant_ctx) -> None:
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     await conn.execute("INSERT INTO tipos_documentales (code, nombre, publicable) VALUES ('VIEJO', 'Viejo', true)")
@@ -212,7 +212,7 @@ async def test_publicable_y_admite_ventanilla_son_ortogonales(tenant_ctx) -> Non
     """Antes la ventanilla EXCLUÍA la publicación (acoplaba dos marcas que dicen cosas
     distintas). Ahora un tipo que se recibe por la ventanilla puede, además, difundirse si la
     entidad lo declara; y uno que se difunde no por eso se ofrece en la ventanilla."""
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     await conn.execute(
@@ -232,7 +232,7 @@ async def test_publicable_y_admite_ventanilla_son_ortogonales(tenant_ctx) -> Non
 @pytest.mark.asyncio
 async def test_el_canal_de_ventanilla_nunca_se_publica_aunque_el_tipo_lo_permita(tenant_ctx) -> None:
     """La exclusión por canal es independiente del tipo (Ley 1581): se conserva."""
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     await _tipo_publicable(conn)
@@ -244,7 +244,7 @@ async def test_el_canal_de_ventanilla_nunca_se_publica_aunque_el_tipo_lo_permita
 async def test_retirar_una_publicacion_no_depende_del_tipo(tenant_ctx) -> None:
     """Fail-safe: si la entidad desmarca el tipo después, el radicado ya publicado se puede
     retirar igual — es la dirección segura."""
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     await _tipo_publicable(conn)
@@ -258,7 +258,7 @@ async def test_retirar_una_publicacion_no_depende_del_tipo(tenant_ctx) -> None:
 
 @pytest.mark.asyncio
 async def test_si_lo_unico_que_falta_es_el_tipo_el_acto_dice_409_y_no_deja_asiento(tenant_ctx) -> None:
-    from app.services.document_service import TipoDocumentalNoPublicableError
+    from document.services.document_service import TipoDocumentalNoPublicableError
 
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn, slug)  # 'Petición': existe, activo, NO publicable
@@ -277,8 +277,8 @@ async def test_el_409_no_es_un_oraculo_cualquier_otro_motivo_sigue_siendo_404(te
     """El diagnóstico repite el MISMO gate (clearance, nivel público, anulado, canal) sin la condición
     del tipo: reservado, anulado, de ventanilla, inexistente o que supera el clearance → 404 neutro
     aunque además el tipo no sea publicable. Solo lo que el actor ya puede ver recibe el 409."""
-    from app.repositories.document_repository import DocumentRepository
-    from app.services.document_service import DocumentNotFoundError
+    from document.repositories.document_repository import DocumentRepository
+    from document.services.document_service import DocumentNotFoundError
 
     slug, conn = await _en(tenant_ctx)  # 'Petición' NO publicable en todos
     svc = DocumentService(conn, slug)
@@ -296,7 +296,7 @@ async def test_el_409_no_es_un_oraculo_cualquier_otro_motivo_sigue_siendo_404(te
         with pytest.raises(DocumentNotFoundError):
             await svc.set_publicacion(rid, True, "x", 3)
     # un actor sin clearance para ver el radicado público tampoco obtiene el 409
-    from app.services.document_service import TipoDocumentalNoPublicableError
+    from document.services.document_service import TipoDocumentalNoPublicableError
 
     with pytest.raises(TipoDocumentalNoPublicableError):
         await svc.set_publicacion(publico, True, "x", 3)  # control positivo: aquí SÍ
@@ -325,8 +325,8 @@ async def test_matriz_del_gate_de_publicable_y_de_su_diagnostico(tenant_ctx, cas
     Mutaciones: `EXISTS`→`NOT EXISTS` o quitar `t.publicable` del UPDATE rompe las filas
     `publicado`/`409`; quitar del diagnóstico el clearance, el nivel, el anulado o el canal rompe las
     filas `404` (se vuelven 409: un oráculo)."""
-    from app.repositories.document_repository import DocumentRepository
-    from app.services.document_service import (
+    from document.repositories.document_repository import DocumentRepository
+    from document.services.document_service import (
         DocumentNotFoundError,
         TipoDocumentalNoPublicableError,
     )
@@ -387,7 +387,7 @@ async def test_matriz_del_gate_de_publicable_y_de_su_diagnostico(tenant_ctx, cas
 
 @pytest.mark.asyncio
 async def test_clasificar_retira_tambien_la_marca_de_los_anexos(tenant_ctx) -> None:
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     slug, conn = await _en(tenant_ctx)
     rid = await _radicado(conn, slug)
@@ -518,7 +518,7 @@ async def _pendientes(conn) -> list[asyncpg.Record]:
 async def test_reclasificar_con_redis_caido_deja_el_evento_pendiente_y_el_rele_lo_envia(
     tenant_ctx, monkeypatch
 ) -> None:
-    from app.services import outbox
+    from document.services import outbox
 
     slug, conn = await _en(tenant_ctx)
     _clearance_3(monkeypatch)
@@ -555,7 +555,7 @@ async def test_el_rele_no_baja_el_nivel_con_un_evento_rancio(tenant_ctx, monkeyp
 
     Mutación verificada: quitar la llamada a `_con_nivel_vivo` en `retransmitir` → cae.
     """
-    from app.services import outbox
+    from document.services import outbox
 
     slug, conn = await _en(tenant_ctx)
     _clearance_3(monkeypatch)
@@ -592,7 +592,7 @@ async def test_el_rollback_del_update_se_lleva_el_evento(tenant_ctx, monkeypatch
     async def _falla(*a, **k):
         raise RuntimeError("auditoría caída")
 
-    monkeypatch.setattr("app.services.document_service.audit.append", _falla)
+    monkeypatch.setattr("document.services.document_service.audit.append", _falla)
     with pytest.raises(RuntimeError):
         await DocumentService(conn, slug).reclassify(
             rid, nuevo_nivel=3, motivo="x", actor=uuid.uuid4(),
@@ -615,7 +615,7 @@ async def test_si_no_se_puede_encolar_el_evento_el_update_revierte(tenant_ctx, m
     async def _no_se_puede(*a, **k):
         raise RuntimeError("no se pudo escribir el evento")
 
-    monkeypatch.setattr("app.services.document_service.outbox.encolar", _no_se_puede)
+    monkeypatch.setattr("document.services.document_service.outbox.encolar", _no_se_puede)
     with pytest.raises(RuntimeError):
         await DocumentService(conn, slug).reclassify(
             rid, nuevo_nivel=3, motivo="x", actor=uuid.uuid4(),
@@ -662,7 +662,7 @@ async def _ventanilla_lista(conn) -> None:
 
 
 def _payload(**kw):
-    from app.schemas.public import VentanillaRadicacion
+    from document.schemas.public import VentanillaRadicacion
 
     base = {
         "tipo_documental": "DEM-PET",
@@ -681,7 +681,7 @@ def _payload(**kw):
 async def test_dos_envios_simultaneos_con_la_misma_clave_dan_un_solo_radicado(tenant_ctx) -> None:
     """Bajo concurrencia REAL: dos conexiones, la misma clave. El índice único serializa:
     la segunda espera el commit de la primera y devuelve su radicado SIN gastar número."""
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.ventanilla_service import VentanillaService
     from tests.integration.conftest import _require_dsn
 
     slug, conn = await _en(tenant_ctx)
@@ -709,7 +709,7 @@ async def test_dos_envios_simultaneos_con_la_misma_clave_dan_un_solo_radicado(te
 
 @pytest.mark.asyncio
 async def test_claves_distintas_dan_radicados_distintos(tenant_ctx) -> None:
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.ventanilla_service import VentanillaService
 
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
@@ -728,7 +728,7 @@ async def test_claves_distintas_dan_radicados_distintos(tenant_ctx) -> None:
 async def test_la_clave_con_otro_contenido_es_409_y_no_radica(tenant_ctx) -> None:
     from fastapi import HTTPException
 
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.ventanilla_service import VentanillaService
 
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
@@ -744,7 +744,7 @@ async def test_la_clave_con_otro_contenido_es_409_y_no_radica(tenant_ctx) -> Non
 
 @pytest.mark.asyncio
 async def test_sin_clave_no_hay_deduplicacion_y_se_conserva_el_comportamiento_previo(tenant_ctx) -> None:
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.ventanilla_service import VentanillaService
 
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
@@ -758,7 +758,7 @@ async def test_sin_clave_no_hay_deduplicacion_y_se_conserva_el_comportamiento_pr
 async def test_la_constancia_de_consentimiento_queda_en_el_radicado_y_en_el_asiento(tenant_ctx) -> None:
     import json
 
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.ventanilla_service import VentanillaService
 
     slug, conn = await _en(tenant_ctx)
     await _ventanilla_lista(conn)
@@ -783,7 +783,7 @@ async def test_la_constancia_de_consentimiento_queda_en_el_radicado_y_en_el_asie
 
 @pytest.mark.asyncio
 async def test_el_estado_de_la_ventanilla_contra_las_tablas_reales(tenant_ctx) -> None:
-    from app.services.ventanilla_service import VentanillaService
+    from document.services.ventanilla_service import VentanillaService
 
     slug, conn = await _en(tenant_ctx)
     e = await VentanillaService(conn, slug, ENTIDAD).estado()
@@ -801,8 +801,8 @@ async def test_el_estado_de_la_ventanilla_contra_las_tablas_reales(tenant_ctx) -
 
 @pytest.mark.asyncio
 async def test_el_lote_con_dependencia_inexistente_falla_el_item_sin_gastar_numero(tenant_ctx) -> None:
-    from app.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
-    from app.services.batch_service import BatchService
+    from document.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
+    from document.services.batch_service import BatchService
     from tests.integration.test_lote_documentos_integration import _tenant_registrado
 
     slug, conn = await _en(tenant_ctx)
@@ -850,8 +850,8 @@ async def test_el_lote_con_dependencia_inexistente_falla_el_item_sin_gastar_nume
 
 @pytest.mark.asyncio
 async def test_la_derivacion_del_borrador_contra_las_tablas_reales(tenant_ctx) -> None:
-    from app.schemas.borrador import BorradorRadicar
-    from app.services.borrador_service import BorradorService
+    from document.schemas.borrador import BorradorRadicar
+    from document.services.borrador_service import BorradorService
 
     slug, conn = await _en(tenant_ctx)
     autor = uuid.uuid4()

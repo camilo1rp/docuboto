@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.clients import storage_client
-from app.core import config as cfg_module
+from document.clients import storage_client
+from document.core import config as cfg_module
 from tests.conftest import TENANT_SLUG
 
 TOKEN = "test-document-internal-token-xxx"

@@ -18,7 +18,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common import events
 
-from app.main import app
+from notification.main import app
 
 pytestmark = pytest.mark.asyncio
 
@@ -43,8 +43,8 @@ async def _ready(xlen: int, estado: dict) -> tuple[int, dict]:
     }
     try:
         with (
-            patch("app.routers.health.get_pool", return_value=_pool()),
-            patch("app.routers.health.get_redis", return_value=redis),
+            patch("notification.routers.health.get_pool", return_value=_pool()),
+            patch("notification.routers.health.get_redis", return_value=redis),
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"

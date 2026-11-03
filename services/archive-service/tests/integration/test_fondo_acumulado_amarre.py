@@ -38,10 +38,10 @@ from datetime import date
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.schemas.archive import ExpedienteCreate, TrdSerieCreate, TvdAgrupacionCreate
-from app.services.archive_service import ArchiveService
-from app.services.retention_math import RetencionDiferida
+from archive.core.database import tenant_schema
+from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate, TvdAgrupacionCreate
+from archive.services.archive_service import ArchiveService
+from archive.services.retention_math import RetencionDiferida
 
 from .conftest import convalidate_for_test
 
@@ -274,8 +274,8 @@ async def test_worm_resolvers_difieren_el_contenido_del_fondo_vencido_a_la_valor
     `RetencionDiferida` sin llamar a `fijar_legal_hold` deja la fila de amarre vacía."""
     from unittest.mock import AsyncMock, patch
 
-    from app.services.aip_wiring_service import AipWiringService
-    from app.services.index_service import IndexService
+    from archive.services.aip_wiring_service import AipWiringService
+    from archive.services.index_service import IndexService
 
     slug, conn = tenant_ctx
     archive = ArchiveService(conn, slug)
@@ -299,8 +299,8 @@ async def test_worm_resolvers_difieren_el_contenido_del_fondo_vencido_a_la_valor
         opened_by=None,
     )
     await archive.close_expediente(expediente.id)
-    from app.core.clearance import CLEARANCE_SIN_RESTRICCION
-    from app.repositories.archive_repository import ArchiveRepository
+    from archive.core.clearance import CLEARANCE_SIN_RESTRICCION
+    from archive.repositories.archive_repository import ArchiveRepository
 
     cerrado = await ArchiveRepository(conn, slug).get_expediente_by_id(
         expediente.id, max_clearance=CLEARANCE_SIN_RESTRICCION
@@ -310,7 +310,7 @@ async def test_worm_resolvers_difieren_el_contenido_del_fondo_vencido_a_la_valor
     index = IndexService(conn, slug)
     hold_id = uuid.uuid4()
     fijar = AsyncMock(return_value={"hold_id": str(hold_id), "creado": True, "objetos_afectados": 0})
-    with patch("app.clients.storage_client.fijar_legal_hold", new=fijar):
+    with patch("archive.clients.storage_client.fijar_legal_hold", new=fijar):
         retention = await index._resolve_worm_retention(expediente.id)
         assert isinstance(retention, RetencionDiferida), "el fondo vencido debe diferirse"
         # El AIP con el mismo expediente: el hold ya existe, no se vuelve a fijar.

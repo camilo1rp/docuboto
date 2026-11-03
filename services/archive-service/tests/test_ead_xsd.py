@@ -39,7 +39,7 @@ from httpx import ASGITransport, AsyncClient
 from lxml import etree
 from orpycamcp_common.tenant import AtencionPublica
 
-from app.main import app
+from archive.main import app
 from tests.oai_fakes import fetch_oai, productora
 
 
@@ -47,7 +47,7 @@ from tests.oai_fakes import fetch_oai, productora
 def _entidad_operativa():
     """ADR-035: aquí se prueba el EAD, no el estado de la entidad (`test_estado_entidad.py`)."""
     with patch(
-        "app.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)
+        "archive.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)
     ):
         yield
 
@@ -74,7 +74,7 @@ class _FakePool:
 
 @pytest.fixture(autouse=True)
 def _habilitar_interop(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import config as cfg_module
+    from archive.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
 

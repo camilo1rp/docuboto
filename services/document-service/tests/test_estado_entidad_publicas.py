@@ -26,7 +26,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from document.main import app
 
 
 class _Conn:
@@ -66,7 +66,7 @@ class _Pool:
 
 @pytest_asyncio.fixture
 async def publico():
-    from app.core.database import (
+    from document.core.database import (
         get_public_tenant_conn,
         get_public_tenant_conn_escritura,
         get_redis,
@@ -183,8 +183,8 @@ async def test_la_politica_de_tratamiento_de_una_entidad_suspendida_SI_se_sirve(
 ) -> None:
     """Re-auditoria B9 D: es lectura (Ley 1581: el aviso se conoce antes de dar
     datos); el 503 queda para quien intenta radicar, no para quien lee el aviso."""
-    from app.schemas.public import PoliticaTratamiento
-    from app.services.ventanilla_service import VentanillaService
+    from document.schemas.public import PoliticaTratamiento
+    from document.services.ventanilla_service import VentanillaService
 
     async def _politica(self) -> PoliticaTratamiento:  # noqa: ANN001
         return PoliticaTratamiento(publicada=False)
@@ -265,7 +265,7 @@ async def test_si_el_registro_no_responde_es_503_no_404(publico) -> None:
 
 @pytest.fixture
 def _interop(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import config as cfg_module
+    from document.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
 

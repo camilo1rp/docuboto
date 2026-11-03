@@ -31,9 +31,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.clients.storage_client import AipPackagingOutcome
-from app.models.archive import Expediente, TrdSerie
-from app.services.aip_wiring_service import AipWiringService
+from archive.clients.storage_client import AipPackagingOutcome
+from archive.models.archive import Expediente, TrdSerie
+from archive.services.aip_wiring_service import AipWiringService
 from tests.test_aip_wiring_service import (
     NOW,
     _expediente,
@@ -171,7 +171,7 @@ async def test_intentar_empaquetar_passes_resolved_pdfa_profile_to_storage_clien
 
     with (
         patch(
-            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [
@@ -181,10 +181,10 @@ async def test_intentar_empaquetar_passes_resolved_pdfa_profile_to_storage_clien
             ),
         ),
         patch(
-            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
-        patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()),
+        patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
     ):
         resultado = await service.intentar_empaquetar(exp.id)
 
@@ -210,7 +210,7 @@ async def test_intentar_empaquetar_passes_none_pdfa_profile_when_serie_has_no_po
 
     with (
         patch(
-            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [
@@ -220,10 +220,10 @@ async def test_intentar_empaquetar_passes_none_pdfa_profile_when_serie_has_no_po
             ),
         ),
         patch(
-            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
-        patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()),
+        patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
     ):
         resultado = await service.intentar_empaquetar(exp.id)
 
@@ -251,7 +251,7 @@ async def test_intentar_empaquetar_serie_without_pdfa_policy_never_schedules_bac
 
     with (
         patch(
-            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [
@@ -261,10 +261,10 @@ async def test_intentar_empaquetar_serie_without_pdfa_policy_never_schedules_bac
             ),
         ),
         patch(
-            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
-        patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()),
+        patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
     ):
         resultado = await service.intentar_empaquetar(exp.id)
 

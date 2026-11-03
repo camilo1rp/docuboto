@@ -15,7 +15,7 @@ importando el validador pero deje de llamarlo, algo que el guardián de `shared/
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import _schema as schema_de
+from signature.core.database import _schema as schema_de
 
 
 @pytest.mark.parametrize(
@@ -35,7 +35,7 @@ def test_slug_valido_se_normaliza_y_el_tope_cabe_en_postgres() -> None:
 @pytest.mark.parametrize("slug", ["-abc", "a_b", "a" * 55, "../x", "a/b", ""])
 def test_keys_rechaza_slug_antes_de_tocar_el_filesystem(slug: str) -> None:
     """`load_seal` valida ANTES de armar la ruta (path traversal por slug)."""
-    from app.core.keys import load_seal
+    from signature.core.keys import load_seal
 
     with pytest.raises(ValueError):
         load_seal(slug)

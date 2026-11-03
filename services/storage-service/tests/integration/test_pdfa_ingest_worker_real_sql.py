@@ -47,8 +47,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
-from app.services.pdfa_ingest_service import run_ingest_validation_background
+from storage.core.database import tenant_schema
+from storage.services.pdfa_ingest_service import run_ingest_validation_background
 from migrations import runner
 
 from .conftest import DSN
@@ -168,7 +168,7 @@ async def test_worker_writes_only_to_the_target_tenant_schema(
 
     pool = await asyncpg.create_pool(dsn=DSN, min_size=1, max_size=2)
     try:
-        with patch("app.services.pdfa_ingest_service.get_minio", return_value=_fake_minio()):
+        with patch("storage.services.pdfa_ingest_service.get_minio", return_value=_fake_minio()):
             # `slug_a` CRUDO, con guion -- tal cual llegaría de X-Tenant-Slug.
             await run_ingest_validation_background(pool, slug_a, file_id)
     finally:
@@ -199,7 +199,7 @@ async def test_worker_never_raises_with_real_pool_even_on_download_failure(
     pool = await asyncpg.create_pool(dsn=DSN, min_size=1, max_size=2)
     try:
         with patch(
-            "app.services.pdfa_ingest_service.get_minio",
+            "storage.services.pdfa_ingest_service.get_minio",
             side_effect=RuntimeError("MinIO caído (forzado, itest)"),
         ):
             # `slug` CRUDO, con guion -- no debe lanzar.
@@ -226,7 +226,7 @@ async def test_worker_run_twice_same_file_id_converges_real_db(
 
     pool = await asyncpg.create_pool(dsn=DSN, min_size=1, max_size=2)
     try:
-        with patch("app.services.pdfa_ingest_service.get_minio", return_value=_fake_minio()):
+        with patch("storage.services.pdfa_ingest_service.get_minio", return_value=_fake_minio()):
             # `slug` CRUDO, con guion.
             await run_ingest_validation_background(pool, slug, file_id)
             await run_ingest_validation_background(pool, slug, file_id)
@@ -264,7 +264,7 @@ async def test_hyphenated_tenant_slug_worker_lands_verdict(
 
     pool = await asyncpg.create_pool(dsn=DSN, min_size=1, max_size=2)
     try:
-        with patch("app.services.pdfa_ingest_service.get_minio", return_value=_fake_minio()):
+        with patch("storage.services.pdfa_ingest_service.get_minio", return_value=_fake_minio()):
             # `slug` CRUDO, con guion -- tal cual llegaría de X-Tenant-Slug.
             await run_ingest_validation_background(pool, slug, file_id)
     finally:

@@ -30,7 +30,7 @@ _FORBIDDEN_KEYS = {"metadata", "description", "radicados", "opened_by"}
 
 
 def _patch_index_service():
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     return (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
@@ -57,7 +57,7 @@ async def test_close_classified_expediente_returns_200_not_404(client_with_conn)
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed]
     mock_conn.fetch.return_value = []
 
-    from app.services.archive_service import ArchiveService
+    from archive.services.archive_service import ArchiveService
 
     patch_regen, patch_firmar = _patch_index_service()
     with (
@@ -89,7 +89,7 @@ async def test_transfer_classified_expediente_returns_200_not_404(client_with_co
     ]
     mock_conn.fetch.return_value = []
 
-    from app.services.archive_service import ArchiveService
+    from archive.services.archive_service import ArchiveService
 
     with patch.object(ArchiveService, "get_expediente", new=AsyncMock()) as mock_get:
         resp = await client.post(f"/api/v1/expedientes/{exp_id}/transfer", headers=TENANT_HEADERS)

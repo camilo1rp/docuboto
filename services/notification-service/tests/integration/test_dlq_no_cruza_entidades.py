@@ -30,7 +30,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from notification.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [
     pytest.mark.integration,

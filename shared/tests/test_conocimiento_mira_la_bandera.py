@@ -14,7 +14,7 @@ este test, en vez de quedar abierta en silencio.
 
 Dos comprobaciones, derivadas del árbol (no hay lista a mano):
 
-1. Toda ruta de ``knowledge-service/app/routers/knowledge.py`` declara en su decorador
+1. Toda ruta de ``knowledge-service/knowledge/routers/knowledge.py`` declara en su decorador
    ``require_asistente_habilitado`` y ``require_permission("PERM_CONOCIMIENTO")``.
 2. Todo llamante de ``visible_tools`` / ``procedimientos_visibles`` / ``puede_usar`` /
    ``authorize`` / ``procedure_runner.ejecutar`` en ``mcp-server/app`` pasa
@@ -30,7 +30,7 @@ import ast
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-KNOWLEDGE = RAIZ / "services" / "knowledge-service" / "app" / "routers" / "knowledge.py"
+KNOWLEDGE = RAIZ / "services" / "knowledge-service" / "knowledge" / "routers" / "knowledge.py"
 MCP_APP = RAIZ / "services" / "mcp-server" / "app"
 
 _METODOS = {"get", "post", "put", "patch", "delete"}

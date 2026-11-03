@@ -28,7 +28,7 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
@@ -38,8 +38,8 @@ async def _radicar(
 ) -> tuple:
     """Radica. `por` hace falta para los niveles ≥ 2: hay **no-write-up** — nadie
     puede originar un documento por encima de su propio clearance."""
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     doc = await DocumentService(conn, slug).create(
         DocumentCreate(
@@ -118,7 +118,7 @@ async def test_leer_un_radicado_aparece_en_su_historial(
     """El caso base, que hasta ahora no se podía preguntar."""
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     doc_id, _ = await _radicar(conn, slug)
     lector = await _clearance(conn, 3)
@@ -151,7 +151,7 @@ async def test_el_historial_NO_es_un_oraculo_sobre_lo_reservado(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.document_service import DocumentNotFoundError, DocumentService
+    from document.services.document_service import DocumentNotFoundError, DocumentService
 
     archivista = await _clearance(conn, 3)  # puede originar RESERVADA
     doc_id, _ = await _radicar(conn, slug, nivel=2, por=archivista)
@@ -180,7 +180,7 @@ async def test_el_historial_solo_trae_ACCESOS_no_todo_lo_ocurrido(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     doc_id, tracking = await _radicar(conn, slug)
     lector = await _clearance(conn, 3)
@@ -212,7 +212,7 @@ async def test_el_historial_dice_un_NOMBRE_no_un_identificador(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     doc_id, _ = await _radicar(conn, slug)
     lector = await _clearance(conn, 3, username="ARCHIVISTA_DE_TURNO")
@@ -242,7 +242,7 @@ async def test_un_actor_que_no_es_un_usuario_no_rompe_el_historial(
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from orpycamcp_common import audit
 
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     doc_id, tracking = await _radicar(conn, slug)
     lector = await _clearance(conn, 3)

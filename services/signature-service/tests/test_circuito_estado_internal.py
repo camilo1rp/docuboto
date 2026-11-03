@@ -21,7 +21,7 @@ import uuid
 
 import pytest
 
-from app.core.config import settings
+from signature.core.config import settings
 
 _TOKEN = "itest-internal-token-circuitos-xyz789"
 _RUTA = "/api/v1/signature/internal/circuitos/borrador"

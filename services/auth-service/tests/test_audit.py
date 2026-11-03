@@ -17,9 +17,9 @@ import pytest
 from httpx import AsyncClient
 from orpycamcp_common import audit as audit_lib
 
-from app.core.authz import Caller, get_caller
-from app.core.database import get_tenant_conn
-from app.main import app
+from auth.core.authz import Caller, get_caller
+from auth.core.database import get_tenant_conn
+from auth.main import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 

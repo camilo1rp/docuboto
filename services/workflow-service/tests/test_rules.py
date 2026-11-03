@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.services.rules_engine import (
+from workflow.services.rules_engine import (
     eval_condition,
     matches_conditions,
     matches_legacy,
@@ -807,7 +807,7 @@ async def test_si_el_asiento_falla_la_regla_no_se_crea(client_with_conn, monkeyp
     puede recibir el asiento, la regla no debe quedar activa enrutando
     correspondencia sin que conste quién la puso.
     """
-    from app.services import rules_service
+    from workflow.services import rules_service
 
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchval.side_effect = [1, 1]

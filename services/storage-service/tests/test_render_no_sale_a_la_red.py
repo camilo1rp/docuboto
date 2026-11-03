@@ -23,7 +23,7 @@ import base64
 
 import pytest
 
-from app.services.render.weasyprint_renderer import WeasyPrintRenderer, _sin_red
+from storage.services.render.weasyprint_renderer import WeasyPrintRenderer, _sin_red
 
 _PAGINA = {"tamano": "Letter", "pie": "Entidad de prueba"}
 

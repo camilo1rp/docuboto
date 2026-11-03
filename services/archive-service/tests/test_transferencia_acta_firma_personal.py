@@ -24,11 +24,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.signature_client import SignedPersonal, SignPersonalOutcome, VerifyResult
-from app.core.actor import Actor
-from app.core.config import settings
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.signature_client import SignedPersonal, SignPersonalOutcome, VerifyResult
+from archive.core.actor import Actor
+from archive.core.config import settings
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import USER_ID, make_expediente_record
 from tests.test_transferencias import _acta_firma_row, _acta_row, _transfer_row
 
@@ -185,7 +185,7 @@ async def test_firmar_personal_ok_inserts_row_and_audits() -> None:
     actor = Actor(id=USER_ID)
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ) as mock_sign:
         result = await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
@@ -226,7 +226,7 @@ async def test_firmar_personal_idempotent_does_not_call_signature_service() -> N
     actor = Actor(id=USER_ID)
 
     with patch(
-        "app.clients.signature_client.sign_personal", new=AsyncMock()
+        "archive.clients.signature_client.sign_personal", new=AsyncMock()
     ) as mock_sign:
         result = await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
 
@@ -275,7 +275,7 @@ async def test_firmar_personal_no_read_up_404_before_reaching_acta() -> None:
     svc = _service(conn)
     actor = Actor(id=USER_ID)
 
-    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
     assert exc_info.value.status_code == 404
@@ -301,7 +301,7 @@ async def test_firmar_personal_rejected_totp_incorrecto_propagates_status() -> N
     rejected = (401, {"error": "totp_incorrecto", "detail": "wrong code", "status": 401})
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=None, rejected=rejected)),
     ):
         with pytest.raises(Exception) as exc_info:
@@ -328,7 +328,7 @@ async def test_firmar_personal_rejected_sin_certificado_activo_returns_422() -> 
     rejected = (422, {"error": "sin_certificado_activo", "detail": "no cert", "status": 422})
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=None, rejected=rejected)),
     ):
         with pytest.raises(Exception) as exc_info:
@@ -354,7 +354,7 @@ async def test_firmar_personal_channel_unavailable_returns_503() -> None:
     actor = Actor(id=USER_ID)
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=None, unavailable=True)),
     ):
         with pytest.raises(Exception) as exc_info:
@@ -394,7 +394,7 @@ async def test_firmar_personal_fallo_remoto_nombra_la_causa_y_no_acusa_al_canal(
 
     causa = "artefacto_no_almacenado: MinIO rechazó el objeto (XMinioStorageFull)"
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(
             return_value=SignPersonalOutcome(signed=None, remote_failure=(500, causa))
         ),
@@ -448,7 +448,7 @@ async def test_firmar_personal_non_receiver_returns_403_no_totp_burned() -> None
     actor = Actor(id=otro_archivista)
 
     with patch(
-        "app.clients.signature_client.sign_personal", new=AsyncMock()
+        "archive.clients.signature_client.sign_personal", new=AsyncMock()
     ) as mock_sign:
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
@@ -496,7 +496,7 @@ async def test_firmar_personal_legitimate_receiver_still_signs_ok() -> None:
     actor = Actor(id=USER_ID)
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ) as mock_sign:
         result = await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
@@ -525,7 +525,7 @@ async def test_firmar_personal_lost_race_no_phantom_audit_returns_winning_row() 
     actor = Actor(id=USER_ID)
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ):
         result = await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
@@ -568,11 +568,11 @@ async def test_acta_verificacion_firmada_receptor_when_personal_present() -> Non
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<xml/>"),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True,
@@ -697,7 +697,7 @@ async def test_firmar_personal_remitente_signs_as_entrega() -> None:
             new=AsyncMock(return_value=inserted),
         ) as mock_insert,
         patch(
-            "app.clients.signature_client.sign_personal",
+            "archive.clients.signature_client.sign_personal",
             new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
         ) as mock_sign,
     ):
@@ -732,7 +732,7 @@ async def test_firmar_personal_tercero_ni_remitente_ni_receptor_403() -> None:
     svc = _service(conn)
     actor = Actor(id=USER_ID)  # ni remitente ni receptor
 
-    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
 
@@ -764,7 +764,7 @@ async def test_firmar_personal_rol_param_no_concede_rol_ajeno_403() -> None:
     svc = _service(conn)
     actor = Actor(id=USER_ID)  # es receptor, NO remitente
 
-    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_personal(
                 tid, actor, "123456", "Bearer faketoken", rol_solicitado="entrega"
@@ -798,7 +798,7 @@ async def test_firmar_personal_autotraslado_sin_rol_requiere_desempate_400() -> 
     svc = _service(conn)
     actor = Actor(id=USER_ID)
 
-    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
 
@@ -839,7 +839,7 @@ async def test_firmar_personal_autotraslado_con_rol_firma_el_indicado() -> None:
             new=AsyncMock(return_value=inserted),
         ) as mock_insert,
         patch(
-            "app.clients.signature_client.sign_personal",
+            "archive.clients.signature_client.sign_personal",
             new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
         ),
     ):
@@ -875,11 +875,11 @@ async def test_acta_verificacion_firmada_remitente_only_entrega() -> None:
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<xml/>"),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True,
@@ -928,11 +928,11 @@ async def test_acta_verificacion_firmada_completa_ambos_roles() -> None:
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<xml/>"),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True,
@@ -989,11 +989,11 @@ async def test_acta_verificacion_auto_traslado_flag_cuando_mismo_firmante() -> N
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<xml/>"),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True,
@@ -1076,7 +1076,7 @@ async def test_firmar_personal_elaborador_signs_as_elabora() -> None:
             new=AsyncMock(return_value=inserted),
         ) as mock_insert,
         patch(
-            "app.clients.signature_client.sign_personal",
+            "archive.clients.signature_client.sign_personal",
             new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
         ),
     ):
@@ -1111,11 +1111,11 @@ async def test_acta_verificacion_elaborador_firmado_ortogonal_a_completitud() ->
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<xml/>"),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True,
@@ -1162,7 +1162,7 @@ async def test_firmar_personal_tres_roles_coincidentes_requiere_rol() -> None:
     conn.fetchrow.side_effect = _rows()
     svc = _service(conn)
     actor = Actor(id=USER_ID)
-    with patch("app.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
+    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as mock_sign:
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_personal(tid, actor, "123456", "Bearer faketoken")
     assert exc_info.value.status_code == 400
@@ -1195,7 +1195,7 @@ async def test_firmar_personal_tres_roles_coincidentes_requiere_rol() -> None:
             new=AsyncMock(return_value=inserted),
         ),
         patch(
-            "app.clients.signature_client.sign_personal",
+            "archive.clients.signature_client.sign_personal",
             new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
         ),
     ):

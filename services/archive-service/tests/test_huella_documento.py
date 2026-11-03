@@ -17,7 +17,7 @@ divergen, la verificación acusa alteraciones que no ocurrieron.
 
 from __future__ import annotations
 
-from app.core.huella_documento import huella_de_documento
+from archive.core.huella_documento import huella_de_documento
 
 _A = "a" * 64
 _B = "b" * 64

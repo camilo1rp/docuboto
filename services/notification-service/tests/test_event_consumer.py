@@ -111,7 +111,7 @@ def _fake_acquire(conn: AsyncMock):
 @pytest.mark.asyncio
 async def test_process_event_claim_true_despacha_efectos() -> None:
     """claim True (evento nuevo) → dispatch_webhooks y send_notification son invocados."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(
@@ -135,7 +135,7 @@ async def test_process_event_claim_true_despacha_efectos() -> None:
 @pytest.mark.asyncio
 async def test_process_event_to_dept_code_manda_sobre_el_nombre() -> None:
     """B5: con `to_dept_code` el aviso va a ESE buzón aunque el nombre ya no case."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(
@@ -160,7 +160,7 @@ async def test_process_event_to_dept_code_manda_sobre_el_nombre() -> None:
 @pytest.mark.asyncio
 async def test_process_event_viejo_solo_nombre_usa_el_resolutor_con_historico() -> None:
     """Evento sin código: se resuelve el nombre (función del catálogo, p_historico)."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(
@@ -182,7 +182,7 @@ async def test_process_event_viejo_solo_nombre_usa_el_resolutor_con_historico() 
 @pytest.mark.asyncio
 async def test_process_event_claim_false_skip_sin_efectos() -> None:
     """claim False (ya procesado) → ningún efecto externo; retorno silencioso."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=False)
     raw = _raw_fields(
@@ -204,7 +204,7 @@ async def test_process_event_claim_false_skip_sin_efectos() -> None:
 @pytest.mark.asyncio
 async def test_process_event_bd_caida_en_claim_propaga() -> None:
     """Error de BD en claim → excepción propaga (A-1: caller no ackeará → PEL)."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = AsyncMock()
     conn.fetchrow.side_effect = OSError("connection lost")
@@ -226,7 +226,7 @@ async def test_process_event_bd_caida_en_claim_propaga() -> None:
 @pytest.mark.asyncio
 async def test_process_event_sin_tenant_slug_raises() -> None:
     """Envelope sin tenant_slug → ValueError propaga (dead-letter R1 en el reclaim)."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     # El sobre nace SIN entidad y se firma así: lo que se prueba es la guarda
     # del consumidor ante un sobre incompleto pero legítimo, no la firma. Vaciar
@@ -241,7 +241,7 @@ async def test_process_event_sin_tenant_slug_raises() -> None:
 @pytest.mark.asyncio
 async def test_process_event_sin_event_id_raises() -> None:
     """Envelope sin event_id → ValueError propaga (no se puede deduplicar)."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     # Igual que el de arriba: nace sin identificador y se firma así.
     raw = _raw_fields(event_type="workflow.step.created", event_id="")
@@ -253,7 +253,7 @@ async def test_process_event_sin_event_id_raises() -> None:
 @pytest.mark.asyncio
 async def test_process_event_overdue_claim_true() -> None:
     """workflow.step.overdue con claim True → notificación de vencimiento enviada."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(
@@ -281,7 +281,7 @@ async def test_process_event_overdue_claim_true() -> None:
 @pytest.mark.asyncio
 async def test_process_document_event_radicado_created_claim_true() -> None:
     """document.radicado.created con claim True → webhook + notificación."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(
@@ -306,7 +306,7 @@ async def test_process_document_event_radicado_created_claim_true() -> None:
 @pytest.mark.asyncio
 async def test_process_document_event_claim_false_skip() -> None:
     """document event con claim False → dedup skip; sin webhook ni email."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=False)
     raw = _raw_fields(event_type="document.radicado.created", payload={})
@@ -325,7 +325,7 @@ async def test_process_document_event_claim_false_skip() -> None:
 @pytest.mark.asyncio
 async def test_process_document_event_tipo_desconocido_solo_webhook() -> None:
     """Tipo de evento desconocido con claim True → webhook dispatched, sin email."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     conn = _make_conn(claim_result=True)
     raw = _raw_fields(event_type="document.radicado.updated", payload={})
@@ -346,7 +346,7 @@ async def test_process_document_event_tipo_desconocido_solo_webhook() -> None:
 @pytest.mark.asyncio
 async def test_process_document_event_sin_tenant_slug_raises() -> None:
     """document event sin tenant_slug → ValueError propaga."""
-    from app.services import event_consumer
+    from notification.services import event_consumer
 
     raw = _raw_fields(event_type="document.radicado.created", tenant_slug="")
 

@@ -25,7 +25,7 @@ from __future__ import annotations
 import pathlib
 import re
 
-from app.core.preservacion_tipos import (
+from storage.core.preservacion_tipos import (
     ALL_WORM_TIPOS,
     CONTENT_TIPOS,
     CONTROL_INSTRUMENT_TIPOS,

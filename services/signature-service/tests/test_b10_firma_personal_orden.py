@@ -29,10 +29,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
-from app.providers import local
-from app.providers.base import PreparedDoc, SignerRef
-from app.providers.local import LocalSigner, XmldsigNoConformeError
-from app.services import personal_signing
+from signature.providers import local
+from signature.providers.base import PreparedDoc, SignerRef
+from signature.providers.local import LocalSigner, XmldsigNoConformeError
+from signature.services import personal_signing
 from tests.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)
     _DOC,
     _cert,

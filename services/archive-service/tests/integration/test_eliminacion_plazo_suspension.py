@@ -31,8 +31,8 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.repositories.archive_repository import ArchiveRepository
-from app.services.archive_service import ArchiveService
+from archive.repositories.archive_repository import ArchiveRepository
+from archive.services.archive_service import ArchiveService
 
 from .test_eliminacion_lote_estados import _publicar, _sembrar_lote
 

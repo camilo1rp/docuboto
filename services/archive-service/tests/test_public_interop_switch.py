@@ -28,8 +28,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.main import app
+from archive.core.config import settings
+from archive.main import app
 
 pytestmark = pytest.mark.asyncio
 
@@ -93,7 +93,7 @@ async def test_encendido_ya_no_da_404_de_ruta_inexistente(
     ausencia. Aquí la petición llega al handler y muere más adelante por falta de
     `db_pool` — señal inequívoca de que el guard no la cortó.
     """
-    from app.core import config as cfg_module
+    from archive.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
 

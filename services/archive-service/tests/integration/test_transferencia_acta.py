@@ -46,13 +46,13 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.core.actor import Actor
-from app.core.clearance import CLASIFICADA
-from app.core.database import tenant_schema
-from app.schemas.fisico import ExpedienteUnidadLink, UnidadCreate
-from app.schemas.transferencia import TransferenciaRechazo, TransferenciaResponse
-from app.services.fisico_service import FisicoService
-from app.services.transferencia_service import TransferenciaService
+from archive.core.actor import Actor
+from archive.core.clearance import CLASIFICADA
+from archive.core.database import tenant_schema
+from archive.schemas.fisico import ExpedienteUnidadLink, UnidadCreate
+from archive.schemas.transferencia import TransferenciaRechazo, TransferenciaResponse
+from archive.services.fisico_service import FisicoService
+from archive.services.transferencia_service import TransferenciaService
 
 from .conftest import DSN
 from .test_atomicity import (
@@ -83,7 +83,7 @@ def _num_registros(acta_xml: str) -> int:
 # ---------------------------------------------------------------------------
 # RBAC mínimo, provisionado a mano dentro del schema desechable: las tablas
 # `auth_users`/`auth_memberships`/`role_clearance` las crea auth-service (ADR-002/
-# ADR-012, ver `app/core/clearance.py`), pero sus migraciones NO viajan en la
+# ADR-012, ver `archive/core/clearance.py`), pero sus migraciones NO viajan en la
 # imagen de archive-service -- `resolve_caller_clearance` atrapa
 # `UndefinedTableError` y cae a PUBLICA(1) en su ausencia (fail-closed, ya
 # documentado en `test_atomicity.py:1202`). Para la garantía 5 hace falta

@@ -182,7 +182,7 @@ async def test_no_audita_la_lectura_de_la_cola(client_with_conn, monkeypatch) ->
     metería una fila por refresco de pantalla en la cadena de hashes, que es
     justo el ruido que ya se retiró una vez del `audit_log`.
     """
-    from app.services import anulacion_service
+    from document.services import anulacion_service
 
     espia = AsyncMock()
     if hasattr(anulacion_service, "audit"):

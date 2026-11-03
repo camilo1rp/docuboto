@@ -38,10 +38,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-import app.core.config as config_module
-import app.routers.storage as storage_router_module
-from app.main import app as fastapi_app
-from app.services.pdfa import PdfaResult
+import storage.core.config as config_module
+import storage.routers.storage as storage_router_module
+from storage.main import app as fastapi_app
+from storage.services.pdfa import PdfaResult
 from tests.conftest import (
     TENANT_HEADERS,
     TENANT_SLUG,
@@ -86,7 +86,7 @@ def _pin_upload_file_id(monkeypatch: pytest.MonkeyPatch, file_id: uuid.UUID) -> 
     `mark_pdfa_pending`/`record_ingest_pdfa_result`/el `BackgroundTask`
     agendado. Para poder afirmar sobre CUÁL `file_id` recibieron esas
     llamadas, se fija el generador a un valor conocido."""
-    monkeypatch.setattr("app.services.storage_service.uuid.uuid4", lambda: file_id)
+    monkeypatch.setattr("storage.services.storage_service.uuid.uuid4", lambda: file_id)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ async def test_strict_non_conformant_rejects_before_touching_minio_or_db(
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 
     monkeypatch.setattr(
-        "app.services.storage_service.validate_ingest_content",
+        "storage.services.storage_service.validate_ingest_content",
         AsyncMock(
             return_value=PdfaResult(
                 outcome="non_conformant",
@@ -274,7 +274,7 @@ async def test_strict_non_conformant_rejects_before_touching_minio_or_db(
 def test_looks_like_pdf_tolera_basura_antes_de_la_cabecera() -> None:
     """AREA-08-02: los lectores aceptan hasta 1 KiB delante de `%PDF-`; con
     `startswith`, un PDF con prefijo saltaba la validación en modo estricto."""
-    from app.services.pdfa_ingest_service import looks_like_pdf
+    from storage.services.pdfa_ingest_service import looks_like_pdf
 
     assert looks_like_pdf(b"\x00\x00\r\n%PDF-1.7\ncuerpo")
     assert looks_like_pdf(_PDF_CONTENT)
@@ -295,7 +295,7 @@ async def test_strict_pdf_con_prefijo_se_valida_y_se_rechaza(
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)
     monkeypatch.setattr(
-        "app.services.storage_service.validate_ingest_content",
+        "storage.services.storage_service.validate_ingest_content",
         AsyncMock(
             return_value=PdfaResult(
                 outcome="non_conformant", profile="2b", validator_agent="t", detail={}
@@ -331,7 +331,7 @@ async def test_strict_conformant_or_not_evaluated_proceeds_and_persists_verdict(
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 
     monkeypatch.setattr(
-        "app.services.storage_service.validate_ingest_content",
+        "storage.services.storage_service.validate_ingest_content",
         AsyncMock(
             return_value=PdfaResult(
                 outcome=outcome,  # type: ignore[arg-type]

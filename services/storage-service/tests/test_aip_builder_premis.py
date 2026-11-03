@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 import pytest
 from lxml import etree
 
-from app.services.aip_builder import (
+from storage.services.aip_builder import (
     _PREMIS_NS,
     _XSI_NS,
     AipDocMaterial,

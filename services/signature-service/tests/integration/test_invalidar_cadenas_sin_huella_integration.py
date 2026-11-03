@@ -24,8 +24,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import _schema as tenant_schema
-from app.ops import invalidar_cadenas_sin_huella as ops
+from signature.core.database import _schema as tenant_schema
+from signature.ops import invalidar_cadenas_sin_huella as ops
 
 pytestmark = pytest.mark.asyncio
 

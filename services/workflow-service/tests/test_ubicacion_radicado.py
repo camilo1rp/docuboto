@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.services.estado_radicado import (
+from workflow.services.estado_radicado import (
     PasoUbicacion,
     Ubicacion,
     derivar_ubicacion,
@@ -127,7 +127,7 @@ def test_el_codigo_es_el_del_paso_no_se_adivina_por_el_nombre() -> None:
 
 from unittest.mock import AsyncMock  # noqa: E402
 
-from app.repositories.workflow_repository import WorkflowRepository  # noqa: E402
+from workflow.repositories.workflow_repository import WorkflowRepository  # noqa: E402
 
 _SINCRONIZAR_REAL = WorkflowRepository.sincronizar_estado_radicado
 

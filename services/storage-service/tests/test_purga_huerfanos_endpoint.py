@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.storage_service import PurgaHuerfano
+from storage.services.storage_service import PurgaHuerfano
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS
 
 RUTA = "/api/v1/storage/internal/purgar-huerfanos"
@@ -40,7 +40,7 @@ def _cuerpo(file_ids, **extra):
 
 @pytest.mark.asyncio
 async def test_sin_token_interno_no_se_borra_nada(client) -> None:
-    with patch("app.services.storage_service.StorageService.purge_orphan", AsyncMock()) as p:
+    with patch("storage.services.storage_service.StorageService.purge_orphan", AsyncMock()) as p:
         resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=TENANT_HEADERS)
     assert resp.status_code in (401, 403)
     p.assert_not_awaited()
@@ -56,7 +56,7 @@ async def test_devuelve_un_resultado_por_archivo_y_no_repite_ids(client) -> None
         assert kw["referencia"] and kw["motivo"] and kw["subido_desde"].tzinfo is not None
         return PurgaHuerfano(file_id, "purgado" if file_id == a else "referenciado", "anexos.file_id")
 
-    with patch("app.services.storage_service.StorageService.purge_orphan", _purgar):
+    with patch("storage.services.storage_service.StorageService.purge_orphan", _purgar):
         resp = await client.post(RUTA, json=_cuerpo([a, b, a]), headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 200

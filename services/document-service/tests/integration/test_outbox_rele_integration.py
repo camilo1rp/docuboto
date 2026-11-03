@@ -30,8 +30,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.services import outbox
+from document.core.database import tenant_schema
+from document.services import outbox
 
 pytestmark = pytest.mark.integration
 

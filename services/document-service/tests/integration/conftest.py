@@ -42,7 +42,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 from migrations import runner
 
 # Mismo cálculo que `migrations/runner.py` — DSN "pelado" para conectar con
@@ -465,7 +465,7 @@ def _dependencia_desde_el_schema(monkeypatch: pytest.MonkeyPatch) -> None:
     """`DocumentService._resolve_dependencia` habla con tenant-service por HTTP; en este
     tier no hay tenant-service. Se sustituye por la MISMA regla leída de la tabla
     `dependencias` del schema de prueba (existe y activa), no por un «todo vale»."""
-    from app.services.document_service import DocumentService, InvalidDependenciaError
+    from document.services.document_service import DocumentService, InvalidDependenciaError
 
     async def _resolver(self: DocumentService, codigo: int) -> str:
         nombre = await self._conn.fetchval(

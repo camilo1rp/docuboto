@@ -10,7 +10,7 @@
 """
 Tests de `Settings.preservation_startup_guard` (E10 Increment A, WORM foundation).
 
-Guard de arranque puro (sin BD/MinIO/red): `app.main.lifespan` lo usa para
+Guard de arranque puro (sin BD/MinIO/red): `storage.main.lifespan` lo usa para
 rechazar el arranque en producción si el modo de retención no es COMPLIANCE
 (GOVERNANCE es evadible por un usuario con permiso bypass-governance de MinIO).
 No requiere `client`/`client_with_conn` — es lógica de configuración aislada.
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.config import Settings
+from storage.core.config import Settings
 
 
 def test_startup_guard_silent_when_compliance() -> None:

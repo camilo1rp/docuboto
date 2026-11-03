@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from app.clients.ppi import ClientePpi
-from app.core.reconciliacion import reconciliar
+from knowledge.clients.ppi import ClientePpi
+from knowledge.core.reconciliacion import reconciliar
 
 pytestmark = pytest.mark.asyncio
 

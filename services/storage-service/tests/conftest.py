@@ -24,9 +24,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core import config as cfg_module
-from app.core.database import get_db_conn
-from app.main import app
+from storage.core import config as cfg_module
+from storage.core.database import get_db_conn
+from storage.main import app
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway, con `X-User-Id` sin
 # firmar: justo lo que el servicio rechaza cuando hay secreto de identidad (docker-compose lo
@@ -388,21 +388,21 @@ def _minio_patches(mock_minio: MagicMock):
     """
     Patch get_minio in all modules that import it at module level.
 
-    Every module does `from app.core.minio_client import get_minio`, which binds
+    Every module does `from storage.core.minio_client import get_minio`, which binds
     its OWN local name — patching the source module alone does not affect
     already-imported references, so each consumer must be patched independently
     (WORM: `preservation_worm_service.py` is the 4th location, E10 Increment A;
     `aip_service.py` is the 5th, E10 Increment B).
     """
     return (
-        patch("app.core.minio_client.get_minio", return_value=mock_minio),
-        patch("app.services.storage_service.get_minio", return_value=mock_minio),
-        patch("app.services.preservation_worm_service.get_minio", return_value=mock_minio),
-        patch("app.services.aip_service.get_minio", return_value=mock_minio),
-        patch("app.services.export_service.get_minio", return_value=mock_minio),
-        patch("app.routers.health.get_minio", return_value=mock_minio),
+        patch("storage.core.minio_client.get_minio", return_value=mock_minio),
+        patch("storage.services.storage_service.get_minio", return_value=mock_minio),
+        patch("storage.services.preservation_worm_service.get_minio", return_value=mock_minio),
+        patch("storage.services.aip_service.get_minio", return_value=mock_minio),
+        patch("storage.services.export_service.get_minio", return_value=mock_minio),
+        patch("storage.routers.health.get_minio", return_value=mock_minio),
         # C-5/C7: el servicio de holds por motivo importa `get_minio` por su cuenta.
-        patch("app.services.legal_hold_service.get_minio", return_value=mock_minio),
+        patch("storage.services.legal_hold_service.get_minio", return_value=mock_minio),
     )
 
 

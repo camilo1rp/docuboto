@@ -36,6 +36,8 @@ no se deja.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 from pathlib import Path
 
@@ -246,7 +248,7 @@ def _censo_de(texto: str, clave: str) -> tuple[set[str], set[str]]:
 def _censo() -> tuple[set[str], set[str]]:
     todas: set[str] = set()
     sin_gate: set[str] = set()
-    for ruta in sorted(SERVICIOS.glob("*/app/routers/*.py")):
+    for ruta in sorted(glob_src(SERVICIOS, "*/app/routers/*.py")):
         if ruta.name in _ARCHIVOS_EXENTOS:
             continue
         t, s = _censo_de(ruta.read_text(encoding="utf-8"), f"{ruta.parts[-4]}::{ruta.name}")

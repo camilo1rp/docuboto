@@ -19,10 +19,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.notification_client import NotificationDeliveryError
-from app.clients.signature_client import SignOutcome
-from app.core.config import settings
-from app.jobs.indice_reconciliation import _reconciliar_indice
+from archive.clients.notification_client import NotificationDeliveryError
+from archive.clients.signature_client import SignOutcome
+from archive.core.config import settings
+from archive.jobs.indice_reconciliation import _reconciliar_indice
 
 TENANT = "demo"
 
@@ -55,10 +55,10 @@ async def test_al_agotarse_se_avisa_a_quien_puede_repararlo(monkeypatch) -> None
 
     with (
         patch(
-            "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+            "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
             new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
         ),
-        patch("app.jobs.indice_reconciliation.enviar_aviso", new=AsyncMock()) as aviso,
+        patch("archive.jobs.indice_reconciliation.enviar_aviso", new=AsyncMock()) as aviso,
     ):
         resultado = await _reconciliar_indice(conn, TENANT, _row(intentos=2))
 
@@ -84,10 +84,10 @@ async def test_antes_de_agotarse_no_se_avisa(monkeypatch) -> None:
 
     with (
         patch(
-            "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+            "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
             new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
         ),
-        patch("app.jobs.indice_reconciliation.enviar_aviso", new=AsyncMock()) as aviso,
+        patch("archive.jobs.indice_reconciliation.enviar_aviso", new=AsyncMock()) as aviso,
     ):
         resultado = await _reconciliar_indice(conn, TENANT, _row(intentos=1))
 
@@ -108,10 +108,10 @@ async def test_un_correo_que_rebota_no_revierte_el_estado_agotado(monkeypatch) -
 
     with (
         patch(
-            "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+            "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
             new=AsyncMock(return_value=SignOutcome(signed=None, seal_absent=True)),
         ),
-        patch("app.jobs.indice_reconciliation.enviar_aviso", new=aviso),
+        patch("archive.jobs.indice_reconciliation.enviar_aviso", new=aviso),
     ):
         resultado = await _reconciliar_indice(conn, TENANT, _row(intentos=2))
 

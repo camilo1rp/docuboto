@@ -21,10 +21,10 @@ from typing import Any
 
 import pytest
 
-from app.core import consumidor
-from app.core.consumidor import atender, cargar_pagina
-from app.core.paso import destino_de
-from app.workers.intelligence_consumer import GROUP, STREAMS
+from knowledge.core import consumidor
+from knowledge.core.consumidor import atender, cargar_pagina
+from knowledge.core.paso import destino_de
+from knowledge.workers.intelligence_consumer import GROUP, STREAMS
 
 RADICADO = uuid.UUID("00000000-0000-4000-8000-0000000000b2")
 OTRO = uuid.UUID("00000000-0000-4000-8000-0000000000c4")

@@ -29,10 +29,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.clients import document_client
-from app.core.config import settings
-from app.schemas.indice_clasificados import IndiceSeriePublico
-from app.services.indice_clasificados_service import SIN_SERIE, componer_indice
+from archive.clients import document_client
+from archive.core.config import settings
+from archive.schemas.indice_clasificados import IndiceSeriePublico
+from archive.services.indice_clasificados_service import SIN_SERIE, componer_indice
 
 RUTA = "/api/v1/public/archive/indice-clasificados/demo"
 
@@ -129,13 +129,13 @@ def test_por_clasificar_se_publica_tal_cual_sin_inventar_articulo() -> None:
 
 def _patch_composicion(radicados, series):
     return (
-        patch("app.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=True)),
+        patch("archive.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=True)),
         patch(
-            "app.services.indice_clasificados_service.document_client.fetch_clasificados_internal",
+            "archive.services.indice_clasificados_service.document_client.fetch_clasificados_internal",
             new=AsyncMock(return_value={"causales": CAUSALES, "radicados": radicados}),
         ),
         patch(
-            "app.services.indice_clasificados_service.series_de_radicados",
+            "archive.services.indice_clasificados_service.series_de_radicados",
             new=AsyncMock(return_value=series),
         ),
     )
@@ -159,7 +159,7 @@ async def test_endpoint_publico_devuelve_filas_sin_autenticar_y_sin_el_interrupt
 @pytest.mark.asyncio
 async def test_entidad_inexistente_es_indistinguible_de_una_sin_clasificados(client_with_conn) -> None:
     client, _ = client_with_conn
-    with patch("app.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=False)):
+    with patch("archive.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=False)):
         inexistente = await client.get("/api/v1/public/archive/indice-clasificados/no-existe")
     p1, p2, p3 = _patch_composicion([], [])
     with p1, p2, p3:
@@ -173,9 +173,9 @@ async def test_entidad_inexistente_es_indistinguible_de_una_sin_clasificados(cli
 async def test_document_service_caido_es_503_no_una_lista_parcial(client_with_conn) -> None:
     client, _ = client_with_conn
     with (
-        patch("app.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=True)),
+        patch("archive.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=True)),
         patch(
-            "app.services.indice_clasificados_service.document_client.fetch_clasificados_internal",
+            "archive.services.indice_clasificados_service.document_client.fetch_clasificados_internal",
             new=AsyncMock(side_effect=document_client.DocumentClientError("caído")),
         ),
     ):
@@ -198,7 +198,7 @@ async def test_csv_lleva_el_mismo_contenido_y_neutraliza_formulas(client_with_co
 
 @pytest.mark.asyncio
 async def test_la_consulta_de_series_solo_cuenta_vinculos_vigentes_y_no_trae_datos_del_radicado() -> None:
-    from app.repositories.clasificados_serie_repository import series_de_radicados
+    from archive.repositories.clasificados_serie_repository import series_de_radicados
 
     conn = AsyncMock()
     conn.fetch.return_value = []

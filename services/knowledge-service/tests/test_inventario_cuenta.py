@@ -18,8 +18,8 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.core.paso import contar_radicados
-from app.routers import inteligencia
+from knowledge.core.paso import contar_radicados
+from knowledge.routers import inteligencia
 
 
 class _Cliente:

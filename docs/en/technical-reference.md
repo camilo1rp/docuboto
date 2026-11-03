@@ -165,7 +165,7 @@ Event envelope fields: `event_id`, `event_type`, `version`, `tenant_slug`, `occu
 
 ## Core modules
 
-Each entry below lists what the module owns, its API surface, the functions that carry the business logic, its events and jobs, its tables, and the flags or gaps a planner should know. Paths are relative to `services/<name>/app/`. `[int]` marks internal routes guarded by `X-Internal-Token` that the gateway never routes.
+Each entry below lists what the module owns, its API surface, the functions that carry the business logic, its events and jobs, its tables, and the flags or gaps a planner should know. Paths are relative to `services/<name>/<module>/` (`document`, `workflow`, …; `app` for api-gateway and mcp-server). `[int]` marks internal routes guarded by `X-Internal-Token` that the gateway never routes.
 
 ### Shared library: `orpycamcp_common`
 

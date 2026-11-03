@@ -15,6 +15,9 @@ ningÃºn servicio aceptaba (`-abc`). Una copia futura sin ancla, o con `_`, habrÃ
 permitido colisiones de schema o salirse del entrecomillado.
 """
 
+from tests._compose import glob_src
+
+
 import re
 from pathlib import Path
 
@@ -34,7 +37,7 @@ _COPIA_LOCAL = re.compile(r"""\b_?(?:TENANT_)?SLUG_RE\s*=\s*re\.compile|\[a-z0-9
 
 
 def _fuentes() -> list[Path]:
-    return sorted(_SERVICIOS.glob("*/app/**/*.py"))
+    return sorted(glob_src(_SERVICIOS, "*/app/**/*.py"))
 
 
 @pytestmark_arbol
@@ -144,7 +147,7 @@ def test_cada_database_py_llama_a_slug_valido() -> None:
     """Los 9 `core/database.py` DEBEN llamar a `slug_valido` (no solo a `_schema_de`,
     que ya valida pero lanza ValueError sin el 400 del borde HTTP)."""
     faltan = []
-    dbs = sorted(_SERVICIOS.glob("*/app/core/database.py"))
+    dbs = sorted(glob_src(_SERVICIOS, "*/app/core/database.py"))
     assert len(dbs) >= 9
     for p in dbs:
         _, llamados = _importa_y_llama(p)

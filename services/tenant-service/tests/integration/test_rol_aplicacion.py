@@ -34,10 +34,10 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.repositories.config_repository import ConfigRepository
-from app.repositories.dependencias_repository import DependenciaRepository
-from app.schemas.tenant import TenantCreate, TenantUpdate
-from app.services.tenant_service import TenantService
+from tenant.repositories.config_repository import ConfigRepository
+from tenant.repositories.dependencias_repository import DependenciaRepository
+from tenant.schemas.tenant import TenantCreate, TenantUpdate
+from tenant.services.tenant_service import TenantService
 from migrations import runner
 
 pytestmark = pytest.mark.skipif(
@@ -154,7 +154,7 @@ async def test_alta_con_rol_de_aplicacion_asienta_y_no_crea_esquema(ctx: Ctx) ->
 
 
 async def test_alta_sin_asiento_revierte_la_fila(ctx: Ctx, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import audit as audit_core
+    from tenant.core import audit as audit_core
 
     async def boom(*a: object, **k: object) -> None:
         raise RuntimeError("audit down")

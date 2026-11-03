@@ -27,6 +27,8 @@ Mutaciones que deben caer (descritas, no ejecutadas):
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 import re
 from pathlib import Path
@@ -48,7 +50,7 @@ ADMITIDOS = {
 
 
 def _con_metrics() -> dict[str, Path]:
-    return {p.parts[-4]: p for p in sorted(SERVICIOS.glob("*/app/routers/metrics.py"))}
+    return {p.parts[-4]: p for p in sorted(glob_src(SERVICIOS, "*/app/routers/metrics.py"))}
 
 
 def test_el_conjunto_de_servicios_con_metrics_es_el_admitido() -> None:
@@ -102,7 +104,7 @@ def test_cada_servicio_expone_la_senal_que_le_toca() -> None:
 
 
 def test_la_senal_dlq_la_tienen_los_que_escriben_la_dlq() -> None:
-    escriben = {p.parts[-4] for p in SERVICIOS.glob("*/app/repositories/dead_letter_repository.py")}
+    escriben = {p.parts[-4] for p in glob_src(SERVICIOS, "*/app/repositories/dead_letter_repository.py")}
     assert len(escriben) >= 3, f"censo de la DLQ vacío o incompleto: {sorted(escriben)}"
     con_senal = {s for s, r in _con_metrics().items() if "metricas.senal_dlq(" in r.read_text(encoding="utf-8")}
     assert con_senal == escriben

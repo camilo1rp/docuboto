@@ -30,13 +30,20 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$RAIZ"
 mkdir -p "$DESTINO"
 
+paquete_de() {
+    case "$1" in
+        api-gateway|mcp-server) echo "app" ;;
+        *) echo "${1%-service}" ;;
+    esac
+}
+
 # El volcado va INLINE y no como fichero montado: un montaje más es un punto de
 # fallo más —y uno silencioso, porque el servicio que no responde se salta—.
-VOLCADO='import json, app.main as m; print(json.dumps(m.app.openapi()))'
-
 for svc in "${SERVICIOS[@]}"; do
+    pkg="$(paquete_de "$svc")"
+    volcado="import json, ${pkg}.main as m; print(json.dumps(m.app.openapi()))"
     if docker compose run --rm --no-deps -T -w /app "$svc" \
-         python -c "$VOLCADO" 2>/dev/null > "$DESTINO/$svc.json" \
+         python -c "$volcado" 2>/dev/null > "$DESTINO/$svc.json" \
          && [ -s "$DESTINO/$svc.json" ]; then
         n=$(python3 -c "import json,sys;print(len(json.load(open(sys.argv[1]))['paths']))" "$DESTINO/$svc.json")
         printf '  %-22s %s rutas\n' "$svc" "$n"

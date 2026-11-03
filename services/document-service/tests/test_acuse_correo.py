@@ -17,7 +17,7 @@ errores sino decisiones—, más lo que la constancia dice y lo que calla.
 import httpx
 import pytest
 
-from app.services import acuse_correo
+from document.services import acuse_correo
 
 CUENTA = "pqrs@e.gov.co"
 

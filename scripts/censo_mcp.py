@@ -105,7 +105,7 @@ _ID = r"\{[^/]+\}"
 _NO = "NO_OFRECIDAS: "
 _SELLADA = "SELLADA: "
 _FLUJOS_MD = "docs/es/mcp-flujos.md"
-_PRESERVACION = "services/storage-service/app/routers/preservacion.py"
+_PRESERVACION = "services/storage-service/storage/routers/preservacion.py"
 
 # Operaciones del API que el MCP NO ofrece **por decisión**, no por falta de trabajo.
 #
@@ -162,7 +162,7 @@ EXCLUIDAS_A_PROPOSITO: tuple[tuple[str, str, str, str], ...] = (
      _SELLADA + _PRESERVACION),
     ("POST", r"^/api/v1/notifications/send$",
      "lo llama signature-service para el segundo factor; sin el sello cualquier token enviaría correo como la institución",
-     _SELLADA + "services/notification-service/app/routers/notifications.py"),
+     _SELLADA + "services/notification-service/notification/routers/notifications.py"),
     # --- Firma: segundo factor o documento delante ------------------------------
     ("POST", rf"^/api/v1/signature/requests/{_ID}/(sign|vobo|reject)$",
      "firmar consume un segundo factor; aprobar/rechazar exige haber visto el documento",

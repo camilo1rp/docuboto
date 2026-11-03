@@ -29,6 +29,8 @@ es su motivo de existir).
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import re
 from pathlib import Path
 
@@ -71,7 +73,7 @@ def _variables_declaradas() -> dict[str, set[str]]:
 def _secretos_exigidos() -> dict[str, set[str]]:
     """`{servicio: {VARIABLES que su lifespan exige presentes}}`."""
     exigidos: dict[str, set[str]] = {}
-    for main in sorted(SERVICIOS.glob("*/app/main.py")):
+    for main in sorted(glob_src(SERVICIOS, "*/app/main.py")):
         servicio = main.parents[1].name
         codigo = main.read_text(encoding="utf-8")
         claves: set[str] = set()

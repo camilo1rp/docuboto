@@ -31,7 +31,7 @@ from collections.abc import AsyncGenerator
 import asyncpg
 import pytest_asyncio
 
-from app.core.database import tenant_schema
+from auth.core.database import tenant_schema
 from migrations import runner
 
 RUN_INTEGRATION = os.environ.get("RUN_INTEGRATION") == "1"

@@ -401,7 +401,7 @@ async def test_cola_filas_y_total_comparten_la_condicion_y_el_clearance(client_w
 
     assert resp.status_code == 200 and resp.json() == []
     assert resp.headers["X-Total-Count"] == "0"
-    from app.repositories.reclasificacion_repository import ReclasificacionRepository as R
+    from document.repositories.reclasificacion_repository import ReclasificacionRepository as R
 
     filas = str(conn.fetch.await_args_list[0].args[0])
     total = str(conn.fetchval.await_args_list[1].args[0])
@@ -448,7 +448,7 @@ async def test_historial_lleva_el_clearance_en_el_where(client_with_redis) -> No
 def test_el_pedido_a_nivel_2_exige_causal_art19_fundamento_y_plazo() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.desclasificacion import DesclasificacionRequest as D
+    from document.schemas.desclasificacion import DesclasificacionRequest as D
 
     base = {"motivo": "Cesó la causa de la clasificación"}
     assert D(nivel_seguridad=1, **base).nivel_seguridad == 1
@@ -470,7 +470,7 @@ def test_el_pedido_a_nivel_2_exige_causal_art19_fundamento_y_plazo() -> None:
 
 
 def test_el_json_de_auditoria_de_aprobar_no_pierde_a_quien_pidio() -> None:
-    from app.services.desclasificacion_service import DesclasificacionService as S
+    from document.services.desclasificacion_service import DesclasificacionService as S
 
     p = S._payload(_fila())
     json.dumps(p)

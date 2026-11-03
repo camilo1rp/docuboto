@@ -25,10 +25,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.schemas.document import DocumentCreate
-from app.services import batch_service as batch_mod
-from app.services.document_service import DocumentService
-from app.services.import_service import ImportService, PackageValidationError
+from document.schemas.document import DocumentCreate
+from document.services import batch_service as batch_mod
+from document.services.document_service import DocumentService
+from document.services.import_service import ImportService, PackageValidationError
 from tests.conftest import TENANT_HEADERS
 from tests.test_import import _pkg, _run, _svc
 from tests.test_postal import _ship_row
@@ -267,7 +267,7 @@ async def test_la_transicion_manual_deja_asiento_con_el_actor(
     client_with_conn, monkeypatch
 ) -> None:
     """Mutación: quitar `audit.append` de `update_estado` → cae."""
-    from app.clients import storage_client
+    from document.clients import storage_client
 
     async def _storage(*, tenant_slug, file_id):
         # El acuse lo subió quien registra la entrega (B2, ADR-031).
@@ -328,7 +328,7 @@ async def test_un_callback_que_gana_la_carrera_hace_que_el_manual_reciba_409(
 ) -> None:
     """El UPDATE no devuelve fila (el callback dejó `devuelto` entre la lectura y
     el UPDATE) → 409 y NINGÚN asiento de transición manual."""
-    from app.clients import storage_client
+    from document.clients import storage_client
 
     async def _storage(*, tenant_slug, file_id):
         # El acuse lo subió quien registra la entrega (B2, ADR-031).
@@ -486,7 +486,7 @@ async def test_validar_el_paquete_no_bloquea_el_event_loop() -> None:
 @pytest.mark.asyncio
 async def test_un_segundo_import_concurrente_recibe_429(client_with_conn) -> None:
     """Mutación: quitar `una_operacion_pesada()` → el segundo no recibe 429."""
-    from app.core.operacion_pesada import una_operacion_pesada
+    from document.core.operacion_pesada import una_operacion_pesada
 
     client, mock_conn = client_with_conn
     mock_conn.fetchrow.return_value = {"is_root": True}
@@ -509,7 +509,7 @@ async def test_un_segundo_import_concurrente_recibe_429(client_with_conn) -> Non
 
 @pytest.mark.asyncio
 async def test_el_cuerpo_se_corta_al_superar_el_tope(client_with_conn, monkeypatch) -> None:
-    from app.routers import import_ as router
+    from document.routers import import_ as router
 
     monkeypatch.setattr(router, "_MAX_UPLOAD", 10)
     client, mock_conn = client_with_conn
@@ -524,7 +524,7 @@ async def test_el_cuerpo_se_corta_al_superar_el_tope(client_with_conn, monkeypat
 
 @pytest.mark.asyncio
 async def test_el_tope_de_bytes_del_export_es_422() -> None:
-    from app.services import export_service as exp
+    from document.services import export_service as exp
 
     conn = AsyncMock()
     svc = exp.ExportService(conn, "demo")

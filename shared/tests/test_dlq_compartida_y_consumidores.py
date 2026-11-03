@@ -17,6 +17,8 @@ AREA-13-12  el último barrido y el tamaño de la DLQ son visibles.
 
 from __future__ import annotations
 
+from tests._compose import glob_src, ruta_src
+
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -34,7 +36,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _fuentes(patron: str):
-    return sorted(SERVICIOS.glob(patron))
+    return glob_src(SERVICIOS, patron)
 
 
 # ---------------------------------------------------------------------------
@@ -276,9 +278,9 @@ def test_el_worker_registra_el_error_y_usa_su_nombre_por_replica(servicio: str) 
 def test_el_nombre_supervisado_coincide_en_worker_main_y_health(servicio: str, nombre: str) -> None:
     """Si difieren, /health/ready nunca encuentra el estado y la DLQ deja de verse sin error."""
     assert f'status_name="{nombre}"' in _worker(servicio).read_text()
-    main = (SERVICIOS / servicio / "app/main.py").read_text()
+    main = ruta_src(servicio, "main.py").read_text()
     assert f'name="{nombre}"' in main and "spawn_supervised" in main
-    health = (SERVICIOS / servicio / "app/routers/health.py").read_text()
+    health = ruta_src(servicio, "routers", "health.py").read_text()
     assert f'_CONSUMIDOR = "{nombre}"' in health
     assert "health_common.consumer_report(" in health and "DEADLETTER_STREAM" in health
 

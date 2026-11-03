@@ -41,8 +41,8 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
-import app.services.archive_service as archive_service_module
-from app.schemas.archive import ExpedienteUpdate
+import archive.services.archive_service as archive_service_module
+from archive.schemas.archive import ExpedienteUpdate
 from tests.conftest import (
     EXPEDIENTE_ID,
     SERIE_ID,

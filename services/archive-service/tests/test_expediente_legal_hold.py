@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.clients.storage_client import StorageLegalHoldError
+from archive.clients.storage_client import StorageLegalHoldError
 from tests.conftest import EXPEDIENTE_ID, TENANT_HEADERS, make_expediente_record
 
 HOLD_ID = uuid.UUID("5d0f6a52-0d0b-4f3e-9e2c-2b1f9b0a1111")
@@ -92,7 +92,7 @@ async def test_fijar_orquesta_storage_y_asienta_en_archive(
     _con_exp(mock_conn)
     res = {"hold_id": str(HOLD_ID), "creado": True, "objetos_afectados": 0}
     with patch(
-        "app.clients.storage_client.fijar_legal_hold", new=AsyncMock(return_value=res)
+        "archive.clients.storage_client.fijar_legal_hold", new=AsyncMock(return_value=res)
     ) as fijar:
         resp = await client.post(_BASE, json=_FIJAR, headers=TENANT_HEADERS)
 
@@ -114,7 +114,7 @@ async def test_fijar_valoracion_pendiente_es_422_hold_de_sistema(
     """Ningún usuario fija el hold de sistema. Mutación: aceptarlo -> storage recibiría la llamada."""
     client, mock_conn = client_with_conn
     _con_exp(mock_conn)
-    with patch("app.clients.storage_client.fijar_legal_hold", new=AsyncMock()) as fijar:
+    with patch("archive.clients.storage_client.fijar_legal_hold", new=AsyncMock()) as fijar:
         resp = await client.post(
             _BASE, json={**_FIJAR, "motivo_tipo": "valoracion_pendiente"}, headers=TENANT_HEADERS
         )
@@ -129,7 +129,7 @@ async def test_expediente_invisible_es_404_neutro_y_no_toca_storage(
 ) -> None:
     client, mock_conn = client_with_conn
     _con_exp(mock_conn, visible=False)
-    with patch("app.clients.storage_client.fijar_legal_hold", new=AsyncMock()) as fijar:
+    with patch("archive.clients.storage_client.fijar_legal_hold", new=AsyncMock()) as fijar:
         resp = await client.post(_BASE, json=_FIJAR, headers=TENANT_HEADERS)
     assert resp.status_code == 404
     fijar.assert_not_called()
@@ -142,7 +142,7 @@ async def test_sin_permiso_admin_es_403_y_no_toca_storage(
 ) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = False
-    with patch("app.clients.storage_client.fijar_legal_hold", new=AsyncMock()) as fijar:
+    with patch("archive.clients.storage_client.fijar_legal_hold", new=AsyncMock()) as fijar:
         resp = await client.post(_BASE, json=_FIJAR, headers=TENANT_HEADERS)
     assert resp.status_code == 403
     fijar.assert_not_called()
@@ -176,7 +176,7 @@ async def test_fallo_de_storage_no_deja_asiento_de_archive(
     client, mock_conn = client_with_conn
     _con_exp(mock_conn)
     with patch(
-        "app.clients.storage_client.fijar_legal_hold",
+        "archive.clients.storage_client.fijar_legal_hold",
         new=AsyncMock(side_effect=StorageLegalHoldError(status_storage, "x")),
     ):
         resp = await client.post(_BASE, json=_FIJAR, headers=TENANT_HEADERS)
@@ -214,7 +214,7 @@ async def test_listar_devuelve_activos_y_levantados_con_su_motivo(
     _con_exp(mock_conn)
     holds = [_hold("judicial"), _hold("valoracion_pendiente", hold_id=uuid.uuid4()),
              _hold("fiscal", levantado=True, hold_id=uuid.uuid4())]
-    with patch("app.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=holds)):
+    with patch("archive.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=holds)):
         resp = await client.get(_BASE, headers=TENANT_HEADERS)
     assert resp.status_code == 200, resp.text
     cuerpo = resp.json()
@@ -229,7 +229,7 @@ async def test_listar_expediente_invisible_es_404_y_no_consulta_storage(
 ) -> None:
     client, mock_conn = client_with_conn
     _con_exp(mock_conn, visible=False)
-    with patch("app.clients.storage_client.listar_legal_holds", new=AsyncMock()) as listar:
+    with patch("archive.clients.storage_client.listar_legal_holds", new=AsyncMock()) as listar:
         resp = await client.get(_BASE, headers=TENANT_HEADERS)
     assert resp.status_code == 404
     listar.assert_not_called()
@@ -246,9 +246,9 @@ async def test_levantar_confirma_el_motivo_y_asienta(
     _con_exp(mock_conn)
     res = {"hold_id": str(HOLD_ID), "objetos_liberados_s3": 2, "holds_restantes": 0}
     with (
-        patch("app.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[_hold()])),
+        patch("archive.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[_hold()])),
         patch(
-            "app.clients.storage_client.levantar_legal_hold", new=AsyncMock(return_value=res)
+            "archive.clients.storage_client.levantar_legal_hold", new=AsyncMock(return_value=res)
         ) as levantar,
     ):
         resp = await client.post(
@@ -271,8 +271,8 @@ async def test_levantar_con_otro_hold_activo_no_libera_s3(
     _con_exp(mock_conn)
     res = {"hold_id": str(HOLD_ID), "objetos_liberados_s3": 0, "holds_restantes": 1}
     with (
-        patch("app.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[_hold()])),
-        patch("app.clients.storage_client.levantar_legal_hold", new=AsyncMock(return_value=res)),
+        patch("archive.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[_hold()])),
+        patch("archive.clients.storage_client.levantar_legal_hold", new=AsyncMock(return_value=res)),
     ):
         resp = await client.post(
             f"{_BASE}/{HOLD_ID}/levantar", json=_LEVANTAR, headers=TENANT_HEADERS
@@ -290,8 +290,8 @@ async def test_hold_de_otro_expediente_es_404_y_no_llega_a_storage(
     _con_exp(mock_conn)
     ajeno = _hold(hold_id=uuid.uuid4())
     with (
-        patch("app.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[ajeno])),
-        patch("app.clients.storage_client.levantar_legal_hold", new=AsyncMock()) as levantar,
+        patch("archive.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[ajeno])),
+        patch("archive.clients.storage_client.levantar_legal_hold", new=AsyncMock()) as levantar,
     ):
         resp = await client.post(
             f"{_BASE}/{HOLD_ID}/levantar", json=_LEVANTAR, headers=TENANT_HEADERS
@@ -309,10 +309,10 @@ async def test_hold_de_sistema_no_se_levanta_a_mano(
     _con_exp(mock_conn)
     with (
         patch(
-            "app.clients.storage_client.listar_legal_holds",
+            "archive.clients.storage_client.listar_legal_holds",
             new=AsyncMock(return_value=[_hold("valoracion_pendiente")]),
         ),
-        patch("app.clients.storage_client.levantar_legal_hold", new=AsyncMock()) as levantar,
+        patch("archive.clients.storage_client.levantar_legal_hold", new=AsyncMock()) as levantar,
     ):
         resp = await client.post(
             f"{_BASE}/{HOLD_ID}/levantar",
@@ -330,10 +330,10 @@ async def test_hold_ya_levantado_es_409(client_with_conn: tuple[AsyncClient, Asy
     _con_exp(mock_conn)
     with (
         patch(
-            "app.clients.storage_client.listar_legal_holds",
+            "archive.clients.storage_client.listar_legal_holds",
             new=AsyncMock(return_value=[_hold(levantado=True)]),
         ),
-        patch("app.clients.storage_client.levantar_legal_hold", new=AsyncMock()) as levantar,
+        patch("archive.clients.storage_client.levantar_legal_hold", new=AsyncMock()) as levantar,
     ):
         resp = await client.post(
             f"{_BASE}/{HOLD_ID}/levantar", json=_LEVANTAR, headers=TENANT_HEADERS
@@ -351,9 +351,9 @@ async def test_motivo_que_no_coincide_lo_rechaza_storage_y_archive_lo_traduce(
     client, mock_conn = client_with_conn
     _con_exp(mock_conn)
     with (
-        patch("app.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[_hold()])),
+        patch("archive.clients.storage_client.listar_legal_holds", new=AsyncMock(return_value=[_hold()])),
         patch(
-            "app.clients.storage_client.levantar_legal_hold",
+            "archive.clients.storage_client.levantar_legal_hold",
             new=AsyncMock(side_effect=StorageLegalHoldError(409, "x", "motivo_no_coincide")),
         ) as levantar,
     ):
@@ -387,7 +387,7 @@ def test_levantar_ddhh_exige_el_acto_de_la_autoridad_explicado() -> None:
     import pytest
     from pydantic import ValidationError
 
-    from app.schemas.retencion_legal import LegalHoldFijarRequest, LegalHoldLevantarRequest
+    from archive.schemas.retencion_legal import LegalHoldFijarRequest, LegalHoldLevantarRequest
 
     LegalHoldFijarRequest(
         motivo_tipo="ddhh_memoria_historica", fundamento="Orden de preservación de archivos", acta_ref="A-1"

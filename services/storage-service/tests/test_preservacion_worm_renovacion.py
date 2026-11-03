@@ -38,9 +38,9 @@ from pathlib import Path
 
 import pytest
 
-import app.core.config as config_module
-from app.core.constants import SYSTEM_RECONCILER_ID
-from app.core.preservacion_tipos import MULTI_ARTEFACTO_TIPOS
+import storage.core.config as config_module
+from storage.core.constants import SYSTEM_RECONCILER_ID
+from storage.core.preservacion_tipos import MULTI_ARTEFACTO_TIPOS
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS, TENANT_SLUG, make_worm_row
 
 
@@ -556,7 +556,7 @@ async def test_renovar_retencion_lock_key_matches_proteger_indice_lock_key(
     `proteger_indice`/`proteger_artefacto` -- no un namespace propio -- así
     una renovación y una protección/renovación concurrentes del MISMO
     artefacto se serializan entre sí."""
-    from app.services.preservation_worm_service import _worm_lock_key
+    from storage.services.preservation_worm_service import _worm_lock_key
 
     client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
@@ -681,7 +681,7 @@ async def test_renovar_retencion_audit_append_failure_propagates_and_releases_lo
     async def _boom(*_args, **_kwargs):
         raise RuntimeError("boom: audit.append falla dentro de la tx")
 
-    monkeypatch.setattr("app.services.preservation_worm_service.audit.append", _boom)
+    monkeypatch.setattr("storage.services.preservation_worm_service.audit.append", _boom)
 
     with pytest.raises(RuntimeError, match="boom"):
         await client.post(

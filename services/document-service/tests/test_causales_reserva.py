@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from app.core import causales_reserva as cr
+from document.core import causales_reserva as cr
 from tests.conftest import TENANT_HEADERS
 
 _SQL = (
@@ -140,7 +140,7 @@ async def test_endpoint_del_catalogo_expone_la_ley(client_with_conn) -> None:
 
 
 def test_el_tope_se_mide_desde_la_generacion_no_desde_la_clasificacion() -> None:
-    from app.core.causales_reserva import PLAZO_EXCEDE_TOPE, RESERVA_AGOTADA, tope_reserva
+    from document.core.causales_reserva import PLAZO_EXCEDE_TOPE, RESERVA_AGOTADA, tope_reserva
 
     assert tope_reserva(2, 60, 120) is None
     assert tope_reserva(2, 61, 120)[0] == PLAZO_EXCEDE_TOPE
@@ -160,7 +160,7 @@ def test_validar_clasificacion_aplica_el_tope_cuando_se_le_da_la_edad() -> None:
     ["Ley 1581 de 2012, art. 5", "Decreto 1081 de 2015", "Constitución Política art. 15", "Código Penal art. 418"],
 )
 def test_una_cita_normativa_valida_pasa(cita: str) -> None:
-    from app.core.causales_reserva import validar_cita_norma
+    from document.core.causales_reserva import validar_cita_norma
 
     assert validar_cita_norma(cita) is None
 
@@ -170,7 +170,7 @@ def test_una_cita_normativa_valida_pasa(cita: str) -> None:
     ["el expediente de Juan Pérez", "Ley sin número", "Ley 1581\nsegunda línea", "x" * 200, "Ley 1; DROP TABLE"],
 )
 def test_una_frase_libre_no_es_una_cita_normativa(cita: str) -> None:
-    from app.core.causales_reserva import validar_cita_norma
+    from document.core.causales_reserva import validar_cita_norma
 
     assert validar_cita_norma(cita) is not None
 
@@ -178,7 +178,7 @@ def test_una_frase_libre_no_es_una_cita_normativa(cita: str) -> None:
 def test_la_cita_del_codigo_y_la_del_check_son_la_misma() -> None:
     import pathlib
 
-    from app.core.causales_reserva import CITA_NORMA_PATRON
+    from document.core.causales_reserva import CITA_NORMA_PATRON
 
     sql = (pathlib.Path(__file__).parents[1] / "migrations/tenant/051_reserva_tope_y_norma.sql").read_text()
     assert f"'{CITA_NORMA_PATRON}'" in sql

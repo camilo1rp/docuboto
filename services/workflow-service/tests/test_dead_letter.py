@@ -114,7 +114,7 @@ async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
     Primera xreadgroup: mensajes vacíos → reclaim se dispara.
     Segunda xreadgroup: CancelledError → sale del bucle.
     """
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -126,9 +126,9 @@ async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.reclaim_stale", mock_reclaim),
+        patch("workflow.workers.document_consumer.time") as mock_time,
     ):
         # Primer monotonic → 0.0 (init _last_reclaim)
         # Segundo monotonic → 31.0 (reclaim check — supera el intervalo de 30 s)
@@ -147,7 +147,7 @@ async def test_run_invoca_reclaim_despues_del_intervalo() -> None:
 @pytest.mark.asyncio
 async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
     """run() NO invoca reclaim_stale si el intervalo aún no ha transcurrido."""
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -159,9 +159,9 @@ async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
-        patch("app.workers.document_consumer.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.reclaim_stale", mock_reclaim),
+        patch("workflow.workers.document_consumer.time") as mock_time,
     ):
         # 0.0 → init; 5.0 → comprobación (solo 5 s < 30 s → sin barrido)
         mock_time.monotonic.side_effect = [0.0, 5.0]
@@ -174,7 +174,7 @@ async def test_run_no_invoca_reclaim_antes_del_intervalo() -> None:
 @pytest.mark.asyncio
 async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
     """Un error en reclaim_stale loguea WARNING pero el bucle continúa."""
-    from app.workers import document_consumer
+    from workflow.workers import document_consumer
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -184,12 +184,12 @@ async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
 
     with (
         patch.object(document_consumer, "get_redis", return_value=fake_redis),
-        patch("app.workers.document_consumer.events.ensure_group", AsyncMock()),
+        patch("workflow.workers.document_consumer.events.ensure_group", AsyncMock()),
         patch(
-            "app.workers.document_consumer.events.reclaim_stale",
+            "workflow.workers.document_consumer.events.reclaim_stale",
             AsyncMock(side_effect=RuntimeError("db connection lost")),
         ),
-        patch("app.workers.document_consumer.time") as mock_time,
+        patch("workflow.workers.document_consumer.time") as mock_time,
     ):
         mock_time.monotonic.side_effect = [0.0, 31.0]
         with pytest.raises(asyncio.CancelledError):
@@ -214,7 +214,7 @@ async def test_persist_dead_letter_inserta_y_audita() -> None:
     - El payload de auditoría tiene las claves 'failure', 'envelope' y 'business'.
     - R-9: actor en audit es 'system'; actor original está en payload['envelope']['actor'].
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from workflow.workers.document_consumer import _persist_dead_letter
 
     row_mock = {"event_id": "evt-dead-0001"}
     conn = _make_conn(fetchrow_return=row_mock)
@@ -224,9 +224,9 @@ async def test_persist_dead_letter_inserta_y_audita() -> None:
     failure = _failure_meta()
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("workflow.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("workflow.workers.document_consumer._audit", mock_audit),
+        patch("workflow.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         await _persist_dead_letter(envelope, failure)
 
@@ -274,16 +274,16 @@ async def test_persist_dead_letter_idempotente_no_audita_en_conflict() -> None:
     ON CONFLICT DO NOTHING.  El INSERT no devuelve fila → audit_log NO se escribe
     de nuevo → no hay doble traza.
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from workflow.workers.document_consumer import _persist_dead_letter
 
     # fetchrow devuelve None → ON CONFLICT, no-op.
     conn = _make_conn(fetchrow_return=None)
     mock_audit = AsyncMock()
 
     with (
-        patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("workflow.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)),
+        patch("workflow.workers.document_consumer._audit", mock_audit),
+        patch("workflow.workers.document_consumer._AUDIT_AVAILABLE", True),
     ):
         await _persist_dead_letter(_dead_letter_envelope(), _failure_meta())
 
@@ -305,7 +305,7 @@ async def test_persist_dead_letter_error_transiente_propaga() -> None:
     El helper reclaim_stale interpretará la excepción como callback fallido y
     NO ackeará → el mensaje permanece en PEL para reintento.
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from workflow.workers.document_consumer import _persist_dead_letter
 
     conn = _make_conn()
     conn.fetchrow.side_effect = OSError("connection reset by peer")
@@ -313,7 +313,7 @@ async def test_persist_dead_letter_error_transiente_propaga() -> None:
     envelope = _dead_letter_envelope()
     failure = _failure_meta()
 
-    with patch("app.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)):
+    with patch("workflow.workers.document_consumer.acquire_tenant", _fake_acquire_tenant(conn)):
         with pytest.raises(OSError, match="connection reset by peer"):
             await _persist_dead_letter(envelope, failure)
 
@@ -336,7 +336,7 @@ async def test_persist_dead_letter_sin_tenant_slug_audita_system_y_retorna() -> 
     - La función retorna normalmente (no lanza) → el helper puede XACK el poison pill.
     - Si el audit falla por error transiente, la excepción propaga (R-4: sin ack sin traza).
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from workflow.workers.document_consumer import _persist_dead_letter
 
     mock_audit = AsyncMock()
 
@@ -360,10 +360,10 @@ async def test_persist_dead_letter_sin_tenant_slug_audita_system_y_retorna() -> 
     failure = _failure_meta()
 
     with (
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
-        patch("app.workers.document_consumer.get_pool", return_value=mock_pool),
-        patch("app.workers.document_consumer.acquire_tenant") as mock_acq,
+        patch("workflow.workers.document_consumer._audit", mock_audit),
+        patch("workflow.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("workflow.workers.document_consumer.get_pool", return_value=mock_pool),
+        patch("workflow.workers.document_consumer.acquire_tenant") as mock_acq,
     ):
         # No debe lanzar — retorna normalmente para que el helper pueda XACK.
         await _persist_dead_letter(envelope, failure)
@@ -395,7 +395,7 @@ async def test_persist_dead_letter_sin_tenant_slug_error_transiente_propaga() ->
     Garantiza que incluso en el path R1 se cumple R-4: si no se puede escribir la
     traza, el helper no puede XACK (el mensaje permanece en PEL para reintento).
     """
-    from app.workers.document_consumer import _persist_dead_letter
+    from workflow.workers.document_consumer import _persist_dead_letter
 
     mock_audit = AsyncMock()
     mock_audit.append.side_effect = OSError("postgres unavailable")
@@ -411,9 +411,9 @@ async def test_persist_dead_letter_sin_tenant_slug_error_transiente_propaga() ->
     failure = {"dead_letter_reason": "max_deliveries_exceeded"}
 
     with (
-        patch("app.workers.document_consumer._audit", mock_audit),
-        patch("app.workers.document_consumer._AUDIT_AVAILABLE", True),
-        patch("app.workers.document_consumer.get_pool", return_value=mock_pool),
+        patch("workflow.workers.document_consumer._audit", mock_audit),
+        patch("workflow.workers.document_consumer._AUDIT_AVAILABLE", True),
+        patch("workflow.workers.document_consumer.get_pool", return_value=mock_pool),
     ):
         with pytest.raises(OSError, match="postgres unavailable"):
             await _persist_dead_letter(envelope, failure)

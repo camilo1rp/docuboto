@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.core.database import get_optional_tenant_conn
-from app.main import app
-from app.schemas.auth import UserInfoResponse
+from auth.core.database import get_optional_tenant_conn
+from auth.main import app
+from auth.schemas.auth import UserInfoResponse
 
 pytestmark = pytest.mark.asyncio
 
@@ -60,7 +60,7 @@ async def _me(client: AsyncClient, conn: AsyncMock | None, slug: str | None = "d
     )
     try:
         with patch(
-            "app.services.auth_service.AuthService.get_current_user",
+            "auth.services.auth_service.AuthService.get_current_user",
             new_callable=AsyncMock,
             return_value=info,
         ):

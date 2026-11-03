@@ -32,8 +32,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from tenant.core.database import get_tenant_conn
+from tenant.main import app
 from migrations import runner
 
 pytestmark = pytest.mark.skipif(
@@ -239,8 +239,8 @@ async def client(conn: asyncpg.Connection) -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_tenant_conn] = override
     with (
-        patch("app.core.authz.check_permission", new=AsyncMock(return_value=True)),
-        patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")) as ap,
+        patch("tenant.core.authz.check_permission", new=AsyncMock(return_value=True)),
+        patch("tenant.core.audit._audit.append", new=AsyncMock(return_value="h")) as ap,
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             ac.audit_append = ap  # type: ignore[attr-defined]

@@ -34,8 +34,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app.core.config as config_module
-import app.services.aip_service as aip_service_module
+import storage.core.config as config_module
+import storage.services.aip_service as aip_service_module
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_SLUG,

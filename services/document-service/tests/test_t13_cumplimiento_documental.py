@@ -32,11 +32,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.core.config import settings
-from app.core.postal_webhook_auth import cifrar_secreto, verify_any, verify_signature
-from app.schemas.postal import ShipmentStatusUpdate
-from app.schemas.public import VentanillaRadicacion
-from app.services.document_service import DocumentService, DuplicateSubmissionError
+from document.core.config import settings
+from document.core.postal_webhook_auth import cifrar_secreto, verify_any, verify_signature
+from document.schemas.postal import ShipmentStatusUpdate
+from document.schemas.public import VentanillaRadicacion
+from document.services.document_service import DocumentService, DuplicateSubmissionError
 from tests.conftest import TENANT_HEADERS
 from tests.test_ventanilla import (
     BASE,
@@ -280,8 +280,8 @@ async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
 async def test_el_consentimiento_queda_en_el_asiento_de_creacion(client_with_conn) -> None:
     """Se ejerce `create` REAL con la constancia por `procedencia` (la única vía: el
     cuerpo de un cliente ya no puede aportarla): el asiento la lleva."""
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     _client, conn = client_with_conn
     conn.fetchrow.side_effect = [
@@ -405,7 +405,7 @@ def _fila(vigente: str, anterior: str | None, caduca: datetime | None, slug="dem
 
 
 def test_la_ranura_anterior_vale_dentro_de_su_vigencia_y_no_despues(monkeypatch) -> None:
-    from app.services.postal_service import PostalService
+    from document.services.postal_service import PostalService
 
     monkeypatch.setattr(settings, "email_encryption_key", _KEK)
     svc = PostalService(AsyncMock(), tenant_slug="demo")
@@ -420,7 +420,7 @@ def test_la_ranura_anterior_vale_dentro_de_su_vigencia_y_no_despues(monkeypatch)
 
 
 def test_un_ciphertext_de_otro_operador_o_entidad_no_descifra(monkeypatch) -> None:
-    from app.services.postal_service import PostalService
+    from document.services.postal_service import PostalService
 
     monkeypatch.setattr(settings, "email_encryption_key", _KEK)
     svc = PostalService(AsyncMock(), tenant_slug="demo")
@@ -436,7 +436,7 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
 ) -> None:
     from httpx import ASGITransport, AsyncClient
 
-    from app.main import app
+    from document.main import app
     from tests.conftest import FakeTenantClient, _make_fake_redis, _make_mock_conn, _override_conn
     from tests.test_postal_callback import _body, _FakePool, _ship_row, _url
 
@@ -447,7 +447,7 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
     async def _correr(caduca: datetime) -> int:
         conn = _make_mock_conn()
         _override_conn(conn, FakeTenantClient())
-        from app.core.database import get_redis
+        from document.core.database import get_redis
 
         app.dependency_overrides[get_redis] = lambda: _make_fake_redis()
         app.state.db_pool = _FakePool(conn)
@@ -461,7 +461,7 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
         from orpycamcp_common.tenant import AtencionPublica
 
         with patch(
-            "app.core.database.atencion_publica",
+            "document.core.database.atencion_publica",
             new=AsyncMock(return_value=AtencionPublica.COMPLETA),  # ADR-035: aquí no se prueba el estado
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -570,7 +570,7 @@ def _storage_responde(
     existe: bool | None = None,
 ) -> list:
     """Sustituye la consulta de procedencia a storage; devuelve las llamadas recibidas."""
-    from app.clients import storage_client
+    from document.clients import storage_client
 
     llamadas: list = []
     hay = (huella is not None) if existe is None else existe
@@ -810,8 +810,8 @@ async def test_entregado_sin_acuse_es_422_por_la_api(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash() -> None:
-    from app.schemas.borrador import BorradorUpdate
-    from app.services.borrador_service import BorradorService
+    from document.schemas.borrador import BorradorUpdate
+    from document.services.borrador_service import BorradorService
 
     bid = uuid.uuid4()
     conn = AsyncMock()
@@ -833,7 +833,7 @@ async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash() -> N
     svc._require_editable = AsyncMock(return_value=antes)
     svc._repo = AsyncMock()
     svc._repo.update_borrador.return_value = despues
-    with patch("app.services.borrador_service._bo", lambda r: r):
+    with patch("document.services.borrador_service._bo", lambda r: r):
         await svc.editar(bid, BorradorUpdate(cuerpo="<p>nuevo</p>"), max_clearance=3, actor=uuid.uuid4())
 
     redis.xadd.assert_awaited_once()
@@ -849,8 +849,8 @@ async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash() -> N
 
 @pytest.mark.asyncio
 async def test_cambiar_solo_el_asunto_no_emite_ni_invalida() -> None:
-    from app.schemas.borrador import BorradorUpdate
-    from app.services.borrador_service import BorradorService
+    from document.schemas.borrador import BorradorUpdate
+    from document.services.borrador_service import BorradorService
 
     bid = uuid.uuid4()
     conn = AsyncMock()
@@ -872,7 +872,7 @@ async def test_cambiar_solo_el_asunto_no_emite_ni_invalida() -> None:
         "nivel_seguridad": 1,
         "cuerpo_sha256": mismo,
     }
-    with patch("app.services.borrador_service._bo", lambda r: r):
+    with patch("document.services.borrador_service._bo", lambda r: r):
         await svc.editar(bid, BorradorUpdate(subject="Otro asunto"), max_clearance=3, actor=None)
     redis.xadd.assert_not_awaited()
     sig.invalidar_circuitos.assert_not_awaited()
@@ -881,7 +881,7 @@ async def test_cambiar_solo_el_asunto_no_emite_ni_invalida() -> None:
 @pytest.mark.asyncio
 async def test_el_rele_sustituye_el_nivel_por_el_vigente() -> None:
     """Un reclassified rancio no debe llevar su nivel original al reenviarse."""
-    from app.services import outbox
+    from document.services import outbox
 
     conn = AsyncMock()
     conn.fetchval.return_value = 3
