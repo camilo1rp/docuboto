@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,7 +30,7 @@ _VALID_RETENTION_MODES = frozenset({"GOVERNANCE", "COMPLIANCE"})
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     database_url: str = "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
 
@@ -310,7 +310,10 @@ class Settings(BaseSettings):
     # directo. Fail-closed: vacío (default) rechaza TODAS las llamadas a esos
     # endpoints con 401 — mismo criterio que `internal_service_token` de
     # knowledge-service. NUNCA loguear el valor real.
-    internal_service_token: str = ""
+    internal_service_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("STORAGE_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
+    )
 
     # Tope de tamaño de un anexo subido (`POST /upload`, `POST /files/{id}/replace`).
     #

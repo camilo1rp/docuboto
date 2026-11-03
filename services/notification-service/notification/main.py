@@ -101,9 +101,9 @@ async def _validacion_sin_eco(_request: Request, exc: RequestValidationError) ->
     return JSONResponse(status_code=422, content={"detail": detalle})
 
 
+DOMAIN_ROUTERS = (notifications.router, webhooks.router, admin_deadletter.router)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 app.include_router(health.router)
-app.include_router(notifications.router)
-app.include_router(webhooks.router)
-app.include_router(admin_deadletter.router)
 app.include_router(metrics.router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 deadletter.instalar_manejador_radicados_ausente(app)

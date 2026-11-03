@@ -298,23 +298,24 @@ app = FastAPI(
 app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="archive-service")
 
-app.include_router(batch_router)
-app.include_router(eliminacion_router)
-app.include_router(public_eliminacion_router)
-app.include_router(public_indice_router)
-app.include_router(expedientes_router)
-app.include_router(indice_router)
-app.include_router(internal_firma_router)
-app.include_router(fisico_router)
-app.include_router(transferencias_router)
-app.include_router(metadata_router)
-# Interoperabilidad pública ANÓNIMA: el router se monta siempre, pero sus rutas
-# responden 404 mientras la entidad no la habilite — ver core/public_interop.py.
-app.include_router(oai_router)
-
-app.include_router(tipos_documentales_router)
-app.include_router(trd_router)
-app.include_router(tvd_router)
+DOMAIN_ROUTERS = (
+    batch_router,
+    eliminacion_router,
+    public_eliminacion_router,
+    public_indice_router,
+    expedientes_router,
+    indice_router,
+    internal_firma_router,
+    fisico_router,
+    transferencias_router,
+    metadata_router,
+    oai_router,
+    tipos_documentales_router,
+    trd_router,
+    tvd_router,
+)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 app.include_router(health_router)
 app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 

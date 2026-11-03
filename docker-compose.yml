@@ -238,6 +238,113 @@ services:
         condition: service_healthy
 
   # ─── Application Services ──────────────────────────────────────────────────────
+  # Default `up` is one HTTP process (`app`). The nine domain services stay on
+  # profile `split` for `docker compose run document-service pytest` and for
+  # debugging a module in isolation.
+
+  app:
+    image: orpycamcp/app:dev
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.app
+    container_name: orpycamcp-app
+    ports:
+      - "127.0.0.1:19000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
+      - APP_ENV=development
+      # Loopback: a module that still speaks HTTP talks to this same process.
+      - AUTH_SERVICE_URL=http://app:8000
+      - TENANT_SERVICE_URL=http://app:8000
+      - DOCUMENT_SERVICE_URL=http://app:8000
+      - ARCHIVE_SERVICE_URL=http://app:8000
+      - STORAGE_SERVICE_URL=http://app:8000
+      - WORKFLOW_SERVICE_URL=http://app:8000
+      - NOTIFICATION_SERVICE_URL=http://app:8000
+      - SIGNATURE_SERVICE_URL=http://app:8000
+      - KNOWLEDGE_SERVICE_URL=http://app:8000
+      - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
+      - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
+      - ARCHIVE_INTERNAL_TOKEN=${ARCHIVE_INTERNAL_TOKEN:-orpycamcp_archive_internal_dev}
+      - NOTIFICATION_INTERNAL_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
+      - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
+      - SIGNING_KEY_INTERNAL_TOKEN=${SIGNING_KEY_INTERNAL_TOKEN:-orpycamcp_signing_key_internal_dev}
+      - INTELLIGENCE_INTERNAL_TOKEN=${INTELLIGENCE_INTERNAL_TOKEN:-orpycamcp_intelligence_internal_dev}
+      - ALTCHA_HMAC_KEY=${ALTCHA_HMAC_KEY:-orpycamcp_altcha_dev_hmac_key_0000000000}
+      - SIGNATURE_SECRET=${SIGNATURE_SECRET:-change-me-in-production}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=orpycamcp
+      - MINIO_SECRET_KEY=orpycamcp_dev
+      - MINIO_USE_SSL=false
+      - RENDER_ENGINE=${RENDER_ENGINE:-weasyprint}
+      - WEBHOOK_SECRET_KEK=${WEBHOOK_SECRET_KEK:-FdATFrQDjvyBfvHjjZSLjrLyIQct0+dgsMz2TOycUnk=}
+      - WEBHOOK_SECRET_KEKS=${WEBHOOK_SECRET_KEKS:-{}}
+      - WEBHOOK_SECRET_KEK_ACTIVE_VERSION=${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
+      - SMTP_FROM=noreply@orpycamcp.local
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+      - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
+      - KEYCLOAK_CLIENT_ID=auth-service
+      - KEYCLOAK_CLIENT_SECRET=change-me-in-production
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
+      - SIGNING_KEY_ENCRYPTION_KEY=${SIGNING_KEY_ENCRYPTION_KEY:-}
+      - SIGNING_KEY_CA_USERS_CERT_PATH=/run/secrets/ca-users-public/ca-users.crt
+      - EMAIL_ENCRYPTION_KEY=${EMAIL_ENCRYPTION_KEY:-}
+      - EMAIL_SONDEO_ENABLED=${EMAIL_SONDEO_ENABLED:-false}
+      - EMAIL_SONDEO_TENANT_SLUG=${EMAIL_SONDEO_TENANT_SLUG:-}
+      - EMAIL_SONDEO_INTERVALO_SEGUNDOS=${EMAIL_SONDEO_INTERVALO_SEGUNDOS:-300}
+      - SIGNER_PROVIDER=${SIGNER_PROVIDER:-xades_local}
+      - SIGNER_CERT_DIR=/run/secrets/signing
+      - SIGNER_ALLOW_DEV_SEAL=${SIGNER_ALLOW_DEV_SEAL:-true}
+      - SIGNER_TIMESTAMP_ENABLED=${SIGNER_TIMESTAMP_ENABLED:-true}
+      - TSA_URL=${TSA_URL:-}
+      - TSA_CERT_DIR=/run/secrets/tsa
+      - TSA_ALLOW_DEV_SEAL=${TSA_ALLOW_DEV_SEAL:-true}
+      - SIGNER_LT_ENABLED=${SIGNER_LT_ENABLED:-false}
+      - SIGNER_LT_REQUIRE=${SIGNER_LT_REQUIRE:-false}
+      - SIGNER_OCSP_ENABLED=${SIGNER_OCSP_ENABLED:-true}
+      - SIGNER_OCSP_REQUIRE=${SIGNER_OCSP_REQUIRE:-false}
+    volumes:
+      - ./secrets/signing:/run/secrets/signing:ro
+      - ./secrets/tsa:/run/secrets/tsa:ro
+      - ./secrets/ca-users-public:/run/secrets/ca-users-public:ro
+    networks:
+      - orpycamcp-net
+    depends_on:
+      migrate-auth:
+        condition: service_completed_successfully
+      migrate-tenant:
+        condition: service_completed_successfully
+      migrate-document:
+        condition: service_completed_successfully
+      migrate-storage:
+        condition: service_completed_successfully
+      migrate-workflow:
+        condition: service_completed_successfully
+      migrate-archive:
+        condition: service_completed_successfully
+      migrate-notification:
+        condition: service_completed_successfully
+      migrate-signature:
+        condition: service_completed_successfully
+      migrate-knowledge:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    restart: "no"
+    mem_limit: 4g
+    memswap_limit: 4g
 
   api-gateway:
     build:
@@ -257,17 +364,18 @@ services:
       # describe la superficie entera —incluidos los endpoints internos que el
       # ruteo retira a propósito— y no se sirve sin credenciales.
       - OPENAPI_PUBLICO=${OPENAPI_PUBLICO:-true}
-      - AUTH_SERVICE_URL=http://auth-service:8001
+      - AUTH_SERVICE_URL=http://app:8000
       # Dev: la red por defecto de Compose está en 172.16/12. Sin esto el gateway
       # ignora X-Forwarded-For (fail-closed) y todo el SSR comparte un cubo.
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
-      - TENANT_SERVICE_URL=http://tenant-service:8002
-      - DOCUMENT_SERVICE_URL=http://document-service:8003
-      - ARCHIVE_SERVICE_URL=http://archive-service:8004
-      - STORAGE_SERVICE_URL=http://storage-service:8005
-      - WORKFLOW_SERVICE_URL=http://workflow-service:8006
-      - NOTIFICATION_SERVICE_URL=http://notification-service:8007
-      - SIGNATURE_SERVICE_URL=http://signature-service:8008
+      - TENANT_SERVICE_URL=http://app:8000
+      - DOCUMENT_SERVICE_URL=http://app:8000
+      - ARCHIVE_SERVICE_URL=http://app:8000
+      - STORAGE_SERVICE_URL=http://app:8000
+      - WORKFLOW_SERVICE_URL=http://app:8000
+      - NOTIFICATION_SERVICE_URL=http://app:8000
+      - SIGNATURE_SERVICE_URL=http://app:8000
+      - KNOWLEDGE_SERVICE_URL=http://app:8000
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:
@@ -317,6 +425,7 @@ services:
       context: .
       dockerfile: services/signature-service/Dockerfile
     container_name: orpycamcp-signature
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19008:8008"
     environment:
@@ -430,6 +539,7 @@ services:
       context: .
       dockerfile: services/knowledge-service/Dockerfile
     container_name: orpycamcp-knowledge
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19011:8011"
     environment:
@@ -461,6 +571,7 @@ services:
       context: .
       dockerfile: services/auth-service/Dockerfile
     container_name: orpycamcp-auth
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19001:8001"
     environment:
@@ -530,6 +641,7 @@ services:
       context: .
       dockerfile: services/tenant-service/Dockerfile
     container_name: orpycamcp-tenant
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19002:8002"
     environment:
@@ -563,6 +675,7 @@ services:
       context: .
       dockerfile: services/document-service/Dockerfile
     container_name: orpycamcp-documents
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19003:8003"
     environment:
@@ -635,6 +748,7 @@ services:
       context: .
       dockerfile: services/archive-service/Dockerfile
     container_name: orpycamcp-archive
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19004:8004"
     environment:
@@ -697,6 +811,7 @@ services:
       dockerfile: services/storage-service/Dockerfile
       target: base
     container_name: orpycamcp-storage
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19005:8005"
     environment:
@@ -746,6 +861,7 @@ services:
       context: .
       dockerfile: services/workflow-service/Dockerfile
     container_name: orpycamcp-workflow
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19006:8006"
     environment:
@@ -780,6 +896,7 @@ services:
       context: .
       dockerfile: services/notification-service/Dockerfile
     container_name: orpycamcp-notifications
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19007:8007"
     environment:

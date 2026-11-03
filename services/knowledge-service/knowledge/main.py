@@ -76,8 +76,8 @@ app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="knowledge-service")
 
 app.add_exception_handler(Problema, respuesta_problema)
-app.include_router(knowledge_router)
-app.include_router(retorno_router)
+DOMAIN_ROUTERS = (knowledge_router, retorno_router, inteligencia_router)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 app.include_router(health_router)
 app.include_router(metrics_router)  # ADR-041: GET /metrics, nunca vía gateway
-app.include_router(inteligencia_router)  # acto de configuración; nunca vía gateway

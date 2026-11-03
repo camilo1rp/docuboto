@@ -114,10 +114,9 @@ app = FastAPI(
 app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="signature-service")
 
-app.include_router(signature_router)
-app.include_router(cadena_router)
-app.include_router(admin_dlq_router)
-app.include_router(admin_sellos_router)
+DOMAIN_ROUTERS = (signature_router, cadena_router, admin_dlq_router, admin_sellos_router)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 deadletter.instalar_manejador_radicados_ausente(app)
 app.include_router(health_router)
 app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)

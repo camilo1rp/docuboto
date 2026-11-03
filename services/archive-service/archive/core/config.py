@@ -9,11 +9,12 @@
 
 from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     database_url: str = "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
 
@@ -63,7 +64,10 @@ class Settings(BaseSettings):
     # en `/api/v1/internal/*` (signature-service resuelve la huella del índice
     # vigente, AREA-04-09). Mismo valor que `signature-service.ARCHIVE_INTERNAL_TOKEN`.
     # Vacío (default) = esos endpoints responden 401 (fail-closed).
-    internal_service_token: str = ""
+    internal_service_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("ARCHIVE_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
+    )
     service_port: int = 8004
     log_level: str = "info"
 

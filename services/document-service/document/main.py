@@ -167,34 +167,34 @@ app = FastAPI(
 app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="document-service")
 
-app.include_router(batch_router)
-# Antes que `documents_router`: el literal `/causales-reserva` no lo captura `/{document_id}`.
-app.include_router(desclasificacion_router)
-app.include_router(desclasificacion_cola_router)
-app.include_router(documents_router)
-app.include_router(metadata_router)
-app.include_router(metadata_elements_router)
-app.include_router(search_router)
-app.include_router(terceros_router)
-app.include_router(reports_router)
-app.include_router(public_router)
-app.include_router(email_cuentas_router)
-app.include_router(email_apps_router)
-app.include_router(email_bandeja_router)
-app.include_router(signatures_router)
-app.include_router(postal_router)
-# Interoperabilidad pública ANÓNIMA: el router se monta siempre, pero sus rutas
-# responden 404 mientras la entidad no la habilite — ver core/public_interop.py.
-app.include_router(oai_router)
-app.include_router(cmis_router)
-
-app.include_router(export_router)
-app.include_router(import_router)
-app.include_router(anulacion_router)
-app.include_router(anulacion_cola_router)
-app.include_router(respuesta_router)
-app.include_router(borradores_router)
-app.include_router(internal_router)
+DOMAIN_ROUTERS = (
+    batch_router,
+    desclasificacion_router,  # Antes que documents: `/causales-reserva` vs `/{document_id}`.
+    desclasificacion_cola_router,
+    documents_router,
+    metadata_router,
+    metadata_elements_router,
+    search_router,
+    terceros_router,
+    reports_router,
+    public_router,
+    email_cuentas_router,
+    email_apps_router,
+    email_bandeja_router,
+    signatures_router,
+    postal_router,
+    oai_router,
+    cmis_router,
+    export_router,
+    import_router,
+    anulacion_router,
+    anulacion_cola_router,
+    respuesta_router,
+    borradores_router,
+    internal_router,
+)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 app.include_router(health_router)
 
 

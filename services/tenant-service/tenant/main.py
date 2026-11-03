@@ -91,11 +91,15 @@ app = FastAPI(
 app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="tenant-service")
 
-app.include_router(tenants_router)
-app.include_router(config_router)
-app.include_router(dependencias_router)
-app.include_router(catalogos_router)
-app.include_router(pinar_router)
+DOMAIN_ROUTERS = (
+    tenants_router,
+    config_router,
+    dependencias_router,
+    catalogos_router,
+    pinar_router,
+)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 app.include_router(health_router)
 
 

@@ -7,12 +7,12 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     database_url: str = "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
 
@@ -52,7 +52,10 @@ class Settings(BaseSettings):
     # que este servicio rechace la llamada con 401 (fail-closed) — NUNCA
     # commitear el valor real. Mismo patrón que
     # `storage-service.INTERNAL_SERVICE_TOKEN`.
-    internal_service_token: str = ""
+    internal_service_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("DOCUMENT_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
+    )
     tenant_service_url: str = "http://tenant-service:8002"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"

@@ -7,12 +7,12 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
     database_url: str = "postgresql+asyncpg://orpycamcp:orpycamcp@postgres:5432/orpycamcp_db"
 
@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     # HTTP). Fail-closed: vacío ⇒ el endpoint rechaza toda llamada (401). Mismo
     # secreto que `signature-service.notification_internal_token`. Ver
     # `notification/core/internal_auth.py`.
-    internal_service_token: str = ""
+    internal_service_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("NOTIFICATION_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
+    )
 
     # Retention job (ADR-021 Fase 4 — MVP-1)
     # How many days to keep rows in notification_processed_events before purging.

@@ -129,19 +129,23 @@ app = FastAPI(
 app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="auth-service")
 
-app.include_router(auth_router)
-app.include_router(rbac_pick_router)  # D-10: antes de rbac_router (ruta /users/pickable)
-app.include_router(rbac_router)
-app.include_router(urd_router)
-app.include_router(context_router)
-app.include_router(clearance_router)
-app.include_router(totp_router)  # /api/v1/auth/me/totp — público vía gateway
-app.include_router(totp_admin_router)  # /api/v1/auth/users/{id}/totp — gate USUA_PERM_ADMIN
-app.include_router(totp_internal_router)  # /internal/totp — NUNCA vía gateway
-app.include_router(signing_key_router)  # /api/v1/auth/me/signing-key — público vía gateway
-app.include_router(signing_key_admin_router)  # /api/v1/auth/admin/users/.../signing-key
-app.include_router(signing_key_internal_router)  # /internal/signing-key — NUNCA vía gateway
-app.include_router(audit_router)
+DOMAIN_ROUTERS = (
+    auth_router,
+    rbac_pick_router,  # D-10: antes de rbac_router (ruta /users/pickable)
+    rbac_router,
+    urd_router,
+    context_router,
+    clearance_router,
+    totp_router,
+    totp_admin_router,
+    totp_internal_router,
+    signing_key_router,
+    signing_key_admin_router,
+    signing_key_internal_router,
+    audit_router,
+)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 app.include_router(health_router)
 app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 

@@ -34,6 +34,9 @@ from tests._compose import glob_src
 import re
 from pathlib import Path
 
+#: El paquete vive en `services/docuboto`; el servicio de Compose se llama `app`.
+_COMPOSE_DE = {"docuboto": "app"}
+
 REPO = Path(__file__).resolve().parents[2]
 COMPOSE = REPO / "docker-compose.yml"
 SERVICIOS = REPO / "services"
@@ -73,9 +76,17 @@ def _variables_declaradas() -> dict[str, set[str]]:
 def _secretos_exigidos() -> dict[str, set[str]]:
     """`{servicio: {VARIABLES que su lifespan exige presentes}}`."""
     exigidos: dict[str, set[str]] = {}
-    for main in sorted(glob_src(SERVICIOS, "*/app/main.py")):
+    mains = list(glob_src(SERVICIOS, "*/app/main.py"))
+    extra = SERVICIOS / "docuboto" / "docuboto" / "main.py"
+    if extra.is_file():
+        mains.append(extra)
+    for main in sorted(set(mains)):
         servicio = main.parents[1].name
-        codigo = main.read_text(encoding="utf-8")
+        partes = [main.read_text(encoding="utf-8")]
+        lifespan = main.parent / "core" / "lifespan.py"
+        if lifespan.is_file():
+            partes.append(lifespan.read_text(encoding="utf-8"))
+        codigo = "\n".join(partes)
         claves: set[str] = set()
         for bloque in _LLAMADA.findall(codigo):
             claves.update(_CLAVE.findall(bloque))
@@ -97,7 +108,8 @@ def test_ningun_servicio_exige_un_secreto_que_el_compose_no_entrega() -> None:
     declaradas = _variables_declaradas()
     huecos: dict[str, set[str]] = {}
     for servicio, claves in _secretos_exigidos().items():
-        faltan = claves - declaradas.get(servicio, set())
+        nombre = _COMPOSE_DE.get(servicio, servicio)
+        faltan = claves - declaradas.get(nombre, set())
         if faltan:
             huecos[servicio] = faltan
     assert not huecos, (

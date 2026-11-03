@@ -179,9 +179,9 @@ app = FastAPI(
 app.add_middleware(identidad.IdentidadFirmadaMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="storage-service")
 
-app.include_router(storage_router)
-app.include_router(preservacion_router)
-app.include_router(render_router)
+DOMAIN_ROUTERS = (storage_router, preservacion_router, render_router)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
 app.include_router(health_router)
 
 
