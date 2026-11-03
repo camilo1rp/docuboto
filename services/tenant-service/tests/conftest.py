@@ -38,6 +38,10 @@ from tenant.main import app
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
+
 
 
 @asynccontextmanager

@@ -17,9 +17,15 @@ from typing import Literal
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from orpycamcp_common.tenant import AtencionPublica
+from orpycamcp_common.usuario import id_opcional
 
 from document.core.clearance import require_permission, resolve_caller_clearance
-from document.core.database import get_redis, get_tenant_conn, public_tenant_conn_atencion, tenant_schema
+from document.core.database import (
+    get_redis,
+    get_tenant_conn,
+    public_tenant_conn_atencion,
+    tenant_schema,
+)
 from document.schemas.postal import (
     CallbackResult,
     CredencialRotacion,
@@ -37,18 +43,10 @@ router = APIRouter(tags=["postal"])
 #: y no una fila de credencial para un nombre inventado.
 _OperadorPath = Literal["4-72", "servientrega", "otro"]
 
-_USER_HEADER = "X-User-Id"
 
 
 def _caller_id(request: Request) -> uuid.UUID | None:
-    """Extract caller UUID from X-User-Id header; returns None on missing/invalid value."""
-    raw = request.headers.get(_USER_HEADER)
-    if not raw:
-        return None
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 @router.post(

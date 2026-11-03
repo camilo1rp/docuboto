@@ -29,7 +29,7 @@ from __future__ import annotations
 import uuid
 
 import httpx
-from orpycamcp_common import identidad
+from orpycamcp_common.usuario import cabeceras_internas
 
 from signature.core.config import settings
 
@@ -67,19 +67,9 @@ async def upload_signed_xml(
     nombre (p. ej. un reintento de firma sin cambios), donde la reconstrucción
     sigue siendo válida.
     """
-    headers = {
-        "X-Tenant-Slug": tenant_slug,
-        # El token ya no es preventivo: `/internal/artefacto` lo EXIGE. El
-        # comentario anterior decía que «`/upload` no está gateado hoy» y hacía
-        # tiempo que era falso — hoy pide `PERM_RADI`.
-        "X-Internal-Token": settings.storage_internal_token,
-    }
-    if uploaded_by is not None:
-        headers["X-User-Id"] = str(uploaded_by)
-    # Firmada por el mismo motivo que en los demás clientes internos: el
-    # middleware de identidad se dispara por la presencia de `X-User-Id`, venga
-    # la llamada del gateway o de otro servicio (ver `orpycamcp_common.identidad`).
-    headers = identidad.firmar(headers, metodo="POST", ruta=_RUTA_ARTEFACTO)
+    headers = cabeceras_internas(
+        tenant_slug=tenant_slug, token=settings.storage_internal_token
+    )
     files = {"file": (filename, content, "application/xml")}
     try:
         async with httpx.AsyncClient(

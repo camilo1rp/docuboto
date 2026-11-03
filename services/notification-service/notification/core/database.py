@@ -26,6 +26,7 @@ import asyncpg
 from fastapi import HTTPException, Request, status
 from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
+from orpycamcp_common.usuario import slug_de
 
 from notification.core.config import settings
 
@@ -82,7 +83,7 @@ def tenant_schema(slug: str) -> str:
 
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     """Conexión con search_path al tenant (X-Tenant-Slug). Para endpoints de lectura."""
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     schema = tenant_schema(slug)
     async with get_pool().acquire() as conn:
         if (veto := await veredicto_entidad(conn, slug)) is not None:

@@ -20,6 +20,7 @@ from orpycamcp_common.tenant import (
     veredicto_entidad,
 )
 from orpycamcp_common.tenant import tenant_schema as _schema_de
+from orpycamcp_common.usuario import slug_de
 
 from document.core.config import settings
 from document.core.conservacion import admitir_conservacion
@@ -104,7 +105,7 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
     Las tablas de radicación viven en tenant_{slug}; el search_path es SOLO el
     tenant (ADR-002, addendum C-7): lo global se califica `public.` en el SQL.
     """
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     schema = tenant_schema(slug)
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:

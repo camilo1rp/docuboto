@@ -256,6 +256,7 @@ services:
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       - APP_ENV=development
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
       # Loopback: a module that still speaks HTTP talks to this same process.
       - AUTH_SERVICE_URL=http://app:8000
       - TENANT_SERVICE_URL=http://app:8000
@@ -347,6 +348,7 @@ services:
     memswap_limit: 4g
 
   api-gateway:
+    profiles: ["split"]
     build:
       # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
       context: .
@@ -396,7 +398,7 @@ services:
     ports:
       - "127.0.0.1:19009:8009"
     environment:
-      - GATEWAY_URL=http://api-gateway:8080
+      - GATEWAY_URL=http://app:8000
       # Clave de firma de las propuestas de escritura. Sin ella el servicio NO
       # arranca: una firma con clave vacía la reproduce cualquiera, y el gate
       # quedaría decorativo. En desarrollo se fija aquí, como el resto de
@@ -409,7 +411,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      - api-gateway
+      - app
     restart: "no"
     mem_limit: 2g
     memswap_limit: 2g
@@ -964,7 +966,7 @@ services:
       # o usar PROTOCOL_HEADER=x-forwarded-proto + HOST_HEADER=x-forwarded-host.
       - ORIGIN=http://localhost:19300
       # Públicas — las construye y usa el JS del navegador (login PKCE, logout).
-      - PUBLIC_API_URL=http://localhost:19080
+      - PUBLIC_API_URL=http://localhost:19000
       - PUBLIC_KEYCLOAK_URL=http://localhost:19180
       # Entidad de las pantallas PÚBLICAS (ventanilla y consulta ciudadana).
       # En producción cada entidad despliega su sitio con SU slug; sin esta
@@ -975,12 +977,12 @@ services:
       # la sirve la ventanilla (ADR-031): ya no se configura aquí.
       # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
       # back-channel logout y los proxys +server.js al gateway). Nunca llegan al cliente.
-      - INTERNAL_API_URL=http://api-gateway:8080
+      - INTERNAL_API_URL=http://app:8000
       - INTERNAL_KEYCLOAK_URL=http://keycloak:8080
     networks:
       - orpycamcp-net
     depends_on:
-      - api-gateway
+      - app
       - keycloak
     restart: "no"
 

@@ -36,6 +36,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
+from orpycamcp_common.usuario import id_opcional, slug_de
 from starlette.background import BackgroundTask
 
 from document.clients import storage_client
@@ -54,11 +55,11 @@ from document.schemas.document import (
     DocumentCreate,
     DocumentResponse,
     DocumentUpdate,
+    DueDateRequest,
+    DueDateResponse,
     HistorialAccesoEntry,
     PublicacionRequest,
     PublicacionResponse,
-    DueDateRequest,
-    DueDateResponse,
     ReclassifyRequest,
     ReclassifyResponse,
 )
@@ -78,13 +79,10 @@ from document.services.metadata_service import MetadataValidationError
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
-_USER_HEADER = "X-User-Id"
-
 
 def _tenant_slug(request: Request) -> str:
     # get_tenant_conn ya garantiza que el header está presente y es válido.
-    return request.headers.get(_TENANT_HEADER, "")
+    return slug_de(request)
 
 
 def _actor_str(request: Request) -> str | None:
@@ -99,13 +97,7 @@ def _actor_str(request: Request) -> str | None:
 
 
 def _get_registered_by(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get(_USER_HEADER)
-    if not raw:
-        return None
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _content_disposition(filename: str) -> str:

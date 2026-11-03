@@ -76,21 +76,11 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
+def _optional_user(request: Request) -> uuid.UUID | None:
+    """Identidad opcional: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_opcional
 
+    return id_opcional(request)
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     """Gemelo de `indice.py::_optional_canal` (E15 perfil v4, R3-a): canal de

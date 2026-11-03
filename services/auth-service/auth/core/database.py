@@ -13,6 +13,7 @@ import asyncpg
 from fastapi import HTTPException, Request, status
 from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
+from orpycamcp_common.usuario import slug_de
 
 from auth.core.config import settings
 
@@ -86,7 +87,7 @@ async def get_optional_tenant_conn(
     "no tenant context" and apply fail-closed defaults (empty permission lists,
     not full access).
     """
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     if not slug:
         yield None
         return
@@ -121,7 +122,7 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
 
     El tenant se toma de la cabecera ``X-Tenant-Slug`` que inyecta el api-gateway.
     """
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     schema = tenant_schema(slug)
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:

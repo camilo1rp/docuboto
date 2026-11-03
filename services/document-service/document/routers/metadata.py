@@ -20,10 +20,9 @@ mutan el molde de validación obligatoria de metadatos para toda la entidad,
 así que el permiso es uno solo. La escritura audita (ver `metadata_service.py`).
 """
 
-import uuid
-
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission
 from document.core.database import get_tenant_conn
@@ -37,19 +36,13 @@ router = APIRouter(prefix="/api/v1/metadata/templates", tags=["metadata"])
 
 
 def _actor(request: Request) -> str | None:
-    raw = request.headers.get("X-User-Id")
-    if not raw:
-        return None
-    try:
-        uuid.UUID(raw)
-    except ValueError:
-        return None
-    return raw
+    u = id_opcional(request)
+    return str(u) if u is not None else None
 
 
 def _tenant_slug(request: Request) -> str:
     # get_tenant_conn ya garantiza que el header está presente y es válido.
-    return request.headers.get("X-Tenant-Slug", "")
+    return slug_de(request)
 
 
 @router.post(

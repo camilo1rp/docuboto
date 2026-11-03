@@ -22,6 +22,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission, resolve_caller_clearance
 from document.core.database import get_tenant_conn
@@ -30,8 +31,6 @@ from document.services.import_service import ImportService, PackageValidationErr
 
 router = APIRouter(prefix="/api/v1/import", tags=["import"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
-_USER_HEADER = "X-User-Id"
 _MAX_UPLOAD = 512 * 1024 * 1024  # 512 MiB de ZIP comprimido (guarda de subida)
 # Plazo TOTAL para recibir el cuerpo mientras se sostiene el cupo global: sin él un
 # cliente con 1 byte cada pocos segundos retenía el único cupo y bloqueaba import/export
@@ -40,13 +39,7 @@ _PLAZO_LECTURA_S = 300.0
 
 
 def _get_registered_by(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get(_USER_HEADER)
-    if not raw:
-        return None
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 class _PaqueteDemasiadoGrande(Exception):
@@ -85,7 +78,7 @@ async def import_paquete(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict:
-    tenant_slug = request.headers.get(_TENANT_HEADER, "")
+    tenant_slug = slug_de(request)
     actor = _get_registered_by(request)
     clearance = await resolve_caller_clearance(conn, actor)
 

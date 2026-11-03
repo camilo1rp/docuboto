@@ -20,6 +20,10 @@
 # queda en el host y `ORPYCA_TAG=<sha-anterior> up -d` sigue pudiendo volver.
 
 services:
+  app:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.app
   api-gateway:
     build:
       # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.

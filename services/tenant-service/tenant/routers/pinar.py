@@ -37,6 +37,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.usuario import id_opcional
 
 from tenant.core.authz import require_permission
 from tenant.core.database import get_tenant_conn
@@ -79,11 +80,7 @@ router = APIRouter(
 
 
 def _actor(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get("X-User-Id")
-    try:
-        return uuid.UUID(raw) if raw else None
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _require_actor(request: Request) -> uuid.UUID:

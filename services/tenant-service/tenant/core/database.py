@@ -13,6 +13,7 @@ import asyncpg
 from fastapi import HTTPException, Request, status
 from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
+from orpycamcp_common.usuario import slug_de
 
 from tenant.core.config import settings
 
@@ -77,7 +78,7 @@ def tenant_schema(slug: str) -> str:
 
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
     """Conexión con search_path al schema del tenant (X-Tenant-Slug). ADR-002/012."""
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     schema = tenant_schema(slug)
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:

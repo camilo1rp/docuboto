@@ -16,6 +16,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.clients.tenant_client import TenantServiceClient
 from document.core.clearance import check_permission, require_permission, resolve_caller_clearance
@@ -119,8 +120,8 @@ async def create_batch_documents(
 
     **Response 202 Accepted** — job queued for processing.
     """
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    user_id = request.headers.get("X-User-Id", "")
+    tenant_slug = slug_de(request)
+    user_id = (str(u) if (u := id_opcional(request)) else "")
 
     if not tenant_slug or not user_id:
         raise HTTPException(status_code=400, detail="Falta el contexto de entidad o de usuario")
@@ -174,8 +175,8 @@ async def get_batch_status(
     `reprocesable` indica que `POST /batch/documents/{job_id}/reprocesar` puede retomar los
     ítems fallidos/faltantes sin renumerar los ya radicados.
     """
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    user_id = request.headers.get("X-User-Id", "")
+    tenant_slug = slug_de(request)
+    user_id = (str(u) if (u := id_opcional(request)) else "")
 
     if not tenant_slug or not user_id:
         raise HTTPException(status_code=400, detail="Falta el contexto de entidad o de usuario")
@@ -219,8 +220,8 @@ async def reprocesar_batch(
     del llamante**: solo su creador, o quien tiene `PERM_RADI` con nivel CRUD >= 3,
     puede verlo o reprocesarlo.
     """
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    user_id = request.headers.get("X-User-Id", "")
+    tenant_slug = slug_de(request)
+    user_id = (str(u) if (u := id_opcional(request)) else "")
     if not tenant_slug or not user_id:
         raise HTTPException(status_code=400, detail="Falta el contexto de entidad o de usuario")
 

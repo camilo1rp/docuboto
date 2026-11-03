@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # El MCP es cliente del api-gateway (nunca de la BD ni de los servicios).
-    gateway_url: str = "http://api-gateway:8080"
+    gateway_url: str = "http://app:8000"
     request_timeout: float = 10.0
     service_port: int = 8009
     log_level: str = "info"

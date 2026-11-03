@@ -18,7 +18,7 @@
  * archivos *.server.js solo se cargan en contexto de servidor.
  *
  * - INTERNAL_API_URL  (env privada) → URL del api-gateway en la red Docker,
- *     ej. http://api-gateway:8080.  Usada por +page.server.js y +server.js
+ *     ej. http://app:8000.  Usada por +page.server.js y +server.js
  *     para hacer fetch al gateway.  En el navegador, el gateway es alcanzable
  *     en PUBLIC_API_URL (config.js) — vía el host, no la red Docker.
  *
@@ -38,7 +38,7 @@ const REALM = "orpycamcp";
 // api-gateway — URL interna (accesible desde el contenedor SSR)
 // ---------------------------------------------------------------------------
 
-const INTERNAL_API_BASE = env.INTERNAL_API_URL ?? "http://api-gateway:8080";
+const INTERNAL_API_BASE = env.INTERNAL_API_URL ?? "http://app:8000";
 
 /** Prefijo versionado del api-gateway para llamadas server-side (SSR, +server.js). */
 export const API_V1 = `${INTERNAL_API_BASE}/api/v1`;

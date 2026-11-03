@@ -30,6 +30,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, Request, status
+from orpycamcp_common.usuario import id_opcional
 
 try:
     from orpycamcp_common import audit as _audit
@@ -42,11 +43,7 @@ _SERVICE = "tenant-service"
 
 
 def actor_from(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get("X-User-Id")
-    try:
-        return uuid.UUID(raw) if raw else None
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def require_audit_available() -> None:

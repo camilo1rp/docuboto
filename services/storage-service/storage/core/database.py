@@ -13,6 +13,7 @@ import asyncpg
 from fastapi import HTTPException, Request, status
 from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
+from orpycamcp_common.usuario import slug_de
 
 from storage.core.config import settings
 from storage.core.conservacion import admitir_conservacion
@@ -85,7 +86,7 @@ async def get_db_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, No
         # servicio no pasa por él). Solo se mira cuando la petición trae un tenant válido:
         # las rutas públicas llevan el slug en el path y no esta cabecera, y un slug mal
         # formado conserva el 400 de `tenant_schema`. Fail-closed si el registro no responde.
-        slug = request.headers.get("X-Tenant-Slug", "")
+        slug = slug_de(request)
         if (
             slug_valido(slug)
             and (veto := await veredicto_entidad(conn, slug)) is not None

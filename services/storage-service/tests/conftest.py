@@ -35,6 +35,10 @@ from storage.main import app
 # Igual que signature-service. Se hace AQUÍ, antes de importar la app, y no en el compose.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
+
 TENANT_SLUG = "demo"
 TENANT_HEADERS = {
     "X-Tenant-Slug": TENANT_SLUG,

@@ -20,6 +20,7 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission
 from document.core.database import get_tenant_conn as get_db
@@ -29,18 +30,10 @@ from document.services.document_service import DocumentService
 
 router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
-_USER_HEADER = "X-User-Id"
 
 
 def _caller_id(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get(_USER_HEADER)
-    if not raw:
-        return None
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _por_etiqueta(filas: Any) -> dict[str, int]:
@@ -183,7 +176,7 @@ async def indice_reservado(
     request: Request,
     conn: asyncpg.Connection = Depends(get_db),
 ):
-    slug = request.headers.get(_TENANT_HEADER, "")
+    slug = slug_de(request)
     service = DocumentService(conn, slug)
     return await service.indice_clasificados(_caller_id(request))
 
@@ -197,7 +190,7 @@ async def indice_reservado_csv(
     request: Request,
     conn: asyncpg.Connection = Depends(get_db),
 ) -> Response:
-    slug = request.headers.get(_TENANT_HEADER, "")
+    slug = slug_de(request)
     service = DocumentService(conn, slug)
     indice = await service.indice_clasificados(_caller_id(request))
     buf = io.StringIO()

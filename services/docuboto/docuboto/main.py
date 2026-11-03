@@ -21,7 +21,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from orpycamcp_common import deadletter, identidad, request_log
+from orpycamcp_common import deadletter, request_log, usuario
 
 from archive.main import DOMAIN_ROUTERS as ARCHIVE_ROUTERS
 from auth.main import DOMAIN_ROUTERS as AUTH_ROUTERS
@@ -54,7 +54,7 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-app.add_middleware(identidad.IdentidadFirmadaMiddleware)
+app.add_middleware(usuario.UsuarioActualMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="docuboto")
 app.add_exception_handler(Problema, respuesta_problema)
 

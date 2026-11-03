@@ -81,14 +81,13 @@ def require_permission(perm_name: str, min_crud: int = 1):
     """
 
     async def _dep(
-        x_user_id: str | None = Header(default=None),
+        request: Request,
         x_tenant_slug: str | None = Header(default=None),
         conn: asyncpg.Connection = Depends(get_db_conn),
     ) -> None:
-        try:
-            user_id = uuid.UUID(x_user_id) if x_user_id else None
-        except ValueError:
-            user_id = None
+        from orpycamcp_common.usuario import id_opcional, slug_de
+        user_id = id_opcional(request)
+        x_tenant_slug = slug_de(request) or x_tenant_slug
         # Sin tenant slug no se puede verificar el RBAC del tenant → deny EXPLÍCITO
         # (no depender de que la tabla no exista en el search_path heredado del pool).
         if not x_tenant_slug:
@@ -135,45 +134,7 @@ def require_permission(perm_name: str, min_crud: int = 1):
 
 
 async def get_actor(request: Request) -> uuid.UUID:
-    """Extrae el UUID interno del llamante desde X-User-Id (401 si ausente/inválido).
+    """UUID interno del llamante. Sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_exigido
 
-    Espejo exacto de ``get_actor`` en signature-service/notification-service
-    (ADR-021, pulido Fase 5 "Baja" [3]: unificación de identidad en el LISTADO
-    de workflow-service, que hasta ahora usaba el ``_actor`` local — OPCIONAL,
-    ``None`` en silencio ante header ausente/ inválido). Nunca toca la BD: la
-    identidad ya fue validada por auth-service en ``/validate``.
-
-    NOTA de comportamiento observable en workflow: el LISTADO sigue protegido
-    por ``require_permission(...)`` como dependencia de ROUTER (se resuelve
-    ANTES que esta), y ese gate NO delega en ``get_actor`` — ante X-User-Id
-    ausente/inválido devuelve 403 (no 401) porque ``check_permission`` falla con
-    ``user_id=None``. La rama 401 de aquí queda por tanto ensombrecida en la
-    práctica en las rutas ya protegidas por ``require_permission``; el valor de
-    unificar es tener una única fuente de extracción de identidad con tipo
-    NO-opcional (``uuid.UUID``, ya no ``uuid.UUID | None``), no un cambio de
-    código HTTP observable. Detail/replay/discard usan también ``get_actor``
-    (AREA-01-07: se retiró el ``_actor`` local, opcional).
-    """
-    raw = request.headers.get("X-User-Id")
-    if not raw:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "unauthorized",
-                "detail": "Falta la cabecera X-User-Id",
-                "status": 401,
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "unauthorized",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido (auth_users.id interno)",
-                "status": 401,
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    return id_exigido(request)

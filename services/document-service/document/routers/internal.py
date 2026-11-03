@@ -28,8 +28,9 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from starlette.background import BackgroundTask
 from orpycamcp_common import audit
+from orpycamcp_common.usuario import slug_de
+from starlette.background import BackgroundTask
 
 from document.clients import storage_client
 from document.clients.storage_client import StoragePurgaError
@@ -68,7 +69,7 @@ async def anexos_batch(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, list[AnexoInternalItem]]:
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    tenant_slug = slug_de(request)
     repo = DocumentRepository(conn, tenant_slug)
     grouped = await repo.list_anexos_for_radicados_internal(
         payload.radicado_ids, max_clearance=payload.max_clearance
@@ -94,7 +95,7 @@ async def clasificados(
     es un registro público y COMPLETO, ortogonal al clearance de lectura. Lo compone
     archive-service cruzando estas filas con el cuadro de clasificación. La consulta no
     selecciona número, asunto ni fundamento (`DocumentRepository.clasificados_internal`)."""
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    tenant_slug = slug_de(request)
     repo = DocumentRepository(conn, tenant_slug)
     return ClasificadosInternalResponse(
         causales=[
@@ -122,7 +123,7 @@ async def metadata_batch(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, RadicadoMetaItem]:
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    tenant_slug = slug_de(request)
     repo = DocumentRepository(conn, tenant_slug)
     # El manifiesto es un camino de LECTURA de usuario → siempre clearance-aware
     # (no-read-up); si el llamante omite max_clearance se asume sin restricción (3).
@@ -150,7 +151,7 @@ async def purgar_radicados(
     ese expediente sin escribir su lápida. Una lápida sobre bytes vivos es peor
     que no haber eliminado.
     """
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    tenant_slug = slug_de(request)
     service = PurgaService(conn, tenant_slug, redis=getattr(request.app.state, "redis", None))
     try:
         recuento = await service.purgar_radicados(
@@ -328,7 +329,7 @@ async def huella_radicado(
     firma lo que no se puede verificar); `503 huella_no_verificable` si storage
     no responde.
     """
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
+    tenant_slug = slug_de(request)
     found = await DocumentRepository(conn, tenant_slug).get_documento_principal_para_firma(ref)
     if found is None:
         raise HTTPException(
@@ -471,7 +472,7 @@ async def contenido_anexo(
     Deja en el historial de acceso que el contenido se transmitió al
     proveedor de inteligencia.
     """
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     fila = await conn.fetchrow(_CONTENIDO, anexo_id, await _niveles(conn, slug))
     if fila is None:
         raise HTTPException(
@@ -533,7 +534,7 @@ async def registro_radicado(
     Deja en el historial de acceso que el registro se transmitió al
     proveedor de inteligencia.
     """
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     fila = await conn.fetchrow(_REGISTRO, radicado_id, await _niveles(conn, slug))
     if fila is None:
         raise HTTPException(

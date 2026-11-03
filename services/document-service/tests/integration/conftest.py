@@ -41,9 +41,9 @@ from pathlib import Path
 import asyncpg
 import pytest
 import pytest_asyncio
+from migrations import runner
 
 from document.core.database import tenant_schema
-from migrations import runner
 
 # Mismo cálculo que `migrations/runner.py` — DSN "pelado" para conectar con
 # `asyncpg.connect` directamente (sin pasar por el pool de la app). Calculado

@@ -12,7 +12,7 @@
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from workflow.core.clearance import require_permission
 from workflow.core.database import get_db_conn as get_db
@@ -44,40 +44,11 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _user(x_user_id: str | None = Header(default=None)) -> UUID:
-    """Identidad de QUIEN actúa sobre la regla — la crea, la edita o la borra.
+def _user(request: Request) -> UUID:
+    """Identidad obligatoria: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import exigir_id_o_400
 
-    Los tres actos la exigen: un asiento sin actor no responde «quién decidió
-    que esto se enrutara así», que es justo lo que se le pregunta a la traza.
-
-    Fail-closed (400) — antes degradaba en
-    silencio a un `_NIL_USER` fijo cuando faltaba/era inválida la cabecera, lo
-    que dejaba la autoría de `created_by` como un UUID nulo indistinguible de un
-    usuario real. Ahora que `create_rule` está gateado por `require_permission`
-    (que ya exige `X-User-Id` para resolver el RBAC), el gateway SIEMPRE inyecta
-    la cabecera antes de llegar aquí — este 400 es inalcanzable en producción, no
-    rompe al llamante legítimo. Gemelo de `_require_user` en `workflow.py`."""
-    if not x_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "missing_user",
-                "detail": "Falta la cabecera X-User-Id",
-                "status": 400,
-            },
-        )
-    try:
-        return UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
-
+    return exigir_id_o_400(request)
 
 @router.post(
     "",

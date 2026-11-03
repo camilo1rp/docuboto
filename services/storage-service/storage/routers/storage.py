@@ -118,14 +118,11 @@ def _reject_if_too_large(file: UploadFile) -> None:
         )
 
 
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    if x_user_id is None:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        return None
+def _optional_user(request: Request) -> uuid.UUID | None:
+    """Identidad opcional: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_opcional
 
+    return id_opcional(request)
 
 @router.post(
     "/internal/artefacto",

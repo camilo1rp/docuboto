@@ -20,6 +20,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from orpycamcp_common.usuario import id_opcional, slug_de
 from pydantic import BaseModel, Field
 
 from document.core.clearance import require_permission, resolve_caller_clearance
@@ -33,8 +34,6 @@ from document.services.export_service import (
 
 router = APIRouter(prefix="/api/v1/export", tags=["export"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
-_USER_HEADER = "X-User-Id"
 
 
 class ExportRequest(BaseModel):
@@ -44,13 +43,7 @@ class ExportRequest(BaseModel):
 
 
 def _get_registered_by(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get(_USER_HEADER)
-    if not raw:
-        return None
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 @router.post(
@@ -63,7 +56,7 @@ async def export_radicados(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> Response:
-    tenant_slug = request.headers.get(_TENANT_HEADER, "")
+    tenant_slug = slug_de(request)
     actor = _get_registered_by(request)
     clearance = await resolve_caller_clearance(conn, actor)
     svc = ExportService(conn, tenant_slug)

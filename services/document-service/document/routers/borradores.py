@@ -26,6 +26,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.clients.storage_client import RenderFallidoError, RenderNoDisponibleError
 from document.core.clearance import (
@@ -61,19 +62,14 @@ from document.services.metadata_service import MetadataValidationError
 
 router = APIRouter(tags=["borradores"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
 
 
 def _slug(request: Request) -> str:
-    return request.headers.get(_TENANT_HEADER, "")
+    return slug_de(request)
 
 
 def _user(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get("X-User-Id")
-    try:
-        return uuid.UUID(raw) if raw else None
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _funcionario(request: Request) -> dict[str, Any] | None:

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 import httpx
 from fastapi import status
-from orpycamcp_common import identidad
+from orpycamcp_common.usuario import cabeceras_internas
 
 from archive.core.config import settings
 
@@ -157,11 +157,7 @@ async def sign_xml(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar(
-        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
-        metodo="POST",
-        ruta=_RUTA_SIGN_XML,
-    )
+    headers = cabeceras_internas(tenant_slug=tenant_slug)
     # El sello institucional de `/sign-xml` es de la ENTIDAD y exige además el
     # token interno (D-02, AREA-04-07): la identidad firmada atribuye el acto al
     # humano, el token prueba que la llamada la hace archive-service y no un JWT
@@ -290,11 +286,7 @@ async def sign_xml_outcome(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar(
-        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
-        metodo="POST",
-        ruta=_RUTA_SIGN_XML,
-    )
+    headers = cabeceras_internas(tenant_slug=tenant_slug)
     # El sello institucional de `/sign-xml` es de la ENTIDAD y exige además el
     # token interno (D-02, AREA-04-07): la identidad firmada atribuye el acto al
     # humano, el token prueba que la llamada la hace archive-service y no un JWT
@@ -612,11 +604,7 @@ async def sign_personal(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar(
-        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
-        metodo="POST",
-        ruta=_RUTA_SIGN_PERSONAL,
-    )
+    headers = cabeceras_internas(tenant_slug=tenant_slug)
     if authorization:
         headers["Authorization"] = authorization
     try:

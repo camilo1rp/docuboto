@@ -65,7 +65,7 @@ describe("bandeja/api/[id]/publicacion GET", () => {
       await GET({ locals: SESSION_LOCALS, params: { id: idTorcido } });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
       expect(calledUrl).toBe(
-        `http://api-gateway:8080/api/v1/documents/${encodeURIComponent(idTorcido)}`,
+        `http://app:8000/api/v1/documents/${encodeURIComponent(idTorcido)}`,
       );
       expect(opts.headers.Authorization).toBe("Bearer tok-abc");
       expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");
@@ -201,7 +201,7 @@ describe("bandeja/api/[id]/publicacion POST", () => {
         }),
       });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
-      expect(calledUrl).toBe(`http://api-gateway:8080/api/v1/documents/${RAD_ID}/publicacion`);
+      expect(calledUrl).toBe(`http://app:8000/api/v1/documents/${RAD_ID}/publicacion`);
       expect(JSON.parse(opts.body)).toEqual({
         publicar: true,
         fundamento: "Numeral 4.2 del esquema",

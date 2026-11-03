@@ -163,6 +163,11 @@ def app_with_mocks(redis_mock: MagicMock, db_conn: AsyncMock):
         ),
     ):
         from notification.main import app
+        from orpycamcp_common.usuario import instalar_inyector
+
+        if not getattr(app, "_inyector_ok", False):
+            instalar_inyector(app)
+            app._inyector_ok = True  # type: ignore[attr-defined]
 
         app.dependency_overrides[get_tenant_conn] = _tenant_conn
         yield app
@@ -231,6 +236,11 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     """
     from notification.core.database import get_tenant_conn
     from notification.main import app
+    from orpycamcp_common.usuario import instalar_inyector
+
+    if not getattr(app, "_inyector_ok", False):
+        instalar_inyector(app)
+        app._inyector_ok = True  # type: ignore[attr-defined]
 
     conn = _make_mock_conn()
 

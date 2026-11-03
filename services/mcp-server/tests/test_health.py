@@ -62,7 +62,7 @@ async def test_ready_comprueba_el_gateway() -> None:
             httpx.Response(
                 200,
                 json={"status": "ok"},
-                request=httpx.Request("GET", "http://api-gateway:8080/health"),
+                request=httpx.Request("GET", "http://app:8000/health"),
             )
         ),
     ):
@@ -88,9 +88,9 @@ async def test_ready_no_publica_la_direccion_del_gateway() -> None:
     with patch(
         "app.routers.health.httpx.AsyncClient",
         return_value=_cliente_que(
-            error=httpx.ConnectError("Name or service not known: api-gateway:8080")
+            error=httpx.ConnectError("Name or service not known: app:8000")
         ),
     ):
         cuerpo = (await _get("/health/ready")).text
 
-    assert "api-gateway:8080" not in cuerpo
+    assert "app:8000" not in cuerpo

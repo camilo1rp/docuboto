@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from orpycamcp_common import deadletter, events, identidad, request_log
+from orpycamcp_common import deadletter, events, request_log, usuario
 from orpycamcp_common import secrets as common_secrets
 
 from notification.core import webhook_secrets
@@ -77,11 +77,9 @@ app = FastAPI(
 # Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
 # el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
 # escribe, que es el mismo defecto de partida movido un salto más allá.
-# La identidad que inyecta el gateway viene FIRMADA: sin esto, cualquiera
-# que alcance el puerto de este servicio dentro de la red podía hablarle
-# diciendo ser quien quisiera y de la entidad que quisiera. Va el primero
-# —o sea el más externo— porque es la decisión que precede a todas.
-app.add_middleware(identidad.IdentidadFirmadaMiddleware)
+# El llamante sale del JWT (`UsuarioActualMiddleware`). Un `X-User-Id` de
+# cliente no cuenta. Va el primero porque es la decisión que precede a todas.
+app.add_middleware(usuario.UsuarioActualMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="notification-service")
 
 

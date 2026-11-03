@@ -42,6 +42,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import check_permission, require_any_permission, require_permission
 from document.core.database import get_redis, get_tenant_client, get_tenant_conn
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 
 def _tenant_slug(request: Request) -> str:
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     if not slug:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -83,7 +84,7 @@ apps_router = APIRouter(prefix="/api/v1/email/apps-oauth", tags=["email-cuentas"
 
 
 def _actor(request: Request) -> uuid.UUID:
-    crudo = request.headers.get("X-User-Id", "")
+    crudo = (str(u) if (u := id_opcional(request)) else "")
     try:
         return uuid.UUID(crudo)
     except ValueError:

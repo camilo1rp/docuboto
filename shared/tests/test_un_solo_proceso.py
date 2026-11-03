@@ -165,6 +165,26 @@ def test_los_tokens_internos_tienen_alias_por_modulo() -> None:
         assert "AliasChoices" in texto, servicio
 
 
+def test_el_trafico_no_pasa_por_el_gateway() -> None:
+    svcs = servicios(COMPOSE_DEV)
+    assert (svcs["api-gateway"].get("profiles") or []) == ["split"]
+    entorno = svcs["frontend"].get("environment") or []
+    pares = {}
+    for item in entorno:
+        if isinstance(item, str) and "=" in item:
+            k, _, v = item.partition("=")
+            pares[k] = v
+    assert pares.get("INTERNAL_API_URL") == "http://app:8000"
+    assert pares.get("PUBLIC_API_URL") == "http://localhost:19000"
+    mcp = svcs["mcp-server"].get("environment") or []
+    mcp_pares = {}
+    for item in mcp:
+        if isinstance(item, str) and "=" in item:
+            k, _, v = item.partition("=")
+            mcp_pares[k] = v
+    assert mcp_pares.get("GATEWAY_URL") == "http://app:8000"
+
+
 def test_el_gateway_apunta_al_proceso() -> None:
     entorno = servicios(COMPOSE_DEV)["api-gateway"].get("environment") or []
     if isinstance(entorno, dict):

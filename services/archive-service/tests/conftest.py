@@ -40,6 +40,10 @@ from archive.services.transferencia_service import TransferenciaService as _Tran
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
+
 
 TENANT_SLUG = "demo"
 USER_ID = uuid.uuid4()

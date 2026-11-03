@@ -94,7 +94,7 @@ def test_el_censo_ve_el_codigo():
     leidas = _cabeceras_leidas()
     # Las que sabemos que existen y se usan de verdad.
     assert "X-Tenant-Slug" in leidas
-    assert "X-User-Id" in leidas
+    assert "X-Internal-Token" in leidas
 
 
 def test_ninguna_cabecera_leida_carece_de_productor() -> None:

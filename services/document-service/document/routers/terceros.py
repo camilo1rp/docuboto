@@ -21,6 +21,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission, resolve_caller_clearance
 from document.core.database import get_tenant_conn
@@ -52,22 +53,14 @@ def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     return x_canal or "system"
 
 
-_TENANT_HEADER = "X-Tenant-Slug"
-_USER_HEADER = "X-User-Id"
 
 
 def _tenant_slug(request: Request) -> str:
-    return request.headers.get(_TENANT_HEADER, "")
+    return slug_de(request)
 
 
 def _actor(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get(_USER_HEADER)
-    if not raw:
-        return None
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 @router.get(

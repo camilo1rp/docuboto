@@ -16,6 +16,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission, resolve_caller_clearance
 from document.core.database import get_redis, get_tenant_conn
@@ -29,20 +30,15 @@ from document.services.anulacion_service import AnulacionService
 
 router = APIRouter(prefix="/api/v1/documents", tags=["anulacion"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
 
 
 def _actor(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get("X-User-Id")
-    try:
-        return uuid.UUID(raw) if raw else None
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _tenant_slug(request: Request) -> str:
     # get_tenant_conn ya garantiza que el header está presente y es válido.
-    return request.headers.get(_TENANT_HEADER, "")
+    return slug_de(request)
 
 
 @router.post(

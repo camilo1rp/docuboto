@@ -32,7 +32,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
 
 
 @dataclass(frozen=True)
@@ -66,16 +66,14 @@ def _parse_user_id(x_user_id: str) -> uuid.UUID:
 
 
 async def require_actor(
-    x_user_id: str | None = Header(default=None),
+    request: Request,
     x_username: str | None = Header(default=None),
 ) -> Actor:
-    """Dependencia FastAPI para actos de custodia (create/enviar/recibir/
-    rechazar transferencias; close/transfer de expedientes): exige un
-    `X-User-Id` válido, sin fallback a `X-Username`. En la práctica ya es
-    inalcanzable sin él — `require_permission` exige la misma cabecera para
-    autorizar la operación (min_crud=3) — pero el fail-closed queda explícito
-    aquí en vez de depender de ese acoplamiento implícito."""
-    if not x_user_id:
+    """Dependencia FastAPI para actos de custodia. El id sale de `request.state`."""
+    from orpycamcp_common.usuario import id_opcional
+
+    uid = id_opcional(request)
+    if uid is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
@@ -84,16 +82,17 @@ async def require_actor(
                 "status": 400,
             },
         )
-    return Actor(id=_parse_user_id(x_user_id), username=x_username)
+    return Actor(id=uid, username=x_username)
 
 
 async def optional_actor(
-    x_user_id: str | None = Header(default=None),
+    request: Request,
     x_username: str | None = Header(default=None),
 ) -> Actor | None:
-    """Gemelo de `require_actor` para rutas de solo-LECTURA (FUID, list, get):
-    `None` si no hay `X-User-Id` (llamante anónimo/sin identificar), en vez de
-    fail-closed 400 — leer no es un acto de custodia."""
-    if not x_user_id:
+    """Gemelo de `require_actor` para rutas de solo-lectura."""
+    from orpycamcp_common.usuario import id_opcional
+
+    uid = id_opcional(request)
+    if uid is None:
         return None
-    return Actor(id=_parse_user_id(x_user_id), username=x_username)
+    return Actor(id=uid, username=x_username)

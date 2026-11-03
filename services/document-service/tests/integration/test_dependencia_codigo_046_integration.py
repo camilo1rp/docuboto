@@ -36,13 +36,13 @@ import uuid
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from migrations import runner
 
 from document.core.database import tenant_schema
 from document.schemas.borrador import BorradorCreate, BorradorUpdate
 from document.schemas.document import DocumentUpdate
 from document.services.borrador_service import BorradorService
 from document.services.document_service import DocumentService
-from migrations import runner
 
 pytestmark = pytest.mark.asyncio
 

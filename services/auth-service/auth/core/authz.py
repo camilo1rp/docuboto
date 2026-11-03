@@ -72,23 +72,9 @@ async def get_caller(
     X-User-Id es el ``auth_users.id`` interno (UUID), resuelto por auth-service
     ``/validate`` con lazy provisioning. Ya NO es el ``keycloak_sub``.
     """
-    raw = request.headers.get("X-User-Id")
-    if not raw:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "unauthorized", "detail": "Falta la cabecera X-User-Id", "status": 401},
-        )
-    try:
-        user_id = UUID(raw)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "unauthorized",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido (auth_users.id interno)",
-                "status": 401,
-            },
-        )
+    from orpycamcp_common.usuario import id_exigido
+
+    user_id = id_exigido(request)
     repo = RBACRepository(conn)
     user = await repo.get_user(user_id)   # looks up by auth_users.id, not keycloak_sub
     if user is None:

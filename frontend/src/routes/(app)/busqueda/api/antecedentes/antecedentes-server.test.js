@@ -86,7 +86,7 @@ describe("busqueda/api/antecedentes POST", () => {
         request: jsonRequest({ query: "convenio", top_k: 999, source_type: "otro" }),
       });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
-      expect(calledUrl).toBe("http://api-gateway:8080/api/v1/knowledge/antecedentes");
+      expect(calledUrl).toBe("http://app:8000/api/v1/knowledge/antecedentes");
       expect(opts.headers["X-User-Id"]).toBe("33333333-3333-3333-3333-333333333333");
       const sentBody = JSON.parse(opts.body);
       expect(sentBody).toEqual({ query: "convenio", top_k: 20 });

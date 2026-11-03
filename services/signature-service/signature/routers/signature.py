@@ -35,6 +35,7 @@ from datetime import UTC, datetime
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from orpycamcp_common.usuario import id_opcional
 
 from signature.core.clearance import get_actor, require_permission, resolve_caller_clearance
 from signature.core.config import settings
@@ -97,7 +98,7 @@ async def _clearance_del_llamante(request: Request, conn: asyncpg.Connection) ->
     (exige JWT), y entonces el gate aplica (AREA-04-10). Un ``X-User-Id`` mal
     formado es 401, no «sin usuario».
     """
-    if not request.headers.get("X-User-Id"):
+    if not (str(u) if (u := id_opcional(request)) else None):
         return None
     actor = await get_actor(request)
     return await resolve_caller_clearance(conn, actor)

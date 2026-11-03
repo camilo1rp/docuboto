@@ -373,7 +373,7 @@ describe("bandeja/api/steps/[stepId]/complete PATCH — usa step_id, NO radicado
       expect(res.status).toBe(200);
       expect(capturedMethod).toBe("PATCH");
       expect(capturedUrl).toBe(
-        `http://api-gateway:8080/api/v1/workflows/${encodeURIComponent(STEP_ID)}/complete`,
+        `http://app:8000/api/v1/workflows/${encodeURIComponent(STEP_ID)}/complete`,
       );
       expect(capturedUrl).not.toContain(RAD_ID);
     } finally {

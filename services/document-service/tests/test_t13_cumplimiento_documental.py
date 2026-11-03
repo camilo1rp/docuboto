@@ -250,11 +250,11 @@ def test_sin_autorizacion_de_tratamiento_no_se_radica() -> None:
 async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
     client_with_conn, monkeypatch
 ) -> None:
-    """Constancia v2 (B2, ADR-031): la IP es la que el GATEWAY firmó para esta ruta."""
-    from orpycamcp_common import identidad
+    """Constancia v2 (B2, ADR-031): la IP sale de saltos de confianza."""
+    from document.main import app
 
-    monkeypatch.setenv("IDENTITY_SIGNING_SECRET", "secreto-de-prueba")
     client, conn = client_with_conn
+    app.state.trusted_proxies = "127.0.0.0/8"
     _preparar(conn)
     with patch.object(
         DocumentService, "create", AsyncMock(return_value=_resultado_radicado())
@@ -262,8 +262,9 @@ async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
         resp = await client.post(
             BASE,
             **_multipart(_cuerpo(politica_version="2026-01")),
-            headers=identidad.firmar_ip_publica("203.0.113.9", BASE),
+            headers={"X-Forwarded-For": "203.0.113.9"},
         )
+    app.state.trusted_proxies = ""
     assert resp.status_code == 201, resp.text
     c = crear.await_args.kwargs["procedencia"]["consentimiento"]
     assert c["politica_version"] == "2026-01"

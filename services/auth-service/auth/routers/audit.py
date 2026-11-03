@@ -24,6 +24,7 @@ documentos que el resto del sistema le niega.
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response
 from orpycamcp_common import audit as audit_lib
+from orpycamcp_common.usuario import slug_de
 
 from auth.core.authz import Caller, get_caller, require_permission
 from auth.core.database import get_tenant_conn, tenant_schema
@@ -39,7 +40,7 @@ router = APIRouter(
 
 
 def _tenant_slug(request: Request) -> str:
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     tenant_schema(slug)  # valida (400 si falta/ inválido)
     return slug
 

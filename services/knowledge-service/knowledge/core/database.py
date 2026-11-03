@@ -16,6 +16,7 @@ import asyncpg
 from fastapi import HTTPException, Request, status
 from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
+from orpycamcp_common.usuario import slug_de
 
 from knowledge.core.config import settings
 
@@ -85,7 +86,7 @@ async def acquire_tenant(slug: str) -> AsyncGenerator[asyncpg.Connection, None]:
 
 
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     schema = _schema(slug)
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:

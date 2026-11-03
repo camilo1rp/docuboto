@@ -246,7 +246,7 @@ def make_require_any_permission(
     servicio (401 sin identidad, asiento «usuario no aprovisionado»). Sin ella, un
     llamante sin identidad válida cae a 403 fail-closed.
     """
-    from fastapi import Depends, Header, HTTPException, status
+    from fastapi import Depends, Header, HTTPException, Request, status
 
     from orpycamcp_common import audit
 
@@ -258,15 +258,15 @@ def make_require_any_permission(
         etiqueta = "|".join(perm_names)
 
         async def _dep(
-            x_user_id: str | None = Header(default=None),
+            request: Request,
             x_tenant_slug: str | None = Header(default=None),
             conn: asyncpg.Connection = Depends(get_conn),
             _identidad: Any = Depends(identity or _sin_identidad_previa),
         ) -> None:
-            try:
-                user_id = uuid.UUID(x_user_id) if x_user_id else None
-            except ValueError:
-                user_id = None
+            from orpycamcp_common.usuario import id_opcional, slug_de
+
+            user_id = id_opcional(request)
+            x_tenant_slug = slug_de(request) or x_tenant_slug
             if await check_any_permission(conn, user_id, perm_names, min_crud):
                 return
             if user_id is not None:

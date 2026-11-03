@@ -41,6 +41,10 @@ from auth.services.auth_service import AuthService
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
+
 
 
 class _FakeTx:

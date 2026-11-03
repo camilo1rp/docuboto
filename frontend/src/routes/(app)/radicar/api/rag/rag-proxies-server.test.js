@@ -98,7 +98,7 @@ describe("radicar/api/rag/suggest POST", () => {
         }),
       });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
-      expect(calledUrl).toBe("http://api-gateway:8080/api/v1/knowledge/rag");
+      expect(calledUrl).toBe("http://app:8000/api/v1/knowledge/rag");
       const body = JSON.parse(opts.body);
       expect(body).toEqual({ query: "asunto del radicado", top_k: 5 });
       expect(opts.headers.Authorization).toBe("Bearer tok-abc");
@@ -142,7 +142,7 @@ describe("radicar/api/rag/antecedentes POST", () => {
   it("propaga el error del gateway sin resolver doc_class si /antecedentes falla", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(async (calledUrl) => {
-      expect(calledUrl).toBe("http://api-gateway:8080/api/v1/knowledge/antecedentes");
+      expect(calledUrl).toBe("http://app:8000/api/v1/knowledge/antecedentes");
       return new Response(
         JSON.stringify({
           error: "antecedente_source_not_found",
@@ -169,7 +169,7 @@ describe("radicar/api/rag/antecedentes POST", () => {
     const originalFetch = globalThis.fetch;
     const trickyRef = "2024/ICETEX-E-001234 ../etc";
     const fetchMock = vi.fn(async (calledUrl) => {
-      if (calledUrl === "http://api-gateway:8080/api/v1/knowledge/antecedentes") {
+      if (calledUrl === "http://app:8000/api/v1/knowledge/antecedentes") {
         return new Response(
           JSON.stringify({
             antecedentes: [
@@ -190,12 +190,12 @@ describe("radicar/api/rag/antecedentes POST", () => {
       expect(calledUrl).not.toContain(trickyRef);
       if (
         calledUrl ===
-        `http://api-gateway:8080/api/v1/documents/by-tracking/${encodeURIComponent(trickyRef)}`
+        `http://app:8000/api/v1/documents/by-tracking/${encodeURIComponent(trickyRef)}`
       ) {
         return new Response(JSON.stringify({ doc_class: "CDP" }), { status: 200 });
       }
       if (
-        calledUrl === "http://api-gateway:8080/api/v1/documents/by-tracking/2024-ICETEX-E-000002"
+        calledUrl === "http://app:8000/api/v1/documents/by-tracking/2024-ICETEX-E-000002"
       ) {
         return new Response(JSON.stringify({ doc_class: "CDP" }), { status: 200 });
       }
@@ -220,7 +220,7 @@ describe("radicar/api/rag/antecedentes POST", () => {
   it("un precedente que no resuelve (404 no-read-up) no rompe la agregación", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(async (calledUrl) => {
-      if (calledUrl === "http://api-gateway:8080/api/v1/knowledge/antecedentes") {
+      if (calledUrl === "http://app:8000/api/v1/knowledge/antecedentes") {
         return new Response(
           JSON.stringify({
             antecedentes: [

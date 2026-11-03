@@ -32,7 +32,8 @@ import asyncio
 import json
 import logging
 import time
-from datetime import UTC, date, datetime, time as hora
+from datetime import UTC, date, datetime
+from datetime import time as hora
 
 import redis.exceptions as redis_exc
 from orpycamcp_common import events

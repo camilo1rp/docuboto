@@ -25,6 +25,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, PLAZO_MAX_MESES
 from document.core.clearance import require_permission
@@ -44,20 +45,15 @@ from document.services.desclasificacion_service import DesclasificacionService
 router = APIRouter(prefix="/api/v1/documents", tags=["desclasificacion"])
 cola_router = APIRouter(prefix="/api/v1/desclasificaciones", tags=["desclasificacion"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
 
 
 def _actor(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get("X-User-Id")
-    try:
-        return uuid.UUID(raw) if raw else None
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _servicio(request: Request, conn: asyncpg.Connection, redis: Any = None) -> DesclasificacionService:
     # get_tenant_conn ya garantiza que el header está presente y es válido.
-    return DesclasificacionService(conn, request.headers.get(_TENANT_HEADER, ""), redis)
+    return DesclasificacionService(conn, slug_de(request), redis)
 
 
 @router.get(

@@ -22,6 +22,7 @@ from datetime import date
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import resolve_caller_clearance
 from document.core.database import get_tenant_conn as get_db
@@ -30,8 +31,6 @@ from document.services.document_service import audit_search_access
 
 router = APIRouter(prefix="/api/v1/search", tags=["search"])
 
-_USER_HEADER = "X-User-Id"
-_TENANT_HEADER = "X-Tenant-Slug"
 
 _SELECT = (
     "id, tracking_number, doc_type, subject, sender_name, sender_entity, doc_class, "
@@ -40,13 +39,7 @@ _SELECT = (
 
 
 def _caller_id(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get(_USER_HEADER)
-    if not raw:
-        return None
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
@@ -62,7 +55,7 @@ def _tenant_slug(request: Request) -> str:
     # handler. El default "" es defensa muerta: NO debe alcanzar `audit.append`
     # (donde `"" or SYSTEM_TENANT` desviaría el asiento a la cadena de SYSTEM).
     # Gemelo de `documents.py::_tenant_slug`.
-    return request.headers.get(_TENANT_HEADER, "")
+    return slug_de(request)
 
 
 @router.get("", response_model=SearchResponse)

@@ -16,6 +16,7 @@ import asyncpg
 from fastapi import HTTPException, Request, status
 from orpycamcp_common.tenant import slug_valido, veredicto_entidad
 from orpycamcp_common.tenant import tenant_schema as _schema_de
+from orpycamcp_common.usuario import slug_de
 
 from signature.core.config import settings
 from signature.core.conservacion import admitir_conservacion
@@ -74,7 +75,7 @@ def _schema(slug: str) -> str:
 
 
 async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, None]:
-    slug = request.headers.get("X-Tenant-Slug", "")
+    slug = slug_de(request)
     try:
         schema = _schema(slug)
     except ValueError as exc:

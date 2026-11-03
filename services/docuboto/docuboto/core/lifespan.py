@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -125,6 +126,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     auth_service = AuthService()
     set_auth_service(auth_service)
+    app.state.auth_service = auth_service
+    app.state.trusted_proxies = os.environ.get("TRUSTED_PROXIES", "")
 
     tareas: list[asyncio.Task[None]] = []
     if settings.auth.signing_key_maintenance_enabled:

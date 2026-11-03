@@ -109,31 +109,7 @@ def require_permission(perm_name: str, min_crud: int = 1):
 
 
 async def get_actor(request: Request) -> uuid.UUID:
-    """Extracts the caller's internal UUID from X-User-Id header.
+    """UUID interno del llamante. Sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_exigido
 
-    Raises 401 when the header is missing or not a valid UUID.  Never touches the
-    database — identity was already validated by auth-service /validate.
-    """
-    raw = request.headers.get("X-User-Id")
-    if not raw:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "unauthorized",
-                "detail": "Falta la cabecera X-User-Id",
-                "status": 401,
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        return uuid.UUID(raw)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "unauthorized",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido (auth_users.id interno)",
-                "status": 401,
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    return id_exigido(request)

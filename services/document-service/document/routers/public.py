@@ -32,8 +32,8 @@ from fastapi import (
     UploadFile,
     status,
 )
-from orpycamcp_common import identidad
 from orpycamcp_common.tenant import slug_valido
+from orpycamcp_common.usuario import ip_de
 
 from document.core.database import (
     get_public_tenant_conn,
@@ -82,13 +82,13 @@ def _clave_idempotencia(valor: str | None) -> str | None:
 
 
 def _ip_cliente(request: Request) -> str | None:
-    """IP del cliente que el GATEWAY firmó para esta ruta (ADR-031), o None.
+    """IP del cliente por saltos de confianza, o None.
 
-    Nunca lee `X-Forwarded-For` ni un `X-Real-Ip` sin firma: los escribe el
-    cliente. Sin firma válida (llamada directa, firma vencida o de otra ruta, sin
-    secreto) la constancia registra `ip=null, ip_verificada=false`.
+    Nunca toma un `X-Forwarded-For` o `X-Real-Ip` de cliente: los escribe quien
+    quiera. Sin proxies de confianza, la constancia usa la IP del socket; si
+    tampoco hay una útil, registra `ip=null, ip_verificada=false`.
     """
-    return identidad.ip_publica_verificada(dict(request.headers), request.url.path)
+    return ip_de(request)
 
 
 @router.post(

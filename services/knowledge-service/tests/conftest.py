@@ -31,6 +31,10 @@ from knowledge.main import app
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
+
 
 # Desde ADR-037 las rutas de consulta exigen identidad (``get_actor``): 401 sin X-User-Id.
 USER_ID = "00000000-0000-4000-8000-0000000000a1"

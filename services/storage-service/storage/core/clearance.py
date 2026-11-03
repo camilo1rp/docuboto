@@ -27,10 +27,9 @@ RBAC no provisionadas o cualquier duda, se deniega.
 """
 
 import logging
-import uuid
 
 import asyncpg
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás módulos del servicio importan de aquí
     check_permission,
     mensaje_denegacion,
@@ -59,14 +58,13 @@ def require_permission(perm_name: str, min_crud: int = 1):
     """
 
     async def _dep(
-        x_user_id: str | None = Header(default=None),
+        request: Request,
         x_tenant_slug: str | None = Header(default=None),
         conn: asyncpg.Connection = Depends(get_db_conn),
     ) -> None:
-        try:
-            user_id = uuid.UUID(x_user_id) if x_user_id else None
-        except ValueError:
-            user_id = None
+        from orpycamcp_common.usuario import id_opcional, slug_de
+        user_id = id_opcional(request)
+        x_tenant_slug = slug_de(request) or x_tenant_slug
         if not x_tenant_slug:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

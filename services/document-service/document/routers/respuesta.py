@@ -16,6 +16,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission, resolve_caller_clearance
 from document.core.database import get_redis, get_tenant_client, get_tenant_conn
@@ -30,20 +31,14 @@ from document.services.document_service import (
 
 router = APIRouter(prefix="/api/v1/documents", tags=["respuesta"])
 
-_TENANT_HEADER = "X-Tenant-Slug"
-_USER_HEADER = "X-User-Id"
 
 
 def _slug(request: Request) -> str:
-    return request.headers.get(_TENANT_HEADER, "")
+    return slug_de(request)
 
 
 def _user(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get(_USER_HEADER)
-    try:
-        return uuid.UUID(raw) if raw else None
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:

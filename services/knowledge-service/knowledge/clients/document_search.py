@@ -21,17 +21,12 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request, status
-from orpycamcp_common import identidad
+from orpycamcp_common.usuario import cabeceras_internas, slug_de
 
 from knowledge.core.config import settings
 
 # La ruta que se FIRMA es la misma que se LLAMA (ADR-036): una sola constante.
 _RUTA_SEARCH = "/api/v1/search"
-
-#: Cabeceras de identidad que se reenvían tal como llegaron (ya verificadas por el
-#: middleware de este servicio). El instante y el nonce los pone `firmar`, nuevos.
-_REENVIADAS = ("X-User-Id", "X-Username", "X-Tenant-Slug", "X-User-Roles", "X-Canal", "X-Real-Ip")
-
 
 def _no_disponible() -> HTTPException:
     return HTTPException(
@@ -50,8 +45,7 @@ async def search(request: Request, *, q: str, size: int) -> list[dict[str, Any]]
     Fail-closed: cualquier respuesta que no sea 200 o un cuerpo inesperado se
     responde 503 ``search_unavailable``; nunca una lista vacía que parezca «no hay».
     """
-    cabeceras = {c: v for c in _REENVIADAS if (v := request.headers.get(c))}
-    headers = identidad.firmar(cabeceras, metodo="GET", ruta=_RUTA_SEARCH)
+    headers = cabeceras_internas(tenant_slug=slug_de(request))
     try:
         async with httpx.AsyncClient(base_url=settings.document_service_url, timeout=10.0) as client:
             resp = await client.get(_RUTA_SEARCH, params={"q": q, "size": size}, headers=headers)

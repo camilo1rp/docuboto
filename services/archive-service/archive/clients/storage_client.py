@@ -110,7 +110,7 @@ from datetime import date, datetime
 
 import httpx
 from fastapi import status
-from orpycamcp_common import identidad
+from orpycamcp_common.usuario import cabeceras_internas
 
 from archive.core.config import settings
 
@@ -259,11 +259,7 @@ async def proteger_indice_worm(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar(
-        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
-        metodo="POST",
-        ruta=_RUTA_PROTEGER_INDICE,
-    )
+    headers = cabeceras_internas(tenant_slug=tenant_slug)
     # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
     # la identidad firmada atribuye el acto al humano que cierra, el token prueba
     # que llama archive-service y no un JWT de usuario directo.
@@ -345,11 +341,7 @@ async def proteger_artefacto_worm(
     # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
     # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
     # llamada muere en 401 antes de tocar el handler.
-    headers = identidad.firmar(
-        {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id},
-        metodo="POST",
-        ruta=_RUTA_PROTEGER_ARTEFACTO,
-    )
+    headers = cabeceras_internas(tenant_slug=tenant_slug)
     # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
     # la identidad firmada atribuye el acto al humano que cierra, el token prueba
     # que llama archive-service y no un JWT de usuario directo.
@@ -562,9 +554,7 @@ def _headers_hold(tenant_slug: str, actor_id: str | None, *, metodo: str, ruta: 
     sistema, p. ej. el hold `valoracion_pendiente`): solo token interno, y storage atribuye a
     SISTEMA."""
     if actor_id:
-        headers = identidad.firmar(
-            {"X-Tenant-Slug": tenant_slug, "X-User-Id": actor_id}, metodo=metodo, ruta=ruta
-        )
+        headers = cabeceras_internas(tenant_slug=tenant_slug)
     else:
         headers = {"X-Tenant-Slug": tenant_slug}
     headers["X-Internal-Token"] = settings.storage_internal_token

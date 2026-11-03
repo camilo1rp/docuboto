@@ -18,6 +18,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from orpycamcp_common.usuario import id_opcional
 from starlette.background import BackgroundTask
 
 from storage.core.clearance import require_permission
@@ -125,7 +126,7 @@ def _actor(request: Request) -> str | None:
     Se sella el identificador, que no cambia nunca, y se acompaña del nombre para
     que el registro siga siendo legible sin tener que resolver un UUID a mano.
     """
-    uid = request.headers.get("X-User-Id")
+    uid = (str(u) if (u := id_opcional(request)) else None)
     nombre = request.headers.get("X-Username")
     if uid and nombre:
         return f"{uid} ({nombre})"
@@ -140,7 +141,7 @@ def _actor_uuid(request: Request) -> uuid.UUID | None:
     `X-Username` no convertible resuelve a `None` en vez de reventar la
     petición — la migración es un acto de preservación y no debe fallar por el
     formato de una cabecera."""
-    crudo = request.headers.get("X-User-Id")
+    crudo = (str(u) if (u := id_opcional(request)) else None)
     if not crudo:
         return None
     try:

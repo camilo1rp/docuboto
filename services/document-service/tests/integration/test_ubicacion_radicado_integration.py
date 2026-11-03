@@ -24,12 +24,12 @@ from datetime import date
 
 import asyncpg
 import pytest
+from migrations import runner
 
 from document.core.database import tenant_schema
 from document.repositories.document_repository import DocumentRepository
 from document.repositories.export_repository import ExportRepository
 from document.repositories.report_repository import ReportRepository
-from migrations import runner
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 

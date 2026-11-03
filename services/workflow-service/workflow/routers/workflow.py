@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from workflow.core.clearance import require_permission
 from workflow.core.database import get_db_conn
@@ -54,21 +54,11 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    """Identidad opcional del llamante (X-User-Id). A diferencia de
-    `_require_user` (assign/transfer/etc., que exige la cabecera con 400), las
-    LECTURAS de bandeja/hoja-de-ruta (RF-SEG-08) no deben romper sin ella: el
-    clearance resuelto simplemente degrada a PUBLICA (fail-closed, ver
-    `resolve_caller_clearance`). Ausente/inválida => `None`. Gemelo de
-    `document-service/workflow/routers/documents.py::_get_registered_by`.
-    """
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        return None
+def _optional_user(request: Request) -> uuid.UUID | None:
+    """Identidad opcional: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_opcional
 
+    return id_opcional(request)
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     """Canal de origen de la petición (X-Canal), inyectado server-side por el
@@ -80,31 +70,12 @@ def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     return x_canal or "system"
 
 
-def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
-    if not x_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "missing_user",
-                "detail": "Falta la cabecera X-User-Id",
-                "status": 400,
-            },
-        )
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
+def _require_user(request: Request) -> uuid.UUID:
+    """Identidad obligatoria: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import exigir_id_o_400
 
+    return exigir_id_o_400(request)
 
-# NOTE: rutas literales antes de /{radicado_id}/... para que FastAPI no intente
-# casar "pending"/"reassign" como UUID.
 @router.post(
     "/reassign/cascade",
     response_model=CascadeReassignResponse,

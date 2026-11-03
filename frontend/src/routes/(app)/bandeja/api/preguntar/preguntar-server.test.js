@@ -64,7 +64,7 @@ describe("bandeja/api/preguntar", () => {
       }),
     });
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://api-gateway:8080/api/v1/knowledge/rag");
+    expect(url).toBe("http://app:8000/api/v1/knowledge/rag");
     expect(opts.headers.Authorization).toBe("Bearer tok-abc");
     expect(opts.headers["X-Tenant-Slug"]).toBe("demo");
     expect(opts.headers["X-User-Id"]).toBe(SESSION.user.sub);
@@ -85,7 +85,7 @@ describe("bandeja/api/preguntar/transmision", () => {
     const res = await GET({ locals: SESSION });
     expect(res.status).toBe(200);
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://api-gateway:8080/api/v1/knowledge/transmission");
+    expect(url).toBe("http://app:8000/api/v1/knowledge/transmission");
     expect(opts.headers.Authorization).toBe("Bearer tok-abc");
     expect(opts.body).toBeUndefined();
   });

@@ -14,7 +14,7 @@ from datetime import date
 from typing import Literal
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from archive.core.actor import Actor, require_actor
 from archive.core.clearance import (
@@ -82,27 +82,11 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    """Gemelo de `expedientes.py::_optional_user` (migración 038): resuelve
-    el clearance del llamante para `GET /trd/revision-pendiente` -- distinto
-    de `Actor`/`require_actor` (que exige X-User-Id fail-closed para
-    MUTACIONES), este endpoint es una LECTURA y `X-User-Id` ausente solo
-    significa "no auditar como consulta de un usuario real" (cae a
-    PUBLICA), nunca un 400."""
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
+def _optional_user(request: Request) -> uuid.UUID | None:
+    """Identidad opcional: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_opcional
 
+    return id_opcional(request)
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     """Gemelo de `expedientes.py::_optional_canal` (E15 perfil v4, R3-a)."""

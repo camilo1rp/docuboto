@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
 
 from archive.core.clearance import CLEARANCE_SIN_RESTRICCION, require_permission
@@ -60,28 +60,11 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    """X-User-Id como UUID, para resolver el clearance del llamante (RF-SEG-08).
+def _optional_user(request: Request) -> uuid.UUID | None:
+    """Identidad opcional: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_opcional
 
-    Gemelo de `expedientes.py::_optional_user`: usado en las lecturas del
-    índice (indice, indice.xml, versions, verify) — a diferencia de
-    `_actor_id` (str crudo, reenviado a signature-service), aquí se necesita
-    el UUID para `ArchiveRepository.caller_clearance`.
-    """
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
-
+    return id_opcional(request)
 
 def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     """Canal de origen de la petición (X-Canal, inyectado server-side por el
@@ -92,26 +75,12 @@ def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
     return x_canal or "system"
 
 
-def _actor_id(x_user_id: str | None = Header(default=None)) -> str | None:
-    """X-User-Id crudo (str) para reenviar tal cual a signature-service.
+def _actor_id(request: Request) -> str | None:
+    """UUID del llamante como str, para un salto HTTP interno al mismo proceso."""
+    from orpycamcp_common.usuario import id_opcional
 
-    Se valida el formato aquí (fail-fast, 400) pero se conserva como str: el
-    cliente HTTP interno lo envía directamente como cabecera, sin re-serializar.
-    """
-    if not x_user_id:
-        return None
-    try:
-        uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
-    return x_user_id
+    uid = id_opcional(request)
+    return None if uid is None else str(uid)
 
 
 @router.get(

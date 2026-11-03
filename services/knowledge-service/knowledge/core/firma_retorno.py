@@ -20,7 +20,7 @@ import base64
 import hashlib
 import hmac
 import re
-from typing import Mapping
+from collections.abc import Mapping
 
 VENTANA_S = 300
 _NONCE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")

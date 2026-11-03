@@ -1044,7 +1044,7 @@ async def test_la_identidad_forjada_no_pisa_la_del_gateway_en_ruta_autenticada(t
     assert por_nombre["x-tenant-slug"] == "icetex"
     assert por_nombre["x-user-id"] == "user-123"
     assert "admin" not in por_nombre["x-user-roles"]
-    assert por_nombre["x-identity-signature"] != "deadbeef"
+    assert por_nombre.get("x-identity-signature") != "deadbeef"
 
 
 async def test_la_identidad_forjada_no_llega_al_upstream_en_ruta_publica(test_client):

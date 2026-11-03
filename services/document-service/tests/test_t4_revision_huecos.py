@@ -273,7 +273,8 @@ async def test_un_paquete_con_un_numero_invalido_no_importa_ninguno() -> None:
 async def test_upload_bytes_cumple_el_contrato_de_storage(monkeypatch) -> None:
     """El import sube cada binario a storage `/upload`; todas las pruebas de import
     sustituyen `upload_bytes`, así que sin esta nada vigila lo que viaja: ruta,
-    tenant, identidad del actor FIRMADA (storage la exige) y campo multipart `file`."""
+    tenant y campo multipart `file`. El llamante viaja en el Bearer, no en
+    `X-User-Id`."""
     capturadas: list[httpx.Request] = []
     real = httpx.AsyncClient
 
@@ -295,8 +296,8 @@ async def test_upload_bytes_cumple_el_contrato_de_storage(monkeypatch) -> None:
     (req,) = capturadas
     assert req.method == "POST" and req.url.path == "/api/v1/storage/upload"
     assert req.headers["X-Tenant-Slug"] == "demo"
-    assert req.headers["X-User-Id"] == str(actor)
-    assert req.headers["X-Identity-Signature"], "sin la firma storage descarta la identidad"
+    assert "X-User-Id" not in req.headers
+    assert "X-Identity-Signature" not in req.headers
     assert b'name="file"' in req.content and b"%PDF" in req.content
 
 

@@ -19,6 +19,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
+from orpycamcp_common.usuario import id_opcional
 
 from document.core.clearance import require_permission, resolve_caller_clearance
 from document.core.database import get_tenant_conn
@@ -34,11 +35,7 @@ router = APIRouter(prefix="/api/v1/documents", tags=["signatures"])
 
 
 def _signer_id(request: Request) -> uuid.UUID | None:
-    raw = request.headers.get("X-User-Id")
-    try:
-        return uuid.UUID(raw) if raw else None
-    except ValueError:
-        return None
+    return id_opcional(request)
 
 
 @router.post(

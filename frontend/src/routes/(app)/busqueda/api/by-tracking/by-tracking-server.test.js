@@ -72,7 +72,7 @@ describe("busqueda/api/by-tracking/[trackingNumber] GET", () => {
       });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
       expect(calledUrl).toBe(
-        `http://api-gateway:8080/api/v1/documents/by-tracking/${encodeURIComponent(trackingConSlash)}`,
+        `http://app:8000/api/v1/documents/by-tracking/${encodeURIComponent(trackingConSlash)}`,
       );
       expect(opts.headers.Authorization).toBe("Bearer tok-abc");
       expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");

@@ -16,7 +16,7 @@ import logging
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from archive.core.clearance import require_permission
 from archive.core.database import acquire_tenant
@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/batch", tags=["batch"])
 
+_tareas_en_curso: set[asyncio.Task] = set()
+
 
 def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     if not x_tenant_slug:
@@ -46,31 +48,11 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _require_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID:
-    if not x_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "missing_user",
-                "detail": "Falta la cabecera X-User-Id",
-                "status": 400,
-            },
-        )
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
+def _require_user(request: Request) -> uuid.UUID:
+    """Identidad obligatoria: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import exigir_id_o_400
 
-
-_tareas_en_curso: set[asyncio.Task] = set()
-
+    return exigir_id_o_400(request)
 
 async def _run_batch_job(tenant_slug: str, job_id: uuid.UUID) -> None:
     """Detached background task: owns its own connection, independent of the

@@ -22,6 +22,7 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     Response,
     status,
 )
@@ -62,31 +63,11 @@ def _require_tenant(x_tenant_slug: str | None = Header(default=None)) -> str:
     return x_tenant_slug
 
 
-def _optional_user(x_user_id: str | None = Header(default=None)) -> uuid.UUID | None:
-    """X-User-Id como UUID, para resolver el clearance del llamante (RF-SEG-08).
+def _optional_user(request: Request) -> uuid.UUID | None:
+    """Identidad opcional: sale de `request.state.usuario`, no de `X-User-Id`."""
+    from orpycamcp_common.usuario import id_opcional
 
-    Gemelo de `expedientes.py::_optional_user` / `indice.py::_optional_user`:
-    usado en el FUID (`/fuid`, `/fuid.xml`) y en `expedientes_in_unit`
-    (`/unidades/{id}/expedientes`), que exponen asunto/serie/signatura o la
-    mera existencia del expediente — contenido, no metadato de custodia.
-    """
-    if not x_user_id:
-        return None
-    try:
-        return uuid.UUID(x_user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "invalid_user_id",
-                "detail": "La cabecera X-User-Id debe ser un UUID válido",
-                "status": 400,
-            },
-        )
-
-
-# -- ubicaciones -------------------------------------------------------
-
+    return id_opcional(request)
 
 @router.post(
     "/ubicaciones",
