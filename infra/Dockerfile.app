@@ -53,6 +53,11 @@ RUN groupadd --system orpycamcp \
     && chown -R orpycamcp:orpycamcp /app
 USER orpycamcp
 
+# XSD live next to the service trees, not inside the Python package.
+# `archive.services.index_xsd` and `storage.services.aip_builder` resolve them at `/app/schemas`.
+COPY --chown=orpycamcp:orpycamcp services/archive-service/schemas/ /app/schemas/
+COPY --chown=orpycamcp:orpycamcp services/storage-service/schemas/ /app/schemas/
+
 # `--no-access-log`: el registro de acceso de uvicorn incluye la CADENA DE
 # CONSULTA. El middleware propio la omite; el de uvicorn la reponía.
 CMD ["uvicorn", "docuboto.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8000"]

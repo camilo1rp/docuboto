@@ -167,6 +167,14 @@ def test_el_dockerfile_vive_fuera_de_services() -> None:
     assert not (RAIZ / "services" / "docuboto" / "Dockerfile").exists()
 
 
+def test_las_imagenes_llevan_los_xsd() -> None:
+    for nombre in ("Dockerfile.app", "Dockerfile.worker"):
+        texto = (RAIZ / "infra" / nombre).read_text(encoding="utf-8")
+        assert "archive-service/schemas/" in texto, nombre
+        assert "storage-service/schemas/" in texto, nombre
+        assert "/app/schemas/" in texto, nombre
+
+
 def test_la_imagen_app_no_lleva_jre() -> None:
     app = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8")
     worker = (RAIZ / "infra" / "Dockerfile.worker").read_text(encoding="utf-8")
