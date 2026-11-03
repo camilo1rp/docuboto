@@ -129,9 +129,6 @@ nada que copiar ni editar**: los tres dominios salen del mismo `infra/.env`.
 
 Por qué en contenedor y no en el servidor:
 
-- `api-gateway` y `frontend` tienen `deploy.replicas: 2`: publicar un puerto fijo del servidor lo
-  tomaría la primera réplica y la segunda moriría con «port is already allocated». nginx resuelve
-  el nombre del servicio en cada petición (`resolver 127.0.0.11`) y reparte entre réplicas.
 - Con nginx en el servidor, el gateway vería como par a la IP del docker-proxy
   (ver `TRUSTED_PROXIES`, abajo).
 - Los servicios llaman a `https://${KEYCLOAK_HOSTNAME}` desde dentro de la red: `edge` lleva ese
@@ -547,22 +544,14 @@ el consumo por `jti` de las propuestas del MCP y otros cachés son por proceso.
 
 ### Escalabilidad de servicios
 
-Servicios sin estado (stateless) pueden escalarse horizontalmente:
+Este manifiesto corre **una réplica** de cada servicio. Con un tenant y unos 10
+usuarios concurrentes, una instancia cubre la carga. `deploy.replicas` queda en
+`1` en `api-gateway`, `document-service`, `storage-service` y `frontend`; el resto
+ya era una instancia. Los nueve servicios con base de datos abren
+`DB_POOL_MAX_SIZE=3`. Keycloak tiene un tope de 1 GB.
 
-```yaml
-# En docker-compose.prod.yml
-api-gateway:
-  deploy:
-    replicas: 3  # 3 instancias balanceadas por carga
-
-storage-service:
-  deploy:
-    replicas: 2  # Para throughput de uploads
-
-document-service:
-  deploy:
-    replicas: 2  # Para búsquedas de radicados
-```
+Subir réplicas en este diseño (procesos separados, identidad firmada, pools por
+servicio) vuelve a inflar el presupuesto de conexiones y no entra en Docuboto 2.0.
 
 ---
 

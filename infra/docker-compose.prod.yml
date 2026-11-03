@@ -92,34 +92,24 @@ services:
     restart: unless-stopped
     # ── Presupuesto de conexiones ──────────────────────────────────────────
     #
-    # Postgres trae `max_connections=100` por defecto, y ese número **no
-    # alcanzaba**. La cuenta de este despliegue, con `db_pool_max_size=10` por
-    # servicio (`app/core/config.py`):
+    # Postgres trae `max_connections=100` por defecto. Este despliegue (un tenant,
+    # una réplica por servicio) abre `DB_POOL_MAX_SIZE=3` por servicio:
     #
-    #   auth 10 · tenant 10 · document 10×2 réplicas · storage 10×2 réplicas
-    #   workflow 10 · archive 10 · notification 10 · signature 10 · knowledge 10
+    #   auth 3 · tenant 3 · document 3 · storage 3 · workflow 3
+    #   archive 3 · notification 3 · signature 3 · knowledge 3
     #   ────────────────────────────────────────────────────────────────────
-    #   = 110 conexiones solo de las aplicaciones
+    #   = 27 conexiones de las aplicaciones
     #
     # (api-gateway y mcp-server no abren pool: no tocan la base de datos.)
     #
-    # Y encima Postgres hospeda **también a Keycloak**, cuyo pool por defecto es
-    # de 100 más. Sumado, el sistema pedía sobre 210 conexiones a un servidor que
-    # concede 100, menos 3 reservadas al superusuario.
+    # Keycloak se acota a `KC_DB_POOL_MAX_SIZE=30` contra el mismo Postgres.
+    # Suma: 57, más margen para migraciones, respaldos y `psql` de operación.
     #
-    # Lo peor es CÓMO se manifiesta: el pool que llega tarde no falla con un
-    # mensaje sobre conexiones — se queda esperando. Y como Keycloak compite por
-    # el mismo cupo, el síntoma que ve la institución son **fallos de inicio de
-    # sesión** intermitentes, sin relación aparente con la carga documental que
-    # los provocó. Nadie mira el número de conexiones buscando eso.
+    # Se deja `max_connections=300`. Bajar el cupo del servidor es otro cambio:
+    # el monolito de Docuboto 2.0 pasa a un solo pool, y esa es la cuenta que
+    # debe cuadrar el tope.
     #
-    # Se sube a 300 (110 aplicaciones + 30 Keycloak + margen para migraciones,
-    # respaldos, `psql` de operación y una segunda réplica de cualquier
-    # servicio). Si se añaden réplicas, esta cuenta se rehace: está escrita aquí
-    # para que se pueda rehacer.
-    #
-    # `shared_buffers` acompaña porque cada conexión reserva memoria de trabajo;
-    # triplicar el cupo sin tocarlo cambia un límite por otro.
+    # `shared_buffers` acompaña porque cada conexión reserva memoria de trabajo.
     command: >
       postgres
       -c max_connections=300
@@ -297,6 +287,9 @@ services:
       # KC_CACHE_STACK solo aplica a clúster; `kubernetes` sobre Compose plano hace
       # que el descubrimiento JGroups falle. Con una sola instancia, `default` basta.
       KC_CACHE: local
+      # El contenedor tiene 1 GB. Sin esto el heap de Java asume el RAM del host
+      # y el proceso se sale del límite. 70 % deja sitio a metaspace y nativo.
+      JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0"
     networks:
       - orpycamcp-net
     # Montajes opcionales (descomenta y añade `volumes:` como lista cuando los uses):
@@ -317,10 +310,10 @@ services:
       resources:
         limits:
           cpus: '2'
-          memory: 3G
+          memory: 1G
         reservations:
           cpus: '1'
-          memory: 1.5G
+          memory: 512M
     logging:
       driver: "json-file"
       options:
@@ -334,8 +327,8 @@ services:
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/api-gateway:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: este servicio escala (deploy.replicas), los nombres
-    # deben ser únicos por réplica (Compose los genera como proyecto-servicio-N).
+    # Una réplica: 10 usuarios concurrentes no justifican más. Sin container_name
+    # fijo, Compose nombra el contenedor.
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
@@ -384,7 +377,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2  # Scale horizontally
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -414,6 +407,7 @@ services:
       KEYCLOAK_REALM: orpycamcp
       KEYCLOAK_CLIENT_ID: auth-service
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_AUTH_SERVICE_SECRET:?Auth Service secret required}
+      DB_POOL_MAX_SIZE: "3"
       # ── Claves de cifrado en reposo (KEK) ────────────────────────────────────
       # Ambas son base64 de 32 bytes y son SECRETOS DISTINTOS con propósitos
       # distintos: TOTP_ENCRYPTION_KEY cifra el secreto TOTP del segundo factor,
@@ -476,6 +470,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Vacío: pasar a ppi responde que la pasarela no está configurada.
       KNOWLEDGE_SERVICE_URL: http://knowledge-service:8011
@@ -515,7 +510,7 @@ services:
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
+    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
     environment:
       # Custodia de las credenciales de los buzones institucionales. Sin ella el
@@ -534,6 +529,7 @@ services:
       # document-service MEDIA la descarga de anexos (gate por clearance vigente)
       # y necesita este token para hablar con storage. Sin él, storage responde
       # 401 a TODA descarga — fail-closed correcto, sistema inservible.
+      DB_POOL_MAX_SIZE: "3"
       STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
       # Token que protege los endpoints /internal de ESTE servicio (los consume
       # archive-service al ensamblar el AIP y el export del expediente).
@@ -562,7 +558,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2  # Scale horizontally for read load
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -581,13 +577,14 @@ services:
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
+    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -632,7 +629,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2  # Scale for file upload throughput
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -658,6 +655,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -701,6 +699,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       # D-02, los tres pares emisor/receptor de este servicio:
       #  - storage:   AIP, protección WORM del índice y del acta
       #  - signature: POST /internal/sign-indice (reconciliación del sellado)
@@ -753,6 +752,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       SMTP_HOST: ${SMTP_HOST:?SMTP host required}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:?SMTP user required}
@@ -810,6 +810,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      DB_POOL_MAX_SIZE: "3"
       # En prod el navegador y los servicios usan el MISMO hostname público de
       # Keycloak (DNS real), así que el `iss` coincide sin override: expected_issuer
       # se deriva de KEYCLOAK_URL. NO se setea KEYCLOAK_ISSUER (a diferencia de dev,
@@ -902,6 +903,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
       # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
@@ -993,7 +995,7 @@ services:
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/frontend:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
+    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
     environment:
       PORT: "3000"
@@ -1030,7 +1032,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -1046,9 +1048,9 @@ services:
 
   # ─── Entrada de producción (ADR-033) ───────────────────────────────────────────
   # ÚNICO servicio que publica puertos. nginx corre en contenedor y no en el
-  # anfitrión porque `api-gateway` y `frontend` tienen dos réplicas (un puerto fijo
-  # del anfitrión lo tomaría la primera y la segunda moriría), y porque con nginx en
-  # el anfitrión el gateway vería como par a la IP del docker-proxy.
+  # anfitrión porque con nginx en el anfitrión el gateway vería como par a la IP
+  # del docker-proxy, y porque `edge` lleva los tres hostnames públicos como
+  # alias en `orpycamcp-net`.
   # Los alias hacen que, dentro de la red, `https://${KEYCLOAK_HOSTNAME}` resuelva
   # a este mismo servicio: certificado válido, sin hairpin NAT ni DNS externo.
   edge:

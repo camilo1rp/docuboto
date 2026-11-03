@@ -128,9 +128,6 @@ The template is `infra/nginx/orpyca.conf.template`; the official image substitut
 
 Why containerised rather than on the server:
 
-- `api-gateway` and `frontend` run with `deploy.replicas: 2`: a fixed host port would be taken by the
-  first replica and the second would die with "port is already allocated". nginx resolves the service
-  name on every request (`resolver 127.0.0.11`) and spreads load across replicas.
 - With nginx on the host, the gateway would see the docker-proxy IP as its peer (see `TRUSTED_PROXIES`,
   below).
 - Services call `https://${KEYCLOAK_HOSTNAME}` from inside the network: `edge` carries that name (and
@@ -512,22 +509,14 @@ MCP proposals' `jti` consumption and other caches are per process.
 
 ### Service scalability
 
-Stateless services can be scaled horizontally:
+This manifest runs **one replica** of each service. One tenant and about 10
+concurrent users fit in a single instance. `deploy.replicas` is `1` on
+`api-gateway`, `document-service`, `storage-service`, and `frontend`; the rest
+were already one instance. The nine database services open `DB_POOL_MAX_SIZE=3`.
+Keycloak is capped at 1 GB.
 
-```yaml
-# In docker-compose.prod.yml
-api-gateway:
-  deploy:
-    replicas: 3  # 3 instancias balanceadas por carga
-
-storage-service:
-  deploy:
-    replicas: 2  # Para throughput de uploads
-
-document-service:
-  deploy:
-    replicas: 2  # For radicado searches
-```
+Raising replicas in this design (separate processes, signed identity, a pool per
+service) inflates the connection budget again and is not part of Docuboto 2.0.
 
 ---
 
