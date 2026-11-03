@@ -105,3 +105,24 @@ def test_startup_guard_calla_con_un_secundario_distinto() -> None:
         preservation_replica_enabled=True,
     )
     assert settings.preservation_startup_guard() == []
+
+
+def test_produccion_exige_almacen_fuera_del_servidor() -> None:
+    warnings = Settings(
+        app_env="production",
+        preservation_enabled=True,
+        preservation_replica_enabled=False,
+    ).preservation_startup_guard()
+    assert any("MINIO_SECONDARY_ENDPOINT" in w for w in warnings)
+    assert any("PRESERVATION_REPLICA_ENABLED" in w for w in warnings)
+
+
+def test_produccion_calla_con_replica_fuera() -> None:
+    settings = Settings(
+        app_env="production",
+        preservation_enabled=True,
+        preservation_replica_enabled=True,
+        minio_endpoint="minio:9000",
+        minio_secondary_endpoint="s3.otro-sitio:9000",
+    )
+    assert settings.preservation_startup_guard() == []

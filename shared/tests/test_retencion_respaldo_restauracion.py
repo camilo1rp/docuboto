@@ -296,7 +296,7 @@ def test_backup_usa_la_libreria_para_la_retencion() -> None:
 
 def test_backup_verifica_la_cadena_antes_de_anclar_y_no_aborta() -> None:
     t = _sin_comentarios(RAIZ / "infra" / "backup.sh")
-    verif = t.index("app.ops.verify_audit_chains")
+    verif = t.index("auth.ops.verify_audit_chains")
     anexa = t.index('>> "$ANCLAS"')
     assert verif < anexa, "el ancla se escribe DESPUÉS de verificar, nunca antes"
     assert "psql" not in t[t.index("ANCLAS=") :].split("# 4. Cifrado")[0], "el ancla ya no sale de un psql sin verificar"
@@ -307,11 +307,14 @@ def test_backup_verifica_la_cadena_antes_de_anclar_y_no_aborta() -> None:
 
 def test_restore_usa_el_mismo_modulo_y_no_un_heredoc() -> None:
     t = _sin_comentarios(RAIZ / "infra" / "restore.sh")
-    assert "app.ops.verify_audit_chains" in t
+    assert "auth.ops.verify_audit_chains" in t
     assert "audit.verify_chain" not in t, "el heredoc que desempaquetaba una tupla ya no existe"
 
 
-@pytest.mark.parametrize("script", ["backup.sh", "restore.sh", "lib-retencion-s3.sh"])
+@pytest.mark.parametrize(
+    "script",
+    ["backup.sh", "restore.sh", "lib-retencion-s3.sh", "verify-restore-semanal.sh"],
+)
 def test_los_scripts_son_sintacticamente_validos(script: str) -> None:
     r = subprocess.run(["bash", "-n", str(RAIZ / "infra" / script)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -437,7 +440,7 @@ def test_el_sello_registra_verificacion_y_retencion() -> None:
 def test_restore_rechaza_un_respaldo_con_retencion_incompleta_salvo_aceptacion() -> None:
     t = _sin_comentarios(RAIZ / "infra" / "restore.sh")
     assert "retencion_capturada_completa=NO" in t and "RESTORE_ACEPTAR_RETENCION_INCOMPLETA" in t
-    assert "app.ops.registrar_restauracion" in t, "el acto de restaurar deja asiento inmutable"
+    assert "auth.ops.registrar_restauracion" in t, "el acto de restaurar deja asiento inmutable"
 
 
 def test_backup_si_la_verificacion_pasa_anexa_el_ancla_y_continua(tmp_path: Path) -> None:
@@ -453,7 +456,7 @@ def test_backup_si_la_verificacion_pasa_anexa_el_ancla_y_continua(tmp_path: Path
 def test_restore_si_la_cadena_esta_rota_no_levanta_los_servicios(tmp_path: Path) -> None:
     ruta = RAIZ / "infra" / "restore.sh"
     lineas = ruta.read_text(encoding="utf-8").splitlines()
-    ref = next(n for n, l in enumerate(lineas) if "app.ops.verify_audit_chains" in l and not l.lstrip().startswith("#"))
+    ref = next(n for n, l in enumerate(lineas) if "auth.ops.verify_audit_chains" in l and not l.lstrip().startswith("#"))
     i = max(n for n in range(ref) if lineas[n].startswith("if ! "))
     j = next(n for n in range(ref, len(lineas)) if lineas[n] == "fi")
     bloque = "\n".join(lineas[i : j + 1])

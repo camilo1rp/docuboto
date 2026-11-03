@@ -292,6 +292,7 @@ echo "── Parando servicios de aplicación..."
 # `|| true`: parar un servicio que no está levantado no es un error, y bajo
 # `set -e` abortaría la restauración por algo que no importa.
 "${COMPOSE[@]}" stop \
+    app worker \
     api-gateway auth-service tenant-service document-service storage-service \
     workflow-service archive-service notification-service signature-service \
     knowledge-service mcp-server frontend keycloak || true
@@ -446,7 +447,7 @@ fi
 echo "── Registrando el acta de restauración..."
 if ! { cat "$EXTREMOS_PREVIOS"; cat "$MAPA_VERSIONES"; } | "${COMPOSE[@]}" run --rm --no-deps -T \
         -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-        auth-service python -m app.ops.registrar_restauracion \
+        app python -m auth.ops.registrar_restauracion \
         --respaldo "$(basename "$ORIGEN_REAL")" \
         --operador "$RESTORE_OPERADOR" \
         --previas-no-restauradas "${RETENCION_PREVIAS_COMPLIANCE:-0}"; then
@@ -505,7 +506,7 @@ ENTRADA_VERIF="$(mktemp)"
 { cat "$ANCLAS"; if [ -f "$ROTURAS_BASE" ]; then cat "$ROTURAS_BASE"; fi; } > "$ENTRADA_VERIF"
 if ! "${COMPOSE[@]}" run --rm --no-deps -T \
         -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-        auth-service python -m app.ops.verify_audit_chains \
+        app python -m auth.ops.verify_audit_chains \
         --anclas - --origen restore ${EXCLUIR[@]+"${EXCLUIR[@]}"} < "$ENTRADA_VERIF"; then
     rm -f "$ENTRADA_VERIF"
     echo "" >&2

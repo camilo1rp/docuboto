@@ -364,6 +364,11 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_USE_SSL: "false"
       PRESERVATION_ENABLED: "true"
+      PRESERVATION_REPLICA_ENABLED: "true"
+      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
+      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
+      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
+      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
       PDFA_PROFILE: ${PDFA_PROFILE:-2b}
       KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: orpycamcp
@@ -448,6 +453,11 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_USE_SSL: "false"
       PRESERVATION_ENABLED: "true"
+      PRESERVATION_REPLICA_ENABLED: "true"
+      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
+      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
+      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
+      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
       PDFA_PROFILE: ${PDFA_PROFILE:-2b}
       FORMAT_MIGRATION_ENABLED: ${FORMAT_MIGRATION_ENABLED:-true}
       SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
@@ -781,6 +791,11 @@ services:
       # acumula backlog en silencio.
       APP_ENV: production
       PRESERVATION_ENABLED: "true"
+      PRESERVATION_REPLICA_ENABLED: "true"
+      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
+      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
+      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
+      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # VERAPDF_BINARY/PDFA_VALIDATOR/PRESERVATION_PDFA_VALIDATION_ENABLED ya
       # vienen como ENV del stage "production" del Dockerfile (valores por

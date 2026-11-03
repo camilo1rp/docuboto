@@ -299,6 +299,24 @@ class Settings(BaseSettings):
                 "la réplica se etiqueta «local» (no cross-site); configure un host distinto "
                 "o deje el secundario vacío."
             )
+        _prod = self.app_env.strip().lower() not in {
+            "development",
+            "dev",
+            "local",
+            "test",
+            "testing",
+            "ci",
+        }
+        if _prod and self.preservation_enabled:
+            if not (self.minio_secondary_endpoint or "").strip():
+                warnings.append(
+                    "MINIO_SECONDARY_ENDPOINT vacío: el cubo de preservación tiene que "
+                    "vivir fuera de este servidor."
+                )
+            if not self.preservation_replica_enabled:
+                warnings.append(
+                    "PRESERVATION_REPLICA_ENABLED=false: la copia WORM no sale del servidor."
+                )
         return warnings
 
     # Token de servicio interno (D-02, mismo patrón que knowledge-service):
