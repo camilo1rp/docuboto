@@ -186,7 +186,7 @@ test-integration:
   image: python:3.11-slim
   interruptible: true
   services:
-    - name: postgres:15-bookworm
+    - name: postgres:17-bookworm
       alias: postgres
   variables:
     POSTGRES_USER: orpycamcp

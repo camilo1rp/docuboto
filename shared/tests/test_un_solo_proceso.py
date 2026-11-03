@@ -177,6 +177,15 @@ def test_la_imagen_app_no_lleva_jre() -> None:
     assert "docuboto.worker:app" in worker
 
 
+def test_postgres_y_keycloak_van_en_la_version_actual() -> None:
+    for compose in (COMPOSE_DEV, RAIZ / "infra" / "docker-compose.prod.yml"):
+        texto = compose.read_text(encoding="utf-8")
+        assert "postgres:17-bookworm@sha256:" in texto
+        assert "keycloak:26.8.1@sha256:" in texto
+        assert "postgres:15-" not in texto
+        assert "keycloak:24." not in texto
+
+
 def test_compose_dev_levanta_un_proceso_por_defecto() -> None:
     svcs = servicios(COMPOSE_DEV)
     assert "app" in svcs, "falta el servicio `app`"

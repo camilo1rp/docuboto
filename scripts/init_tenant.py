@@ -49,10 +49,9 @@ BASE = Path(__file__).parent.parent
 # Each entry points to the service root; _sql_files() appends the sub-dir.
 # Migrations live in migrations/global/*.sql  (schema public)
 #                  and migrations/tenant/*.sql  (schema tenant_{slug}).
-# Las GLOBALES se aplican SIEMPRE antes que las de tenant (ver main()), lo que
-# importa porque instalan extensiones de las que dependen tablas por-tenant:
-# `document-service/001_extensions.sql` (pg_trgm/unaccent → FTS). Omitirlas hacía
-# fallar la provisión de ese servicio.
+# Fuente numerada de cada dominio: el import del libro antiguo las usa para
+# devolverle el servicio a un nombre desnudo. El SQL que se APLICA en un
+# tenant nuevo es el baseline concatenado (APLICAR_*), no estas carpetas.
 GLOBAL_MIGRATIONS = [
     BASE / "services" / "auth-service"   / "migrations" / "global",
     BASE / "services" / "tenant-service" / "migrations" / "global",
@@ -65,8 +64,9 @@ GLOBAL_MIGRATIONS = [
 # (no fuente de verdad — ADR-046).
 #
 # Esta lista debe cubrir TODO servicio con `migrations/tenant/`. Al añadir un
-# servicio nuevo, añadirlo también aquí: una omisión no da error: el tenant se
-# provisiona "bien" y el servicio falla en runtime contra tablas inexistentes.
+# servicio nuevo, añadirlo también aquí Y regenerar el baseline: una omisión
+# no da error: el tenant se provisiona "bien" y el servicio falla en runtime
+# contra tablas inexistentes.
 TENANT_MIGRATIONS = [
     BASE / "services" / "auth-service"    / "migrations" / "tenant",
     BASE / "services" / "tenant-service"    / "migrations" / "tenant",
@@ -78,6 +78,10 @@ TENANT_MIGRATIONS = [
     BASE / "services" / "notification-service" / "migrations" / "tenant",
     BASE / "services" / "knowledge-service" / "migrations" / "tenant",
 ]
+
+APLICAR_GLOBAL = [BASE / "services" / "docuboto" / "migrations" / "global"]
+APLICAR_TENANT = [BASE / "services" / "docuboto" / "migrations" / "tenant"]
+SERVICIO_BASELINE = "docuboto"
 
 
 def _dsn(raw: str) -> str:
@@ -124,9 +128,20 @@ def _mapa_servicios(dirs: list[Path]) -> dict[str, list[str]]:
 # Migraciones globales — se anotan en el libro único public.schema_migrations
 # ---------------------------------------------------------------------------
 
+def _provision_antigua(aplicadas: set[tuple[str, str]]) -> bool:
+    return any(svc != SERVICIO_BASELINE for svc, _nombre in aplicadas)
+
+
 async def apply_global_migrations(conn: asyncpg.Connection) -> None:
     aplicadas = await ledger.applied(conn, ledger.ESQUEMA_GLOBAL)
-    for migrations_dir in GLOBAL_MIGRATIONS:
+    if _provision_antigua(aplicadas):
+        for migrations_dir in APLICAR_GLOBAL:
+            servicio = _servicio_de(migrations_dir)
+            for path in _sql_files(migrations_dir):
+                await ledger.record(conn, ledger.ESQUEMA_GLOBAL, servicio, path.name)
+                print(f"  [global] stamp {servicio}/{path.name}")
+        return
+    for migrations_dir in APLICAR_GLOBAL:
         servicio = _servicio_de(migrations_dir)
         for path in _sql_files(migrations_dir):
             if (servicio, path.name) in aplicadas:
@@ -168,7 +183,15 @@ async def apply_tenant_migrations(conn: asyncpg.Connection, slug: str) -> None:
     schema = f"tenant_{slug.replace('-', '_')}"
     await conn.execute(f"SET search_path = \"{schema}\"")
     aplicadas = await ledger.applied(conn, schema)
-    for migrations_dir in TENANT_MIGRATIONS:
+    if _provision_antigua(aplicadas):
+        for migrations_dir in APLICAR_TENANT:
+            servicio = _servicio_de(migrations_dir)
+            for path in _sql_files(migrations_dir):
+                await ledger.record(conn, schema, servicio, path.name)
+                print(f"  [{schema}] stamp {servicio}/{path.name}")
+        await conn.execute("SET search_path = public")
+        return
+    for migrations_dir in APLICAR_TENANT:
         servicio = _servicio_de(migrations_dir)
         for path in _sql_files(migrations_dir):
             if (servicio, path.name) in aplicadas:
@@ -548,8 +571,12 @@ async def main(slug: str, name: str, code: str) -> None:
             # código y merece aviso (de ahí `ignorar_desconocidos` por defecto).
             for aviso in await ledger.importar_libros_antiguos(
                 conn,
-                servicios_por_archivo_global=_mapa_servicios(GLOBAL_MIGRATIONS),
-                servicios_por_archivo_tenant=_mapa_servicios(TENANT_MIGRATIONS),
+                servicios_por_archivo_global=_mapa_servicios(
+                    GLOBAL_MIGRATIONS + APLICAR_GLOBAL
+                ),
+                servicios_por_archivo_tenant=_mapa_servicios(
+                    TENANT_MIGRATIONS + APLICAR_TENANT
+                ),
             ):
                 print(aviso)
 

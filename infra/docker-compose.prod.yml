@@ -53,17 +53,17 @@ volumes:
   redis-data:
   # Keycloak uses external PostgreSQL, no separate volume
 
-# Migraciones al arrancar (AREA-13-08). Cada servicio con base de datos espera a su
-# `migrate-<servicio>`: un contenedor de un solo uso que corre `migrations/runner.py`
-# con la conexión del PROPIETARIO (MIGRATIONS_DATABASE_URL) sobre la MISMA imagen
-# inmutable que va a servir. Si la migración falla, el servicio no arranca
-# (`service_completed_successfully`, fail-closed), así que una versión nunca sirve
-# contra un esquema que no es el suyo. El runner es idempotente y los nueve `migrate-*`
-# (y `scripts/init_tenant.py`) se serializan con UN cerrojo global:
-# `orpycamcp_common.migrations.cerrojo` (`pg_try_advisory_lock`, plazo
-# `MIGRATIONS_LOCK_TIMEOUT_S`, 600 s por defecto; si vence, el migrador sale con
-# error y el servicio no arranca). Ese cerrojo no existía cuando este comentario
-# lo afirmaba (C19, ADR-041). Repetir `up -d` o escalar réplicas es seguro.
+# Migraciones al arrancar (AREA-13-08). El proceso unificado espera a
+# `migrate-docuboto` (imagen `app`, `command: python migrations/runner.py`,
+# conexión del propietario). Los nueve `migrate-<servicio>` de dominio quedan
+# en el perfil `split`. Si la migración falla, el servicio no arranca
+# (`service_completed_successfully`, fail-closed). El runner es idempotente y
+# todos los `migrate-*` (y `scripts/init_tenant.py`) se serializan con UN
+# cerrojo global: `orpycamcp_common.migrations.cerrojo` (`pg_try_advisory_lock`,
+# plazo `MIGRATIONS_LOCK_TIMEOUT_S`, 600 s por defecto; si vence, el migrador
+# sale con error y el servicio no arranca). Ese cerrojo no existía cuando este
+# comentario lo afirmaba (C19, ADR-041). Repetir `up -d` o escalar réplicas es
+# seguro.
 x-migracion: &migracion
   restart: "no"
   command: ["python", "migrations/runner.py"]
@@ -87,7 +87,7 @@ services:
 
   postgres:
     # PostgreSQL a secas desde D0 (ADR-046 §4): ningún servicio usa pgvector.
-    image: postgres:15-bookworm@sha256:daeac543477e189e334f159133f4be6dae739b005cec2dfb9d482509fed05465
+    image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
     container_name: orpycamcp-postgres-prod
     restart: unless-stopped
     # ── Presupuesto de conexiones ──────────────────────────────────────────
@@ -250,7 +250,7 @@ services:
         max-file: "3"
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0.5@sha256:f8ade94c1d0ad2f2fa7734a455fee5392764f402c43ca35e9af6bf63a2541dc9
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
     container_name: orpycamcp-keycloak-prod
     restart: unless-stopped
     command: start --db=postgres --hostname-strict=true --hostname=${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
@@ -266,8 +266,8 @@ services:
       # este tope, un pico de carga documental y el inicio de sesión compiten por
       # el mismo cupo y lo que falla es el login.
       KC_DB_POOL_MAX_SIZE: "30"
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
 
       # TLS TERMINADO EN EL REVERSE PROXY (es el despliegue que documenta la guía
       # y el que asume el resto de este fichero: todos los servicios usan `expose:`,
@@ -403,23 +403,7 @@ services:
     expose:
       - "8000"
     depends_on:
-      migrate-auth:
-        condition: service_completed_successfully
-      migrate-tenant:
-        condition: service_completed_successfully
-      migrate-document:
-        condition: service_completed_successfully
-      migrate-storage:
-        condition: service_completed_successfully
-      migrate-workflow:
-        condition: service_completed_successfully
-      migrate-archive:
-        condition: service_completed_successfully
-      migrate-notification:
-        condition: service_completed_successfully
-      migrate-signature:
-        condition: service_completed_successfully
-      migrate-knowledge:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -483,23 +467,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-auth:
-        condition: service_completed_successfully
-      migrate-tenant:
-        condition: service_completed_successfully
-      migrate-document:
-        condition: service_completed_successfully
-      migrate-storage:
-        condition: service_completed_successfully
-      migrate-workflow:
-        condition: service_completed_successfully
-      migrate-archive:
-        condition: service_completed_successfully
-      migrate-notification:
-        condition: service_completed_successfully
-      migrate-signature:
-        condition: service_completed_successfully
-      migrate-knowledge:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -1311,57 +1279,72 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ─── Migraciones (un contenedor de un solo uso por servicio con base de datos) ───
+  # ─── Migraciones (un contenedor de un solo uso) ───
+  migrate-docuboto:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/app:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
   migrate-auth:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/auth-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-tenant:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/tenant-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-document:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-storage:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-workflow:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/workflow-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-archive:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/archive-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-notification:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/notification-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-signature:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/signature-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-knowledge:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/knowledge-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}

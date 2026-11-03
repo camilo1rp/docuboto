@@ -95,6 +95,9 @@ async def _apply_global(conn: asyncpg.Connection) -> None:
     files = _sql_files(GLOBAL_DIR)
     if not files:
         return
+    if await ledger.sello_si_baseline(conn, ledger.ESQUEMA_GLOBAL, SERVICIO, files):
+        print("  stamp [global] baseline already applied")
+        return
     aplicadas = await ledger.applied(conn, ledger.ESQUEMA_GLOBAL)
     await conn.execute("SET search_path = public")
     for path in files:
@@ -260,6 +263,9 @@ async def _apply_tenant(conn: asyncpg.Connection) -> None:
         return
     for schema in schemas:
         aplicadas = await ledger.applied(conn, schema)
+        if await ledger.sello_si_baseline(conn, schema, SERVICIO, files):
+            print(f"  stamp [{schema}] baseline already applied")
+            continue
         for path in files:
             if (SERVICIO, path.name) in aplicadas:
                 print(f"  skip  [{schema}] {path.name}")

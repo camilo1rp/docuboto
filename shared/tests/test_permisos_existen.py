@@ -112,6 +112,9 @@ def permisos_exigidos_por_los_datos_sembrados() -> dict[str, set[str]]:
         if fichero.parent == _SEED:
             continue
         servicio = fichero.relative_to(_SERVICIOS).parts[0]
+        # El baseline concatena el seed: no es una fuente de exigencia nueva.
+        if servicio == "docuboto":
+            continue
         for m in _PERMISO.finditer(fichero.read_text(encoding="utf-8")):
             exigidos.setdefault(m.group(1), set()).add(servicio)
     return exigidos

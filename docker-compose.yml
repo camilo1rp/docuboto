@@ -24,13 +24,12 @@ volumes:
   keycloak-data:
   redis-data:
 
-# Migraciones al arrancar en DESARROLLO (C19, ADR-041): cada servicio con base de
-# datos espera a su `migrate-<servicio>`, un contenedor de un solo uso que corre
-# `migrations/runner.py` con la conexión del PROPIETARIO sobre la MISMA imagen que
-# va a servir (la construye el servicio; el migrador la reutiliza por nombre, sin
-# `build:` propio para no construirla dos veces). Si el runner falla, el servicio
-# no arranca (`service_completed_successfully`). Los nueve runners comparten un
-# cerrojo global, así que arrancar todo junto es seguro.
+# Migraciones al arrancar en DESARROLLO (C19, ADR-041): el proceso unificado
+# espera a `migrate-docuboto`, que aplica el baseline generado. Los nueve
+# `migrate-<servicio>` de dominio quedan en el perfil `split` (misma imagen que
+# el servicio, `command: python migrations/runner.py`, conexión del propietario).
+# Si el runner falla, el servicio no arranca (`service_completed_successfully`).
+# Todos los runners más `init_tenant.py` comparten un cerrojo global.
 #
 # Los servicios CONSERVAN `MIGRATIONS_DATABASE_URL` en dev: `scripts/init-tenant.sh`
 # hace `docker compose exec` y los conftest de integración la leen.
@@ -53,49 +52,63 @@ x-migracion-dev: &migracion-dev
 
 services:
 
-  # ─── Migraciones (un contenedor de un solo uso por servicio con base de datos) ───
+  # ─── Migraciones (un contenedor de un solo uso) ───
+  migrate-docuboto:
+    <<: *migracion-dev
+    image: orpycamcp/app:dev
+    container_name: orpycamcp-migrate-docuboto
+
   migrate-auth:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/auth-service:dev
     container_name: orpycamcp-migrate-auth
 
   migrate-tenant:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/tenant-service:dev
     container_name: orpycamcp-migrate-tenant
 
   migrate-document:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/document-service:dev
     container_name: orpycamcp-migrate-document
 
   migrate-storage:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/storage-service:dev
     container_name: orpycamcp-migrate-storage
 
   migrate-workflow:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/workflow-service:dev
     container_name: orpycamcp-migrate-workflow
 
   migrate-archive:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/archive-service:dev
     container_name: orpycamcp-migrate-archive
 
   migrate-notification:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/notification-service:dev
     container_name: orpycamcp-migrate-notification
 
   migrate-signature:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/signature-service:dev
     container_name: orpycamcp-migrate-signature
 
   migrate-knowledge:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/knowledge-service:dev
     container_name: orpycamcp-migrate-knowledge
 
@@ -105,7 +118,7 @@ services:
     # Debian (bookworm), no alpine: la imagen anterior (pgvector) también era
     # bookworm, y cambiar de libc cambia la colación de los índices de un volumen
     # existente. Sin pgvector desde D0 (ADR-046 §4): ningún servicio lo usa.
-    image: postgres:15-bookworm@sha256:daeac543477e189e334f159133f4be6dae739b005cec2dfb9d482509fed05465
+    image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
     container_name: orpycamcp-postgres
     environment:
       POSTGRES_USER: orpycamcp
@@ -197,7 +210,7 @@ services:
       retries: 3
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0.5@sha256:f8ade94c1d0ad2f2fa7734a455fee5392764f402c43ca35e9af6bf63a2541dc9
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
     container_name: orpycamcp-keycloak
     command: start-dev --import-realm
     environment:
@@ -206,8 +219,8 @@ services:
       KC_DB_USERNAME: orpycamcp
       KC_DB_PASSWORD: orpycamcp
       KC_DB_SCHEMA: keycloak
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: orpycamcp_dev
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: orpycamcp_dev
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
       # Fija las frontend-URLs (incluido el `iss` de los tokens) a la URL pública
@@ -215,7 +228,7 @@ services:
       # los backends alcancen Keycloak internamente por http://keycloak:8080, el
       # issuer emitido es SIEMPRE http://localhost:19180/realms/orpycamcp → así
       # navegador y servidor coinciden y la validación del `iss` no rechaza tokens.
-      KC_HOSTNAME_URL: http://localhost:19180
+      KC_HOSTNAME: http://localhost:19180
     ports:
       - "19180:8080"
     volumes:
@@ -317,23 +330,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-auth:
-        condition: service_completed_successfully
-      migrate-tenant:
-        condition: service_completed_successfully
-      migrate-document:
-        condition: service_completed_successfully
-      migrate-storage:
-        condition: service_completed_successfully
-      migrate-workflow:
-        condition: service_completed_successfully
-      migrate-archive:
-        condition: service_completed_successfully
-      migrate-notification:
-        condition: service_completed_successfully
-      migrate-signature:
-        condition: service_completed_successfully
-      migrate-knowledge:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -385,23 +382,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-auth:
-        condition: service_completed_successfully
-      migrate-tenant:
-        condition: service_completed_successfully
-      migrate-document:
-        condition: service_completed_successfully
-      migrate-storage:
-        condition: service_completed_successfully
-      migrate-workflow:
-        condition: service_completed_successfully
-      migrate-archive:
-        condition: service_completed_successfully
-      migrate-notification:
-        condition: service_completed_successfully
-      migrate-signature:
-        condition: service_completed_successfully
-      migrate-knowledge:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy

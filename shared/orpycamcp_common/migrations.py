@@ -216,6 +216,29 @@ async def record(
     )
 
 
+SERVICIO_BASELINE = "docuboto"
+ARCHIVO_BASELINE = "001_baseline.sql"
+
+
+async def sello_si_baseline(
+    conn: asyncpg.Connection, schema_name: str, servicio: str, files: list
+) -> bool:
+    """Si el baseline unificado ya corrió, asienta los archivos de este runner y no ejecuta SQL.
+
+    Un `compose --profile split` arranca `migrate-docuboto` y los nueve de dominio.
+    Reaplicar los numerados después del concat choca con los INSERT de catálogo.
+    El runner del baseline no se sella a sí mismo por este camino.
+    """
+    if servicio == SERVICIO_BASELINE:
+        return False
+    aplicadas = await applied(conn, schema_name)
+    if (SERVICIO_BASELINE, ARCHIVO_BASELINE) not in aplicadas:
+        return False
+    for path in files:
+        await record(conn, schema_name, servicio, path.name)
+    return True
+
+
 async def importar_libros_antiguos(
     conn: asyncpg.Connection,
     *,

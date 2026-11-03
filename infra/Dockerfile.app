@@ -44,6 +44,7 @@ COPY services/notification-service/notification /app/notification
 COPY services/signature-service/signature /app/signature
 COPY services/knowledge-service/knowledge /app/knowledge
 COPY services/docuboto/docuboto /app/docuboto
+COPY services/docuboto/migrations /app/migrations
 
 ENV PYTHONPATH=/app
 
