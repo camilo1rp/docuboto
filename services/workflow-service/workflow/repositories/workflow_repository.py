@@ -17,6 +17,7 @@ from typing import Any
 
 import asyncpg
 
+from document.api import mover_flujo
 from workflow.core.clearance import resolve_caller_clearance
 from workflow.core.database import tenant_schema
 from workflow.models.flow import FlowStep
@@ -279,18 +280,14 @@ class WorkflowRepository:
             await self._pasos_para_ubicacion(radicado_id),
             congelada=_ubicacion_de_fila(row),
         )
-        await self._conn.execute(
-            "UPDATE radicados SET status = $2, flujo_dept = $3, flujo_dept_code = $4, "
-            "flujo_usuario = $5, updated_at = now() "
-            "WHERE id = $1 AND (status IS DISTINCT FROM $2 "
-            "OR flujo_dept IS DISTINCT FROM $3 "
-            "OR flujo_dept_code IS DISTINCT FROM $4 "
-            "OR flujo_usuario IS DISTINCT FROM $5)",
-            radicado_id,
-            despues,
-            ubicacion.dept if ubicacion else None,
-            ubicacion.dept_code if ubicacion else None,
-            ubicacion.usuario if ubicacion else None,
+        await mover_flujo(
+            self._conn,
+            actor=None,
+            radicado_id=radicado_id,
+            status=despues,
+            flujo_dept=ubicacion.dept if ubicacion else None,
+            flujo_dept_code=ubicacion.dept_code if ubicacion else None,
+            flujo_usuario=ubicacion.usuario if ubicacion else None,
         )
         return actual, despues
 

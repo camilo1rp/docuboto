@@ -129,6 +129,8 @@ def test_el_lifespan_no_arranca_intelligence() -> None:
     assert "workflow_consumer" in texto
     assert "stream_worker" in texto
     assert "signature_consumer" in texto
+    assert "registrar_apertura_de_flujo" in texto
+    assert "abrir_al_radicar" in texto
 
 
 def test_el_dockerfile_vive_fuera_de_services() -> None:

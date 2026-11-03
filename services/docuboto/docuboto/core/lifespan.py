@@ -34,6 +34,7 @@ from auth.routers.auth import set_auth_service
 from auth.services.auth_service import AuthService
 from docuboto.core.config import settings
 from docuboto.core.pools import bind_pool, bind_redis, unbind_pool, unbind_redis
+from document.api import registrar_apertura_de_flujo
 from document.core import altcha
 from document.services.barrido import bucle_de_barrido
 from document.services.email_sondeo import bucle_de_sondeo
@@ -44,6 +45,7 @@ from signature.jobs import renovacion_lta
 from signature.workers import document_consumer as signature_consumer
 from storage.core.minio_client import init_minio
 from storage.main import _format_migration_loop
+from workflow.api import abrir_al_radicar
 from workflow.workers import document_consumer as workflow_consumer
 
 logger = logging.getLogger(__name__)
@@ -106,6 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     pool = await _crear_pool()
     bind_pool(pool)
     app.state.db_pool = pool
+    registrar_apertura_de_flujo(abrir_al_radicar)
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     bind_redis(redis_client)
@@ -175,4 +178,5 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     unbind_redis()
     await pool.close()
     unbind_pool()
+    registrar_apertura_de_flujo(None)
     app.state.db_pool = None

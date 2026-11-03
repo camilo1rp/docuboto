@@ -26,6 +26,12 @@ RUN pip install --no-cache-dir -r requirements.lock
 # 3) Código del servicio.
 COPY services/workflow-service/ .
 
+# Frontera de escritura del radicado: workflow llama a `document.api.mover_flujo`.
+# En el proceso unificado ambos paquetes ya están en `/app`. En esta imagen split
+# viaja solo ese módulo, que no importa el resto de `document`.
+COPY services/document-service/document/__init__.py /app/document/__init__.py
+COPY services/document-service/document/api.py /app/document/api.py
+
 # Usuario NO-root. Cada uno de estos servicios procesa entrada que no controla
 # —cuerpos HTTP, XML, PDF, correo, eventos de Redis—, así que un fallo de memoria
 # o una deserialización insegura en cualquier dependencia escalaría a root DEL

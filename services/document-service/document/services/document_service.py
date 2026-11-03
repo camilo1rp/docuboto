@@ -34,6 +34,7 @@ import asyncpg
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
+from document.api import abrir_flujo_si_hay
 from document.clients.tenant_client import TenantServiceClient
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, tope_reserva
 from document.core.clearance import resolve_caller_clearance
@@ -572,14 +573,45 @@ class DocumentService:
             # OUTBOX (AREA-09-05): el evento nace en la MISMA transacción que el
             # radicado y su asiento. Antes se publicaba después del commit y un
             # fallo de Redis lo perdía en silencio.
-            pendiente = await self._encolar_created(radicado, actor)
+            payload_evento = self._payload_created(radicado)
+            # Misma conexión: si la primera asignación falla, el consecutivo
+            # no se consume. En la imagen split el hook no está ligado y el
+            # consumidor Redis cubre ese despliegue. El envío del outbox sigue
+            # después del commit.
+            await abrir_flujo_si_hay(self._conn, self._slug, payload_evento)
+            pendiente = await self._encolar_created(radicado, actor, payload_evento)
 
         # Camino rápido tras el commit; si falla, el relé del barrido lo reenvía.
         await outbox.enviar(self._conn, self._redis, pendiente)
 
         return _to_response(radicado)
 
-    async def _encolar_created(self, radicado: Radicado, actor: str | None) -> dict[str, Any]:
+    def _payload_created(self, radicado: Radicado) -> dict[str, Any]:
+        return {
+            "id": str(radicado.id),
+            "tracking_number": radicado.tracking_number,
+            "doc_type": radicado.doc_type,
+            "doc_class": radicado.doc_class,
+            "subject": radicado.subject,
+            "dest_dept": radicado.dest_dept,
+            "dest_dept_code": radicado.dest_dept_code,
+            "origin_dept": radicado.origin_dept,
+            "origin_dept_code": radicado.origin_dept_code,
+            "sender_name": radicado.sender_name,
+            "sender_entity": radicado.sender_entity,
+            "pages": radicado.pages,
+            "due_date": radicado.due_date.isoformat() if radicado.due_date else None,
+            # E21: propagación de ACL vía evento (fail-closed) — knowledge-service
+            # deriva el nivel del chunk de aquí; nunca hace fetch-back al radicado.
+            "nivel_seguridad": radicado.nivel_seguridad,
+        }
+
+    async def _encolar_created(
+        self,
+        radicado: Radicado,
+        actor: str | None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return await outbox.encolar(
             self._conn,
             stream=_STREAM,
@@ -587,24 +619,7 @@ class DocumentService:
             tenant_slug=self._slug,
             actor=actor,
             dedup_key=radicado.tracking_number,
-            payload={
-                "id": str(radicado.id),
-                "tracking_number": radicado.tracking_number,
-                "doc_type": radicado.doc_type,
-                "doc_class": radicado.doc_class,
-                "subject": radicado.subject,
-                "dest_dept": radicado.dest_dept,
-                "dest_dept_code": radicado.dest_dept_code,
-                "origin_dept": radicado.origin_dept,
-                "origin_dept_code": radicado.origin_dept_code,
-                "sender_name": radicado.sender_name,
-                "sender_entity": radicado.sender_entity,
-                "pages": radicado.pages,
-                "due_date": radicado.due_date.isoformat() if radicado.due_date else None,
-                # E21: propagación de ACL vía evento (fail-closed) — knowledge-service
-                # deriva el nivel del chunk de aquí; nunca hace fetch-back al radicado.
-                "nivel_seguridad": radicado.nivel_seguridad,
-            },
+            payload=payload if payload is not None else self._payload_created(radicado),
         )
 
     async def get_disposition(self, document_id: uuid.UUID, max_clearance: int) -> dict:
