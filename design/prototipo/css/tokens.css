@@ -1,0 +1,397 @@
+/* ============================================================================
+   Docuboto 3.0 — capa de tokens
+   ----------------------------------------------------------------------------
+   Esta capa NO reemplaza los tokens `--op-*` existentes: los absorbe.
+   El bloque final (sección 6) aliasa cada `--op-*` a su equivalente `--db-*`,
+   de modo que las 845 pantallas y sus tests de tokens siguen funcionando
+   mientras el sistema nuevo se adopta pantalla por pantalla.
+
+   Convención: `--db-*` para el sistema nuevo. `--op-*` queda como capa de
+   compatibilidad, congelada y sin crecimiento.
+
+   Identidad: paleta y marca de Proboto (proboto.co) — azul #095ECE,
+   cian #00D4E0, noche #0A1122, superficie #F0F5FC, línea #DDE1E9.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   1. Tipografía autoalojada (misma elección que el producto: Space Grotesk
+      para display, Public Sans para UI). Sin CDN: soberanía del dato.
+
+      ADOPCIÓN: al copiar este archivo a `frontend/src/styles/`, BORRA este
+      bloque @font-face. El frontend ya carga las fuentes por `@fontsource`
+      en `app.scss` y las rutas `../fonts/` no existirían allí.
+   ------------------------------------------------------------------------ */
+@font-face {
+  font-family: "Public Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/public-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Public Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/public-sans-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Public Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/public-sans-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/space-grotesk-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/space-grotesk-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../fonts/space-grotesk-latin-700-normal.woff2") format("woff2");
+}
+
+/* ---------------------------------------------------------------------------
+   2. Primitivas sin tema (no cambian con el modo claro/oscuro)
+   ------------------------------------------------------------------------ */
+:root {
+  /* Tipografía */
+  --db-font-ui: "Public Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --db-font-display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --db-font-mono: "SFMono-Regular", ui-monospace, Consolas, "Liberation Mono",
+    Menlo, monospace;
+
+  --db-text-2xs: 11px;
+  --db-text-xs: 12px;
+  --db-text-sm: 13px;
+  --db-text-base: 14.5px;
+  --db-text-md: 16px;
+  --db-text-lg: 19px;
+  --db-text-xl: 24px;
+  --db-text-2xl: 30px;
+  --db-text-3xl: 40px;
+
+  --db-leading-tight: 1.15;
+  --db-leading-snug: 1.35;
+  --db-leading-normal: 1.55;
+  --db-leading-relaxed: 1.7;
+
+  --db-weight-regular: 400;
+  --db-weight-medium: 500;
+  --db-weight-bold: 600;
+  --db-weight-display: 700;
+
+  --db-tracking-tight: -0.02em;
+  --db-tracking-wide: 0.06em;
+
+  /* Espaciado — base 4 */
+  --db-space-1: 4px;
+  --db-space-2: 8px;
+  --db-space-3: 12px;
+  --db-space-4: 16px;
+  --db-space-5: 20px;
+  --db-space-6: 24px;
+  --db-space-7: 32px;
+  --db-space-8: 40px;
+  --db-space-9: 56px;
+  --db-space-10: 72px;
+
+  /* Radios */
+  --db-radius-xs: 6px;
+  --db-radius-sm: 8px;
+  --db-radius-md: 12px;
+  --db-radius-lg: 16px;
+  --db-radius-xl: 22px;
+  --db-radius-full: 999px;
+
+  /* Movimiento */
+  --db-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --db-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --db-dur-fast: 110ms;
+  --db-dur-base: 190ms;
+  --db-dur-slow: 320ms;
+
+  /* Layout */
+  --db-rail-w: 236px;
+  --db-rail-w-collapsed: 68px;
+  --db-topbar-h: 58px;
+  --db-tabs-h: 46px;
+  --db-agent-w: 392px;
+  --db-reading-max: 860px;
+  --db-page-pad: clamp(20px, 2.4vw, 36px);
+
+  /* Capas */
+  --db-z-sticky: 20;
+  --db-z-rail: 30;
+  --db-z-topbar: 40;
+  --db-z-agent: 45;
+  --db-z-overlay: 60;
+  --db-z-modal: 70;
+  --db-z-toast: 80;
+  --db-z-palette: 90;
+}
+
+/* ---------------------------------------------------------------------------
+   3. Tema claro (por defecto)
+
+   Paleta Proboto. Los cinco valores de marca son los del sitio
+   (proboto.co): azul #095ECE, cian #00D4E0, noche #0A1122,
+   superficie #F0F5FC, línea #DDE1E9. Todo lo demás se deriva de ellos.
+   ------------------------------------------------------------------------ */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* Superficies */
+  --db-canvas: #f0f5fc;          /* superficie */
+  --db-surface: #ffffff;         /* blanco */
+  --db-surface-2: #f7fafe;
+  --db-surface-3: #e9f0fa;
+  --db-sunken: #e2eaf6;
+  --db-overlay: rgba(10, 17, 34, 0.46);
+
+  /* Tinta */
+  --db-ink: #0a1122;             /* noche */
+  --db-ink-2: #4a5163;           /* txt-2 */
+  --db-ink-3: #5f6778;           /* txt-3 */
+  --db-ink-inverse: #ffffff;
+
+  /* Líneas */
+  --db-line: #dde1e9;            /* linea */
+  --db-line-strong: #c3ccdb;
+  --db-line-soft: #eef2f8;
+
+  /* Marca — azul Proboto. A 6.01:1 sobre blanco, así que sirve como color
+     de TEXTO y de acción: no hace falta la separación marca/marca-tinta
+     que exigía el verde anterior. */
+  --db-brand: #095ece;           /* azul */
+  --db-brand-ink: #095ece;
+  --db-brand-ink-hover: #0749a3;
+  --db-brand-soft: #e3edfb;
+  --db-brand-soft-2: #f0f6fe;
+  --db-brand-line: #c2d7f3;      /* tinte */
+  --db-brand-contrast: #ffffff;
+
+  /* Inteligencia — cian Proboto. El cian no se usa como texto (1.6:1 sobre
+     blanco): vive en rellenos, bordes y el avatar; el texto va en un teal
+     profundo derivado, que sí cumple AA sobre el fondo suave. */
+  --db-ai: #00d4e0;              /* cian */
+  --db-ai-ink: #066169;
+  --db-ai-soft: #d9f9fd;
+  --db-ai-soft-2: #eefdfe;
+  --db-ai-line: #8feef5;
+  --db-ai-contrast: #062a2d;
+
+  /* Estados */
+  --db-ok: #0b7a4b;
+  --db-ok-soft: #e3f5eb;
+  --db-ok-line: #bce3cd;
+
+  --db-warn: #9a5b00;
+  --db-warn-soft: #fff3de;
+  --db-warn-line: #f0d6a6;
+
+  --db-danger: #b3261e;
+  --db-danger-soft: #fde9e7;
+  --db-danger-line: #f5c6c1;
+
+  --db-info: #1f5f8b;
+  --db-info-soft: #e7f1f9;
+  --db-info-line: #c4dcee;
+
+  /* Reversibilidad — el acto reversible se pinta como acción normal (azul);
+     el compensatorio, ámbar; el definitivo, grafito. Ver §6 de la spec. */
+  --db-undo: #095ece;
+  --db-undo-soft: #e3edfb;
+  --db-undo-line: #c2d7f3;
+
+  /* Sombras — tinte noche, no negro: sobre superficie azulada el negro
+     ensucia. */
+  --db-shadow-xs: 0 1px 2px rgba(10, 17, 34, 0.05);
+  --db-shadow-sm: 0 2px 6px rgba(10, 17, 34, 0.06);
+  --db-shadow-md: 0 8px 20px -6px rgba(10, 17, 34, 0.14),
+    0 2px 6px rgba(10, 17, 34, 0.05);
+  --db-shadow-lg: 0 24px 56px -16px rgba(10, 17, 34, 0.24),
+    0 4px 12px rgba(10, 17, 34, 0.07);
+  --db-shadow-pop: 0 18px 40px -12px rgba(10, 17, 34, 0.22);
+
+  --db-ring: 0 0 0 3px rgba(9, 94, 206, 0.22);
+  --db-ring-ai: 0 0 0 3px rgba(0, 212, 224, 0.32);
+  --db-ring-danger: 0 0 0 3px rgba(179, 38, 30, 0.2);
+}
+
+/* ---------------------------------------------------------------------------
+   4. Tema oscuro — noche como lienzo, azul aclarado para texto y acción.
+   ------------------------------------------------------------------------ */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --db-canvas: #070c18;
+  --db-surface: #0d1424;
+  --db-surface-2: #111a2c;
+  --db-surface-3: #172135;
+  --db-sunken: #0a1020;
+  --db-overlay: rgba(0, 0, 0, 0.66);
+
+  --db-ink: #e9eef8;
+  --db-ink-2: #a9b7cd;
+  --db-ink-3: #828fa8;
+  --db-ink-inverse: #070c18;
+
+  --db-line: #1f2a40;
+  --db-line-strong: #33415c;
+  --db-line-soft: #172032;
+
+  --db-brand: #4d8df0;
+  --db-brand-ink: #93bcff;
+  --db-brand-ink-hover: #bcd6ff;
+  --db-brand-soft: #122647;
+  --db-brand-soft-2: #0e1d38;
+  --db-brand-line: #24436f;
+  --db-brand-contrast: #04101f;
+
+  --db-ai: #35e3ee;
+  --db-ai-ink: #8ff3f9;
+  --db-ai-soft: #0a2733;
+  --db-ai-soft-2: #082029;
+  --db-ai-line: #17505f;
+  --db-ai-contrast: #04252a;
+
+  --db-ok: #63d68f;
+  --db-ok-soft: #0c2a1e;
+  --db-ok-line: #1d4d38;
+
+  --db-warn: #e8b45c;
+  --db-warn-soft: #2c2113;
+  --db-warn-line: #55401d;
+
+  --db-danger: #f08c80;
+  --db-danger-soft: #2e1917;
+  --db-danger-line: #5a2e29;
+
+  --db-info: #86b9e4;
+  --db-info-soft: #13232f;
+  --db-info-line: #274558;
+
+  --db-undo: #4d8df0;
+  --db-undo-soft: #122647;
+  --db-undo-line: #24436f;
+
+  --db-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --db-shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.36);
+  --db-shadow-md: 0 10px 24px -8px rgba(0, 0, 0, 0.62);
+  --db-shadow-lg: 0 28px 60px -18px rgba(0, 0, 0, 0.78);
+  --db-shadow-pop: 0 20px 44px -14px rgba(0, 0, 0, 0.72);
+
+  --db-ring: 0 0 0 3px rgba(77, 141, 240, 0.34);
+  --db-ring-ai: 0 0 0 3px rgba(53, 227, 238, 0.3);
+  --db-ring-danger: 0 0 0 3px rgba(240, 140, 128, 0.26);
+}
+
+/* ---------------------------------------------------------------------------
+   5. Densidad — el modo "compacto" es una preferencia de usuario, no un tema
+   ------------------------------------------------------------------------ */
+[data-density="compact"] {
+  --db-row-h: 38px;
+  --db-page-pad: clamp(14px, 1.6vw, 22px);
+  --db-text-base: 13.5px;
+}
+:root {
+  --db-row-h: 46px;
+}
+
+/* ---------------------------------------------------------------------------
+   6. Compatibilidad: `--op-*` se deriva de `--db-*`
+      Ninguna pantalla existente se rompe. Los tests de tokens existentes
+      (frontend/src/styles/*.test.js) siguen encontrando sus variables.
+   ------------------------------------------------------------------------ */
+:root {
+  --op-primary: var(--db-brand);
+  --op-primary-dark: var(--db-brand-ink);
+  --op-primary-light: var(--db-brand-soft);
+  --op-on-primary: var(--db-brand-contrast);
+  --op-accent: var(--db-ai); /* cian */
+  --op-brand-700: #0749a3;
+  --op-brand-400: #4d8df0;
+  --op-brand-900: #0a1122;
+
+  --op-text: var(--db-ink);
+  --op-text-secondary: var(--db-ink-2);
+  --op-border: var(--db-line);
+  --op-bg: var(--db-canvas);
+  --op-surface: var(--db-surface);
+  --op-scrim: var(--db-overlay);
+
+  --op-success: var(--db-ok);
+  --op-warning: var(--db-warn);
+  --op-error: var(--db-danger);
+  --op-info: var(--db-info);
+  --op-success-bg: var(--db-ok-soft);
+  --op-success-fg: var(--db-ok);
+  --op-warning-bg: var(--db-warn-soft);
+  --op-warning-fg: var(--db-warn);
+  --op-error-bg: var(--db-danger-soft);
+  --op-error-fg: var(--db-danger);
+  --op-info-bg: var(--db-info-soft);
+  --op-info-fg: var(--db-info);
+
+  --op-font-family: var(--db-font-ui);
+  --op-font-display: var(--db-font-display);
+  --op-font-family-mono: var(--db-font-mono);
+  --op-font-size-base: var(--db-text-base);
+  --op-line-height: var(--db-leading-normal);
+
+  --op-radius-sm: var(--db-radius-xs);
+  --op-radius: var(--db-radius-md);
+  --op-radius-lg: var(--db-radius-lg);
+  --op-radius-full: var(--db-radius-full);
+
+  --op-shadow-xs: var(--db-shadow-xs);
+  --op-shadow-sm: var(--db-shadow-sm);
+  --op-shadow: var(--db-shadow-md);
+  --op-shadow-lg: var(--db-shadow-lg);
+
+  --op-transition: var(--db-dur-base) var(--db-ease);
+  --op-motion-fast: var(--db-dur-fast);
+  --op-motion-base: var(--db-dur-base);
+  --op-motion-slow: var(--db-dur-slow);
+  --op-motion-easing: var(--db-ease);
+
+  --op-sidebar-width: var(--db-rail-w);
+  --op-sidebar-collapsed-width: var(--db-rail-w-collapsed);
+  --op-topbar-height: var(--db-topbar-h);
+  --op-content-max: 100%;
+  --op-reading-max: var(--db-reading-max);
+}
+
+/* ---------------------------------------------------------------------------
+   7. Movimiento reducido — regla global, ninguna pantalla la repite
+   ------------------------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --db-dur-fast: 0ms;
+    --db-dur-base: 0ms;
+    --db-dur-slow: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

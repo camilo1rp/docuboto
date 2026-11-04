@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Docuboto 3.0 — prototipo de rediseño</title>
+    <meta
+      name="description"
+      content="Prototipo interactivo del rediseño de interfaz de Docuboto: capa de inteligencia proboto, activación por capacidades y modelo de reversibilidad."
+    />
+    <link rel="icon" href="assets/proboto-mark.svg" />
+    <link rel="stylesheet" href="css/tokens.css" />
+    <link rel="stylesheet" href="css/base.css" />
+    <link rel="stylesheet" href="css/components.css" />
+    <link rel="stylesheet" href="css/panels.css" />
+    <link rel="stylesheet" href="css/screens.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="overlays"></div>
+    <div id="toasts" class="toast-stack" aria-live="polite"></div>
+
+    <noscript>
+      <div style="padding: 40px; font-family: sans-serif">
+        Este prototipo necesita JavaScript activo para simular las interacciones.
+      </div>
+    </noscript>
+
+    <script src="js/util.js"></script>
+    <script src="js/icons.js"></script>
+    <script src="js/data.js"></script>
+    <script src="js/views-work.js"></script>
+    <script src="js/views-admin.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>
