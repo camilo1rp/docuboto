@@ -162,9 +162,9 @@ def rutas_de(normal: dict[str, Any], habilitados: Iterable[int]) -> list[dict[st
     return salida
 
 
-async def leer(cliente: Any) -> Declaracion:
+async def leer(conn: Any, slug: str, cliente: Any) -> Declaracion:
     """Comprueba la firma y devuelve la vista. No transmite registros."""
-    recibido = await paso.leer_declaracion(cliente)
+    recibido = await paso.leer_declaracion(conn, slug, cliente)
     if not recibido.sale or not isinstance(recibido.cuerpo, dict):
         return Declaracion(False, recibido.motivo, None)
     pem, kid = _clave()
@@ -190,7 +190,7 @@ async def aceptar(conn: Any, slug: str, cliente: Any, *, nivel: int, sha256: str
     """
     if nivel not in _CODIGO or not _SHA.fullmatch(sha256):
         return "nivel"
-    declaracion = await leer(cliente)
+    declaracion = await leer(conn, slug, cliente)
     if not declaracion.ok or declaracion.vista is None:
         return declaracion.motivo
     if declaracion.vista["sha256"] != sha256:

@@ -38,7 +38,7 @@ from typing import Any, Protocol
 from orpycamcp_common.tenant import slug_valido
 
 from knowledge.clients.ppi import ClientePpi
-from knowledge.core import medidor
+from knowledge.core import medidor, salida_http
 from knowledge.core.clearance import motivo_interruptor, motivo_salida
 from knowledge.core.seudonimo import abrir as abrir_seudonimo
 from knowledge.core.seudonimo import referenciar
@@ -290,6 +290,7 @@ async def _anotar(
 
 async def _enviar_y_anotar(
     conn: Any,
+    slug: str,
     cliente: _Salida,
     operation: str,
     record_ref: str,
@@ -297,7 +298,8 @@ async def _enviar_y_anotar(
     lote: dict[str, Any],
 ) -> None:
     try:
-        await cliente.enviar(lote)
+        with salida_http.con_entidad(conn, slug):
+            await cliente.enviar(lote)
     except Exception:
         try:
             await _anotar(
@@ -356,7 +358,7 @@ async def enviar(
         return Decision(False, "cuerpo")
     if not politica.metadata:
         lote = _quitar_metadata(lote)
-    await _enviar_y_anotar(conn, cliente, "push", str(radicado_id), int(nivel), lote)
+    await _enviar_y_anotar(conn, slug, cliente, "push", str(radicado_id), int(nivel), lote)
     return Decision(True, "ok")
 
 
@@ -407,7 +409,7 @@ async def borrar(
             }
         ]
     }
-    await _enviar_y_anotar(conn, cliente, "purge", str(radicado_id), nivel, lote)
+    await _enviar_y_anotar(conn, slug, cliente, "purge", str(radicado_id), nivel, lote)
     return Decision(True, "ok")
 
 
@@ -458,7 +460,8 @@ async def consultar(
     if alcance is not None:
         cuerpo["scope"] = {"record_ref": str(alcance), "include_children": True}
     try:
-        recibido = await cliente.consultar(cuerpo, timeout=plazo)
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.consultar(cuerpo, timeout=plazo)
     except Exception:
         logger.warning("la consulta al proveedor falló")
         return Respuesta(False, "proveedor", None)
@@ -487,7 +490,8 @@ async def inventario(
     if not 1 <= limite <= 1000:
         return Respuesta(False, "limite", None)
     try:
-        recibido = await cliente.inventario(cursor=cursor, limite=limite)
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.inventario(cursor=cursor, limite=limite)
     except Exception:
         logger.warning("el inventario no respondió")
         return Respuesta(False, "proveedor", None)
@@ -502,7 +506,11 @@ _TIPOS_INVENTARIO = frozenset({"record", "attachment"})
 
 
 async def contar_radicados(
-    cliente: _Salida, *, tope_paginas: int = _PAGINAS_INVENTARIO
+    conn: Any,
+    slug: str,
+    cliente: _Salida,
+    *,
+    tope_paginas: int = _PAGINAS_INVENTARIO,
 ) -> Respuesta:
     """Cuántos radicados conserva el proveedor. No mira el interruptor.
 
@@ -520,7 +528,10 @@ async def contar_radicados(
     total = 0
     for _ in range(tope_paginas):
         try:
-            recibido = await cliente.inventario(cursor=cursor, limite=_LIMITE_INVENTARIO)
+            with salida_http.con_entidad(conn, slug):
+                recibido = await cliente.inventario(
+                    cursor=cursor, limite=_LIMITE_INVENTARIO
+                )
         except Exception:
             logger.warning("no se pudo contar el inventario")
             return Respuesta(False, "proveedor", None)
@@ -587,7 +598,7 @@ async def expulsar(
             }
         ]
     }
-    await _enviar_y_anotar(conn, cliente, "purge", external_ref, None, lote)
+    await _enviar_y_anotar(conn, slug, cliente, "purge", external_ref, None, lote)
     return Decision(True, "ok")
 
 
@@ -607,7 +618,8 @@ async def capacidades(conn: Any, slug: str, cliente: _Salida) -> Respuesta:
     if motivo is not None:
         return Respuesta(False, motivo, None)
     try:
-        recibido = await cliente.capacidades()
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.capacidades()
     except Exception:
         logger.warning("la declaración no respondió")
         return Respuesta(False, "proveedor", None)
@@ -622,7 +634,8 @@ async def declarar(conn: Any, slug: str, cliente: _Salida, cuerpo: dict[str, Any
     if motivo is not None:
         return Respuesta(False, motivo, None)
     try:
-        recibido = await cliente.declarar(cuerpo)
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.declarar(cuerpo)
     except Exception:
         logger.warning("la conexión no quedó declarada")
         return Respuesta(False, "proveedor", None)
@@ -631,7 +644,7 @@ async def declarar(conn: Any, slug: str, cliente: _Salida, cuerpo: dict[str, Any
     return Respuesta(True, "ok", recibido)
 
 
-async def leer_declaracion(cliente: _Salida) -> Respuesta:
+async def leer_declaracion(conn: Any, slug: str, cliente: _Salida) -> Respuesta:
     """La declaración firmada, también con el interruptor apagado.
 
     No transmite registros. La pide el acto de configuración, antes de pasar
@@ -640,7 +653,8 @@ async def leer_declaracion(cliente: _Salida) -> Respuesta:
     if not getattr(cliente, "destino", ""):
         return Respuesta(False, "destino", None)
     try:
-        recibido = await cliente.capacidades()
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.capacidades()
     except Exception:
         logger.warning("la declaración no respondió")
         return Respuesta(False, "proveedor", None)
@@ -683,7 +697,8 @@ async def purgar(
     if niveles:
         cuerpo["levels"] = [_CODIGO[nivel] for nivel, _ref in filas]
     try:
-        recibido = await cliente.purgar(cuerpo)
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.purgar(cuerpo)
     except Exception:
         logger.warning("el borrado en el proveedor no quedó aceptado")
         await _anotar_purga(conn, filas, cuerpo, destino, "error")

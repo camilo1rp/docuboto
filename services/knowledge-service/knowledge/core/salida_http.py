@@ -9,20 +9,37 @@
 
 """Transporte HTTP hacia el proveedor. No decide qué sale: eso es del punto de paso.
 
-Cada petición declara la versión del protocolo. El plazo de una consulta se
-pasa por llamada; el envío usa el plazo del cliente.
+Cada petición declara la versión del protocolo y lleva el token de la cuenta
+de servicio. El plazo de una consulta se pasa por llamada; el envío usa el
+plazo del cliente. Sin entidad o sin token, no hay llamada.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 import httpx
+
+from knowledge.core import token_ppi
 
 #: Versión que esta pasarela habla. El proveedor la exige en `PPI-Version`.
 PPI_VERSION = "1.2.0"
 
 _consulta: TransporteHttp | None = None
+_llamada: ContextVar[tuple[Any, str] | None] = ContextVar("ppi_entidad", default=None)
+
+
+@contextmanager
+def con_entidad(conn: Any, slug: str) -> Iterator[None]:
+    """Fija la entidad cuyo cliente de servicio firma las peticiones."""
+    token = _llamada.set((conn, slug))
+    try:
+        yield
+    finally:
+        _llamada.reset(token)
 
 
 class TransporteHttp:
@@ -38,7 +55,17 @@ class TransporteHttp:
         timeout: float | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        kwargs: dict[str, Any] = {"headers": {"PPI-Version": PPI_VERSION}}
+        entidad = _llamada.get()
+        if entidad is None:
+            raise RuntimeError("llamada PPI sin entidad")
+        conn, slug = entidad
+        portador = await token_ppi.portador(conn, slug)
+        kwargs: dict[str, Any] = {
+            "headers": {
+                "PPI-Version": PPI_VERSION,
+                "Authorization": f"Bearer {portador}",
+            }
+        }
         if json is not None:
             kwargs["json"] = json
         if params:

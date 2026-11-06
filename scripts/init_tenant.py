@@ -267,6 +267,46 @@ def id_cliente_inteligencia(slug: str) -> str:
     return f"intelligence-{slug}"
 
 
+# Audiencia que el proveedor exige en el access token. Literales adyacentes:
+# el árbol de código no escribe el nombre del proveedor.
+AUDIENCIA_PROVEEDOR = "pro" "boto-api"
+NOMBRE_ALCANCE_AUDIENCIA = "audiencia-proveedor"
+
+
+def mapeador_audiencia_proveedor() -> dict[str, Any]:
+    """Mapper OIDC que añade la audiencia del proveedor al access token.
+
+    `included.custom.audience` escribe el valor aunque el realm no tenga un
+    cliente con ese id. Keycloak 26 aplica el mapper cuando vive en un client
+    scope asignado al cliente; el mapper colgado solo del cliente no entra en
+    el token de `client_credentials`.
+    """
+    return {
+        "name": NOMBRE_ALCANCE_AUDIENCIA,
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-audience-mapper",
+        "consentRequired": False,
+        "config": {
+            "included.custom.audience": AUDIENCIA_PROVEEDOR,
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+        },
+    }
+
+
+def cuerpo_alcance_audiencia() -> dict[str, Any]:
+    """Client scope del realm: el mapper sí entra en el access token."""
+    return {
+        "name": NOMBRE_ALCANCE_AUDIENCIA,
+        "protocol": "openid-connect",
+        "attributes": {
+            "include.in.token.scope": "false",
+            "display.on.consent.screen": "false",
+        },
+        "protocolMappers": [mapeador_audiencia_proveedor()],
+    }
+
+
 def cuerpo_cliente_servicio(client_id: str, secret: str) -> dict[str, Any]:
     """Representación de Keycloak: cuenta de servicio, sin flujos de usuario."""
     return {
@@ -280,6 +320,7 @@ def cuerpo_cliente_servicio(client_id: str, secret: str) -> dict[str, Any]:
         "directAccessGrantsEnabled": False,
         "serviceAccountsEnabled": True,
         "secret": secret,
+        "protocolMappers": [mapeador_audiencia_proveedor()],
     }
 
 
@@ -422,10 +463,19 @@ async def asegurar_cliente_servicio(
         raise RuntimeError("Keycloak devolvió el cliente sin id")
     flags = cuerpo_cliente_servicio(client_id, secret_nuevo)
     flags.pop("secret")
+    flags.pop("protocolMappers", None)
     cliente.update(flags)
     cliente.pop("secret", None)
     put_url = f"{base}/admin/realms/{realm}/clients/{uuid}"
     await _json_o_fallo(http, "PUT", put_url, headers=headers, json=cliente, ok=(200, 204))
+    await asegurar_audiencia_proveedor(
+        http,
+        keycloak_url=keycloak_url,
+        realm=realm,
+        token=token,
+        client_id=client_id,
+        uuid=str(uuid),
+    )
 
     secreto_url = f"{base}/admin/realms/{realm}/clients/{uuid}/client-secret"
     secreto = await _json_o_fallo(http, "GET", secreto_url, headers=headers)
@@ -433,6 +483,157 @@ async def asegurar_cliente_servicio(
     if not valor:
         raise RuntimeError("Keycloak no devolvió el secreto del cliente de servicio")
     return valor
+
+
+def _audiencia_de(mapeador: dict[str, Any]) -> str:
+    config = mapeador.get("config")
+    if not isinstance(config, dict):
+        return ""
+    valor = config.get("included.custom.audience") or config.get(
+        "included.client.audience"
+    )
+    return valor if isinstance(valor, str) else ""
+
+
+async def _asegurar_mapper(
+    http: Any, modelos: str, headers: dict[str, str]
+) -> None:
+    """Deja el mapper de audiencia en esa colección. Sustituye la config vieja."""
+    actuales = await _json_o_fallo(http, "GET", modelos, headers=headers)
+    if not isinstance(actuales, list):
+        actuales = []
+    cuerpo = mapeador_audiencia_proveedor()
+    existente = next(
+        (
+            m
+            for m in actuales
+            if isinstance(m, dict)
+            and m.get("protocolMapper") == "oidc-audience-mapper"
+            and _audiencia_de(m) == AUDIENCIA_PROVEEDOR
+        ),
+        None,
+    )
+    if existente is None:
+        await _json_o_fallo(
+            http, "POST", modelos, headers=headers, json=cuerpo, ok=(201, 204)
+        )
+        return
+    mapper_id = existente.get("id")
+    if not mapper_id:
+        return
+    actualizado = {**existente, **cuerpo, "id": mapper_id, "config": dict(cuerpo["config"])}
+    await _json_o_fallo(
+        http,
+        "PUT",
+        f"{modelos}/{mapper_id}",
+        headers=headers,
+        json=actualizado,
+        ok=(200, 204),
+    )
+
+
+async def asegurar_alcance_audiencia(
+    http: Any,
+    *,
+    keycloak_url: str,
+    realm: str,
+    token: str,
+    uuid: str,
+) -> None:
+    """Crea el client scope y lo asigna al cliente. Sin él el mapper no viaja."""
+    base = keycloak_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {token}"}
+    scopes_url = f"{base}/admin/realms/{realm}/client-scopes"
+    lista = await _json_o_fallo(http, "GET", scopes_url, headers=headers)
+    if not isinstance(lista, list):
+        lista = []
+    alcance = next(
+        (
+            s
+            for s in lista
+            if isinstance(s, dict) and s.get("name") == NOMBRE_ALCANCE_AUDIENCIA
+        ),
+        None,
+    )
+    if alcance is None:
+        resp = await http.request(
+            "POST", scopes_url, headers=headers, json=cuerpo_alcance_audiencia()
+        )
+        if resp.status_code not in (201, 204, 409):
+            raise _error_keycloak("POST", scopes_url, resp.status_code)
+        lista = await _json_o_fallo(http, "GET", scopes_url, headers=headers)
+        if not isinstance(lista, list):
+            lista = []
+        alcance = next(
+            (
+                s
+                for s in lista
+                if isinstance(s, dict) and s.get("name") == NOMBRE_ALCANCE_AUDIENCIA
+            ),
+            None,
+        )
+    if alcance is None or not alcance.get("id"):
+        raise RuntimeError("Keycloak no muestra el client scope de audiencia")
+    scope_id = str(alcance["id"])
+    await _asegurar_mapper(
+        http,
+        f"{scopes_url}/{scope_id}/protocol-mappers/models",
+        headers,
+    )
+    asignados_url = f"{base}/admin/realms/{realm}/clients/{uuid}/default-client-scopes"
+    asignados = await _json_o_fallo(http, "GET", asignados_url, headers=headers)
+    if not isinstance(asignados, list):
+        asignados = []
+    if any(
+        isinstance(s, dict)
+        and (s.get("id") == scope_id or s.get("name") == NOMBRE_ALCANCE_AUDIENCIA)
+        for s in asignados
+    ):
+        return
+    await _json_o_fallo(
+        http,
+        "PUT",
+        f"{asignados_url}/{scope_id}",
+        headers=headers,
+        ok=(200, 204),
+    )
+
+
+async def asegurar_audiencia_proveedor(
+    http: Any,
+    *,
+    keycloak_url: str,
+    realm: str,
+    token: str,
+    client_id: str,
+    uuid: str | None = None,
+) -> None:
+    """Deja el mapper en el cliente y en un client scope asignado. No rota el secreto."""
+    base = keycloak_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {token}"}
+    if not uuid:
+        lista_url = f"{base}/admin/realms/{realm}/clients"
+        lista = await _json_o_fallo(
+            http, "GET", lista_url, headers=headers, params={"clientId": client_id}
+        )
+        encontrados = [
+            c for c in lista if isinstance(c, dict) and c.get("clientId") == client_id
+        ]
+        if not encontrados or not encontrados[0].get("id"):
+            raise RuntimeError(f"Keycloak no muestra el cliente {client_id}")
+        uuid = str(encontrados[0]["id"])
+    await _asegurar_mapper(
+        http,
+        f"{base}/admin/realms/{realm}/clients/{uuid}/protocol-mappers/models",
+        headers,
+    )
+    await asegurar_alcance_audiencia(
+        http,
+        keycloak_url=keycloak_url,
+        realm=realm,
+        token=token,
+        uuid=uuid,
+    )
 
 
 async def aprovisionar_cliente_inteligencia(
@@ -447,9 +648,11 @@ async def aprovisionar_cliente_inteligencia(
     issuer: str | None = None,
     http: Any | None = None,
 ) -> str:
-    """Crea el cliente y guarda el secreto, o no hace nada si la fila ya existe.
+    """Crea el cliente y guarda el secreto, o deja el mapper si la fila ya existe.
 
-    Devuelve la línea que se imprime: issuer y client_id, sin el secreto.
+    Reejecutar no rota el secreto guardado. Sí actualiza Keycloak para que el
+    access token lleve la audiencia del proveedor. Devuelve la línea que se
+    imprime: issuer y client_id, sin el secreto.
     """
     from orpycamcp_common.kek import seal
 
@@ -470,6 +673,34 @@ async def aprovisionar_cliente_inteligencia(
                     f"la fila service_client guarda {guardado}, no {client_id}"
                 )
             await asegurar_clave_seudonimo(conn, slug, key=key)
+            import httpx
+
+            propio_existente = http is None
+            cliente_existente = http if http is not None else httpx.AsyncClient(timeout=30.0)
+            try:
+                try:
+                    token = await token_admin(
+                        cliente_existente,
+                        keycloak_url=keycloak_url,
+                        admin_user=admin_user,
+                        admin_password=admin_password,
+                    )
+                    await asegurar_audiencia_proveedor(
+                        cliente_existente,
+                        keycloak_url=keycloak_url,
+                        realm=realm,
+                        token=token,
+                        client_id=client_id,
+                    )
+                except RuntimeError:
+                    raise
+                except httpx.HTTPError:
+                    raise RuntimeError(
+                        "Keycloak no respondió. El esquema del tenant ya quedó aplicado."
+                    ) from None
+            finally:
+                if propio_existente:
+                    await cliente_existente.aclose()
             return f"[intelligence] ya existía — issuer={publicado} client_id={client_id}"
 
         import httpx

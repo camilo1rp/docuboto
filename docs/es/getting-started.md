@@ -25,6 +25,8 @@ docker compose --profile dev up -d
 docker compose ps
 ```
 
+Para unir un Proboto local por PPI, suma `-f docker-compose.intelligence.yml` y fija `PPI_PROVIDER_URL`. El orden de arranque, la red `ppi` y la primera comprobación de **Inteligencia** / **Preguntar** están en `docs/runbooks/local-dev.md` de Proboto (sección "Join a local Docuboto").
+
 ## URLs de acceso / Access URLs
 
 | Servicio / Service | URL | Credenciales dev |

@@ -4,12 +4,31 @@
 # `-f docker-compose.intelligence.yml`. La red se crea una vez por host,
 # fuera de este proyecto y del del proveedor:
 #   docker network create --internal ppi
-# PPI_PROVIDER_URL no tiene valor por defecto.
+# PPI_PROVIDER_URL no tiene valor por defecto. En local el join usa un puente
+# ordinario (`docker network create ppi`) para no cortar la ruta del proveedor.
 
 services:
+  app:
+    environment:
+      - PPI_PROVIDER_URL=${PPI_PROVIDER_URL:?URL del proveedor en la red ppi}
+      - INTELLIGENCE_CREDENTIAL_KEK=${INTELLIGENCE_CREDENTIAL_KEK:-b3JweWNhbWNwX2ludGVsbGlnZW5jZV9rZWtfZGV2ISE=}
+      - PPI_CAPABILITIES_PUBLIC_KEY=${PPI_CAPABILITIES_PUBLIC_KEY:?clave pública de la declaración}
+      - PPI_CAPABILITIES_KID=${PPI_CAPABILITIES_KID:-local}
+      - PPI_CALLBACK_BASE_URL=${PPI_CALLBACK_BASE_URL:-http://orpycamcp-app:8000}
+    networks:
+      - ppi
   knowledge-service:
     environment:
       - PPI_PROVIDER_URL=${PPI_PROVIDER_URL:?URL del proveedor en la red ppi}
+      - INTELLIGENCE_CREDENTIAL_KEK=${INTELLIGENCE_CREDENTIAL_KEK:-b3JweWNhbWNwX2ludGVsbGlnZW5jZV9rZWtfZGV2ISE=}
+      - PPI_CAPABILITIES_PUBLIC_KEY=${PPI_CAPABILITIES_PUBLIC_KEY:?clave pública de la declaración}
+      - PPI_CAPABILITIES_KID=${PPI_CAPABILITIES_KID:-local}
+      - PPI_CALLBACK_BASE_URL=${PPI_CALLBACK_BASE_URL:-http://orpycamcp-app:8000}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-orpycamcp}
+      # Unified local `app` serves the document routes. Split `document-service`
+      # is not running, so the consumer must read registros from `app`.
+      - DOCUMENT_SERVICE_URL=${DOCUMENT_SERVICE_URL:-http://app:8000}
     networks:
       - ppi
 

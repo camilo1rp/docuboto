@@ -110,7 +110,7 @@ class _Conn:
 
 
 def _leer(sha: str, niveles: tuple[str, ...] = ("public", "reserved")) -> Any:
-    async def _impl(_cliente: object) -> Declaracion:
+    async def _impl(_conn: object, _slug: str, _cliente: object) -> Declaracion:
         return Declaracion(
             True,
             "ok",

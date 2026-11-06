@@ -45,9 +45,12 @@ class Settings(BaseSettings):
     # destino: el punto de paso no llama a nadie hasta el perfil intelligence.
     redis_url: str = "redis://redis:6379/0"
     ppi_provider_url: str = ""
-    # KEK que abre la clave de seudónimo y la de retorno. Vacía: no hay consulta
-    # al proveedor ni declaración de la conexión.
+    # KEK que abre la clave de seudónimo, la de retorno y el secreto del
+    # cliente de servicio. Vacía: no hay consulta al proveedor ni declaración.
     intelligence_credential_kek: str = ""
+    # Realm que emite el token de la cuenta de servicio. Vacío: no hay llamada.
+    keycloak_url: str = ""
+    keycloak_realm: str = "orpycamcp"
     # Clave pública fijada para comprobar la declaración. Vacía: no se lee.
     ppi_capabilities_public_key: str = ""
     ppi_capabilities_kid: str = ""

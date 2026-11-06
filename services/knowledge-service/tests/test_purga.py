@@ -125,6 +125,6 @@ async def test_sin_url_no_hay_llamada() -> None:
 @pytest.mark.asyncio
 async def test_leer_la_declaracion_no_exige_el_interruptor() -> None:
     cliente = _Cliente()
-    respuesta = await paso.leer_declaracion(cliente)
+    respuesta = await paso.leer_declaracion(object(), "demo", cliente)
     assert respuesta.sale is True
     assert cliente.capacidades_llamadas == 1

@@ -175,6 +175,24 @@ def test_el_canonico_ordena_claves_y_escapa() -> None:
     assert canonico({"b": 1, "a": "x\n"}) == b'{"a":"x\\n","b":1}'
 
 
+def test_la_huella_no_cambia_si_solo_cambia_el_plazo() -> None:
+    primera = verificar(_firmado(_statement()), pem=_PEM, kid=KID)
+    segunda = verificar(
+        _firmado(
+            _statement(
+                issued_at="2026-11-05T16:00:00Z",
+                expires_at="2099-06-01T00:00:00Z",
+                connection_id="pending",
+            )
+        ),
+        pem=_PEM,
+        kid=KID,
+    )
+    assert primera.ok is True
+    assert segunda.ok is True
+    assert primera.huella == segunda.huella
+
+
 def test_la_firma_eddsa_sostiene_y_otra_clave_no() -> None:
     statement = _statement()
     veredicto = verificar(_firmado(statement), pem=_PEM, kid=KID)

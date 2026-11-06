@@ -59,7 +59,7 @@ def _fijar(
     async def leer_politica(*_args: Any, **_kwargs: Any) -> Politica:
         return politica
 
-    async def leer(_cliente: Any) -> Declaracion:
+    async def leer(_conn: Any, _slug: str, _cliente: Any) -> Declaracion:
         llamadas.append(1)
         if vista is None:
             return Declaracion(False, "proveedor", None)

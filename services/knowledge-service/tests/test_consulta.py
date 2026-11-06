@@ -572,25 +572,60 @@ async def test_availability_suspendida_no_genera(client_with_conn) -> None:
     assert resp.json() == {"generation": False, "mode": "ppi"}
 
 
-async def test_el_transporte_declara_la_version() -> None:
+async def test_el_transporte_declara_la_version(monkeypatch: pytest.MonkeyPatch) -> None:
     recibidas: list[httpx.Request] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
         recibidas.append(req)
         return httpx.Response(200, json={"mode": "search", "hits": []})
 
+    from knowledge.core import salida_http, token_ppi
     from knowledge.core.salida_http import PPI_VERSION, TransporteHttp
 
+    async def _portador(_conn: Any, _slug: str) -> str:
+        return "token-de-servicio"
+
+    monkeypatch.setattr(token_ppi, "portador", _portador)
     transporte = TransporteHttp()
     await transporte.cerrar()
     transporte._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        await transporte.request(
-            "POST",
-            "http://ppi.internal/v1/query",
-            json={"mode": "search"},
-            timeout=3,
-        )
+        with salida_http.con_entidad(object(), "demo"):
+            await transporte.request(
+                "POST",
+                "http://ppi.internal/v1/query",
+                json={"mode": "search"},
+                timeout=3,
+            )
     finally:
         await transporte.cerrar()
     assert recibidas[0].headers["PPI-Version"] == PPI_VERSION
+    assert recibidas[0].headers["Authorization"] == "Bearer token-de-servicio"
+
+
+async def test_el_transporte_no_llama_sin_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    recibidas: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        recibidas.append(req)
+        return httpx.Response(200, json={})
+
+    from knowledge.core import salida_http, token_ppi
+    from knowledge.core.salida_http import TransporteHttp
+
+    async def _portador(_conn: Any, _slug: str) -> str:
+        raise RuntimeError("sin token de servicio")
+
+    monkeypatch.setattr(token_ppi, "portador", _portador)
+    transporte = TransporteHttp()
+    await transporte.cerrar()
+    transporte._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with salida_http.con_entidad(object(), "demo"):
+            with pytest.raises(RuntimeError, match="sin token"):
+                await transporte.request("GET", "http://ppi.internal/v1/capabilities")
+        with pytest.raises(RuntimeError, match="sin entidad"):
+            await transporte.request("GET", "http://ppi.internal/v1/capabilities")
+    finally:
+        await transporte.cerrar()
+    assert recibidas == []

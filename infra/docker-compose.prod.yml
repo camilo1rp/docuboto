@@ -1104,6 +1104,7 @@ services:
       DB_POOL_MAX_SIZE: "3"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
+      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
       # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
     networks:
       - orpycamcp-net

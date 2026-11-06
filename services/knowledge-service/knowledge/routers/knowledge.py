@@ -476,7 +476,7 @@ async def transmission(
         return TransmissionResponse(transmits=False)
     if not politica.completa or politica.motivo is not None:
         return TransmissionResponse(transmits=False)
-    declaracion = await aceptacion.leer(_cliente())
+    declaracion = await aceptacion.leer(conn, _slug(request), _cliente())
     vista = declaracion.vista
     if not declaracion.ok or not isinstance(vista, dict):
         raise _ruta_no_disponible()

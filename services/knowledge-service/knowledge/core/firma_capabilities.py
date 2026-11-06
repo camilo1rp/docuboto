@@ -54,7 +54,12 @@ class Verificacion:
 
 
 def verificar(firmado: dict[str, Any], *, pem: str, kid: str) -> Verificacion:
-    """Comprueba la firma y el vencimiento. No acepta una declaración a medias."""
+    """Comprueba la firma y el vencimiento. No acepta una declaración a medias.
+
+    La huella cubre la declaración estable. `issued_at`, `expires_at` y
+    `connection_id` cambian entre lecturas y no cuentan: si contaran, cada
+    refresco o el primer `PUT /v1/connection` suspendería el envío.
+    """
     statement = firmado.get("statement")
     jws = firmado.get("jws")
     if not isinstance(statement, dict) or not isinstance(jws, str) or not _JWS.fullmatch(jws):
@@ -83,7 +88,16 @@ def verificar(firmado: dict[str, Any], *, pem: str, kid: str) -> Verificacion:
         _verificar_firma(cabecera["alg"], _b64url_decode(firma), entrada, pem)
     except (ValueError, TypeError, InvalidSignature):
         return Verificacion(False, None, "firma")
-    return Verificacion(True, hashlib.sha256(cuerpo).hexdigest(), "ok")
+    try:
+        estable = {
+            clave: valor
+            for clave, valor in statement.items()
+            if clave not in ("issued_at", "expires_at", "connection_id")
+        }
+        huella = hashlib.sha256(canonico(estable)).hexdigest()
+    except TypeError:
+        return Verificacion(False, None, "forma")
+    return Verificacion(True, huella, "ok")
 
 
 def _vencida(valor: Any) -> bool:

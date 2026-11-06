@@ -48,7 +48,7 @@ async def test_cuenta_radicados_y_no_anexos() -> None:
             _pagina([{"type": "attachment"}], None),
         ]
     )
-    resultado = await contar_radicados(cliente)
+    resultado = await contar_radicados(object(), "demo", cliente)
     assert resultado.sale is True
     assert resultado.cuerpo == {"records": 2, "complete": True}
     assert cliente.llamadas == [(None, 1000), ("c1", 1000)]
@@ -58,7 +58,7 @@ async def test_cuenta_radicados_y_no_anexos() -> None:
 async def test_sin_destino_no_llama() -> None:
     cliente = _Cliente([])
     cliente.destino = ""
-    resultado = await contar_radicados(cliente)
+    resultado = await contar_radicados(object(), "demo", cliente)
     assert resultado.sale is False
     assert resultado.motivo == "destino"
     assert cliente.llamadas == []
@@ -67,7 +67,7 @@ async def test_sin_destino_no_llama() -> None:
 @pytest.mark.asyncio
 async def test_un_cursor_repetido_no_sigue() -> None:
     cliente = _Cliente([_pagina([{"type": "record"}], "c1"), _pagina([], "c1")])
-    resultado = await contar_radicados(cliente)
+    resultado = await contar_radicados(object(), "demo", cliente)
     assert resultado.sale is False
     assert resultado.motivo == "proveedor"
 
@@ -81,7 +81,7 @@ async def test_el_tope_deja_la_cuenta_incompleta() -> None:
             _pagina([{"type": "record"}], "c3"),
         ]
     )
-    resultado = await contar_radicados(cliente, tope_paginas=2)
+    resultado = await contar_radicados(object(), "demo", cliente, tope_paginas=2)
     assert resultado.cuerpo == {"records": 2, "complete": False}
     assert len(cliente.llamadas) == 2
 
@@ -89,7 +89,7 @@ async def test_el_tope_deja_la_cuenta_incompleta() -> None:
 @pytest.mark.asyncio
 async def test_una_pagina_mal_formada_no_cuenta() -> None:
     cliente = _Cliente([{"items": [{"type": "nota"}], "next_cursor": None}])
-    resultado = await contar_radicados(cliente)
+    resultado = await contar_radicados(object(), "demo", cliente)
     assert resultado.sale is False
 
 

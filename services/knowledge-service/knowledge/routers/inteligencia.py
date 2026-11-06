@@ -63,11 +63,10 @@ def _falla(code: int, error: str, detail: str) -> HTTPException:
 @router.get("/capabilities")
 async def capabilities(
     request: Request,
-    _conn: asyncpg.Connection = Depends(get_tenant_conn),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, object]:
     """La declaración vigente, ya comprobada. No incluye la firma."""
-    _slug(request)
-    declaracion = await aceptacion.leer(_cliente())
+    declaracion = await aceptacion.leer(conn, _slug(request), _cliente())
     if not declaracion.ok or declaracion.vista is None:
         raise _traducir(declaracion.motivo)
     return declaracion.vista
@@ -118,15 +117,14 @@ async def purge(
 @router.get("/inventory")
 async def inventory(
     request: Request,
-    _conn: asyncpg.Connection = Depends(get_tenant_conn),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> dict[str, object]:
     """Cuántos radicados conserva el proveedor. También con la entidad en local.
 
     No transmite registros. Si no se puede leer, 503: la pantalla lo dice en
     vez de mostrar un cero.
     """
-    _slug(request)
-    resultado = await paso.contar_radicados(_cliente())
+    resultado = await paso.contar_radicados(conn, _slug(request), _cliente())
     cuerpo = resultado.cuerpo
     if not resultado.sale or not isinstance(cuerpo, dict):
         raise _falla(
