@@ -27,9 +27,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.clients.tenant_client import TenantServiceError
-from app.core.config import settings
-from app.core.database import (
+from document.clients.tenant_client import TenantServiceError
+from document.core.config import settings
+from document.core.database import (
     get_db_conn,
     get_public_tenant_conn,
     get_public_tenant_conn_escritura,
@@ -37,8 +37,8 @@ from app.core.database import (
     get_tenant_client,
     get_tenant_conn,
 )
-from app.main import app
-from app.services.ventanilla_service import VentanillaService
+from document.main import app
+from document.services.ventanilla_service import VentanillaService
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -49,6 +49,10 @@ from app.services.ventanilla_service import VentanillaService
 # atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
+
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
 
 
 TENANT_SLUG = "demo"
@@ -303,7 +307,7 @@ def _reloj_de_la_base_fijo(request: pytest.FixtureRequest, monkeypatch: pytest.M
     integración (Postgres real) NO se sustituye: ahí se prueba el reloj de verdad."""
     if "integration" in request.node.nodeid:
         return
-    from app.services import outbox
+    from document.services import outbox
 
     async def _fijo(_conn: object) -> datetime:
         return datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
@@ -323,7 +327,7 @@ def _concordancia_sin_consulta(request: pytest.FixtureRequest, monkeypatch: pyte
     async def _nada(*_a: object, **_k: object) -> None:
         return None
 
-    monkeypatch.setattr("app.routers.documents.exigir_concordancia", _nada)
+    monkeypatch.setattr("document.routers.documents.exigir_concordancia", _nada)
 
 
 #: Clave ALTCHA de las pruebas (>= 32 bytes). La real nunca está en el repositorio.

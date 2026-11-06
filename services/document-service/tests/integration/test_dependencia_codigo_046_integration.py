@@ -36,13 +36,13 @@ import uuid
 import asyncpg
 import pytest
 from fastapi import HTTPException
-
-from app.core.database import tenant_schema
-from app.schemas.borrador import BorradorCreate, BorradorUpdate
-from app.schemas.document import DocumentUpdate
-from app.services.borrador_service import BorradorService
-from app.services.document_service import DocumentService
 from migrations import runner
+
+from document.core.database import tenant_schema
+from document.schemas.borrador import BorradorCreate, BorradorUpdate
+from document.schemas.document import DocumentUpdate
+from document.services.borrador_service import BorradorService
+from document.services.document_service import DocumentService
 
 pytestmark = pytest.mark.asyncio
 
@@ -397,7 +397,7 @@ async def test_el_ancla_de_la_047_tiene_accion_propia_y_distinta_de_la_046() -> 
 
 async def test_el_reporte_rotula_sin_codigo_con_etiqueta_fija_y_no_con_un_nombre_arbitrario(tenant_ctx) -> None:
     """Mutación: volver a `MIN(dest_dept)` rotula el grupo sin código con un nombre cualquiera."""
-    from app.repositories.report_repository import ReportRepository
+    from document.repositories.report_repository import ReportRepository
 
     _, conn = await _prep(tenant_ctx)
     await _dep(conn, 901, "Archivo")

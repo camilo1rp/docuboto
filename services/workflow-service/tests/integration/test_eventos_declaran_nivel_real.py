@@ -23,9 +23,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.workflow_repository import WorkflowRepository
-from app.services.workflow_service import WorkflowService
+from workflow.core.database import tenant_schema
+from workflow.repositories.workflow_repository import WorkflowRepository
+from workflow.services.workflow_service import WorkflowService
 
 pytestmark = pytest.mark.integration
 
@@ -44,8 +44,8 @@ async def ctx(tenant_ctx):
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     emit = AsyncMock()
     with (
-        patch("app.services.workflow_service.events.emit", emit),
-        patch("app.services.workflow_service.get_redis", return_value=MagicMock()),
+        patch("workflow.services.workflow_service.events.emit", emit),
+        patch("workflow.services.workflow_service.get_redis", return_value=MagicMock()),
     ):
         yield WorkflowService(conn, slug), conn, emit
 

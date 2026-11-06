@@ -15,7 +15,7 @@ importando el validador pero deje de llamarlo, algo que el guardián de `shared/
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema as schema_de
+from storage.core.database import tenant_schema as schema_de
 
 
 @pytest.mark.parametrize(

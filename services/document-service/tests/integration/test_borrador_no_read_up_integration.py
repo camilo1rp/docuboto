@@ -22,12 +22,12 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
 #: Ac. AGN 060/2001 §5.2: el borrador no guarda tipo ni dependencias; se aportan al radicar.
-from app.schemas.borrador import BorradorRadicar  # noqa: E402
+from document.schemas.borrador import BorradorRadicar  # noqa: E402
 
 _DATOS = BorradorRadicar(tipo_documental="Oficio", origin_dept_code=1, dest_dept_code=1)
 
@@ -64,10 +64,10 @@ async def _bajar_a_1(conn: asyncpg.Connection, radicado_id) -> None:
 
 
 async def _escenario(tenant_ctx: tuple[str, asyncpg.Connection]):
-    from app.schemas.borrador import BorradorCreate
-    from app.schemas.document import DocumentCreate
-    from app.services.borrador_service import BorradorService
-    from app.services.document_service import DocumentService
+    from document.schemas.borrador import BorradorCreate
+    from document.schemas.document import DocumentCreate
+    from document.services.borrador_service import BorradorService
+    from document.services.document_service import DocumentService
 
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
@@ -105,7 +105,7 @@ async def test_el_borrador_hereda_el_nivel_del_padre(
 async def test_clearance_1_no_lista_ni_lee_ni_edita_el_reservado(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch
 ) -> None:
-    from app.schemas.borrador import BorradorUpdate
+    from document.schemas.borrador import BorradorUpdate
 
     _, conn, servicio, _, reservado, publico = await _escenario(tenant_ctx)
     antes = await conn.fetchval("SELECT updated_at FROM borrador WHERE id = $1", reservado.id)
@@ -140,7 +140,7 @@ async def test_clearance_3_lo_ve_y_lo_edita_dejando_asiento(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     """Control positivo: sin él, un gate que niega a TODOS pasaría igual."""
-    from app.schemas.borrador import BorradorUpdate
+    from document.schemas.borrador import BorradorUpdate
 
     slug, conn, servicio, _, reservado, publico = await _escenario(tenant_ctx)
     ids = {b.id for b in await servicio.listar(None, max_clearance=3)}
@@ -167,7 +167,7 @@ async def test_reclasificar_el_padre_cierra_tambien_el_borrador(
 ) -> None:
     """La instantánea del hijo no puede quedarse más abierta que el padre."""
     _, conn, servicio, padre, _, _ = await _escenario(tenant_ctx)
-    from app.schemas.borrador import BorradorCreate
+    from document.schemas.borrador import BorradorCreate
 
     # Padre público, borrador nivel 1; después el padre sube a 2.
     await _bajar_a_1(conn, padre.id)
@@ -187,7 +187,7 @@ async def test_reclasificar_el_padre_cierra_tambien_el_borrador(
 async def test_no_se_crea_un_borrador_sobre_un_padre_que_no_se_alcanza(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    from app.schemas.borrador import BorradorCreate
+    from document.schemas.borrador import BorradorCreate
 
     _, _, servicio, padre, _, _ = await _escenario(tenant_ctx)
     with pytest.raises(HTTPException) as exc:
@@ -208,7 +208,7 @@ async def test_el_repositorio_gatea_cada_escritura_por_si_mismo(
     El servicio ya cortó en el `get`; si alguien reordena el servicio, el
     repositorio no puede quedarse abierto.
     """
-    from app.repositories.borrador_repository import BorradorRepository
+    from document.repositories.borrador_repository import BorradorRepository
 
     _, conn, _, _, reservado, _ = await _escenario(tenant_ctx)
     repo = BorradorRepository(conn)
@@ -241,14 +241,14 @@ def _clearance_3(monkeypatch) -> None:
     async def _c(conn, user_id):
         return 3
 
-    monkeypatch.setattr("app.services.document_service.resolve_caller_clearance", _c)
+    monkeypatch.setattr("document.services.document_service.resolve_caller_clearance", _c)
 
     # Sin render ni storage reales: aquí se prueba la clasificación, no el PDF.
     async def _sin_documento(self, *a, **k):
         return None
 
     monkeypatch.setattr(
-        "app.services.borrador_service.BorradorService._producir", _sin_documento
+        "document.services.borrador_service.BorradorService._producir", _sin_documento
     )
 
 
@@ -261,9 +261,9 @@ async def test_radicar_hereda_el_nivel_del_padre_y_el_de_clearance_1_no_lo_ve(
     Antes el `DocumentCreate` salía con el default (nivel 1) y `observations` =
     cuerpo que arrastra datos del padre CLASIFICADO.
     """
-    from app.schemas.borrador import BorradorCreate
-    from app.services.borrador_service import BorradorService
-    from app.services.document_service import DocumentService
+    from document.schemas.borrador import BorradorCreate
+    from document.services.borrador_service import BorradorService
+    from document.services.document_service import DocumentService
 
     _clearance_3(monkeypatch)
     slug, conn, _, padre, _, _ = await _escenario(tenant_ctx)
@@ -312,9 +312,9 @@ async def test_radicar_con_padre_reservado_sin_fundamento_no_cae_a_nivel_1(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch
 ) -> None:
     """Un padre antiguo sin fundamento no puede dejar al hijo en PUBLICA."""
-    from app.schemas.borrador import BorradorCreate
-    from app.services.borrador_service import BorradorService
-    from app.services.document_service import DocumentService
+    from document.schemas.borrador import BorradorCreate
+    from document.services.borrador_service import BorradorService
+    from document.services.document_service import DocumentService
 
     _clearance_3(monkeypatch)
     slug, conn, _, padre, _, _ = await _escenario(tenant_ctx)
@@ -350,7 +350,7 @@ async def test_radicar_con_padre_reservado_sin_fundamento_no_cae_a_nivel_1(
 async def test_aprobar_y_devolver_dejan_asiento_atomico(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    from app.services.borrador_service import BorradorService
+    from document.services.borrador_service import BorradorService
 
     slug, conn, _, _, _, publico = await _escenario(tenant_ctx)
     servicio = BorradorService(conn, slug, signature_client=_SinCircuito)

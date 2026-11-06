@@ -19,7 +19,7 @@ completo. Cubre:
 
   (a) las cuatro escrituras exigen `USUA_PERM_TRD` (403 sin él, éxito con él).
   (b) `DELETE /metadata/elements/{id}` exige además `min_crud=3` (precedente
-      `archive-service/app/routers/tipos_documentales.py::delete_tipo`).
+      `archive-service/document/routers/tipos_documentales.py::delete_tipo`).
   (c) las cuatro escrituras dejan un asiento en `public.audit_log` (Media:
       antes no auditaban en absoluto).
 

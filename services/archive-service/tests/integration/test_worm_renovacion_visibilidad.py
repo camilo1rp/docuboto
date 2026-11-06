@@ -44,9 +44,9 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.core.clearance import CLASIFICADA
-from app.core.database import tenant_schema
-from app.services.index_service import IndexService
+from archive.core.clearance import CLASIFICADA
+from archive.core.database import tenant_schema
+from archive.services.index_service import IndexService
 
 from .test_transferencia_acta import _grant_clearance
 from .test_worm_renovacion_ct_filter import (

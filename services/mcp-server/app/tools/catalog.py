@@ -636,7 +636,7 @@ CATALOG: tuple[Tool, ...] = (
         # que siembran `auth_permissions`, y solo aparecía aquí, en los tests de
         # este servicio —que lo consagraban como contrato— y en la documentación
         # de integraciones. `POST /api/v1/documents` exige `PERM_RADI`
-        # (`document-service/app/routers/documents.py:148`).
+        # (`document-service/document/routers/documents.py:148`).
         #
         # Efecto de la cadena inventada: `visible_tools` comparaba contra un
         # nombre que nunca está en el conjunto devuelto por `/auth/me`, así que
@@ -661,7 +661,7 @@ CATALOG: tuple[Tool, ...] = (
             "Sin permiso de radicación, el documento puede entregarse a la "
             "dependencia de correspondencia para que lo radique."
         ),
-        # Subconjunto de `DocumentCreate` (document-service/app/schemas/document.py).
+        # Subconjunto de `DocumentCreate` (document-service/document/schemas/document.py).
         # Se omiten a propósito los campos de clasificación
         # (`nivel_seguridad`, `clasificacion_*`): clasificar un documento es un acto
         # motivado con su propio permiso, no un argumento más de la radicación.
@@ -5640,7 +5640,7 @@ CATALOG: tuple[Tool, ...] = (
         # `PERM_RADI`, el mismo que la bandeja. Este listado exigía
         # `USUA_PERM_ADMIN` y era la única forma de saber qué buzones existen: el
         # funcionario al que la bandeja está dirigida no podía llegar a ella.
-        # Corregido en `document-service/app/routers/ingest.py` con su test.
+        # Corregido en `document-service/document/routers/ingest.py` con su test.
         permission="PERM_RADI",
         min_crud=1,
         write=False,

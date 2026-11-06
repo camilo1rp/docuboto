@@ -31,25 +31,25 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.repositories.archive_repository import ArchiveRepository
-from app.schemas.archive import (
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.repositories.archive_repository import ArchiveRepository
+from archive.schemas.archive import (
     ExpedienteCreate,
     ExpedienteDisposicionResult,
     ExpedienteUpdate,
     RadicadoLink,
     TrdSerieCreate,
 )
-from app.schemas.batch import BatchExpedienteCreate, BatchExpedientesRequest
-from app.schemas.transferencia import (
+from archive.schemas.batch import BatchExpedienteCreate, BatchExpedientesRequest
+from archive.schemas.transferencia import (
     TransferenciaCreate,
     TransferenciaRechazo,
     TransferenciaResponse,
 )
-from app.services.archive_service import ArchiveService
-from app.services.batch_service import BatchArchiveService
-from app.services.transferencia_service import TransferenciaService
+from archive.services.archive_service import ArchiveService
+from archive.services.batch_service import BatchArchiveService
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import registrar_radicado
 
 from .conftest import DSN, huella_en_almacen
@@ -1421,8 +1421,8 @@ async def test_transferencia_recibir_fixity_ortogonal_a_clearance_lectura(
         )
     )
 
-    from app.core.clearance import PUBLICA
-    from app.services.index_service import IndexService
+    from archive.core.clearance import PUBLICA
+    from archive.services.index_service import IndexService
 
     # Contraste: con el clearance REAL de un lector sin acceso, la MISMA
     # comparación de fixity SÍ es no-read-up (esto es lo que `recibir()`

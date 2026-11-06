@@ -38,8 +38,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.disposition import CT_DISPOSITION_CODES
-from app.jobs import indice_reconciliation
+from archive.core.disposition import CT_DISPOSITION_CODES
+from archive.jobs import indice_reconciliation
 
 
 def _mock_conn() -> AsyncMock:
@@ -98,7 +98,7 @@ async def test_reconciliar_worm_renovacion_indice_delegates_to_index_service() -
     row = _renovacion_pending_indice_row(worm_renovacion_intentos=3)
 
     with patch(
-        "app.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
+        "archive.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
         new=AsyncMock(return_value="renovado"),
     ) as mock_renovar:
         resultado = await indice_reconciliation._reconciliar_worm_renovacion_indice(
@@ -117,7 +117,7 @@ async def test_reconciliar_worm_renovacion_acta_delegates_to_transferencia_servi
     row = _renovacion_pending_acta_row(worm_renovacion_intentos=2)
 
     with patch(
-        "app.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
+        "archive.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
         new=AsyncMock(return_value="renovado"),
     ) as mock_renovar:
         resultado = await indice_reconciliation._reconciliar_worm_renovacion_acta(
@@ -136,7 +136,7 @@ async def test_reconciliar_worm_renovacion_aip_delegates_to_aip_wiring_service()
     row = _renovacion_pending_aip_row(worm_renovacion_intentos=4)
 
     with patch(
-        "app.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
+        "archive.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
         new=AsyncMock(return_value="renovado"),
     ) as mock_renovar:
         resultado = await indice_reconciliation._reconciliar_worm_renovacion_aip(conn, "demo", row)
@@ -166,24 +166,24 @@ async def test_run_once_worm_renovacion_passes_ct_codes_and_ventana_to_all_three
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ) as mock_list_indice,
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ) as mock_list_acta,
         patch(
-            "app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ) as mock_list_aip,
     ):
         await indice_reconciliation.run_once_worm_renovacion()
 
-    from app.core.config import settings
+    from archive.core.config import settings
 
     mock_list_indice.assert_awaited_once_with(
         ventana_dias=settings.worm_renovacion_ventana_dias,
@@ -221,30 +221,30 @@ async def test_run_once_worm_renovacion_aggregates_across_indice_acta_and_aip() 
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_indice]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_acta]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_aip]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
             new=AsyncMock(return_value="renovado"),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
+            "archive.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
             new=AsyncMock(return_value="renovado"),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
+            "archive.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
             new=AsyncMock(return_value="renovado"),
         ),
     ):
@@ -279,22 +279,22 @@ async def test_run_once_worm_renovacion_isolates_per_item_failure_on_both_axes()
         raise RuntimeError("boom (itest)")
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_indice_boom]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_acta_ok]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
             new=AsyncMock(side_effect=_indice_side_effect),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
+            "archive.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
             new=AsyncMock(return_value="renovado"),
         ),
     ):
@@ -329,26 +329,26 @@ async def test_run_once_worm_renovacion_isolates_aip_failure_from_other_two_axes
         raise RuntimeError("boom (itest)")
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_indice_ok]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_aip_boom]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
             new=AsyncMock(return_value="renovado"),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
+            "archive.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
             new=AsyncMock(side_effect=_aip_side_effect),
         ),
     ):
@@ -376,18 +376,18 @@ async def test_run_once_worm_renovacion_counts_agotado_outcome() -> None:
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
             new=AsyncMock(return_value="agotado"),
         ),
     ):
@@ -419,22 +419,22 @@ async def test_run_once_worm_renovacion_counts_agotado_outcome_for_aip() -> None
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
+            "archive.jobs.indice_reconciliation.AipWiringService.renovar_worm_aip",
             new=AsyncMock(return_value="agotado"),
         ),
     ):
@@ -471,22 +471,22 @@ async def test_run_once_worm_renovacion_indice_lock_busy_does_not_block_acta_or_
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ) as mock_list_indice,
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_acta]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
+            "archive.jobs.indice_reconciliation.TransferenciaService.renovar_worm_acta",
             new=AsyncMock(return_value="renovado"),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ) as mock_list_aip,
     ):
@@ -519,22 +519,22 @@ async def test_run_once_worm_renovacion_aip_lock_busy_does_not_block_indice_or_a
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[row_indice]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
+            "archive.jobs.indice_reconciliation.IndexService.renovar_worm_indice",
             new=AsyncMock(return_value="renovado"),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ) as mock_list_acta,
         patch(
-            "app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ) as mock_list_aip,
     ):
@@ -562,18 +562,18 @@ async def test_run_once_worm_renovacion_acquires_and_releases_all_three_locks() 
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ),
         patch(
-            "app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
+            "archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending",
             new=AsyncMock(return_value=[]),
         ),
     ):

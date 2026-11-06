@@ -18,9 +18,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.core.database import get_tenant_conn
-from app.main import app
+from signature.core.config import settings
+from signature.core.database import get_tenant_conn
+from signature.main import app
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -31,6 +31,10 @@ from app.main import app
 # atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
+
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
 
 
 # El default de `signature_secret` es "" desde que el arranque exige que venga
@@ -97,7 +101,7 @@ def _entidad_sin_parametros_por_defecto(
     if "/integration/" in request.node.nodeid:
         return None  # el tier real lee la tabla de verdad
     mock = AsyncMock(return_value=None)
-    monkeypatch.setattr("app.core.params_entidad.leer_param", mock)
+    monkeypatch.setattr("signature.core.params_entidad.leer_param", mock)
     return mock
 
 
@@ -117,8 +121,8 @@ def _productores_de_huella_por_defecto(monkeypatch: pytest.MonkeyPatch) -> dict[
     """
     radicado = AsyncMock(return_value={"huella_sha256": HUELLA_PRODUCTOR})
     expediente = AsyncMock(return_value={"huella_sha256": HUELLA_PRODUCTOR, "version": 1})
-    monkeypatch.setattr("app.services.cadena_service.get_huella_radicado", radicado)
-    monkeypatch.setattr("app.services.cadena_service.get_huella_indice_expediente", expediente)
+    monkeypatch.setattr("signature.services.cadena_service.get_huella_radicado", radicado)
+    monkeypatch.setattr("signature.services.cadena_service.get_huella_indice_expediente", expediente)
     return {"radicado": radicado, "expediente": expediente}
 
 
@@ -133,7 +137,7 @@ def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncM
     tests que ejercen el veto o la incoherencia de identidad lo sustituyen.
     """
     mock = AsyncMock(return_value={"activo": False, "user_id": str(USER)})
-    monkeypatch.setattr("app.services.cadena_service.get_totp_status_remote", mock)
+    monkeypatch.setattr("signature.services.cadena_service.get_totp_status_remote", mock)
     return mock
 
 
@@ -149,7 +153,7 @@ def _estado_de_credencial_personal_sin_clave_por_defecto(
     de la firma personal y del gate XAdES lo sustituyen.
     """
     mock = AsyncMock(return_value={"estado": "sin_clave"})
-    monkeypatch.setattr("app.services.cadena_service.get_signing_key_status_remote", mock)
+    monkeypatch.setattr("signature.services.cadena_service.get_signing_key_status_remote", mock)
     return mock
 
 
@@ -171,7 +175,7 @@ def _nivel_vigente_neutro(request: pytest.FixtureRequest, monkeypatch: pytest.Mo
     """
     if "/integration/" in request.node.nodeid:
         return
-    from app.services.cadena_service import CadenaFirmaService
+    from signature.services.cadena_service import CadenaFirmaService
 
     if not request.node.get_closest_marker("nivel_vigente_real"):
 

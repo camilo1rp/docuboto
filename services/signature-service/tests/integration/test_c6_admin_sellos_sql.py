@@ -32,10 +32,10 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import _schema as tenant_schema
-from app.core.database import get_tenant_conn
-from app.main import app
-from app.repositories.firma_repository import FirmaRepository
+from signature.core.database import _schema as tenant_schema
+from signature.core.database import get_tenant_conn
+from signature.main import app
+from signature.repositories.firma_repository import FirmaRepository
 
 pytestmark = pytest.mark.asyncio
 
@@ -234,8 +234,8 @@ async def test_http_total_filas_y_asiento(api) -> None:  # noqa: ANN001
     await _sembrar(conn, slug)
     h = {"X-Tenant-Slug": slug, "X-User-Id": str(ADMIN)}
     with (
-        patch("app.core.clearance.check_permission", AsyncMock(return_value=True)),
-        patch("app.routers.admin_sellos.resolve_caller_clearance", AsyncMock(return_value=5)),
+        patch("signature.core.clearance.check_permission", AsyncMock(return_value=True)),
+        patch("signature.routers.admin_sellos.resolve_caller_clearance", AsyncMock(return_value=5)),
     ):
         r = await ac.get("/api/v1/signature/admin/sellos-archivo?situacion=por_vencer&size=2&page=2", headers=h)
         assert r.status_code == 200, r.text
@@ -253,7 +253,7 @@ async def test_http_sin_permiso_no_ve_nada(api) -> None:  # noqa: ANN001
     ac, slug, conn = api
     await _sembrar(conn, slug)
     h = {"X-Tenant-Slug": slug, "X-User-Id": str(ADMIN)}
-    with patch("app.core.clearance.check_permission", AsyncMock(return_value=False)):
+    with patch("signature.core.clearance.check_permission", AsyncMock(return_value=False)):
         r = await ac.get("/api/v1/signature/admin/sellos-archivo", headers=h)
     assert r.status_code == 403
 

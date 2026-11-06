@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from app.core.clearance import CLASIFICADA, PUBLICA, resolve_caller_clearance
+from document.core.clearance import CLASIFICADA, PUBLICA, resolve_caller_clearance
 
 
 @pytest.mark.asyncio

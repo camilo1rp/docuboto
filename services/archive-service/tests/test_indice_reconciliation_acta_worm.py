@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.jobs import indice_reconciliation
+from archive.jobs import indice_reconciliation
 
 
 def _mock_conn() -> AsyncMock:
@@ -62,7 +62,7 @@ async def test_reconciliar_worm_acta_delegates_to_transferencia_service() -> Non
     row = _worm_pending_acta_row()
 
     with patch(
-        "app.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
+        "archive.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
         new=AsyncMock(return_value="protegido"),
     ) as mock_proteger:
         resultado = await indice_reconciliation._reconciliar_worm_acta(conn, "demo", row)
@@ -94,10 +94,10 @@ async def test_run_once_actas_worm_uses_own_advisory_lock_namespace() -> None:
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
+            "archive.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
             new=AsyncMock(return_value="protegido"),
         ),
     ):
@@ -142,10 +142,10 @@ async def test_run_once_actas_worm_aggregates_across_tenants_and_respects_adviso
         yield conns[slug]
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
+            "archive.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
             new=AsyncMock(return_value="protegido"),
         ),
     ):
@@ -184,10 +184,10 @@ async def test_run_once_actas_worm_isolates_per_acta_failure() -> None:
         return "protegido"
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
+            "archive.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
             new=AsyncMock(side_effect=_side_effect),
         ),
     ):
@@ -216,10 +216,10 @@ async def test_run_once_actas_worm_counts_agotado_outcome() -> None:
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
+            "archive.jobs.indice_reconciliation.TransferenciaService.proteger_worm_acta",
             new=AsyncMock(return_value="agotado"),
         ),
     ):
@@ -252,7 +252,7 @@ async def test_run_once_actas_worm_lists_via_transferencia_repository(
         called_with.append(limit)
         return []
 
-    from app.repositories.transferencia_repository import TransferenciaRepository
+    from archive.repositories.transferencia_repository import TransferenciaRepository
 
     monkeypatch.setattr(
         TransferenciaRepository, "list_worm_pending_actas", fake_list_worm_pending_actas
@@ -263,8 +263,8 @@ async def test_run_once_actas_worm_lists_via_transferencia_repository(
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
     ):
         summary = await indice_reconciliation.run_once_actas_worm()
 

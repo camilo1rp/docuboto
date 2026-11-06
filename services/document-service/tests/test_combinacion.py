@@ -15,7 +15,7 @@ from datetime import date
 
 import pytest
 
-from app.core.combinacion import (
+from document.core.combinacion import (
     CAMPOS,
     SEGUNDA_PASADA,
     combinar,
@@ -23,7 +23,7 @@ from app.core.combinacion import (
     marcadores,
     vocabulario,
 )
-from app.services.contexto_combinacion import PARAMS_ENTIDAD, fecha_en_letras
+from document.services.contexto_combinacion import PARAMS_ENTIDAD, fecha_en_letras
 
 
 class TestVocabulario:

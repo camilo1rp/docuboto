@@ -22,8 +22,8 @@ import uuid
 
 import pytest
 
-from app.core.database import _schema as tenant_schema
-from app.services import invalidacion
+from signature.core.database import _schema as tenant_schema
+from signature.services import invalidacion
 
 pytestmark = pytest.mark.asyncio
 

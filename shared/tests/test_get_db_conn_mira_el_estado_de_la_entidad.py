@@ -29,7 +29,7 @@ SERVICIOS = ["archive", "workflow", "storage"]
 
 
 def _get_db_conn(servicio: str) -> ast.AsyncFunctionDef:
-    archivo = _SERVICIOS / f"{servicio}-service" / "app" / "core" / "database.py"
+    archivo = _SERVICIOS / f"{servicio}-service" / servicio / "core" / "database.py"
     for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
         if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "get_db_conn":
             return nodo
@@ -77,5 +77,5 @@ def test_el_veto_se_levanta_no_se_descarta(servicio: str) -> None:
 def test_require_permission_no_duplica_el_gate(servicio: str) -> None:
     """Un solo punto: `require_permission` usa `get_db_conn`, así que ya pasó por el gate;
     repetirlo costaría una consulta más por petición sin cerrar nada nuevo."""
-    clearance = _SERVICIOS / f"{servicio}-service" / "app" / "core" / "clearance.py"
+    clearance = _SERVICIOS / f"{servicio}-service" / servicio / "core" / "clearance.py"
     assert "veredicto_entidad" not in clearance.read_text(encoding="utf-8")

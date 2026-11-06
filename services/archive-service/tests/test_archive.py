@@ -87,8 +87,8 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
-import app.services.archive_service as archive_service_module
-from app.schemas.archive import ExpedienteCreate, RadicadoLink
+import archive.services.archive_service as archive_service_module
+from archive.schemas.archive import ExpedienteCreate, RadicadoLink
 from tests.conftest import (
     EXPEDIENTE_ID,
     NOW,
@@ -396,7 +396,7 @@ async def test_create_expediente_late_failure_propagates_not_a_fake_success(
     (nota de llamador). Invoca `ArchiveService.create_expediente` DIRECTAMENTE
     (no vía HTTP): Starlette's `ServerErrorMiddleware` reraise la excepción
     hacia el transporte ASGI DESPUÉS de invocar el exception handler global de
-    `app/main.py` (para que el servidor/test runner la vea), así que pasar por
+    `archive/main.py` (para que el servidor/test runner la vea), así que pasar por
     `httpx.AsyncClient` aquí solo añadiría una capa intermedia — la aserción
     relevante es que la excepción sale de la corrutina del SERVICIO, no que se
     convierta en un 500 HTTP."""
@@ -1981,7 +1981,7 @@ async def test_audit_read_access_does_not_write_without_user_id() -> None:
     ausente — solo es alcanzable si `ArchiveService` se invoca directamente
     (otro router, MCP, un futuro llamador interno); la guarda debe sostenerse
     igual en ese caso."""
-    from app.services.archive_service import ArchiveService
+    from archive.services.archive_service import ArchiveService
 
     mock_conn = AsyncMock()
     svc = ArchiveService(mock_conn, "demo")

@@ -17,7 +17,7 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.core.database import tenant_schema
+from workflow.core.database import tenant_schema
 from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
@@ -67,7 +67,7 @@ async def test_crear_cadena(
     # La auditoría forense (audit.append) se ejercita en sus propios tests; aquí se
     # aísla para no acoplar el test al detalle interno (advisory lock + prev_hash).
     with patch(
-        "app.services.visto_bueno_service.audit.append", new_callable=AsyncMock
+        "workflow.services.visto_bueno_service.audit.append", new_callable=AsyncMock
     ) as mock_audit:
         resp = await client.post(
             f"/api/v1/workflows/{RAD}/vistos-buenos",
@@ -199,7 +199,7 @@ async def test_decidir_aprueba_su_turno(
     mock_conn.fetch.return_value = [_row(1, REV1, "aprobado"), _row(2, REV2)]
 
     with patch(
-        "app.services.visto_bueno_service.audit.append", new_callable=AsyncMock
+        "workflow.services.visto_bueno_service.audit.append", new_callable=AsyncMock
     ) as mock_audit:
         resp = await client.post(
             f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
@@ -237,7 +237,7 @@ async def test_decidir_rechazo_auditado(
     mock_conn.fetch.return_value = [_row(1, REV1, "aprobado"), _row(2, REV2, "rechazado")]
 
     with patch(
-        "app.services.visto_bueno_service.audit.append", new_callable=AsyncMock
+        "workflow.services.visto_bueno_service.audit.append", new_callable=AsyncMock
     ) as mock_audit:
         resp = await client.post(
             f"/api/v1/workflows/{RAD}/vistos-buenos/decidir",
@@ -275,7 +275,7 @@ async def test_decidir_sin_traza_no_decide(
 
     with (
         patch(
-            "app.services.visto_bueno_service.audit.append",
+            "workflow.services.visto_bueno_service.audit.append",
             new=AsyncMock(side_effect=RuntimeError("audit_log no disponible")),
         ),
         pytest.raises(RuntimeError, match="audit_log no disponible"),

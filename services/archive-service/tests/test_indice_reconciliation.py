@@ -25,11 +25,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.signature_client import SignedIndice, SignOutcome
-from app.core.config import settings
-from app.core.constants import SYSTEM_RECONCILER_ID
-from app.repositories.index_repository import IndexRepository
-from app.services.index_service import IndexService
+from archive.clients.signature_client import SignedIndice, SignOutcome
+from archive.core.config import settings
+from archive.core.constants import SYSTEM_RECONCILER_ID
+from archive.repositories.index_repository import IndexRepository
+from archive.services.index_service import IndexService
 from tests.conftest import TENANT_HEADERS
 
 TENANT = "demo"
@@ -207,7 +207,7 @@ async def test_firmar_indice_close_ok_first_attempt_marks_firmado() -> None:
     exp_id = uuid.uuid4()
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome",
+        "archive.clients.signature_client.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ) as mock_outcome:
         result = await svc.firmar_indice_close(exp_id, tenant_slug=TENANT, actor_id=str(uuid.uuid4()))
@@ -243,7 +243,7 @@ async def test_firmar_indice_close_lost_race_returns_none_no_phantom_audit() -> 
     signed = _signed()
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome",
+        "archive.clients.signature_client.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ) as mock_outcome:
         result = await svc.firmar_indice_close(uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4()))
@@ -269,7 +269,7 @@ async def test_firmar_indice_close_seal_absent_degrades_without_retry(monkeypatc
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome",
+        "archive.clients.signature_client.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=None, seal_absent=True)),
     ) as mock_outcome:
         result = await svc.firmar_indice_close(uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4()))
@@ -297,7 +297,7 @@ async def test_firmar_indice_close_transient_then_success_second_attempt(monkeyp
 
     outcomes = [SignOutcome(signed=None, transient=True), SignOutcome(signed=signed)]
     with patch(
-        "app.clients.signature_client.sign_xml_outcome",
+        "archive.clients.signature_client.sign_xml_outcome",
         new=AsyncMock(side_effect=outcomes),
     ) as mock_outcome:
         result = await svc.firmar_indice_close(uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4()))
@@ -316,7 +316,7 @@ async def test_firmar_indice_close_transient_exhausted_degrades(monkeypatch) -> 
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome",
+        "archive.clients.signature_client.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ) as mock_outcome:
         result = await svc.firmar_indice_close(uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4()))
@@ -336,7 +336,7 @@ async def test_firmar_indice_close_sin_actor_id_no_intenta_http() -> None:
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome", new=AsyncMock()
+        "archive.clients.signature_client.sign_xml_outcome", new=AsyncMock()
     ) as mock_outcome:
         result = await svc.firmar_indice_close(uuid.uuid4(), tenant_slug=TENANT, actor_id=None)
 
@@ -351,7 +351,7 @@ async def test_firmar_indice_close_ya_firmado_no_intenta_http() -> None:
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome", new=AsyncMock()
+        "archive.clients.signature_client.sign_xml_outcome", new=AsyncMock()
     ) as mock_outcome:
         result = await svc.firmar_indice_close(uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4()))
 
@@ -412,7 +412,7 @@ async def test_get_indices_pendientes_firma_endpoint_sets_total_count_header(cli
 
 @pytest.mark.asyncio
 async def test_list_active_tenants_queries_public_tenants() -> None:
-    from app.jobs import indice_reconciliation
+    from archive.jobs import indice_reconciliation
 
     pool = MagicMock()
     conn = AsyncMock()
@@ -431,7 +431,7 @@ async def test_list_active_tenants_queries_public_tenants() -> None:
 
 @pytest.mark.asyncio
 async def test_reconciliar_indice_success_marks_signed_and_audits_reconciliation() -> None:
-    from app.jobs.indice_reconciliation import _reconciliar_indice
+    from archive.jobs.indice_reconciliation import _reconciliar_indice
 
     conn = _mock_conn()
     conn.execute.return_value = "UPDATE 1"  # mark_signed SÍ ganó la fila (affected=1)
@@ -446,7 +446,7 @@ async def test_reconciliar_indice_success_marks_signed_and_audits_reconciliation
     }
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ):
         resultado = await _reconciliar_indice(conn, TENANT, row)
@@ -477,7 +477,7 @@ async def test_reconciliar_indice_lost_race_does_not_write_phantom_audit() -> No
     efecto que esta llamada no produjo (idempotencia real de la traza, no
     solo del UPDATE — ver el caso concurrente real en
     `tests/integration/test_indice_reconciliation_atomicity.py`)."""
-    from app.jobs.indice_reconciliation import _reconciliar_indice
+    from archive.jobs.indice_reconciliation import _reconciliar_indice
 
     conn = _mock_conn()
     conn.execute.return_value = "UPDATE 0"  # perdió la carrera
@@ -491,7 +491,7 @@ async def test_reconciliar_indice_lost_race_does_not_write_phantom_audit() -> No
     }
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=_signed())),
     ):
         resultado = await _reconciliar_indice(conn, TENANT, row)
@@ -507,7 +507,7 @@ async def test_reconciliar_indice_lost_race_does_not_write_phantom_audit() -> No
 
 @pytest.mark.asyncio
 async def test_reconciliar_indice_failure_schedules_backoff_not_agotado(monkeypatch) -> None:
-    from app.jobs.indice_reconciliation import _reconciliar_indice
+    from archive.jobs.indice_reconciliation import _reconciliar_indice
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 8)
     conn = _mock_conn()
@@ -521,7 +521,7 @@ async def test_reconciliar_indice_failure_schedules_backoff_not_agotado(monkeypa
     }
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ):
         resultado = await _reconciliar_indice(conn, TENANT, row)
@@ -547,7 +547,7 @@ async def test_reconciliar_indice_failure_schedules_backoff_not_agotado(monkeypa
 
 @pytest.mark.asyncio
 async def test_reconciliar_indice_reaches_max_intentos_marks_agotado(monkeypatch) -> None:
-    from app.jobs.indice_reconciliation import _reconciliar_indice
+    from archive.jobs.indice_reconciliation import _reconciliar_indice
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 3)
     conn = _mock_conn()
@@ -561,7 +561,7 @@ async def test_reconciliar_indice_reaches_max_intentos_marks_agotado(monkeypatch
     }
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=None, seal_absent=True)),
     ):
         resultado = await _reconciliar_indice(conn, TENANT, row)
@@ -587,7 +587,7 @@ async def test_reconciliar_indice_reaches_max_intentos_marks_agotado(monkeypatch
 
 @pytest.mark.asyncio
 async def test_run_once_aggregates_across_tenants_and_respects_advisory_lock() -> None:
-    from app.jobs import indice_reconciliation
+    from archive.jobs import indice_reconciliation
 
     mock_pool = MagicMock()
     mock_global_conn = AsyncMock()
@@ -620,10 +620,10 @@ async def test_run_once_aggregates_across_tenants_and_respects_advisory_lock() -
         yield conns[slug]
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+            "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
             new=AsyncMock(return_value=SignOutcome(signed=_signed())),
         ),
     ):
@@ -641,7 +641,7 @@ async def test_run_once_aggregates_across_tenants_and_respects_advisory_lock() -
 async def test_run_once_isolates_per_index_failure() -> None:
     """Un índice que revienta con una excepción inesperada NO aborta la
     barrida del resto del batch de ese tenant."""
-    from app.jobs import indice_reconciliation
+    from archive.jobs import indice_reconciliation
 
     mock_pool = MagicMock()
     mock_global_conn = AsyncMock()
@@ -679,10 +679,10 @@ async def test_run_once_isolates_per_index_failure() -> None:
         return SignOutcome(signed=_signed())
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+            "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
             new=AsyncMock(side_effect=_sign_side_effect),
         ),
     ):

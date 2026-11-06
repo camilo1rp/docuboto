@@ -31,11 +31,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.config import settings
-from app.core.database import get_tenant_conn
-from app.core.totp import build_aad, encrypt_secret
-from app.main import app
+from auth.core.authz import Caller, get_caller
+from auth.core.config import settings
+from auth.core.database import get_tenant_conn
+from auth.core.totp import build_aad, encrypt_secret
+from auth.main import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -61,7 +61,7 @@ def _totp_key(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock_append = AsyncMock(return_value="fakehash")
-    monkeypatch.setattr("app.services.totp_service._audit.append", mock_append)
+    monkeypatch.setattr("auth.services.totp_service._audit.append", mock_append)
     return mock_append
 
 

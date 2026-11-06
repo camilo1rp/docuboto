@@ -10,7 +10,7 @@
 """
 Tests de `Settings.preservation_startup_guard` (E10 Increment A, WORM foundation).
 
-Guard de arranque puro (sin BD/MinIO/red): `app.main.lifespan` lo usa para
+Guard de arranque puro (sin BD/MinIO/red): `storage.main.lifespan` lo usa para
 rechazar el arranque en producción si el modo de retención no es COMPLIANCE
 (GOVERNANCE es evadible por un usuario con permiso bypass-governance de MinIO).
 No requiere `client`/`client_with_conn` — es lógica de configuración aislada.
@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.config import Settings
+from storage.core.config import Settings
 
 
 def test_startup_guard_silent_when_compliance() -> None:
@@ -103,5 +103,26 @@ def test_startup_guard_calla_con_un_secundario_distinto() -> None:
         minio_endpoint="minio:9000",
         minio_secondary_endpoint="otro-sitio:9000",
         preservation_replica_enabled=True,
+    )
+    assert settings.preservation_startup_guard() == []
+
+
+def test_produccion_exige_almacen_fuera_del_servidor() -> None:
+    warnings = Settings(
+        app_env="production",
+        preservation_enabled=True,
+        preservation_replica_enabled=False,
+    ).preservation_startup_guard()
+    assert any("MINIO_SECONDARY_ENDPOINT" in w for w in warnings)
+    assert any("PRESERVATION_REPLICA_ENABLED" in w for w in warnings)
+
+
+def test_produccion_calla_con_replica_fuera() -> None:
+    settings = Settings(
+        app_env="production",
+        preservation_enabled=True,
+        preservation_replica_enabled=True,
+        minio_endpoint="minio:9000",
+        minio_secondary_endpoint="s3.otro-sitio:9000",
     )
     assert settings.preservation_startup_guard() == []

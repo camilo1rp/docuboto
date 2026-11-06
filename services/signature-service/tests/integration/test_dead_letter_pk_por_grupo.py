@@ -29,7 +29,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.repositories.dead_letter_repository import DeadLetterRepository
+from signature.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [
     pytest.mark.integration,
@@ -149,7 +149,7 @@ async def test_la_ruta_del_worker_deja_un_asiento_por_grupo_y_no_repite(conn, mo
     mismo grupo no añada uno. Se ejercita `_persist_dead_letter` entera (Postgres real)."""
     from contextlib import asynccontextmanager
 
-    from app.workers import document_consumer as worker
+    from signature.workers import document_consumer as worker
 
     await _aplicar(conn, _ANTES + (_PK,))
 

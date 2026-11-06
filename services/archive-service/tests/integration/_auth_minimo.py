@@ -21,7 +21,7 @@ import uuid
 
 import asyncpg
 
-from app.core.database import tenant_schema
+from archive.core.database import tenant_schema
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS {s}.auth_users (

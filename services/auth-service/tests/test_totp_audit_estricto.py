@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.services import totp_service
-from app.services.totp_service import TotpService
+from auth.services import totp_service
+from auth.services.totp_service import TotpService
 
 
 @pytest.mark.asyncio

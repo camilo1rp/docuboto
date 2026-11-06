@@ -31,7 +31,7 @@ from pathlib import Path
 from packaging.requirements import Requirement
 from packaging.version import Version
 
-from tests._compose import COMPOSE_DEV, COMPOSE_E2E, COMPOSE_PROD, RAIZ, cargar
+from tests._compose import COMPOSE_DEV, COMPOSE_E2E, COMPOSE_PROD, RAIZ, cargar, glob_src
 
 SERVICIOS = RAIZ / "services"
 
@@ -91,7 +91,7 @@ def _imports(texto: str) -> set[str]:
 
 
 def test_ningun_servicio_importa_orm_ni_jose() -> None:
-    fuentes = sorted(SERVICIOS.glob("*/app/**/*.py")) + sorted(SERVICIOS.glob("*/migrations/**/*.py"))
+    fuentes = sorted(glob_src(SERVICIOS, "*/app/**/*.py")) + sorted(SERVICIOS.glob("*/migrations/**/*.py"))
     assert len(fuentes) > 200, "el censo de fuentes se quedó corto"
     hallados = [
         f"{f.relative_to(RAIZ)}: {m}"

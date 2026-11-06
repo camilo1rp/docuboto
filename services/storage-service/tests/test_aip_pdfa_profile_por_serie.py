@@ -40,10 +40,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-import app.core.config as config_module
-from app.schemas.preservacion import AipCreate
-from app.services.aip_service import _resolve_pdfa_profile
-from app.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
+import storage.core.config as config_module
+from storage.schemas.preservacion import AipCreate
+from storage.services.aip_service import _resolve_pdfa_profile
+from storage.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_SLUG,
@@ -140,7 +140,7 @@ async def test_missing_profile_resolves_to_default_and_would_be_evaluated_agains
     """Contraste positivo: `None` SÍ resuelve a un flavour reconocido por
     veraPDF (pasa la whitelist) -- solo el valor INVÁLIDO queda congelado en
     `not_evaluated` por construcción."""
-    from app.services.pdfa.subprocess_verapdf import _VALID_FLAVOURS
+    from storage.services.pdfa.subprocess_verapdf import _VALID_FLAVOURS
 
     monkeypatch.setattr(config_module.settings, "pdfa_profile", "2b")
     resolved = _resolve_pdfa_profile(None)

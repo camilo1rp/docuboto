@@ -78,7 +78,7 @@ describe("reportes/api/indice-reservado GET", () => {
       const res = await indiceGet({ locals: SESSION_LOCALS });
       expect(res.status).toBe(200);
       const [calledUrl, opts] = fetchMock.mock.calls[0];
-      expect(calledUrl).toBe("http://api-gateway:8080/api/v1/reports/indice-reservado");
+      expect(calledUrl).toBe("http://app:8000/api/v1/reports/indice-reservado");
       expect(opts.headers.Authorization).toBe("Bearer tok-abc");
       expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");
       expect(opts.headers["X-User-Id"]).toBe("33333333-3333-3333-3333-333333333333");

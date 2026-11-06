@@ -23,7 +23,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import (
     SOL_ID,
@@ -124,8 +124,8 @@ async def test_firmar_con_huella_de_la_cadena_ignora_el_payload_xml_del_body(
     ``payload_xml`` del body no cambia los bytes (no hay 422: ya no decide nada)."""
     import hashlib
 
-    from app.core.config import settings
-    from app.services import signer
+    from signature.core.config import settings
+    from signature.services import signer
 
     audit = _patch_audit(monkeypatch)
     monkeypatch.setattr(settings, "firma_2fa_required", False)
@@ -137,7 +137,7 @@ async def test_firmar_con_huella_de_la_cadena_ignora_el_payload_xml_del_body(
         capturados.append(payload)
         return real(payload, *a, **kw)
 
-    monkeypatch.setattr("app.services.cadena_service.signer.firmar", _espia)
+    monkeypatch.setattr("signature.services.cadena_service.signer.firmar", _espia)
 
     conn = _make_conn()
     sol = {**_sol_row(), "payload_sha256": "c" * 64}

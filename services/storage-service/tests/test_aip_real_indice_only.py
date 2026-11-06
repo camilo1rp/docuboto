@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-import app.core.config as config_module
+import storage.core.config as config_module
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_SLUG,
@@ -186,7 +186,7 @@ async def test_empaquetar_aip_indice_only_happy_path(client_with_conn) -> None:
     assert _INDICE_SHA256 in premis_xml
     assert "data/indice-firmado.xml" in premis_xml  # contentLocation apunta al payload
 
-    from app.services.aip_builder import validate_premis_xml
+    from storage.services.aip_builder import validate_premis_xml
 
     validate_premis_xml(premis_xml)  # sigue conforme al XSD oficial
 

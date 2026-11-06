@@ -23,9 +23,9 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.repositories.cadena_repository import CadenaRepository
-from app.repositories.firma_repository import FirmaRepository
-from app.services import cadena_service as mod
+from signature.repositories.cadena_repository import CadenaRepository
+from signature.repositories.firma_repository import FirmaRepository
+from signature.services import cadena_service as mod
 from tests.conftest import USER
 from tests.test_challenge_mismas_precondiciones_que_firmar import (
     SOL_ID,

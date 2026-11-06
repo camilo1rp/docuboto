@@ -114,7 +114,7 @@ echo "Verificando PostgreSQL (usuario '$DB_USER', base '$DB_NAME')..."
 echo "  PostgreSQL OK"
 
 # ---------------------------------------------------------------------------
-# Ejecutar el script de inicialización dentro del contenedor auth-service
+# Ejecutar el script de inicialización dentro del contenedor `app`
 # (ya tiene asyncpg instalado y acceso a la red interna)
 #
 # scripts/ y services/ se montan en SOLO LECTURA: el contenedor corre como UID 0
@@ -157,7 +157,7 @@ echo ""
     -e "KEYCLOAK_ADMIN=${KEYCLOAK_ADMIN}" \
     -e "KEYCLOAK_ADMIN_PASSWORD=${KEYCLOAK_ADMIN_PASSWORD}" \
     -e "INTELLIGENCE_CREDENTIAL_KEK=${INTELLIGENCE_CREDENTIAL_KEK}" \
-    auth-service \
+    app \
     python /scripts/init_tenant.py \
         --slug  "$SLUG" \
         --name  "$NAME" \

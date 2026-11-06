@@ -50,6 +50,7 @@ SUFIJOS = {".py", ".sql", ".js", ".cjs", ".mjs", ".ts", ".svelte", ".sh"}
 #: `node_modules`.
 DIRECTORIOS_AJENOS = {
     ".git",
+    ".claude",
     ".svelte-kit",
     ".venv",
     ".mypy_cache",

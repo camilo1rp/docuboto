@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.config import settings
-from app.services.transferencia_service import TransferenciaService
+from archive.core.config import settings
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import REGISTRAR_FIXITY_PREMIS_REAL, TENANT_HEADERS, USER_ID
 from tests.test_transferencia_indice_y_tenencia import _flujo_recibir, _mock_sellar
 
@@ -102,7 +102,7 @@ async def test_registra_el_evento_con_la_forma_que_storage_espera() -> None:
     tid = fila["transferencia_id"]
 
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
     ) as post:
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, tid, origen="close")
 
@@ -127,7 +127,7 @@ async def test_storage_caido_reprograma_con_backoff_sin_lanzar(monkeypatch) -> N
     conn.fetchrow.return_value = fila
 
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=False)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=False)
     ):
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, fila["transferencia_id"], origen="close")
 
@@ -146,7 +146,7 @@ async def test_al_agotarse_deja_asiento(monkeypatch) -> None:
     conn.fetchrow.return_value = fila
 
     with patch(
-        "app.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=False)
+        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=False)
     ):
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, fila["transferencia_id"], origen="reconciliation")
 
@@ -165,7 +165,7 @@ async def test_sin_detalle_guardado_no_se_inventa_el_evento() -> None:
     svc = TransferenciaService(conn, TENANT)
     conn.fetchrow.return_value = _fila(fixity_premis_detalle=None)
 
-    with patch("app.clients.storage_client.registrar_evento_internal", new=AsyncMock()) as post:
+    with patch("archive.clients.storage_client.registrar_evento_internal", new=AsyncMock()) as post:
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, uuid.uuid4(), origen="reconciliation")
 
     assert resultado == "omitido"
@@ -185,7 +185,7 @@ async def test_el_metodo_real_nunca_lanza() -> None:
 async def test_la_barrida_reintenta_las_recepciones_con_el_evento_pendiente() -> None:
     from contextlib import asynccontextmanager
 
-    from app.jobs import indice_reconciliation
+    from archive.jobs import indice_reconciliation
 
     mock_pool = MagicMock()
     glob = AsyncMock()
@@ -203,8 +203,8 @@ async def test_la_barrida_reintenta_las_recepciones_con_el_evento_pendiente() ->
 
     reg = AsyncMock(return_value="registrado")
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", _acquire),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", _acquire),
         patch.object(TransferenciaService, "registrar_fixity_premis", reg),
     ):
         resumen = await indice_reconciliation.run_once_fixity_premis()

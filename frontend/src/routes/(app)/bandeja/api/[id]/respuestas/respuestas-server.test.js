@@ -54,7 +54,7 @@ describe("bandeja/api/[id]/respuestas GET", () => {
       await GET({ locals: SESSION_LOCALS, params: { id: idConRuta } });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
       expect(calledUrl).toBe(
-        `http://api-gateway:8080/api/v1/documents/${encodeURIComponent(idConRuta)}/respuestas`,
+        `http://app:8000/api/v1/documents/${encodeURIComponent(idConRuta)}/respuestas`,
       );
       expect(opts.headers.Authorization).toBe("Bearer tok-abc");
       expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");

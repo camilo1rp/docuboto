@@ -39,9 +39,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
-from app.repositories.file_repository import FileRepository
-from app.services.storage_service import AnexoCitadoPorConstanciaError, StorageService
+from storage.core.database import tenant_schema
+from storage.repositories.file_repository import FileRepository
+from storage.services.storage_service import AnexoCitadoPorConstanciaError, StorageService
 from tests.integration.conftest import DDL_VISTA_CITAS_STUB, _require_dsn
 
 pytestmark = pytest.mark.integration
@@ -71,7 +71,7 @@ def _minio() -> MagicMock:
 
 
 async def _purgar(conn: asyncpg.Connection, slug: str, fid: uuid.UUID, minio: MagicMock) -> bool:
-    with patch("app.services.storage_service.get_minio", return_value=minio):
+    with patch("storage.services.storage_service.get_minio", return_value=minio):
         return await StorageService(conn, slug).purge_for_disposition(
             fid, _EXP, "Eliminación TRD, lote LOTE-1", actor=None
         )

@@ -20,12 +20,12 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
-from app.clients.ppi import ClientePpi
-from app.core.config import settings
-from app.core.conexion import asegurar
-from app.core.firma_capabilities import verificar
-from app.core.jcs import canonico
-from app.core.salida_http import PPI_VERSION
+from knowledge.clients.ppi import ClientePpi
+from knowledge.core.config import settings
+from knowledge.core.conexion import asegurar
+from knowledge.core.firma_capabilities import verificar
+from knowledge.core.jcs import canonico
+from knowledge.core.salida_http import PPI_VERSION
 
 KEK = b"\x44" * 32
 KID = "pin-1"
@@ -173,6 +173,24 @@ def _puts(transporte: _Transporte) -> list[dict[str, Any]]:
 
 def test_el_canonico_ordena_claves_y_escapa() -> None:
     assert canonico({"b": 1, "a": "x\n"}) == b'{"a":"x\\n","b":1}'
+
+
+def test_la_huella_no_cambia_si_solo_cambia_el_plazo() -> None:
+    primera = verificar(_firmado(_statement()), pem=_PEM, kid=KID)
+    segunda = verificar(
+        _firmado(
+            _statement(
+                issued_at="2026-11-05T16:00:00Z",
+                expires_at="2099-06-01T00:00:00Z",
+                connection_id="pending",
+            )
+        ),
+        pem=_PEM,
+        kid=KID,
+    )
+    assert primera.ok is True
+    assert segunda.ok is True
+    assert primera.huella == segunda.huella
 
 
 def test_la_firma_eddsa_sostiene_y_otra_clave_no() -> None:

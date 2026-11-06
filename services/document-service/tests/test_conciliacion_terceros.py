@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.tercero_service import TerceroService
+from document.services.tercero_service import TerceroService
 from tests.conftest import TENANT_HEADERS
 
 _USER = str(uuid.uuid4())
@@ -43,12 +43,12 @@ def gate(monkeypatch):
         estado["pedidos"].append((perm, min_crud))
         return min_crud <= estado["nivel"]
 
-    monkeypatch.setattr("app.core.clearance.check_permission", _check)
+    monkeypatch.setattr("document.core.clearance.check_permission", _check)
 
     async def _clearance(conn, user_id):
         return 2
 
-    monkeypatch.setattr("app.routers.terceros.resolve_caller_clearance", _clearance)
+    monkeypatch.setattr("document.routers.terceros.resolve_caller_clearance", _clearance)
     return estado
 
 

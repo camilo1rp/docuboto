@@ -15,9 +15,9 @@ from typing import Any
 
 import pytest
 
-from app.core.aceptacion import Declaracion
-from app.core.paso import Politica
-from app.routers import knowledge as rutas
+from knowledge.core.aceptacion import Declaracion
+from knowledge.core.paso import Politica
+from knowledge.routers import knowledge as rutas
 from tests.conftest import TENANT_HEADERS
 
 _APAGADA = {"transmits": False, "provider": None, "levels": []}
@@ -59,7 +59,7 @@ def _fijar(
     async def leer_politica(*_args: Any, **_kwargs: Any) -> Politica:
         return politica
 
-    async def leer(_cliente: Any) -> Declaracion:
+    async def leer(_conn: Any, _slug: str, _cliente: Any) -> Declaracion:
         llamadas.append(1)
         if vista is None:
             return Declaracion(False, "proveedor", None)

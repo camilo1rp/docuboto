@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.cadena_service import CadenaFirmaService
+from signature.services.cadena_service import CadenaFirmaService
 from tests.test_visto_bueno_circuito import HUELLA, REVISOR, _sol, _turno
 
 
@@ -37,7 +37,7 @@ def _conn() -> AsyncMock:
 
 def _servicio(monkeypatch, sol: dict, *, quedan_turnos: bool):
     """Servicio listo para resolver un visto bueno, con el aviso interceptado."""
-    from app.services import cadena_service as mod
+    from signature.services import cadena_service as mod
 
     turno = _turno("visto_bueno", REVISOR)
     svc = CadenaFirmaService(_conn(), "demo")
@@ -116,7 +116,7 @@ async def test_si_document_no_responde_el_visto_bueno_sigue_dado(monkeypatch) ->
     contesta castigaría al revisor por una avería ajena. No abre ninguna
     ventana: la autoridad es la consulta que hace `aprobar`, no este aviso.
     """
-    from app.services import cadena_service as mod
+    from signature.services import cadena_service as mod
 
     sol = _sol()
     svc, _ = _servicio(monkeypatch, sol, quedan_turnos=False)

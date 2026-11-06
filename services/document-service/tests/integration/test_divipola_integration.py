@@ -28,7 +28,7 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
@@ -112,7 +112,7 @@ async def test_los_municipios_que_estaban_MAL_quedaron_bien(tenant_ctx) -> None:
     # que es lo que el usuario ve. Se comprueba sobre el listado y no sobre la
     # columna `vigente`: así vale igual para un despliegue que aplicó 003 y 004
     # que para uno que arrancó ya con el catálogo bueno.
-    from app.repositories.tercero_repository import TerceroRepository
+    from document.repositories.tercero_repository import TerceroRepository
 
     boyaca = await TerceroRepository(conn, "itest").list_municipios("15")
     assert "15695" not in {m["codigo"] for m in boyaca}
@@ -271,7 +271,7 @@ async def test_el_filtro_de_municipios_ignora_los_acentos(tenant_ctx) -> None:
     defensa blanda que la búsqueda de terceros: el duplicado no nace de saltarse
     una restricción, nace de no encontrar lo que ya está."""
     _, conn = tenant_ctx
-    from app.repositories.tercero_repository import TerceroRepository
+    from document.repositories.tercero_repository import TerceroRepository
 
     repo = TerceroRepository(conn, "itest")
     encontrados = await repo.list_municipios("23", texto="monteria")

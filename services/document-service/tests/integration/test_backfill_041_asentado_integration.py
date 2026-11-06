@@ -25,11 +25,11 @@ import json
 
 import asyncpg
 import pytest
-
-from app.core.database import tenant_schema
-from app.schemas.document import DocumentCreate
-from app.services.document_service import DocumentService
 from migrations import runner
+
+from document.core.database import tenant_schema
+from document.schemas.document import DocumentCreate
+from document.services.document_service import DocumentService
 
 pytestmark = pytest.mark.integration
 

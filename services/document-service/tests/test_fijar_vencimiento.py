@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.document_service import DocumentService, PlazoError
+from document.services.document_service import DocumentService, PlazoError
 
 _RAIZ = Path(__file__).resolve().parents[1]
 ACTOR = uuid.uuid4()
@@ -57,19 +57,19 @@ def _servicio(filas, asignado=None, cliente=None):
 def _parches():
     return (
         patch(
-            "app.services.document_service.resolve_caller_clearance",
+            "document.services.document_service.resolve_caller_clearance",
             AsyncMock(return_value=3),
         ),
         patch(
-            "app.services.document_service.audit.append",
+            "document.services.document_service.audit.append",
             AsyncMock(return_value="a" * 32),
         ),
         patch(
-            "app.services.document_service.outbox.encolar",
+            "document.services.document_service.outbox.encolar",
             AsyncMock(return_value={"stream": "s", "event": {}}),
         ),
         patch(
-            "app.services.document_service.outbox.enviar",
+            "document.services.document_service.outbox.enviar",
             AsyncMock(return_value=True),
         ),
     )
@@ -177,14 +177,14 @@ async def test_sin_calendario_no_inventa_la_fecha():
 
 
 def test_el_alta_guarda_el_termino_inicial():
-    repo = (_RAIZ / "app/repositories/document_repository.py").read_text()
-    lote = (_RAIZ / "app/services/batch_service.py").read_text()
+    repo = (_RAIZ / "document/repositories/document_repository.py").read_text()
+    lote = (_RAIZ / "document/services/batch_service.py").read_text()
     assert "due_date, termino_inicial" in repo
     assert "due_date, termino_inicial" in lote
 
 
 def test_la_ruta_no_acepta_origen():
-    router = (_RAIZ / "app/routers/documents.py").read_text()
+    router = (_RAIZ / "document/routers/documents.py").read_text()
     assert 'require_permission("PERM_DUE_DATE", min_crud=3)' in router
     esquema = (_RAIZ / "app/schemas/document.py").read_text()
     bloque = esquema.split("class DueDateRequest", 1)[1].split("class DueDateResponse", 1)[0]

@@ -19,7 +19,7 @@ from typing import Any
 import asyncpg
 import pytest
 
-from app.services.cuadro_clasificacion import (
+from archive.services.cuadro_clasificacion import (
     OrganigramaConCicloError,
     OrganigramaDemasiadoProfundoError,
     armar_cuadro,

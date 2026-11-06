@@ -25,9 +25,9 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from app.repositories.webhook_entregas_repository import WebhookEntregasRepository
-from app.services import webhook_service
-from app.services.webhook_service import BitacoraEntregas
+from notification.repositories.webhook_entregas_repository import WebhookEntregasRepository
+from notification.services import webhook_service
+from notification.services.webhook_service import BitacoraEntregas
 
 pytestmark = [
     pytest.mark.integration,
@@ -133,7 +133,7 @@ async def test_extremo_a_extremo_la_fila_envio_esta_en_la_base_cuando_llega_el_p
 
     monkeypatch.setattr(webhook_service, "acquire_tenant", lambda slug: _Acq())
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
     vistas: list[int] = []
@@ -164,7 +164,7 @@ async def test_si_la_tabla_no_existe_no_se_envia(conn, monkeypatch) -> None:
 
     monkeypatch.setattr(webhook_service, "acquire_tenant", lambda slug: _Acq())
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
     posts: list[int] = []

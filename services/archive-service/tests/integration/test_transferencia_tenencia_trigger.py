@@ -24,9 +24,9 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.actor import Actor
-from app.schemas.transferencia import TransferenciaCreate
-from app.services.transferencia_service import TransferenciaService
+from archive.core.actor import Actor
+from archive.schemas.transferencia import TransferenciaCreate
+from archive.services.transferencia_service import TransferenciaService
 
 from .test_atomicity import _seed_expediente_closed
 from .test_transferencia_creacion_integridad import _make_ubicacion

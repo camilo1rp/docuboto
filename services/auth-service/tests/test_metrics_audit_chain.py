@@ -28,8 +28,8 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
-from app.routers import metrics as m
+from auth.main import app
+from auth.routers import metrics as m
 
 _FIN = datetime(2026, 10, 20, 3, 0, tzinfo=UTC)
 

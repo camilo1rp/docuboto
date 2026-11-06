@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.buzones import (
+from notification.services.buzones import (
     BUZON_VENTANILLA,
     buzon_de_codigo,
     buzon_de_codigo_o_ventanilla,
@@ -31,7 +31,7 @@ from app.services.buzones import (
     resolver_buzon_dependencia,
 )
 
-APP = Path(__file__).resolve().parents[1] / "app"
+APP = Path(__file__).resolve().parents[1] / "notification"
 
 
 def test_buzon_de_codigo_produce_parte_local_ascii():
@@ -195,7 +195,7 @@ def test_ninguna_direccion_se_compone_fuera_de_buzones_py():
     assert revisados > 10, f"el censo solo leyó {revisados} archivos: extractor roto"
 
     assert not culpables, (
-        "una dirección de correo se compone fuera de `app/services/buzones.py`: "
+        "una dirección de correo se compone fuera de `notification/services/buzones.py`: "
         f"{culpables}. Toda dirección pasa por ese módulo — es lo que impide volver "
         "a interpolar el NOMBRE de una dependencia en la parte local."
     )

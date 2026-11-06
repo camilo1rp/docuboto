@@ -96,7 +96,7 @@ async def test_denial_survives_audit_failure(
     mock_conn.fetchval.return_value = False  # D-08: permiso denegado
 
     with patch(
-        "app.core.clearance.audit.append_denial",
+        "archive.core.clearance.audit.append_denial",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.post(

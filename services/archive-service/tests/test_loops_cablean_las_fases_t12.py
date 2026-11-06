@@ -12,7 +12,7 @@
 """Cableado de los loops de fondo con las fases de la tanda T12 (AREA-07-01/05/10).
 
 Las pruebas de cada fase llaman `run_once_*` directamente; ninguna miraba que
-`app/main.py` las INVOQUE. Una fase que nadie programa pasa en verde y no corre
+`archive/main.py` las INVOQUE. Una fase que nadie programa pasa en verde y no corre
 nunca (el backfill del origen, el evento PREMIS de fixity, el WORM de las firmas
 personales). Aquí se ejecuta UNA vuelta de cada loop con las fases dobladas."""
 
@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app import main as app_main
+from archive import main as app_main
 
 
 class _Fin(Exception):
@@ -92,7 +92,7 @@ async def test_una_fase_que_revienta_no_impide_las_siguientes(monkeypatch) -> No
 async def test_el_punto_de_entrada_suelto_corre_todas_las_fases(monkeypatch) -> None:
     """`python -m app.jobs.indice_reconciliation` (una pasada manual) no debe dejar fuera
     las fases nuevas: antes omitía el backfill, el evento PREMIS y el WORM de las firmas."""
-    from app.jobs import indice_reconciliation as job
+    from archive.jobs import indice_reconciliation as job
 
     nombres = [n for n in dir(job) if n.startswith("run_once")]
     dobles = {}

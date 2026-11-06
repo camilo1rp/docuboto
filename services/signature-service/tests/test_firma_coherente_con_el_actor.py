@@ -30,12 +30,12 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.core.http_clients import (
+from signature.core.config import settings
+from signature.core.http_clients import (
     SigningKeyStatusUnavailableError,
     TotpStatusUnavailableError,
 )
-from app.main import app
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
 from tests.test_cadena_2fa import (
@@ -254,7 +254,7 @@ async def test_get_signer_identity_manda_el_tenant_y_devuelve_el_user_id() -> No
     Keycloak: la comparación con el actor fallaría siempre."""
     from unittest.mock import MagicMock, patch
 
-    from app.core import http_clients
+    from signature.core import http_clients
 
     resp = MagicMock(status_code=200, text="")
     resp.json.return_value = {"email": "a@b.co", "user_id": str(USER)}
@@ -263,7 +263,7 @@ async def test_get_signer_identity_manda_el_tenant_y_devuelve_el_user_id() -> No
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=inner)
     cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("app.core.http_clients.httpx.AsyncClient", return_value=cm):
+    with patch("signature.core.http_clients.httpx.AsyncClient", return_value=cm):
         ident = await http_clients.get_signer_identity("Bearer x", "demo")
     assert ident.user_id == str(USER) and ident.email == "a@b.co"
     headers = inner.get.call_args.kwargs["headers"]
@@ -282,7 +282,7 @@ def _estado_totp(monkeypatch, *, activo: bool = True, user_id=USER, error=None) 
         if error
         else AsyncMock(return_value={"activo": activo, "user_id": str(user_id)})
     )
-    monkeypatch.setattr("app.services.cadena_service.get_totp_status_remote", mock)
+    monkeypatch.setattr("signature.services.cadena_service.get_totp_status_remote", mock)
     return mock
 
 
@@ -549,7 +549,7 @@ async def test_status_personal_se_resuelve_antes_del_lock(
         orden.append("status_http")
         return {"estado": "no_configurado", "user_id": str(USER)}
 
-    monkeypatch.setattr("app.services.cadena_service.get_signing_key_status_remote", _status)
+    monkeypatch.setattr("signature.services.cadena_service.get_signing_key_status_remote", _status)
 
     conn = _make_conn()
     _cola_nativa_nivel1(conn)

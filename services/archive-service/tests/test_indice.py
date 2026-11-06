@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.index_builder import (
+from archive.services.index_builder import (
     NS,
     XSD_VERSION,
     IndiceData,
@@ -228,7 +228,7 @@ async def test_insert_version_persists_xsd_version_v4() -> None:
     """(e) Toda versión nueva del índice persiste xsd_version='v4' de forma
     explícita — el repositorio NO confía en el DEFAULT 'v1' de la columna
     (migración 015)."""
-    from app.repositories.index_repository import IndexRepository
+    from archive.repositories.index_repository import IndexRepository
 
     mock_conn = AsyncMock()
     mock_conn.transaction = MagicMock(return_value=AsyncMock())
@@ -496,8 +496,8 @@ def test_item_valor_huella_from_link_hash() -> None:
     vínculo — se usa el dataclass real `ExpedienteRadicado` (no un stub
     dinámico) para que la prueba no quede desalineada de sus campos.
     """
-    from app.models.archive import Expediente, ExpedienteRadicado
-    from app.services.index_service import IndexService
+    from archive.models.archive import Expediente, ExpedienteRadicado
+    from archive.services.index_service import IndexService
 
     h = "c" * 64
     rad = make_radicado_link_record(content_hash=h)
@@ -551,8 +551,8 @@ def test_la_tipologia_del_vinculo_llega_al_indice() -> None:
     documental de nada de lo que ampara. Un esquema no caza un elemento
     obligatorio que se cumple con vacío.
     """
-    from app.models.archive import Expediente, ExpedienteRadicado
-    from app.services.index_service import IndexService
+    from archive.models.archive import Expediente, ExpedienteRadicado
+    from archive.services.index_service import IndexService
 
     rad = make_radicado_link_record()
     exp = Expediente(
@@ -591,8 +591,8 @@ def test_sin_tipologia_declarada_el_item_no_la_inventa() -> None:
     arriba mientras el índice miente sobre la clase documental. El vacío
     honesto es una respuesta válida; un valor inventado no.
     """
-    from app.models.archive import Expediente, ExpedienteRadicado
-    from app.services.index_service import IndexService
+    from archive.models.archive import Expediente, ExpedienteRadicado
+    from archive.services.index_service import IndexService
 
     rad = make_radicado_link_record()
     exp = Expediente(
@@ -755,9 +755,9 @@ async def _expected_rebuild_hash(exp_row: dict, link_rows: list[dict]) -> str:
     a partir de un solo `IndiceItemData` como en v1-v3 — debe pasar por
     `_data` (nivel_seguridad, productora_presente, pista_acceso_desde,
     contexto TRD) igual que el código real."""
-    from app.models.archive import Expediente
-    from app.repositories.archive_repository import _row_to_expediente, _row_to_radicado
-    from app.services.index_service import IndexService
+    from archive.models.archive import Expediente
+    from archive.repositories.archive_repository import _row_to_expediente, _row_to_radicado
+    from archive.services.index_service import IndexService
 
     exp: Expediente = _row_to_expediente(exp_row)
     exp.radicados = [_row_to_radicado(r) for r in link_rows]
@@ -1136,15 +1136,15 @@ async def test_verify_v1_indice_firmado_sigue_verificando_ok(client_with_conn) -
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from app.clients.signature_client import VerifyResult
+    from archive.clients.signature_client import VerifyResult
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value=v1_xml),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
@@ -1181,15 +1181,15 @@ async def test_verify_with_valid_firma_returns_true(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from app.clients.signature_client import VerifyResult
+    from archive.clients.signature_client import VerifyResult
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<indice-firmado/>"),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
@@ -1234,10 +1234,10 @@ async def test_verify_with_firma_service_unreachable_reports_invalida(client_wit
     # None simula firma_client.verify cuando el servicio está inalcanzable
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<indice-firmado/>"),
         ),
-        patch("app.clients.signature_client.verify", new=AsyncMock(return_value=None)),
+        patch("archive.clients.signature_client.verify", new=AsyncMock(return_value=None)),
     ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
@@ -1272,15 +1272,15 @@ async def test_verify_with_firma_invalid_signature(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from app.clients.signature_client import VerifyResult
+    from archive.clients.signature_client import VerifyResult
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value="<indice-firmado/>"),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=False, nivel_conformidad=None, acreditado=False, motivo="firma_adulterada"
@@ -1320,9 +1320,9 @@ async def test_verify_with_firma_but_minio_key_null_reports_unavailable(client_w
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml", new=AsyncMock()
+            "archive.clients.storage_client.download_signed_xml", new=AsyncMock()
         ) as mock_download,
-        patch("app.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
+        patch("archive.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
     ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
@@ -1359,9 +1359,9 @@ async def test_verify_with_firma_storage_download_fails_reports_unavailable(clie
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=None)
+            "archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=None)
         ),
-        patch("app.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
+        patch("archive.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
     ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
@@ -1385,7 +1385,7 @@ async def test_verify_with_firma_storage_download_fails_reports_unavailable(clie
 @pytest.mark.asyncio
 async def test_firmar_indice_retry_404_sin_indice(client_with_conn) -> None:
     client, mock_conn = client_with_conn  # noqa: F841
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     exp_id = uuid.uuid4()
     svc = IndexService(mock_conn, "demo")
@@ -1401,7 +1401,7 @@ async def test_firmar_indice_retry_409_ya_firmado_no_reintenta(client_with_conn)
     """Idempotente: si el índice vigente ya está 'firmado', 409 SIN llamar a
     signature-service (inmutable, no es un error de negocio)."""
     client, mock_conn = client_with_conn  # noqa: F841
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     exp_id = uuid.uuid4()
     svc = IndexService(mock_conn, "demo")
@@ -1411,7 +1411,7 @@ async def test_firmar_indice_retry_409_ya_firmado_no_reintenta(client_with_conn)
         "xml": "<indice/>",
     }
 
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     with patch.object(signature_client, "sign_xml", new=AsyncMock()) as mock_sign:
         with pytest.raises(Exception) as exc_info:
@@ -1423,14 +1423,14 @@ async def test_firmar_indice_retry_409_ya_firmado_no_reintenta(client_with_conn)
 @pytest.mark.asyncio
 async def test_firmar_indice_retry_503_si_firma_sigue_fallando(client_with_conn) -> None:
     client, mock_conn = client_with_conn  # noqa: F841
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     exp_id = uuid.uuid4()
     svc = IndexService(mock_conn, "demo")
     row = {"id": uuid.uuid4(), "estado": "pendiente_firma", "xml": "<indice/>", "version": 1}
     mock_conn.fetchrow.side_effect = [row, row]  # check + get_current dentro de firmar_indice
 
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=None)):
         with pytest.raises(Exception) as exc_info:
@@ -1513,7 +1513,7 @@ async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
     # (`execute.return_value = None`) simularía una carrera perdida (409).
     mock_conn.execute.return_value = "UPDATE 1"
 
-    from app.clients.signature_client import SignedIndice
+    from archive.clients.signature_client import SignedIndice
 
     signed = SignedIndice(
         firma_id=firma_id,
@@ -1526,7 +1526,7 @@ async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
     )
 
     with patch(
-        "app.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)
+        "archive.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)
     ):
         resp = await client.post(
             f"/api/v1/expedientes/{exp_id}/indice/firmar",
@@ -1551,7 +1551,7 @@ async def test_firmar_indice_lost_race_raises_409_no_phantom_audit(client_with_c
     idempotente que `firmar_indice_retry` ya usa cuando el índice YA estaba
     firmado antes de intentar nada — NUNCA un 500."""
     client, mock_conn = client_with_conn  # noqa: F841
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     exp_id = uuid.uuid4()
     svc = IndexService(mock_conn, "demo")
@@ -1559,8 +1559,8 @@ async def test_firmar_indice_lost_race_raises_409_no_phantom_audit(client_with_c
     mock_conn.fetchrow.return_value = row
     mock_conn.execute.return_value = "UPDATE 0"  # perdió la carrera
 
-    from app.clients import signature_client
-    from app.clients.signature_client import SignedIndice
+    from archive.clients import signature_client
+    from archive.clients.signature_client import SignedIndice
 
     signed = SignedIndice(
         firma_id=uuid.uuid4(),
@@ -1598,7 +1598,7 @@ async def test_firmar_endpoint_exito_audit_origen_manual(client_with_conn) -> No
     mock_conn.fetchrow.side_effect = [row, row]
     mock_conn.execute.return_value = "UPDATE 1"
 
-    from app.clients.signature_client import SignedIndice
+    from archive.clients.signature_client import SignedIndice
 
     signed = SignedIndice(
         firma_id=uuid.uuid4(),
@@ -1610,7 +1610,7 @@ async def test_firmar_endpoint_exito_audit_origen_manual(client_with_conn) -> No
         certificado_fingerprint="ab:cd",
     )
 
-    with patch("app.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)):
+    with patch("archive.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)):
         resp = await client.post(
             f"/api/v1/expedientes/{exp_id}/indice/firmar",
             headers=TENANT_HEADERS,
@@ -1693,8 +1693,8 @@ def test_items_from_preserves_stable_orden_after_exclusion() -> None:
     """(a) `_items_from` usa orden_documental ESTABLE de cada vínculo — no un
     enumerate temporal — así que un documento excluido en medio de la lista
     NO desplaza el orden de los que le siguen."""
-    from app.models.archive import Expediente, ExpedienteRadicado
-    from app.services.index_service import IndexService
+    from archive.models.archive import Expediente, ExpedienteRadicado
+    from archive.services.index_service import IndexService
 
     a_id, b_id, c_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     exp = Expediente(
@@ -1753,7 +1753,7 @@ async def test_unlink_radicado_repo_soft_deletes_not_deletes() -> None:
     """(b) `ArchiveRepository.unlink_radicado` es un UPDATE (soft-delete) — ya
     NO un DELETE físico — y persiste el causal opcional aportado por quien
     excluye (Acuerdo AGN 001/2024 art. 4.3.2.3)."""
-    from app.repositories.archive_repository import ArchiveRepository
+    from archive.repositories.archive_repository import ArchiveRepository
 
     mock_conn = AsyncMock()
     mock_conn.execute.return_value = "UPDATE 1"
@@ -2019,8 +2019,8 @@ async def test_contexto_series_resolves_parent_as_serie_and_own_as_subserie() ->
     """(e) Si la serie TRD del expediente tiene padre (`parent_id`), el
     expediente está clasificado en una SUBSERIE: `serie` = nombre del padre,
     `subserie` = nombre propio."""
-    from app.models.archive import TrdSerie
-    from app.services.index_service import IndexService
+    from archive.models.archive import TrdSerie
+    from archive.services.index_service import IndexService
 
     parent = TrdSerie(
         id=uuid.uuid4(),
@@ -2061,8 +2061,8 @@ async def test_contexto_series_resolves_parent_as_serie_and_own_as_subserie() ->
 async def test_contexto_series_top_level_has_no_subserie() -> None:
     """(e) Una serie TRD de primer nivel (sin `parent_id`) solo aporta
     `serie` — `subserie` queda None (se omite del XML)."""
-    from app.models.archive import TrdSerie
-    from app.services.index_service import IndexService
+    from archive.models.archive import TrdSerie
+    from archive.services.index_service import IndexService
 
     serie = TrdSerie(
         id=uuid.uuid4(),
@@ -2093,8 +2093,8 @@ async def test_data_productora_presente_false_sin_documentos_vigentes() -> None:
     vacuamente `True`, lo que proyectaría conformidad positiva sobre un
     conjunto documental inexistente. Solo debe ser `True` cuando hay AL MENOS
     UN vigente y todos declararon productora."""
-    from app.models.archive import Expediente
-    from app.services.index_service import IndexService
+    from archive.models.archive import Expediente
+    from archive.services.index_service import IndexService
 
     exp = Expediente(
         id=uuid.uuid4(),
@@ -2146,15 +2146,15 @@ async def test_verify_v2_indice_firmado_sigue_verificando_ok(client_with_conn) -
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from app.clients.signature_client import VerifyResult
+    from archive.clients.signature_client import VerifyResult
 
     with (
         patch(
-            "app.clients.storage_client.download_signed_xml",
+            "archive.clients.storage_client.download_signed_xml",
             new=AsyncMock(return_value=v2_xml),
         ),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
@@ -2257,7 +2257,7 @@ async def test_index_service_audit_read_access_does_not_write_without_user_id() 
     `require_permission("USUA_PERM_EXPEDIENTE")` ya exige un `X-User-Id`
     resoluble (fail-closed en `check_permission`); la guarda debe sostenerse
     igual si `IndexService` se invoca directamente."""
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     mock_conn = AsyncMock()
     svc = IndexService(mock_conn, "demo")
@@ -2286,12 +2286,12 @@ async def test_verify_propaga_las_advertencias_de_signature(client_with_conn) ->
         [make_radicado_link_record(radicado_id=rad_id, content_hash=h)],
         [_item_row(rad_id, h)],
     ]
-    from app.clients.signature_client import VerifyResult
+    from archive.clients.signature_client import VerifyResult
 
     with (
-        patch("app.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<x/>")),
+        patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<x/>")),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False,
@@ -2323,7 +2323,7 @@ async def test_verify_propaga_las_advertencias_de_signature(client_with_conn) ->
 async def test_el_cliente_lee_advertencias_de_forma_tolerante(monkeypatch, cuerpo, esperado) -> None:
     import httpx
 
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     real = httpx.AsyncClient
 
@@ -2348,14 +2348,14 @@ async def test_verify_verifica_el_artefacto_vigente_y_no_el_original(client_with
     indice = _indice_row_with_firma(firma_id)
     mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id), indice]
     mock_conn.fetch.side_effect = [[make_radicado_link_record(radicado_id=rad_id, content_hash=h)], [_item_row(rad_id, h)]]
-    from app.clients.signature_client import VerifyResult
+    from archive.clients.signature_client import VerifyResult
 
     descargar = AsyncMock(return_value="<renovado/>")
     with (
-        patch("app.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value="vigente-id/renovado.xml")),
-        patch("app.clients.storage_client.download_signed_xml", new=descargar),
+        patch("archive.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value="vigente-id/renovado.xml")),
+        patch("archive.clients.storage_client.download_signed_xml", new=descargar),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(return_value=VerifyResult(valida=True, nivel_conformidad=None, acreditado=False, motivo=None, lta_vigente=True)),
         ),
     ):
@@ -2376,14 +2376,14 @@ async def test_verify_sin_resolver_el_vigente_cae_al_original_y_lo_avisa(client_
     indice = _indice_row_with_firma(firma_id)
     mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id), indice]
     mock_conn.fetch.side_effect = [[make_radicado_link_record(radicado_id=rad_id, content_hash=h)], [_item_row(rad_id, h)]]
-    from app.clients.signature_client import VerifyResult
+    from archive.clients.signature_client import VerifyResult
 
     descargar = AsyncMock(return_value="<original/>")
     with (
-        patch("app.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value=None)),
-        patch("app.clients.storage_client.download_signed_xml", new=descargar),
+        patch("archive.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value=None)),
+        patch("archive.clients.storage_client.download_signed_xml", new=descargar),
         patch(
-            "app.clients.signature_client.verify",
+            "archive.clients.signature_client.verify",
             new=AsyncMock(return_value=VerifyResult(valida=True, nivel_conformidad=None, acreditado=False, motivo=None)),
         ),
     ):

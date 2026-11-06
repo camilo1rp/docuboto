@@ -35,9 +35,9 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
-from app.schemas.fisico import ExpedienteUnidadLink, PrestamoCreate
-from app.services.fisico_service import FisicoService
+from archive.core.database import tenant_schema
+from archive.schemas.fisico import ExpedienteUnidadLink, PrestamoCreate
+from archive.services.fisico_service import FisicoService
 
 from ._auth_minimo import crear_tablas_auth, crear_usuario
 from .conftest import DSN

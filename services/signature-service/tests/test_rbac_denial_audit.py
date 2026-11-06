@@ -93,7 +93,7 @@ async def test_denial_survives_audit_failure(
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
     with patch(
-        "app.core.clearance.audit.append_denial",
+        "signature.core.clearance.audit.append_denial",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.post(

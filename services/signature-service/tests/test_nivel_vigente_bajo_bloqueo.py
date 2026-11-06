@@ -26,8 +26,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.config import settings
-from app.repositories.cadena_repository import CadenaRepository
+from signature.core.config import settings
+from signature.repositories.cadena_repository import CadenaRepository
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
 from tests.test_cadena_2fa import _clear, _override, _patch_audit, _patch_email, _sol_row
@@ -62,7 +62,7 @@ async def _post(client, path: str):
 async def _llamar(path: str):
     from httpx import ASGITransport, AsyncClient
 
-    from app.main import app
+    from signature.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         return await _post(ac, path)

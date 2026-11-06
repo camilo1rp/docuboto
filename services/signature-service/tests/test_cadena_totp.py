@@ -22,10 +22,10 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.core.database import get_tenant_conn
-from app.core.http_clients import TotpVerifyUnavailableError
-from app.main import app
+from signature.core.config import settings
+from signature.core.database import get_tenant_conn
+from signature.core.http_clients import TotpVerifyUnavailableError
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
 from tests.test_cadena_2fa import FIRMA_ID, NOW, _patch_audit, _sol_row
@@ -44,7 +44,7 @@ def _clear() -> None:
 
 def _patch_verify_totp(monkeypatch: pytest.MonkeyPatch, *, result: dict | None = None, error: Exception | None = None) -> AsyncMock:
     mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=result)
-    monkeypatch.setattr("app.services.cadena_service.verify_totp", mock)
+    monkeypatch.setattr("signature.services.cadena_service.verify_totp", mock)
     return mock
 
 
@@ -409,7 +409,7 @@ async def test_batch_sign_with_totp_code_per_item(monkeypatch: pytest.MonkeyPatc
 def test_firmar_request_rejects_non_6_digit_totp_code() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.cadena import FirmarRequest
+    from signature.schemas.cadena import FirmarRequest
 
     with pytest.raises(ValidationError):
         FirmarRequest(totp_code="12a456")
@@ -419,7 +419,7 @@ def test_firmar_request_rejects_non_6_digit_totp_code() -> None:
 
 
 def test_lote_item_allows_totp_code_without_otp_email_fields() -> None:
-    from app.schemas.cadena import LoteItem
+    from signature.schemas.cadena import LoteItem
 
     item = LoteItem(solicitud_id=uuid.uuid4(), totp_code="123456")
     assert item.challenge_id is None

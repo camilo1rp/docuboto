@@ -20,13 +20,13 @@ import httpx
 import pytest
 from orpycamcp_common.kek import seal
 
-from app.clients.ppi import ClientePpi
-from app.core import consulta
-from app.core.config import settings
-from app.core.consulta import NO_DISPONIBLE
-from app.core.rechequeo import Registro, filtrar_busqueda, filtrar_pregunta, refs_a_borrar
-from app.core.seudonimo import aad, referenciar
-from app.routers import knowledge as rutas
+from knowledge.clients.ppi import ClientePpi
+from knowledge.core import consulta
+from knowledge.core.config import settings
+from knowledge.core.consulta import NO_DISPONIBLE
+from knowledge.core.rechequeo import Registro, filtrar_busqueda, filtrar_pregunta, refs_a_borrar
+from knowledge.core.seudonimo import aad, referenciar
+from knowledge.routers import knowledge as rutas
 from tests.conftest import TENANT_HEADERS
 
 ACTOR = uuid.UUID("00000000-0000-4000-8000-0000000000a1")
@@ -425,7 +425,7 @@ async def test_search_publica_el_origen_cuando_delega(
     ident = uuid.uuid4()
 
     async def delega(*_args: Any, **_kwargs: Any) -> consulta.Busqueda:
-        from app.core.rechequeo import Hallazgo
+        from knowledge.core.rechequeo import Hallazgo
 
         return consulta.Busqueda(True, (Hallazgo(ident, "2026-E-1", "cita viva", 0.9, 2, None),))
 
@@ -502,7 +502,7 @@ async def test_rag_publica_la_pagina_y_el_anexo(
     anexo = "22222222-2222-4222-8222-222222222222"
 
     async def responde(*_args: Any, **_kwargs: Any) -> consulta.Pregunta:
-        from app.core.rechequeo import Hallazgo
+        from knowledge.core.rechequeo import Hallazgo
 
         cita = Hallazgo(ident, "2026-E-1", "quince días", 0.8, 3, anexo)
         return consulta.Pregunta(
@@ -572,25 +572,60 @@ async def test_availability_suspendida_no_genera(client_with_conn) -> None:
     assert resp.json() == {"generation": False, "mode": "ppi"}
 
 
-async def test_el_transporte_declara_la_version() -> None:
+async def test_el_transporte_declara_la_version(monkeypatch: pytest.MonkeyPatch) -> None:
     recibidas: list[httpx.Request] = []
 
     def handler(req: httpx.Request) -> httpx.Response:
         recibidas.append(req)
         return httpx.Response(200, json={"mode": "search", "hits": []})
 
-    from app.core.salida_http import PPI_VERSION, TransporteHttp
+    from knowledge.core import salida_http, token_ppi
+    from knowledge.core.salida_http import PPI_VERSION, TransporteHttp
 
+    async def _portador(_conn: Any, _slug: str) -> str:
+        return "token-de-servicio"
+
+    monkeypatch.setattr(token_ppi, "portador", _portador)
     transporte = TransporteHttp()
     await transporte.cerrar()
     transporte._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        await transporte.request(
-            "POST",
-            "http://ppi.internal/v1/query",
-            json={"mode": "search"},
-            timeout=3,
-        )
+        with salida_http.con_entidad(object(), "demo"):
+            await transporte.request(
+                "POST",
+                "http://ppi.internal/v1/query",
+                json={"mode": "search"},
+                timeout=3,
+            )
     finally:
         await transporte.cerrar()
     assert recibidas[0].headers["PPI-Version"] == PPI_VERSION
+    assert recibidas[0].headers["Authorization"] == "Bearer token-de-servicio"
+
+
+async def test_el_transporte_no_llama_sin_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    recibidas: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        recibidas.append(req)
+        return httpx.Response(200, json={})
+
+    from knowledge.core import salida_http, token_ppi
+    from knowledge.core.salida_http import TransporteHttp
+
+    async def _portador(_conn: Any, _slug: str) -> str:
+        raise RuntimeError("sin token de servicio")
+
+    monkeypatch.setattr(token_ppi, "portador", _portador)
+    transporte = TransporteHttp()
+    await transporte.cerrar()
+    transporte._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with salida_http.con_entidad(object(), "demo"):
+            with pytest.raises(RuntimeError, match="sin token"):
+                await transporte.request("GET", "http://ppi.internal/v1/capabilities")
+        with pytest.raises(RuntimeError, match="sin entidad"):
+            await transporte.request("GET", "http://ppi.internal/v1/capabilities")
+    finally:
+        await transporte.cerrar()
+    assert recibidas == []

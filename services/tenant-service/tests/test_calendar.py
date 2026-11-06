@@ -11,7 +11,7 @@
 
 from datetime import date
 
-from app.core.calendar import (
+from tenant.core.calendar import (
     add_business_days,
     colombian_holidays,
     easter_sunday,

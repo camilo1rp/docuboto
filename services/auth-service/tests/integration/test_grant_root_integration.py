@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from app.ops import grant_root
+from auth.ops import grant_root
 from tests.integration.conftest import RUN_INTEGRATION, ensure_audit_log
 
 pytestmark = [

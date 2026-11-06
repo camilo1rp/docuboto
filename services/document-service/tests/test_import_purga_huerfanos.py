@@ -24,7 +24,7 @@ import asyncpg
 import httpx
 import pytest
 
-from app.clients import storage_client
+from document.clients import storage_client
 from tests.test_import import _pkg, _svc
 
 
@@ -105,9 +105,9 @@ async def test_un_item_omitido_por_carrera_dispara_la_purga_tras_confirmar() -> 
     svc._huerfanos.purgar = purga
     pkg = _pkg([{"tracking": "2026-OTRA-E-000001", "anexos": [("a.pdf", b"PDF")]}])
     with patch(
-        "app.services.import_service.storage_client.upload_bytes",
+        "document.services.import_service.storage_client.upload_bytes",
         new=AsyncMock(return_value=storage_client.ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
-    ), patch("app.services.import_service.audit.append", new=AsyncMock(return_value="h")):
+    ), patch("document.services.import_service.audit.append", new=AsyncMock(return_value="h")):
         rep = await svc.import_package(zip_bytes=pkg, max_clearance=3, actor=None)
     assert rep["importados"] == 0
     svc._huerfanos.registrar.assert_awaited_once()

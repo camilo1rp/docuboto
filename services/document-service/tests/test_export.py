@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from jsonschema import Draft202012Validator
 
-from app.services.export_service import (
+from document.services.export_service import (
     MAX_EXPORT_RADICADOS,
     RADICADO_SCHEMA,
     ExportService,
@@ -38,7 +38,7 @@ from app.services.export_service import (
 def _no_audit():
     """El asiento de egreso (audit.append) se prueba en orpycamcp_common; aquí se
     neutraliza para no ejercer el hash-chain sobre un conn nulo."""
-    with patch("app.services.export_service.audit.append", new=AsyncMock(return_value="h")):
+    with patch("document.services.export_service.audit.append", new=AsyncMock(return_value="h")):
         yield
 
 
@@ -164,7 +164,7 @@ async def test_anexo_bytes_included_with_sha256() -> None:
             return None
 
     with patch(
-        "app.services.export_service.storage_client.open_content_stream",
+        "document.services.export_service.storage_client.open_content_stream",
         new=AsyncMock(return_value=_FakeStream()),
     ):
         zbytes, *_ = await svc.build_export(
@@ -185,7 +185,7 @@ async def test_purged_anexo_is_traceable_not_fatal() -> None:
     entrada `ausente` TRAZABLE (no se descarta en silencio)."""
     svc = _svc([_row(con_anexo=True)])
     with patch(
-        "app.services.export_service.storage_client.open_content_stream",
+        "document.services.export_service.storage_client.open_content_stream",
         new=AsyncMock(return_value=None),
     ):
         zbytes, _u, num, _e = await svc.build_export(

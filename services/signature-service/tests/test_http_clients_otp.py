@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core import http_clients
+from signature.core import http_clients
 
 
 def _mock_async_client(status_code: int = 202) -> MagicMock:
@@ -47,7 +47,7 @@ async def test_send_otp_email_marks_payload_sensible_and_keeps_real_otp() -> Non
     cm = _mock_async_client()
     solicitud_id = uuid.uuid4()
 
-    with patch("app.core.http_clients.httpx.AsyncClient", return_value=cm):
+    with patch("signature.core.http_clients.httpx.AsyncClient", return_value=cm):
         await http_clients.send_otp_email(
             recipient_email="firmante@example.com",
             tenant_slug="icetex",
@@ -77,7 +77,7 @@ async def test_send_otp_email_raises_on_non_2xx_status() -> None:
     cm = _mock_async_client(status_code=500)
 
     with (
-        patch("app.core.http_clients.httpx.AsyncClient", return_value=cm),
+        patch("signature.core.http_clients.httpx.AsyncClient", return_value=cm),
         pytest.raises(http_clients.OtpEmailDeliveryError),
     ):
         await http_clients.send_otp_email(
@@ -107,7 +107,7 @@ async def test_send_otp_email_raises_on_502_envio_fallido() -> None:
     """
     cm = _mock_async_client(status_code=502)
     with (
-        patch("app.core.http_clients.httpx.AsyncClient", return_value=cm),
+        patch("signature.core.http_clients.httpx.AsyncClient", return_value=cm),
         pytest.raises(http_clients.OtpEmailDeliveryError),
     ):
         await http_clients.send_otp_email(

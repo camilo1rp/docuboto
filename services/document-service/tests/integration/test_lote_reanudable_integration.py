@@ -26,9 +26,9 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import acquire_tenant
-from app.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
-from app.services.batch_service import BatchService, LoteError
+from document.core.database import acquire_tenant
+from document.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
+from document.services.batch_service import BatchService, LoteError
 from tests.integration.test_lote_documentos_integration import (
     _schema,
     _tenant_registrado,

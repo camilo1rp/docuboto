@@ -33,8 +33,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from signature.core.database import get_tenant_conn
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 
 SOL_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -108,7 +108,7 @@ def _espiar_huella(monkeypatch) -> list[str]:
     ajeno es la misma fuga con otro disfraz —y de paso es trabajo tirado en un
     acto que se va a rechazar de todas formas—.
     """
-    from app.services import cadena_service as mod
+    from signature.services import cadena_service as mod
 
     llamadas: list[str] = []
 

@@ -48,7 +48,7 @@ describe("proxy de inteligencia", () => {
       }),
     });
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://api-gateway:8080/api/v1/config/intelligence");
+    expect(url).toBe("http://app:8000/api/v1/config/intelligence");
     expect(opts.method).toBe("PUT");
     expect(opts.headers.Authorization).toBe("Bearer tok-abc");
     expect(opts.headers["X-Tenant-Slug"]).toBe("demo");
@@ -77,7 +77,7 @@ describe("proxy de inteligencia", () => {
       request: cuerpo({ level: 2, enabled: false, statement: "   ", extra: true }),
     });
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://api-gateway:8080/api/v1/config/intelligence/levels");
+    expect(url).toBe("http://app:8000/api/v1/config/intelligence/levels");
     expect(JSON.parse(opts.body)).toEqual({ level: 2, enabled: false });
   });
 
@@ -86,7 +86,7 @@ describe("proxy de inteligencia", () => {
     globalThis.fetch = fetchMock;
     await postRetiro({ locals: SESSION, request: cuerpo({ levels: [1] }) });
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe("http://api-gateway:8080/api/v1/config/intelligence/withdraw");
+    expect(url).toBe("http://app:8000/api/v1/config/intelligence/withdraw");
     expect(opts.method).toBe("POST");
     expect(opts.body).toBeUndefined();
   });

@@ -9,9 +9,9 @@
 
 """Tests de `POST /api/v1/internal/documentos/anexos` (E10 debt, cableado del
 AIP OAIS al cierre del expediente) — primer endpoint interno de
-document-service (`app/routers/internal.py`).
+document-service (`document/routers/internal.py`).
 
-Gate D-02 (`X-Internal-Token`, fail-closed, `app/core/internal_auth.py`) +
+Gate D-02 (`X-Internal-Token`, fail-closed, `document/core/internal_auth.py`) +
 inventario TOTAL batch de anexos por `radicado_id`, SIN el gate de clearance
 que sí aplica `GET /documents/{id}/anexos` (RF-SEG-08, no-read-up): el
 empaquetado del AIP es un acto de SISTEMA, no una lectura de usuario. La
@@ -32,8 +32,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core import config as cfg_module
-from app.repositories.document_repository import DocumentRepository
+from document.core import config as cfg_module
+from document.repositories.document_repository import DocumentRepository
 from tests.conftest import TENANT_SLUG, make_anexo_record
 
 TEST_INTERNAL_TOKEN = "test-document-internal-token-xxx"
@@ -107,7 +107,7 @@ def test_require_internal_token_uses_constant_time_comparison(
     cambia — solo esta comparación final."""
     from fastapi import HTTPException
 
-    from app.core.internal_auth import require_internal_token
+    from document.core.internal_auth import require_internal_token
 
     monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
 

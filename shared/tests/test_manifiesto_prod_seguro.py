@@ -52,6 +52,9 @@ DEFECTO_DECLARADO = {
     # activa (WEBHOOK_SECRET_KEK) es `:?`.
     "WEBHOOK_SECRET_KEKS",
     "WEBHOOK_SECRET_KEK_ACTIVE_VERSION",
+    # Vacío mientras la entidad sigue en local. El fragmento intelligence no
+    # entra en este manifiesto; el acto de pasar a ppi responde 503.
+    "INTELLIGENCE_INTERNAL_TOKEN",
 }
 
 
@@ -107,7 +110,7 @@ def test_los_defectos_declarados_siguen_existiendo() -> None:
 
 def test_imagenes_de_terceros_con_tag_y_digest() -> None:
     """Tag legible Y digest: el tag solo se puede mover en el registro, el digest no."""
-    propios = {*servicios_propios(), "frontend"}
+    propios = {*servicios_propios(), "frontend", "app", "worker"}
     mal: list[str] = []
     terceros = 0
     for nombre, s in servicios(COMPOSE_PROD).items():

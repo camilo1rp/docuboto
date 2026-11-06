@@ -37,11 +37,20 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # no miraba — 108 errores invisibles entre los tres. Un servicio que se añada a
 # `services/` entra en el lint solo, sin que nadie tenga que acordarse.
 #
-# El criterio de "es un servicio Python" es tener `app/` y `requirements.txt`,
-# que es justo lo que el propio contenedor de lint necesita más abajo.
+# El criterio de "es un servicio Python" es tener requirements.txt y el
+# directorio-paquete (`document/`, `app/` en gateway y MCP).
+paquete_de() {
+    case "$1" in
+        api-gateway|mcp-server) echo "app" ;;
+        *) echo "${1%-service}" ;;
+    esac
+}
+
 mapfile -t SERVICES < <(
     for d in "$PROJECT_ROOT"/services/*/; do
-        [ -d "$d/app" ] && [ -f "$d/requirements.txt" ] && basename "$d"
+        name="$(basename "$d")"
+        pkg="$(paquete_de "$name")"
+        [ -d "$d/$pkg" ] && [ -f "$d/requirements.txt" ] && echo "$name"
     done | sort
 )
 
@@ -68,6 +77,8 @@ for svc in "${SERVICES[@]}"; do
     echo "  Linting: $svc"
     echo "══════════════════════════════════════════"
 
+    pkg="$(paquete_de "$svc")"
+
     if [ "${LINT_IN_PROCESS:-0}" = "1" ]; then
         # Mismas herramientas, mismos argumentos, misma configuración y el mismo
         # directorio de trabajo (el del SERVICIO, no la raíz) que el modo Docker.
@@ -81,7 +92,7 @@ for svc in "${SERVICES[@]}"; do
         ) || rc=1
         ( cd "$SVC_DIR" || exit 1
           echo '--- mypy ---'
-          mypy app/ --config-file "$PROJECT_ROOT/pyproject.toml" --ignore-missing-imports \
+          mypy "$pkg/" --config-file "$PROJECT_ROOT/pyproject.toml" --ignore-missing-imports \
               --no-error-summary --cache-dir=/tmp/mypy-cache-$svc || exit 1
         ) || rc=1
         if [ "$rc" -eq 0 ]; then
@@ -147,7 +158,7 @@ for svc in "${SERVICES[@]}"; do
             echo '--- ruff check ---'
             ruff check . --config /project/pyproject.toml --no-cache || rc=1
             echo '--- mypy ---'
-            mypy app/ --config-file /project/pyproject.toml --ignore-missing-imports \
+            mypy ${pkg}/ --config-file /project/pyproject.toml --ignore-missing-imports \
                 --no-error-summary --cache-dir=/tmp/mypy-cache || rc=1
             exit \$rc
         "; then

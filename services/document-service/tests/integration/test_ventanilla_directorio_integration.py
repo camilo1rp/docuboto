@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 from tests.integration.politica_stub import ENTIDAD
 
 pytestmark = pytest.mark.integration
@@ -48,9 +48,9 @@ async def _radicar_por_ventanilla(
     Se llama al SERVICIO y no al endpoint: lo que se comprueba es el modelo que
     queda en la base, no el transporte HTTP —que tiene sus propios tests—.
     """
-    from app.schemas.public import VentanillaRadicacion
-    from app.services.document_service import DocumentService
-    from app.services.ventanilla_service import VentanillaService
+    from document.schemas.public import VentanillaRadicacion
+    from document.services.document_service import DocumentService
+    from document.services.ventanilla_service import VentanillaService
 
     payload = VentanillaRadicacion(
         tipo_documental=campos.get("tipo_documental") or "DEM-PET",
@@ -192,7 +192,7 @@ async def test_el_mismo_remitente_de_correo_reutiliza_su_ficha(
 ) -> None:
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     servicio = TerceroService(conn, slug)
     a = await servicio.resolver_por_email("ana@ejemplo.co", nombre="Ana Ruiz", actor=None)
@@ -217,7 +217,7 @@ async def test_dos_fichas_con_el_mismo_correo_NO_se_eligen_solas(
     """
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     for nombre in ("Luis A", "Luis B"):
         await conn.execute(
@@ -240,7 +240,7 @@ async def test_un_correo_sin_direccion_o_sin_nombre_no_crea_ficha(
     """Una ficha sin nombre no se puede buscar ni elegir después: no sirve."""
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.services.tercero_service import TerceroService
+    from document.services.tercero_service import TerceroService
 
     servicio = TerceroService(conn, slug)
     assert await servicio.resolver_por_email(None, nombre="Alguien", actor=None) is None

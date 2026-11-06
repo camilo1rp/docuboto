@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.core import audit_partitions as ap
+from auth.core import audit_partitions as ap
 
 
 def test_el_mes_siguiente_salta_de_diciembre_a_enero() -> None:
@@ -51,9 +51,9 @@ async def test_si_la_consulta_falla_no_se_acusa() -> None:
 @pytest.mark.asyncio
 async def test_ready_expone_degraded_sin_tumbar_la_disponibilidad(client: AsyncClient) -> None:
     with (
-        patch("app.routers.health._ping_db", new_callable=AsyncMock),
-        patch("app.routers.health._audit_particiones", new_callable=AsyncMock, return_value="degraded"),
-        patch("app.services.auth_service.AuthService.keycloak_healthy", new_callable=AsyncMock, return_value=True),
+        patch("auth.routers.health._ping_db", new_callable=AsyncMock),
+        patch("auth.routers.health._audit_particiones", new_callable=AsyncMock, return_value="degraded"),
+        patch("auth.services.auth_service.AuthService.keycloak_healthy", new_callable=AsyncMock, return_value=True),
     ):
         r = await client.get("/health/ready")
     assert r.status_code == 200, "una partición ausente es una alerta de operación, no un 503"
@@ -66,9 +66,9 @@ async def test_ready_expone_degraded_sin_tumbar_la_disponibilidad(client: AsyncC
 @pytest.mark.asyncio
 async def test_ready_con_particion_al_dia_no_marca_degraded(client: AsyncClient) -> None:
     with (
-        patch("app.routers.health._ping_db", new_callable=AsyncMock),
-        patch("app.routers.health._audit_particiones", new_callable=AsyncMock, return_value="ok"),
-        patch("app.services.auth_service.AuthService.keycloak_healthy", new_callable=AsyncMock, return_value=True),
+        patch("auth.routers.health._ping_db", new_callable=AsyncMock),
+        patch("auth.routers.health._audit_particiones", new_callable=AsyncMock, return_value="ok"),
+        patch("auth.services.auth_service.AuthService.keycloak_healthy", new_callable=AsyncMock, return_value=True),
     ):
         r = await client.get("/health/ready")
     assert r.status_code == 200 and "degraded" not in r.json()
@@ -78,9 +78,9 @@ async def test_ready_con_particion_al_dia_no_marca_degraded(client: AsyncClient)
 @pytest.mark.asyncio
 async def test_ready_sin_base_no_consulta_las_particiones(client: AsyncClient) -> None:
     with (
-        patch("app.routers.health._ping_db", new_callable=AsyncMock, side_effect=RuntimeError("down")),
-        patch("app.routers.health._audit_particiones", new_callable=AsyncMock) as sonda,
-        patch("app.services.auth_service.AuthService.keycloak_healthy", new_callable=AsyncMock, return_value=True),
+        patch("auth.routers.health._ping_db", new_callable=AsyncMock, side_effect=RuntimeError("down")),
+        patch("auth.routers.health._audit_particiones", new_callable=AsyncMock) as sonda,
+        patch("auth.services.auth_service.AuthService.keycloak_healthy", new_callable=AsyncMock, return_value=True),
     ):
         r = await client.get("/health/ready")
     assert r.status_code == 503

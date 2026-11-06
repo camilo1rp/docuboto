@@ -36,8 +36,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.preservacion_repository import PreservacionRepository
+from storage.core.database import tenant_schema
+from storage.repositories.preservacion_repository import PreservacionRepository
 
 pytestmark = pytest.mark.integration
 

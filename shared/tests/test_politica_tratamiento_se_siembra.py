@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-LECTOR = RAIZ / "services" / "document-service" / "app" / "core" / "politica.py"
+LECTOR = RAIZ / "services" / "document-service" / "document" / "core" / "politica.py"
 MIGRACION = (
     RAIZ / "services" / "tenant-service" / "migrations" / "tenant" / "012_politica_tratamiento.sql"
 )

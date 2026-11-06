@@ -21,7 +21,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 GATEWAY = (RAIZ / "services/api-gateway/app/middleware/auth.py").read_text(encoding="utf-8")
-ESQUEMA = (RAIZ / "services/auth-service/app/schemas/auth.py").read_text(encoding="utf-8")
+ESQUEMA = (RAIZ / "services/auth-service/auth/schemas/auth.py").read_text(encoding="utf-8")
 
 
 def _campos_validate() -> set[str]:

@@ -33,8 +33,8 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from app.core.database import tenant_schema
-from app.services.archive_service import ArchiveService
+from archive.core.database import tenant_schema
+from archive.services.archive_service import ArchiveService
 
 from .test_eliminacion_lote_estados import _publicar, _sembrar_lote
 

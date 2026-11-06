@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.jobs import indice_reconciliation
+from archive.jobs import indice_reconciliation
 
 
 def _mock_conn() -> AsyncMock:
@@ -57,7 +57,7 @@ async def test_reconciliar_aip_delegates_to_wiring_service() -> None:
     row = _aip_pending_row()
 
     with patch(
-        "app.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
+        "archive.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
         new=AsyncMock(return_value="empaquetado"),
     ) as mock_intentar:
         resultado = await indice_reconciliation._reconciliar_aip(conn, "demo", row)
@@ -89,10 +89,10 @@ async def test_run_once_aip_aggregates_across_tenants_and_respects_advisory_lock
         yield conns[slug]
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
+            "archive.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
             new=AsyncMock(return_value="empaquetado"),
         ),
     ):
@@ -145,10 +145,10 @@ async def test_run_once_aip_isolates_per_expediente_failure() -> None:
         return "empaquetado"
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
+            "archive.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
             new=AsyncMock(side_effect=_side_effect),
         ),
     ):
@@ -176,10 +176,10 @@ async def test_run_once_aip_counts_omitido_outcome() -> None:
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
+            "archive.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
             new=AsyncMock(return_value="omitido"),
         ),
     ):
@@ -207,10 +207,10 @@ async def test_run_once_aip_counts_agotado_outcome() -> None:
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
+            "archive.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
             new=AsyncMock(return_value="agotado"),
         ),
     ):
@@ -244,10 +244,10 @@ async def test_run_once_aip_counts_pendiente_outcome_as_fallido() -> None:
         yield conn_a
 
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "app.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
+            "archive.jobs.indice_reconciliation.AipWiringService.intentar_empaquetar",
             new=AsyncMock(return_value="pendiente"),
         ),
     ):

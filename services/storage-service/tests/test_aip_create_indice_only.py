@@ -30,7 +30,7 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.preservacion import AipCreate
+from storage.schemas.preservacion import AipCreate
 
 
 def _base_kwargs(**overrides) -> dict:

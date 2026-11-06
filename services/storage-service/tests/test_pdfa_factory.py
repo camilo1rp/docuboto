@@ -27,9 +27,9 @@ from pathlib import Path
 
 import pytest
 
-from app.services.pdfa.factory import _resolve_verapdf_binary, get_pdfa_validator
-from app.services.pdfa.stub import StubPdfaValidator
-from app.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
+from storage.services.pdfa.factory import _resolve_verapdf_binary, get_pdfa_validator
+from storage.services.pdfa.stub import StubPdfaValidator
+from storage.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
 
 
 class _FakeSettings:
@@ -132,7 +132,7 @@ async def test_get_pdfa_validator_degrades_to_stub_for_non_executable(tmp_path: 
 
 
 def test_get_pdfa_validator_logs_warning_when_degrading(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.WARNING, logger="app.services.pdfa.factory")
+    caplog.set_level(logging.WARNING, logger="storage.services.pdfa.factory")
     settings = _FakeSettings(verapdf_binary="relative/path/verapdf")
 
     validator = get_pdfa_validator(settings)
@@ -143,7 +143,7 @@ def test_get_pdfa_validator_logs_warning_when_degrading(tmp_path: Path, caplog: 
 
 
 def test_get_pdfa_validator_unknown_validator_name_falls_back_to_stub(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.WARNING, logger="app.services.pdfa.factory")
+    caplog.set_level(logging.WARNING, logger="storage.services.pdfa.factory")
     settings = _FakeSettings(pdfa_validator="not-a-real-validator")
 
     assert isinstance(get_pdfa_validator(settings), StubPdfaValidator)

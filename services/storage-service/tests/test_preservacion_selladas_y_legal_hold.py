@@ -27,7 +27,7 @@ import uuid
 
 import pytest
 
-from app.core import config as config_module
+from storage.core import config as config_module
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS, conceder_permisos, make_worm_row
 
 

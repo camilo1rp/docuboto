@@ -80,7 +80,7 @@ async def test_denial_survives_audit_failure(client_with_conn) -> None:
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
     with patch(
-        "app.core.clearance.audit.append_denial",
+        "workflow.core.clearance.audit.append_denial",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)

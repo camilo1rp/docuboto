@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app.services.fisico_service as fisico_service_module
-from app.schemas.fisico import PrestamoCreate
-from app.services.fisico_service import FisicoService
+import archive.services.fisico_service as fisico_service_module
+from archive.schemas.fisico import PrestamoCreate
+from archive.services.fisico_service import FisicoService
 from tests.conftest import TENANT_HEADERS, TENANT_SLUG, USER_ID
 
 NOW = datetime.now(tz=UTC)
@@ -349,7 +349,7 @@ async def test_expedientes_in_unit_row_level_filter(client_with_conn) -> None:
 async def test_expedientes_in_unit_sin_user_id_403(client_with_conn) -> None:
     """Fail-closed observado (no asumido): `check_permission` corta en
     `user_id is None -> return False` ANTES de tocar la BD (ver
-    `app/core/clearance.py`), así que sin `X-User-Id` la petición nunca llega
+    `archive/core/clearance.py`), así que sin `X-User-Id` la petición nunca llega
     a `caller_clearance` — `require_permission` ya la rechaza con 403. El
     mock de `fetchval` deliberadamente devuelve `True` para demostrar que
     esto NO depende de la respuesta RBAC: el corte ocurre antes de
@@ -630,7 +630,7 @@ async def test_fuid_xml_row_level_filter(client_with_conn) -> None:
 async def test_fuid_sin_user_id_403(client_with_conn) -> None:
     """Fail-closed observado (no asumido): `check_permission` corta en
     `user_id is None -> return False` ANTES de tocar la BD (ver
-    `app/core/clearance.py`), así que sin `X-User-Id` la petición nunca llega
+    `archive/core/clearance.py`), así que sin `X-User-Id` la petición nunca llega
     a `caller_clearance` — `require_permission` ya la rechaza con 403. El
     mock de `fetchval` deliberadamente devuelve `True` para demostrar que
     esto NO depende de la respuesta RBAC: el corte ocurre antes de consultarla."""

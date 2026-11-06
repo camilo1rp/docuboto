@@ -25,7 +25,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from archive.main import app
 
 
 class _Conn:
@@ -68,8 +68,8 @@ class _Pool:
 
 @pytest_asyncio.fixture
 async def publico(monkeypatch: pytest.MonkeyPatch):
-    from app.core import config as cfg_module
-    from app.core.database import get_db_conn
+    from archive.core import config as cfg_module
+    from archive.core.database import get_db_conn
 
     monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
     conn = _Conn()

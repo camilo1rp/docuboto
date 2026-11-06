@@ -23,7 +23,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from app.core import database as db
+from knowledge.core import database as db
 
 
 class _Conn:

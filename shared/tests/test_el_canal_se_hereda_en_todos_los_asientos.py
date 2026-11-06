@@ -8,7 +8,6 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 
-
 """AREA-11-04: el canal 'mcp' llega al asiento en TODOS los servicios que asientan.
 
 Dos formas de que lo que el asistente hace en nombre de una persona se asentara
@@ -25,6 +24,9 @@ Dos formas de que lo que el asistente hace en nombre de una persona se asentara
 Única excepción legítima: el asiento del acceso PÚBLICO anónimo (`public_audit.py`),
 que por definición no pasa por el gateway autenticado.
 """
+
+from tests._compose import glob_src
+
 
 import re
 from pathlib import Path
@@ -43,7 +45,7 @@ _CANAL_FIJO = re.compile(r"""\bcanal\s*(?::\s*str\s*)?=\s*["']api["']""")
 def test_ningun_asiento_fija_canal_api_a_mano() -> None:
     ofensores = [
         f"{p.relative_to(_SERVICES)}:{n}"
-        for p in _SERVICES.glob("*/app/**/*.py")
+        for p in glob_src(_SERVICES, "*/app/**/*.py")
         if p.name != "public_audit.py"
         for n, linea in enumerate(p.read_text(encoding="utf-8").splitlines(), start=1)
         if _CANAL_FIJO.search(linea) and not linea.lstrip().startswith("#")
@@ -65,7 +67,7 @@ def _asientan(main: Path) -> bool:
 def test_todo_servicio_que_asienta_instala_el_middleware_de_traza() -> None:
     sin_middleware = [
         main.parent.parent.name
-        for main in sorted(_SERVICES.glob("*/app/main.py"))
+        for main in sorted(glob_src(_SERVICES, "*/app/main.py"))
         if _asientan(main) and "RequestLogMiddleware" not in main.read_text(encoding="utf-8")
     ]
     assert not sin_middleware, (
@@ -76,5 +78,5 @@ def test_todo_servicio_que_asienta_instala_el_middleware_de_traza() -> None:
 
 def test_el_censo_no_es_vacio() -> None:
     """Control positivo: sin él, un glob que no encuentra nada también pasaría."""
-    mains = list(_SERVICES.glob("*/app/main.py"))
+    mains = list(glob_src(_SERVICES, "*/app/main.py"))
     assert len([m for m in mains if _asientan(m)]) >= 8

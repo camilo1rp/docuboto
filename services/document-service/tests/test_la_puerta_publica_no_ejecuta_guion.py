@@ -16,7 +16,7 @@ autenticar. Servir en línea con el tipo declarado significaba que un anexo HTML
 
 import pytest
 
-from app.routers.cmis import _tipo_y_disposicion
+from document.routers.cmis import _tipo_y_disposicion
 
 
 @pytest.mark.parametrize(

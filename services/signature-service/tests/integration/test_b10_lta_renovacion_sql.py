@@ -29,14 +29,14 @@ from unittest.mock import AsyncMock
 import pytest
 from lxml import etree
 
-from app.clients import preservacion_client, storage_client
-from app.core import tsa
-from app.core.config import settings
-from app.core.database import _schema as tenant_schema
-from app.jobs import renovacion_lta
-from app.providers.base import SignerRef
-from app.providers.local import verify_xades
-from app.repositories.firma_repository import FirmaRepository
+from signature.clients import preservacion_client, storage_client
+from signature.core import tsa
+from signature.core.config import settings
+from signature.core.database import _schema as tenant_schema
+from signature.jobs import renovacion_lta
+from signature.providers.base import SignerRef
+from signature.providers.local import verify_xades
+from signature.repositories.firma_repository import FirmaRepository
 from tests.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)
     _cert,
     _firmar_lta,
@@ -109,7 +109,7 @@ def _tsa_larga(monkeypatch) -> None:
         .sign(key, hashes.SHA256())
     )
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem_cert(larga), key_pem=_pem_key(key), key_password=None),
     )
 
@@ -342,7 +342,7 @@ async def test_sin_la_crl_de_la_tsa_anterior_no_se_renueva(tenant_ctx, monkeypat
     def _sin_crl(*_a, **_k):
         raise tsa.RevocacionTsaNoDisponibleError("crl_tsa_no_obtenida: caída")
 
-    monkeypatch.setattr("app.providers.local.tsa.revocacion_de_tsa", _sin_crl)
+    monkeypatch.setattr("signature.providers.local.tsa.revocacion_de_tsa", _sin_crl)
     # La TSA de pruebas es autofirmada (no la consulta): se fuerza para ejercitar el camino.
     for _ in range(2):
         r = await renovacion_lta.renovar_tenant(conn, slug)
@@ -389,7 +389,7 @@ async def test_tsa_revocada_no_renueva_y_se_asienta_una_vez(tenant_ctx, monkeypa
     def _revocada(*_a, **_k):
         raise tsa.TsaRevocadaError("tsa_revocada: serie 1")
 
-    monkeypatch.setattr("app.providers.local.tsa.revocacion_de_tsa", _revocada)
+    monkeypatch.setattr("signature.providers.local.tsa.revocacion_de_tsa", _revocada)
     for _ in range(2):
         r = await renovacion_lta.renovar_tenant(conn, slug)
         assert r["tsa_revocada"] == 1 and r["renovadas"] == 0

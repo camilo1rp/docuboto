@@ -24,8 +24,8 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core import database
-from app.routers.internal_firma import huella_indice_vigente
+from archive.core import database
+from archive.routers.internal_firma import huella_indice_vigente
 
 
 async def _expediente(conn: asyncpg.Connection, schema: str, code: str) -> uuid.UUID:

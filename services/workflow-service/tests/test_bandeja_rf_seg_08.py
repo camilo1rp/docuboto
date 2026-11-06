@@ -318,7 +318,7 @@ async def test_list_pending_survives_audit_failure(client_with_conn) -> None:
     headers = {**TENANT_HEADERS, "X-Canal": "ui"}
 
     with patch(
-        "app.services.workflow_service.audit.append",
+        "workflow.services.workflow_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.get("/api/v1/workflows/pending", headers=headers)
@@ -333,7 +333,7 @@ async def test_get_flow_history_survives_audit_failure(client_with_conn) -> None
     headers = {**TENANT_HEADERS, "X-Canal": "api"}
 
     with patch(
-        "app.services.workflow_service.audit.append",
+        "workflow.services.workflow_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.get(
@@ -406,7 +406,7 @@ async def test_get_current_step_survives_audit_failure(client_with_conn) -> None
     headers = {**TENANT_HEADERS, "X-Canal": "ui"}
 
     with patch(
-        "app.services.workflow_service.audit.append",
+        "workflow.services.workflow_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.get(
@@ -460,7 +460,7 @@ async def test_get_flow_events_survives_audit_failure(client_with_conn) -> None:
     headers = {**TENANT_HEADERS, "X-Canal": "api"}
 
     with patch(
-        "app.services.workflow_service.audit.append",
+        "workflow.services.workflow_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.get(

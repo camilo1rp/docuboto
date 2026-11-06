@@ -45,7 +45,7 @@ async def test_close_applies_trd_disposition(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [exp_open, trd, trd, trd, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
@@ -71,7 +71,7 @@ async def test_close_forwards_x_user_id_as_actor_id(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
@@ -117,16 +117,16 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn, monkeyp
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, indice_vigente]
     mock_conn.fetch.return_value = []
 
-    from app.clients.signature_client import SignOutcome
-    from app.core.config import settings as archive_settings
-    from app.services.index_service import IndexService
+    from archive.clients.signature_client import SignOutcome
+    from archive.core.config import settings as archive_settings
+    from archive.services.index_service import IndexService
 
     monkeypatch.setattr(archive_settings, "close_sign_max_sync_attempts", 1)
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
         patch(
-            "app.clients.signature_client.sign_xml_outcome",
+            "archive.clients.signature_client.sign_xml_outcome",
             new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
         ),
     ):
@@ -150,8 +150,8 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn, monkeyp
 async def test_firmar_indice_marca_firmado(client_with_conn) -> None:
     """El índice vigente se firma vía signature-service y queda 'firmado'."""
     client, mock_conn = client_with_conn  # noqa: F841 (solo para overrides de app)
-    from app.clients.signature_client import SignedIndice
-    from app.services.index_service import IndexService
+    from archive.clients.signature_client import SignedIndice
+    from archive.services.index_service import IndexService
 
     exp_id = uuid.uuid4()
     firma_id = uuid.uuid4()
@@ -174,7 +174,7 @@ async def test_firmar_indice_marca_firmado(client_with_conn) -> None:
         certificado_fingerprint="ab:cd",
     )
 
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=signed)):
         result = await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=actor_id)
@@ -188,13 +188,13 @@ async def test_firmar_indice_marca_firmado(client_with_conn) -> None:
 async def test_firmar_indice_sin_actor_id_queda_pendiente(client_with_conn) -> None:
     """Sin actor_id (X-User-Id) no se intenta la llamada HTTP: 'pendiente_firma'."""
     client, mock_conn = client_with_conn  # noqa: F841
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     exp_id = uuid.uuid4()
     svc = IndexService(mock_conn, "demo")
     mock_conn.fetchrow.return_value = {"id": uuid.uuid4(), "estado": "vigente", "xml": "<indice/>", "version": 1}
 
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     with patch.object(signature_client, "sign_xml", new=AsyncMock()) as mock_sign:
         result = await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=None)
@@ -208,14 +208,14 @@ async def test_firmar_indice_signature_service_inalcanzable_no_bloquea(client_wi
     """Si signature-service no responde (sign_xml → None), el índice queda
     'pendiente_firma' y el cierre no se bloquea (best-effort, RT-16)."""
     client, mock_conn = client_with_conn  # noqa: F841
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     exp_id = uuid.uuid4()
     actor_id = str(uuid.uuid4())
     svc = IndexService(mock_conn, "demo")
     mock_conn.fetchrow.return_value = {"id": uuid.uuid4(), "estado": "vigente", "xml": "<indice/>", "version": 1}
 
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=None)) as mock_sign:
         result = await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=actor_id)
@@ -248,8 +248,8 @@ async def test_close_expediente_audit_uses_real_regenerate_result_not_redacted(
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
-    from app.schemas.archive import RebuildResult
-    from app.services.index_service import IndexService
+    from archive.schemas.archive import RebuildResult
+    from archive.services.index_service import IndexService
 
     # Marcador distintivo e inequívocamente REAL — un `xsd_version` que la
     # redacción de M2 jamás produciría (esa solo deja pasar la constante del
@@ -297,7 +297,7 @@ async def test_close_expediente_with_borrador_serie_returns_409_trd_version_no_v
     # no hay convalidada/migrada para el código).
     mock_conn.fetchrow.side_effect = [exp_open, trd_borrador, None]
 
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()) as mock_regenerate,
@@ -354,7 +354,7 @@ async def test_close_expediente_with_vigente_serie_succeeds(
     mock_conn.fetchrow.side_effect = [exp_open, trd, trd, trd, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
@@ -480,7 +480,7 @@ async def test_cerrar_sin_serie_trd_deja_marca_de_revision(client_with_conn) -> 
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
@@ -514,7 +514,7 @@ async def test_cerrar_con_serie_convalidada_no_marca_nada(client_with_conn) -> N
     mock_conn.fetchrow.side_effect = [exp_open, trd, trd, trd, exp_closed, exp_closed]
     mock_conn.fetch.return_value = []
 
-    from app.services.index_service import IndexService
+    from archive.services.index_service import IndexService
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),

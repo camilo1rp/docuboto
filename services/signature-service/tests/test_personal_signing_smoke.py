@@ -62,7 +62,7 @@ from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSigner, XAdESVerifier
 
-from app.providers.local import _declarar_transforms
+from signature.providers.local import _declarar_transforms
 
 _SIGN_ALG = SignatureMethod.RSA_SHA256
 _DIGEST_ALG = DigestAlgorithm.SHA256

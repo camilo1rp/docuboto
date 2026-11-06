@@ -42,11 +42,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-import app.core.config as config_module
-import app.services.aip_service as aip_service_module
-from app.schemas.preservacion import AipCreate
-from app.services.aip_service import AipService
-from app.services.preservation_worm_service import _worm_lock_key
+import storage.core.config as config_module
+import storage.services.aip_service as aip_service_module
+from storage.schemas.preservacion import AipCreate
+from storage.services.aip_service import AipService
+from storage.services.preservation_worm_service import _worm_lock_key
 
 from .conftest import DSN
 

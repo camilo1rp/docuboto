@@ -37,20 +37,47 @@ from tests._compose import COMPOSE_DEV, COMPOSE_PROD, RAIZ, servicios
 _CON_MIGRACIONES = sorted(
     p.parent.parent.name for p in (RAIZ / "services").glob("*/migrations/runner.py")
 )
+#: El paquete vive en `services/docuboto`; el servicio de Compose se llama `app`.
+_COMPOSE_DE = {"docuboto": "app"}
+_DOMINIO_MIGRA = (
+    "auth",
+    "tenant",
+    "document",
+    "storage",
+    "workflow",
+    "archive",
+    "notification",
+    "signature",
+    "knowledge",
+)
+
+
+def _compose_de(svc: str) -> str:
+    return _COMPOSE_DE.get(svc, svc)
+
+
+def _dockerfile_de(svc: str):
+    if svc == "docuboto":
+        return RAIZ / "infra" / "Dockerfile.app"
+    return RAIZ / "services" / svc / "Dockerfile"
 
 
 def _dockerfile_migra(svc: str) -> bool:
-    texto = (RAIZ / "services" / svc / "Dockerfile").read_text(encoding="utf-8")
+    ruta = _dockerfile_de(svc)
+    if not ruta.is_file():
+        return False
+    texto = ruta.read_text(encoding="utf-8")
     m = re.search(r"^(?:CMD|ENTRYPOINT)\s.*$", texto, re.MULTILINE)
     return bool(m and "runner.py" in m.group(0) and m.group(0).index("runner.py") < m.group(0).find("uvicorn"))
 
 
 def _migrador_de(svc: str, todos: dict[str, dict]) -> str | None:
+    token = _compose_de(svc)
     for nombre, s in todos.items():
         cmd = s.get("command")
         cmd_txt = " ".join(cmd) if isinstance(cmd, list) else str(cmd or "")
         img = str(s.get("image", ""))
-        if nombre.startswith("migrate-") and "migrations/runner.py" in cmd_txt and f"/{svc}:" in img:
+        if nombre.startswith("migrate-") and "migrations/runner.py" in cmd_txt and f"/{token}:" in img:
             return nombre
     return None
 
@@ -75,17 +102,18 @@ def test_todo_servicio_con_migraciones_las_aplica_antes_de_servir(compose) -> No
         if migrador is None:
             mal.append(f"{svc}: ni el Dockerfile ni el manifiesto de producción migran antes de servir")
             continue
-        deps = todos[svc].get("depends_on") or {}
+        nombre = _compose_de(svc)
+        deps = todos[nombre].get("depends_on") or {}
         cond = deps.get(migrador, {}).get("condition") if isinstance(deps, dict) else None
         if cond != "service_completed_successfully":
-            mal.append(f"{svc}: no depende de {migrador} con service_completed_successfully")
+            mal.append(f"{nombre}: no depende de {migrador} con service_completed_successfully")
         env = todos[migrador].get("environment") or {}
         # prod: mapa; dev: lista `K=V`.
         nombres = set(env) if isinstance(env, dict) else {str(e).split("=", 1)[0] for e in env}
         if "MIGRATIONS_DATABASE_URL" not in nombres:
             mal.append(f"{migrador}: no usa la conexión del propietario (MIGRATIONS_DATABASE_URL)")
-        if todos[migrador].get("image") != todos[svc].get("image"):
-            mal.append(f"{migrador}: no usa la MISMA imagen que {svc} (migraría otro código)")
+        if todos[migrador].get("image") != todos[nombre].get("image"):
+            mal.append(f"{migrador}: no usa la MISMA imagen que {nombre} (migraría otro código)")
     assert not mal, "Migraciones al arrancar (fail-closed):\n  " + "\n  ".join(mal)
 
 
@@ -102,10 +130,12 @@ def test_en_dev_cada_servicio_con_runner_tiene_su_migrador() -> None:
     """Dev nombra la imagen (`image:`) para que el migrador la reutilice sin construirla aparte."""
     todos = servicios(COMPOSE_DEV)
     for svc in _CON_MIGRACIONES:
-        assert f"migrate-{svc.removesuffix('-service')}" in todos, f"dev sin migrador para {svc}"
-        assert todos[svc].get("image"), f"{svc}: sin `image:` explícita; el migrador no la comparte"
-        assert "build" in todos[svc], f"{svc}: el servicio es quien construye la imagen"
-        assert "build" not in todos[f"migrate-{svc.removesuffix('-service')}"], (
+        nombre = _compose_de(svc)
+        migrador = f"migrate-{svc.removesuffix('-service')}"
+        assert migrador in todos, f"dev sin migrador para {svc}"
+        assert todos[nombre].get("image"), f"{nombre}: sin `image:` explícita; el migrador no la comparte"
+        assert "build" in todos[nombre], f"{nombre}: el servicio es quien construye la imagen"
+        assert "build" not in todos[migrador], (
             "el migrador no construye: reutiliza la imagen del servicio"
         )
 
@@ -154,3 +184,63 @@ def test_el_texto_de_prod_y_la_doc_ya_no_afirman_un_cerrojo_que_no_existe() -> N
     assert "orpycamcp_common.migrations.cerrojo" in prod
     modulo = (RAIZ / "shared" / "orpycamcp_common" / "migrations.py").read_text(encoding="utf-8")
     assert "pg_try_advisory_lock" in modulo and "MIGRATIONS_LOCK_TIMEOUT_S" in modulo
+
+
+def test_el_baseline_es_el_generado_y_trae_los_catalogos() -> None:
+    """Mutación que debe caer: editar 001_baseline.sql a mano; omitir un catálogo."""
+    import importlib.util
+
+    script = RAIZ / "scripts" / "generar_baseline.py"
+    spec = importlib.util.spec_from_file_location("generar_baseline", script)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for ambito in ("global", "tenant"):
+        dest = RAIZ / "services" / "docuboto" / "migrations" / ambito / "001_baseline.sql"
+        assert dest.is_file(), dest
+        assert dest.read_text(encoding="utf-8") == mod.concatenar(ambito)
+    global_ = (RAIZ / "services/docuboto/migrations/global/001_baseline.sql").read_text(
+        encoding="utf-8"
+    )
+    tenant = (RAIZ / "services/docuboto/migrations/tenant/001_baseline.sql").read_text(
+        encoding="utf-8"
+    )
+    texto = global_ + "\n" + tenant
+    for marca in (
+        "auth_permissions",
+        "medios_recepcion",
+        "intelligence_provider",
+        "trabajo_fuera",
+        "ppi_nonces",
+    ):
+        assert marca in texto, marca
+
+
+@pytest.mark.parametrize("compose", _MANIFIESTOS)
+def test_el_proceso_unificado_aplica_un_solo_baseline(compose) -> None:  # noqa: ANN001
+    todos = servicios(compose)
+    assert "migrate-docuboto" in todos
+    assert (todos["migrate-docuboto"].get("profiles") or []) in ([], None)
+    for corto in _DOMINIO_MIGRA:
+        perfiles = todos[f"migrate-{corto}"].get("profiles") or []
+        assert perfiles == ["split"], f"migrate-{corto} debe quedar en split"
+    for nombre in ("app", "worker"):
+        deps = todos[nombre].get("depends_on") or {}
+        migradores = [k for k in deps if str(k).startswith("migrate-")]
+        assert migradores == ["migrate-docuboto"], f"{nombre}: {migradores}"
+
+
+def test_la_imagen_app_copia_el_baseline() -> None:
+    texto = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8")
+    assert "COPY services/docuboto/migrations /app/migrations" in texto
+
+
+def test_los_nueve_runners_sellan_si_el_baseline_ya_corrio() -> None:
+    vistos = 0
+    for svc in _CON_MIGRACIONES:
+        if svc == "docuboto":
+            continue
+        texto = _runner(svc)
+        assert "sello_si_baseline" in texto, svc
+        vistos += 1
+    assert vistos >= 9

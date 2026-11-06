@@ -35,7 +35,7 @@ def _clearance_row(max_level: int = 3) -> dict:
 
 def test_el_recorte_de_expedientes_exige_el_acto_de_publicacion() -> None:
     """El chokepoint del OAI ya no deduce «público» de la ausencia de reserva."""
-    from app.repositories.oai_repository import _PUBLIC
+    from archive.repositories.oai_repository import _PUBLIC
 
     assert "publicable" in _PUBLIC, "el recorte público no exige el acto de publicación"
     assert "nivel_seguridad = 1" in _PUBLIC, "la reserva sigue mandando"
@@ -49,7 +49,7 @@ def test_el_recorte_no_despublica_los_expedientes_cerrados() -> None:
     `status <> ...` por simetría habría despublicado en silencio todo el archivo
     cerrado, que es la mayor parte de un fondo.
     """
-    from app.repositories.oai_repository import _PUBLIC
+    from archive.repositories.oai_repository import _PUBLIC
 
     assert "status" not in _PUBLIC
 

@@ -15,6 +15,9 @@ fail-closed en una sola copia es un hueco de autorización que ningún test del 
 sano ve. La definición vive en `orpycamcp_common.rbac`; los servicios la importan.
 """
 
+from tests._compose import glob_src
+
+
 import ast
 import uuid
 from pathlib import Path
@@ -42,7 +45,7 @@ _necesita_arbol = pytest.mark.skipif(
 
 def _definiciones() -> list[tuple[str, str]]:
     halladas: list[tuple[str, str]] = []
-    for archivo in sorted(_SERVICIOS.glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(_SERVICIOS, "*/app/**/*.py")):
         for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
             if isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef)) and nodo.name in _UNICAS:
                 halladas.append((str(archivo.relative_to(_RAIZ)), nodo.name))
@@ -63,7 +66,7 @@ def test_el_censo_ve_a_los_servicios_que_la_importan() -> None:
     """Anti-vacuidad: el guardián de arriba pasaría igual si el glob no hallara nada."""
     importan = [
         p
-        for p in _SERVICIOS.glob("*/app/core/*.py")
+        for p in glob_src(_SERVICIOS, "*/app/core/*.py")
         if "from orpycamcp_common.rbac import" in p.read_text(encoding="utf-8")
     ]
     assert len(importan) >= 8, [p.parent.parent.parent.name for p in importan]

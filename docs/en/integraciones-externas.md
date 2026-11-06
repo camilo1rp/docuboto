@@ -11,7 +11,7 @@ Common principle: the contract (function signatures / REST endpoints) **does not
 | | |
 |---|---|
 | Current state | Native **electronic** signature (SHA-256 + identity + seal). Detects alteration; it is **not** a qualified digital signature. |
-| Swap point | `services/signature-service/app/services/signer.py` (`firmar` / `verificar` functions). |
+| Swap point | `services/signature-service/signature/services/signer.py` (`firmar` / `verificar` functions). |
 | Selector | `SIGNER_PROVIDER` (config; `nativa` by default). |
 | Regulation | Decreto 2364/2012 (Colombian electronic signature law) → certified for procedures that require a **digital** signature. |
 
@@ -107,7 +107,7 @@ The MCP layer is thus **complete** (tools + resources + prompts + both transport
 | | |
 |---|---|
 | Current state | **Stub** provider (deterministic guía, no real API). |
-| Swap point | `services/document-service/app/services/postal_provider.py` (`generar_guia`). |
+| Swap point | `services/document-service/document/services/postal_provider.py` (`generar_guia`). |
 
 **To enable the real operator:** implement `generar_guia(operador, radicado_id)` (and, if applicable, the status query) against the operator's API with its credentials; the delivery status is already updated via `POST /api/v1/envios/{id}/estado` (callback/polling).
 

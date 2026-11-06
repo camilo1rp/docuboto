@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.document_client import DocumentClientError
-from app.services.archive_service import ArchiveService
+from archive.clients.document_client import DocumentClientError
+from archive.services.archive_service import ArchiveService
 
 TENANT = "demo"
 
@@ -59,7 +59,7 @@ async def test_completa_lo_que_document_service_sabe_y_deja_asiento() -> None:
     svc = ArchiveService(conn, TENANT)
 
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         new=AsyncMock(return_value={str(rid): _meta()}),
     ) as meta:
         resumen = await svc.completar_origen_legado(50)
@@ -91,7 +91,7 @@ async def test_un_null_legitimo_se_marca_intentado_sin_asiento() -> None:
     svc = ArchiveService(conn, TENANT)
 
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         new=AsyncMock(
             return_value={str(rid): _meta(origin_dept_code=None, origin_dept=None, formato=None, tamano_bytes=None)}
         ),
@@ -116,7 +116,7 @@ async def test_con_document_service_caido_no_se_marca_nada() -> None:
     svc = ArchiveService(conn, TENANT)
 
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         new=AsyncMock(side_effect=DocumentClientError("caído")),
     ):
         resumen = await svc.completar_origen_legado(50)
@@ -129,7 +129,7 @@ async def test_con_document_service_caido_no_se_marca_nada() -> None:
 async def test_sin_pendientes_no_llama_a_document_service() -> None:
     svc = ArchiveService(_conn(), TENANT)
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal", new=AsyncMock()
+        "archive.clients.document_client.fetch_radicado_metadata_internal", new=AsyncMock()
     ) as meta:
         assert await svc.completar_origen_legado(50) == {"vistos": 0, "completados": 0, "sin_cambios": 0}
     meta.assert_not_awaited()
@@ -171,7 +171,7 @@ async def test_el_asiento_lleva_los_valores_escritos_y_la_fuente() -> None:
     }
     svc = ArchiveService(conn, TENANT)
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         new=AsyncMock(return_value={str(rid): _meta()}),
     ):
         await svc.completar_origen_legado(50)

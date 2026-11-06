@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.providers.base import SignerRef
+from signature.providers.base import SignerRef
 from tests.conftest import TENANT_HEADERS
 from tests.test_sign_xml_xades import (  # noqa: F401 — fixtures y helpers compartidos
     _generate_cert,
@@ -117,7 +117,7 @@ async def test_verify_pasa_el_certificado_firmante_al_sello_de_tiempo(
 ) -> None:
     """AREA-04-08: ``verify_xades`` entrega el certificado FIRMANTE a la
     verificación del SignatureTimeStamp (el cruce genTime/vigencia)."""
-    from app.core import tsa as tsa_module
+    from signature.core import tsa as tsa_module
 
     client, conn, table, uploads, install_seal, _ = signature_env
     install_seal(_sello(*_generate_cert("sello-t"), acreditado=False))

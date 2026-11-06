@@ -34,10 +34,10 @@ from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import NameOID
 from httpx import AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.config import settings
-from app.core.database import get_db_conn, get_tenant_conn
-from app.core.signing_keys import (
+from auth.core.authz import Caller, get_caller
+from auth.core.config import settings
+from auth.core.database import get_db_conn, get_tenant_conn
+from auth.core.signing_keys import (
     build_aad,
     build_csr,
     build_subject_name,
@@ -48,7 +48,7 @@ from app.core.signing_keys import (
     private_key_to_pem,
     sign_digest,
 )
-from app.main import app
+from auth.main import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 USER_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
@@ -79,8 +79,8 @@ def _internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock_append = AsyncMock(return_value="fakehash")
-    monkeypatch.setattr("app.services.signing_key_service._audit.append", mock_append)
-    monkeypatch.setattr("app.services.totp_service._audit.append", mock_append)
+    monkeypatch.setattr("auth.services.signing_key_service._audit.append", mock_append)
+    monkeypatch.setattr("auth.services.totp_service._audit.append", mock_append)
     return mock_append
 
 
@@ -676,7 +676,7 @@ async def test_activate_fails_closed_without_audit_lib(
     (``if _AUDIT_AVAILABLE:`` sin ``else``) y la activación seguía
     adelante. Ahora falla ANTES de tocar la fila (ni ``activate()`` ni
     ``verify_directly_issued_by`` se alcanzan)."""
-    monkeypatch.setattr("app.services.signing_key_service._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("auth.services.signing_key_service._AUDIT_AVAILABLE", False)
     ca_key, ca_cert = sub_ca
     conn = _make_conn()
     private_key = generate_keypair()
@@ -724,7 +724,7 @@ async def test_internal_status_resolves_from_bearer(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "app.routers.signing_key.validate_token",
+        "auth.routers.signing_key.validate_token",
         AsyncMock(return_value={"user_id": "kc-sub", "tenant_slug": "demo"}),
     )
     conn = _make_conn()
@@ -766,7 +766,7 @@ async def test_internal_status_requires_internal_token(client: AsyncClient) -> N
 
 def _mock_validate_token(monkeypatch: pytest.MonkeyPatch, claims: dict) -> None:
     monkeypatch.setattr(
-        "app.routers.signing_key.validate_token", AsyncMock(return_value=claims)
+        "auth.routers.signing_key.validate_token", AsyncMock(return_value=claims)
     )
 
 
@@ -784,8 +784,8 @@ async def test_sign_digest_success(client: AsyncClient, monkeypatch: pytest.Monk
     active_key_row = _key_row(private_key=private_key, estado="activo", cert_pem=cert_pem)
 
     active_totp_secret = b"0123456789012345678901"
-    from app.core.totp import _hotp, current_timestep, encrypt_secret
-    from app.core.totp import build_aad as build_totp_aad
+    from auth.core.totp import _hotp, current_timestep, encrypt_secret
+    from auth.core.totp import build_aad as build_totp_aad
 
     code = _hotp(active_totp_secret, current_timestep())
     monkeypatch.setattr(settings, "totp_encryption_key", TEST_KEK)
@@ -883,8 +883,8 @@ async def test_sign_digest_wrong_totp_never_signs(
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     active_key_row = _key_row(private_key=private_key, estado="activo", cert_pem=cert_pem)
 
-    from app.core.totp import build_aad as build_totp_aad  # noqa: PLC0415
-    from app.core.totp import encrypt_secret
+    from auth.core.totp import build_aad as build_totp_aad  # noqa: PLC0415
+    from auth.core.totp import encrypt_secret
 
     totp_ciphertext, totp_nonce = encrypt_secret(
         b"0123456789012345678901",
@@ -1037,8 +1037,8 @@ def _totp_row_and_code(
     """Fila TOTP ``activo`` + código RFC 6238 válido para ESA fila — mismo
     patrón que :func:`test_sign_digest_success`, factorizado para el
     step-up de enroll/revoke de Incremento 2."""
-    from app.core.totp import _hotp, current_timestep, encrypt_secret
-    from app.core.totp import build_aad as build_totp_aad
+    from auth.core.totp import _hotp, current_timestep, encrypt_secret
+    from auth.core.totp import build_aad as build_totp_aad
 
     secret = b"0123456789012345678901"
     code = _hotp(secret, current_timestep())
@@ -1247,7 +1247,7 @@ async def test_self_revoke_fails_closed_without_audit_lib(
     ``signing_key.revocada`` se saltaba en silencio y la revocación seguía
     adelante. Ahora falla ANTES de verificar el TOTP (no consume el
     código) y ANTES de tocar la fila (``revoke_atomic`` nunca se invoca)."""
-    monkeypatch.setattr("app.services.signing_key_service._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("auth.services.signing_key_service._AUDIT_AVAILABLE", False)
     conn = _make_conn()
     active_row = _key_row(estado="activo")
     conn.fetchrow.side_effect = [active_row]
@@ -1367,7 +1367,7 @@ async def test_admin_revoke_fails_closed_without_audit_lib(
     """R1 (Baja de auditoría #1, Incremento 2) — mismo fail-closed que
     ``revoke_self``, camino admin: sin ``orpycamcp_common``, la revocación
     se rehúsa ANTES de tocar la fila."""
-    monkeypatch.setattr("app.services.signing_key_service._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("auth.services.signing_key_service._AUDIT_AVAILABLE", False)
     conn = _make_conn()
     admin_caller = Caller(
         user_id=USER_ID,

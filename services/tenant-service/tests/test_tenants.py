@@ -406,7 +406,7 @@ async def test_sin_token_configurado_rechaza_todo(
     legítimo por HTTP (el alta la hace `scripts/init_tenant.py` escribiendo
     directo a la BD). Un default que abriera el registro sería fail-open.
     """
-    from app.core import config as cfg_module
+    from tenant.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "internal_service_token", "")
     client, _ = client_with_conn
@@ -510,7 +510,7 @@ async def test_create_tenant_sin_asiento_no_hay_commit(
 
     from httpx import ASGITransport
 
-    from app.main import app
+    from tenant.main import app
 
     async with AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"

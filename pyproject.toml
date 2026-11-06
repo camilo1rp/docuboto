@@ -18,7 +18,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app"]
+known-first-party = ["app", "document", "workflow", "archive", "storage", "auth", "tenant", "notification", "signature", "knowledge", "docuboto"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

@@ -53,17 +53,17 @@ volumes:
   redis-data:
   # Keycloak uses external PostgreSQL, no separate volume
 
-# Migraciones al arrancar (AREA-13-08). Cada servicio con base de datos espera a su
-# `migrate-<servicio>`: un contenedor de un solo uso que corre `migrations/runner.py`
-# con la conexión del PROPIETARIO (MIGRATIONS_DATABASE_URL) sobre la MISMA imagen
-# inmutable que va a servir. Si la migración falla, el servicio no arranca
-# (`service_completed_successfully`, fail-closed), así que una versión nunca sirve
-# contra un esquema que no es el suyo. El runner es idempotente y los nueve `migrate-*`
-# (y `scripts/init_tenant.py`) se serializan con UN cerrojo global:
-# `orpycamcp_common.migrations.cerrojo` (`pg_try_advisory_lock`, plazo
-# `MIGRATIONS_LOCK_TIMEOUT_S`, 600 s por defecto; si vence, el migrador sale con
-# error y el servicio no arranca). Ese cerrojo no existía cuando este comentario
-# lo afirmaba (C19, ADR-041). Repetir `up -d` o escalar réplicas es seguro.
+# Migraciones al arrancar (AREA-13-08). El proceso unificado espera a
+# `migrate-docuboto` (imagen `app`, `command: python migrations/runner.py`,
+# conexión del propietario). Los nueve `migrate-<servicio>` de dominio quedan
+# en el perfil `split`. Si la migración falla, el servicio no arranca
+# (`service_completed_successfully`, fail-closed). El runner es idempotente y
+# todos los `migrate-*` (y `scripts/init_tenant.py`) se serializan con UN
+# cerrojo global: `orpycamcp_common.migrations.cerrojo` (`pg_try_advisory_lock`,
+# plazo `MIGRATIONS_LOCK_TIMEOUT_S`, 600 s por defecto; si vence, el migrador
+# sale con error y el servicio no arranca). Ese cerrojo no existía cuando este
+# comentario lo afirmaba (C19, ADR-041). Repetir `up -d` o escalar réplicas es
+# seguro.
 x-migracion: &migracion
   restart: "no"
   command: ["python", "migrations/runner.py"]
@@ -87,39 +87,29 @@ services:
 
   postgres:
     # PostgreSQL a secas desde D0 (ADR-046 §4): ningún servicio usa pgvector.
-    image: postgres:15-bookworm@sha256:daeac543477e189e334f159133f4be6dae739b005cec2dfb9d482509fed05465
+    image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
     container_name: orpycamcp-postgres-prod
     restart: unless-stopped
     # ── Presupuesto de conexiones ──────────────────────────────────────────
     #
-    # Postgres trae `max_connections=100` por defecto, y ese número **no
-    # alcanzaba**. La cuenta de este despliegue, con `db_pool_max_size=10` por
-    # servicio (`app/core/config.py`):
+    # Postgres trae `max_connections=100` por defecto. Este despliegue (un tenant,
+    # una réplica por servicio) abre `DB_POOL_MAX_SIZE=3` por servicio:
     #
-    #   auth 10 · tenant 10 · document 10×2 réplicas · storage 10×2 réplicas
-    #   workflow 10 · archive 10 · notification 10 · signature 10 · knowledge 10
+    #   auth 3 · tenant 3 · document 3 · storage 3 · workflow 3
+    #   archive 3 · notification 3 · signature 3 · knowledge 3
     #   ────────────────────────────────────────────────────────────────────
-    #   = 110 conexiones solo de las aplicaciones
+    #   = 27 conexiones de las aplicaciones
     #
     # (api-gateway y mcp-server no abren pool: no tocan la base de datos.)
     #
-    # Y encima Postgres hospeda **también a Keycloak**, cuyo pool por defecto es
-    # de 100 más. Sumado, el sistema pedía sobre 210 conexiones a un servidor que
-    # concede 100, menos 3 reservadas al superusuario.
+    # Keycloak se acota a `KC_DB_POOL_MAX_SIZE=30` contra el mismo Postgres.
+    # Suma: 57, más margen para migraciones, respaldos y `psql` de operación.
     #
-    # Lo peor es CÓMO se manifiesta: el pool que llega tarde no falla con un
-    # mensaje sobre conexiones — se queda esperando. Y como Keycloak compite por
-    # el mismo cupo, el síntoma que ve la institución son **fallos de inicio de
-    # sesión** intermitentes, sin relación aparente con la carga documental que
-    # los provocó. Nadie mira el número de conexiones buscando eso.
+    # Se deja `max_connections=300`. Bajar el cupo del servidor es otro cambio:
+    # el monolito de Docuboto 2.0 pasa a un solo pool, y esa es la cuenta que
+    # debe cuadrar el tope.
     #
-    # Se sube a 300 (110 aplicaciones + 30 Keycloak + margen para migraciones,
-    # respaldos, `psql` de operación y una segunda réplica de cualquier
-    # servicio). Si se añaden réplicas, esta cuenta se rehace: está escrita aquí
-    # para que se pueda rehacer.
-    #
-    # `shared_buffers` acompaña porque cada conexión reserva memoria de trabajo;
-    # triplicar el cupo sin tocarlo cambia un límite por otro.
+    # `shared_buffers` acompaña porque cada conexión reserva memoria de trabajo.
     command: >
       postgres
       -c max_connections=300
@@ -260,7 +250,7 @@ services:
         max-file: "3"
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0.5@sha256:f8ade94c1d0ad2f2fa7734a455fee5392764f402c43ca35e9af6bf63a2541dc9
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
     container_name: orpycamcp-keycloak-prod
     restart: unless-stopped
     command: start --db=postgres --hostname-strict=true --hostname=${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
@@ -276,8 +266,8 @@ services:
       # este tope, un pico de carga documental y el inicio de sesión compiten por
       # el mismo cupo y lo que falla es el login.
       KC_DB_POOL_MAX_SIZE: "30"
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
 
       # TLS TERMINADO EN EL REVERSE PROXY (es el despliegue que documenta la guía
       # y el que asume el resto de este fichero: todos los servicios usan `expose:`,
@@ -297,6 +287,9 @@ services:
       # KC_CACHE_STACK solo aplica a clúster; `kubernetes` sobre Compose plano hace
       # que el descubrimiento JGroups falle. Con una sola instancia, `default` basta.
       KC_CACHE: local
+      # El contenedor tiene 1 GB. Sin esto el heap de Java asume el RAM del host
+      # y el proceso se sale del límite. 70 % deja sitio a metaspace y nativo.
+      JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0"
     networks:
       - orpycamcp-net
     # Montajes opcionales (descomenta y añade `volumes:` como lista cuando los uses):
@@ -317,10 +310,10 @@ services:
       resources:
         limits:
           cpus: '2'
-          memory: 3G
+          memory: 1G
         reservations:
           cpus: '1'
-          memory: 1.5G
+          memory: 512M
     logging:
       driver: "json-file"
       options:
@@ -329,14 +322,198 @@ services:
 
   # ─── Application Services ──────────────────────────────────────────────────────
 
+
+  app:
+    # Proceso unificado Docuboto 2.0. Imagen INMUTABLE publicada por
+    # `build-images` con el SHA del commit. Los nueve servicios de dominio y el
+    # api-gateway quedan en el perfil `split`.
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/app:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.128.0/17}
+      GATEWAY_RED_DOCKER_GATEWAY: 172.20.0.1
+      AUTH_SERVICE_URL: http://app:8000
+      TENANT_SERVICE_URL: http://app:8000
+      DOCUMENT_SERVICE_URL: http://app:8000
+      ARCHIVE_SERVICE_URL: http://app:8000
+      STORAGE_SERVICE_URL: http://app:8000
+      WORKFLOW_SERVICE_URL: http://app:8000
+      NOTIFICATION_SERVICE_URL: http://app:8000
+      SIGNATURE_SERVICE_URL: http://app:8000
+      KNOWLEDGE_SERVICE_URL: http://app:8000
+      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
+      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
+      ARCHIVE_INTERNAL_TOKEN: ${ARCHIVE_INTERNAL_TOKEN:?Archive internal token required}
+      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
+      SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
+      SIGNING_KEY_INTERNAL_TOKEN: ${SIGNING_KEY_INTERNAL_TOKEN:?Signing key internal token required}
+      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
+      ALTCHA_HMAC_KEY: ${ALTCHA_HMAC_KEY:?ALTCHA_HMAC_KEY es obligatorio}
+      ALTCHA_TTL_SEGUNDOS: ${ALTCHA_TTL_SEGUNDOS:-300}
+      ALTCHA_MAXNUMBER: ${ALTCHA_MAXNUMBER:-100000}
+      TZ_RADICACION: ${TZ_RADICACION:-America/Bogota}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_USE_SSL: "false"
+      PRESERVATION_ENABLED: "true"
+      PRESERVATION_REPLICA_ENABLED: "true"
+      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
+      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
+      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
+      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
+      PDFA_PROFILE: ${PDFA_PROFILE:-2b}
+      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
+      KEYCLOAK_REALM: orpycamcp
+      KEYCLOAK_CLIENT_ID: auth-service
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_AUTH_SERVICE_SECRET:?Auth Service secret required}
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?TOTP encryption key required (openssl rand -base64 32)}
+      SIGNING_KEY_ENCRYPTION_KEY: ${SIGNING_KEY_ENCRYPTION_KEY:?Signing key encryption key required (openssl rand -base64 32)}
+      SIGNING_KEY_CA_USERS_CERT_PATH: /run/secrets/ca-users-public/ca-users.crt
+      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:?EMAIL_ENCRYPTION_KEY es obligatorio}
+      SMTP_HOST: ${SMTP_HOST:?SMTP host required}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:?SMTP user required}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?SMTP password required}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?From email required}
+      SMTP_TLS: "true"
+      WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?WEBHOOK_SECRET_KEK es obligatoria (openssl rand -base64 32)}
+      WEBHOOK_SECRET_KEKS: ${WEBHOOK_SECRET_KEKS:-{}}
+      WEBHOOK_SECRET_KEK_ACTIVE_VERSION: ${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
+      SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
+      SIGNER_PROVIDER: ${SIGNER_PROVIDER:-xades_local}
+      SIGNER_CERT_DIR: /run/secrets/signing
+      SIGNER_TIMESTAMP_ENABLED: ${SIGNER_TIMESTAMP_ENABLED:-true}
+      TSA_URL: ${TSA_URL:-}
+      TSA_CERT_DIR: /run/secrets/tsa
+      TSA_ESSCERTID_CORTE: ${TSA_ESSCERTID_CORTE:-2026-10-04T00:00:00Z}
+      FIRMA_PERSONAL_REQUIRE_XADES: ${FIRMA_PERSONAL_REQUIRE_XADES:-off}
+      SIGNER_LT_ENABLED: ${SIGNER_LT_ENABLED:-false}
+      SIGNER_LT_REQUIRE: ${SIGNER_LT_REQUIRE:-false}
+      SIGNER_OCSP_ENABLED: ${SIGNER_OCSP_ENABLED:-true}
+      SIGNER_OCSP_REQUIRE: ${SIGNER_OCSP_REQUIRE:-false}
+    volumes:
+      - ../secrets/ca-users-public:/run/secrets/ca-users-public:ro
+      - ../secrets/signing:/run/secrets/signing:ro
+      - ../secrets/tsa:/run/secrets/tsa:ro
+    networks:
+      - orpycamcp-net
+    expose:
+      - "8000"
+    depends_on:
+      migrate-docuboto:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/worker:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
+      APP_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DOCUMENT_SERVICE_URL: http://app:8000
+      STORAGE_SERVICE_URL: http://app:8000
+      SIGNATURE_SERVICE_URL: http://app:8000
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_USE_SSL: "false"
+      PRESERVATION_ENABLED: "true"
+      PRESERVATION_REPLICA_ENABLED: "true"
+      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
+      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
+      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
+      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
+      PDFA_PROFILE: ${PDFA_PROFILE:-2b}
+      FORMAT_MIGRATION_ENABLED: ${FORMAT_MIGRATION_ENABLED:-true}
+      SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
+      SIGNER_PROVIDER: ${SIGNER_PROVIDER:-xades_local}
+      SIGNER_CERT_DIR: /run/secrets/signing
+      SIGNER_TIMESTAMP_ENABLED: ${SIGNER_TIMESTAMP_ENABLED:-true}
+      TSA_URL: ${TSA_URL:-}
+      TSA_CERT_DIR: /run/secrets/tsa
+      TSA_ESSCERTID_CORTE: ${TSA_ESSCERTID_CORTE:-2026-10-04T00:00:00Z}
+      SIGNER_LT_ENABLED: ${SIGNER_LT_ENABLED:-false}
+      SIGNER_LT_REQUIRE: ${SIGNER_LT_REQUIRE:-false}
+      SIGNER_OCSP_ENABLED: ${SIGNER_OCSP_ENABLED:-true}
+      SIGNER_OCSP_REQUIRE: ${SIGNER_OCSP_REQUIRE:-false}
+    volumes:
+      - ../secrets/signing:/run/secrets/signing:ro
+      - ../secrets/tsa:/run/secrets/tsa:ro
+    networks:
+      - orpycamcp-net
+    depends_on:
+      migrate-docuboto:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   api-gateway:
     # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/api-gateway:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: este servicio escala (deploy.replicas), los nombres
-    # deben ser únicos por réplica (Compose los genera como proyecto-servicio-N).
+    # Una réplica: 10 usuarios concurrentes no justifican más. Sin container_name
+    # fijo, Compose nombra el contenedor.
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -384,7 +561,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2  # Scale horizontally
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -405,6 +582,7 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/auth-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-auth-service-prod
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
@@ -414,6 +592,7 @@ services:
       KEYCLOAK_REALM: orpycamcp
       KEYCLOAK_CLIENT_ID: auth-service
       KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_AUTH_SERVICE_SECRET:?Auth Service secret required}
+      DB_POOL_MAX_SIZE: "3"
       # ── Claves de cifrado en reposo (KEK) ────────────────────────────────────
       # Ambas son base64 de 32 bytes y son SECRETOS DISTINTOS con propósitos
       # distintos: TOTP_ENCRYPTION_KEY cifra el secreto TOTP del segundo factor,
@@ -471,11 +650,13 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/tenant-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-tenant-service-prod
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # Vacío: pasar a ppi responde que la pasarela no está configurada.
       KNOWLEDGE_SERVICE_URL: http://knowledge-service:8011
@@ -515,8 +696,9 @@ services:
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
+    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       # Custodia de las credenciales de los buzones institucionales. Sin ella el
       # servicio arranca pero no puede descifrar lo que guardó, y la ingesta de
@@ -534,6 +716,7 @@ services:
       # document-service MEDIA la descarga de anexos (gate por clearance vigente)
       # y necesita este token para hablar con storage. Sin él, storage responde
       # 401 a TODA descarga — fail-closed correcto, sistema inservible.
+      DB_POOL_MAX_SIZE: "3"
       STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
       # Token que protege los endpoints /internal de ESTE servicio (los consume
       # archive-service al ensamblar el AIP y el export del expediente).
@@ -562,7 +745,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2  # Scale horizontally for read load
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -581,13 +764,15 @@ services:
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
+    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -606,6 +791,11 @@ services:
       # acumula backlog en silencio.
       APP_ENV: production
       PRESERVATION_ENABLED: "true"
+      PRESERVATION_REPLICA_ENABLED: "true"
+      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
+      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
+      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
+      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # VERAPDF_BINARY/PDFA_VALIDATOR/PRESERVATION_PDFA_VALIDATION_ENABLED ya
       # vienen como ENV del stage "production" del Dockerfile (valores por
@@ -632,7 +822,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2  # Scale for file upload throughput
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -653,11 +843,13 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/workflow-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-workflow-service-prod
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - orpycamcp-net
@@ -696,11 +888,13 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/archive-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-archive-service-prod
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       # D-02, los tres pares emisor/receptor de este servicio:
       #  - storage:   AIP, protección WORM del índice y del acta
       #  - signature: POST /internal/sign-indice (reconciliación del sellado)
@@ -748,11 +942,13 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/notification-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-notification-service-prod
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       SMTP_HOST: ${SMTP_HOST:?SMTP host required}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:?SMTP user required}
@@ -808,8 +1004,10 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/signature-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-signature-service-prod
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
+      DB_POOL_MAX_SIZE: "3"
       # En prod el navegador y los servicios usan el MISMO hostname público de
       # Keycloak (DNS real), así que el `iss` coincide sin override: expected_issuer
       # se deriva de KEYCLOAK_URL. NO se setea KEYCLOAK_ISSUER (a diferencia de dev,
@@ -898,12 +1096,15 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/knowledge-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     container_name: orpycamcp-knowledge-service-prod
     restart: unless-stopped
+    profiles: ["split"]
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
+      DB_POOL_MAX_SIZE: "3"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
+      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
       # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
     networks:
       - orpycamcp-net
@@ -945,7 +1146,7 @@ services:
     container_name: orpycamcp-mcp-server-prod
     restart: unless-stopped
     environment:
-      GATEWAY_URL: http://api-gateway:8080
+      GATEWAY_URL: http://app:8000
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       # `:?` aborta el despliegue si falta: sin clave de firma el gate de
       # escritura del MCP sería decorativo, y un control decorativo es peor que
@@ -960,7 +1161,7 @@ services:
     expose:
       - "8009"
     depends_on:
-      - api-gateway
+      - app
     # Era el único servicio de aplicación SIN healthcheck: si el proceso moría,
     # el contenedor seguía "arriba" y el catálogo MCP simplemente no
     # respondía, sin que el orquestador lo reiniciara.
@@ -993,7 +1194,7 @@ services:
     # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/frontend:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    # Sin container_name fijo: escala (deploy.replicas) → nombres únicos por réplica.
+    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
     environment:
       PORT: "3000"
@@ -1014,7 +1215,7 @@ services:
       PUBLIC_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       # Internas (SSR): el gateway por la red Docker; Keycloak por su hostname
       # público (hostname-strict=true + TLS solo aceptan el dominio del cert).
-      INTERNAL_API_URL: http://api-gateway:8080
+      INTERNAL_API_URL: http://app:8000
       INTERNAL_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
     networks:
       - orpycamcp-net
@@ -1022,7 +1223,7 @@ services:
     expose:
       - "3000"
     depends_on:
-      - api-gateway
+      - app
       - keycloak
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
@@ -1030,7 +1231,7 @@ services:
       timeout: 5s
       retries: 3
     deploy:
-      replicas: 2
+      replicas: 1
       resources:
         limits:
           cpus: '1'
@@ -1046,9 +1247,9 @@ services:
 
   # ─── Entrada de producción (ADR-033) ───────────────────────────────────────────
   # ÚNICO servicio que publica puertos. nginx corre en contenedor y no en el
-  # anfitrión porque `api-gateway` y `frontend` tienen dos réplicas (un puerto fijo
-  # del anfitrión lo tomaría la primera y la segunda moriría), y porque con nginx en
-  # el anfitrión el gateway vería como par a la IP del docker-proxy.
+  # anfitrión porque con nginx en el anfitrión el gateway vería como par a la IP
+  # del docker-proxy, y porque `edge` lleva los tres hostnames públicos como
+  # alias en `orpycamcp-net`.
   # Los alias hacen que, dentro de la red, `https://${KEYCLOAK_HOSTNAME}` resuelva
   # a este mismo servicio: certificado válido, sin hairpin NAT ni DNS externo.
   edge:
@@ -1081,7 +1282,7 @@ services:
           - ${API_PUBLIC_HOSTNAME}
     depends_on:
       - frontend
-      - api-gateway
+      - app
       - keycloak
     deploy:
       resources:
@@ -1094,57 +1295,72 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ─── Migraciones (un contenedor de un solo uso por servicio con base de datos) ───
+  # ─── Migraciones (un contenedor de un solo uso) ───
+  migrate-docuboto:
+    <<: *migracion
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/app:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    environment:
+      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+
   migrate-auth:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/auth-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-tenant:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/tenant-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-document:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-storage:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-workflow:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/workflow-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-archive:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/archive-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-notification:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/notification-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-signature:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/signature-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
   migrate-knowledge:
     <<: *migracion
+    profiles: ["split"]
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/knowledge-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}

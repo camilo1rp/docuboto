@@ -22,6 +22,8 @@ no aprobados): la lista solo puede BAJAR. Un emisor nuevo sin nivel rompe el tes
 
 from __future__ import annotations
 
+from tests._compose import paquete_de
+
 import ast
 from pathlib import Path
 
@@ -34,6 +36,9 @@ CLAVES_DE_NIVEL = frozenset({"nivel_seguridad", "nivel_nuevo", "nivel_anterior"}
 #: pierden guía/estado en el webhook (el tipo del evento ya dice el estado).
 SIN_NIVEL_DECLARADOS = frozenset({
     "document-service::anulacion_service.py::'document.radicado.annulled'",
+    "document-service::document_service.py::'document.anexo.added'",
+    "document-service::document_service.py::'document.radicado.updated'",
+    "document-service::document_service.py::outbox.VENCIMIENTO_CAMBIADO",
     "document-service::postal_service.py::_STREAM_EVENT[estado]",
     "document-service::purga_service.py::'document.radicado.purged'",
 })
@@ -64,7 +69,7 @@ def _es_llamada(n: ast.AST, objeto: str, metodo: str) -> bool:
 def _censo() -> dict[str, bool]:
     censo: dict[str, bool] = {}
     for svc in SERVICIOS:
-        for f in sorted((RAIZ / "services" / svc / "app").rglob("*.py")):
+        for f in sorted((paquete_de(RAIZ / "services" / svc) or RAIZ / "services" / svc).rglob("*.py")):
             for n in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
                 # Outbox: `outbox.encolar(conn, stream=, event_type=, ..., payload=)`.
                 if _es_llamada(n, "outbox", "encolar"):

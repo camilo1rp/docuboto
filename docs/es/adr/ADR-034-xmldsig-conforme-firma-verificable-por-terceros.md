@@ -35,7 +35,7 @@ Alternativa A (cambiar a C14N 1.0 inclusiva): **descartada**. Cambia los digests
 namespaces del ancestro al digest: incrustar el XML firmado en otro (paquete AIP/SIP) rompe la firma. La exclusiva está pensada
 para sobrevivir al reempaquetado.
 
-Alternativa B (elegida), en `services/signature-service/app/providers/local.py`:
+Alternativa B (elegida), en `services/signature-service/signature/providers/local.py`:
 
 1. `XAdESSigner.sign(...)` (sello: con su clave; firma personal: clave efímera + certificado real, como antes).
 2. `_declarar_transforms`: cada `ds:Reference` sin `ds:Transforms` recibe, como primer hijo, `Transform exc-c14n`. Los digests **no

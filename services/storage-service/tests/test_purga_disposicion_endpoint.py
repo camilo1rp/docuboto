@@ -28,8 +28,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.repositories.file_repository import CitaConstancia
-from app.services.storage_service import AnexoCitadoPorConstanciaError, WormLockActiveError
+from storage.repositories.file_repository import CitaConstancia
+from storage.services.storage_service import AnexoCitadoPorConstanciaError, WormLockActiveError
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS
 
 RUTA = "/api/v1/storage/internal/purgar-disposicion"
@@ -44,7 +44,7 @@ def _sin_precheck_de_citas(request):
     if request.node.get_closest_marker("con_precheck_real"):
         yield
         return
-    with patch("app.services.storage_service.StorageService.verificar_sin_citas", AsyncMock()):
+    with patch("storage.services.storage_service.StorageService.verificar_sin_citas", AsyncMock()):
         yield
 
 
@@ -62,7 +62,7 @@ async def test_sin_token_interno_no_se_purga_nada(client) -> None:
     """El gate va antes que cualquier otra cosa: nadie de fuera puede pedir un
     borrado físico."""
     with patch(
-        "app.services.storage_service.StorageService.purge_for_disposition", AsyncMock()
+        "storage.services.storage_service.StorageService.purge_for_disposition", AsyncMock()
     ) as purgar:
         resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=TENANT_HEADERS)
 
@@ -80,7 +80,7 @@ async def test_purga_y_distingue_lo_purgado_de_lo_que_ya_no_estaba(client) -> No
     async def _purgar(self, file_id, *args, **kwargs):
         return file_id == a
 
-    with patch("app.services.storage_service.StorageService.purge_for_disposition", _purgar):
+    with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
         resp = await client.post(RUTA, json=_cuerpo([a, b]), headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 200
@@ -100,7 +100,7 @@ async def test_el_candado_WORM_aborta_la_purga_ENTERA(client) -> None:
         llamadas["n"] += 1
         raise WormLockActiveError("retain_until=2030-01-01")
 
-    with patch("app.services.storage_service.StorageService.purge_for_disposition", _purgar):
+    with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
         resp = await client.post(RUTA, json=_cuerpo([a, b]), headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 409
@@ -120,7 +120,7 @@ async def test_el_expediente_viaja_porque_es_la_llave_del_gate_WORM(client) -> N
         recibido.update(expediente_id=expediente_id, motivo=motivo)
         return True
 
-    with patch("app.services.storage_service.StorageService.purge_for_disposition", _purgar):
+    with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
         await client.post(RUTA, json=_cuerpo([a]), headers=INTERNAL_HEADERS)
 
     assert recibido["expediente_id"] == EXP
@@ -162,7 +162,7 @@ async def test_un_archivo_citado_aborta_la_purga_ANTES_de_borrar_ninguno(client_
         llamadas["n"] += 1
         return True
 
-    with patch("app.services.storage_service.StorageService.purge_for_disposition", _purgar):
+    with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
         resp = await client.post(RUTA, json=_cuerpo([a, b, c]), headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 409
@@ -185,7 +185,7 @@ async def test_sin_citas_el_precheck_deja_pasar_y_se_purga(client_with_conn) -> 
     async def _purgar(self, file_id, *args, **kwargs):
         return True
 
-    with patch("app.services.storage_service.StorageService.purge_for_disposition", _purgar):
+    with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
         resp = await client.post(RUTA, json=_cuerpo([a]), headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 200
@@ -200,7 +200,7 @@ async def test_vista_ausente_bloquea_la_purga_fail_closed(client_with_conn) -> N
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchval.return_value = None  # to_regclass(...) -> NULL
     with patch(
-        "app.services.storage_service.StorageService.purge_for_disposition", AsyncMock()
+        "storage.services.storage_service.StorageService.purge_for_disposition", AsyncMock()
     ) as purgar:
         resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=INTERNAL_HEADERS)
 
@@ -221,7 +221,7 @@ async def test_la_carrera_residual_cae_en_el_409_del_bloqueo_de_fila(client) -> 
     async def _purgar(self, file_id, *args, **kwargs):
         raise AnexoCitadoPorConstanciaError(file_id, [cita])
 
-    with patch("app.services.storage_service.StorageService.purge_for_disposition", _purgar):
+    with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
         resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=INTERNAL_HEADERS)
 
     assert resp.status_code == 409

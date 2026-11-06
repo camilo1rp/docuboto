@@ -40,12 +40,12 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.clients.signature_client import SignedIndice, SignOutcome
-from app.core.actor import Actor
-from app.core.database import tenant_schema
-from app.jobs.indice_reconciliation import _reconciliar_acta
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.signature_client import SignedIndice, SignOutcome
+from archive.core.actor import Actor
+from archive.core.database import tenant_schema
+from archive.jobs.indice_reconciliation import _reconciliar_acta
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.services.transferencia_service import TransferenciaService
 
 from .conftest import DSN
 from .test_atomicity import _seed_transferencia_lista_para_recibir
@@ -175,7 +175,7 @@ async def test_reconciliar_acta_failure_after_audit_append_reverts_mark_firmada(
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
     ):
         with pytest.raises(RuntimeError, match="boom-post-audit"):
@@ -219,7 +219,7 @@ async def test_reconciliar_acta_commits_firmada_and_audit_together(
     signed = _fake_signed()
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ):
         resultado = await _reconciliar_acta(conn, slug, row)
@@ -249,7 +249,7 @@ async def test_reconciliar_acta_commits_firmada_and_audit_together(
 
     assert audit_row is not None
     assert audit_row["canal"] == "system"
-    from app.core.constants import SYSTEM_RECONCILER_ID
+    from archive.core.constants import SYSTEM_RECONCILER_ID
 
     assert audit_row["actor"] == str(SYSTEM_RECONCILER_ID)
     payload = json.loads(audit_row["payload"])
@@ -293,7 +293,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
                     new=_REAL_SELLAR_ACTA_POST_COMMIT,
                 ),
                 patch(
-                    "app.clients.signature_client.sign_xml_outcome",
+                    "archive.clients.signature_client.sign_xml_outcome",
                     new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
                 ),
             ):
@@ -313,7 +313,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
                 "reconcile_intentos": firma_row["reconcile_intentos"],
             }
             with patch(
-                "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+                "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
                 new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
             ):
                 return await _reconciliar_acta(own_conn, slug, row)
@@ -363,7 +363,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
 async def test_reconciliar_acta_agotada_permanece_pendiente_firma(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.core.config import settings
+    from archive.core.config import settings
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 1)
     slug, conn = tenant_ctx
@@ -377,7 +377,7 @@ async def test_reconciliar_acta_agotada_permanece_pendiente_firma(
     }
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ):
         resultado = await _reconciliar_acta(conn, slug, row)
@@ -405,7 +405,7 @@ async def test_reconciliar_acta_agotada_permanece_pendiente_firma(
     assert firma["reconcile_proximo_at"] is None
     assert agotado_audit == 1
 
-    from app.repositories.transferencia_repository import TransferenciaRepository
+    from archive.repositories.transferencia_repository import TransferenciaRepository
 
     pending_after = await TransferenciaRepository(conn, slug).list_acta_firmas_pendientes(10)
     assert tid not in {r["transferencia_id"] for r in pending_after}

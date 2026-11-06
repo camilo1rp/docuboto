@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.repositories.firma_repository import SITUACIONES_SELLO, FirmaRepository
+from signature.repositories.firma_repository import SITUACIONES_SELLO, FirmaRepository
 from tests.conftest import TENANT_HEADERS
 
 BASE = "/api/v1/signature/admin/sellos-archivo"
@@ -46,13 +46,13 @@ def _fila(**kw) -> dict:  # noqa: ANN003
 
 @pytest.fixture
 def _clearance():  # noqa: ANN202
-    with patch("app.routers.admin_sellos.resolve_caller_clearance", AsyncMock(return_value=1)) as m:
+    with patch("signature.routers.admin_sellos.resolve_caller_clearance", AsyncMock(return_value=1)) as m:
         yield m
 
 
 @pytest.fixture
 def _asiento():  # noqa: ANN202
-    with patch("app.routers.admin_sellos._audit.append", AsyncMock(return_value="h")) as m:
+    with patch("signature.routers.admin_sellos._audit.append", AsyncMock(return_value="h")) as m:
         yield m
 
 
@@ -61,7 +61,7 @@ async def test_exige_administracion_a_nivel_3(client_with_conn) -> None:  # noqa
     """El gate es `USUA_PERM_ADMIN` con `min_crud=3`: el nivel 2 NO alcanza. Mutación: bajar el
     `min_crud` en el router -> cae."""
     client, conn = client_with_conn
-    with patch("app.core.clearance.check_permission", AsyncMock(return_value=True)) as cp:
+    with patch("signature.core.clearance.check_permission", AsyncMock(return_value=True)) as cp:
         conn.fetch.return_value = []
         conn.fetchval.return_value = 0
         resp = await client.get(BASE, headers=TENANT_HEADERS)
@@ -136,7 +136,7 @@ async def test_parametros_fuera_de_rango_son_422_sin_consultar(client_with_conn,
 
 @pytest.mark.asyncio
 async def test_el_margen_por_omision_es_el_de_la_renovacion(client_with_conn, _clearance, _asiento) -> None:  # noqa: ANN001
-    from app.core.config import settings
+    from signature.core.config import settings
 
     client, conn = client_with_conn
     conn.fetch.side_effect = [[], []]
@@ -174,7 +174,7 @@ def test_insert_sello_archivo_no_tiene_valor_por_omision_en_las_columnas_de_c6()
 def test_todo_productor_de_eslabones_pasa_las_tres_columnas() -> None:
     """AST de `app/`: cada llamada a `insert_sello_archivo` nombra las tres. Un productor nuevo que las
     omita falla aquí y no en producción."""
-    raiz = Path(__file__).resolve().parents[1] / "app"
+    raiz = Path(__file__).resolve().parents[1] / "signature"
     llamadas = 0
     for py in raiz.rglob("*.py"):
         for nodo in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):

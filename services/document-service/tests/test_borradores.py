@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.clients import signature_client as signature_client_mod
+from document.clients import signature_client as signature_client_mod
 from tests.conftest import TENANT_HEADERS, make_radicado_record
 
 
@@ -48,7 +48,7 @@ def _datos_minimos_derivados(monkeypatch, request) -> None:
     real lo marca con `@pytest.mark.derivacion_real`."""
     if request.node.get_closest_marker("derivacion_real"):
         return
-    from app.services import borrador_service as svc
+    from document.services import borrador_service as svc
 
     async def _derivados(self, row, registered_by, datos=None):
         return "Oficio", 1, 1
@@ -57,7 +57,7 @@ def _datos_minimos_derivados(monkeypatch, request) -> None:
 
     # Con tipo documental, `create` consulta la plantilla de metadatos con un
     # `fetchrow` más, que descuadraba las secuencias de estos mocks.
-    from app.repositories.metadata_repository import MetadataRepository
+    from document.repositories.metadata_repository import MetadataRepository
 
     async def _sin_plantilla(self, doc_class):
         return None
@@ -684,7 +684,7 @@ def render_falso(monkeypatch):
     es que se genere un PDF —eso lo prueba storage-service contra veraPDF real—
     sino que nada irreversible ocurra antes de que el documento exista.
     """
-    from app.services import borrador_service as svc
+    from document.services import borrador_service as svc
 
     registro = {"renders": [], "subidas": 0, "fallo": None}
 
@@ -714,7 +714,7 @@ async def test_un_fallo_de_render_no_consume_numero(client_with_conn, render_fal
     render va ANTES de pedir el número, y por eso este test mira la secuencia,
     no el código de estado.
     """
-    from app.clients.storage_client import RenderNoDisponibleError
+    from document.clients.storage_client import RenderNoDisponibleError
 
     client, mock_conn = client_with_conn
     bid, rid = uuid.uuid4(), uuid.uuid4()
@@ -918,7 +918,7 @@ async def test_previsualizar_deja_RAD_S_a_la_vista(client_with_conn, render_fals
 
 @pytest.mark.asyncio
 async def test_previsualizar_sin_renderizador_es_503(client_with_conn, render_falso) -> None:
-    from app.clients.storage_client import RenderNoDisponibleError
+    from document.clients.storage_client import RenderNoDisponibleError
 
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()
@@ -1337,7 +1337,7 @@ async def test_radicar_borrador_sin_datos_derivables_es_422_antes_del_numero(
 ) -> None:
     """El cableado, no solo la pieza: `radicar` llama a la derivación y rechaza
     ANTES de `tracking_sequences` (el consecutivo no se devuelve)."""
-    from app.services import borrador_service as svc
+    from document.services import borrador_service as svc
 
     async def _nada(self, row, registered_by, datos=None):
         return None, None, None
@@ -1360,7 +1360,7 @@ async def test_radicar_borrador_sin_datos_derivables_es_422_antes_del_numero(
 @pytest.mark.derivacion_real
 @pytest.mark.asyncio
 async def test_la_derivacion_del_borrador_usa_plantilla_dependencia_y_urd() -> None:
-    from app.services.borrador_service import BorradorService
+    from document.services.borrador_service import BorradorService
 
     padre = uuid.uuid4()
     conn = AsyncMock()
@@ -1399,13 +1399,13 @@ async def test_radicar_borrador_metadata_invalida_es_422_con_field(client_with_c
     """B6 ítem 23: `MetadataValidationError` salía como 500. Es 422 con `field`."""
     from unittest.mock import patch
 
-    from app.services.metadata_service import MetadataValidationError
+    from document.services.metadata_service import MetadataValidationError
 
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW]
     with patch(
-        "app.routers.borradores.BorradorService.radicar",
+        "document.routers.borradores.BorradorService.radicar",
         side_effect=MetadataValidationError("'x' es obligatorio", field="expediente_ref"),
     ):
         resp = await client.post(
@@ -1424,7 +1424,7 @@ def test_borrador_radicar_rechaza_from_borrador_del_cliente() -> None:
     """La procedencia la pone el sistema: el cliente no la afirma."""
     from pydantic import ValidationError
 
-    from app.schemas.borrador import BorradorRadicar
+    from document.schemas.borrador import BorradorRadicar
 
     assert BorradorRadicar(metadata={"a": 1}).metadata == {"a": 1}
     with pytest.raises(ValidationError):

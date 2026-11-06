@@ -17,8 +17,8 @@ import uuid
 import httpx
 import pytest
 
-from app.clients import storage_client
-from app.clients.tenant_client import TenantServiceClient, TenantServiceError
+from document.clients import storage_client
+from document.clients.tenant_client import TenantServiceClient, TenantServiceError
 
 
 def _http(monkeypatch, handler) -> list[httpx.Request]:

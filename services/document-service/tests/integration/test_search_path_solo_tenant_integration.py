@@ -14,7 +14,7 @@ de tenant que faltara) se resolvía en silencio contra `public`. Ahora es `Undef
 (fail-closed), y lo legítimo —`public.tenants`, `public.unaccent`, la config de FTS calificada,
 los índices trigram— sigue funcionando.
 
-Mutaciones: devolver `, public` al `SET search_path` de `app/core/database.py` cae en
+Mutaciones: devolver `, public` al `SET search_path` de `document/core/database.py` cae en
 `test_el_path_de_la_conexion_de_la_app_es_solo_el_tenant` y en `test_lo_global_sin_calificar_ya_no_se_resuelve`;
 `public.unaccent` -> `unaccent` cae en `test_unaccent_calificado_funciona_con_el_path_solo_tenant`
 solo si se quita también la calificación del repositorio (lo cubre el guardián estático).
@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 

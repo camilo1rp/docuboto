@@ -24,8 +24,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.borrador_repository import BorradorRepository
+from document.core.database import tenant_schema
+from document.repositories.borrador_repository import BorradorRepository
 
 pytestmark = pytest.mark.asyncio
 

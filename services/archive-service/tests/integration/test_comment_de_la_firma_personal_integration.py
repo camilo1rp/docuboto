@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.database import tenant_schema
+from archive.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 

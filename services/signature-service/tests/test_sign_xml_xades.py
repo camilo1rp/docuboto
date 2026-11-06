@@ -49,11 +49,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from lxml import etree
 
-from app.clients import storage_client
-from app.core import tsa as tsa_module
-from app.core.config import settings
-from app.core.keys import SealNotFoundError, TsaSealNotFoundError, cert_fingerprint
-from app.providers.base import SignerRef
+from signature.clients import storage_client
+from signature.core import tsa as tsa_module
+from signature.core.config import settings
+from signature.core.keys import SealNotFoundError, TsaSealNotFoundError, cert_fingerprint
+from signature.providers.base import SignerRef
 from tests.conftest import TENANT_HEADERS, USER
 
 # ---------------------------------------------------------------------------
@@ -486,7 +486,7 @@ async def signature_env(client_with_conn, monkeypatch):
     # AREA-04-07: el sello institucional en /sign-xml exige X-Internal-Token (lo
     # manda archive-service junto a la identidad firmada). Los tests de este
     # fixture ejercen ESA ruta legítima, así que el cliente lo lleva por defecto.
-    from app.core.config import settings as _settings
+    from signature.core.config import settings as _settings
 
     monkeypatch.setattr(_settings, "signature_internal_token", "itest-internal-token-abc123")
     client.headers["X-Internal-Token"] = "itest-internal-token-abc123"
@@ -512,7 +512,7 @@ async def signature_env(client_with_conn, monkeypatch):
 
     def _install_seal(seal):
         if isinstance(seal, SignerRef):
-            monkeypatch.setattr("app.services.signing_service.load_seal", lambda slug: seal)
+            monkeypatch.setattr("signature.services.signing_service.load_seal", lambda slug: seal)
         else:
 
             def _dispatch(slug: str) -> SignerRef:
@@ -520,7 +520,7 @@ async def signature_env(client_with_conn, monkeypatch):
                     raise SealNotFoundError(f"no seal montado para tenant {slug!r}")
                 return seal[slug]
 
-            monkeypatch.setattr("app.services.signing_service.load_seal", _dispatch)
+            monkeypatch.setattr("signature.services.signing_service.load_seal", _dispatch)
 
     def _install_tsa_seal(seal):
         if seal is None:
@@ -528,9 +528,9 @@ async def signature_env(client_with_conn, monkeypatch):
             def _raise() -> SignerRef:
                 raise TsaSealNotFoundError("no TSA montada (test)")
 
-            monkeypatch.setattr("app.core.tsa.load_tsa_seal", _raise)
+            monkeypatch.setattr("signature.core.tsa.load_tsa_seal", _raise)
         else:
-            monkeypatch.setattr("app.core.tsa.load_tsa_seal", lambda: seal)
+            monkeypatch.setattr("signature.core.tsa.load_tsa_seal", lambda: seal)
 
     _install_tsa_seal(_tsa_signer_ref(*_generate_tsa_cert()))
 
@@ -864,8 +864,8 @@ async def test_sign_xml_xades_requires_auth() -> None:
     (el gate de autenticación corre antes de seleccionar el proveedor)."""
     from httpx import ASGITransport, AsyncClient
 
-    from app.core.database import get_tenant_conn
-    from app.main import app
+    from signature.core.database import get_tenant_conn
+    from signature.main import app
     from tests.conftest import _make_mock_conn
 
     conn = _make_mock_conn()
@@ -900,8 +900,8 @@ async def test_sign_xml_xades_requires_perm_firma() -> None:
     """
     from httpx import ASGITransport, AsyncClient
 
-    from app.core.database import get_tenant_conn
-    from app.main import app
+    from signature.core.database import get_tenant_conn
+    from signature.main import app
     from tests.conftest import _make_mock_conn
 
     conn = _make_mock_conn()
@@ -1281,7 +1281,7 @@ async def test_xades_t_verify_rejects_forged_timestamp_from_foreign_tsa(
     sig_value_c14n = etree.tostring(sig_value_el, method="c14n", exclusive=True)
     forged_token = tsa_module.build_timestamp_token(sig_value_c14n)
 
-    from app.providers.local import _insert_signature_timestamp
+    from signature.providers.local import _insert_signature_timestamp
 
     _insert_signature_timestamp(root, forged_token)
     forged_xml = etree.tostring(root, xml_declaration=False, encoding="UTF-8")
@@ -1582,8 +1582,8 @@ async def test_xades_lt_verify_pins_ca_fingerprint(monkeypatch) -> None:
     con la CA REALMENTE embebida, `verify_xades` falla-cerrado. Llamado
     directo a la función (no vía HTTP, sin pasar por ``signature_env``/router)
     para aislar el pinning de cualquier otra comprobación previa."""
-    from app.providers.base import PreparedDoc
-    from app.providers.local import LocalSigner, verify_xades
+    from signature.providers.base import PreparedDoc
+    from signature.providers.local import LocalSigner, verify_xades
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     monkeypatch.setattr(settings, "signer_timestamp_enabled", True)
@@ -1710,8 +1710,8 @@ async def test_xades_lta_archive_timestamp_covered_bytes_deterministic_across_re
     (prefijos de namespace, orden de atributos, espacios), esta igualdad
     fallaría y el `ArchiveTimeStamp` jamás validaría fuera del árbol lxml
     original en memoria — round-trip verde es el contrato mínimo."""
-    from app.providers.base import PreparedDoc
-    from app.providers.local import LocalSigner, _archive_ts_covered_bytes
+    from signature.providers.base import PreparedDoc
+    from signature.providers.local import LocalSigner, _archive_ts_covered_bytes
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     # Este test no pasa por `signature_env` (no necesita cliente HTTP/tabla
@@ -2165,8 +2165,8 @@ async def test_ocsp_revoked_seal_reported_by_verify(signature_env, monkeypatch) 
     fuera de banda, también declararía `REVOKED` (mismo serial, misma CRL).
     Aquí se verifica esto último de forma directa (sin pasar por /verify,
     que nunca llega a evaluar OCSP por el corte temprano en la CRL)."""
-    from app.providers.base import PreparedDoc
-    from app.providers.local import LocalSigner
+    from signature.providers.base import PreparedDoc
+    from signature.providers.local import LocalSigner
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
@@ -2199,8 +2199,8 @@ async def test_ocsp_verify_pins_responder_fingerprint(monkeypatch) -> None:
     `expected_ocsp_responder_fingerprint` (fila legacy/sin OCSP) o con uno
     que no coincide con el responder REALMENTE embebido, `verify_xades`
     falla-cerrado. Llamada directa a la función (no vía HTTP)."""
-    from app.providers.base import PreparedDoc
-    from app.providers.local import LocalSigner, verify_xades
+    from signature.providers.base import PreparedDoc
+    from signature.providers.local import LocalSigner, verify_xades
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     monkeypatch.setattr(settings, "signer_ocsp_enabled", True)
@@ -2290,7 +2290,7 @@ async def test_verify_declara_advertencias_de_un_sello_sin_esscertid_anterior_al
         r.advertencias.append(tsa_module.ADVERTENCIA_SIN_ESSCERTID)
         return r
 
-    monkeypatch.setattr("app.providers.local.tsa.verify_timestamp_token", _con_aviso)
+    monkeypatch.setattr("signature.providers.local.tsa.verify_timestamp_token", _con_aviso)
     avisado = (await client.post("/api/v1/signature/verify", json=peticion, headers=TENANT_HEADERS)).json()
     assert avisado["valida"] is True
     assert avisado["advertencias"] == ["tsa_sin_esscertid_anterior_al_corte"]

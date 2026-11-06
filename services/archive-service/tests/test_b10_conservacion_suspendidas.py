@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.jobs import indice_reconciliation as job
+from archive.jobs import indice_reconciliation as job
 
 _FASES_DE_CONSERVACION = [
     "run_once_worm",
@@ -78,7 +78,7 @@ async def test_verify_result_propaga_lta_vigente(
     """Mutación: no leer `lta_vigente` en `signature_client.verify` -> cae (False llega como None)."""
     import httpx
 
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     cuerpo = {"valida": True, "acreditado": False, "lta_vigente": crudo}
 

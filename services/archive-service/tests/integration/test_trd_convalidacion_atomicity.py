@@ -28,8 +28,8 @@ from datetime import date
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.schemas.archive import (
+from archive.core.database import tenant_schema
+from archive.schemas.archive import (
     ExpedienteCreate,
     RadicadoLink,
     TrdSerieAprobar,
@@ -37,7 +37,7 @@ from app.schemas.archive import (
     TrdSerieCreate,
     TrdSerieVersionCreate,
 )
-from app.services.archive_service import ArchiveService
+from archive.services.archive_service import ArchiveService
 from tests.conftest import datos_radicado
 
 from .conftest import convalidate_for_test

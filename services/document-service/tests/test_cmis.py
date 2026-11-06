@@ -21,7 +21,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.tenant import AtencionPublica
 
-from app.main import app
+from document.main import app
 
 
 def _rad(tn: str = "2026-DEMO-E-000001", subject: str = "Acta pública") -> dict:
@@ -39,7 +39,7 @@ def _rad(tn: str = "2026-DEMO-E-000001", subject: str = "Acta pública") -> dict
 def _entidad_operativa():
     """ADR-035: estos tests ejercen el protocolo, no el estado (eso lo cubre
     `test_estado_entidad.py`), así que la entidad se da por operativa."""
-    with patch("app.routers.cmis.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
+    with patch("document.routers.cmis.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
         yield
 
 
@@ -169,7 +169,7 @@ async def test_content_stream_ok(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> Non
             return None
 
     with patch(
-        "app.routers.cmis.storage_client.open_content_stream",
+        "document.routers.cmis.storage_client.open_content_stream",
         new=AsyncMock(return_value=_FakeStream()),
     ):
         resp = await client.get(
@@ -184,7 +184,7 @@ async def test_content_stream_ok(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> Non
 async def test_nonexistent_tenant_is_404(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> None:
     client, conn = cmis_ctx
     with patch(
-        "app.routers.cmis.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
+        "document.routers.cmis.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
     ):
         resp = await client.get("/api/v1/public/cmis/demo")
     assert resp.status_code == 404
@@ -218,7 +218,7 @@ async def test_content_disposition_sanitized(cmis_ctx: tuple[AsyncClient, AsyncM
             return None
 
     with patch(
-        "app.routers.cmis.storage_client.open_content_stream",
+        "document.routers.cmis.storage_client.open_content_stream",
         new=AsyncMock(return_value=_FakeStream()),
     ):
         resp = await client.get(
@@ -242,6 +242,6 @@ async def test_content_disposition_sanitized(cmis_ctx: tuple[AsyncClient, AsyncM
 
 @pytest.fixture(autouse=True)
 def _habilitar_interop(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core import config as cfg_module
+    from document.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)

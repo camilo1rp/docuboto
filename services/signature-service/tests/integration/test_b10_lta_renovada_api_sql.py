@@ -24,10 +24,10 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.jobs import renovacion_lta
-from app.main import app
-from app.repositories.firma_repository import FirmaRepository
+from signature.core.database import get_tenant_conn
+from signature.jobs import renovacion_lta
+from signature.main import app
+from signature.repositories.firma_repository import FirmaRepository
 from tests.integration.test_b10_lta_renovacion_sql import (  # noqa: F401  (fixtures y helpers)
     _sembrar,
     _tsa_larga,

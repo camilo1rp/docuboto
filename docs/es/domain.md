@@ -61,7 +61,7 @@ POST /api/v1/documents/
 - Tipo documental inválido para la TRD del tenant: error 422
 - El número asignado **nunca puede modificarse ni reasignarse**
 
-**¿Cómo contribuir?** `services/document-service/app/services/tracking_service.py`
+**¿Cómo contribuir?** `services/document-service/document/services/tracking_service.py`
 
 #### Tipos de radicado
 

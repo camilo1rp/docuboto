@@ -32,8 +32,8 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
-from app import main as app_main
-from app.services import barrido
+from document import main as app_main
+from document.services import barrido
 
 
 def _acquire(conn):

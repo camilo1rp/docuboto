@@ -25,9 +25,9 @@ import pytest_asyncio
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
-from app.routers import catalogos, dependencias, pinar
+from tenant.core.database import get_tenant_conn
+from tenant.main import app
+from tenant.routers import catalogos, dependencias, pinar
 
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}
 
@@ -67,7 +67,7 @@ async def client_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
         yield conn
 
     app.dependency_overrides[get_tenant_conn] = override
-    with patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")):
+    with patch("tenant.core.audit._audit.append", new=AsyncMock(return_value="h")):
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac, conn

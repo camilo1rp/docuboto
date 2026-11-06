@@ -19,10 +19,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.core.database import get_tenant_conn
-from app.main import app
-from app.services import signer
+from signature.core.config import settings
+from signature.core.database import get_tenant_conn
+from signature.main import app
+from signature.services import signer
 from tests.conftest import TENANT_HEADERS, USER
 
 # Fixed timestamp used to build test firma rows so verify tests are deterministic.
@@ -95,7 +95,7 @@ def test_firma_nativa_no_verifica_sobre_otro_objeto() -> None:
 
 
 def test_firma_nativa_nueva_sale_en_key_version_actual() -> None:
-    from app.core.secret_derivation import KEY_VERSION_HKDF
+    from signature.core.secret_derivation import KEY_VERSION_HKDF
 
     assert _firmar()["key_version"] == KEY_VERSION_HKDF == 1
 
@@ -128,7 +128,7 @@ def test_key_version_desconocida_no_verifica() -> None:
 
 
 def test_clave_derivada_distinta_por_proposito_y_entidad() -> None:
-    from app.core.secret_derivation import derive_key
+    from signature.core.secret_derivation import derive_key
 
     r = settings.signature_secret
     assert derive_key(r, purpose="firma_nativa", tenant_slug="a") != derive_key(
@@ -144,7 +144,7 @@ def test_clave_derivada_distinta_por_proposito_y_entidad() -> None:
 
 @pytest.mark.parametrize("slug", ["", None])
 def test_derivar_clave_sin_entidad_se_rechaza(slug) -> None:
-    from app.core.secret_derivation import derive_key
+    from signature.core.secret_derivation import derive_key
 
     with pytest.raises(ValueError):
         derive_key(settings.signature_secret, purpose="otp", tenant_slug=slug or "")
@@ -209,7 +209,7 @@ async def test_sign_xml_happy_path(client_with_conn, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_sign_xml_body_firmante_id_ignored() -> None:
     """firmante_id in the request body must not exist in the schema (RF-FIR-11)."""
-    from app.schemas.firma import SignXmlRequest
+    from signature.schemas.firma import SignXmlRequest
 
     # Pydantic should reject or ignore a firmante_id field — it's not in the schema.
     req = SignXmlRequest(payload_xml="<x/>", objeto_tipo="indice", firmante_id=str(uuid.uuid4()))  # type: ignore[call-arg]

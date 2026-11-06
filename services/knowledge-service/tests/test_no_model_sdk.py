@@ -20,7 +20,7 @@ import ast
 import re
 from pathlib import Path
 
-APP = Path(__file__).resolve().parents[1] / "app"
+APP = Path(__file__).resolve().parents[1] / "knowledge"
 
 MODEL_SDKS = {"anthropic", "openai", "sentence_transformers", "ollama", "torch", "transformers"}
 PROVIDER_VAR = re.compile(r"^(AI|EMBEDDING|OLLAMA|ANTHROPIC)_", re.IGNORECASE)

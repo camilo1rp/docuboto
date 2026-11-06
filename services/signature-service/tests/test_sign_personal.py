@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
-from app.core.http_clients import SignDigestRemoteError, SigningKeyStatusUnavailableError
+from signature.core.http_clients import SignDigestRemoteError, SigningKeyStatusUnavailableError
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena_personal_signing import _issue_user_cert
 
@@ -38,13 +38,13 @@ _PAYLOAD_XML = '<acta xmlns="urn:orpycamcp:test:acta"><campo>valor</campo></acta
 
 def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock_append = AsyncMock(return_value="fakehash")
-    monkeypatch.setattr("app.services.personal_signing._audit.append", mock_append)
+    monkeypatch.setattr("signature.services.personal_signing._audit.append", mock_append)
     return mock_append
 
 
 def _patch_upload(monkeypatch: pytest.MonkeyPatch, *, key: str = "file-id/acta-firmado.xml") -> AsyncMock:
     mock = AsyncMock(return_value=key)
-    monkeypatch.setattr("app.services.personal_signing.storage_client.upload_signed_xml", mock)
+    monkeypatch.setattr("signature.services.personal_signing.storage_client.upload_signed_xml", mock)
     return mock
 
 
@@ -52,7 +52,7 @@ def _patch_signing_key_status(
     monkeypatch: pytest.MonkeyPatch, *, body: dict | None = None, error: Exception | None = None
 ) -> AsyncMock:
     mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=body)
-    monkeypatch.setattr("app.services.personal_signing.get_signing_key_status_remote", mock)
+    monkeypatch.setattr("signature.services.personal_signing.get_signing_key_status_remote", mock)
     return mock
 
 
@@ -80,12 +80,12 @@ def _patch_sign_digest_remote(
             }
 
         mock = AsyncMock(side_effect=_fake_sign)
-    monkeypatch.setattr("app.services.personal_signing.sign_digest_remote", mock)
+    monkeypatch.setattr("signature.services.personal_signing.sign_digest_remote", mock)
     return mock
 
 
 def _disable_tsa(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.core.config import settings as signature_settings
+    from signature.core.config import settings as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
 

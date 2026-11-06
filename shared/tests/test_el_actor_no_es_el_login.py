@@ -16,7 +16,7 @@ puede reasignarse. Una fila de custodia física —«el préstamo lo hizo juan»
 `generado_por` de un índice electrónico que luego se firma, atribuidos a un
 login, dejan de ser reconstruibles el día que el nombre cambia.
 
-`archive-service/app/core/actor.py` ya lo declaraba resuelto para el resto del
+`archive-service/archive/core/actor.py` ya lo declaraba resuelto para el resto del
 servicio («`X-Username` se conserva solo como atributo DESCRIPTIVO»), pero dos
 sitios seguían asignándolo como actor: `fisico._performed_by` y
 `indice.rebuild_indice`. El mismo patrón que `sub` frente a `user_id`: un
@@ -30,6 +30,8 @@ legítimo y no se toca: se prohíbe asignarlo a quien responde del acto.
 """
 
 from __future__ import annotations
+
+from tests._compose import glob_src
 
 import re
 from pathlib import Path
@@ -64,7 +66,7 @@ def test_el_censo_reconoce_la_forma_que_se_prohibe() -> None:
 
 def test_ninguna_variable_de_atribucion_se_asigna_desde_el_login() -> None:
     culpables: list[str] = []
-    for archivo in sorted(SERVICIOS.glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(SERVICIOS, "*/app/**/*.py")):
         for hallazgo in _hallazgos(archivo.read_text(encoding="utf-8")):
             culpables.append(f"{archivo.relative_to(RAIZ)}: {hallazgo}")
     assert not culpables, (
@@ -78,4 +80,4 @@ def test_ninguna_variable_de_atribucion_se_asigna_desde_el_login() -> None:
 def test_el_censo_mira_servicios_de_verdad() -> None:
     """Anti-vacuidad del árbol: si el glob dejara de encontrar código, el
     guardián aprobaría por no haber leído ningún fichero."""
-    assert len(list(SERVICIOS.glob("*/app/**/*.py"))) > 100
+    assert len(list(glob_src(SERVICIOS, "*/app/**/*.py"))) > 100

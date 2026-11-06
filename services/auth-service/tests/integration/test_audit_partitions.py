@@ -151,7 +151,7 @@ async def test_la_sonda_marca_degraded_si_falta_el_mes_siguiente_y_ok_al_crearlo
     transaccional), así que no deja particiones lejanas en la base compartida.
 
     Mutación: que la sonda devuelva `ok` fijo -> la primera aserción cae."""
-    from app.core.audit_partitions import estado_particion_siguiente
+    from auth.core.audit_partitions import estado_particion_siguiente
 
     nombre, momento = _mes_libre(offset_meses=90)
     # `ahora` = el mes ANTERIOR al libre, para que «el mes siguiente» sea `nombre`.

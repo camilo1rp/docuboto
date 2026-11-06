@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.core.database import get_optional_tenant_conn
-from app.main import app
+from auth.core.database import get_optional_tenant_conn
+from auth.main import app
 from tests.conftest import FAKE_TOKEN_RESPONSE
 
 
@@ -45,11 +45,11 @@ async def test_token_success(client: AsyncClient) -> None:
     """Successful ROPC login returns a token pair."""
     with (
         patch(
-            "app.services.auth_service.AuthService.login",
+            "auth.services.auth_service.AuthService.login",
             new_callable=AsyncMock,
         ) as mock_login,
     ):
-        from app.schemas.auth import TokenResponse
+        from auth.schemas.auth import TokenResponse
 
         mock_login.return_value = TokenResponse(**FAKE_TOKEN_RESPONSE)
 
@@ -69,10 +69,10 @@ async def test_token_success(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_token_invalid_credentials(client: AsyncClient) -> None:
     """Wrong password returns 401 with structured error."""
-    from app.services.auth_service import KeycloakError
+    from auth.services.auth_service import KeycloakError
 
     with patch(
-        "app.services.auth_service.AuthService.login",
+        "auth.services.auth_service.AuthService.login",
         new_callable=AsyncMock,
         side_effect=KeycloakError(401, "invalid_credentials"),
     ):
@@ -89,10 +89,10 @@ async def test_token_invalid_credentials(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_token_tenant_mismatch(client: AsyncClient) -> None:
     """A user logging in with a tenant they don't belong to returns 403."""
-    from app.services.auth_service import KeycloakError
+    from auth.services.auth_service import KeycloakError
 
     with patch(
-        "app.services.auth_service.AuthService.login",
+        "auth.services.auth_service.AuthService.login",
         new_callable=AsyncMock,
         side_effect=KeycloakError(403, "tenant_mismatch"),
     ):
@@ -113,10 +113,10 @@ async def test_token_tenant_mismatch(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_refresh_token(client: AsyncClient) -> None:
     """Valid refresh token returns a new token pair."""
-    from app.schemas.auth import TokenResponse
+    from auth.schemas.auth import TokenResponse
 
     with patch(
-        "app.services.auth_service.AuthService.refresh",
+        "auth.services.auth_service.AuthService.refresh",
         new_callable=AsyncMock,
         return_value=TokenResponse(**FAKE_TOKEN_RESPONSE),
     ):
@@ -132,10 +132,10 @@ async def test_refresh_token(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_refresh_invalid_token(client: AsyncClient) -> None:
     """Expired or invalid refresh token returns 401."""
-    from app.services.auth_service import KeycloakError
+    from auth.services.auth_service import KeycloakError
 
     with patch(
-        "app.services.auth_service.AuthService.refresh",
+        "auth.services.auth_service.AuthService.refresh",
         new_callable=AsyncMock,
         side_effect=KeycloakError(401, "invalid_refresh_token"),
     ):
@@ -156,7 +156,7 @@ async def test_refresh_invalid_token(client: AsyncClient) -> None:
 async def test_logout(client: AsyncClient) -> None:
     """Logout returns 204 and invalidates the token in Keycloak."""
     with patch(
-        "app.services.auth_service.AuthService.logout",
+        "auth.services.auth_service.AuthService.logout",
         new_callable=AsyncMock,
         return_value=None,
     ):
@@ -176,7 +176,7 @@ async def test_logout(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_validate_valid_token(client: AsyncClient) -> None:
     """api-gateway calls /validate with a valid token and gets user info back."""
-    from app.schemas.auth import ValidateResponse
+    from auth.schemas.auth import ValidateResponse
 
     expected = ValidateResponse(
         valid=True,
@@ -187,7 +187,7 @@ async def test_validate_valid_token(client: AsyncClient) -> None:
     )
 
     with patch(
-        "app.services.auth_service.AuthService.validate",
+        "auth.services.auth_service.AuthService.validate",
         new_callable=AsyncMock,
         return_value=expected,
     ):
@@ -207,10 +207,10 @@ async def test_validate_valid_token(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_validate_expired_token(client: AsyncClient) -> None:
     """An expired token returns valid=False (not an HTTP error — gateway decides)."""
-    from app.schemas.auth import ValidateResponse
+    from auth.schemas.auth import ValidateResponse
 
     with patch(
-        "app.services.auth_service.AuthService.validate",
+        "auth.services.auth_service.AuthService.validate",
         new_callable=AsyncMock,
         return_value=ValidateResponse(valid=False),
     ):
@@ -242,7 +242,7 @@ async def test_me_returns_user_info(client: AsyncClient) -> None:
 
     No X-Tenant-Slug → get_optional_tenant_conn yields None → permissions=[].
     """
-    from app.schemas.auth import UserInfoResponse
+    from auth.schemas.auth import UserInfoResponse
 
     expected = UserInfoResponse(
         user_id="some-uuid",
@@ -253,7 +253,7 @@ async def test_me_returns_user_info(client: AsyncClient) -> None:
     )
 
     with patch(
-        "app.services.auth_service.AuthService.get_current_user",
+        "auth.services.auth_service.AuthService.get_current_user",
         new_callable=AsyncMock,
         return_value=expected,
     ):
@@ -273,7 +273,7 @@ async def test_me_returns_user_info(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_me_permissions_populated(client: AsyncClient) -> None:
     """When the user is provisioned in the tenant, permissions are resolved and returned."""
-    from app.schemas.auth import UserInfoResponse
+    from auth.schemas.auth import UserInfoResponse
 
     sub = str(uuid.uuid4())
     user_id = uuid.uuid4()
@@ -306,7 +306,7 @@ async def test_me_permissions_populated(client: AsyncClient) -> None:
     _override_optional_conn(conn)
 
     with patch(
-        "app.services.auth_service.AuthService.get_current_user",
+        "auth.services.auth_service.AuthService.get_current_user",
         new_callable=AsyncMock,
         return_value=user_info,
     ):
@@ -335,7 +335,7 @@ async def test_me_permission_levels_distinguish_read_from_write(client: AsyncCli
     indistinguishable from a write-level grant (crud=3), while backends gate
     with `min_crud=3` (RF-SEG-03) — offering actions that then 403.
     """
-    from app.schemas.auth import UserInfoResponse
+    from auth.schemas.auth import UserInfoResponse
 
     sub = str(uuid.uuid4())
     user_id = uuid.uuid4()
@@ -363,7 +363,7 @@ async def test_me_permission_levels_distinguish_read_from_write(client: AsyncCli
     _override_optional_conn(conn)
 
     with patch(
-        "app.services.auth_service.AuthService.get_current_user",
+        "auth.services.auth_service.AuthService.get_current_user",
         new_callable=AsyncMock,
         return_value=user_info,
     ):
@@ -387,7 +387,7 @@ async def test_me_permission_levels_distinguish_read_from_write(client: AsyncCli
 @pytest.mark.asyncio
 async def test_me_permissions_empty_when_not_provisioned(client: AsyncClient) -> None:
     """User authenticated via Keycloak but not in tenant DB → permissions=[] (fail-closed)."""
-    from app.schemas.auth import UserInfoResponse
+    from auth.schemas.auth import UserInfoResponse
 
     user_info = UserInfoResponse(
         user_id="ghost-sub",
@@ -403,7 +403,7 @@ async def test_me_permissions_empty_when_not_provisioned(client: AsyncClient) ->
     _override_optional_conn(conn)
 
     with patch(
-        "app.services.auth_service.AuthService.get_current_user",
+        "auth.services.auth_service.AuthService.get_current_user",
         new_callable=AsyncMock,
         return_value=user_info,
     ):
@@ -424,7 +424,7 @@ async def test_me_permissions_empty_when_not_provisioned(client: AsyncClient) ->
 @pytest.mark.asyncio
 async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
     """Root users always have USUA_PERM_ROOT in their permissions list."""
-    from app.schemas.auth import UserInfoResponse
+    from auth.schemas.auth import UserInfoResponse
 
     sub = str(uuid.uuid4())
     user_id = uuid.uuid4()
@@ -452,7 +452,7 @@ async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
     _override_optional_conn(conn)
 
     with patch(
-        "app.services.auth_service.AuthService.get_current_user",
+        "auth.services.auth_service.AuthService.get_current_user",
         new_callable=AsyncMock,
         return_value=user_info,
     ):
@@ -489,7 +489,7 @@ async def test_health_es_vivacidad_y_no_llama_a_keycloak(client: AsyncClient) ->
     que ya estaba en curso.
     """
     with patch(
-        "app.services.auth_service.AuthService.keycloak_healthy",
+        "auth.services.auth_service.AuthService.keycloak_healthy",
         new_callable=AsyncMock,
         return_value=True,
     ) as kc:
@@ -508,7 +508,7 @@ async def test_ready_con_keycloak_caido_devuelve_503(client: AsyncClient) -> Non
     es exactamente la distinción que este bloque introduce.
     """
     with patch(
-        "app.services.auth_service.AuthService.keycloak_healthy",
+        "auth.services.auth_service.AuthService.keycloak_healthy",
         new_callable=AsyncMock,
         return_value=False,
     ):
@@ -555,7 +555,7 @@ async def test_me_entidad_sin_schema_permisos_vacios(client: AsyncClient) -> Non
     """
     import asyncpg
 
-    from app.schemas.auth import UserInfoResponse
+    from auth.schemas.auth import UserInfoResponse
 
     user_info = UserInfoResponse(
         user_id="kc-sub-1",
@@ -570,7 +570,7 @@ async def test_me_entidad_sin_schema_permisos_vacios(client: AsyncClient) -> Non
     app.state.db_pool = _PoolFalso(conn)
     try:
         with patch(
-            "app.services.auth_service.AuthService.get_current_user",
+            "auth.services.auth_service.AuthService.get_current_user",
             new_callable=AsyncMock,
             return_value=user_info,
         ):
@@ -594,7 +594,7 @@ async def test_me_entidad_sin_schema_permisos_vacios(client: AsyncClient) -> Non
 @pytest.mark.asyncio
 async def test_me_entidad_con_schema_sigue_resolviendo_permisos(client: AsyncClient) -> None:
     """Control positivo: con `auth_users` presente se consulta como siempre."""
-    from app.schemas.auth import UserInfoResponse
+    from auth.schemas.auth import UserInfoResponse
 
     user_info = UserInfoResponse(
         user_id="kc-sub-2", username="x", email="x@demo.test", tenant_slug="demo", roles=[]
@@ -605,7 +605,7 @@ async def test_me_entidad_con_schema_sigue_resolviendo_permisos(client: AsyncCli
     app.state.db_pool = _PoolFalso(conn)
     try:
         with patch(
-            "app.services.auth_service.AuthService.get_current_user",
+            "auth.services.auth_service.AuthService.get_current_user",
             new_callable=AsyncMock,
             return_value=user_info,
         ):

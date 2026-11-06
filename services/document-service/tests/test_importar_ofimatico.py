@@ -22,7 +22,7 @@ import zipfile
 
 import pytest
 
-from app.services.importar_ofimatico import (
+from document.services.importar_ofimatico import (
     MAX_BYTES,
     ImportacionError,
     importar,

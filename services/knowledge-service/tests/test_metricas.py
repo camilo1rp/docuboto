@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from orpycamcp_common.metricas import MetricaInvalida
 
-from app.core import medidor
+from knowledge.core import medidor
 
 
 def _valor(muestras: list[Any], familia: str, **etiquetas: str) -> float:

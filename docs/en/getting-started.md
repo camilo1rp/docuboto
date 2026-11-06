@@ -25,6 +25,8 @@ docker compose --profile dev up -d
 docker compose ps
 ```
 
+To join a local provider over PPI, add `-f docker-compose.intelligence.yml` and set `PPI_PROVIDER_URL`. The start order, the `ppi` network, and the first **Inteligencia** / **Preguntar** check live in the provider's `docs/runbooks/local-dev.md` (section "Join a local Docuboto").
+
 ## Access URLs
 
 | Service | URL | Dev credentials |

@@ -27,9 +27,9 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.core.http_clients import SigningKeyStatusUnavailableError
-from app.schemas.cadena import FirmarRequest
-from app.services import cadena_service as mod
+from signature.core.http_clients import SigningKeyStatusUnavailableError
+from signature.schemas.cadena import FirmarRequest
+from signature.services import cadena_service as mod
 from tests.conftest import USER
 from tests.test_challenge_mismas_precondiciones_que_firmar import (
     SOL_ID,

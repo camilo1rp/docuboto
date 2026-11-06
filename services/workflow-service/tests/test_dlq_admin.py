@@ -23,11 +23,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.core.clearance import (
+from workflow.core.clearance import (
     get_actor,
 )
-from app.core.constants import DLQ_GROUP
-from app.repositories.dead_letter_repository import (
+from workflow.core.constants import DLQ_GROUP
+from workflow.repositories.dead_letter_repository import (
     DeadLetterRepository,
 )
 from tests.conftest import TENANT_HEADERS, USER_ID
@@ -97,7 +97,7 @@ async def test_list_returns_summaries(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetch.return_value = [_summary_row()]
     with patch(
-        "app.routers.admin_deadletter.resolve_caller_clearance",
+        "workflow.routers.admin_deadletter.resolve_caller_clearance",
         AsyncMock(return_value=3),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
@@ -113,7 +113,7 @@ async def test_list_no_payload_or_last_error_in_response(client_with_conn) -> No
     client, conn, _redis = client_with_conn
     conn.fetch.return_value = [_summary_row()]
     with patch(
-        "app.routers.admin_deadletter.resolve_caller_clearance",
+        "workflow.routers.admin_deadletter.resolve_caller_clearance",
         AsyncMock(return_value=3),
     ):
         resp = await client.get(f"{BASE}/", headers=TENANT_HEADERS)
@@ -211,10 +211,10 @@ async def test_detail_clearance_denied(client_with_conn) -> None:
     conn.fetchrow.return_value = None
     mock_audit = AsyncMock()
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=1)),
-        patch("app.routers.admin_deadletter._audit", mock_audit),
-        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
+        patch("workflow.routers.admin_deadletter._audit", mock_audit),
+        patch("workflow.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
         resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 404
@@ -228,7 +228,7 @@ async def test_detail_success(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetchrow.return_value = _full_row()
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
     ):
         resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
@@ -248,10 +248,10 @@ async def test_detail_view_writes_audit_log(client_with_conn) -> None:
     conn.fetchrow.return_value = _full_row()
     mock_audit = AsyncMock()
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter._audit", mock_audit),
-        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
+        patch("workflow.routers.admin_deadletter._audit", mock_audit),
+        patch("workflow.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
         resp = await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -274,12 +274,12 @@ async def test_replay_success(client_with_conn) -> None:
     conn.execute.return_value = "UPDATE 1"
     mock_audit = AsyncMock()
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_distribution",
+        patch("workflow.routers.admin_deadletter.apply_distribution",
               AsyncMock(return_value="Dirección Jurídica")),
-        patch("app.routers.admin_deadletter._audit", mock_audit),
-        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
+        patch("workflow.routers.admin_deadletter._audit", mock_audit),
+        patch("workflow.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -296,11 +296,11 @@ async def test_replay_handler_fails_returns_502(client_with_conn) -> None:
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_distribution",
+        patch("workflow.routers.admin_deadletter.apply_distribution",
               AsyncMock(side_effect=RuntimeError("boom"))),
-        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+        patch("workflow.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
     assert resp.status_code == 502
@@ -317,11 +317,11 @@ async def test_replay_not_pending_returns_409(client_with_conn) -> None:
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 0"
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_distribution",
+        patch("workflow.routers.admin_deadletter.apply_distribution",
               AsyncMock(return_value=None)),
-        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+        patch("workflow.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
     assert resp.status_code == 409
@@ -331,7 +331,7 @@ async def test_replay_not_pending_returns_409(client_with_conn) -> None:
 async def test_replay_tenant_mismatch_returns_422(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetchrow.return_value = _full_row(tenant="otro")
-    with patch("app.routers.admin_deadletter._audit", AsyncMock()):
+    with patch("workflow.routers.admin_deadletter._audit", AsyncMock()):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
     assert resp.status_code == 422
 
@@ -341,9 +341,9 @@ async def test_replay_clearance_denied_returns_404(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetchrow.return_value = None
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=1)),
-        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+        patch("workflow.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
     assert resp.status_code == 404
@@ -353,7 +353,7 @@ async def test_replay_clearance_denied_returns_404(client_with_conn) -> None:
 async def test_replay_not_found_returns_404(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetchrow.return_value = None
-    with patch("app.routers.admin_deadletter._audit", AsyncMock()):
+    with patch("workflow.routers.admin_deadletter._audit", AsyncMock()):
         resp = await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
     assert resp.status_code == 404
 
@@ -367,10 +367,10 @@ async def test_discard_success(client_with_conn) -> None:
     conn.execute.return_value = "UPDATE 1"
     mock_audit = AsyncMock()
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter._audit", mock_audit),
-        patch("app.routers.admin_deadletter._AUDIT_AVAILABLE", True),
+        patch("workflow.routers.admin_deadletter._audit", mock_audit),
+        patch("workflow.routers.admin_deadletter._AUDIT_AVAILABLE", True),
     ):
         resp = await client.post(
             f"{BASE}/{EVT}/discard", headers=TENANT_HEADERS, json={"reason": "spurious"}
@@ -394,9 +394,9 @@ async def test_discard_clearance_denied_returns_404(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetchrow.return_value = None
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=1)),
-        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+        patch("workflow.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(
             f"{BASE}/{EVT}/discard", headers=TENANT_HEADERS, json={"reason": "spurious"}
@@ -417,9 +417,9 @@ async def test_discard_not_pending_returns_409(client_with_conn) -> None:
     }
     conn.execute.return_value = "UPDATE 0"
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+        patch("workflow.routers.admin_deadletter._audit", AsyncMock()),
     ):
         resp = await client.post(
             f"{BASE}/{EVT}/discard", headers=TENANT_HEADERS, json={"reason": "late"}
@@ -439,7 +439,7 @@ async def test_discard_not_found_returns_404(client_with_conn) -> None:
 
 # ------------------------------------------- origin_group scoping (shared table)
 # `evento_dead_letter` is shared with signature-service in the same tenant schema
-# (see module note in app/repositories/dead_letter_repository.py). These tests
+# (see module note in workflow/repositories/dead_letter_repository.py). These tests
 # cover both ends: (a) the router always queries with ITS OWN origin_group
 # (wiring), and (b) the repository methods actually filter rows by
 # origin_group so a row belonging to the other consumer is invisible here.
@@ -459,7 +459,7 @@ async def test_detail_passes_own_origin_group_to_repo(client_with_conn) -> None:
     client, conn, _redis = client_with_conn
     conn.fetchrow.return_value = _full_row()
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
     ):
         await client.get(f"{BASE}/{EVT}", headers=TENANT_HEADERS)
@@ -473,11 +473,11 @@ async def test_replay_passes_own_origin_group_to_get_for_update(client_with_conn
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter.apply_distribution",
+        patch("workflow.routers.admin_deadletter.apply_distribution",
               AsyncMock(return_value="Dirección Jurídica")),
-        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+        patch("workflow.routers.admin_deadletter._audit", AsyncMock()),
     ):
         await client.post(f"{BASE}/{EVT}/replay", headers=TENANT_HEADERS)
     # get_for_update(event_id, caller_slug, origin_group)
@@ -492,9 +492,9 @@ async def test_discard_passes_own_origin_group(client_with_conn) -> None:
     conn.fetchrow.return_value = _full_row()
     conn.execute.return_value = "UPDATE 1"
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance",
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance",
               AsyncMock(return_value=3)),
-        patch("app.routers.admin_deadletter._audit", AsyncMock()),
+        patch("workflow.routers.admin_deadletter._audit", AsyncMock()),
     ):
         await client.post(
             f"{BASE}/{EVT}/discard", headers=TENANT_HEADERS, json={"reason": "x"}
@@ -566,7 +566,7 @@ def test_las_rutas_del_dlq_toman_la_identidad_de_get_actor() -> None:
     """AREA-01-07: detalle, replay y discard dejaron el `_actor` opcional. Ante un
     X-User-Id ausente el gate de router da 403 antes, así que la rama 401 no se
     observa por HTTP: se comprueba el cableado de la dependencia."""
-    from app.routers import admin_deadletter as mod
+    from workflow.routers import admin_deadletter as mod
 
     assert not hasattr(mod, "_actor")
     for ruta in mod.router.routes:
@@ -584,8 +584,8 @@ async def test_list_pasa_el_clearance_del_llamante_al_repositorio(client_with_co
     conn.fetchval.return_value = 1  # check_permission
     lista = AsyncMock(return_value=([_summary_row()], 7))
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=2)),
-        patch("app.routers.admin_deadletter.DeadLetterRepository.list_visible", lista),
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=2)),
+        patch("workflow.routers.admin_deadletter.DeadLetterRepository.list_visible", lista),
     ):
         resp = await client.get(f"{BASE}/?page=2&size=5", headers=TENANT_HEADERS)
     assert resp.status_code == 200
@@ -604,9 +604,9 @@ async def test_sin_tabla_radicados_el_listado_responde_503(client_with_conn) -> 
     client, conn, _redis = client_with_conn
     conn.fetchval.return_value = 1
     with (
-        patch("app.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
+        patch("workflow.routers.admin_deadletter.resolve_caller_clearance", AsyncMock(return_value=3)),
         patch(
-            "app.routers.admin_deadletter.DeadLetterRepository.list_visible",
+            "workflow.routers.admin_deadletter.DeadLetterRepository.list_visible",
             AsyncMock(side_effect=RadicadosAusenteError("relation radicados")),
         ),
     ):

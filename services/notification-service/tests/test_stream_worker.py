@@ -36,7 +36,7 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
     no hay entradas nuevas en los streams.  El bucle debe continuar de inmediato, sin
     registrar ningún mensaje de error y sin backoff innecesario.
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = MagicMock()
     fake_redis.xreadgroup = AsyncMock(
@@ -49,8 +49,8 @@ async def test_run_timeout_es_silencioso_y_reanuda_escucha() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.time") as mock_time,
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.time") as mock_time,
         patch("asyncio.sleep", AsyncMock()) as mock_sleep,
         patch.object(stream_worker, "logger") as mock_logger,
     ):
@@ -77,7 +77,7 @@ async def test_run_xack_si_handler_tiene_exito() -> None:
     El refactor del bucle externo mantiene la semántica de despacho por stream
     y el xack condicional (A-1) cuando el handler completa sin excepción.
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = MagicMock()
     msg_id = b"1700000000000-0"
@@ -96,8 +96,8 @@ async def test_run_xack_si_handler_tiene_exito() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.time") as mock_time,
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.time") as mock_time,
         patch.dict(stream_worker._HANDLERS, {stream_worker.WORKFLOW_STREAM: mock_handler}),
     ):
         mock_time.monotonic.return_value = 0.0  # no reclaim sweep
@@ -119,7 +119,7 @@ async def test_run_xack_no_se_llama_si_handler_falla() -> None:
     max_deliveries=5, lo escalará al dead-letter stream con traza durable.
     El loop debe continuar (no crashear) y salir limpiamente con CancelledError.
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = MagicMock()
     msg_id = b"1700000000000-0"
@@ -138,8 +138,8 @@ async def test_run_xack_no_se_llama_si_handler_falla() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.time") as mock_time,
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.time") as mock_time,
         patch.dict(stream_worker._HANDLERS, {stream_worker.WORKFLOW_STREAM: mock_handler}),
     ):
         mock_time.monotonic.return_value = 0.0  # no reclaim sweep
@@ -158,7 +158,7 @@ async def test_run_reclaim_llamado_por_cada_stream() -> None:
     dos streams (WORKFLOW_STREAM y DOCUMENT_STREAM), pasando el handler correspondiente
     y el mismo DEADLETTER_STREAM.
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -173,9 +173,9 @@ async def test_run_reclaim_llamado_por_cada_stream() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", mock_reclaim),
+        patch("notification.workers.stream_worker.time", mock_time),
     ):
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
@@ -199,7 +199,7 @@ async def test_run_trim_dlq_llamado_junto_con_retention() -> None:
     y que trim_deadletter recibe DEADLETTER_STREAM y el max_age_ms correcto
     (retention_dlq_days * 86 400 000).
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -215,11 +215,11 @@ async def test_run_trim_dlq_llamado_junto_con_retention() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.stream_worker.retention.run_once", mock_run_once),
-        patch("app.workers.stream_worker.events.trim_deadletter", mock_trim),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", mock_reclaim),
+        patch("notification.workers.stream_worker.retention.run_once", mock_run_once),
+        patch("notification.workers.stream_worker.events.trim_deadletter", mock_trim),
+        patch("notification.workers.stream_worker.time", mock_time),
     ):
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
@@ -237,7 +237,7 @@ async def test_run_trim_dlq_llamado_junto_con_retention() -> None:
 @pytest.mark.asyncio
 async def test_run_trim_dlq_no_llamado_antes_del_intervalo() -> None:
     """MVP-2: trim_deadletter NO se llama si RETENTION_INTERVAL aún no ha transcurrido."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -251,9 +251,9 @@ async def test_run_trim_dlq_no_llamado_antes_del_intervalo() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.trim_deadletter", mock_trim),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.trim_deadletter", mock_trim),
+        patch("notification.workers.stream_worker.time", mock_time),
     ):
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
@@ -268,7 +268,7 @@ async def test_run_fallo_trim_dlq_no_tumba_el_loop() -> None:
     retention.run_once completa con éxito; trim_deadletter falla; el loop sale
     limpiamente via CancelledError.
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -281,14 +281,14 @@ async def test_run_fallo_trim_dlq_no_tumba_el_loop() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.stream_worker.retention.run_once", AsyncMock()),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", AsyncMock()),
+        patch("notification.workers.stream_worker.retention.run_once", AsyncMock()),
         patch(
-            "app.workers.stream_worker.events.trim_deadletter",
+            "notification.workers.stream_worker.events.trim_deadletter",
             AsyncMock(side_effect=RuntimeError("redis timeout")),
         ),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.time", mock_time),
         patch.object(stream_worker, "logger") as mock_logger,
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -305,7 +305,7 @@ async def test_run_fallo_trim_dlq_no_tumba_el_loop() -> None:
 @pytest.mark.asyncio
 async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
     """Un fallo en reclaim_stale se registra como WARNING y el loop continúa."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -318,12 +318,12 @@ async def test_run_fallo_en_barrido_no_tumba_el_loop() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
         patch(
-            "app.workers.stream_worker.events.reclaim_stale",
+            "notification.workers.stream_worker.events.reclaim_stale",
             AsyncMock(side_effect=RuntimeError("redis down")),
         ),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.time", mock_time),
         patch.object(stream_worker, "logger") as mock_logger,
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -348,7 +348,7 @@ async def test_los_streams_de_DOMINIO_tambien_se_recortan() -> None:
     Probar la función de recorte aislada no prueba que se invoque: esto mira el
     ciclo real, y comprueba además CUÁLES streams recibe.
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [[], asyncio.CancelledError()]
@@ -359,12 +359,12 @@ async def test_los_streams_de_DOMINIO_tambien_se_recortan() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", AsyncMock()),
-        patch("app.workers.stream_worker.retention.run_once", AsyncMock()),
-        patch("app.workers.stream_worker.events.trim_deadletter", AsyncMock(return_value=0)),
-        patch("app.workers.stream_worker.events.trim_stream", mock_trim_dominio),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", AsyncMock()),
+        patch("notification.workers.stream_worker.retention.run_once", AsyncMock()),
+        patch("notification.workers.stream_worker.events.trim_deadletter", AsyncMock(return_value=0)),
+        patch("notification.workers.stream_worker.events.trim_stream", mock_trim_dominio),
+        patch("notification.workers.stream_worker.time", mock_time),
     ):
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()

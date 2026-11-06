@@ -186,7 +186,7 @@ test-integration:
   image: python:3.11-slim
   interruptible: true
   services:
-    - name: postgres:15-bookworm
+    - name: postgres:17-bookworm
       alias: postgres
   variables:
     POSTGRES_USER: orpycamcp
@@ -266,7 +266,7 @@ test-frontend:
       - frontend/node_modules/
 
 # ─── Stage: Test — subprocess veraPDF REAL (E10 Increment C2b) ────────────────
-# `SubprocessVeraPdfValidator` (services/storage-service/app/services/pdfa/
+# `SubprocessVeraPdfValidator` (services/storage-service/storage/services/pdfa/
 # subprocess_verapdf.py) ejecuta un binario Java externo sobre PDFs subidos
 # por cualquier tenant -- input NO confiable. No hay veraPDF real disponible
 # en CI (requeriría bajar/instalar un JRE + el CLI en cada pipeline), así que
@@ -561,6 +561,16 @@ build-images:
         docker push "$CI_REGISTRY_IMAGE/$svc:$CI_COMMIT_SHA"
         docker push "$CI_REGISTRY_IMAGE/$svc:latest"
       done
+      docker build -f infra/Dockerfile.app -t "$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA" \
+                                          -t "$CI_REGISTRY_IMAGE/app:latest" .
+      escanear "$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA"
+      docker push "$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA"
+      docker push "$CI_REGISTRY_IMAGE/app:latest"
+      docker build -f infra/Dockerfile.worker -t "$CI_REGISTRY_IMAGE/worker:$CI_COMMIT_SHA" \
+                                             -t "$CI_REGISTRY_IMAGE/worker:latest" .
+      escanear "$CI_REGISTRY_IMAGE/worker:$CI_COMMIT_SHA"
+      docker push "$CI_REGISTRY_IMAGE/worker:$CI_COMMIT_SHA"
+      docker push "$CI_REGISTRY_IMAGE/worker:latest"
       docker build -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA" \
                                           -t "$CI_REGISTRY_IMAGE/frontend:latest" frontend
       escanear "$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHA"

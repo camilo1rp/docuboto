@@ -32,6 +32,8 @@ nombres prohibidos: un catálogo solo recuerda los casos que alguien ya sufrió.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import re
 from pathlib import Path
 
@@ -50,7 +52,7 @@ _PRODUCIDA = re.compile(r"""["'](X-[A-Za-z0-9-]+)["']\s*(?::|\]\s*=|,|\))""")
 def _ficheros() -> list[Path]:
     return sorted(
         p
-        for p in SERVICIOS.glob("*/app/**/*.py")
+        for p in glob_src(SERVICIOS, "*/app/**/*.py")
         if "__pycache__" not in p.parts
     )
 
@@ -92,7 +94,7 @@ def test_el_censo_ve_el_codigo():
     leidas = _cabeceras_leidas()
     # Las que sabemos que existen y se usan de verdad.
     assert "X-Tenant-Slug" in leidas
-    assert "X-User-Id" in leidas
+    assert "X-Internal-Token" in leidas
 
 
 def test_ninguna_cabecera_leida_carece_de_productor() -> None:

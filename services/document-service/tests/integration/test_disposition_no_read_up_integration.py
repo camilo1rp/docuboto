@@ -27,9 +27,9 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.document_repository import DocumentRepository
-from app.schemas.document import DocumentUpdate
+from document.core.database import tenant_schema
+from document.repositories.document_repository import DocumentRepository
+from document.schemas.document import DocumentUpdate
 
 pytestmark = pytest.mark.integration
 

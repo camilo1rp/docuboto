@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from app.services.transferencia_service import TransferenciaService, _cabecera_completa
+from archive.services.transferencia_service import TransferenciaService, _cabecera_completa
 from tests.conftest import (
     TENANT_HEADERS,
     USER_ID,

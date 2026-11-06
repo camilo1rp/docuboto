@@ -27,24 +27,24 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from lxml import etree
 
-import app.core.config as config_module
-from app.schemas.preservacion import AipReempaquetarRequest
-from app.services.aip_builder import (
+import storage.core.config as config_module
+from storage.schemas.preservacion import AipReempaquetarRequest
+from storage.services.aip_builder import (
     _PREMIS_NS,
     AipDocMaterial,
     BagAnteriorCorruptoError,
     build_bag,
     read_bag_anterior,
 )
-from app.services.aip_service import (
+from storage.services.aip_service import (
     AipAnteriorFixityMismatchError,
     AipNoEncontradoError,
     AipService,
     AipYaSustituidoError,
     IndiceNoEsRenovacionError,
 )
-from app.services.pdfa.types import PdfaResult
-from app.services.retention_policy import InvalidRetentionError
+from storage.services.pdfa.types import PdfaResult
+from storage.services.retention_policy import InvalidRetentionError
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS, TENANT_SLUG
 
 EXP = "EXP-1"
@@ -196,8 +196,8 @@ class _Mundo:
 def _habilitado(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
     monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", False)
-    with patch("app.services.aip_service.get_minio") as gm, patch(
-        "app.services.aip_service.audit.append", new=AsyncMock()
+    with patch("storage.services.aip_service.get_minio") as gm, patch(
+        "storage.services.aip_service.audit.append", new=AsyncMock()
     ):
         gm.return_value = None  # se pisa por test
         yield gm
@@ -403,7 +403,7 @@ async def test_ruta_exige_token_interno(client_with_conn) -> None:
     ],
 )
 async def test_errores_http(client_with_conn, monkeypatch, exc_name, status, code) -> None:
-    import app.services.aip_service as mod
+    import storage.services.aip_service as mod
 
     client, _c, _m = client_with_conn
     monkeypatch.setattr(
@@ -422,7 +422,7 @@ async def test_errores_http(client_with_conn, monkeypatch, exc_name, status, cod
 
 @pytest.mark.asyncio
 async def test_201_si_crea_y_200_si_ya_existia(client_with_conn, monkeypatch) -> None:
-    from app.schemas.preservacion import AipResponse
+    from storage.schemas.preservacion import AipResponse
 
     client, _c, _m = client_with_conn
     resp = AipResponse(
@@ -446,7 +446,7 @@ async def test_201_si_crea_y_200_si_ya_existia(client_with_conn, monkeypatch) ->
 
 
 def test_ruta_de_conservacion_admitida_y_solo_esa() -> None:
-    from app.core.conservacion import es_ruta_de_conservacion
+    from storage.core.conservacion import es_ruta_de_conservacion
 
     assert es_ruta_de_conservacion("POST", "/api/v1/preservacion/aip-reempaquetar-internal")
     assert not es_ruta_de_conservacion("POST", "/api/v1/preservacion/aip-reempaquetar-internal\n")

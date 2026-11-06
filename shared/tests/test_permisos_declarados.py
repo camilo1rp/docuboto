@@ -38,6 +38,8 @@ por los `require_permission(...)` de los decoradores. No hay tercera lista.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 import re
 from pathlib import Path
@@ -104,7 +106,7 @@ def _gates_de_los_routers() -> dict[tuple[str, str], tuple[str | frozenset[str] 
     información, es la declaración de que no exige permiso atómico.
     """
     gates: dict[tuple[str, str], tuple[str | frozenset[str] | None, int]] = {}
-    for fichero in sorted(_SERVICIOS.glob("*/app/routers/*.py")):
+    for fichero in sorted(glob_src(_SERVICIOS, "*/app/routers/*.py")):
         try:
             arbol = ast.parse(fichero.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover — un router roto lo caza su lint

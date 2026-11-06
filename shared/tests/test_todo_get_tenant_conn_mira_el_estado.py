@@ -18,6 +18,9 @@ y un schema inexistente acababa en `UndefinedTableError` (500). Un guardián por
 lista esperada se declara: un `get_tenant_conn` nuevo obliga a decidirlo, no pasa de largo.
 """
 
+from tests._compose import glob_src
+
+
 import ast
 from pathlib import Path
 
@@ -37,7 +40,7 @@ _LLAMADAS_AL_ESTADO = {"veredicto_entidad", "estado_entidad", "atencion_publica"
 
 
 def _get_tenant_conn(servicio: str) -> ast.AsyncFunctionDef | None:
-    archivo = _SERVICIOS / f"{servicio}-service" / "app" / "core" / "database.py"
+    archivo = _SERVICIOS / f"{servicio}-service" / servicio / "core" / "database.py"
     for nodo in ast.walk(ast.parse(archivo.read_text(encoding="utf-8"))):
         if isinstance(nodo, ast.AsyncFunctionDef) and nodo.name == "get_tenant_conn":
             return nodo
@@ -75,7 +78,7 @@ def _es_set_search_path(n: ast.AST) -> bool:
 def test_la_lista_de_servicios_con_get_tenant_conn_es_la_declarada() -> None:
     definen = sorted(
         d.parent.parent.parent.name.removesuffix("-service")
-        for d in _SERVICIOS.glob("*/app/core/database.py")
+        for d in glob_src(_SERVICIOS, "*/app/core/database.py")
         if "async def get_tenant_conn" in d.read_text(encoding="utf-8")
     )
     assert definen == ESPERADOS, (
@@ -144,6 +147,7 @@ CON_GATE = {
 EXENTOS = {
     ("archive", "acquire_tenant"),
     ("document", "acquire_tenant"),
+    ("knowledge", "acquire_tenant"),
     ("notification", "acquire_tenant"),
     ("signature", "acquire_tenant"),
     ("workflow", "acquire_tenant"),
@@ -167,7 +171,7 @@ def _cede_conexion_de_tenant(fn: ast.AsyncFunctionDef) -> bool:
 
 def _censo() -> set[tuple[str, str]]:
     hallados: set[tuple[str, str]] = set()
-    for archivo in _SERVICIOS.glob("*-service/app/**/*.py"):
+    for archivo in glob_src(_SERVICIOS, "*-service/app/**/*.py"):
         if "ops" in archivo.parts or "jobs" in archivo.parts:
             continue  # herramientas de operador y jobs: no atienden peticiones
         servicio = archivo.relative_to(_SERVICIOS).parts[0].removesuffix("-service")
@@ -196,7 +200,7 @@ def test_todo_generador_con_gate_mira_el_estado_antes_del_schema() -> None:
         fn = next(
             (
                 n
-                for a in (_SERVICIOS / f"{servicio}-service" / "app").rglob("*.py")
+                for a in (_SERVICIOS / f"{servicio}-service" / servicio).rglob("*.py")
                 for n in ast.walk(ast.parse(a.read_text(encoding="utf-8")))
                 if isinstance(n, ast.AsyncFunctionDef) and n.name == nombre
             ),

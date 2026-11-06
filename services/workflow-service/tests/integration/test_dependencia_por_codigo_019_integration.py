@@ -43,8 +43,8 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
-from app.services.estado_radicado import PasoUbicacion, Ubicacion, derivar_ubicacion
+from workflow.core.database import tenant_schema
+from workflow.services.estado_radicado import PasoUbicacion, Ubicacion, derivar_ubicacion
 from migrations import runner
 from tests.integration.conftest import _STUB_TABLES_DDL, _make_slug
 from tests.integration.test_estado_radicado_integration import (  # noqa: F401
@@ -480,7 +480,7 @@ async def test_renombrar_con_tramite_vivo_no_saca_el_paso_de_la_bandeja_ni_de_la
     u = await conn.fetchrow("SELECT flujo_dept, flujo_dept_code, ubicacion_dept_code FROM radicados WHERE id = $1", rid)
     assert (u["flujo_dept"], u["flujo_dept_code"], u["ubicacion_dept_code"]) == ("Oficina Archivo", 901, 901)
     # Y sigue siendo SUYO: el miembro lo cierra (tenencia por código).
-    cerrado = await svc.complete_step(items[0].id, __import__("app.schemas.workflow", fromlist=["FlowStepComplete"]).FlowStepComplete(), miembro)
+    cerrado = await svc.complete_step(items[0].id, __import__("workflow.schemas.workflow", fromlist=["FlowStepComplete"]).FlowStepComplete(), miembro)
     assert cerrado.status == "completed"
 
 

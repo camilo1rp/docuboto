@@ -26,8 +26,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.core.config import settings
-from app.core.constants import SYSTEM_RECONCILER_ID
+from signature.core.config import settings
+from signature.core.constants import SYSTEM_RECONCILER_ID
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_sign_xml_xades import _generate_cert, _signer_ref
 from tests.test_sign_xml_xades import signature_env as signature_env  # re-exported fixture
@@ -154,7 +154,7 @@ async def test_sign_xml_acta_transferencia_never_publishes_indice_firmado_event(
     install_seal(_signer_ref(cert_pem, key_pem))
 
     mock_publish = AsyncMock()
-    monkeypatch.setattr("app.services.signing_service.publish_indice_firmado", mock_publish)
+    monkeypatch.setattr("signature.services.signing_service.publish_indice_firmado", mock_publish)
 
     resp = await _sign_acta(client)
     assert resp.status_code == 201
@@ -174,12 +174,12 @@ async def test_sign_xml_indice_still_publishes_event_retrocompat(
     install_seal(_signer_ref(cert_pem, key_pem))
 
     mock_publish = AsyncMock()
-    monkeypatch.setattr("app.services.signing_service.publish_indice_firmado", mock_publish)
+    monkeypatch.setattr("signature.services.signing_service.publish_indice_firmado", mock_publish)
     # `get_redis()` no está inicializado en el entorno de test (sin lifespan) —
     # se patchea también para que la llamada llegue a `publish_indice_firmado`
     # en vez de fallar antes en `get_redis()` (best-effort, capturado por el
     # mismo `try/except` que protege el evento).
-    monkeypatch.setattr("app.services.signing_service.get_redis", lambda: object())
+    monkeypatch.setattr("signature.services.signing_service.get_redis", lambda: object())
 
     resp = await _sign_indice(client)
     assert resp.status_code == 201
@@ -239,7 +239,7 @@ async def test_internal_sign_indice_default_objeto_tipo_still_indice_retrocompat
     signature_env, monkeypatch
 ) -> None:
     """Retrocompat del Inc.8: el llamador preexistente
-    (`archive-service/app/jobs/indice_reconciliation.py`) nunca envía
+    (`archive-service/archive/jobs/indice_reconciliation.py`) nunca envía
     `objeto_tipo` — el default sigue siendo `"indice"`, filename con el
     prefijo `indice-` de siempre."""
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env

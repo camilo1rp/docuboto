@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import httpx
 
-from app.clients.signature_client import _causa_remota
+from archive.clients.signature_client import _causa_remota
 
 
 def _resp(contenido: bytes | str, tipo: str = "application/json") -> httpx.Response:

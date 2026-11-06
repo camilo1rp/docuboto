@@ -79,7 +79,7 @@ def _asientos(mock_conn, accion: str) -> list:
 
 def _huellas_vacias():
     return patch(
-        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+        "archive.services.archive_service.ArchiveService._huellas_por_radicado",
         AsyncMock(return_value={}),
     )
 
@@ -185,7 +185,7 @@ async def test_una_huella_distinta_a_la_del_almacen_se_rechaza(
     _armar(mock_conn)
 
     with patch(
-        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+        "archive.services.archive_service.ArchiveService._huellas_por_radicado",
         AsyncMock(return_value={str(RADICADO_ID): "a" * 64}),
     ):
         resp = await _vincular(client, content_hash="b" * 64)
@@ -206,7 +206,7 @@ async def test_se_persiste_lo_RESUELTO_aunque_el_cuerpo_no_declare_nada(
     _armar(mock_conn)
 
     with patch(
-        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+        "archive.services.archive_service.ArchiveService._huellas_por_radicado",
         AsyncMock(return_value={str(RADICADO_ID): "a" * 64}),
     ):
         resp = await _vincular(client)
@@ -250,13 +250,13 @@ async def test_una_tipologia_falsa_no_llega_al_indice(
 async def test_si_document_service_no_responde_NO_se_vincula(client_with_conn) -> None:
     """Fail-closed para existencia y número: un 503 explícito, no un vínculo
     con datos sin contrastar."""
-    from app.clients.document_client import DocumentClientError
+    from archive.clients.document_client import DocumentClientError
 
     client, mock_conn = client_with_conn
     _armar(mock_conn)
 
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(side_effect=DocumentClientError("caído")),
     ):
         resp = await _vincular(client)
@@ -315,7 +315,7 @@ def _document_service_con_nivel(nivel: int, **meta):
         }
 
     return patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(side_effect=_fake),
     )
 

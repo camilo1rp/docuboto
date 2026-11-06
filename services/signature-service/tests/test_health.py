@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from signature.main import app
 
 pytestmark = pytest.mark.asyncio
 
@@ -48,7 +48,7 @@ def _pool_que(resultado=None, error=None):
 async def test_health_es_vivacidad_y_no_toca_nada() -> None:
     """Gobierna los reinicios: si dependiera de Postgres, un Postgres caído
     provocaría una tormenta de reinicios que no arregla Postgres."""
-    with patch("app.routers.health.get_pool") as pool:
+    with patch("signature.routers.health.get_pool") as pool:
         respuesta = await _get("/health")
         assert pool.call_count == 0
 
@@ -59,8 +59,8 @@ async def test_health_es_vivacidad_y_no_toca_nada() -> None:
 async def test_ready_comprueba_base_de_datos_y_redis() -> None:
     redis = AsyncMock()
     with (
-        patch("app.routers.health.get_pool", return_value=_pool_que(1)),
-        patch("app.routers.health.get_redis", return_value=redis),
+        patch("signature.routers.health.get_pool", return_value=_pool_que(1)),
+        patch("signature.routers.health.get_redis", return_value=redis),
     ):
         respuesta = await _get("/health/ready")
 
@@ -72,8 +72,8 @@ async def test_ready_comprueba_base_de_datos_y_redis() -> None:
 async def test_ready_devuelve_503_con_la_base_de_datos_caida() -> None:
     """Este es el caso que `/health` reportaba como «ok» indefinidamente."""
     with (
-        patch("app.routers.health.get_pool", return_value=_pool_que(error=OSError("sin conexión"))),
-        patch("app.routers.health.get_redis", return_value=AsyncMock()),
+        patch("signature.routers.health.get_pool", return_value=_pool_que(error=OSError("sin conexión"))),
+        patch("signature.routers.health.get_redis", return_value=AsyncMock()),
     ):
         respuesta = await _get("/health/ready")
 
@@ -86,8 +86,8 @@ async def test_ready_no_publica_el_motivo_del_fallo() -> None:
     """El texto de una excepción de red trae el destino: `postgres:5432`."""
     fallo = OSError("connect failed: postgres:5432 (Name or service not known)")
     with (
-        patch("app.routers.health.get_pool", return_value=_pool_que(error=fallo)),
-        patch("app.routers.health.get_redis", return_value=AsyncMock()),
+        patch("signature.routers.health.get_pool", return_value=_pool_que(error=fallo)),
+        patch("signature.routers.health.get_redis", return_value=AsyncMock()),
     ):
         cuerpo = (await _get("/health/ready")).text
 
@@ -107,8 +107,8 @@ async def test_ready_informa_el_consumidor_pero_no_lo_hace_bloqueante() -> None:
     }
     try:
         with (
-            patch("app.routers.health.get_pool", return_value=_pool_que(1)),
-            patch("app.routers.health.get_redis", return_value=AsyncMock()),
+            patch("signature.routers.health.get_pool", return_value=_pool_que(1)),
+            patch("signature.routers.health.get_redis", return_value=AsyncMock()),
         ):
             respuesta = await _get("/health/ready")
     finally:

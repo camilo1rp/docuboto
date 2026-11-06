@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from app.repositories.firma_repository import FirmaRepository
+from signature.repositories.firma_repository import FirmaRepository
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_signature import _firma_row
 

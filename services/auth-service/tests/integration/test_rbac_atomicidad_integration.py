@@ -23,10 +23,10 @@ import uuid
 import asyncpg
 import pytest
 
-from app.repositories.clearance_repository import ClearanceRepository
-from app.repositories.rbac_repository import RBACRepository
-from app.services import rbac_service, totp_service
-from app.services.totp_service import TotpService
+from auth.repositories.clearance_repository import ClearanceRepository
+from auth.repositories.rbac_repository import RBACRepository
+from auth.services import rbac_service, totp_service
+from auth.services.totp_service import TotpService
 from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [

@@ -33,9 +33,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.storage_client import WormRenewalOutcome
-from app.core.config import settings
-from app.services.aip_wiring_service import AipWiringService
+from archive.clients.storage_client import WormRenewalOutcome
+from archive.core.config import settings
+from archive.services.aip_wiring_service import AipWiringService
 
 TENANT = "demo"
 
@@ -112,7 +112,7 @@ async def test_renovar_worm_aip_success_marks_and_audits_when_renovado() -> None
     nueva = datetime(2051, 1, 1, tzinfo=UTC)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as mock_client:
         resultado = await service.renovar_worm_aip(expediente_id, intentos_previos=0)
@@ -152,7 +152,7 @@ async def test_renovar_worm_aip_confirmed_noop_marks_but_does_not_audit() -> Non
     vigente = datetime(2051, 1, 1, tzinfo=UTC)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=vigente, renovado=False)
         ),
@@ -177,7 +177,7 @@ async def test_renovar_worm_aip_disabled_schedules_backoff() -> None:
     service._resolve_ct_retencion_anios = AsyncMock(return_value=25)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, disabled=True)),
     ):
         resultado = await service.renovar_worm_aip(uuid.uuid4(), intentos_previos=0)
@@ -197,7 +197,7 @@ async def test_renovar_worm_aip_not_found_schedules_backoff() -> None:
     service._resolve_ct_retencion_anios = AsyncMock(return_value=25)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, not_found=True)),
     ):
         resultado = await service.renovar_worm_aip(uuid.uuid4(), intentos_previos=0)
@@ -213,7 +213,7 @@ async def test_renovar_worm_aip_transient_failure_marks_worm_no_confirmado() -> 
     service._resolve_ct_retencion_anios = AsyncMock(return_value=25)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, transient=True)),
     ):
         resultado = await service.renovar_worm_aip(uuid.uuid4(), intentos_previos=0)
@@ -236,7 +236,7 @@ async def test_renovar_worm_aip_exhausts_after_max_intentos_and_audits() -> None
     max_intentos = settings.indice_reconciliation_max_intentos
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, transient=True)),
     ):
         resultado = await service.renovar_worm_aip(

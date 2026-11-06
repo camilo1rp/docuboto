@@ -49,12 +49,12 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.config import settings
-from app.core.database import tenant_schema
-from app.repositories.postal_repository import PostalRepository
-from app.schemas.postal import PostalCallbackPayload
-from app.services import barrido, postal_service
-from app.services.postal_service import PostalService
+from document.core.config import settings
+from document.core.database import tenant_schema
+from document.repositories.postal_repository import PostalRepository
+from document.schemas.postal import PostalCallbackPayload
+from document.services import barrido, postal_service
+from document.services.postal_service import PostalService
 
 pytestmark = pytest.mark.integration
 
@@ -284,7 +284,7 @@ async def test_el_tope_de_pendientes_devuelve_503_y_no_encola(tenant_ctx, monkey
 @pytest.mark.asyncio
 async def test_la_devolucion_manual_deja_el_evento_en_el_outbox(tenant_ctx) -> None:
     """El hallazgo del ítem 1: la transición MANUAL no emitía nada."""
-    from app.schemas.postal import ShipmentStatusUpdate
+    from document.schemas.postal import ShipmentStatusUpdate
 
     slug, conn = await _en(tenant_ctx)
     sid = await _envio(conn)
@@ -299,7 +299,7 @@ async def test_la_devolucion_manual_deja_el_evento_en_el_outbox(tenant_ctx) -> N
 
 @pytest.mark.asyncio
 async def test_si_falla_el_asiento_de_la_transicion_manual_no_queda_evento(tenant_ctx, monkeypatch) -> None:
-    from app.schemas.postal import ShipmentStatusUpdate
+    from document.schemas.postal import ShipmentStatusUpdate
 
     slug, conn = await _en(tenant_ctx)
     sid = await _envio(conn)

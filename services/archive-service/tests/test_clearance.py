@@ -16,8 +16,8 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.clearance import CLASIFICADA, PUBLICA, check_permission, resolve_caller_clearance
-from app.core.database import tenant_schema
+from archive.core.clearance import CLASIFICADA, PUBLICA, check_permission, resolve_caller_clearance
+from archive.core.database import tenant_schema
 
 
 # --- hardening de slug (defensa en profundidad ante inyección de schema) -----

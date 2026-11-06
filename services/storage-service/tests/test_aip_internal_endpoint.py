@@ -34,10 +34,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.core import config as cfg_module
-from app.core.constants import SYSTEM_RECONCILER_ID
-from app.schemas.preservacion import AipResponse
-from app.services.preservation_worm_service import FixityMismatchError, PreservationDisabledError
+from storage.core import config as cfg_module
+from storage.core.constants import SYSTEM_RECONCILER_ID
+from storage.schemas.preservacion import AipResponse
+from storage.services.preservation_worm_service import FixityMismatchError, PreservationDisabledError
 from tests.conftest import TENANT_HEADERS, TENANT_SLUG, TEST_INTERNAL_TOKEN
 
 _PATH = "/api/v1/preservacion/aip-internal"
@@ -136,7 +136,7 @@ async def test_without_min_crud_permission_still_succeeds_with_token(
     mock_conn.fetchval.return_value = 0  # "sin permiso" si se consultara (no debería)
 
     with patch(
-        "app.routers.preservacion.AipService.empaquetar_aip",
+        "storage.routers.preservacion.AipService.empaquetar_aip",
         new=AsyncMock(return_value=_fake_aip_response()),
     ):
         resp = await client.post(
@@ -158,7 +158,7 @@ async def test_actor_is_always_system_reconciler_id_never_from_headers(
     client, _mock_conn, _mock_minio = client_with_conn
 
     with patch(
-        "app.routers.preservacion.AipService.empaquetar_aip",
+        "storage.routers.preservacion.AipService.empaquetar_aip",
         new=AsyncMock(return_value=_fake_aip_response()),
     ) as mock_empaquetar:
         resp = await client.post(
@@ -186,7 +186,7 @@ async def test_happy_path_returns_201_with_aip_response(
     aip_id = uuid.uuid4()
 
     with patch(
-        "app.routers.preservacion.AipService.empaquetar_aip",
+        "storage.routers.preservacion.AipService.empaquetar_aip",
         new=AsyncMock(return_value=_fake_aip_response(aip_id)),
     ):
         resp = await client.post(
@@ -211,7 +211,7 @@ async def test_fixity_mismatch_maps_to_409(
     client, _mock_conn, _mock_minio = client_with_conn
 
     with patch(
-        "app.routers.preservacion.AipService.empaquetar_aip",
+        "storage.routers.preservacion.AipService.empaquetar_aip",
         new=AsyncMock(side_effect=FixityMismatchError("un anexo mutó desde que se vinculó")),
     ):
         resp = await client.post(
@@ -229,7 +229,7 @@ async def test_preservation_disabled_maps_to_503(
     client, _mock_conn, _mock_minio = client_with_conn
 
     with patch(
-        "app.routers.preservacion.AipService.empaquetar_aip",
+        "storage.routers.preservacion.AipService.empaquetar_aip",
         new=AsyncMock(side_effect=PreservationDisabledError("PRESERVATION_ENABLED=false")),
     ):
         resp = await client.post(

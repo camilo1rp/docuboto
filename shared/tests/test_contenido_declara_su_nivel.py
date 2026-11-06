@@ -25,6 +25,8 @@ nivel rompe este test; arreglar una excepción obliga a quitarla de la lista
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 from pathlib import Path
 
@@ -58,7 +60,7 @@ EXCEPCIONES = frozenset({
 def _censo() -> dict[str, bool]:
     """`clave de clase -> declara nivel_seguridad`, solo clases con contenido."""
     censo: dict[str, bool] = {}
-    for f in sorted(SERVICIOS.glob("*/app/schemas/*.py")):
+    for f in sorted(glob_src(SERVICIOS, "*/app/schemas/*.py")):
         for c in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
             if not isinstance(c, ast.ClassDef):
                 continue
@@ -81,7 +83,7 @@ def _niveles_con_default() -> set[str]:
     entradas (Create/Update/Request) sí pueden tener default: no devuelven datos.
     """
     con_default: set[str] = set()
-    for f in sorted(SERVICIOS.glob("*/app/schemas/*.py")):
+    for f in sorted(glob_src(SERVICIOS, "*/app/schemas/*.py")):
         for c in ast.walk(ast.parse(f.read_text(encoding="utf-8"))):
             if not isinstance(c, ast.ClassDef) or c.name.endswith(("Create", "Update", "Request")):
                 continue

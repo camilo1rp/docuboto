@@ -9,7 +9,7 @@
 
 """Quien hizo el acto es su UUID, no su login (AREA-02-08).
 
-`app/core/actor.py` ya declaraba que `X-Username` es solo un atributo
+`archive/core/actor.py` ya declaraba que `X-Username` es solo un atributo
 descriptivo («nunca como identidad»), pero dos sitios lo seguían asignando como
 actor: `fisico._performed_by` —quién prestó o devolvió una unidad física— e
 `indice.rebuild_indice` —el `generado_por` del índice electrónico, que luego se

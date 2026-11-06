@@ -33,7 +33,7 @@ describe("fetchGenerationAvailable", () => {
     const f = responde(200, { generation: true, mode: "ppi" });
 
     expect(await fetchGenerationAvailable(f, HEADERS, CON_CONOCIMIENTO)).toBe(true);
-    expect(f).toHaveBeenCalledWith("http://api-gateway:8080/api/v1/knowledge/availability", {
+    expect(f).toHaveBeenCalledWith("http://app:8000/api/v1/knowledge/availability", {
       headers: HEADERS,
     });
   });

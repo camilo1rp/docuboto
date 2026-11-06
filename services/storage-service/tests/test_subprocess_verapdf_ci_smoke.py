@@ -42,8 +42,8 @@ import time
 
 import pytest
 
-from app.core.config import settings as app_settings
-from app.services.pdfa import SubprocessVeraPdfValidator, get_pdfa_validator
+from storage.core.config import settings as app_settings
+from storage.services.pdfa import SubprocessVeraPdfValidator, get_pdfa_validator
 
 _VERAPDF_BINARY = os.environ.get("VERAPDF_BINARY", "")
 _BINARY_USABLE = bool(_VERAPDF_BINARY) and os.path.isabs(_VERAPDF_BINARY) and os.access(_VERAPDF_BINARY, os.X_OK)

@@ -38,9 +38,9 @@ import uuid
 import asyncpg
 import pytest
 
-from app.repositories.fisico_repository import FisicoRepository
-from app.schemas.archive import ExpedienteCreate
-from app.services.archive_service import ArchiveService
+from archive.repositories.fisico_repository import FisicoRepository
+from archive.schemas.archive import ExpedienteCreate
+from archive.services.archive_service import ArchiveService
 
 pytestmark = pytest.mark.asyncio
 

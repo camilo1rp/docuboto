@@ -31,8 +31,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app.core.config as config_module
-from app.core.constants import SYSTEM_RECONCILER_ID
+import storage.core.config as config_module
+from storage.core.constants import SYSTEM_RECONCILER_ID
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_HEADERS,
@@ -303,7 +303,7 @@ async def test_proteger_artefacto_indice_and_acta_same_expediente_do_not_collide
 
 
 def test_worm_lock_key_differs_by_tipo_for_same_tenant_and_expediente() -> None:
-    from app.services.preservation_worm_service import _worm_lock_key
+    from storage.services.preservation_worm_service import _worm_lock_key
 
     k_indice = _worm_lock_key("icetex", "EXP-1", "indice")
     k_acta = _worm_lock_key("icetex", "EXP-1", "acta_transferencia")
@@ -531,7 +531,7 @@ async def test_proteger_artefacto_firma_personal_por_rol(client_with_conn, tipo:
 def test_las_firmas_personales_son_instrumentos_de_control_y_estan_en_la_migracion() -> None:
     """No postergan la disposición del contenido (como el acta que firman) y el CHECK de la
     migración 018 los admite: el guard `test_preservacion_tipos_guard` ata las dos listas."""
-    from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
+    from storage.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
 
     for t in ("acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"):
         assert t in CONTROL_INSTRUMENT_TIPOS
@@ -580,7 +580,7 @@ async def test_proteger_artefacto_constancia_firma_inobtenible_por_rol(
 
 
 def test_las_constancias_son_instrumentos_de_control() -> None:
-    from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
+    from storage.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
 
     for t in _TIPOS_CONSTANCIA:
         assert t in CONTROL_INSTRUMENT_TIPOS

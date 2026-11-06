@@ -21,8 +21,8 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from app.clients import document_search
-from app.routers.knowledge import ANTECEDENTES_ADVISORY
+from knowledge.clients import document_search
+from knowledge.routers.knowledge import ANTECEDENTES_ADVISORY
 from tests.conftest import TENANT_HEADERS, USER_ID
 
 pytestmark = pytest.mark.asyncio

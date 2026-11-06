@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.clients import storage_client
+from document.clients import storage_client
 from tests.conftest import TENANT_HEADERS
 
 _USER = str(uuid.uuid4())

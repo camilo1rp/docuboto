@@ -15,13 +15,13 @@
 # Dos imágenes salen de este archivo (E10 Increment C2b):
 #   - target por defecto ("base", lo que usa docker-compose.yml de dev): SIN
 #     Java/veraPDF. `PDFA_VALIDATOR` por defecto es "stub" y aunque se pida
-#     "verapdf" sin binario, la factory (`app/services/pdfa/factory.py`)
+#     "verapdf" sin binario, la factory (`storage/services/pdfa/factory.py`)
 #     degrada honestamente a `StubPdfaValidator` -- dev sigue liviano.
 #   - target "production" (infra/docker-compose.prod.yml): añade un JRE
 #     headless + el CLI real de veraPDF y corre como usuario NO-root, porque
 #     `SubprocessVeraPdfValidator` ejecuta ese binario sobre PDFs subidos por
 #     cualquier tenant -- input NO confiable (ver
-#     `app/services/pdfa/subprocess_verapdf.py` para el modelo de seguridad
+#     `storage/services/pdfa/subprocess_verapdf.py` para el modelo de seguridad
 #     completo del subprocess en sí).
 FROM python:3.11-slim AS base
 WORKDIR /app
@@ -63,7 +63,7 @@ COPY services/storage-service/ .
 # —lo dice su docstring— y el de uvicorn la reponía por detrás, así que la
 # garantía escrita no se cumplía. Se apaga el de uvicorn, no el propio:
 # la traza estructurada sigue emitiéndose, sin el contenido documental.
-CMD ["uvicorn", "app.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8005"]
+CMD ["uvicorn", "storage.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8005"]
 
 # ─── Stage: verapdf-builder (SOLO alcanzado por el target "production") ───
 # Descarga e instala veraPDF con su instalador oficial (IzPack, modo
@@ -73,7 +73,7 @@ CMD ["uvicorn", "app.main:app", "--no-access-log", "--host", "0.0.0.0", "--port"
 # se copia el resultado ya instalado (/opt/verapdf). El flujo de abajo (URL,
 # nombre del script `verapdf-install`, y el XML de `auto-install.xml`) se
 # verificó CONTRA UNA INSTALACIÓN REAL (no solo la documentación) al escribir
-# este Dockerfile -- veraPDF 1.30.2, ver `app/services/pdfa/subprocess_verapdf.py`
+# este Dockerfile -- veraPDF 1.30.2, ver `storage/services/pdfa/subprocess_verapdf.py`
 # para cómo se parsea su salida JSON real.
 FROM python:3.11-slim AS verapdf-builder
 # El instalador oficial de veraPDF NO versiona la URL de descarga (siempre
@@ -150,7 +150,7 @@ ARG JAVA_PACKAGE=openjdk-21-jre-headless
 # externas que el servicio necesita para preservar de verdad.
 #
 # **Sin él NO hay migración de formato, y eso es correcto**: la factory
-# (`app/services/migracion/factory.py`) devuelve `None` y el endpoint responde
+# (`storage/services/migracion/factory.py`) devuelve `None` y el endpoint responde
 # 503. A diferencia del validador PDF/A, aquí no hay stub al que degradar — un
 # validador puede declarar honestamente «no evaluado», pero un migrador falso
 # tendría que inventarse el archivo.
@@ -162,7 +162,7 @@ COPY --from=verapdf-builder /opt/verapdf /opt/verapdf
 
 # Config de despliegue: ruta ABSOLUTA al binario (la factory exige eso para
 # activar `SubprocessVeraPdfValidator` en vez de degradar a stub, ver
-# `app/services/pdfa/factory.py::_resolve_verapdf_binary`).
+# `storage/services/pdfa/factory.py::_resolve_verapdf_binary`).
 ENV RENDER_ENGINE=weasyprint \
     VERAPDF_BINARY=/opt/verapdf/verapdf \
     PDFA_VALIDATOR=verapdf \
@@ -182,4 +182,4 @@ RUN groupadd --system orpycamcp \
     && chown -R orpycamcp:orpycamcp /app
 USER orpycamcp
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8005"]
+CMD ["uvicorn", "storage.main:app", "--host", "0.0.0.0", "--port", "8005"]

@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from app.core.traduccion import lote, trozos
+from knowledge.core.traduccion import lote, trozos
 
 RADICADO = uuid.UUID("00000000-0000-4000-8000-0000000000b2")
 ANEXO = uuid.UUID("00000000-0000-4000-8000-0000000000c3")

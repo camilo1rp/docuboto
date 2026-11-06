@@ -24,7 +24,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { instalarTiempoLimite, _reiniciarParaTests } from "./fetchTimeout.js";
 
-const API = "http://api-gateway:8080/api/v1";
+const API = "http://app:8000/api/v1";
 
 /** @type {typeof globalThis.fetch} */
 let fetchOriginal;

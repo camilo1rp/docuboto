@@ -23,8 +23,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.document_repository import DocumentRepository
+from document.core.database import tenant_schema
+from document.repositories.document_repository import DocumentRepository
 
 
 async def _radicado(conn: asyncpg.Connection, schema: str, tracking: str) -> uuid.UUID:

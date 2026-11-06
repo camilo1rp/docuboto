@@ -37,9 +37,9 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.core.actor import Actor
-from app.services.paquete_entrega import NS_NOTA
-from app.services.transferencia_service import TransferenciaService
+from archive.core.actor import Actor
+from archive.services.paquete_entrega import NS_NOTA
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import TENANT_HEADERS
 from tests.test_acta_firma_inobtenible import ADMIN, TENANT, _excepcion_row, _revocada
 
@@ -173,11 +173,11 @@ def _externos(
 
     dl = AsyncMock(side_effect=_dl)
     return (
-        patch("app.clients.storage_client.download_signed_bytes", new=dl),
+        patch("archive.clients.storage_client.download_signed_bytes", new=dl),
         _Pila(
-            patch("app.services.transferencia_service.audit.append", new=AsyncMock(side_effect=_audit)),
-            patch("app.clients.storage_client.fetch_file_hashes_internal", new=AsyncMock(side_effect=_hashes)),
-            patch("app.clients.storage_client.get_aip", new=AsyncMock(side_effect=_get_aip)),
+            patch("archive.services.transferencia_service.audit.append", new=AsyncMock(side_effect=_audit)),
+            patch("archive.clients.storage_client.fetch_file_hashes_internal", new=AsyncMock(side_effect=_hashes)),
+            patch("archive.clients.storage_client.get_aip", new=AsyncMock(side_effect=_get_aip)),
         ),
         dl,
     )
@@ -492,7 +492,7 @@ async def test_sin_huellas_de_captura_es_503() -> None:
     svc, tid, eventos, _ = _svc()
     dl, au, _m = _externos(eventos)
     with dl, au, patch(
-        "app.clients.storage_client.fetch_file_hashes_internal", new=AsyncMock(return_value={})
+        "archive.clients.storage_client.fetch_file_hashes_internal", new=AsyncMock(return_value={})
     ), pytest.raises(HTTPException) as exc:
         await svc.paquete_entrega(tid, Actor(id=ADMIN))
     assert exc.value.status_code == 503
@@ -564,7 +564,7 @@ async def test_el_endpoint_sirve_un_zip_con_su_longitud(
         return await original(svc, tid, actor)
 
     with dl, au, patch(
-        "app.routers.transferencias.TransferenciaService.paquete_entrega", new=_delegado
+        "archive.routers.transferencias.TransferenciaService.paquete_entrega", new=_delegado
     ):
         resp = await client.post(f"/api/v1/transferencias/{tid}/paquete-entrega", headers=TENANT_HEADERS)
     assert resp.status_code == 200, resp.text
@@ -575,7 +575,7 @@ async def test_el_endpoint_sirve_un_zip_con_su_longitud(
 
 # --- guardián: ni OAI, ni EAD, ni CMIS ven la cadena de excepciones ---------------------------
 
-_APP = Path(__file__).resolve().parents[1] / "app"
+_APP = Path(__file__).resolve().parents[1] / "archive"
 _PROHIBIDO = re.compile(r"transferencia_acta_firma_excepcion|paquete_entrega|nota-entrega|sobre_minio_key")
 
 

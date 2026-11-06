@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.clients.signature_client import SIN_RENOVACION, ArtefactoVigente
-from app.clients.storage_client import AipPackagingOutcome
+from archive.clients.signature_client import SIN_RENOVACION, ArtefactoVigente
+from archive.clients.storage_client import AipPackagingOutcome
 from tests.test_aip_wiring_service_indice_only import (
     _expediente,
     _indice_by_id_row,
@@ -53,18 +53,18 @@ async def _empaquetar(vigente: str | None, original: str, firma_id: uuid.UUID | 
     service._aip.mark_empaquetado = AsyncMock(return_value=1)
     with (
         patch(
-            "app.clients.signature_client.resolver_artefacto_vigente",
+            "archive.clients.signature_client.resolver_artefacto_vigente",
             new=AsyncMock(return_value=_vig(vigente) if vigente else SIN_RENOVACION),
         ) as consulta,
         patch(
-            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as storage,
-        patch("app.services.aip_wiring_service.audit.append", new=AsyncMock()),
+        patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
     ):
         await service.intentar_empaquetar(exp.id)
     return storage.await_args.kwargs["indice_file_id"], consulta

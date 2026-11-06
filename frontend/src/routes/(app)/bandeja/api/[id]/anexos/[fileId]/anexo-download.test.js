@@ -45,7 +45,7 @@ describe("bandeja anexo download", () => {
     expect(res.status).toBe(404);
     expect((await res.json()).error).toBe("not_found");
     const [url, opts] = fetchMock.mock.calls[0];
-    expect(url).toBe(`http://api-gateway:8080/api/v1/documents/${RAD}/anexos/${FILE}/download`);
+    expect(url).toBe(`http://app:8000/api/v1/documents/${RAD}/anexos/${FILE}/download`);
     expect(opts.headers["X-User-Id"]).toBe(SESSION.user.sub);
   });
 });

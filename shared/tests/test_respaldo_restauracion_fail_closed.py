@@ -202,7 +202,7 @@ def test_el_extremo_se_anota_antes_de_pg_restore_y_viaja_al_acta() -> None:
     texto = _sin_comentarios(RESTORE)
     i_cap = texto.index("EXTREMO_PREVIO")
     assert texto.index(" stop \\") < i_cap < texto.index("pg_restore -U")
-    acta = texto[texto.index("app.ops.registrar_restauracion") - 300 :]
+    acta = texto[texto.index("auth.ops.registrar_restauracion") - 300 :]
     assert 'cat "$EXTREMOS_PREVIOS"' in acta and '--operador "$RESTORE_OPERADOR"' in acta
     # la captura es fail-closed: si falla, no se restaura
     cap = texto[i_cap : texto.index("pg_restore -U")]

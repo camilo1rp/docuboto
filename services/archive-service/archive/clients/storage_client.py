@@ -1,0 +1,1366 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+Cliente del storage-service: descarga del índice YA FIRMADO (E06 Inc.1) y,
+desde E10 Increment C, lectura mediada del AIP de preservación.
+
+`download_signed_xml` la usa solo `IndexService.verify` para contrastar la
+firma XAdES-B contra el XML realmente sellado (no el XML en claro que
+persiste `expediente_indice.xml` — la canonicalización C14N 2.0 de exhibición
+nunca coincidirá con el digest exc-c14n de XAdES, ver
+`archive/services/index_builder.py` y el docstring de `app.providers.local` en
+signature-service; no se intenta reconciliar).
+
+archive-service NUNCA habla con MinIO directamente (aislamiento por servicio,
+igual que signature-service): pide una URL prefirmada a storage-service y
+sigue esa URL. Best-effort: cualquier fallo devuelve ``None`` — el llamador
+no declara conforme una firma que no pudo verificar (RF-FIR-15).
+
+D-02 (remediación no-read-up en anexos, RF-SEG-08): `GET /files/{id}/download`
+en storage-service ahora exige `X-Internal-Token` — este cliente es una
+llamada de servicio-a-servicio legítima (descarga el índice ya firmado para
+verificar su firma, no un anexo de usuario) y envía el mismo secreto
+compartido que storage-service espera (`settings.storage_internal_token`).
+
+`get_aip` (E10 Increment C) cierra el mismo tipo de fuga sobre
+`GET /preservacion/aip/{expediente_id}`: ese endpoint también exige ahora
+`X-Internal-Token`, y SOLO `ArchiveService.get_aip` (el mediador que resuelve
+el clearance del llamante contra el `nivel_seguridad` VIGENTE del expediente,
+que storage-service no modela) puede alcanzarlo — a diferencia de
+`download_signed_xml`, que es best-effort (`None` en cualquier fallo),
+`get_aip` SÍ distingue "no hay AIP" (``None``, 404 de storage) de "storage-service
+falló" (``StorageAipError``, el router lo traduce a 503) porque el llamador
+necesita esa distinción para decidir el código de respuesta — aunque el 404 de
+"no hay AIP" y el 404 de "expediente no visible" SE FUNDEN en el mismo 404
+neutro en `ArchiveService.get_aip` (no-read-up, ver ese método).
+
+`list_eventos` (continuación de E10 Increment C, RF-SEG-08) cierra el MISMO
+tipo de fuga sobre `GET /preservacion/eventos?object_ref=`: ese endpoint
+también exige ahora `X-Internal-Token`, y SOLO
+`ArchiveService.get_eventos_preservacion` (mismo mediador que `get_aip`)
+puede alcanzarlo. A diferencia de `get_aip` (que distingue "no hay AIP" de
+"storage-service falló"), aquí storage-service SIEMPRE responde 200 con una
+lista (vacía si no hay eventos) — no hay 404 legítimo que distinguir; solo
+``StorageEventosError`` ante un fallo real de infraestructura.
+
+AREA-08-16 / AREA-08-07: `/proteger-indice`, `/proteger-artefacto` y `/aip` de
+storage exigen `X-Internal-Token` (los clientes de este módulo lo envían junto a
+la identidad firmada cuando hay humano) y el gateway no las enruta. `legal_hold`
+YA NO viaja en ningún body: storage lo rechaza con 422; se declara solo por los
+actos internos `POST /preservacion/legal-hold-internal/fijar` y
+`/legal-hold-internal/{hold_id}/levantar` (retención legal POR MOTIVO, ADR-043).
+La protección del contenido de un fondo vencido viaja con `retencion_diferida=
+"valoracion_pendiente"` en vez de `retencion_anios`+`fecha_inicio`.
+
+`proteger_indice_worm`/`proteger_indice_worm_internal` (E10 Inc.1, cableado
+WORM del índice) — gemelo ESTRUCTURADO al estilo de
+`signature_client.sign_xml_outcome`/`sign_indice_internal`: dos funciones,
+no una con un flag, porque tienen credenciales e identidad DISTINTAS:
+
+- `proteger_indice_worm` la usa `IndexService.proteger_worm_indice` con
+  `origen="close"` (disparo síncrono tras el sellado, dentro de
+  `firmar_indice_close`) — envía `X-User-Id=actor_id`, el usuario que YA
+  pasó el gate `min_crud=3` de `close_expediente` en ESTE servicio, y que
+  supera el MISMO chequeo en storage-service porque ambos leen la misma
+  tabla `auth_users`/`auth_permissions` del tenant (Postgres único
+  compartido, ADR-002). Llama a la ruta PÚBLICA `POST /proteger-indice`
+  (RBAC `require_permission(min_crud=3)`).
+- `proteger_indice_worm_internal` la usa `origen="reconciliation"` (3ra
+  fase de `app/jobs/indice_reconciliation.py::run_once_worm`) — SIN
+  `X-User-Id` real (actúa con `SYSTEM_RECONCILER_ID`, que no tiene fila en
+  `auth_users`; `require_permission` la rechazaría SIEMPRE con 403). Llama
+  a la ruta INTERNA `POST /proteger-indice-internal` (D-02,
+  `X-Internal-Token`), mismo patrón que `sign_indice_internal`.
+
+Ambas devuelven `WormProtectionOutcome` (nunca lanzan): distinguen `ok`
+(éxito, incluida la respuesta idempotente 200 de una segunda llamada),
+`disabled` (503 `preservation_disabled` — PRESERVATION_ENABLED=false en
+storage-service en este instante) de `transient` (cualquier otro fallo:
+HTTP no-2xx, timeout, servicio inalcanzable) — el llamador
+(`IndexService._bump_worm_backoff`) programa el backoff igual en ambos
+casos NO-ok (ninguno se agota de inmediato, solo tras acumular intentos),
+pero el motivo textual persistido difiere para diagnóstico operacional.
+
+`proteger_artefacto_worm`/`proteger_artefacto_worm_internal` (E10 Inc.2
+wiring, fast-follow declarado en el diseño de Inc.1) — GENERALIZACIÓN de las
+dos funciones de arriba: mismo contrato ESTRUCTURADO (`WormProtectionOutcome`),
+mismas dos identidades (`X-User-Id` real vs. `X-Internal-Token` sistema), pero
+reciben `tipo` explícito y llaman a las rutas generalizadas de storage-service
+(`POST /proteger-artefacto[-internal]`) en vez de `/proteger-indice[-internal]`.
+`proteger_indice_worm`/`proteger_indice_worm_internal` se CONSERVAN intactas
+(alias del índice, mismo criterio que storage-service mantiene
+`/proteger-indice` fijo a `tipo='indice'`) — `TransferenciaService.
+proteger_worm_acta` usa las nuevas, `IndexService.proteger_worm_indice` sigue
+usando las de siempre.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from dataclasses import dataclass
+from datetime import date, datetime
+
+import httpx
+from fastapi import status
+from orpycamcp_common.usuario import cabeceras_internas
+
+from archive.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# La ruta que se FIRMA con la identidad (ADR-036) es la misma que se LLAMA: una sola
+# constante en los dos sitios, y un guardián AST lo comprueba.
+_RUTA_PROTEGER_INDICE = "/api/v1/preservacion/proteger-indice"
+_RUTA_PROTEGER_ARTEFACTO = "/api/v1/preservacion/proteger-artefacto"
+_RUTA_LEGAL_HOLD = "/api/v1/preservacion/legal-hold-internal"
+_RUTA_FIJAR_RETENCION = "/api/v1/preservacion/fijar-retencion-internal"
+
+
+RETENCION_DIFERIDA = "valoracion_pendiente"
+
+
+def _campos_retencion(
+    retencion_anios: int | None,
+    fecha_inicio: date | None,
+    retencion_diferida: str | None,
+) -> dict:
+    """Las DOS fuentes exclusivas de la retención (ADR-043): `retencion_anios`+`fecha_inicio`
+    (calendario) o `retencion_diferida` (solo hold). Mezclarlas o no dar ninguna es un error de
+    programación del llamador: se falla aquí, antes de la red, en vez de dejar que storage
+    responda 422 y se confunda con un fallo transitorio."""
+    if retencion_diferida is not None:
+        if retencion_anios is not None or fecha_inicio is not None:
+            raise ValueError("retencion_diferida es excluyente con retencion_anios/fecha_inicio")
+        return {"retencion_diferida": retencion_diferida}
+    if retencion_anios is None or fecha_inicio is None:
+        raise ValueError("falta retencion_anios+fecha_inicio o retencion_diferida")
+    return {"retencion_anios": retencion_anios, "fecha_inicio": fecha_inicio.isoformat()}
+
+
+@dataclass(slots=True)
+class WormProtectionOutcome:
+    """Resultado ESTRUCTURADO de un intento de cableado WORM del índice (E10
+    Inc.1) — exactamente uno de los tres queda "poblado": `ok=True` (éxito,
+    `worm_object_id`/`retain_until` poblados), `disabled=True` (503
+    `preservation_disabled`) o `transient=True` (cualquier otro fallo —
+    reintentable).
+
+    `retain_until` (E10 debt: renovación de retención para series CT) se
+    añade AQUÍ, no en un tipo nuevo, porque `IndexService.proteger_worm_indice`/
+    `TransferenciaService.proteger_worm_acta` ya reciben este mismo outcome y
+    lo necesitan para poblar el espejo `worm_retain_until` (migraciones
+    031/032) al confirmar la protección — antes la respuesta de storage-service
+    (`ProtegerIndiceResponse.retain_until`, siempre presente) se descartaba
+    sin leer."""
+
+    ok: bool
+    worm_object_id: uuid.UUID | None = None
+    retain_until: datetime | None = None
+    disabled: bool = False
+    transient: bool = False
+
+    @property
+    def protected_object_id(self) -> uuid.UUID:
+        """El identificador del objeto WORM confirmado por storage-service.
+
+        El invariante que ya declara el docstring de la clase —``ok=True``
+        implica ``worm_object_id`` poblado— vive en la prosa y no en el tipo,
+        así que los dos llamantes (``IndexService.proteger_worm_indice`` y
+        ``TransferenciaService.proteger_worm_acta``) lo daban por supuesto
+        tras comprobar ``ok``. Este accesor lo declara una vez y falla
+        ruidosamente en vez de marcar la fila como protegida con ``NULL``,
+        que dejaría el espejo de protección WORM mintiendo.
+        """
+        if self.worm_object_id is None:
+            raise ValueError("WormProtectionOutcome(ok=True) sin worm_object_id")
+        return self.worm_object_id
+
+
+def _worm_outcome_from_response(resp: httpx.Response, *, contexto: str) -> WormProtectionOutcome:
+    """Traduce una respuesta HTTP de storage-service a un
+    `WormProtectionOutcome` — compartido por `proteger_indice_worm`
+    (`/proteger-indice`) y `proteger_indice_worm_internal`
+    (`/proteger-indice-internal`), mismo criterio que
+    `signature_client._outcome_from_response`."""
+    if resp.status_code in (200, 201):
+        try:
+            data = resp.json()
+            worm_object_id = uuid.UUID(data["id"])
+        except (ValueError, KeyError, TypeError):
+            logger.warning(
+                "storage-service → respuesta 2xx sin 'id' válido al proteger WORM (%s)",
+                contexto,
+            )
+            return WormProtectionOutcome(ok=False, transient=True)
+        # `retain_until` SIEMPRE viene en `ProtegerIndiceResponse` — un fallo
+        # al parsearlo NO degrada la protección ya confirmada (el objeto YA
+        # quedó inmutable en MinIO): solo deja el espejo local sin poblar
+        # (`mark_worm_protegido`/`mark_acta_worm_protegido` toleran `None`,
+        # ver `COALESCE` en esos UPDATE) — la renovación (E10 debt) lo
+        # recuperará más tarde vía `PreservacionWormRepository.
+        # get_by_expediente_and_tipo` del lado de storage-service, que sigue
+        # siendo la fuente de verdad legal.
+        retain_until: datetime | None = None
+        try:
+            # `null` es legítimo con `retencion_diferida` (solo hold, ADR-043): sin aviso.
+            if data.get("retain_until") is not None:
+                retain_until = datetime.fromisoformat(data["retain_until"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "storage-service → respuesta 2xx sin 'retain_until' válido al "
+                "proteger WORM (%s) — espejo local quedará sin poblar",
+                contexto,
+            )
+        return WormProtectionOutcome(
+            ok=True, worm_object_id=worm_object_id, retain_until=retain_until
+        )
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning(
+            "storage-service: protección WORM deshabilitada (PRESERVATION_ENABLED=false, %s)",
+            contexto,
+        )
+        return WormProtectionOutcome(ok=False, disabled=True)
+    logger.warning(
+        "storage-service → HTTP %s al proteger WORM el índice (%s, transient)",
+        resp.status_code,
+        contexto,
+    )
+    return WormProtectionOutcome(ok=False, transient=True)
+
+
+async def proteger_indice_worm(
+    *,
+    tenant_slug: str,
+    actor_id: str,
+    file_id: str,
+    expediente_id: str,
+    retencion_anios: int | None = None,
+    fecha_inicio: date | None = None,
+    retencion_diferida: str | None = None,
+) -> WormProtectionOutcome:
+    """Disparo SÍNCRONO (usuario real, `origen="close"`) — ver el docstring
+    del módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        **_campos_retencion(retencion_anios, fecha_inicio, retencion_diferida),
+    }
+    # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
+    # cuando la inyecta el gateway: el middleware que la verifica se dispara por
+    # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
+    # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
+    # llamada muere en 401 antes de tocar el handler.
+    headers = cabeceras_internas(tenant_slug=tenant_slug)
+    # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
+    # la identidad firmada atribuye el acto al humano que cierra, el token prueba
+    # que llama archive-service y no un JWT de usuario directo.
+    headers["X-Internal-Token"] = settings.storage_internal_token
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                _RUTA_PROTEGER_INDICE, json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al proteger WORM el índice: %s", exc)
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto="close")
+
+
+async def proteger_indice_worm_internal(
+    *,
+    tenant_slug: str,
+    file_id: str,
+    expediente_id: str,
+    retencion_anios: int | None = None,
+    fecha_inicio: date | None = None,
+    retencion_diferida: str | None = None,
+) -> WormProtectionOutcome:
+    """Gemelo SISTEMA (D-02, `X-Internal-Token`, `origen="reconciliation"`) —
+    ver el docstring del módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        **_campos_retencion(retencion_anios, fecha_inicio, retencion_diferida),
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/proteger-indice-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al proteger WORM el índice: %s", exc)
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto="reconciliation")
+
+
+async def proteger_artefacto_worm(
+    *,
+    tenant_slug: str,
+    actor_id: str,
+    file_id: str,
+    expediente_id: str,
+    tipo: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+    # De QUÉ es `expediente_id` (storage, migración 014): el acta de
+    # eliminación pertenece a un LOTE. El default conserva el contrato de
+    # todos los llamadores anteriores.
+    objeto_tipo: str = "expediente",
+) -> WormProtectionOutcome:
+    """Disparo SÍNCRONO GENERALIZADO (usuario real) — gemelo de
+    `proteger_indice_worm` que acepta `tipo` explícito y llama a
+    `POST /proteger-artefacto` (E10 Inc.2 wiring). Ver el docstring del
+    módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        "tipo": tipo,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+        "objeto_tipo": objeto_tipo,
+    }
+    # La identidad de PERSONA que viaja entre servicios va FIRMADA, igual que
+    # cuando la inyecta el gateway: el middleware que la verifica se dispara por
+    # la sola presencia de `X-User-Id`, sin mirar si la llamada viene de fuera o
+    # de otro servicio de la red (ver `orpycamcp_common.identidad`). Sin esto la
+    # llamada muere en 401 antes de tocar el handler.
+    headers = cabeceras_internas(tenant_slug=tenant_slug)
+    # Las rutas de protección WORM exigen el token interno (D-02, AREA-08-16):
+    # la identidad firmada atribuye el acto al humano que cierra, el token prueba
+    # que llama archive-service y no un JWT de usuario directo.
+    headers["X-Internal-Token"] = settings.storage_internal_token
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                _RUTA_PROTEGER_ARTEFACTO, json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "storage-service inalcanzable al proteger WORM (%s, close): %s", tipo, exc
+        )
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto=f"close:{tipo}")
+
+
+async def proteger_artefacto_worm_internal(
+    *,
+    tenant_slug: str,
+    file_id: str,
+    expediente_id: str,
+    tipo: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+    # De QUÉ es `expediente_id` (storage, migración 014): el acta de
+    # eliminación pertenece a un LOTE. El default conserva el contrato de
+    # todos los llamadores anteriores.
+    objeto_tipo: str = "expediente",
+) -> WormProtectionOutcome:
+    """Gemelo SISTEMA GENERALIZADO (D-02, `X-Internal-Token`) — llama a
+    `POST /proteger-artefacto-internal` (E10 Inc.2 wiring). Ver el docstring
+    del módulo para el contrato completo."""
+    body = {
+        "file_id": file_id,
+        "expediente_id": expediente_id,
+        "tipo": tipo,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+        "objeto_tipo": objeto_tipo,
+    }
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/proteger-artefacto-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "storage-service inalcanzable al proteger WORM (%s, reconciliation): %s",
+            tipo,
+            exc,
+        )
+        return WormProtectionOutcome(ok=False, transient=True)
+    return _worm_outcome_from_response(resp, contexto=f"reconciliation:{tipo}")
+
+
+# ---------------------------------------------------------------------------
+# E10 debt — renovación de retención WORM para series de disposición
+# Conservación Total (CT)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class WormRenewalOutcome:
+    """Resultado ESTRUCTURADO de un intento de renovación de retención WORM
+    (E10 debt) — mismo criterio de "exactamente un flag queda poblado" que
+    `WormProtectionOutcome`: `ok=True` (llamada confirmada — `renovado`
+    distingue extensión real de no-op idempotente, `retain_until` es SIEMPRE
+    el valor vigente tras la llamada), `not_found=True` (404
+    `worm_object_not_found` — nada que renovar, artefacto nunca protegido),
+    `disabled=True` (503 `preservation_disabled`) o `transient=True`
+    (cualquier otro fallo — reintentable)."""
+
+    ok: bool
+    retain_until: datetime | None = None
+    renovado: bool = False
+    not_found: bool = False
+    disabled: bool = False
+    transient: bool = False
+
+
+def _worm_renewal_outcome_from_response(
+    resp: httpx.Response, *, contexto: str
+) -> WormRenewalOutcome:
+    """Traduce una respuesta HTTP de storage-service a un
+    `WormRenewalOutcome` — compartido por la (futura) variante pública y
+    `renovar_retencion_worm_internal`, mismo criterio que
+    `_worm_outcome_from_response`."""
+    if resp.status_code == status.HTTP_200_OK:
+        try:
+            data = resp.json()
+            retain_until = datetime.fromisoformat(data["retain_until"])
+            renovado = bool(data["renovado"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "storage-service → respuesta 200 sin 'retain_until'/'renovado' "
+                "válidos al renovar retención WORM (%s)",
+                contexto,
+            )
+            return WormRenewalOutcome(ok=False, transient=True)
+        return WormRenewalOutcome(ok=True, retain_until=retain_until, renovado=renovado)
+    if resp.status_code == status.HTTP_404_NOT_FOUND:
+        logger.warning(
+            "storage-service: sin objeto WORM protegido para renovar (%s, 404)", contexto
+        )
+        return WormRenewalOutcome(ok=False, not_found=True)
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning(
+            "storage-service: protección WORM deshabilitada al renovar "
+            "(PRESERVATION_ENABLED=false, %s)",
+            contexto,
+        )
+        return WormRenewalOutcome(ok=False, disabled=True)
+    logger.warning(
+        "storage-service → HTTP %s al renovar retención WORM (%s, transient)",
+        resp.status_code,
+        contexto,
+    )
+    return WormRenewalOutcome(ok=False, transient=True)
+
+
+async def renovar_retencion_worm_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    tipo: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+    file_id: str | None = None,
+) -> WormRenewalOutcome:
+    """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST
+    /renovar-retencion-internal` — único llamador en este incremento: la 5ª
+    fase de reconciliación (`run_once_worm_renovacion`,
+    `app/jobs/indice_reconciliation.py`), sin `X-User-Id` real (actúa con
+    `SYSTEM_RECONCILER_ID`). No existe variante pública en este cliente
+    porque nada en archive-service dispara una renovación síncrona con un
+    usuario real detrás (a diferencia de la protección inicial, que sí ocurre
+    al cierre) — la renovación es puramente reactiva al vencimiento próximo,
+    detectado solo por el job."""
+    body = {
+        "expediente_id": expediente_id,
+        "tipo": tipo,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+    }
+    if file_id is not None:
+        # Tipos multi-artefacto (constancias de firma inobtenible y sus revocaciones, FIRMA-2):
+        # hay N objetos por (expediente, tipo) y storage los identifica por `file_id`
+        # (obligatorio allí); sin él renovaría solo el más reciente.
+        body["file_id"] = file_id
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/renovar-retencion-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning(
+            "storage-service inalcanzable al renovar retención WORM (%s, %s): %s",
+            tipo,
+            expediente_id,
+            exc,
+        )
+        return WormRenewalOutcome(ok=False, transient=True)
+    return _worm_renewal_outcome_from_response(resp, contexto=f"renovacion:{tipo}")
+
+
+class StorageLegalHoldError(Exception):
+    """storage-service no pudo aplicar el acto de retención legal. `status` es el código HTTP que
+    archive debe traducir y `code` el `error` del cuerpo de storage cuando lo hay
+    (`motivo_no_coincide`, `hold_de_sistema`, `hold_ya_levantado`, `hold_no_encontrado`,
+    `retencion_diferida_sin_hold`...). 503 = preservación apagada o storage inalcanzable/ilegible."""
+
+    def __init__(self, status: int, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def _error_de_storage(resp: httpx.Response) -> str | None:
+    """`error` del cuerpo (`{"error": ...}` o `{"detail": {"error": ...}}`), o ``None``."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    detail = data.get("detail")
+    if isinstance(detail, dict):
+        data = detail
+    err = data.get("error")
+    return err if isinstance(err, str) else None
+
+
+def _headers_hold(tenant_slug: str, actor_id: str | None, *, metodo: str, ruta: str) -> dict:
+    """Con humano: identidad FIRMADA (el asiento de storage lo atribuye a él). Sin humano (acto de
+    sistema, p. ej. el hold `valoracion_pendiente`): solo token interno, y storage atribuye a
+    SISTEMA."""
+    if actor_id:
+        headers = cabeceras_internas(tenant_slug=tenant_slug)
+    else:
+        headers = {"X-Tenant-Slug": tenant_slug}
+    headers["X-Internal-Token"] = settings.storage_internal_token
+    return headers
+
+
+async def _llamar_hold(
+    metodo: str,
+    ruta: str,
+    *,
+    headers: dict,
+    json_body: dict | None = None,
+    params: dict | None = None,
+    ok: tuple[int, ...] = (200, 201),
+) -> object:
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=60.0
+        ) as client:
+            resp = await client.request(
+                metodo, ruta, json=json_body, params=params, headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise StorageLegalHoldError(503, f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code in ok:
+        try:
+            return resp.json()
+        except ValueError as exc:
+            raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+    codigo = _error_de_storage(resp)
+    if resp.status_code in (404, 409, 422):
+        raise StorageLegalHoldError(
+            resp.status_code, f"storage-service respondió {resp.status_code}", codigo
+        )
+    if resp.status_code == 503:
+        raise StorageLegalHoldError(503, "la protección WORM está desactivada", codigo)
+    raise StorageLegalHoldError(503, f"storage-service respondió {resp.status_code}", codigo)
+
+
+async def fijar_legal_hold(
+    *,
+    tenant_slug: str,
+    actor_id: str | None,
+    expediente_id: str,
+    motivo_tipo: str,
+    fundamento: str,
+    acta_ref: str,
+) -> dict:
+    """`POST /preservacion/legal-hold-internal/fijar` (ADR-043): fija UNA retención legal por
+    motivo. Ya NO exige objetos WORM (el hold existe aunque aún no haya AIP/índice: los objetos
+    que nazcan después lo heredan). Devuelve `{hold_id, creado, objetos_afectados}`. Idempotente
+    para `valoracion_pendiente`. No es best-effort: un freeze que no se aplicó no puede darse por
+    declarado."""
+    body = {
+        "expediente_id": expediente_id,
+        "motivo_tipo": motivo_tipo,
+        "fundamento": fundamento,
+        "acta_ref": acta_ref,
+    }
+    ruta = f"{_RUTA_LEGAL_HOLD}/fijar"
+    data = await _llamar_hold(
+        "POST",
+        ruta,
+        headers=_headers_hold(tenant_slug, actor_id, metodo="POST", ruta=ruta),
+        json_body=body,
+    )
+    try:
+        assert isinstance(data, dict)
+        uuid.UUID(str(data["hold_id"]))
+        int(data["objetos_afectados"])
+        bool(data["creado"])
+    except (AssertionError, ValueError, KeyError, TypeError) as exc:
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+    return data
+
+
+async def levantar_legal_hold(
+    *,
+    tenant_slug: str,
+    actor_id: str | None,
+    hold_id: uuid.UUID | str,
+    motivo_tipo_esperado: str,
+    fundamento: str,
+    acta_ref: str,
+) -> dict:
+    """`POST /preservacion/legal-hold-internal/{hold_id}/levantar` (ADR-043). Storage libera el
+    legal hold de S3 SOLO si tras el levantamiento no queda ningún otro hold activo del expediente.
+    409 `motivo_no_coincide` si la confirmación no coincide con el motivo del hold. Devuelve
+    `{hold_id, objetos_liberados_s3, holds_restantes}`."""
+    body = {
+        "motivo_tipo_esperado": motivo_tipo_esperado,
+        "fundamento": fundamento,
+        "acta_ref": acta_ref,
+    }
+    ruta = f"{_RUTA_LEGAL_HOLD}/{hold_id}/levantar"
+    data = await _llamar_hold(
+        "POST",
+        ruta,
+        headers=_headers_hold(tenant_slug, actor_id, metodo="POST", ruta=ruta),
+        json_body=body,
+    )
+    try:
+        assert isinstance(data, dict)
+        int(data["objetos_liberados_s3"])
+        int(data["holds_restantes"])
+    except (AssertionError, ValueError, KeyError, TypeError) as exc:
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+    return data
+
+
+async def listar_legal_holds(*, tenant_slug: str, expediente_id: str) -> list[dict]:
+    """`GET /preservacion/legal-hold-internal?expediente_id=`: TODOS los holds del expediente
+    (activos y levantados), más recientes primero. Sin identidad humana: la lectura la mediatiza
+    archive (clearance en el `WHERE` del expediente)."""
+    data = await _llamar_hold(
+        "GET",
+        _RUTA_LEGAL_HOLD,
+        headers=_headers_hold(tenant_slug, None, metodo="GET", ruta=_RUTA_LEGAL_HOLD),
+        params={"expediente_id": expediente_id},
+        ok=(200,),
+    )
+    if isinstance(data, dict) and isinstance(data.get("items"), list):
+        data = data["items"]
+    if not isinstance(data, list):
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service")
+    return [h for h in data if isinstance(h, dict)]
+
+
+async def fijar_retencion_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    retencion_anios: int,
+    fecha_inicio: date,
+) -> dict:
+    """`POST /preservacion/fijar-retencion-internal` (ADR-043): fija COMPLIANCE por PRIMERA vez en
+    los objetos `valoracion_pendiente` del expediente (valoración CT). Nunca toca filas con
+    calendario. Idempotente. Devuelve `{expediente_id, retain_until, filas_fijadas,
+    filas_pendientes_restantes}`. Acto de sistema (valoración aplicada por la fase de archive)."""
+    body = {
+        "expediente_id": expediente_id,
+        "retencion_anios": retencion_anios,
+        "fecha_inicio": fecha_inicio.isoformat(),
+    }
+    data = await _llamar_hold(
+        "POST",
+        _RUTA_FIJAR_RETENCION,
+        headers=_headers_hold(tenant_slug, None, metodo="POST", ruta=_RUTA_FIJAR_RETENCION),
+        json_body=body,
+    )
+    try:
+        assert isinstance(data, dict)
+        int(data["filas_fijadas"])
+    except (AssertionError, ValueError, KeyError, TypeError) as exc:
+        raise StorageLegalHoldError(503, "respuesta ilegible de storage-service") from exc
+    return data
+
+
+@dataclass(slots=True)
+class AipPackagingOutcome:
+    """Resultado ESTRUCTURADO de un intento de empaquetado del AIP (E10 debt,
+    cableado del AIP al cierre del expediente) — mismo criterio de
+    "exactamente un flag poblado" que `WormProtectionOutcome`: `ok=True`
+    (éxito, `aip_id` poblado — el `id` de la fila `aip` en storage-service,
+    ver `AipResponse`), `fixity_mismatch=True` (409 — la fixity REAL de un
+    anexo, `files.sha256` capturado en storage-service al momento de la
+    SUBIDA original, ya no coincide con los bytes que descarga y re-hashea
+    `AipService._resolve_and_verify` al empaquetar; `payload.documentos`
+    (`AipDocInput`, ver `archive/services/aip_wiring_service.py`) solo aporta
+    `document_id`/`nombre`/`file_id` — NO lleva ningún hash propio, la
+    comparación es siempre contra `files.sha256`, nunca contra un valor
+    aportado por este cliente), `disabled=True` (503 `preservation_disabled`)
+    o `transient=True` (cualquier otro fallo — reintentable).
+
+    `retain_until` (E10 debt: extensión de la renovación WORM al AIP) se
+    añade AQUÍ, mismo criterio que `WormProtectionOutcome.retain_until` —
+    `AipWiringService.intentar_empaquetar` la necesita para poblar el espejo
+    `expediente_aip.worm_retain_until` (migración 034) al confirmar el
+    empaquetado. `AipResponse.retain_until` SIEMPRE viene poblado en un 201
+    real (`AipService.empaquetar_aip` la resuelve de `payload.
+    resolve_retain_until()` antes de construir la respuesta) — un fallo al
+    parsearla NO degrada el empaquetado ya confirmado (el AIP YA quedó
+    inmutable en MinIO), solo deja el espejo local sin poblar (mismo
+    `COALESCE` defensivo que `IndexRepository.mark_worm_protegido`)."""
+
+    ok: bool
+    aip_id: uuid.UUID | None = None
+    retain_until: datetime | None = None
+    disabled: bool = False
+    fixity_mismatch: bool = False
+    transient: bool = False
+    #: 409 `aip_ya_existe`: storage YA tiene un AIP del expediente (p. ej. un empaquetado que sí
+    #: se completó y cuya respuesta se perdió). NO es un fallo de fixity: el llamador reconcilia
+    #: con `get_aip` antes de tocar su registro. `aip_id` = el AIP vigente que storage informa.
+    ya_existe: bool = False
+
+
+async def empaquetar_aip_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    documentos: list[dict],
+    indice_file_id: uuid.UUID | None,
+    retencion_anios: int | None = None,
+    fecha_inicio: date | None = None,
+    retencion_diferida: str | None = None,
+    pdfa_profile: str | None = None,
+) -> AipPackagingOutcome:
+    """Gemelo SISTEMA (D-02, `X-Internal-Token`) de `POST /preservacion/aip`
+    — único llamador: `AipWiringService` (reconciliación-only, actúa con
+    `SYSTEM_RECONCILER_ID`, sin `X-User-Id` real — la ruta base `POST /aip`
+    también exige `X-Internal-Token` desde AREA-08-16, pero atribuye el acto al
+    `X-User-Id` firmado; la gemela `-internal` fija el actor de sistema, mismo
+    motivo que `proteger_indice_worm_internal`).
+
+    Timeout deliberadamente MAYOR (120s) que el resto de este cliente: a
+    diferencia de `proteger_indice_worm[_internal]` (sube un XML ya en
+    `files`), este endpoint DESCARGA los bytes reales de cada documento desde
+    MinIO, los re-hashea y arma un ZIP server-side antes de responder — coste
+    proporcional al tamaño total de los anexos del expediente, no una
+    operación barata.
+
+    `documentos` ya viene armado por el llamador con la forma que exige
+    `AipCreate.documentos` (`[{"document_id": ..., "nombre": ..., "file_id":
+    ...}, ...]`) — este cliente no valida su contenido, solo lo reenvía.
+
+    `pdfa_profile` (E10 debt "perfil PDF/A por serie", RF-FIR-15): resuelto
+    por el llamador (`AipWiringService._resolve_aip_pdfa_profile`) a partir
+    de `trd_series.pdfa_profile` de la serie del expediente. `None` = la
+    serie no tiene política propia -- se omite del payload y storage-service
+    cae a su default global (`AipCreate.pdfa_profile` es opcional,
+    retrocompat)."""
+    body: dict = {
+        "expediente_id": expediente_id,
+        "documentos": documentos,
+        **_campos_retencion(retencion_anios, fecha_inicio, retencion_diferida),
+    }
+    if indice_file_id is not None:
+        body["indice_file_id"] = str(indice_file_id)
+    if pdfa_profile is not None:
+        body["pdfa_profile"] = pdfa_profile
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=120.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/aip-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al empaquetar el AIP: %s", exc)
+        return AipPackagingOutcome(ok=False, transient=True)
+
+    if resp.status_code == status.HTTP_201_CREATED:
+        try:
+            data = resp.json()
+            aip_id = uuid.UUID(data["id"])
+        except (ValueError, KeyError, TypeError):
+            logger.warning("storage-service → 201 sin 'id' válido al empaquetar el AIP")
+            return AipPackagingOutcome(ok=False, transient=True)
+        retain_until: datetime | None = None
+        try:
+            if data.get("retain_until"):
+                retain_until = datetime.fromisoformat(data["retain_until"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning(
+                "storage-service → 201 sin 'retain_until' válido al empaquetar el "
+                "AIP de %s — espejo local quedará sin poblar",
+                expediente_id,
+            )
+        return AipPackagingOutcome(ok=True, aip_id=aip_id, retain_until=retain_until)
+    if resp.status_code == status.HTTP_409_CONFLICT and _codigo_de_error(resp) == "aip_ya_existe":
+        existente: uuid.UUID | None = None
+        try:
+            det = resp.json().get("detail") or {}
+            if isinstance(det, dict) and det.get("aip_id"):
+                existente = uuid.UUID(str(det["aip_id"]))
+        except (ValueError, AttributeError, TypeError):
+            existente = None
+        logger.warning(
+            "storage-service: el AIP de %s ya existe (aip_id=%s); se reconcilia",
+            expediente_id,
+            existente,
+        )
+        return AipPackagingOutcome(ok=False, ya_existe=True, aip_id=existente)
+    if resp.status_code == status.HTTP_409_CONFLICT:
+        logger.warning(
+            "storage-service: fixity_mismatch al empaquetar el AIP de %s "
+            "(un anexo mutó desde que se vinculó)",
+            expediente_id,
+        )
+        return AipPackagingOutcome(ok=False, fixity_mismatch=True)
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        logger.warning(
+            "storage-service: empaquetado de AIP deshabilitado "
+            "(PRESERVATION_ENABLED=false, expediente_id=%s)",
+            expediente_id,
+        )
+        return AipPackagingOutcome(ok=False, disabled=True)
+    logger.warning(
+        "storage-service → HTTP %s al empaquetar el AIP de %s (transient)",
+        resp.status_code,
+        expediente_id,
+    )
+    return AipPackagingOutcome(ok=False, transient=True)
+
+
+@dataclass(slots=True)
+class AipReempaqueOutcome:
+    """Resultado de ``POST /preservacion/aip-reempaquetar-internal`` (C-6, ADR-042)."""
+
+    ok: bool
+    aip_id: uuid.UUID | None = None
+    version: int | None = None
+    sustituye_a: uuid.UUID | None = None
+    retain_until: datetime | None = None
+    ya_sustituido: bool = False
+    fixity_mismatch: bool = False
+    indice_invalido: bool = False
+    not_found: bool = False
+    disabled: bool = False
+    transient: bool = False
+
+
+def _codigo_de_error(resp: httpx.Response) -> str:
+    """``error`` del cuerpo (``{"error": ...}`` o ``{"detail": {"error": ...}}``), o ``""``."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return ""
+    if isinstance(data, dict):
+        det = data.get("detail")
+        if isinstance(det, dict):
+            return str(det.get("error", ""))
+        return str(data.get("error", ""))
+    return ""
+
+
+async def reempaquetar_aip_internal(
+    *,
+    tenant_slug: str,
+    expediente_id: str,
+    aip_anterior_id: uuid.UUID,
+    indice_file_id: uuid.UUID,
+    indice_xml_sha256: str,
+    firma_id: str,
+    ordinal: int,
+) -> AipReempaqueOutcome:
+    """Pide a storage-service el AIP NUEVO construido desde el bag anterior con el índice
+    renovado (C-6). Idempotente por ``indice_xml_sha256`` (reintento -> 200 con el mismo AIP).
+    Timeout alto: storage relee y re-empaqueta el ZIP completo."""
+    body = {
+        "expediente_id": expediente_id,
+        "aip_anterior_id": str(aip_anterior_id),
+        "indice_file_id": str(indice_file_id),
+        "indice_xml_sha256": indice_xml_sha256,
+        "firma_id": firma_id,
+        "ordinal": ordinal,
+    }
+    headers = {"X-Tenant-Slug": tenant_slug, "X-Internal-Token": settings.storage_internal_token}
+    try:
+        async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=120.0) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/aip-reempaquetar-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al reempaquetar el AIP: %s", exc)
+        return AipReempaqueOutcome(ok=False, transient=True)
+
+    if resp.status_code in (status.HTTP_200_OK, status.HTTP_201_CREATED):
+        try:
+            data = resp.json()
+            aip_id = uuid.UUID(data["id"])
+            version = int(data["version"])
+            sustituye = uuid.UUID(data["sustituye_a"])
+        except (ValueError, KeyError, TypeError):
+            logger.warning("storage-service → %s sin id/version/sustituye_a válidos", resp.status_code)
+            return AipReempaqueOutcome(ok=False, transient=True)
+        retain_until: datetime | None = None
+        try:
+            if data.get("retain_until"):
+                retain_until = datetime.fromisoformat(data["retain_until"])
+        except (TypeError, ValueError):
+            retain_until = None
+        return AipReempaqueOutcome(
+            ok=True, aip_id=aip_id, version=version, sustituye_a=sustituye, retain_until=retain_until
+        )
+    codigo = _codigo_de_error(resp)
+    if resp.status_code == status.HTTP_409_CONFLICT:
+        if codigo == "aip_ya_sustituido":
+            return AipReempaqueOutcome(ok=False, ya_sustituido=True)
+        # aip_anterior_fixity_mismatch (o 409 desconocido): nunca se da por bueno.
+        return AipReempaqueOutcome(ok=False, fixity_mismatch=True)
+    if resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY:
+        return AipReempaqueOutcome(ok=False, indice_invalido=True)
+    if resp.status_code == status.HTTP_404_NOT_FOUND:
+        return AipReempaqueOutcome(ok=False, not_found=True)
+    if resp.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        return AipReempaqueOutcome(ok=False, disabled=True)
+    logger.warning("storage-service → HTTP %s al reempaquetar el AIP", resp.status_code)
+    return AipReempaqueOutcome(ok=False, transient=True)
+
+
+class StorageAipError(Exception):
+    """storage-service no respondió (o respondió con error) al pedir el AIP."""
+
+
+class StorageEventosError(Exception):
+    """storage-service no respondió (o respondió con error) al pedir los
+    eventos de preservación de un objeto."""
+
+
+class StorageExportError(Exception):
+    """storage-service no pudo ensamblar el ZIP de exportación del expediente.
+
+    `status_code` es el de storage cuando respondió (413 tope, 507 disco); `None`
+    si fue inalcanzable."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ExportZipStream:
+    """ZIP de exportación ya ensamblado por storage, listo para reenviarse por
+    trozos SIN bufferizarlo. Storage lo cierra en disco antes de responder, así
+    que cuando existe esta instancia el paquete está completo y su
+    `content_length` es el real."""
+
+    def __init__(self, client: httpx.AsyncClient, response: httpx.Response) -> None:
+        self._client = client
+        self._response = response
+        length = response.headers.get("content-length")
+        self.content_length: int | None = int(length) if length and length.isdigit() else None
+
+    async def aclose(self) -> None:
+        await self._response.aclose()
+        await self._client.aclose()
+
+    async def iter_bytes(self):
+        """Reenvía los trozos y cierra la conexión al terminar, también si el
+        consumidor se va a mitad. Si storage corta antes de completar el
+        `Content-Length`, lanza en vez de dar por terminado un ZIP corto."""
+        recibido = 0
+        try:
+            async for chunk in self._response.aiter_raw(1024 * 1024):
+                recibido += len(chunk)
+                yield chunk
+            if self.content_length is not None and recibido != self.content_length:
+                raise StorageExportError(
+                    f"ZIP incompleto: {recibido} de {self.content_length} bytes"
+                )
+        finally:
+            await self.aclose()
+
+
+async def export_zip_internal(
+    *,
+    tenant_slug: str,
+    items: list[dict],
+    extra_files: list[dict],
+) -> ExportZipStream:
+    """Pide a storage el ZIP de exportación (D-02, `X-Internal-Token`) a partir
+    del inventario de anexos (`{file_id, arcname}`) + archivos generados por
+    archive (`{arcname, contenido_b64}`).
+
+    Devuelve un `ExportZipStream` (no los bytes): el estado de storage se
+    resuelve ANTES de devolver, de modo que cualquier fallo es un error limpio
+    y nunca un 200 con el cuerpo cortado. Timeout de lectura amplio: storage
+    descarga N anexos y comprime antes de responder."""
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    body = {"items": items, "extra_files": extra_files}
+    client = httpx.AsyncClient(
+        base_url=settings.storage_service_url,
+        timeout=httpx.Timeout(600.0, connect=10.0),
+    )
+    try:
+        request = client.build_request(
+            "POST", "/api/v1/preservacion/export-zip-internal", json=body, headers=headers
+        )
+        resp = await client.send(request, stream=True)
+    except httpx.RequestError as exc:
+        await client.aclose()
+        raise StorageExportError(f"storage-service inalcanzable: {exc}") from exc
+    if resp.status_code != 200:
+        status_code = resp.status_code
+        await resp.aclose()
+        await client.aclose()
+        raise StorageExportError(
+            f"storage-service respondió {status_code} al ensamblar el ZIP", status_code
+        )
+    return ExportZipStream(client, resp)
+
+
+async def purgar_huerfanos_internal(
+    *,
+    tenant_slug: str,
+    file_ids: list[uuid.UUID],
+    referencia: str,
+    motivo: str,
+    subido_desde: datetime,
+) -> list[dict] | None:
+    """`POST /internal/purgar-huerfanos` de storage (AREA-09-14, sellado con `X-Internal-Token`):
+    borrado SEGURO de binarios que ninguna fila referencia. Storage decide por referencias del
+    tenant, `subido_desde` y WORM, y deja su asiento `file.purgado_huerfano`. Devuelve un
+    resultado por archivo, o `None` si storage no respondió 2xx (best-effort: nunca lanza)."""
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    body = {
+        "file_ids": [str(f) for f in file_ids],
+        "referencia": referencia,
+        "motivo": motivo,
+        "subido_desde": subido_desde.isoformat(),
+        "actor": None,
+    }
+    try:
+        async with httpx.AsyncClient(base_url=settings.storage_service_url, timeout=30.0) as client:
+            resp = await client.post(
+                "/api/v1/storage/internal/purgar-huerfanos", headers=headers, json=body
+            )
+        if resp.status_code != 200:
+            logger.warning("storage-service → HTTP %s al purgar huérfanos", resp.status_code)
+            return None
+        return list(resp.json()["resultados"])
+    except (httpx.RequestError, KeyError, ValueError, TypeError) as exc:
+        logger.warning("purgar-huerfanos no completado: %s", exc)
+        return None
+
+
+async def download_signed_xml(*, tenant_slug: str, minio_key_firmado: str) -> str | None:
+    """Descarga el XML firmado identificado por `minio_key_firmado`.
+
+    `minio_key_firmado` tiene la forma ``"{file_id}/{filename}"`` (ver
+    ``signature-service.app.clients.storage_client.upload_signed_xml``): el
+    primer segmento es el ``file_id`` que espera el endpoint de descarga de
+    storage-service. Ese endpoint no expone bytes directamente, solo una URL
+    prefirmada de MinIO (`GET /files/{file_id}/download`), que se sigue con
+    una segunda petición.
+    """
+    file_id = minio_key_firmado.split("/", 1)[0]
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=10.0
+        ) as client:
+            resp = await client.get(
+                f"/api/v1/storage/files/{file_id}/download", headers=headers
+            )
+            if resp.status_code != 200:
+                logger.warning(
+                    "storage-service → HTTP %s al presignar el índice firmado",
+                    resp.status_code,
+                )
+                return None
+            url = resp.json()["url"]
+            download = await client.get(url)
+            if download.status_code != 200:
+                logger.warning(
+                    "MinIO → HTTP %s al descargar el índice firmado", download.status_code
+                )
+                return None
+            return download.text
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al descargar el índice firmado: %s", exc)
+    return None
+
+
+async def download_signed_bytes(*, tenant_slug: str, minio_key_firmado: str) -> bytes | None:
+    """Gemela de `download_signed_xml` que devuelve los BYTES tal cual salen del almacén (sin
+    decodificar): quien necesita recotejar la huella de captura (B4, paquete de entrega) no puede
+    hacerlo sobre un `.text` que ya pasó por una decodificación. `None` en cualquier fallo."""
+    file_id = minio_key_firmado.split("/", 1)[0]
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=10.0
+        ) as client:
+            resp = await client.get(
+                f"/api/v1/storage/files/{file_id}/download", headers=headers
+            )
+            if resp.status_code != 200:
+                logger.warning("storage-service → HTTP %s al presignar un componente", resp.status_code)
+                return None
+            download = await client.get(resp.json()["url"])
+            if download.status_code != 200:
+                logger.warning("almacén → HTTP %s al descargar un componente", download.status_code)
+                return None
+            return download.content
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al descargar un componente: %s", exc)
+    return None
+
+
+async def get_aip(*, tenant_slug: str, expediente_id: str) -> dict | None:
+    """Obtiene el AIP vigente de ``expediente_id`` desde storage-service
+    (E10 Increment C, único llamador legítimo de
+    ``GET /preservacion/aip/{expediente_id}`` tras el cierre D-02 de ese
+    endpoint).
+
+    ``expediente_id`` es ``str(Expediente.id)`` (el UUID de archive-service
+    en texto) — el mismo string que deberá usar cualquier futuro llamador de
+    ``POST /preservacion/aip`` (empaquetado, todavía sin wiring en este
+    servicio) para que la lectura mediada aquí encuentre el AIP correcto
+    (mismo criterio que ``IndexService._data``: ``expediente_id=str(exp.id)``).
+
+    Devuelve ``None`` si storage-service responde 404 (el expediente existe
+    pero aún no tiene ningún AIP empaquetado) — el llamador (``ArchiveService.
+    get_aip``) funde este caso con el 404 de "expediente no visible" en la
+    MISMA respuesta neutra (no-read-up): no se distingue "no hay AIP" de
+    "no autorizado".
+
+    Lanza ``StorageAipError`` ante cualquier otro fallo (red, timeout, HTTP
+    fuera de {200, 404}) — a diferencia de ``download_signed_xml`` (best-effort,
+    ``None`` en todo fallo), aquí el llamador necesita distinguir un fallo de
+    infraestructura (503) de un 404 legítimo.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=10.0
+        ) as client:
+            resp = await client.get(
+                f"/api/v1/preservacion/aip/{expediente_id}", headers=headers
+            )
+    except httpx.RequestError as exc:
+        raise StorageAipError(f"storage-service inalcanzable al pedir el AIP: {exc}") from exc
+
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        raise StorageAipError(
+            f"storage-service → HTTP {resp.status_code} al pedir el AIP de "
+            f"{expediente_id}: {resp.text[:300]!r}"
+        )
+    return resp.json()
+
+
+#: Refs por petición: cada `object_ref=<uuid>` pesa ~48 bytes y h11 corta la línea de
+#: petición en ~16 KB. Un expediente con miles de anexos se pide en tandas.
+_EVENTOS_REFS_POR_PETICION = 100
+
+
+async def list_eventos(*, tenant_slug: str, object_refs: list[str]) -> list[dict]:
+    """Obtiene los eventos PREMIS de preservación de UNO O VARIOS ``object_ref`` desde
+    storage-service (único llamador legítimo de ``GET /preservacion/eventos`` tras el
+    cierre D-02 de ese endpoint).
+
+    ``object_refs`` lo arma ``ArchiveService._object_refs_preservacion``: el UUID del
+    expediente, el id de su AIP y los ``file_id`` de sus anexos vigentes (AREA-07-15).
+    Se pide en tandas de ``_EVENTOS_REFS_POR_PETICION`` y se funde ordenado por ``ts``
+    sin duplicados.
+
+    Devuelve ``[]`` si no hay eventos (storage-service responde 200 con lista vacía,
+    nunca 404 para esta variante) — a diferencia de ``get_aip``, no hay aquí un caso
+    "ausente" que fundir con el 404 de no-read-up.
+
+    Lanza ``StorageEventosError`` ante cualquier fallo (red, timeout, HTTP distinto de
+    200) — el llamador (``ArchiveService.get_eventos_preservacion``) lo traduce a 503,
+    ortogonal a la autorización.
+    """
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    vistos: dict[str, dict] = {}
+    for i in range(0, len(object_refs), _EVENTOS_REFS_POR_PETICION):
+        tanda = object_refs[i : i + _EVENTOS_REFS_POR_PETICION]
+        try:
+            async with httpx.AsyncClient(
+                base_url=settings.storage_service_url, timeout=10.0
+            ) as client:
+                resp = await client.get(
+                    "/api/v1/preservacion/eventos",
+                    params=[("object_ref", r) for r in tanda],
+                    headers=headers,
+                )
+        except httpx.RequestError as exc:
+            raise StorageEventosError(
+                f"storage-service inalcanzable al pedir los eventos de preservación: {exc}"
+            ) from exc
+
+        if resp.status_code != 200:
+            raise StorageEventosError(
+                f"storage-service → HTTP {resp.status_code} al pedir los eventos de "
+                f"{len(tanda)} objeto(s): {resp.text[:300]!r}"
+            )
+        for evento in resp.json():
+            vistos[str(evento.get("id"))] = evento
+    return sorted(vistos.values(), key=lambda e: str(e.get("ts")))
+
+
+async def registrar_evento_internal(
+    *,
+    tenant_slug: str,
+    object_ref: str,
+    tipo: str,
+    resultado: str,
+    detalle: dict,
+    agente: str | None,
+    dedup_key: str,
+    hash_after: str | None = None,
+) -> bool:
+    """Registra un evento PREMIS en storage-service (`POST /preservacion/eventos-internal`,
+    AREA-07-05). Idempotente por `dedup_key` (200 = ya existía, 201 = creado: ambos son
+    éxito). Devuelve ``True`` si quedó registrado y ``False`` ante cualquier fallo (red,
+    timeout, HTTP inesperado): el llamador lo trata como best-effort y lo reconcilia; NUNCA
+    lanza."""
+    body = {
+        "object_ref": object_ref,
+        "tipo": tipo,
+        "resultado": resultado,
+        "detalle": detalle,
+        "agente": agente,
+        "dedup_key": dedup_key,
+    }
+    if hash_after is not None:
+        body["hash_after"] = hash_after
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=10.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/preservacion/eventos-internal", json=body, headers=headers
+            )
+    except httpx.RequestError as exc:
+        logger.warning("storage-service inalcanzable al registrar el evento PREMIS: %s", exc)
+        return False
+    if resp.status_code not in (200, 201):
+        logger.warning(
+            "storage-service → HTTP %s al registrar el evento PREMIS: %s",
+            resp.status_code,
+            resp.text[:200],
+        )
+        return False
+    return True
+
+
+async def fetch_file_hashes_internal(
+    *, tenant_slug: str, file_ids: list[str]
+) -> dict[str, str]:
+    """SHA-256 de un LOTE de ficheros — `POST /storage/internal/files/hashes`.
+
+    Es la mitad que faltaba de E15 T-08. El índice electrónico debe llevar la
+    huella de cada documento (RT-15 art. 4.3.2.3) y el sistema SIEMPRE la ha
+    tenido —storage la calcula al subir el anexo—; lo que no había era quien la
+    trajera: la pantalla de vincular no la envía (ni debe: una huella que
+    aporta el cliente no prueba nada) y el campo quedaba nulo para todo lo
+    vinculado desde la interfaz.
+
+    **Best-effort a propósito.** Cualquier fallo devuelve ``{}`` y el vínculo se
+    hace igual, sin huella. Vincular un radicado a su expediente es un acto
+    archivístico que no puede quedar preso de que otros dos servicios estén en
+    pie; y un documento sin huella el índice ya sabe declararlo
+    (`sin_huella_declarada`) en vez de fingirla. Lo contrario —abortar la
+    vinculación— cambiaría un dato ausente por trabajo perdido.
+    """
+    if not file_ids:
+        return {}
+    headers = {
+        "X-Tenant-Slug": tenant_slug,
+        "X-Internal-Token": settings.storage_internal_token,
+    }
+    try:
+        async with httpx.AsyncClient(
+            base_url=settings.storage_service_url, timeout=15.0
+        ) as client:
+            resp = await client.post(
+                "/api/v1/storage/internal/files/hashes",
+                json={"file_ids": file_ids},
+                headers=headers,
+            )
+    except httpx.RequestError:
+        logger.warning(
+            "storage-service inalcanzable al pedir las huellas de %d anexos; "
+            "el vínculo queda sin huella declarada",
+            len(file_ids),
+            exc_info=True,
+        )
+        return {}
+    if resp.status_code != 200:
+        logger.warning(
+            "storage-service → HTTP %s al pedir las huellas de %d anexos; "
+            "el vínculo queda sin huella declarada",
+            resp.status_code,
+            len(file_ids),
+        )
+        return {}
+    return resp.json().get("hashes", {})

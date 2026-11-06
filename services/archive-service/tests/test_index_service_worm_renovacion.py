@@ -28,9 +28,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.storage_client import WormRenewalOutcome
-from app.core.config import settings
-from app.services.index_service import IndexService
+from archive.clients.storage_client import WormRenewalOutcome
+from archive.core.config import settings
+from archive.services.index_service import IndexService
 
 TENANT = "demo"
 
@@ -107,7 +107,7 @@ async def test_renovar_worm_indice_success_marks_and_audits_when_renovado() -> N
     nueva = datetime(2051, 1, 1, tzinfo=UTC)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as mock_client:
         resultado = await index.renovar_worm_indice(
@@ -149,7 +149,7 @@ async def test_renovar_worm_indice_confirmed_noop_marks_but_does_not_audit() -> 
     vigente = datetime(2051, 1, 1, tzinfo=UTC)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=vigente, renovado=False)
         ),
@@ -176,7 +176,7 @@ async def test_renovar_worm_indice_disabled_schedules_backoff() -> None:
     index._resolve_ct_retencion_anios = AsyncMock(return_value=25)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, disabled=True)),
     ):
         resultado = await index.renovar_worm_indice(
@@ -198,7 +198,7 @@ async def test_renovar_worm_indice_not_found_schedules_backoff() -> None:
     index._resolve_ct_retencion_anios = AsyncMock(return_value=25)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, not_found=True)),
     ):
         resultado = await index.renovar_worm_indice(
@@ -216,7 +216,7 @@ async def test_renovar_worm_indice_transient_failure_marks_worm_no_confirmado() 
     index._resolve_ct_retencion_anios = AsyncMock(return_value=25)
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, transient=True)),
     ):
         resultado = await index.renovar_worm_indice(
@@ -241,7 +241,7 @@ async def test_renovar_worm_indice_exhausts_after_max_intentos_and_audits() -> N
     max_intentos = settings.indice_reconciliation_max_intentos
 
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, transient=True)),
     ):
         resultado = await index.renovar_worm_indice(

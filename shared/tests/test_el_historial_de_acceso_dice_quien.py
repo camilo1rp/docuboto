@@ -19,9 +19,9 @@ nombre está a un JOIN de distancia.
 **Por qué hace falta un guardián y no bastaba con arreglarlo.** Hay DOS lectores
 de la pista de acceso, gemelos y escritos a partir del mismo diseño:
 
-* `document-service/app/repositories/audit_read.py` — «¿quién vio este
+* `document-service/document/repositories/audit_read.py` — «¿quién vio este
   radicado?»
-* `archive-service/app/repositories/audit_read.py` — «¿quién vio este
+* `archive-service/archive/repositories/audit_read.py` — «¿quién vio este
   expediente?»
 
 El 2026-09-06 se corrigió el primero. El 2026-09-07, recorriendo B5 del plan de
@@ -35,6 +35,8 @@ El censo se DERIVA del árbol: un tercer lector entra el día que exista.
 """
 
 from __future__ import annotations
+
+from tests._compose import glob_src
 
 import re
 from pathlib import Path
@@ -187,7 +189,7 @@ def test_el_censo_de_pantallas_encuentra_algo() -> None:
 def _lectores_de_la_pista() -> dict[str, str]:
     """Derivado del árbol: cualquier `audit_read.py` de cualquier servicio."""
     hallados: dict[str, str] = {}
-    for ruta in sorted(SERVICIOS.glob("*/app/repositories/audit_read.py")):
+    for ruta in sorted(glob_src(SERVICIOS, "*/app/repositories/audit_read.py")):
         hallados[str(ruta.relative_to(SERVICIOS))] = ruta.read_text(encoding="utf-8")
     return hallados
 
@@ -271,7 +273,7 @@ _ESCRIBE_EVENTO = re.compile(r"insert_expediente_evento\s*\(")
 def _servicios_que_escriben_la_hoja_de_ruta() -> dict[str, str]:
     """Derivado del árbol: un servicio nuevo entra en el censo el día que existe."""
     hallados: dict[str, str] = {}
-    for ruta in sorted(SERVICIOS.glob("*/app/services/*.py")):
+    for ruta in sorted(glob_src(SERVICIOS, "*/app/services/*.py")):
         texto = ruta.read_text(encoding="utf-8")
         if _ESCRIBE_EVENTO.search(texto):
             hallados[str(ruta.relative_to(SERVICIOS))] = texto

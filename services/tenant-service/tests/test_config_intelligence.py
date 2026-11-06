@@ -27,9 +27,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.clients.pasarela import PasarelaError
-from app.core.database import get_tenant_conn
-from app.main import app
+from tenant.clients.pasarela import PasarelaError
+from tenant.core.database import get_tenant_conn
+from tenant.main import app
 
 URL = "/api/v1/config/intelligence"
 SHA = "ab" * 32
@@ -139,11 +139,11 @@ async def ctx() -> AsyncGenerator[tuple[Any, ...], None]:
 
     app.dependency_overrides[get_tenant_conn] = override
     with (
-        patch("app.clients.pasarela.capacidades", new=capacidades),
-        patch("app.clients.pasarela.aceptar", new=aceptar),
-        patch("app.clients.pasarela.purgar", new=purgar),
-        patch("app.clients.pasarela.inventario", new=inventario),
-        patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")) as append,
+        patch("tenant.clients.pasarela.capacidades", new=capacidades),
+        patch("tenant.clients.pasarela.aceptar", new=aceptar),
+        patch("tenant.clients.pasarela.purgar", new=purgar),
+        patch("tenant.clients.pasarela.inventario", new=inventario),
+        patch("tenant.core.audit._audit.append", new=AsyncMock(return_value="h")) as append,
     ):
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

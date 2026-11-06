@@ -26,9 +26,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_conn
-from app.main import app
-from app.services.transferencia_service import TransferenciaService as _TransferenciaService
+from archive.core.database import get_db_conn
+from archive.main import app
+from archive.services.transferencia_service import TransferenciaService as _TransferenciaService
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -39,6 +39,10 @@ from app.services.transferencia_service import TransferenciaService as _Transfer
 # atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
+
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
 
 
 TENANT_SLUG = "demo"
@@ -506,7 +510,7 @@ def _document_service_responde() -> Iterator[None]:
         }
 
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(side_effect=_fake),
     ):
         yield
@@ -550,7 +554,7 @@ def _firma_personal_worm_doble() -> Iterator[AsyncMock]:
 @pytest.fixture(autouse=True)
 def _artefacto_vigente_doble() -> Iterator[AsyncMock]:
     doble = AsyncMock(return_value=None)
-    with patch("app.clients.signature_client.artefacto_vigente", doble):
+    with patch("archive.clients.signature_client.artefacto_vigente", doble):
         yield doble
 
 
@@ -559,15 +563,15 @@ def _artefacto_vigente_doble() -> Iterator[AsyncMock]:
 # ejercen el cambio (`test_c6_*`, `test_aip_wiring_artefacto_vigente`) los sustituyen.
 @pytest.fixture(autouse=True)
 def _aip_c6_dobles() -> Iterator[None]:
-    from app.clients import signature_client
+    from archive.clients import signature_client
 
     with (
         patch(
-            "app.clients.signature_client.resolver_artefacto_vigente",
+            "archive.clients.signature_client.resolver_artefacto_vigente",
             AsyncMock(return_value=signature_client.SIN_RENOVACION),
         ),
         patch(
-            "app.services.aip_wiring_service._huella_indice_original",
+            "archive.services.aip_wiring_service._huella_indice_original",
             AsyncMock(return_value="a" * 64),
         ),
     ):
@@ -585,7 +589,7 @@ def _artefacto_vigente_por_defecto(request: pytest.FixtureRequest):
     from unittest.mock import AsyncMock, patch
 
     with patch(
-        "app.clients.signature_client.artefacto_vigente",
+        "archive.clients.signature_client.artefacto_vigente",
         new=AsyncMock(return_value="00000000-0000-0000-0000-0000000000aa/vigente.xml"),
     ):
         yield

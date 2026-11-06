@@ -9,7 +9,7 @@
 
 """Guardián: `PARAMS_ADMITIDOS` de `PUT /config/params/{key}` == claves sembradas.
 
-La allowlist (tenant-service/app/routers/config.py) impide que la tabla
+La allowlist (tenant-service/tenant/routers/config.py) impide que la tabla
 `sgd_param_admin` —de lectura abierta a todo el tenant— aloje claves libres. Pero
 una lista escrita a mano envejece: una migración que siembra un parámetro nuevo sin
 añadirlo aquí lo deja imposible de configurar (el caso del membrete, ver
@@ -19,6 +19,8 @@ admitida reabre el buzón. Se compara en las dos direcciones, leyendo el fuente.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 import re
 from pathlib import Path
@@ -27,7 +29,7 @@ import pytest
 
 RAIZ = Path(__file__).resolve().parents[2]
 MIGRACIONES = RAIZ / "services" / "tenant-service" / "migrations" / "tenant"
-ROUTER = RAIZ / "services" / "tenant-service" / "app" / "routers" / "config.py"
+ROUTER = RAIZ / "services" / "tenant-service" / "tenant" / "routers" / "config.py"
 
 _necesita_arbol = pytest.mark.skipif(
     not MIGRACIONES.is_dir(), reason="el árbol de servicios no está montado"
@@ -89,7 +91,7 @@ def test_ninguna_inerte_carece_de_siembra() -> None:
 def test_una_inerte_no_la_lee_ningun_servicio() -> None:
     """Qué las hace inertes: ningún `app/` de servicio las menciona salvo la lista
     de config.py. Si alguien las cablea, el test obliga a moverlas a admitidas."""
-    for archivo in sorted((RAIZ / "services").glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(RAIZ / "services", "*/app/**/*.py")):
         if archivo == ROUTER:
             continue
         texto = archivo.read_text(encoding="utf-8")
@@ -117,7 +119,7 @@ def test_el_censo_no_esta_vacio() -> None:
 def test_las_claves_que_lee_el_codigo_estan_admitidas() -> None:
     leidas = {"firma_personal_require_xades"}
     fuente = (
-        RAIZ / "services" / "document-service" / "app" / "services" / "contexto_combinacion.py"
+        RAIZ / "services" / "document-service" / "document" / "services" / "contexto_combinacion.py"
     ).read_text(encoding="utf-8")
     leidas.update(re.findall(r'"(entidad_[a-z_]+)"', fuente))
     assert not leidas - _admitidas(), sorted(leidas - _admitidas())

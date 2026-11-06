@@ -37,7 +37,7 @@ def _sig_row(**kw) -> dict:
 
 @pytest.mark.asyncio
 async def test_sign_document(client_with_conn, monkeypatch) -> None:
-    from app.clients import storage_client
+    from document.clients import storage_client
 
     async def _huella(*, tenant_slug, file_id):
         return _HASH

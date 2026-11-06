@@ -362,7 +362,7 @@ def test_reclassify_request_rejects_nivel_out_of_range() -> None:
     """nivel_seguridad fuera de rango 1-3 → ValidationError."""
     from pydantic import ValidationError
 
-    from app.schemas.document import ReclassifyRequest
+    from document.schemas.document import ReclassifyRequest
 
     with pytest.raises(ValidationError):
         ReclassifyRequest(nivel_seguridad=0)
@@ -372,7 +372,7 @@ def test_reclassify_request_rejects_nivel_out_of_range() -> None:
 
 
 def test_reclassify_request_accepts_valid_range() -> None:
-    from app.schemas.document import ReclassifyRequest
+    from document.schemas.document import ReclassifyRequest
 
     # Nivel 1 (desclasificar) no exige fundamento; nivel ≥ 2 sí (Ley 1712 art. 19/28).
     assert ReclassifyRequest(nivel_seguridad=1, motivo="Motivo").nivel_seguridad == 1
@@ -399,7 +399,7 @@ def test_reclassify_request_rejects_missing_motivo() -> None:
     """motivo ausente → ValidationError (Ley 1712 art.19/28: el acto debe ser motivado)."""
     from pydantic import ValidationError
 
-    from app.schemas.document import ReclassifyRequest
+    from document.schemas.document import ReclassifyRequest
 
     with pytest.raises(ValidationError):
         ReclassifyRequest(nivel_seguridad=2)  # motivo ausente
@@ -409,7 +409,7 @@ def test_reclassify_request_rejects_empty_motivo() -> None:
     """motivo vacío → ValidationError (min_length=1)."""
     from pydantic import ValidationError
 
-    from app.schemas.document import ReclassifyRequest
+    from document.schemas.document import ReclassifyRequest
 
     with pytest.raises(ValidationError):
         ReclassifyRequest(nivel_seguridad=2, motivo="")
@@ -479,7 +479,7 @@ def test_reclassify_request_compliance_fields_are_optional() -> None:
     desclasificar (nivel 1)."""
     from pydantic import ValidationError
 
-    from app.schemas.document import ReclassifyRequest
+    from document.schemas.document import ReclassifyRequest
 
     # Nivel 1: fundamento opcional; causal/plazo opcionales.
     req = ReclassifyRequest(nivel_seguridad=1, motivo="Desclasificar")
@@ -727,7 +727,7 @@ async def test_set_classification_no_reinicia_clasificado_at_si_el_nivel_no_camb
     una re-clasificación al mismo nivel perpetúe una reserva más allá de los 15 años."""
     from unittest.mock import AsyncMock
 
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     conn = AsyncMock()
     conn.execute.return_value = "UPDATE 1"
@@ -744,7 +744,7 @@ async def test_set_classification_no_reinicia_clasificado_at_si_el_nivel_no_camb
 def test_la_causal_debe_corresponder_al_nivel_y_al_plazo() -> None:
     from pydantic import ValidationError
 
-    from app.schemas.document import ReclassifyRequest
+    from document.schemas.document import ReclassifyRequest
 
     base = {"motivo": "m", "fundamento_juridico": "F"}
     # art. 18 con nivel 2, art. 19 con nivel 3

@@ -67,7 +67,7 @@ def _make_pool_with_tenants(slugs: list[str]) -> MagicMock:
 @pytest.mark.asyncio
 async def test_purge_older_than_returns_deleted_count() -> None:
     """purge_older_than parses 'DELETE N' from conn.execute and returns N."""
-    from app.repositories.processed_events_repository import ProcessedEventsRepository
+    from notification.repositories.processed_events_repository import ProcessedEventsRepository
 
     conn = AsyncMock()
     conn.execute.return_value = "DELETE 5"
@@ -91,7 +91,7 @@ async def test_purge_older_than_returns_deleted_count() -> None:
 
 @pytest.mark.asyncio
 async def test_purge_older_than_returns_zero_when_nothing_deleted() -> None:
-    from app.repositories.processed_events_repository import ProcessedEventsRepository
+    from notification.repositories.processed_events_repository import ProcessedEventsRepository
 
     conn = AsyncMock()
     conn.execute.return_value = "DELETE 0"
@@ -109,7 +109,7 @@ async def test_purge_older_than_returns_zero_when_nothing_deleted() -> None:
 
 @pytest.mark.asyncio
 async def test_list_active_tenants_returns_only_active() -> None:
-    from app.jobs.retention import list_active_tenants
+    from notification.jobs.retention import list_active_tenants
 
     pool = _make_pool_with_tenants(["tenant_a", "tenant_b"])
 
@@ -131,7 +131,7 @@ async def test_list_active_tenants_returns_only_active() -> None:
 
 @pytest.mark.asyncio
 async def test_purge_dedup_aggregates_counts() -> None:
-    from app.jobs import retention
+    from notification.jobs import retention
 
     conn_a = AsyncMock()
     conn_a.execute.return_value = "DELETE 3"
@@ -144,8 +144,8 @@ async def test_purge_dedup_aggregates_counts() -> None:
         return _FakeAcquire(conn_a if slug == "alpha" else conn_b)
 
     with (
-        patch("app.jobs.retention.get_pool", return_value=fake_pool),
-        patch("app.jobs.retention.acquire_tenant", side_effect=_fake_acquire),
+        patch("notification.jobs.retention.get_pool", return_value=fake_pool),
+        patch("notification.jobs.retention.acquire_tenant", side_effect=_fake_acquire),
     ):
         totals = await retention.purge_dedup(days=7)
 
@@ -159,7 +159,7 @@ async def test_purge_dedup_aggregates_counts() -> None:
 
 @pytest.mark.asyncio
 async def test_purge_dedup_tenant_failure_does_not_abort() -> None:
-    from app.jobs import retention
+    from notification.jobs import retention
 
     conn_ok = AsyncMock()
     conn_ok.execute.return_value = "DELETE 4"
@@ -172,8 +172,8 @@ async def test_purge_dedup_tenant_failure_does_not_abort() -> None:
         return _FakeAcquire(conn_ok)
 
     with (
-        patch("app.jobs.retention.get_pool", return_value=fake_pool),
-        patch("app.jobs.retention.acquire_tenant", side_effect=_fake_acquire),
+        patch("notification.jobs.retention.get_pool", return_value=fake_pool),
+        patch("notification.jobs.retention.acquire_tenant", side_effect=_fake_acquire),
     ):
         totals = await retention.purge_dedup(days=7)
 
@@ -191,7 +191,7 @@ async def test_purge_dedup_tenant_failure_does_not_abort() -> None:
 @pytest.mark.asyncio
 async def test_worker_retention_gate_fires_after_interval() -> None:
     """run_once is called when now - _last_retention >= RETENTION_INTERVAL."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -208,10 +208,10 @@ async def test_worker_retention_gate_fires_after_interval() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", mock_reclaim),
-        patch("app.workers.stream_worker.retention.run_once", mock_run_once),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", mock_reclaim),
+        patch("notification.workers.stream_worker.retention.run_once", mock_run_once),
+        patch("notification.workers.stream_worker.time", mock_time),
     ):
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
@@ -227,7 +227,7 @@ async def test_worker_retention_gate_fires_after_interval() -> None:
 @pytest.mark.asyncio
 async def test_worker_retention_gate_does_not_fire_before_interval() -> None:
     """run_once is NOT called when the interval has not elapsed."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -242,9 +242,9 @@ async def test_worker_retention_gate_does_not_fire_before_interval() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.retention.run_once", mock_run_once),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.retention.run_once", mock_run_once),
+        patch("notification.workers.stream_worker.time", mock_time),
     ):
         with pytest.raises(asyncio.CancelledError):
             await stream_worker.run()
@@ -260,7 +260,7 @@ async def test_worker_retention_gate_does_not_fire_before_interval() -> None:
 @pytest.mark.asyncio
 async def test_worker_retention_failure_does_not_crash_loop() -> None:
     """A RuntimeError from run_once is logged as WARNING; the loop exits via CancelledError."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     fake_redis = AsyncMock()
     fake_redis.xreadgroup.side_effect = [
@@ -273,13 +273,13 @@ async def test_worker_retention_failure_does_not_crash_loop() -> None:
 
     with (
         patch.object(stream_worker, "get_redis", return_value=fake_redis),
-        patch("app.workers.stream_worker.events.ensure_group", AsyncMock()),
-        patch("app.workers.stream_worker.events.reclaim_stale", AsyncMock()),
+        patch("notification.workers.stream_worker.events.ensure_group", AsyncMock()),
+        patch("notification.workers.stream_worker.events.reclaim_stale", AsyncMock()),
         patch(
-            "app.workers.stream_worker.retention.run_once",
+            "notification.workers.stream_worker.retention.run_once",
             AsyncMock(side_effect=RuntimeError("DB down")),
         ),
-        patch("app.workers.stream_worker.time", mock_time),
+        patch("notification.workers.stream_worker.time", mock_time),
         patch.object(stream_worker, "logger") as mock_logger,
     ):
         # Loop must exit via CancelledError, not RuntimeError.

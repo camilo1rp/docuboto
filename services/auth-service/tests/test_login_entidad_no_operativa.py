@@ -25,7 +25,7 @@ import httpx
 import pytest
 from httpx import AsyncClient
 
-from app.services.auth_service import AuthService, KeycloakError
+from auth.services.auth_service import AuthService, KeycloakError
 
 
 class _Conn:
@@ -72,21 +72,21 @@ def _claims(tenant: str | None = "demo", roles: list[str] | None = None) -> Asyn
 async def test_el_login_de_una_entidad_no_operativa_no_entrega_token(
     fila: dict | None, http: int, error: str
 ) -> None:
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         with pytest.raises(KeycloakError) as exc:
             await _servicio().login("operador", "x", "demo", conn=_Conn(fila))  # type: ignore[arg-type]
     assert (exc.value.status_code, exc.value.detail) == (http, error)
 
 
 async def test_el_refresh_de_una_entidad_suspendida_tampoco_entrega_token() -> None:
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         with pytest.raises(KeycloakError) as exc:
             await _servicio().refresh("RT", conn=_Conn(_fila(status="suspended")))  # type: ignore[arg-type]
     assert (exc.value.status_code, exc.value.detail) == (403, "tenant_inactivo")
 
 
 async def test_si_el_registro_no_responde_no_se_entrega_token() -> None:
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         with pytest.raises(KeycloakError) as exc:
             await _servicio().login(
                 "operador", "x", "demo", conn=_Conn(None, RuntimeError("caído"))  # type: ignore[arg-type]
@@ -95,14 +95,14 @@ async def test_si_el_registro_no_responde_no_se_entrega_token() -> None:
 
 
 async def test_una_entidad_operativa_recibe_su_token() -> None:
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         out = await _servicio().login("operador", "x", "demo", conn=_Conn(_fila()))  # type: ignore[arg-type]
     assert out.access_token == "AT"
 
 
 async def test_un_superadmin_sin_entidad_en_el_token_recibe_token() -> None:
     """Sin entidad no hay nada que comprobar: es quien puede reactivar a las demás."""
-    with patch("app.services.auth_service.validate_token", _claims(None, ["superadmin"])):
+    with patch("auth.services.auth_service.validate_token", _claims(None, ["superadmin"])):
         out = await _servicio().login("root", "x", "demo", conn=_Conn(None))  # type: ignore[arg-type]
     assert out.access_token == "AT"
 
@@ -117,7 +117,7 @@ async def test_se_mira_la_entidad_del_token_no_la_del_cuerpo() -> None:
             visto.append(str(args[0]))
             return conn_por_slug.get(str(args[0]))
 
-    with patch("app.services.auth_service.validate_token", _claims("otra", ["superadmin"])):
+    with patch("auth.services.auth_service.validate_token", _claims("otra", ["superadmin"])):
         with pytest.raises(KeycloakError) as exc:
             await _servicio().login("root", "x", "demo", conn=_ConnPorSlug(None))  # type: ignore[arg-type]
     assert exc.value.detail == "tenant_inactivo"
@@ -126,7 +126,7 @@ async def test_se_mira_la_entidad_del_token_no_la_del_cuerpo() -> None:
 
 async def test_el_endpoint_responde_el_mismo_codigo_que_el_gateway(client: AsyncClient) -> None:
     with patch(
-        "app.services.auth_service.AuthService.login",
+        "auth.services.auth_service.AuthService.login",
         new_callable=AsyncMock,
         side_effect=KeycloakError(403, "tenant_inactivo"),
     ):
@@ -135,7 +135,7 @@ async def test_el_endpoint_responde_el_mismo_codigo_que_el_gateway(client: Async
             json={"username": "operador", "password": "x", "tenant_slug": "demo"},
         )
     with patch(
-        "app.services.auth_service.AuthService.login",
+        "auth.services.auth_service.AuthService.login",
         new_callable=AsyncMock,
         side_effect=KeycloakError(503, "tenant_no_provisionado"),
     ):
@@ -158,7 +158,7 @@ async def test_el_endpoint_responde_el_mismo_codigo_que_el_gateway(client: Async
 async def test_tenant_mismatch_sigue_siendo_tenant_mismatch(client: AsyncClient) -> None:
     """Regresión del mapeo: el 403 de otra causa no se confunde con la entidad."""
     with patch(
-        "app.services.auth_service.AuthService.login",
+        "auth.services.auth_service.AuthService.login",
         new_callable=AsyncMock,
         side_effect=KeycloakError(403, "tenant_mismatch"),
     ):
@@ -174,7 +174,7 @@ async def test_tenant_mismatch_sigue_siendo_tenant_mismatch(client: AsyncClient)
 
 def _servicio_que_registra(logout_status: int = 204) -> tuple[AuthService, list[httpx.Request]]:
     """Keycloak simulado que anota cada llamada a la revocacion (logout) del realm."""
-    from app.core.config import settings
+    from auth.core.config import settings
 
     revocaciones: list[httpx.Request] = []
 
@@ -194,7 +194,7 @@ def _servicio_que_registra(logout_status: int = 204) -> tuple[AuthService, list[
 
 async def test_el_login_rechazado_por_entidad_REVOCA_el_refresh_token_emitido() -> None:
     svc, revocaciones = _servicio_que_registra()
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         with pytest.raises(KeycloakError) as exc:
             await svc.login("operador", "x", "demo", conn=_Conn(_fila(status="suspended")))  # type: ignore[arg-type]
     assert exc.value.detail == "tenant_inactivo"
@@ -204,7 +204,7 @@ async def test_el_login_rechazado_por_entidad_REVOCA_el_refresh_token_emitido() 
 
 async def test_el_refresh_rechazado_por_entidad_REVOCA_el_nuevo_refresh_token() -> None:
     svc, revocaciones = _servicio_que_registra()
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         with pytest.raises(KeycloakError):
             await svc.refresh("RT", conn=_Conn(_fila(status="suspended")))  # type: ignore[arg-type]
     assert len(revocaciones) == 1
@@ -214,7 +214,7 @@ async def test_el_refresh_rechazado_por_entidad_REVOCA_el_nuevo_refresh_token() 
 async def test_una_entidad_operativa_NO_revoca_nada() -> None:
     """Control positivo: sin el, una revocacion incondicional pasaria los tests de arriba."""
     svc, revocaciones = _servicio_que_registra()
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         out = await svc.login("operador", "x", "demo", conn=_Conn(_fila()))  # type: ignore[arg-type]
     assert out.refresh_token == "RT-NUEVO"
     assert revocaciones == []
@@ -222,7 +222,7 @@ async def test_una_entidad_operativa_NO_revoca_nada() -> None:
 
 async def test_si_la_revocacion_falla_el_rechazo_sigue_siendo_el_de_la_entidad() -> None:
     svc, revocaciones = _servicio_que_registra(logout_status=500)
-    with patch("app.services.auth_service.validate_token", _claims("demo")):
+    with patch("auth.services.auth_service.validate_token", _claims("demo")):
         with pytest.raises(KeycloakError) as exc:
             await svc.login("operador", "x", "demo", conn=_Conn(_fila(status="suspended")))  # type: ignore[arg-type]
     assert (exc.value.status_code, exc.value.detail) == (403, "tenant_inactivo")

@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
-from app.services.storage_service import StorageService, WormLockActiveError
+from storage.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
+from storage.services.storage_service import StorageService, WormLockActiveError
 from tests.conftest import TENANT_SLUG, make_file_record, make_worm_row, vista_de_citas
 
 
@@ -47,7 +47,7 @@ async def test_purge_blocked_while_retain_until_is_future() -> None:
     )
     conn.fetchrow.side_effect = [record, active_lock]
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio
@@ -80,7 +80,7 @@ async def test_purge_blocked_by_legal_hold_even_if_retain_until_past() -> None:
     )
     conn.fetchrow.side_effect = [record, active_lock]
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio
@@ -108,7 +108,7 @@ async def test_purge_blocked_by_aip_type_worm_row() -> None:
     )
     conn.fetchrow.side_effect = [record, active_lock]
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio
@@ -131,7 +131,7 @@ async def test_purge_allowed_once_worm_lock_expired() -> None:
     conn.execute.side_effect = None
     conn.execute.return_value = "DELETE 1"
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio
@@ -157,7 +157,7 @@ async def test_purge_canonicalizes_expediente_id_before_gate_query() -> None:
     )
     conn.fetchrow.side_effect = [record, active_lock]
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio
@@ -179,7 +179,7 @@ async def test_purge_not_found_returns_false_without_worm_query() -> None:
     conn = _mock_conn()
     conn.fetchrow.return_value = None
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio
@@ -211,7 +211,7 @@ async def test_purge_passes_control_instrument_tipos_to_gate_query() -> None:
     vista_de_citas(conn)
     conn.execute.return_value = "DELETE 1"
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio
@@ -244,7 +244,7 @@ async def test_purge_blocked_by_acta_transferencia_legal_hold() -> None:
     )
     conn.fetchrow.side_effect = [record, active_lock]
 
-    with patch("app.services.storage_service.get_minio") as get_minio_mock:
+    with patch("storage.services.storage_service.get_minio") as get_minio_mock:
         minio = MagicMock()
         minio.remove_object = AsyncMock()
         get_minio_mock.return_value = minio

@@ -43,11 +43,11 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from app.clients.storage_client import AipPackagingOutcome
-from app.core.database import tenant_schema
-from app.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate, TrdSerieUpdate
-from app.services.aip_wiring_service import AipWiringService
-from app.services.archive_service import ArchiveService
+from archive.clients.storage_client import AipPackagingOutcome
+from archive.core.database import tenant_schema
+from archive.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate, TrdSerieUpdate
+from archive.services.aip_wiring_service import AipWiringService
+from archive.services.archive_service import ArchiveService
 from tests.conftest import datos_radicado
 
 from .conftest import DSN, convalidate_for_test
@@ -289,11 +289,11 @@ async def test_aip_wiring_passes_real_serie_pdfa_profile_to_storage_client(
 
     with (
         patch(
-            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(return_value=anexos),
         ),
         patch(
-            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
     ):
@@ -315,11 +315,11 @@ async def test_aip_wiring_passes_none_when_real_serie_has_no_pdfa_profile(
 
     with (
         patch(
-            "app.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
             new=AsyncMock(return_value=anexos),
         ),
         patch(
-            "app.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
     ):

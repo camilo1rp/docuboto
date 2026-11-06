@@ -134,7 +134,7 @@ server {
     location = /health/ready {
         allow 127.0.0.1;
         deny  all;
-        set $gateway http://api-gateway:8080;
+        set $gateway http://app:8000;
         proxy_pass $gateway;
     }
 
@@ -150,7 +150,7 @@ server {
     }
 
     location / {
-        set $gateway http://api-gateway:8080;
+        set $gateway http://app:8000;
         proxy_pass $gateway;
 
         # IMPRESCINDIBLE para las descargas: anexos, ZIP de expediente, AIP y

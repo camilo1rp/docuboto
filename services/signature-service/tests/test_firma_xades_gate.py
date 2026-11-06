@@ -36,9 +36,9 @@ from cryptography.hazmat.primitives import serialization
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
-from app.core.config import Settings, settings
-from app.core.http_clients import SigningKeyStatusUnavailableError
-from app.main import app
+from signature.core.config import Settings, settings
+from signature.core.http_clients import SigningKeyStatusUnavailableError
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row
 from tests.test_cadena_2fa import _patch_audit
@@ -292,7 +292,7 @@ async def test_gate_clasificados_nivel2_sin_cert_denied_422(
     _patch_signing_key_status(monkeypatch, body={"estado": "no_configurado", "cert_pem": None})
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
     verify_totp_mock = AsyncMock(side_effect=RuntimeError("no debe llamarse"))
-    monkeypatch.setattr("app.services.cadena_service.verify_totp", verify_totp_mock)
+    monkeypatch.setattr("signature.services.cadena_service.verify_totp", verify_totp_mock)
 
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=2)
@@ -389,7 +389,7 @@ async def test_gate_clasificados_nivel2_auth_status_unavailable_denied_503(
     )
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
     verify_totp_mock = AsyncMock(side_effect=RuntimeError("no debe llamarse"))
-    monkeypatch.setattr("app.services.cadena_service.verify_totp", verify_totp_mock)
+    monkeypatch.setattr("signature.services.cadena_service.verify_totp", verify_totp_mock)
 
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=3)
@@ -568,7 +568,7 @@ async def test_firmar_lote_gate_denials_per_item(monkeypatch: pytest.MonkeyPatch
         raise SigningKeyStatusUnavailableError("auth-service inalcanzable")
 
     monkeypatch.setattr(
-        "app.services.cadena_service.get_signing_key_status_remote",
+        "signature.services.cadena_service.get_signing_key_status_remote",
         AsyncMock(side_effect=_status_side_effect),
     )
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)

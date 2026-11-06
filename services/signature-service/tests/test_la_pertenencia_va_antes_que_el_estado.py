@@ -25,7 +25,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from signature.main import app
 from tests.conftest import TENANT_HEADERS
 from tests.test_cadena import SOL_ID, _clear, _make_conn, _override, _sol_row
 
@@ -122,7 +122,7 @@ async def test_bajo_el_nivel_manda_el_404_neutro_sea_cual_sea_el_estado(
     estado: str, ruta: str, cuerpo: dict | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """El 404 (no-read-up) sigue yendo ANTES que la pertenencia y que el estado."""
-    from app.services import cadena_service as mod
+    from signature.services import cadena_service as mod
 
     async def _clearance_publica(conn, actor):  # noqa: ANN001
         return 1

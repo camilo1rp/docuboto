@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app.core.config as config_module
-import app.services.aip_replica_service as aip_replica_module
+import storage.core.config as config_module
+import storage.services.aip_replica_service as aip_replica_module
 from tests.conftest import INTERNAL_HEADERS, TENANT_SLUG, make_worm_row, minio_get_object
 
 _DOC_CONTENT = b"contenido real del oficio radicado"

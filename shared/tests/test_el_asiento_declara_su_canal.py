@@ -18,6 +18,9 @@ el asiento elige `CANAL_PETICION` (hereda el `X-Canal` del gateway) o un canal c
 fondo fijan `'system'` en su tarea (`request_log.canal_de_fondo`).
 """
 
+from tests._compose import glob_src
+
+
 import ast
 import asyncio
 from pathlib import Path
@@ -38,7 +41,7 @@ def _llamadas_a_append() -> list[tuple[str, int, ast.Call]]:
     """(archivo, línea, llamada) de cada `audit.append(...)` / `_audit.append(...)` /
     `audit_core.append(...)` (el envoltorio de tenant-service) en `services/*/app/**`."""
     hallazgos: list[tuple[str, int, ast.Call]] = []
-    for archivo in sorted(_SERVICIOS.glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(_SERVICIOS, "*/app/**/*.py")):
         texto = archivo.read_text(encoding="utf-8")
         if ".append(" not in texto:
             continue
@@ -89,8 +92,8 @@ def test_los_trabajos_conocidos_asientan_system() -> None:
     """Los trabajos que la auditoría señaló (purga de disposición y renovaciones del
     cableado WORM) no pueden volver a decir 'api'."""
     esperados = {
-        "services/document-service/app/services/purga_service.py": "system",
-        "services/storage-service/app/services/storage_service.py": "system",
+        "services/document-service/document/services/purga_service.py": "system",
+        "services/storage-service/storage/services/storage_service.py": "system",
     }
     vistos: dict[str, set[str]] = {k: set() for k in esperados}
     for f, _, llamada in _llamadas_a_append():
@@ -195,7 +198,7 @@ def test_todo_bucle_de_fondo_fija_el_canal_system() -> None:
     censo de `canal=` no ve, porque esas llamadas declaran `CANAL_PETICION`)."""
     sin_marca = []
     vistos = 0
-    for archivo in sorted(_SERVICIOS.glob("*/app/**/*.py")):
+    for archivo in sorted(glob_src(_SERVICIOS, "*/app/**/*.py")):
         texto = archivo.read_text(encoding="utf-8")
         if "while True" not in texto:
             continue

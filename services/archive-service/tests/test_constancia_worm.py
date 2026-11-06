@@ -24,11 +24,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.storage_client import WormProtectionOutcome, WormRenewalOutcome
-from app.core.config import settings
-from app.jobs import indice_reconciliation
-from app.services.index_service import _TIPO_FIRMA_EXCEPCION, _TIPO_FIRMA_REVOCACION
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.storage_client import WormProtectionOutcome, WormRenewalOutcome
+from archive.core.config import settings
+from archive.jobs import indice_reconciliation
+from archive.services.index_service import _TIPO_FIRMA_EXCEPCION, _TIPO_FIRMA_REVOCACION
+from archive.services.transferencia_service import TransferenciaService
 
 TENANT = "demo"
 
@@ -99,7 +99,7 @@ async def test_protege_con_el_tipo_del_rol_y_el_artefacto_y_el_file_id_sale_de_l
     worm_id = uuid.uuid4()
     conn.execute.return_value = "UPDATE 1"
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=True, worm_object_id=worm_id, retain_until=retain)),
     ) as st:
         res = await getattr(_svc(conn), proteger)(
@@ -129,8 +129,8 @@ async def test_en_el_cierre_dispara_con_el_usuario_y_en_la_barrida_con_el_sistem
     conn.execute.return_value = "UPDATE 1"
     ok = WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=datetime(2053, 1, 1, tzinfo=UTC))
     with (
-        patch("app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=ok)) as user,
-        patch("app.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=ok)) as sys_,
+        patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=ok)) as user,
+        patch("archive.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=ok)) as sys_,
     ):
         await _svc(conn).proteger_worm_firma_excepcion(fila["id"], "sello", actor_id="u-1", origen="close")
         await _svc(conn).proteger_worm_firma_excepcion(
@@ -144,7 +144,7 @@ async def test_en_el_cierre_dispara_con_el_usuario_y_en_la_barrida_con_el_sistem
 async def test_ya_protegida_o_sin_clave_se_omite_y_nunca_lanza() -> None:
     conn = _conn()
     svc = _svc(conn)
-    with patch("app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as st:
+    with patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as st:
         conn.fetchrow.return_value = _fila(worm_protegido_at=datetime.now(tz=UTC))
         assert await svc.proteger_worm_firma_excepcion(uuid.uuid4(), "sello", actor_id="x", origen="close") == "omitido"
         conn.fetchrow.return_value = _fila(minio_key_firmado=None)
@@ -168,7 +168,7 @@ async def test_un_fallo_de_storage_programa_backoff_y_la_retencion_sin_resolver_
     conn = _conn()
     conn.fetchrow.return_value = _fila()
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=outcome)
+        "archive.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=outcome)
     ):
         res = await _svc(conn).proteger_worm_firma_excepcion(
             uuid.uuid4(), "sello", actor_id=None, origen="reconciliation"
@@ -191,7 +191,7 @@ async def test_al_agotar_los_reintentos_deja_asiento_de_sistema() -> None:
     conn = _conn()
     conn.fetchrow.return_value = _fila(worm_reconcile_intentos=settings.indice_reconciliation_max_intentos - 1)
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=False, transient=True)),
     ):
         res = await _svc(conn).proteger_worm_firma_excepcion(
@@ -222,7 +222,7 @@ async def test_renueva_con_el_tipo_marca_el_espejo_monotonico_y_asienta(
     clave = _clave()
     nueva = datetime(2052, 1, 1, tzinfo=UTC)
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as st:
         res = await getattr(_svc(conn), renovar)(
@@ -253,7 +253,7 @@ async def test_sin_la_clave_del_artefacto_no_se_renueva_a_ciegas(renovar: str) -
     """Sin `file_id` no hay a qué objeto extenderle la retención: backoff, nunca una llamada a
     storage que tomaría «el más reciente»."""
     conn = _conn()
-    with patch("app.clients.storage_client.renovar_retencion_worm_internal", new=AsyncMock()) as st:
+    with patch("archive.clients.storage_client.renovar_retencion_worm_internal", new=AsyncMock()) as st:
         res = await getattr(_svc(conn), renovar)(
             uuid.uuid4(), "sello", uuid.uuid4(), uuid.uuid4(), "recibe",
             intentos_previos=0, minio_key_firmado=None,
@@ -269,7 +269,7 @@ async def test_sin_la_clave_del_artefacto_no_se_renueva_a_ciegas(renovar: str) -
 async def test_el_no_op_confirmado_marca_pero_no_asienta() -> None:
     conn = _conn()
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=datetime(2052, 1, 1, tzinfo=UTC), renovado=False)),
     ):
         res = await _svc(conn).renovar_worm_firma_excepcion(
@@ -292,7 +292,7 @@ async def test_el_no_op_confirmado_marca_pero_no_asienta() -> None:
 )
 async def test_los_fallos_de_la_renovacion_programan_backoff(outcome, motivo) -> None:
     conn = _conn()
-    with patch("app.clients.storage_client.renovar_retencion_worm_internal", new=AsyncMock(return_value=outcome)):
+    with patch("archive.clients.storage_client.renovar_retencion_worm_internal", new=AsyncMock(return_value=outcome)):
         res = await _svc(conn).renovar_worm_firma_excepcion(
             uuid.uuid4(), "personal", uuid.uuid4(), uuid.uuid4(), "entrega",
             intentos_previos=0, minio_key_firmado=_clave(),
@@ -306,7 +306,7 @@ async def test_los_fallos_de_la_renovacion_programan_backoff(outcome, motivo) ->
 async def test_la_renovacion_agotada_deja_asiento_urgente() -> None:
     conn = _conn()
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, transient=True)),
     ):
         res = await _svc(conn).renovar_worm_firma_excepcion(
@@ -356,18 +356,18 @@ async def test_el_job_renueva_constancias_y_revocaciones_con_el_file_id_y_libera
     renovar_rev = AsyncMock(return_value="renovado")
     vacio = AsyncMock(return_value=[])
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=_pool()),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake),
-        patch("app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending", new=vacio),
-        patch("app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending", new=vacio),
-        patch("app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending", new=vacio),
-        patch("app.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_renovacion_pending", new=vacio),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=_pool()),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake),
+        patch("archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending", new=vacio),
+        patch("archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending", new=vacio),
+        patch("archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending", new=vacio),
+        patch("archive.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_renovacion_pending", new=vacio),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_firma_excepcion_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_firma_excepcion_renovacion_pending",
             new=_lista,
         ),
-        patch("app.jobs.indice_reconciliation.TransferenciaService.renovar_worm_firma_excepcion", new=renovar_exc),
-        patch("app.jobs.indice_reconciliation.TransferenciaService.renovar_worm_revocacion", new=renovar_rev),
+        patch("archive.jobs.indice_reconciliation.TransferenciaService.renovar_worm_firma_excepcion", new=renovar_exc),
+        patch("archive.jobs.indice_reconciliation.TransferenciaService.renovar_worm_revocacion", new=renovar_rev),
     ):
         resumen = await indice_reconciliation.run_once_worm_renovacion()
 
@@ -404,11 +404,11 @@ async def test_el_job_de_proteccion_inicial_tambien_recoge_las_revocaciones() ->
     proteger_rev = AsyncMock(return_value="protegido")
     vacio = AsyncMock(return_value=[])
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=_pool()),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake),
-        patch("app.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_worm_pending", new=vacio),
-        patch("app.jobs.indice_reconciliation.TransferenciaRepository.list_firma_excepcion_worm_pending", new=_pendientes),
-        patch("app.jobs.indice_reconciliation.TransferenciaService.proteger_worm_revocacion", new=proteger_rev),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=_pool()),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake),
+        patch("archive.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_worm_pending", new=vacio),
+        patch("archive.jobs.indice_reconciliation.TransferenciaRepository.list_firma_excepcion_worm_pending", new=_pendientes),
+        patch("archive.jobs.indice_reconciliation.TransferenciaService.proteger_worm_revocacion", new=proteger_rev),
     ):
         resumen = await indice_reconciliation.run_once_firmas_personales_worm()
 

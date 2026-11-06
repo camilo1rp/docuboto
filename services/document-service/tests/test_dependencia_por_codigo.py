@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException, Response
 
-from app.core.dependencias import (
+from document.core.dependencias import (
     exigir_concordancia,
     marcar_alias_deprecado,
     normalizar_dependencia,

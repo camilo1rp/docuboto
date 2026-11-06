@@ -111,8 +111,8 @@ def test_search_object_type_excluded_from_audit_read_object_types() -> None:
     índice firmado), este test debe fallar: sería exactamente el error que
     arruinaría la pista por-expediente, mezclando un evento de CONJUNTO con
     lecturas de UN expediente concreto."""
-    from app.repositories.audit_read import _OBJECT_TYPES
-    from app.services.archive_service import _SEARCH_OBJECT_REF, _SEARCH_OBJECT_TYPE
+    from archive.repositories.audit_read import _OBJECT_TYPES
+    from archive.services.archive_service import _SEARCH_OBJECT_REF, _SEARCH_OBJECT_TYPE
 
     assert _SEARCH_OBJECT_TYPE == "expediente_busqueda"
     assert _SEARCH_OBJECT_REF == "listado"
@@ -151,7 +151,7 @@ async def test_audit_search_access_does_not_write_without_user_id() -> None:
     `X-User-Id` resoluble, así que este estado solo es alcanzable si
     `ArchiveService` se invoca directamente (otro router, MCP, un futuro
     llamador interno)."""
-    from app.services.archive_service import ArchiveService
+    from archive.services.archive_service import ArchiveService
 
     mock_conn = AsyncMock()
     svc = ArchiveService(mock_conn, "demo")
@@ -219,7 +219,7 @@ async def test_list_expedientes_search_audit_is_best_effort(
     async def _boom(*args, **kwargs):
         raise RuntimeError("audit_log unavailable")
 
-    monkeypatch.setattr("app.services.archive_service.audit.append", _boom)
+    monkeypatch.setattr("archive.services.archive_service.audit.append", _boom)
 
     with caplog.at_level(logging.WARNING):
         resp = await client.get("/api/v1/expedientes", headers=_AUDITABLE_HEADERS)

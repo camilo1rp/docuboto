@@ -40,7 +40,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+from document.main import app
 from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
@@ -112,7 +112,7 @@ async def test_solicitar_audita_con_actor_causal_y_tracking(client_with_conn) ->
     tracking = "2026-DEMO-E-000042"
     # `fetchval` sirve al gate RBAC (truthy) y a `get_tracking_number`. El estado
     # del radicado ya NO sale de ahí: se lee con `fetchrow` junto a su TIPO,
-    # porque una Entrada no se anula (`app/core/reglas_tipo.py`) y esa
+    # porque una Entrada no se anula (`document/core/reglas_tipo.py`) y esa
     # comprobación necesita el tipo. Se declara "S": el caso de la Entrada tiene
     # su propio test.
     mock_conn.fetchval.return_value = tracking
@@ -233,7 +233,7 @@ async def test_solicitar_no_sobrevive_a_fallo_de_auditoria(client_with_conn) -> 
     ]
 
     with patch(
-        "app.services.anulacion_service.audit.append",
+        "document.services.anulacion_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("audit_log down")),
     ):
         async with _no_raise_client() as client:
@@ -265,7 +265,7 @@ async def test_aprobar_no_sobrevive_a_fallo_de_auditoria(client_with_conn) -> No
     mock_conn.fetchval.return_value = "2026-DEMO-E-000051"
 
     with patch(
-        "app.services.anulacion_service.audit.append",
+        "document.services.anulacion_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("audit_log down")),
     ):
         async with _no_raise_client() as client:
@@ -292,7 +292,7 @@ async def test_rechazar_no_sobrevive_a_fallo_de_auditoria(client_with_conn) -> N
     mock_conn.fetchval.return_value = "2026-DEMO-E-000052"
 
     with patch(
-        "app.services.anulacion_service.audit.append",
+        "document.services.anulacion_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("audit_log down")),
     ):
         async with _no_raise_client() as client:
@@ -318,7 +318,7 @@ async def test_escritura_sin_tenant_slug_falla_en_vez_de_auditar_al_sistema() ->
     Los tres endpoints de escritura pasan el slug hoy; esto fija el invariante
     para el próximo llamante.
     """
-    from app.services.anulacion_service import AnulacionService
+    from document.services.anulacion_service import AnulacionService
 
     service = AnulacionService(AsyncMock())  # sin tenant_slug (el default)
 

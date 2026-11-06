@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-from app.services import preservation_worm_service as svc
+from storage.services import preservation_worm_service as svc
 from tests.conftest import TENANT_HEADERS, TEST_INTERNAL_TOKEN
 
 

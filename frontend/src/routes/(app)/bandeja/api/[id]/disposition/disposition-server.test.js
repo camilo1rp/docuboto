@@ -65,7 +65,7 @@ describe("bandeja/api/[id]/disposition GET", () => {
       await GET({ locals: SESSION_LOCALS, params: { id: idConEspacio } });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
       expect(calledUrl).toBe(
-        `http://api-gateway:8080/api/v1/documents/${encodeURIComponent(idConEspacio)}/disposition`,
+        `http://app:8000/api/v1/documents/${encodeURIComponent(idConEspacio)}/disposition`,
       );
       expect(opts.headers.Authorization).toBe("Bearer tok-abc");
       expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");
@@ -214,7 +214,7 @@ describe("bandeja/api/[id]/disposition PATCH", () => {
       });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
       expect(opts.method).toBe("PATCH");
-      expect(calledUrl).toBe(`http://api-gateway:8080/api/v1/documents/${RAD_ID}/disposition`);
+      expect(calledUrl).toBe(`http://app:8000/api/v1/documents/${RAD_ID}/disposition`);
       expect(JSON.parse(opts.body)).toEqual({
         programa: "Serie Correspondencia",
         retention_until: "2030-12-31",

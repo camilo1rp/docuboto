@@ -25,11 +25,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.core.database import get_db_conn
-from app.main import app
-from app.routers.auth import set_auth_service
-from app.services.auth_service import AuthService
+from auth.core.config import settings
+from auth.core.database import get_db_conn
+from auth.main import app
+from auth.routers.auth import set_auth_service
+from auth.services.auth_service import AuthService
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -40,6 +40,10 @@ from app.services.auth_service import AuthService
 # atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
+
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
 
 
 

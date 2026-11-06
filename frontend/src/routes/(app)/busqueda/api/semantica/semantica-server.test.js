@@ -74,7 +74,7 @@ describe("busqueda/api/semantica POST", () => {
         }),
       });
       const [calledUrl, opts] = fetchMock.mock.calls[0];
-      expect(calledUrl).toBe("http://api-gateway:8080/api/v1/knowledge/search");
+      expect(calledUrl).toBe("http://app:8000/api/v1/knowledge/search");
       expect(opts.headers.Authorization).toBe("Bearer tok-abc");
       expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");
       expect(opts.headers["X-User-Id"]).toBe("33333333-3333-3333-3333-333333333333");

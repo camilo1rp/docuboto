@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.cadena import SolicitudCreate
-from app.services.cadena_service import CadenaFirmaService
+from signature.schemas.cadena import SolicitudCreate
+from signature.services.cadena_service import CadenaFirmaService
 
 HUELLA = "a" * 64
 REVISOR = uuid.uuid4()
@@ -65,7 +65,7 @@ def _conn() -> AsyncMock:
 
 
 def _servicio(turno: dict, monkeypatch, *, sol: dict | None = None) -> CadenaFirmaService:
-    from app.services import cadena_service as mod
+    from signature.services import cadena_service as mod
 
     sol = sol or _sol()
     svc = CadenaFirmaService(_conn(), "demo")
@@ -165,7 +165,7 @@ class TestResolucionDelVistoBueno:
         Sin este gate, el circuito recogería aprobaciones de un texto y firmaría
         otro — que es exactamente el fraude que existe para impedir.
         """
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         svc = _servicio(_turno("visto_bueno"), monkeypatch)
 
@@ -214,7 +214,7 @@ class TestHuellaAutoritativa:
     """
 
     def _svc(self, monkeypatch, respuesta=None, error=None) -> CadenaFirmaService:
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         async def _huella(borrador_id: str, tenant_slug: str) -> dict:
             if error is not None:
@@ -258,7 +258,7 @@ class TestHuellaAutoritativa:
     async def test_si_no_se_puede_resolver_no_se_abre(self, monkeypatch) -> None:
         # Una cadena con la huella equivocada es PEOR que ninguna: parece que
         # protege.
-        from app.core.http_clients import HuellaNoVerificableError
+        from signature.core.http_clients import HuellaNoVerificableError
 
         svc = self._svc(monkeypatch, error=HuellaNoVerificableError("caido"))
         with pytest.raises(Exception) as exc:
@@ -269,7 +269,7 @@ class TestHuellaAutoritativa:
     async def test_un_borrador_inexistente_da_404_neutro(self, monkeypatch) -> None:
         # Mismo 404 que el no-read-up: abrir un circuito no puede servir para
         # descubrir si un objeto existe.
-        from app.core.http_clients import BorradorDesaparecidoError
+        from signature.core.http_clients import BorradorDesaparecidoError
 
         svc = self._svc(monkeypatch, error=BorradorDesaparecidoError("no está"))
         with pytest.raises(Exception) as exc:
@@ -291,7 +291,7 @@ class TestHuellaAutoritativa:
         Aquí se envía una huella FALSA en el body y se comprueba qué acabó
         escrito en la fila.
         """
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         HUELLA_FALSA = "f" * 64
         HUELLA_REAL = "9" * 64
@@ -385,7 +385,7 @@ class TestElRolLlegaALasPantallas:
         }
 
     def test_cada_turno_conserva_su_rol(self) -> None:
-        from app.services.cadena_service import _build_response
+        from signature.services.cadena_service import _build_response
 
         resp = _build_response(
             self._sol(),
@@ -398,7 +398,7 @@ class TestElRolLlegaALasPantallas:
         # Anti-vacuidad por el lado que importa: si el defecto volviera, TODOS
         # los turnos dirían «firma» y este caso lo cazaría aunque el de arriba
         # cambiara de forma.
-        from app.services.cadena_service import _build_response
+        from signature.services.cadena_service import _build_response
 
         resp = _build_response(self._sol(), [self._turno(1, "visto_bueno")])
 
@@ -453,7 +453,7 @@ class TestElGateSimetrico:
         """
         from fastapi import HTTPException
 
-        from app.services import cadena_service as mod
+        from signature.services import cadena_service as mod
 
         consultas = []
 

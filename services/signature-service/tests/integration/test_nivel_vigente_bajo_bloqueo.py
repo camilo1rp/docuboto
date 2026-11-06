@@ -29,8 +29,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import _schema as tenant_schema
-from app.repositories.cadena_repository import CadenaRepository
+from signature.core.database import _schema as tenant_schema
+from signature.repositories.cadena_repository import CadenaRepository
 from tests.integration.conftest import _require_dsn
 
 pytestmark = pytest.mark.asyncio

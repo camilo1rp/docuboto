@@ -27,10 +27,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.config import settings
-from app.core.database import get_tenant_conn
-from app.core.recovery_codes import (
+from auth.core.authz import Caller, get_caller
+from auth.core.config import settings
+from auth.core.database import get_tenant_conn
+from auth.core.recovery_codes import (
     generate_recovery_code,
     generate_recovery_codes,
     hash_recovery_code,
@@ -38,7 +38,7 @@ from app.core.recovery_codes import (
     normalize_recovery_code,
     verify_recovery_code,
 )
-from app.core.totp import (
+from auth.core.totp import (
     _hotp,
     build_aad,
     current_timestep,
@@ -46,7 +46,7 @@ from app.core.totp import (
     encrypt_secret,
     generate_secret,
 )
-from app.main import app
+from auth.main import app
 
 USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 TOTP_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
@@ -56,7 +56,7 @@ TEST_KEY = base64.b64encode(b"0" * 32).decode()
 
 
 # ---------------------------------------------------------------------------
-# Primitivas puras (app/core/recovery_codes.py)
+# Primitivas puras (auth/core/recovery_codes.py)
 # ---------------------------------------------------------------------------
 
 
@@ -126,7 +126,7 @@ def _totp_key(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock_append = AsyncMock(return_value="fakehash")
-    monkeypatch.setattr("app.services.totp_service._audit.append", mock_append)
+    monkeypatch.setattr("auth.services.totp_service._audit.append", mock_append)
     return mock_append
 
 
@@ -251,7 +251,7 @@ async def test_el_consumo_es_un_update_condicional() -> None:
     consulta — un test de forma, declarado como tal, en vez de uno de
     comportamiento que no comprueba lo que dice.
     """
-    from app.repositories.totp_repository import TotpRepository
+    from auth.repositories.totp_repository import TotpRepository
 
     conn = _make_conn()
     conn.fetchrow.return_value = {"id": RECOVERY_ID}
@@ -419,7 +419,7 @@ def test_el_verify_interno_no_acepta_codigos_de_recuperacion() -> None:
     cuerpo del endpoint interno no tiene campo donde meterlo, y su `code` está
     validado como TOTP (6 dígitos).
     """
-    from app.schemas.totp import InternalTotpVerifyRequest
+    from auth.schemas.totp import InternalTotpVerifyRequest
 
     assert "recovery" not in str(InternalTotpVerifyRequest.model_fields.keys())
     with pytest.raises(ValueError):

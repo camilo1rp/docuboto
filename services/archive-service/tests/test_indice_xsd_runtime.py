@@ -25,11 +25,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.signature_client import SignOutcome
-from app.core.config import settings
-from app.services.index_builder import IndiceData, IndiceItemData, build_xml
-from app.services.index_service import IndexService
-from app.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
+from archive.clients.signature_client import SignOutcome
+from archive.core.config import settings
+from archive.services.index_builder import IndiceData, IndiceItemData, build_xml
+from archive.services.index_service import IndexService
+from archive.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
 
 TENANT = "demo"
 
@@ -136,7 +136,7 @@ async def test_cierre_con_xml_invalido_no_pide_el_sello_y_queda_pendiente() -> N
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome", new=AsyncMock()
+        "archive.clients.signature_client.sign_xml_outcome", new=AsyncMock()
     ) as sellar:
         resultado = await svc.firmar_indice_close(
             uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4())
@@ -168,7 +168,7 @@ async def test_reintento_manual_con_xml_invalido_tampoco_sella() -> None:
     }
     svc = IndexService(conn, TENANT)
 
-    with patch("app.clients.signature_client.sign_xml", new=AsyncMock()) as sellar:
+    with patch("archive.clients.signature_client.sign_xml", new=AsyncMock()) as sellar:
         resultado = await svc.firmar_indice(
             uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4())
         )
@@ -190,7 +190,7 @@ async def test_cierre_con_xml_valido_si_pide_el_sello() -> None:
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "app.clients.signature_client.sign_xml_outcome",
+        "archive.clients.signature_client.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=None, seal_absent=True)),
     ) as sellar:
         await svc.firmar_indice_close(
@@ -202,7 +202,7 @@ async def test_cierre_con_xml_valido_si_pide_el_sello() -> None:
 
 @pytest.mark.asyncio
 async def test_la_reconciliacion_no_firma_un_xml_invalido(monkeypatch) -> None:
-    from app.jobs.indice_reconciliation import _reconciliar_indice
+    from archive.jobs.indice_reconciliation import _reconciliar_indice
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 8)
     conn = _mock_conn()
@@ -216,7 +216,7 @@ async def test_la_reconciliacion_no_firma_un_xml_invalido(monkeypatch) -> None:
     }
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(),
     ) as sellar:
         resultado = await _reconciliar_indice(conn, TENANT, row)

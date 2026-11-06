@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core import config as config_module
+from storage.core import config as config_module
 from tests.conftest import INTERNAL_HEADERS, TENANT_HEADERS, make_file_record, make_worm_row
 
 _FIJAR = "/api/v1/preservacion/legal-hold-internal/fijar"
@@ -766,7 +766,7 @@ def test_levantar_ddhh_exige_el_acto_de_la_autoridad_explicado() -> None:
     mismo criterio que archive-service)."""
     from pydantic import ValidationError
 
-    from app.schemas.preservacion import HoldFijarRequest, HoldLevantarRequest
+    from storage.schemas.preservacion import HoldFijarRequest, HoldLevantarRequest
 
     HoldFijarRequest(
         expediente_id=_EXP, motivo_tipo="ddhh_memoria_historica",
@@ -779,8 +779,8 @@ def test_levantar_ddhh_exige_el_acto_de_la_autoridad_explicado() -> None:
 
 
 def test_el_409_aip_ya_existe_lleva_el_aip_vigente() -> None:
-    from app.routers.preservacion import _map_empaquetar_aip_error as _http_error
-    from app.services.aip_service import AipYaExisteError
+    from storage.routers.preservacion import _map_empaquetar_aip_error as _http_error
+    from storage.services.aip_service import AipYaExisteError
 
     aip_id = uuid.uuid4()
     err = _http_error(AipYaExisteError("ya tiene un AIP", aip_id=aip_id))

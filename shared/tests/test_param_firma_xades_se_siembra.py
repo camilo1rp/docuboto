@@ -25,8 +25,8 @@ import re
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-LECTOR = RAIZ / "services" / "signature-service" / "app" / "core" / "params_entidad.py"
-ESCRITOR = RAIZ / "services" / "tenant-service" / "app" / "routers" / "config.py"
+LECTOR = RAIZ / "services" / "signature-service" / "signature" / "core" / "params_entidad.py"
+ESCRITOR = RAIZ / "services" / "tenant-service" / "tenant" / "routers" / "config.py"
 MIGRACION = RAIZ / "services" / "tenant-service" / "migrations" / "tenant" / "010_params_firma.sql"
 
 

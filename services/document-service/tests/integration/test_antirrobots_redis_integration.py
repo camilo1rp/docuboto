@@ -31,10 +31,10 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as aioredis
 
-from app.core import altcha
-from app.core.config import settings
-from app.core.database import get_redis
-from app.main import app
+from document.core import altcha
+from document.core.config import settings
+from document.core.database import get_redis
+from document.main import app
 from tests.test_ventanilla import (
     BASE,
     _cuerpo,
@@ -117,7 +117,7 @@ async def test_veinte_peticiones_simultaneas_con_el_mismo_reto_radican_una_sola_
     payload = await _reto(client, redis_real)
 
     with patch(
-        "app.services.document_service.DocumentService.create", AsyncMock(side_effect=_crear_lento)
+        "document.services.document_service.DocumentService.create", AsyncMock(side_effect=_crear_lento)
     ) as crear:
         respuestas = await asyncio.gather(
             *[client.post(BASE, **_multipart(_cuerpo(altcha=payload))) for _ in range(20)]
@@ -145,7 +145,7 @@ async def test_el_mismo_reto_no_sirve_a_la_vez_por_ventanilla_y_por_pqrs(
     payload = await _reto(client, redis_real)
 
     with patch(
-        "app.services.document_service.DocumentService.create", AsyncMock(side_effect=_crear_lento)
+        "document.services.document_service.DocumentService.create", AsyncMock(side_effect=_crear_lento)
     ) as crear:
         respuestas = await asyncio.gather(
             *[client.post(BASE, **_multipart(_cuerpo(altcha=payload))) for _ in range(8)],
@@ -164,7 +164,7 @@ async def test_retos_distintos_simultaneos_radican_todos(client_with_conn, redis
     payloads = [await _reto(client, redis_real) for _ in range(12)]
 
     with patch(
-        "app.services.document_service.DocumentService.create", AsyncMock(side_effect=_crear_lento)
+        "document.services.document_service.DocumentService.create", AsyncMock(side_effect=_crear_lento)
     ) as crear:
         respuestas = await asyncio.gather(
             *[client.post(BASE, **_multipart(_cuerpo(altcha=p))) for p in payloads]
@@ -187,7 +187,7 @@ async def test_un_reto_con_la_firma_alterada_no_deja_marca_en_redis(
     datos["signature"] = "0" * 64
     malo = base64.b64encode(json.dumps(datos).encode()).decode()
 
-    with patch("app.services.document_service.DocumentService.create", AsyncMock()) as crear:
+    with patch("document.services.document_service.DocumentService.create", AsyncMock()) as crear:
         resp = await client.post(BASE, **_multipart(_cuerpo(altcha=malo)))
 
     assert resp.status_code == 422

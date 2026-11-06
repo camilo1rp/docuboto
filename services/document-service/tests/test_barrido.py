@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
-from app.services import barrido
+from document.services import barrido
 
 
 def _conn_con_lock(lock: bool = True) -> AsyncMock:

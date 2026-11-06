@@ -27,7 +27,7 @@ reconstruirla desde los pasos, y es lo que el funcionario de Orfeo ya espera.
 
 1. **El estado lo escribe el workflow-service, en la MISMA transacción que el paso.**
    Excepción única: `anulado` lo sigue escribiendo la anulación (document-service).
-2. **Una sola función pura** (`workflow-service/app/services/estado_radicado.py`):
+2. **Una sola función pura** (`workflow-service/workflow/services/estado_radicado.py`):
 
    ```python
    def derivar_estado_radicado(actual, paso_activo, *, tiene_pasos, finalizar=False) -> str:

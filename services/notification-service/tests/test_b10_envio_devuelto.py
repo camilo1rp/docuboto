@@ -32,8 +32,8 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from app.services import devolucion, event_consumer
-from app.services.devolucion import (
+from notification.services import devolucion, event_consumer
+from notification.services.devolucion import (
     ContenidoDevolucion,
     ContextoDevolucion,
     DestinatarioDevolucion,
@@ -355,8 +355,8 @@ async def test_envio_purgado_no_manda_correo_y_no_lanza() -> None:
 
 @pytest.mark.asyncio
 async def test_replay_dlq_usa_el_mismo_nucleo() -> None:
-    from app.routers import admin_deadletter
-    from app.workers.stream_worker import DOCUMENT_STREAM
+    from notification.routers import admin_deadletter
+    from notification.workers.stream_worker import DOCUMENT_STREAM
 
     ctx = ContextoDevolucion(
         shipment_id=str(SID),
@@ -375,7 +375,7 @@ def test_el_nucleo_unico_es_el_que_usan_consumidor_y_reproceso() -> None:
     """Censo: ni el consumidor ni el reproceso llaman a un constructor de documento por su cuenta."""
     import inspect
 
-    from app.routers import admin_deadletter
+    from notification.routers import admin_deadletter
 
     assert "construir_envios_documento" in inspect.getsource(event_consumer.process_document_event)
     assert "construir_envios_documento" in inspect.getsource(admin_deadletter._construir_envios)

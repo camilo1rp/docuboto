@@ -37,11 +37,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 from lxml import etree
 
-from app.core import http_clients, tsa
-from app.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
-from app.providers import local
-from app.providers.base import SignerRef
-from app.providers.local import renovar_archive_timestamp, verify_xades
+from signature.core import http_clients, tsa
+from signature.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
+from signature.providers import local
+from signature.providers.base import SignerRef
+from signature.providers.local import renovar_archive_timestamp, verify_xades
 from tests.test_sign_xml_xades import signature_env  # noqa: F401, F811  (fixture)
 from tests.test_vigencia_del_certificado_y_sellos import _reloj_adelantado
 from tests.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)
@@ -148,7 +148,7 @@ def _tsa_de_dias(monkeypatch: pytest.MonkeyPatch, dias: int, *, ca=None, cdp: st
         )
     cert = builder.sign(ca[0] if ca else key, hashes.SHA256())
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem_cert(cert), key_pem=_pem_key(key), key_password=None),
     )
     return key, cert
@@ -346,7 +346,7 @@ def test_certificado_tsa_de_token_sin_certificados_devuelve_none() -> None:
 async def test_el_vencimiento_del_eslabon_0_sale_de_la_huella_no_del_primero(
     signature_env, monkeypatch: pytest.MonkeyPatch  # noqa: F811
 ) -> None:
-    from app.repositories.firma_repository import FirmaRepository
+    from signature.repositories.firma_repository import FirmaRepository
     from tests.test_sign_xml_xades import (
         _build_crl,
         _ca_cert_pem,
@@ -357,7 +357,7 @@ async def test_el_vencimiento_del_eslabon_0_sale_de_la_huella_no_del_primero(
     )
 
     client, _conn, _table, _uploads, install_seal, _install_tsa = signature_env
-    from app.core.config import settings
+    from signature.core.config import settings
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     ca_key, ca_cert = _generate_ca()
@@ -383,7 +383,7 @@ async def test_el_vencimiento_del_eslabon_0_sale_de_la_huella_no_del_primero(
         larga.fingerprint = lambda alg: ca_larga.fingerprint(alg)
         return [larga, *certs]
 
-    monkeypatch.setattr("app.services.signing_service.tsa_module.certificados_de_token", _con_la_ca_delante)
+    monkeypatch.setattr("signature.services.signing_service.tsa_module.certificados_de_token", _con_la_ca_delante)
 
     resp = await _sign_indice(client)
     assert resp.status_code == 201
@@ -396,7 +396,7 @@ async def test_el_vencimiento_del_eslabon_0_sale_de_la_huella_no_del_primero(
 async def test_un_token_sin_certificados_no_tumba_la_firma(
     signature_env, monkeypatch: pytest.MonkeyPatch  # noqa: F811
 ) -> None:
-    from app.repositories.firma_repository import FirmaRepository
+    from signature.repositories.firma_repository import FirmaRepository
     from tests.test_sign_xml_xades import (
         _build_crl,
         _ca_cert_pem,
@@ -407,7 +407,7 @@ async def test_un_token_sin_certificados_no_tumba_la_firma(
     )
 
     client, _conn, _table, _uploads, install_seal, _install_tsa = signature_env
-    from app.core.config import settings
+    from signature.core.config import settings
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     ca_key, ca_cert = _generate_ca()
@@ -417,7 +417,7 @@ async def test_un_token_sin_certificados_no_tumba_la_firma(
     insertado = AsyncMock()
     monkeypatch.setattr(FirmaRepository, "insert_sello_archivo", insertado)
     # `signing_service` lee SOLO el token de archivo con esta función: llega «vacío».
-    monkeypatch.setattr("app.services.signing_service.tsa_module.certificados_de_token", lambda _d: [])
+    monkeypatch.setattr("signature.services.signing_service.tsa_module.certificados_de_token", lambda _d: [])
 
     resp = await _sign_indice(client)
     assert resp.status_code == 201, resp.text  # antes: IndexError -> 500

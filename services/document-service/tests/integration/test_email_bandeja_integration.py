@@ -25,8 +25,8 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.email_mensaje_repository import EmailMensajeRepository
+from document.core.database import tenant_schema
+from document.repositories.email_mensaje_repository import EmailMensajeRepository
 
 pytestmark = pytest.mark.asyncio
 
@@ -304,7 +304,7 @@ async def test_el_estado_no_mezcla_cuentas(tenant_ctx) -> None:
 
 
 async def _descartar_por_el_servicio(conn, slug, cuenta, mensaje_id, *, motivo, actor=ANA):
-    from app.services.email_bandeja_service import EmailBandejaService
+    from document.services.email_bandeja_service import EmailBandejaService
 
     # `es_admin=True`: la cuenta de `_preparar` es institucional y sin asignados,
     # así que este es el alcance legítimo. El caso contrario tiene su propio test.
@@ -363,7 +363,7 @@ async def test_si_el_asiento_no_se_puede_escribir_el_correo_NO_se_descarta(
     correo = await _correo(repo, cuenta)
     await repo.reservar(correo["id"], cuenta, actor=ANA, minutos=10)
 
-    from app.services import email_bandeja_service
+    from document.services import email_bandeja_service
 
     async def cae(*_a, **_k):
         raise RuntimeError("cadena de auditoría no disponible")
@@ -392,8 +392,8 @@ async def test_no_se_alcanza_la_bandeja_de_una_cuenta_ajena(tenant_ctx) -> None:
     entidad podía leer el asunto y el remitente del correo privado de otro y
     apartárselo.
     """
-    from app.services.email_bandeja_service import EmailBandejaService
-    from app.services.email_cuenta_service import ErrorDeCuenta
+    from document.services.email_bandeja_service import EmailBandejaService
+    from document.services.email_cuenta_service import ErrorDeCuenta
 
     slug, conn = tenant_ctx
     repo, _ = await _preparar(conn, slug)

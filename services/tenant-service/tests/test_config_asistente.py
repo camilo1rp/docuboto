@@ -24,8 +24,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from tenant.core.database import get_tenant_conn
+from tenant.main import app
 
 URL = "/api/v1/config/asistente"
 ENCENDER = {"habilitado": True, "declaracion_transmision": True}
@@ -96,7 +96,7 @@ async def ctx() -> AsyncGenerator[tuple[AsyncClient, _Estado, AsyncMock], None]:
         yield conn
 
     app.dependency_overrides[get_tenant_conn] = override
-    with patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")) as append:
+    with patch("tenant.core.audit._audit.append", new=AsyncMock(return_value="h")) as append:
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             ac.audit_append = append  # type: ignore[attr-defined]

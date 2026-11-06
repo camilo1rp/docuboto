@@ -21,12 +21,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.storage_client import WormRenewalOutcome
-from app.core.config import settings
-from app.jobs import indice_reconciliation
-from app.repositories.transferencia_repository import TransferenciaRepository
-from app.services.index_service import IndexService
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.storage_client import WormRenewalOutcome
+from archive.core.config import settings
+from archive.jobs import indice_reconciliation
+from archive.repositories.transferencia_repository import TransferenciaRepository
+from archive.services.index_service import IndexService
+from archive.services.transferencia_service import TransferenciaService
 
 TENANT = "demo"
 
@@ -58,7 +58,7 @@ async def test_renueva_con_el_tipo_del_rol_marca_y_asienta(rol: str) -> None:
     fid, tid, eid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     nueva = datetime(2052, 1, 1, tzinfo=UTC)
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as storage:
         res = await _svc(conn).renovar_worm_firma_personal(fid, tid, eid, rol, intentos_previos=0)
@@ -83,7 +83,7 @@ async def test_no_op_confirmado_marca_pero_no_asienta() -> None:
     conn = _conn()
     vigente = datetime(2052, 1, 1, tzinfo=UTC)
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=vigente, renovado=False)),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(
@@ -106,7 +106,7 @@ async def test_no_op_confirmado_marca_pero_no_asienta() -> None:
 async def test_los_fallos_de_storage_programan_backoff(outcome, motivo) -> None:
     conn = _conn()
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=outcome),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(
@@ -121,7 +121,7 @@ async def test_los_fallos_de_storage_programan_backoff(outcome, motivo) -> None:
 @pytest.mark.asyncio
 async def test_trd_sin_retencion_no_inventa_una() -> None:
     conn = _conn()
-    with patch("app.clients.storage_client.renovar_retencion_worm_internal", new=AsyncMock()) as st:
+    with patch("archive.clients.storage_client.renovar_retencion_worm_internal", new=AsyncMock()) as st:
         res = await _svc(conn, anios=None).renovar_worm_firma_personal(
             uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), "recibe", intentos_previos=0
         )
@@ -134,7 +134,7 @@ async def test_trd_sin_retencion_no_inventa_una() -> None:
 async def test_agotado_asienta_la_alarma() -> None:
     conn = _conn()
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, transient=True)),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(
@@ -152,7 +152,7 @@ async def test_agotado_asienta_la_alarma() -> None:
 async def test_nunca_propaga_una_excepcion_imprevista() -> None:
     conn = _conn()
     with patch(
-        "app.clients.storage_client.renovar_retencion_worm_internal",
+        "archive.clients.storage_client.renovar_retencion_worm_internal",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(
@@ -200,11 +200,11 @@ async def test_pendientes_renovacion_incluye_las_firmas_personales_con_su_tipo()
         "worm_renovacion_ultimo_error": "worm_no_confirmado",
     }
     with (
-        patch("app.services.index_service.IndexRepository.list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])),
-        patch("app.services.index_service.TransferenciaRepository.list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])),
-        patch("app.services.index_service.AipRepository.list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])),
+        patch("archive.services.index_service.IndexRepository.list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])),
+        patch("archive.services.index_service.TransferenciaRepository.list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])),
+        patch("archive.services.index_service.AipRepository.list_worm_renovacion_visibilidad", new=AsyncMock(return_value=[])),
         patch(
-            "app.services.index_service.TransferenciaRepository.list_firma_personal_renovacion_visibilidad",
+            "archive.services.index_service.TransferenciaRepository.list_firma_personal_renovacion_visibilidad",
             new=AsyncMock(return_value=[fila]),
         ),
     ):
@@ -242,16 +242,16 @@ async def test_el_job_renueva_las_firmas_con_su_propio_lock_y_lo_libera() -> Non
 
     renovar = AsyncMock(return_value="renovado")
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=_pool()),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake),
-        patch("app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
-        patch("app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
-        patch("app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=_pool()),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake),
+        patch("archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
+        patch("archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
+        patch("archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
         patch(
-            "app.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_renovacion_pending",
+            "archive.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_renovacion_pending",
             new=AsyncMock(return_value=[fila]),
         ),
-        patch("app.jobs.indice_reconciliation.TransferenciaService.renovar_worm_firma_personal", new=renovar),
+        patch("archive.jobs.indice_reconciliation.TransferenciaService.renovar_worm_firma_personal", new=renovar),
     ):
         resumen = await indice_reconciliation.run_once_worm_renovacion()
 
@@ -276,12 +276,12 @@ async def test_el_lock_de_las_firmas_ocupado_no_bloquea_los_otros_ejes() -> None
 
     listar = AsyncMock(return_value=[])
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=_pool()),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", fake),
-        patch("app.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])) as i,
-        patch("app.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
-        patch("app.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
-        patch("app.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_renovacion_pending", new=listar),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=_pool()),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", fake),
+        patch("archive.jobs.indice_reconciliation.IndexRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])) as i,
+        patch("archive.jobs.indice_reconciliation.TransferenciaRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
+        patch("archive.jobs.indice_reconciliation.AipRepository.list_worm_renovacion_pending", new=AsyncMock(return_value=[])),
+        patch("archive.jobs.indice_reconciliation.TransferenciaRepository.list_firma_personal_renovacion_pending", new=listar),
     ):
         await indice_reconciliation.run_once_worm_renovacion()
     i.assert_awaited_once()

@@ -28,10 +28,10 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from app.clients import document_client
-from app.core.config import settings
-from app.schemas.archive import RadicadoLink
-from app.services.archive_service import ArchiveService
+from archive.clients import document_client
+from archive.core.config import settings
+from archive.schemas.archive import RadicadoLink
+from archive.services.archive_service import ArchiveService
 
 # Capturada al importar el módulo: el autouse de conftest solo parchea durante
 # cada test, así que esta es la función REAL.
@@ -105,7 +105,7 @@ async def test_fallo_del_cable_es_error_del_cliente_y_vincular_responde_503(cabl
 
     svc = ArchiveService(AsyncMock(), "demo")
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal", _REAL
+        "archive.clients.document_client.fetch_radicado_metadata_internal", _REAL
     ), patch.object(svc, "_huellas_por_radicado", AsyncMock(return_value={})):
         with pytest.raises(HTTPException) as exc:
             await svc._resolver_metadatos_vinculo(
@@ -126,7 +126,7 @@ async def test_una_respuesta_de_un_document_service_anterior_sin_tracking_es_503
     fijar(httpx.Response(200, json={str(_RID): {"subject": "s", "doc_type": "E"}}))
     svc = ArchiveService(AsyncMock(), "demo")
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal", _REAL
+        "archive.clients.document_client.fetch_radicado_metadata_internal", _REAL
     ), patch.object(svc, "_huellas_por_radicado", AsyncMock(return_value={})):
         with pytest.raises(HTTPException) as exc:
             await svc._resolver_metadatos_vinculo(
@@ -150,7 +150,7 @@ async def test_con_la_respuesta_real_de_document_service_se_resuelve_todo(cable)
     }}))
     svc = ArchiveService(AsyncMock(), "demo")
     with patch(
-        "app.clients.document_client.fetch_radicado_metadata_internal", _REAL
+        "archive.clients.document_client.fetch_radicado_metadata_internal", _REAL
     ), patch.object(svc, "_huellas_por_radicado", AsyncMock(return_value={str(_RID): "ab" * 32})):
         out = await svc._resolver_metadatos_vinculo(
             [RadicadoLink(radicado_id=_RID, tracking_number=_TRACKING)],

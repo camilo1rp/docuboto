@@ -10,7 +10,7 @@
 """Aislamiento físico por tenant (Postgres real) del inventario TOTAL de
 anexos (E10 debt, cableado del AIP al cierre del expediente):
 `DocumentRepository.list_anexos_for_radicados_internal`
-(`app/repositories/document_repository.py`).
+(`document/repositories/document_repository.py`).
 
 La query es `WHERE radicado_id = ANY($1)` SIN JOIN a `radicados` ni filtro
 de tenant explícito — el aislamiento depende ENTERAMENTE de que la conexión
@@ -28,8 +28,8 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.document_repository import DocumentRepository
+from document.core.database import tenant_schema
+from document.repositories.document_repository import DocumentRepository
 
 
 async def _seed_radicado_con_anexo(

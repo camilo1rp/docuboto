@@ -33,7 +33,7 @@ def test_la_fecha_de_recibo_sale_del_buzon_no_del_remitente() -> None:
     mensaje entra en el buzón, y es literalmente la «fecha y hora de recibo» de
     la que la Circular Externa AGN 001/2020 exige dejar constancia.
     """
-    from app.clients.imap_adaptador import _internaldate
+    from document.clients.imap_adaptador import _internaldate
 
     respuesta = b'1 (UID 7 INTERNALDATE "20-Aug-2026 09:15:42 +0000" BODY[] {793}'
     recibido = _internaldate(respuesta)
@@ -49,7 +49,7 @@ def test_un_huso_horario_no_desplaza_la_fecha_de_recibo() -> None:
     el huso del servidor — cinco en Colombia, suficientes para cambiar el día en
     que vence un plazo.
     """
-    from app.clients.imap_adaptador import _internaldate
+    from document.clients.imap_adaptador import _internaldate
 
     utc = _internaldate(b'1 (INTERNALDATE "20-Aug-2026 09:15:42 +0000" BODY[] {1}')
     bogota = _internaldate(b'1 (INTERNALDATE "20-Aug-2026 04:15:42 -0500" BODY[] {1}')
@@ -59,7 +59,7 @@ def test_un_huso_horario_no_desplaza_la_fecha_de_recibo() -> None:
 
 def test_sin_internaldate_no_se_inventa_una_fecha() -> None:
     """Una fecha de recibo inventada es peor que ninguna: nadie la revisaría."""
-    from app.clients.imap_adaptador import _internaldate
+    from document.clients.imap_adaptador import _internaldate
 
     assert _internaldate(b"1 (UID 7 BODY[] {793}") is None
 
@@ -80,7 +80,7 @@ def test_un_uidvalidity_distinto_impide_operar() -> None:
     comprobarlo antes de traer o mover. Se descubrió al reiniciarse el servidor
     de pruebas, que asignó uno nuevo.
     """
-    from app.clients.imap_adaptador import Conexion, ErrorDeCorreo, ImapAdaptador
+    from document.clients.imap_adaptador import Conexion, ErrorDeCorreo, ImapAdaptador
 
     adaptador = ImapAdaptador(
         Conexion(
@@ -115,7 +115,7 @@ def _gate_de(ruta: str, metodo: str) -> set[str]:
     las rutas—, así que se baja al `original_router`. El nombre del permiso vive
     en el cierre de la dependencia que fabrica `require_permission`.
     """
-    from app.main import app
+    from document.main import app
 
     exigidos: set[str] = set()
     for incluido in app.routes:

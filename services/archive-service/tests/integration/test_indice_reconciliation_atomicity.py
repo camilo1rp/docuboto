@@ -40,13 +40,13 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from app.clients.signature_client import SignedIndice, SignOutcome
-from app.core.database import tenant_schema
-from app.jobs.indice_reconciliation import _reconciliar_indice
-from app.repositories.index_repository import IndexRepository
-from app.schemas.archive import ExpedienteCreate
-from app.services.archive_service import ArchiveService
-from app.services.index_service import IndexService
+from archive.clients.signature_client import SignedIndice, SignOutcome
+from archive.core.database import tenant_schema
+from archive.jobs.indice_reconciliation import _reconciliar_indice
+from archive.repositories.index_repository import IndexRepository
+from archive.schemas.archive import ExpedienteCreate
+from archive.services.archive_service import ArchiveService
+from archive.services.index_service import IndexService
 
 from .conftest import DSN
 
@@ -103,7 +103,7 @@ async def test_reconciliar_indice_failure_after_audit_append_reverts_mark_signed
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
     ):
         with pytest.raises(RuntimeError, match="boom-post-audit"):
@@ -144,7 +144,7 @@ async def test_reconciliar_indice_commits_signed_and_audit_together(
     signed = _fake_signed()
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ):
         resultado = await _reconciliar_indice(conn, slug, row)
@@ -175,7 +175,7 @@ async def test_reconciliar_indice_commits_signed_and_audit_together(
 
     assert audit_row is not None
     assert audit_row["canal"] == "system"
-    from app.core.constants import SYSTEM_RECONCILER_ID
+    from archive.core.constants import SYSTEM_RECONCILER_ID
 
     assert audit_row["actor"] == str(SYSTEM_RECONCILER_ID)
     payload = json.loads(audit_row["payload"])
@@ -217,7 +217,7 @@ async def test_concurrent_reconciliar_indice_does_not_double_sign(
     # UN solo patch que envuelve el gather (un `with patch` por corrutina sale en
     # orden no-LIFO y deja el mock fugado).
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
     ):
         resultados = await asyncio.gather(_attempt(), _attempt())
@@ -276,7 +276,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
         try:
             await own_conn.execute(f'SET search_path = "{schema}"')
             with patch(
-                "app.clients.signature_client.sign_xml",
+                "archive.clients.signature_client.sign_xml",
                 new=AsyncMock(return_value=_fake_signed()),
             ):
                 svc = IndexService(own_conn, slug)
@@ -302,7 +302,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
     # sin saberlo del mock de `sign_indice_internal` que el test concurrente dejaba
     # fugado: aislado, el job llamaba al signature-service real (503).
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
     ):
         manual_result, job_result = await asyncio.gather(
@@ -348,7 +348,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
 async def test_reconciliar_indice_agotado_permanece_pendiente_firma(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from app.core.config import settings
+    from archive.core.config import settings
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 1)
     slug, conn = tenant_ctx
@@ -356,7 +356,7 @@ async def test_reconciliar_indice_agotado_permanece_pendiente_firma(
     expediente_id, row = await _seed_pendiente_firma(conn, slug, "itest reconcile agotado")
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ):
         resultado = await _reconciliar_indice(conn, slug, row)
@@ -411,7 +411,7 @@ async def test_reconciliar_indice_agotado_failure_after_audit_append_reverts_bum
     `reconcile_agotado=TRUE`) debe revertir JUNTO con el asiento -- antes eran
     dos commits autocommit separados y esta fault-injection habría dejado
     `reconcile_agotado=TRUE` con CERO asientos que lo explicaran."""
-    from app.core.config import settings
+    from archive.core.config import settings
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 1)
     slug, conn = tenant_ctx
@@ -427,7 +427,7 @@ async def test_reconciliar_indice_agotado_failure_after_audit_append_reverts_bum
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "app.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ):
         with pytest.raises(RuntimeError, match="boom-post-audit"):

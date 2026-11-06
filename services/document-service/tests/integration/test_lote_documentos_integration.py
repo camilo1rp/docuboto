@@ -43,9 +43,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import acquire_tenant, close_pool, create_pool
-from app.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
-from app.services.batch_service import BatchService
+from document.core.database import acquire_tenant, close_pool, create_pool
+from document.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
+from document.services.batch_service import BatchService
 
 pytestmark = pytest.mark.asyncio
 

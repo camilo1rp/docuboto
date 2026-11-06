@@ -25,13 +25,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import app.core.config as config_module
-from app.core.preservacion_tipos import (
+import storage.core.config as config_module
+from storage.core.preservacion_tipos import (
     ALL_WORM_TIPOS,
     CONTROL_INSTRUMENT_TIPOS,
     MULTI_ARTEFACTO_TIPOS,
 )
-from app.repositories.preservacion_worm_repository import PreservacionWormRepository
+from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
 from tests.conftest import INTERNAL_HEADERS, make_worm_row
 
 _MIGRACION = (

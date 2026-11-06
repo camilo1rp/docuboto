@@ -28,7 +28,7 @@ compone la dependencia por nombre, no por código—.
 
 import pytest
 
-from app.services.event_consumer import build_document_notifications
+from notification.services.event_consumer import build_document_notifications
 
 BUZON = "dependencia-100@orpycamcp.local"
 

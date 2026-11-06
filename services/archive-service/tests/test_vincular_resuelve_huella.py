@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.archive_service import ArchiveService
+from archive.services.archive_service import ArchiveService
 
 _RAD = uuid.uuid4()
 _FILE = uuid.uuid4()
@@ -41,14 +41,14 @@ def _servicio() -> ArchiveService:
 
 def _anexos(**kwargs):
     return patch(
-        "app.clients.document_client.fetch_anexos_internal",
+        "archive.clients.document_client.fetch_anexos_internal",
         AsyncMock(**kwargs),
     )
 
 
 def _huellas(**kwargs):
     return patch(
-        "app.clients.storage_client.fetch_file_hashes_internal",
+        "archive.clients.storage_client.fetch_file_hashes_internal",
         AsyncMock(**kwargs),
     )
 
@@ -69,7 +69,7 @@ async def test_el_inventario_se_pide_SIN_recorte_de_clearance() -> None:
     vinculó: dos archivistas producirían índices distintos del mismo
     expediente, que es justo lo que un índice no puede permitirse."""
     anexos = AsyncMock(return_value={})
-    with patch("app.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+    with patch("archive.clients.document_client.fetch_anexos_internal", anexos), _huellas(
         return_value={}
     ):
         await _servicio()._huellas_por_radicado([_RAD])
@@ -91,7 +91,7 @@ async def test_si_document_service_no_responde_el_VINCULO_no_se_pierde() -> None
     archivístico que no puede quedar preso de que otros dos servicios estén en
     pie. Sin huella se declara; abortar cambiaría un dato ausente por trabajo
     perdido."""
-    from app.clients.document_client import DocumentClientError
+    from archive.clients.document_client import DocumentClientError
 
     with _anexos(side_effect=DocumentClientError("caído")), _huellas(return_value={}):
         assert await _servicio()._huellas_por_radicado([_RAD]) == {}
@@ -139,8 +139,8 @@ async def test_el_lote_pregunta_UNA_vez_por_todos() -> None:
     )
     huellas = AsyncMock(return_value={str(_FILE): _HASH, str(otro_file): "b" * 64})
     with (
-        patch("app.clients.document_client.fetch_anexos_internal", anexos),
-        patch("app.clients.storage_client.fetch_file_hashes_internal", huellas),
+        patch("archive.clients.document_client.fetch_anexos_internal", anexos),
+        patch("archive.clients.storage_client.fetch_file_hashes_internal", huellas),
     ):
         resultado = await _servicio()._huellas_por_radicado([_RAD, otro_rad])
 
@@ -328,7 +328,7 @@ async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_un_desacuerdo_aborta_tod
     )
     ruta = f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch"
     huellas = {str(_FILE): _HASH, str(file2): hash2}
-    with patch("app.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+    with patch("archive.clients.document_client.fetch_anexos_internal", anexos), _huellas(
         return_value=huellas
     ):
         resp = await client.post(
@@ -356,7 +356,7 @@ async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_un_desacuerdo_aborta_tod
     antes = len(_content_hashes_de_los_inserts(mock_conn))
     mock_conn.fetchrow.side_effect = [exp, None]
     mock_conn.fetchval.side_effect = [True, None, None]
-    with patch("app.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+    with patch("archive.clients.document_client.fetch_anexos_internal", anexos), _huellas(
         return_value=huellas
     ):
         mala = await client.post(

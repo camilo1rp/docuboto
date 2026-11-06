@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.eliminacion_acta import construir_acta_xml
+from archive.services.eliminacion_acta import construir_acta_xml
 from tests.conftest import TENANT_HEADERS
 
 LOTE = uuid.uuid4()
@@ -136,7 +136,7 @@ def _sellado(signed=None, seal_absent=False):
     """Doble del sellado. `sign_xml_outcome` vive en `app.clients.
     signature_client` y se importa DENTRO del método, así que se parchea ahí."""
     return patch(
-        "app.clients.signature_client.sign_xml_outcome",
+        "archive.clients.signature_client.sign_xml_outcome",
         AsyncMock(return_value=_Outcome(signed=signed, seal_absent=seal_absent)),
     )
 
@@ -572,7 +572,7 @@ class _WormFallo:
 
 def _worm(outcome):
     return patch(
-        "app.clients.storage_client.proteger_artefacto_worm",
+        "archive.clients.storage_client.proteger_artefacto_worm",
         AsyncMock(return_value=outcome),
     )
 
@@ -670,7 +670,7 @@ async def test_agotados_los_intentos_el_acta_se_marca_agotada_y_deja_asiento(
 ) -> None:
     """Sin proximo_at y con asiento de sistema: la visibilidad de un acta que
     ya no se reintenta sola."""
-    from app.core.config import settings
+    from archive.core.config import settings
 
     client, mock_conn = client_with_conn
     _entorno_firmada(mock_conn)
@@ -741,7 +741,7 @@ async def test_la_guarda_del_cableado_no_protege_un_acta_sin_firmar() -> None:
     test que seguía verde al quitarla, porque nunca llegaba a ejecutarse."""
     from unittest.mock import MagicMock
 
-    from app.services.archive_service import ArchiveService
+    from archive.services.archive_service import ArchiveService
 
     servicio = ArchiveService(MagicMock(), "demo")
     servicio._repo = MagicMock()

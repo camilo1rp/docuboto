@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-from app.core import config as cfg_module
+from storage.core import config as cfg_module
 from tests.conftest import (
     FILE_ID,
     TENANT_HEADERS,
@@ -192,7 +192,7 @@ def test_require_internal_token_uses_constant_time_comparison(
 ) -> None:
     from fastapi import HTTPException
 
-    from app.core.internal_auth import require_internal_token
+    from storage.core.internal_auth import require_internal_token
 
     monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
 

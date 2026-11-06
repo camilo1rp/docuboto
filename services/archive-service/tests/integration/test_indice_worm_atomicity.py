@@ -38,12 +38,12 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from app.clients.storage_client import WormProtectionOutcome
-from app.core.database import tenant_schema
-from app.repositories.index_repository import IndexRepository
-from app.schemas.archive import ExpedienteCreate, TrdSerieCreate
-from app.services.archive_service import ArchiveService
-from app.services.index_service import IndexService
+from archive.clients.storage_client import WormProtectionOutcome
+from archive.core.database import tenant_schema
+from archive.repositories.index_repository import IndexRepository
+from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate
+from archive.services.archive_service import ArchiveService
+from archive.services.index_service import IndexService
 
 from .conftest import DSN, convalidate_for_test
 
@@ -119,7 +119,7 @@ async def test_proteger_worm_indice_commits_mark_and_audit_together(
     outcome = _ok_outcome()
 
     with patch(
-        "app.clients.storage_client.proteger_indice_worm_internal",
+        "archive.clients.storage_client.proteger_indice_worm_internal",
         new=AsyncMock(return_value=outcome),
     ):
         resultado = await IndexService(conn, slug).proteger_worm_indice(
@@ -179,7 +179,7 @@ async def test_proteger_worm_indice_failure_after_audit_append_reverts_mark(
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "app.clients.storage_client.proteger_indice_worm_internal",
+        "archive.clients.storage_client.proteger_indice_worm_internal",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultado = await IndexService(conn, slug).proteger_worm_indice(
@@ -231,7 +231,7 @@ async def test_proteger_worm_indice_second_call_is_idempotent(
     index = IndexService(conn, slug)
 
     with patch(
-        "app.clients.storage_client.proteger_indice_worm_internal",
+        "archive.clients.storage_client.proteger_indice_worm_internal",
         new=AsyncMock(return_value=_ok_outcome()),
     ) as mock_client:
         primero = await index.proteger_worm_indice(
@@ -283,7 +283,7 @@ async def test_concurrent_proteger_worm_indice_does_not_double_mark(
     # UN solo patch que envuelve el gather: un `with patch` dentro de cada corrutina
     # sale en orden no-LIFO y restaura el mock de la otra, dejándolo fugado.
     with patch(
-        "app.clients.storage_client.proteger_indice_worm_internal",
+        "archive.clients.storage_client.proteger_indice_worm_internal",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultados = await asyncio.gather(_attempt(), _attempt())

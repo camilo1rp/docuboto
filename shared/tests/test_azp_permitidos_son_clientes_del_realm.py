@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-CONFIG = (RAIZ / "services/auth-service/app/core/config.py").read_text(encoding="utf-8")
+CONFIG = (RAIZ / "services/auth-service/auth/core/config.py").read_text(encoding="utf-8")
 REALM = json.loads((RAIZ / "infra/keycloak/realm-dev.json").read_text(encoding="utf-8"))
 
 

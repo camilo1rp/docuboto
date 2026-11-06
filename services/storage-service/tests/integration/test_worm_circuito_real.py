@@ -45,13 +45,13 @@ import asyncpg
 import pytest
 from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
 
-import app.core.config as config_module
-import app.services.preservation_worm_service as worm_module
-import app.services.storage_service as storage_module
-from app.core.minio_client import ObjectLockNotEnabledError
-from app.schemas.preservacion import ProtegerIndiceRequest, RenovarRetencionRequest
-from app.services.preservation_worm_service import PreservationWormService, preservation_bucket_name
-from app.services.storage_service import StorageService, WormLockActiveError
+import storage.core.config as config_module
+import storage.services.preservation_worm_service as worm_module
+import storage.services.storage_service as storage_module
+from storage.core.minio_client import ObjectLockNotEnabledError
+from storage.schemas.preservacion import ProtegerIndiceRequest, RenovarRetencionRequest
+from storage.services.preservation_worm_service import PreservationWormService, preservation_bucket_name
+from storage.services.storage_service import StorageService, WormLockActiveError
 
 from .test_worm_object_lock_real_s3 import _endpoint
 

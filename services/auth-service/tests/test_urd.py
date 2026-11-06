@@ -17,10 +17,10 @@ import asyncpg
 import pytest
 from httpx import AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.database import get_tenant_conn
-from app.main import app
-from app.services import urd_service as urd_service_module
+from auth.core.authz import Caller, get_caller
+from auth.core.database import get_tenant_conn
+from auth.main import app
+from auth.services import urd_service as urd_service_module
 
 USER_ID = uuid.uuid4()
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}

@@ -40,6 +40,8 @@ Las tres fuentes se derivan del código. No hay ninguna lista escrita a mano.
 
 from __future__ import annotations
 
+from tests._compose import glob_src
+
 import ast
 import re
 from pathlib import Path
@@ -70,7 +72,7 @@ def permisos_sembrados() -> set[str]:
 def permisos_exigidos_por_los_gates() -> dict[str, set[str]]:
     """`require_permission("X")` en cualquier router, por AST. permiso → servicios."""
     exigidos: dict[str, set[str]] = {}
-    for fichero in sorted(_SERVICIOS.glob("*/app/**/*.py")):
+    for fichero in sorted(glob_src(_SERVICIOS, "*/app/**/*.py")):
         try:
             arbol = ast.parse(fichero.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover — lo caza el lint del servicio
@@ -110,6 +112,9 @@ def permisos_exigidos_por_los_datos_sembrados() -> dict[str, set[str]]:
         if fichero.parent == _SEED:
             continue
         servicio = fichero.relative_to(_SERVICIOS).parts[0]
+        # El baseline concatena el seed: no es una fuente de exigencia nueva.
+        if servicio == "docuboto":
+            continue
         for m in _PERMISO.finditer(fichero.read_text(encoding="utf-8")):
             exigidos.setdefault(m.group(1), set()).add(servicio)
     return exigidos

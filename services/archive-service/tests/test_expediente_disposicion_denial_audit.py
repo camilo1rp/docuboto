@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 
-import app.services.archive_service as archive_service_module
+import archive.services.archive_service as archive_service_module
 from tests.conftest import TENANT_HEADERS, make_expediente_record
 
 

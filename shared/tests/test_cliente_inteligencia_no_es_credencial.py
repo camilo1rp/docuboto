@@ -27,7 +27,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 SCRIPT = RAIZ / "scripts" / "init_tenant.py"
 GLOBAL = RAIZ / "services/tenant-service/migrations/global/006_tenants_intelligence.sql"
 TENANT = RAIZ / "services/knowledge-service/migrations/tenant/016_intelligence.sql"
-CONFIG = (RAIZ / "services/auth-service/app/core/config.py").read_text(encoding="utf-8")
+CONFIG = (RAIZ / "services/auth-service/auth/core/config.py").read_text(encoding="utf-8")
 
 
 def _modulo() -> Any:
@@ -82,6 +82,11 @@ class _Http:
         self.secreto = secreto
         self.llamadas: list[tuple[str, str]] = []
         self.cuerpo_alta: dict[str, Any] | None = None
+        self.cuerpo_mapper: dict[str, Any] | None = None
+        self.cuerpo_alcance: dict[str, Any] | None = None
+        self.mappers: list[dict[str, Any]] = []
+        self.alcances: list[dict[str, Any]] = []
+        self.alcances_asignados: list[dict[str, Any]] = []
 
     async def request(self, metodo: str, url: str, **kwargs: Any) -> Any:
         self.llamadas.append((metodo, url))
@@ -93,6 +98,27 @@ class _Http:
             self.cuerpo_alta = kwargs.get("json")
             self.existente = {"id": "uuid-1", "clientId": kwargs["json"]["clientId"]}
             return _Resp(201, None)
+        if url.endswith("/client-scopes") and metodo == "GET":
+            return _Resp(200, list(self.alcances))
+        if url.endswith("/client-scopes") and metodo == "POST":
+            self.cuerpo_alcance = kwargs.get("json")
+            fila = dict(kwargs.get("json") or {})
+            fila.setdefault("id", "scope-1")
+            self.alcances.append(fila)
+            return _Resp(201, None)
+        if url.endswith("/default-client-scopes") and metodo == "GET":
+            return _Resp(200, list(self.alcances_asignados))
+        if url.endswith("/protocol-mappers/models") and metodo == "GET":
+            return _Resp(200, list(self.mappers))
+        if url.endswith("/protocol-mappers/models") and metodo == "POST":
+            self.cuerpo_mapper = kwargs.get("json")
+            fila = dict(kwargs.get("json") or {})
+            fila.setdefault("id", "mapper-1")
+            self.mappers.append(fila)
+            return _Resp(201, None)
+        if "/protocol-mappers/models/" in url and metodo == "PUT":
+            self.cuerpo_mapper = kwargs.get("json")
+            return _Resp(204, None)
         if url.endswith("/client-secret") and metodo == "GET":
             return _Resp(200, {"type": "secret", "value": self.secreto})
         if metodo == "PUT":
@@ -120,20 +146,32 @@ def test_el_cliente_no_entra_en_allowed_azp() -> None:
 
 
 def test_el_cuerpo_es_solo_client_credentials() -> None:
-    cuerpo = _modulo().cuerpo_cliente_servicio("intelligence-demo", "s3cret")
+    mod = _modulo()
+    cuerpo = mod.cuerpo_cliente_servicio("intelligence-demo", "s3cret")
     assert cuerpo["publicClient"] is False
     assert cuerpo["standardFlowEnabled"] is False
     assert cuerpo["implicitFlowEnabled"] is False
     assert cuerpo["directAccessGrantsEnabled"] is False
     assert cuerpo["serviceAccountsEnabled"] is True
     assert cuerpo["clientId"] == "intelligence-demo"
+    mapeadores = cuerpo["protocolMappers"]
+    assert mapeadores[0]["protocolMapper"] == "oidc-audience-mapper"
+    assert mapeadores[0]["config"]["included.custom.audience"] == "pro" "boto-api"
+    assert mapeadores[0]["config"]["access.token.claim"] == "true"
+    alcance = mod.cuerpo_alcance_audiencia()
+    assert alcance["name"] == "audiencia-proveedor"
+    assert alcance["protocolMappers"][0]["config"]["included.custom.audience"] == "pro" "boto-api"
+
+
+def _cliente_existente() -> dict[str, Any]:
+    return {"id": "uuid-1", "clientId": "intelligence-demo"}
 
 
 @pytest.mark.asyncio
-async def test_reejecutar_no_toca_keycloak_ni_rota_el_secreto() -> None:
+async def test_reejecutar_actualiza_keycloak_sin_rotar_el_secreto() -> None:
     mod = _modulo()
     conn = _Conn({"client_id": "intelligence-demo"})
-    http = _Http()
+    http = _Http(existente=_cliente_existente())
     linea = await mod.aprovisionar_cliente_inteligencia(
         conn,
         "demo",
@@ -145,18 +183,80 @@ async def test_reejecutar_no_toca_keycloak_ni_rota_el_secreto() -> None:
         issuer="http://localhost:19180/realms/orpycamcp",
         http=http,
     )
-    assert http.llamadas == []
+    assert any(url.endswith("/protocol/openid-connect/token") for _, url in http.llamadas)
+    assert any("/protocol-mappers/models" in url for _, url in http.llamadas)
+    assert not any(url.endswith("/client-secret") for _, url in http.llamadas)
+    assert http.cuerpo_mapper is not None
+    assert http.cuerpo_mapper["config"]["included.custom.audience"] == "pro" "boto-api"
+    assert http.cuerpo_alcance is not None
+    assert http.cuerpo_alcance["name"] == "audiencia-proveedor"
+    assert any(
+        metodo == "PUT" and "/default-client-scopes/" in url
+        for metodo, url in http.llamadas
+    )
     assert "issuer=http://localhost:19180/realms/orpycamcp" in linea
     assert "client_id=intelligence-demo" in linea
     assert not any("INSERT" in sql for sql in conn.sql)
 
+    http.llamadas.clear()
+    await mod.aprovisionar_cliente_inteligencia(
+        conn,
+        "demo",
+        key=b"\x11" * 32,
+        keycloak_url="http://keycloak:8080",
+        realm="orpycamcp",
+        admin_user="admin",
+        admin_password="no-se-usa",
+        issuer="http://localhost:19180/realms/orpycamcp",
+        http=http,
+    )
+    assert any("/protocol-mappers/models" in url for metodo, url in http.llamadas)
+    assert not any(url.endswith("/client-secret") for _, url in http.llamadas)
+    assert not any("INSERT INTO intelligence_credentials" in sql for sql in conn.sql)
+
 
 @pytest.mark.asyncio
-async def test_si_falta_el_seudonimo_lo_sella_sin_tocar_keycloak() -> None:
+async def test_reejecutar_cambia_audiencia_de_cliente_a_personalizada() -> None:
+    mod = _modulo()
+    conn = _Conn({"client_id": "intelligence-demo"})
+    http = _Http(existente=_cliente_existente())
+    http.mappers = [
+        {
+            "id": "mapper-viejo",
+            "protocolMapper": "oidc-audience-mapper",
+            "config": {"included.client.audience": "pro" "boto-api"},
+        }
+    ]
+    await mod.aprovisionar_cliente_inteligencia(
+        conn,
+        "demo",
+        key=b"\x11" * 32,
+        keycloak_url="http://keycloak:8080",
+        realm="orpycamcp",
+        admin_user="admin",
+        admin_password="no-se-usa",
+        issuer="http://localhost:19180/realms/orpycamcp",
+        http=http,
+    )
+    assert http.cuerpo_mapper is not None
+    assert http.cuerpo_mapper["config"]["included.custom.audience"] == "pro" "boto-api"
+    assert "included.client.audience" not in http.cuerpo_mapper["config"]
+    assert any(
+        metodo == "PUT" and url.endswith("/protocol-mappers/models/mapper-viejo")
+        for metodo, url in http.llamadas
+    )
+    assert any(
+        metodo == "PUT" and "/default-client-scopes/" in url
+        for metodo, url in http.llamadas
+    )
+
+
+@pytest.mark.asyncio
+async def test_si_falta_el_seudonimo_lo_sella_sin_rotar_el_secreto() -> None:
     kek = pytest.importorskip("orpycamcp_common.kek")
     mod = _modulo()
     conn = _Conn({"client_id": "intelligence-demo"}, seudonimo=None)
-    http = _Http()
+    http = _Http(existente=_cliente_existente())
     await mod.aprovisionar_cliente_inteligencia(
         conn,
         "demo",
@@ -168,7 +268,7 @@ async def test_si_falta_el_seudonimo_lo_sella_sin_tocar_keycloak() -> None:
         issuer="http://localhost:19180/realms/orpycamcp",
         http=http,
     )
-    assert http.llamadas == []
+    assert not any(url.endswith("/client-secret") for _, url in http.llamadas)
     inserts = [
         args
         for sql, args in zip(conn.sql, conn.args)

@@ -23,8 +23,8 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from app.core.database import _schema as tenant_schema
-from app.repositories.cadena_repository import CadenaRepository
+from signature.core.database import _schema as tenant_schema
+from signature.repositories.cadena_repository import CadenaRepository
 
 pytestmark = pytest.mark.asyncio
 

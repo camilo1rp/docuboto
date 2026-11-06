@@ -19,7 +19,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("$lib/utils/config.server.js", () => ({
-  API_V1: "http://api-gateway:8080/api/v1",
+  API_V1: "http://app:8000/api/v1",
 }));
 
 const claims = {

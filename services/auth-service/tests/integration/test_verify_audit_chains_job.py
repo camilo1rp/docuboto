@@ -38,8 +38,8 @@ import pytest
 import pytest_asyncio
 from orpycamcp_common import audit
 
-from app.ops import verify_audit_chains as job
-from app.ops.verify_audit_chains import Ancla
+from auth.ops import verify_audit_chains as job
+from auth.ops.verify_audit_chains import Ancla
 
 pytestmark = pytest.mark.asyncio
 
@@ -174,7 +174,7 @@ def test_el_proceso_real_propaga_el_codigo_de_salida_y_no_imprime_ancla(tmp_path
     ancla.write_text(f"F0\t{slug}\t5\t99\t{_HASH_JUGUETE}\n")
     app_dir = Path(job.__file__).resolve().parents[2]
     r = subprocess.run(
-        [sys.executable, "-m", "app.ops.verify_audit_chains", "--anclas", str(ancla), "--slug", slug, "--emitir-ancla", "F1"],
+        [sys.executable, "-m", "auth.ops.verify_audit_chains", "--anclas", str(ancla), "--slug", slug, "--emitir-ancla", "F1"],
         cwd=app_dir,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         capture_output=True,

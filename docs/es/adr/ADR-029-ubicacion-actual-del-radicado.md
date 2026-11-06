@@ -39,7 +39,7 @@ propio radicado que cada reparto reescribe.
    `COALESCE(flujo_dept_code, dest_dept_code, …)` un nombre de flujo sin código único mostraría el
    código de *otra* dependencia (el de radicación). Es un refinamiento del diseño original, que
    proponía el `COALESCE` simple.
-3. **Una sola función pura** (`workflow-service/app/services/estado_radicado.py`), junto a
+3. **Una sola función pura** (`workflow-service/workflow/services/estado_radicado.py`), junto a
    `derivar_estado_radicado`:
 
    ```python

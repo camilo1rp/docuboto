@@ -15,9 +15,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.core.config import settings
-from app.core.webhook_security import validate_webhook_target
-from app.services.webhook_service import sign
+from notification.core.config import settings
+from notification.core.webhook_security import validate_webhook_target
+from notification.services.webhook_service import sign
 from tests.conftest import USER
 
 NOW = datetime.now(tz=UTC)
@@ -106,7 +106,7 @@ async def test_delete_webhook_not_found(client, db_conn) -> None:
 @pytest.mark.asyncio
 async def test_dispatch_no_subscriptions_is_noop(db_conn, monkeypatch) -> None:
     """dispatch sin suscripciones no falla y no entrega nada."""
-    from app.services import webhook_service
+    from notification.services import webhook_service
 
     class _Acq:
         async def __aenter__(self):
@@ -187,7 +187,7 @@ class TestValidateWebhookTargetUnit:
 
     def test_destino_externo_valido_pasa_con_resolucion(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "app.core.webhook_security.socket.getaddrinfo",
+            "notification.core.webhook_security.socket.getaddrinfo",
             lambda *a, **k: _addrinfo("8.8.8.8"),
         )
         validate_webhook_target(
@@ -197,7 +197,7 @@ class TestValidateWebhookTargetUnit:
     def test_rebinding_dns_a_ip_interna_rechazado(self, monkeypatch) -> None:
         """El dominio resuelve (ahora) a una IP interna: se cierra en la entrega."""
         monkeypatch.setattr(
-            "app.core.webhook_security.socket.getaddrinfo",
+            "notification.core.webhook_security.socket.getaddrinfo",
             lambda *a, **k: _addrinfo("10.1.2.3"),
         )
         with pytest.raises(ValueError, match="privado"):
@@ -209,7 +209,7 @@ class TestValidateWebhookTargetUnit:
         def _boom(*a, **k):
             raise socket.gaierror("Name or service not known")
 
-        monkeypatch.setattr("app.core.webhook_security.socket.getaddrinfo", _boom)
+        monkeypatch.setattr("notification.core.webhook_security.socket.getaddrinfo", _boom)
         with pytest.raises(ValueError, match="no fue posible resolver"):
             validate_webhook_target(
                 "https://no-existe.invalid/hook", allow_private=False, resolve=True
@@ -306,7 +306,7 @@ async def test_dispatch_rechaza_entrega_a_destino_ahora_interno(
     real queda en 0 éxitos; la suscripción sigue viva para que el
     administrador decida.
     """
-    from app.services import webhook_service
+    from notification.services import webhook_service
 
     class _Acq:
         async def __aenter__(self):
@@ -317,7 +317,7 @@ async def test_dispatch_rechaza_entrega_a_destino_ahora_interno(
 
     monkeypatch.setattr(webhook_service, "acquire_tenant", lambda slug: _Acq())
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: _addrinfo("10.0.0.5"),
     )
     db_conn.fetch.return_value = [
@@ -356,7 +356,7 @@ async def test_crear_webhook_deja_asiento_con_actor(client, db_conn, monkeypatch
     from unittest.mock import AsyncMock
 
     audit = AsyncMock()
-    monkeypatch.setattr("app.routers.webhooks._audit.append", audit)
+    monkeypatch.setattr("notification.routers.webhooks._audit.append", audit)
     db_conn.fetchrow.return_value = _fila()
     resp = await client.post(
         "/api/v1/webhooks",
@@ -392,7 +392,7 @@ async def test_borrar_webhook_deja_asiento_con_actor(client, db_conn, monkeypatc
     from unittest.mock import AsyncMock
 
     audit = AsyncMock()
-    monkeypatch.setattr("app.routers.webhooks._audit.append", audit)
+    monkeypatch.setattr("notification.routers.webhooks._audit.append", audit)
     fila = _fila()
     db_conn.fetchrow.return_value = fila
     resp = await client.delete(
@@ -412,7 +412,7 @@ async def test_borrar_inexistente_no_deja_asiento(client, db_conn, monkeypatch) 
     from unittest.mock import AsyncMock
 
     audit = AsyncMock()
-    monkeypatch.setattr("app.routers.webhooks._audit.append", audit)
+    monkeypatch.setattr("notification.routers.webhooks._audit.append", audit)
     db_conn.fetchrow.return_value = None
     resp = await client.delete(
         f"/api/v1/webhooks/{uuid.uuid4()}",
@@ -428,7 +428,7 @@ async def test_escribir_exige_nivel_3_y_leer_nivel_1(client, db_conn, monkeypatc
     como 3.er argumento de la consulta de `check_permission`."""
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr("app.routers.webhooks._audit.append", AsyncMock())
+    monkeypatch.setattr("notification.routers.webhooks._audit.append", AsyncMock())
     db_conn.fetchrow.return_value = _fila()
     h = {"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
 
@@ -466,7 +466,7 @@ async def test_la_entrega_conecta_a_la_ip_validada_no_a_la_que_resuelva_despues(
 ) -> None:
     import httpx
 
-    from app.services import webhook_service
+    from notification.services import webhook_service
 
     respuestas = iter([_addrinfo("93.184.216.34"), _addrinfo("10.0.0.5")])
     llamadas = []
@@ -475,7 +475,7 @@ async def test_la_entrega_conecta_a_la_ip_validada_no_a_la_que_resuelva_despues(
         llamadas.append(a)
         return next(respuestas)
 
-    monkeypatch.setattr("app.core.webhook_security.socket.getaddrinfo", _gai)
+    monkeypatch.setattr("notification.core.webhook_security.socket.getaddrinfo", _gai)
 
     vistas: list[httpx.Request] = []
 
@@ -502,7 +502,7 @@ async def test_la_entrega_conecta_a_la_ip_validada_no_a_la_que_resuelva_despues(
 
 def test_validate_devuelve_la_ip_a_fijar(monkeypatch) -> None:
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo",
+        "notification.core.webhook_security.socket.getaddrinfo",
         lambda *a, **k: _addrinfo("93.184.216.34"),
     )
     assert (
@@ -524,10 +524,10 @@ async def test_una_redireccion_no_se_sigue_ni_con_un_cliente_que_las_sigue(monke
     aunque el cliente compartido las siga (la validación SSRF solo cubre el 1.er salto)."""
     import httpx
 
-    from app.services import webhook_service
+    from notification.services import webhook_service
 
     monkeypatch.setattr(
-        "app.core.webhook_security.socket.getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
+        "notification.core.webhook_security.socket.getaddrinfo", lambda *a, **k: _addrinfo("93.184.216.34")
     )
     vistas: list[httpx.Request] = []
 
@@ -546,7 +546,7 @@ async def test_una_redireccion_no_se_sigue_ni_con_un_cliente_que_las_sigue(monke
 
 
 def test_pinned_request_ipv6_y_puerto_por_defecto() -> None:
-    from app.services.webhook_service import _pinned_request
+    from notification.services.webhook_service import _pinned_request
 
     url, headers, ext = _pinned_request("https://hook.example.com/p?q=1", "2606:2800:220:1::1")
     assert url == "https://[2606:2800:220:1::1]/p?q=1"
@@ -572,7 +572,7 @@ async def test_sin_modulo_de_auditoria_no_se_abre_ni_se_cierra_el_canal(
     client, db_conn, monkeypatch
 ) -> None:
     """Fail-closed: sin `audit` el 503 sale ANTES de tocar la tabla."""
-    monkeypatch.setattr("app.routers.webhooks._AUDIT_AVAILABLE", False)
+    monkeypatch.setattr("notification.routers.webhooks._AUDIT_AVAILABLE", False)
     h = {"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
     r1 = await client.post("/api/v1/webhooks", json={"url": "https://e.example.com/h"}, headers=h)
     r2 = await client.delete(f"/api/v1/webhooks/{uuid.uuid4()}", headers=h)

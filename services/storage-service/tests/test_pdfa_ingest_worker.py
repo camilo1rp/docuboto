@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.pdfa_ingest_service import (
+from storage.services.pdfa_ingest_service import (
     WORKER_AGENT,
     run_ingest_validation_background,
 )
@@ -110,7 +110,7 @@ async def test_worker_happy_path_writes_terminal_status_and_premis_event(
 
     minio = MagicMock()
     minio.get_object = minio_get_object(_PDF_CONTENT)
-    monkeypatch.setattr("app.services.pdfa_ingest_service.get_minio", lambda: minio)
+    monkeypatch.setattr("storage.services.pdfa_ingest_service.get_minio", lambda: minio)
 
     await run_ingest_validation_background(_FakePool(conn), TENANT_SLUG, file_id)
 
@@ -146,7 +146,7 @@ async def test_worker_file_not_found_noop_no_download_no_write(
 
     minio = MagicMock()
     minio.get_object = AsyncMock()
-    monkeypatch.setattr("app.services.pdfa_ingest_service.get_minio", lambda: minio)
+    monkeypatch.setattr("storage.services.pdfa_ingest_service.get_minio", lambda: minio)
 
     await run_ingest_validation_background(_FakePool(conn), TENANT_SLUG, uuid.uuid4())
 
@@ -168,7 +168,7 @@ async def test_worker_defensive_recheck_skips_object_replaced_by_non_pdf(
 
     minio = MagicMock()
     minio.get_object = minio_get_object(_NON_PDF_CONTENT)
-    monkeypatch.setattr("app.services.pdfa_ingest_service.get_minio", lambda: minio)
+    monkeypatch.setattr("storage.services.pdfa_ingest_service.get_minio", lambda: minio)
 
     await run_ingest_validation_background(_FakePool(conn), TENANT_SLUG, file_id)
 
@@ -192,7 +192,7 @@ async def test_worker_never_raises_even_if_minio_explodes(
     def _boom() -> None:
         raise RuntimeError("MinIO caído (forzado por el test)")
 
-    monkeypatch.setattr("app.services.pdfa_ingest_service.get_minio", _boom)
+    monkeypatch.setattr("storage.services.pdfa_ingest_service.get_minio", _boom)
 
     with caplog.at_level("ERROR"):
         # No debe lanzar -- si lo hiciera, este `await` propagaría y el test fallaría.
@@ -221,7 +221,7 @@ async def test_worker_run_twice_same_file_id_converges_to_coherent_state(
 
     minio = MagicMock()
     minio.get_object = minio_get_object(_PDF_CONTENT)
-    monkeypatch.setattr("app.services.pdfa_ingest_service.get_minio", lambda: minio)
+    monkeypatch.setattr("storage.services.pdfa_ingest_service.get_minio", lambda: minio)
 
     pool = _FakePool(conn)
     await run_ingest_validation_background(pool, TENANT_SLUG, file_id)
@@ -250,7 +250,7 @@ async def test_hyphenated_tenant_slug_worker_lands_verdict(
     `app.core.database.tenant_schema()`, que ya normalizaban '-'->'_'. Un
     `tenant_slug` con guion -- la forma VÁLIDA y habitual de un slug real
     (tenant-service los admite, ver
-    `services/tenant-service/app/schemas/tenant.py`) -- hacía que
+    `services/tenant-service/tenant/schemas/tenant.py`) -- hacía que
     `FileRepository.__init__` levantara `InvalidTenantSlugError` ANTES de
     cualquier I/O, y el worker se retiraba en silencio, para siempre.
 
@@ -270,7 +270,7 @@ async def test_hyphenated_tenant_slug_worker_lands_verdict(
 
     minio = MagicMock()
     minio.get_object = minio_get_object(_PDF_CONTENT)
-    monkeypatch.setattr("app.services.pdfa_ingest_service.get_minio", lambda: minio)
+    monkeypatch.setattr("storage.services.pdfa_ingest_service.get_minio", lambda: minio)
 
     await run_ingest_validation_background(_FakePool(conn), slug, file_id)
 

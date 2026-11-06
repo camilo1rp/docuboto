@@ -51,8 +51,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
-from app.services.transferencia_service import TransferenciaService
+from archive.core.database import tenant_schema
+from archive.services.transferencia_service import TransferenciaService
 from migrations import runner
 
 # Mismo cálculo que `migrations/runner.py:33` — DSN "pelado" (driver psycopg-style)
@@ -570,7 +570,7 @@ def huella_en_almacen(radicado_id: uuid.UUID, content_hash: str) -> Iterator[Non
     vínculo —para ejercitar la fixity, no el vínculo— declara aquí qué dice el
     almacén, en vez de que el servidor la acepte sin contraste."""
     with patch(
-        "app.services.archive_service.ArchiveService._huellas_por_radicado",
+        "archive.services.archive_service.ArchiveService._huellas_por_radicado",
         AsyncMock(return_value={str(radicado_id): content_hash}),
     ):
         yield

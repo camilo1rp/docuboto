@@ -28,8 +28,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app.core.config as config_module
-from app.services.aip_builder import _PREMIS_NS, AipDocMaterial
+import storage.core.config as config_module
+from storage.services.aip_builder import _PREMIS_NS, AipDocMaterial
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_HEADERS,
@@ -249,7 +249,7 @@ async def test_empaquetar_aip_happy_path_bag_and_premis(client_with_conn) -> Non
     assert _DOC_SHA256 in premis_xml
     assert _INDICE_SHA256 in premis_xml
 
-    from app.services.aip_builder import validate_premis_xml
+    from storage.services.aip_builder import validate_premis_xml
 
     validate_premis_xml(premis_xml)  # no debe lanzar
 
@@ -570,7 +570,7 @@ async def test_empaquetar_aip_without_indice_excludes_indice_tag_file(client_wit
     # — cada `object` real lleva el atributo `xsi:type="premis:file"`.
     assert premis_xml.count("<object ") == 1  # solo el documento, sin el índice
 
-    from app.services.aip_builder import validate_premis_xml
+    from storage.services.aip_builder import validate_premis_xml
 
     validate_premis_xml(premis_xml)  # sigue conforme al XSD sin el índice
 
@@ -706,7 +706,7 @@ async def test_empaquetar_aip_premis_invalid_blocks_upload(
     mock_conn.fetchrow.side_effect = [_doc_record(doc_file_id)]
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    import app.services.aip_builder as aip_builder_module
+    import storage.services.aip_builder as aip_builder_module
 
     def _boom(xml_text: str) -> None:
         raise aip_builder_module.PremisValidationError("XSD roto a propósito para el test")
@@ -839,7 +839,7 @@ def _material(nombre: str, content: bytes, *, document_id: str = "R-1") -> AipDo
 
 
 def test_manifest_sha256_txt_percent_encodes_cr_lf_and_percent() -> None:
-    from app.services.aip_builder import manifest_sha256_txt
+    from storage.services.aip_builder import manifest_sha256_txt
 
     doc = _material("100%.pdf", b"x")
     manifest = manifest_sha256_txt([doc]).decode()
@@ -856,7 +856,7 @@ def test_build_bag_derives_num_files_and_oxum_from_real_data_entries() -> None:
     SOBRESCRIBE al primero en `files["data/{nombre}"]`; `num_files` y
     `Payload-Oxum` deben reflejar la ÚNICA entrada real, no `len(docs)`
     (hallazgo de auditoría Increment B)."""
-    from app.services.aip_builder import build_bag
+    from storage.services.aip_builder import build_bag
 
     doc1 = _material("oficio.pdf", b"contenido uno", document_id="R-1")
     doc2 = _material("oficio.pdf", b"contenido dos, mas largo", document_id="R-2")
@@ -883,7 +883,7 @@ def test_build_bag_tagmanifest_covers_payload_manifest() -> None:
     """`tagmanifest-sha256.txt` debe cubrir `manifest-sha256.txt` (RFC 8493
     §2.2.1: el manifiesto de payload ES UN tag file) — invocación directa del
     builder, sin pasar por el router."""
-    from app.services.aip_builder import build_bag
+    from storage.services.aip_builder import build_bag
 
     doc = _material("oficio.pdf", b"contenido")
     artifact = build_bag(

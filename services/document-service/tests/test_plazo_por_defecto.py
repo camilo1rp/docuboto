@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.email_sondeo import SondeoDeCorreo
+from document.services.email_sondeo import SondeoDeCorreo
 from tests.conftest import TENANT_HEADERS, make_radicado_record
 from tests.test_documents import _CREATE_PAYLOAD
 
@@ -108,8 +108,8 @@ def test_el_sondeo_automatico_lleva_el_calendario() -> None:
 
 
 def test_el_importador_no_inventa_plazo() -> None:
-    texto = (_RAIZ / "app" / "services" / "import_service.py").read_text(encoding="utf-8")
-    repo = _RAIZ / "app" / "repositories" / "import_repository.py"
+    texto = (_RAIZ / "document" / "services" / "import_service.py").read_text(encoding="utf-8")
+    repo = _RAIZ / "document" / "repositories" / "import_repository.py"
     texto += repo.read_text(encoding="utf-8")
     assert "plazo_por_defecto" not in texto
     assert "default_response_days" not in texto

@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from app.services.cuadro_clasificacion import armar_cuadro
+from archive.services.cuadro_clasificacion import armar_cuadro
 from tests.conftest import (
     TENANT_HEADERS,
     declara_productoras,

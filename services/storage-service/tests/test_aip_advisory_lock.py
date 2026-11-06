@@ -33,9 +33,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-import app.core.config as config_module
-import app.services.aip_service as aip_service_module
-from app.services.preservation_worm_service import _worm_lock_key
+import storage.core.config as config_module
+import storage.services.aip_service as aip_service_module
+from storage.services.preservation_worm_service import _worm_lock_key
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_SLUG,

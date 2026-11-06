@@ -14,9 +14,13 @@
 # Uso:
 #   ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 #
-# En cron (diario a las 02:00), redirigiendo la salida a un log que alguien MIRE:
-#   0 2 * * * ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/backup.sh \
+# En cron (cada hora), redirigiendo la salida a un log que alguien MIRE:
+#   0 * * * * ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/backup.sh \
 #               >> /var/log/orpyca-backup.log 2>&1
+#
+# Restauración de prueba semanal (cadena de auditoría sobre un Postgres desechable):
+#   0 3 * * 0 ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/verify-restore-semanal.sh \
+#               >> /var/log/orpyca-restore-prueba.log 2>&1
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # POR QUÉ ESTE FICHERO EXISTE
@@ -100,8 +104,13 @@ trap marcar_parcial EXIT
 echo "══ Respaldo OrpycaMCP — $FECHA ══"
 echo "Destino: $DESTINO"
 
+# Dos etapas, en este orden. Un archivo que llega mientras corre el volcado
+# queda nombrado en el dump (si su transacción ya cerró) y otra vez en la copia
+# de objetos. Copiar los archivos ANTES deja ese objeto fuera del sitio y el
+# volcado igual lo nombra: al restaurar, la fila apunta a un fichero que no está.
+#
 # ---------------------------------------------------------------------------
-# 1. PostgreSQL
+# Etapa 1. PostgreSQL
 # ---------------------------------------------------------------------------
 # Incluye TODOS los schemas: `public` (registro de tenants + audit_log) y un
 # `tenant_*` por institución. Un volcado por-tenant sería inútil para restaurar
@@ -135,7 +144,7 @@ fi
 echo "   volcado legible: $OBJETOS entradas en el índice"
 
 # ---------------------------------------------------------------------------
-# 2. MinIO
+# Etapa 2. Archivos de trabajo (después del volcado)
 # ---------------------------------------------------------------------------
 # `mc` va en un contenedor DESECHABLE unido a la red del despliegue: la imagen de
 # MinIO no trae el cliente, que es por lo que el procedimiento anterior no podía
@@ -363,7 +372,7 @@ fi
 # FAIL-CLOSED (AREA-03-02). Antes este bloque ancló el extremo con un `psql` sin
 # verificar nada: podía sellar como «extremo de confianza» una cadena YA rota, o
 # una que había retrocedido. Ahora el ancla solo se escribe si
-# `app.ops.verify_audit_chains` (el mismo módulo que usa restore.sh) comprueba que
+# `auth.ops.verify_audit_chains` (el mismo módulo que usa restore.sh) comprueba que
 # TODAS las cadenas son íntegras, que ningún conteo bajó respecto al ancla
 # anterior y que el hash del asiento anclado no cambió. El ancla viaja por stdout
 # y se anexa AQUÍ, en el host: el contenedor no monta nada en escritura (regla 3).
@@ -395,7 +404,7 @@ NUEVAS=""
 if [ "$VERIFICACION_AUDITORIA" = "OK" ]; then
     if ! NUEVAS="$("${COMPOSE[@]}" run --rm --no-deps -T \
             -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-            auth-service python -m app.ops.verify_audit_chains \
+            app python -m auth.ops.verify_audit_chains \
             --anclas - --origen backup --emitir-ancla "$FECHA" ${EXCLUIR[@]+"${EXCLUIR[@]}"} < "$ENTRADA_VERIF")"; then
         VERIFICACION_AUDITORIA="FALLIDA"
     fi

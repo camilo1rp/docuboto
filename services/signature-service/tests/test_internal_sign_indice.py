@@ -26,9 +26,9 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
-from app.core.config import settings
-from app.core.constants import SYSTEM_RECONCILER_ID
-from app.core.internal_auth import require_internal_token
+from signature.core.config import settings
+from signature.core.constants import SYSTEM_RECONCILER_ID
+from signature.core.internal_auth import require_internal_token
 from tests.conftest import TENANT_HEADERS
 from tests.test_sign_xml_xades import (
     INDICE_XML,
@@ -270,7 +270,7 @@ async def test_personal_chain_sign_ignores_internal_token_still_requires_user_id
     monkeypatch.setattr(settings, "signature_internal_token", _INTERNAL_TOKEN)
     from httpx import ASGITransport, AsyncClient
 
-    from app.main import app
+    from signature.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         resp = await ac.post(

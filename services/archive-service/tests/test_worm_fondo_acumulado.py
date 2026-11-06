@@ -33,15 +33,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.config import settings
-from app.services.aip_wiring_service import AipWiringService
-from app.services.index_service import IndexService
-from app.services.retention_math import RetencionDiferida, base_worm
-from app.services.transferencia_service import TransferenciaService
+from archive.core.config import settings
+from archive.services.aip_wiring_service import AipWiringService
+from archive.services.index_service import IndexService
+from archive.services.retention_math import RetencionDiferida, base_worm
+from archive.services.transferencia_service import TransferenciaService
 
 HOY = datetime.now(tz=UTC).date()
 MARGEN = settings.worm_piso_margen_dias
-_RESOLVER = "app.services.valoracion_service.ValoracionService.resolver_diferida"
+_RESOLVER = "archive.services.valoracion_service.ValoracionService.resolver_diferida"
 
 
 def _suma_storage(inicio: date, anios: int) -> date:
@@ -109,7 +109,7 @@ async def test_fondo_vencido_propaga_la_falla_del_hold_en_vez_de_proteger_sin_el
 ) -> None:
     """Si el hold no se pudo fijar, el resolutor NO devuelve una retención: lanza, y el llamador
     pospone con backoff. Mutación: capturar la excepción y devolver `RetencionDiferida` -> rojo."""
-    from app.services.valoracion_service import ValoracionHoldError
+    from archive.services.valoracion_service import ValoracionHoldError
 
     exp = _exp(extrema=HOY.replace(year=HOY.year - 30))
     with patch(_RESOLVER, new=AsyncMock(side_effect=ValoracionHoldError("storage caído"))):

@@ -21,9 +21,9 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from app.core.database import tenant_schema
-from app.schemas.archive import ExpedienteCreate
-from app.services.archive_service import ArchiveService
+from archive.core.database import tenant_schema
+from archive.schemas.archive import ExpedienteCreate
+from archive.services.archive_service import ArchiveService
 
 from .conftest import DSN
 

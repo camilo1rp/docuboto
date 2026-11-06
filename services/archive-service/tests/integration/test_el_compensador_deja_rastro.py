@@ -34,11 +34,11 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.constants import SYSTEM_RECONCILER_ID
-from app.core.database import tenant_schema
-from app.repositories.index_repository import IndexRepository
-from app.schemas.archive import ExpedienteCreate
-from app.services.archive_service import ArchiveService
+from archive.core.constants import SYSTEM_RECONCILER_ID
+from archive.core.database import tenant_schema
+from archive.repositories.index_repository import IndexRepository
+from archive.schemas.archive import ExpedienteCreate
+from archive.services.archive_service import ArchiveService
 
 pytestmark = pytest.mark.asyncio
 

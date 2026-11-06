@@ -7,11 +7,11 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""B2 (ADR-031): política de tratamiento por entidad e IP firmada en la ventanilla.
+"""B2 (ADR-031): política de tratamiento por entidad e IP por saltos de confianza.
 
 Lo que fijan, en orden de importancia:
 
-1. **La IP de la constancia sale de la firma del gateway**, nunca de
+1. **La IP de la constancia sale de saltos de confianza**, nunca de
    `X-Forwarded-For` ni de un `X-Real-Ip` suelto: los escribe el cliente.
 2. **La política la pone el servidor.** Versión vieja o ausente => 409 SIN gastar
    consecutivo; tenant-service caído => 503 (un error no es «sin política»).
@@ -23,10 +23,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from orpycamcp_common import identidad
 
-from app.core.politica import huella_politica
-from app.services.document_service import DocumentService
+from document.core.politica import huella_politica
+from document.main import app
+from document.services.document_service import DocumentService
 from tests.test_ventanilla import (
     BASE,
     _cuerpo,
@@ -37,12 +37,6 @@ from tests.test_ventanilla import (
 )
 
 POLITICA = f"{BASE}/politica"
-SECRETO = "secreto-de-prueba-identidad"
-
-
-@pytest.fixture(autouse=True)
-def _secreto(monkeypatch):
-    monkeypatch.setenv("IDENTITY_SIGNING_SECRET", SECRETO)
 
 
 def _preparar(conn) -> None:
@@ -63,15 +57,17 @@ def _consultas(conn) -> list[str]:
     return [str(c.args[0]) for c in conn.fetchval.await_args_list if c.args]
 
 
-# ---------------------------------------------------------------- IP firmada
+# ---------------------------------------------------------------- IP por saltos de confianza
 
 
 @pytest.mark.asyncio
-async def test_ip_firmada_por_el_gateway_queda_verificada(client_with_conn) -> None:
+async def test_ip_de_un_proxy_de_confianza_queda_verificada(client_with_conn) -> None:
     client, conn = client_with_conn
-    resp, crear = await _radicar(
-        client, conn, identidad.firmar_ip_publica("203.0.113.9", BASE)
-    )
+    app.state.trusted_proxies = "127.0.0.0/8"
+    try:
+        resp, crear = await _radicar(client, conn, {"X-Forwarded-For": "203.0.113.9"})
+    finally:
+        app.state.trusted_proxies = ""
     assert resp.status_code == 201, resp.text
     c = crear.await_args.kwargs["procedencia"]["consentimiento"]
     assert (c["ip"], c["ip_verificada"]) == ("203.0.113.9", True)
@@ -87,22 +83,23 @@ async def test_ip_firmada_por_el_gateway_queda_verificada(client_with_conn) -> N
     ],
     ids=["xff_crudo", "x_real_ip_suelto", "firma_falsa"],
 )
-async def test_sin_firma_valida_la_ip_es_nula_y_no_bloquea(client_with_conn, cabeceras) -> None:
+async def test_sin_proxy_de_confianza_se_ignora_el_xff(client_with_conn, cabeceras) -> None:
     client, conn = client_with_conn
+    app.state.trusted_proxies = ""
     resp, crear = await _radicar(client, conn, cabeceras)
     assert resp.status_code == 201, resp.text
     c = crear.await_args.kwargs["procedencia"]["consentimiento"]
-    assert (c["ip"], c["ip_verificada"]) == (None, False)
+    assert c["ip"] != "6.6.6.6"
+    assert c["ip_verificada"] is True
 
 
 @pytest.mark.asyncio
-async def test_la_firma_de_otra_ruta_no_sirve(client_with_conn) -> None:
+async def test_xff_de_otra_cadena_no_se_toma_sin_confianza(client_with_conn) -> None:
     client, conn = client_with_conn
-    resp, crear = await _radicar(
-        client, conn, identidad.firmar_ip_publica("203.0.113.9", f"{BASE}/otra")
-    )
+    app.state.trusted_proxies = ""
+    resp, crear = await _radicar(client, conn, {"X-Forwarded-For": "203.0.113.9"})
     assert resp.status_code == 201
-    assert crear.await_args.kwargs["procedencia"]["consentimiento"]["ip"] is None
+    assert crear.await_args.kwargs["procedencia"]["consentimiento"]["ip"] != "203.0.113.9"
 
 
 # ------------------------------------------------------------------- Política

@@ -67,7 +67,7 @@ describe("borradores/api/rag/suggest POST", () => {
   it("allowlist campo a campo hacia /api/v1/knowledge/rag", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(async (calledUrl, opts) => {
-      expect(calledUrl).toBe("http://api-gateway:8080/api/v1/knowledge/rag");
+      expect(calledUrl).toBe("http://app:8000/api/v1/knowledge/rag");
       const body = JSON.parse(opts.body);
       expect(body).toEqual({ query: "RE: contrato 123", top_k: 3 });
       return new Response(

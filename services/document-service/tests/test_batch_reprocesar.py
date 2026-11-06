@@ -22,8 +22,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.routers import batch as batch_router
-from app.services.batch_service import BatchService, LoteError
+from document.routers import batch as batch_router
+from document.services.batch_service import BatchService, LoteError
 from tests.conftest import TENANT_HEADERS
 
 JOB = uuid.uuid4()

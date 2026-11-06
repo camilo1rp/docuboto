@@ -23,9 +23,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.core.datos_minimos import REQUERIDOS_POR_TIPO, exigir_o_422, faltantes
-from app.schemas.batch import BatchDocumentCreate
-from app.services import batch_service as batch_mod
+from document.core.datos_minimos import REQUERIDOS_POR_TIPO, exigir_o_422, faltantes
+from document.schemas.batch import BatchDocumentCreate
+from document.services import batch_service as batch_mod
 from tests.conftest import TENANT_HEADERS, make_radicado_record
 
 _BASE = {"subject": "Solicitud", "doc_class": "Petición"}

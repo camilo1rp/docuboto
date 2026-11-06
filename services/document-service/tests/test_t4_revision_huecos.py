@@ -32,8 +32,8 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.clients import storage_client
-from app.core.operacion_pesada import OperacionPesadaOcupadaError, una_operacion_pesada
+from document.clients import storage_client
+from document.core.operacion_pesada import OperacionPesadaOcupadaError, una_operacion_pesada
 from tests.conftest import TENANT_HEADERS
 from tests.test_import import _pkg, _run, _svc
 from tests.test_postal_callback import (  # noqa: F401
@@ -74,7 +74,7 @@ async def test_import_y_export_exigen_nivel_3(client_with_conn, method, url, kw)
 async def test_armar_el_zip_del_export_no_bloquea_el_event_loop() -> None:
     """Mutación: llamar `_escribir_binario` directo (sin `to_thread`) → el latido
     espera lo que dure el binario más lento y el test cae."""
-    from app.services import export_service as exp
+    from document.services import export_service as exp
 
     svc = exp.ExportService(AsyncMock(), "demo")
     svc._repo = AsyncMock()
@@ -176,7 +176,7 @@ async def test_el_callback_que_pierde_la_carrera_no_pisa_ni_marca_aplicada(callb
 async def test_el_cuerpo_sin_content_length_se_corta_por_streaming(client_with_conn, monkeypatch) -> None:
     """Chunked: no hay `Content-Length` que mire la cabecera. Mutación: quitar el
     corte dentro del bucle (`if total > _MAX_UPLOAD`) → se bufferiza todo y no hay 413."""
-    from app.routers import import_ as router
+    from document.routers import import_ as router
 
     monkeypatch.setattr(router, "_MAX_UPLOAD", 10)
     client, mock_conn = client_with_conn
@@ -258,7 +258,7 @@ async def test_la_secuencia_999998_propia_se_admite_y_reconcilia() -> None:
 @pytest.mark.asyncio
 async def test_un_paquete_con_un_numero_invalido_no_importa_ninguno() -> None:
     """Todo-o-nada: un número fuera de techo junto a uno válido → 422 y NINGÚN insert."""
-    from app.services.import_service import PackageValidationError
+    from document.services.import_service import PackageValidationError
 
     svc = _svc_demo()
     with pytest.raises(PackageValidationError):
@@ -273,7 +273,8 @@ async def test_un_paquete_con_un_numero_invalido_no_importa_ninguno() -> None:
 async def test_upload_bytes_cumple_el_contrato_de_storage(monkeypatch) -> None:
     """El import sube cada binario a storage `/upload`; todas las pruebas de import
     sustituyen `upload_bytes`, así que sin esta nada vigila lo que viaja: ruta,
-    tenant, identidad del actor FIRMADA (storage la exige) y campo multipart `file`."""
+    tenant y campo multipart `file`. El llamante viaja en el Bearer, no en
+    `X-User-Id`."""
     capturadas: list[httpx.Request] = []
     real = httpx.AsyncClient
 
@@ -295,8 +296,8 @@ async def test_upload_bytes_cumple_el_contrato_de_storage(monkeypatch) -> None:
     (req,) = capturadas
     assert req.method == "POST" and req.url.path == "/api/v1/storage/upload"
     assert req.headers["X-Tenant-Slug"] == "demo"
-    assert req.headers["X-User-Id"] == str(actor)
-    assert req.headers["X-Identity-Signature"], "sin la firma storage descarta la identidad"
+    assert "X-User-Id" not in req.headers
+    assert "X-Identity-Signature" not in req.headers
     assert b'name="file"' in req.content and b"%PDF" in req.content
 
 
@@ -307,7 +308,7 @@ async def test_upload_bytes_cumple_el_contrato_de_storage(monkeypatch) -> None:
 async def test_un_numero_propio_en_999999_se_rechaza_y_uno_ajeno_se_admite() -> None:
     """Mutación: quitar la guarda `MAX_SECUENCIA_PROPIA` → el propio entra y el
     siguiente nativo saldría `-E-1000000`. El ajeno no toca el contador."""
-    from app.services.import_service import PackageValidationError
+    from document.services.import_service import PackageValidationError
 
     svc = _svc_demo()
     with pytest.raises(PackageValidationError, match="agota el año"):
@@ -321,7 +322,7 @@ async def test_un_numero_propio_en_999999_se_rechaza_y_uno_ajeno_se_admite() -> 
 async def test_un_cuerpo_goteado_agota_el_plazo_y_libera_el_cupo(client_with_conn, monkeypatch) -> None:
     """Mutación: quitar `asyncio.timeout` → el cliente que gotea retiene el cupo y
     esta petición no termina (y la siguiente recibiría 429)."""
-    from app.routers import import_ as router
+    from document.routers import import_ as router
 
     monkeypatch.setattr(router, "_PLAZO_LECTURA_S", 0.2)
     client, mock_conn = client_with_conn
@@ -349,10 +350,10 @@ async def test_la_reversion_total_asienta_los_binarios_huerfanos() -> None:
     pkg = _pkg([{"tracking": "2026-DEMO-E-000001", "anexos": [("a.pdf", b"PDF")]}])
     audit = AsyncMock(return_value="h")
     with patch(
-        "app.services.import_service.storage_client.upload_bytes",
+        "document.services.import_service.storage_client.upload_bytes",
         new=AsyncMock(return_value=storage_client.ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
-    ), patch("app.services.import_service.audit.append", new=audit), patch(
-        "app.services.import_service.ImportHuerfanosService.purgar", new=AsyncMock()
+    ), patch("document.services.import_service.audit.append", new=audit), patch(
+        "document.services.import_service.ImportHuerfanosService.purgar", new=AsyncMock()
     ):
         with pytest.raises(RuntimeError):
             await svc.import_package(zip_bytes=pkg, max_clearance=3, actor=None)
@@ -371,10 +372,10 @@ async def test_un_item_omitido_por_carrera_asienta_sus_binarios() -> None:
     pkg = _pkg([{"tracking": "2026-DEMO-E-000001", "anexos": [("a.pdf", b"PDF")]}])
     audit = AsyncMock(return_value="h")
     with patch(
-        "app.services.import_service.storage_client.upload_bytes",
+        "document.services.import_service.storage_client.upload_bytes",
         new=AsyncMock(return_value=storage_client.ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
-    ), patch("app.services.import_service.audit.append", new=audit), patch(
-        "app.services.import_service.ImportHuerfanosService.purgar", new=AsyncMock()
+    ), patch("document.services.import_service.audit.append", new=audit), patch(
+        "document.services.import_service.ImportHuerfanosService.purgar", new=AsyncMock()
     ):
         rep = await svc.import_package(zip_bytes=pkg, max_clearance=3, actor=None)
     assert rep["importados"] == 0

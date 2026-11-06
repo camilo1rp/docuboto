@@ -27,8 +27,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.tenant import AtencionPublica
 
-from app.core.postal_webhook_auth import verify_signature
-from app.main import app
+from document.core.postal_webhook_auth import verify_signature
+from document.main import app
 from tests.conftest import (
     TENANT_HEADERS,
     FakeTenantClient,  # type: ignore[attr-defined]
@@ -99,14 +99,14 @@ async def callback_ctx():
     mock_conn = _make_mock_conn()
     fake_redis = _make_fake_redis()
     _override_conn(mock_conn, FakeTenantClient())
-    from app.core.database import get_redis
+    from document.core.database import get_redis
 
     app.dependency_overrides[get_redis] = lambda: fake_redis
     app.state.db_pool = _FakePool(mock_conn)
     # ADR-035: estos tests ejercen el callback, no el estado de la entidad (eso lo
     # cubre `test_estado_entidad_publicas.py`), así que se da por operativa.
     with patch(
-        "app.core.database.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)
+        "document.core.database.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, fake_redis
@@ -346,7 +346,7 @@ async def test_callback_de_entidad_suspendida_con_firma_valida_se_difiere_con_20
     conn.fetchrow.side_effect = [_cred(), _ship_row(estado="registrado")]
     conn.fetchval.side_effect = [uuid.uuid4(), 1, None]  # id en cola, pendientes, prev_hash
     with patch(
-        "app.core.database.atencion_publica",
+        "document.core.database.atencion_publica",
         new=AsyncMock(return_value=AtencionPublica.SOLO_LECTURA),
     ):
         resp = await client.post(_url(), content=body, headers=_hdr(body))
@@ -365,7 +365,7 @@ async def test_callback_de_entidad_suspendida_con_firma_invalida_es_el_404_neutr
     body = _body(event_id="evt-susp2")
     conn.fetchrow.side_effect = [_cred(), _cred(), _cred()]
     with patch(
-        "app.core.database.atencion_publica",
+        "document.core.database.atencion_publica",
         new=AsyncMock(return_value=AtencionPublica.SOLO_LECTURA),
     ):
         mala = await client.post(_url(), content=body, headers=_hdr(body, secret="otro"))
@@ -381,7 +381,7 @@ def test_ocurrido_at_sin_zona_horaria_se_rechaza() -> None:
     import pytest as _pytest
     from pydantic import ValidationError
 
-    from app.schemas.postal import PostalCallbackPayload
+    from document.schemas.postal import PostalCallbackPayload
 
     base = {"operador": "4-72", "guia": "G", "estado_operador": "ENTREGADO", "event_id": "e"}
     assert PostalCallbackPayload(**base).ocurrido_at is None

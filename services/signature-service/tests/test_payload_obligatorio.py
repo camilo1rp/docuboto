@@ -25,12 +25,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.core.constants import (
+from signature.core.constants import (
     CADENA_OBJETO_TIPOS,
     CADENA_PAYLOAD_AUTORITATIVO,
     CADENA_PAYLOAD_OBLIGATORIO,
 )
-from app.schemas.cadena import SolicitudCreate
+from signature.schemas.cadena import SolicitudCreate
 
 #: Tipos a los que se les exige la huella AL LLAMANTE: los que el servidor no
 #: puede resolver por su cuenta. Para los autoritativos la pide al productor.

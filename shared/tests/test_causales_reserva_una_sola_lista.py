@@ -29,7 +29,7 @@ _RAIZ = Path(__file__).resolve().parents[2]
 _DOC = _RAIZ / "services" / "document-service"
 _CATALOGO_MCP = _RAIZ / "services" / "mcp-server" / "app" / "tools" / "catalog.py"
 _SQL = _DOC / "migrations" / "tenant" / "050_reserva_catalogo_y_desclasificacion.sql"
-_CAUSALES_PY = _DOC / "app" / "core" / "causales_reserva.py"
+_CAUSALES_PY = _DOC / "document" / "core" / "causales_reserva.py"
 
 pytestmark = pytest.mark.skipif(
     not (_SQL.is_file() and _CATALOGO_MCP.is_file() and _CAUSALES_PY.is_file()),

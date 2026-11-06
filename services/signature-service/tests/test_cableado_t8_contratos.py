@@ -32,16 +32,16 @@ import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core import http_clients
-from app.core.config import settings
-from app.core.http_clients import (
+from signature.core import http_clients
+from signature.core.config import settings
+from signature.core.http_clients import (
     SignerEmailError,
     TotpStatusUnavailableError,
     get_signer_identity,
     get_totp_status_remote,
 )
-from app.core.secret_derivation import KEY_VERSION_ACTUAL, KEY_VERSION_SIN_HMAC
-from app.main import app
+from signature.core.secret_derivation import KEY_VERSION_ACTUAL, KEY_VERSION_SIN_HMAC
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
 from tests.test_cadena_2fa import (
@@ -288,7 +288,7 @@ async def test_emitir_challenge_persiste_hash_que_verifica_con_su_propio_id_y_ve
     """El OTP que sale por correo debe verificar contra el ``otp_hash`` que se
     insertó, con el ``challenge_id`` insertado y la ``key_version`` insertada
     (el id se genera ANTES del hash: si no coinciden, el desafío nace inservible)."""
-    from app.core.otp import verify_otp
+    from signature.core.otp import verify_otp
 
     _patch_audit(monkeypatch)
     _, mock_send = _patch_email(monkeypatch)

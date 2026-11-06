@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.clients.storage_client import StorageAipError
+from archive.clients.storage_client import StorageAipError
 from tests.conftest import EXPEDIENTE_ID, TENANT_HEADERS, make_expediente_record
 
 _NOW = datetime.now(tz=UTC)
@@ -70,7 +70,7 @@ async def test_get_aip_sufficient_clearance_returns_aip(
     payload = _aip_payload(expediente_id=str(EXPEDIENTE_ID))
 
     with patch(
-        "app.clients.storage_client.get_aip", new=AsyncMock(return_value=payload)
+        "archive.clients.storage_client.get_aip", new=AsyncMock(return_value=payload)
     ) as mock_get_aip:
         response = await client.get(
             f"/api/v1/expedientes/{EXPEDIENTE_ID}/aip", headers=TENANT_HEADERS
@@ -91,7 +91,7 @@ async def test_get_aip_deja_asiento_de_acceso(
 ) -> None:
     # La lectura del AIP (inventario clasificado) deja pista de acceso
     # (RF-BUS-10) cuando hay canal auditable + actor real.
-    from app.services import archive_service as _svc
+    from archive.services import archive_service as _svc
 
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID, nivel_seguridad=3)
@@ -102,7 +102,7 @@ async def test_get_aip_deja_asiento_de_acceso(
     append = AsyncMock()
 
     with (
-        patch("app.clients.storage_client.get_aip", new=AsyncMock(return_value=payload)),
+        patch("archive.clients.storage_client.get_aip", new=AsyncMock(return_value=payload)),
         patch.object(_svc.audit, "append", append),
     ):
         response = await client.get(
@@ -131,7 +131,7 @@ async def test_get_aip_over_clearance_returns_404_neutral(
     mock_conn.fetchrow.side_effect = [None, None]
 
     with patch(
-        "app.clients.storage_client.get_aip", new=AsyncMock()
+        "archive.clients.storage_client.get_aip", new=AsyncMock()
     ) as mock_get_aip:
         response = await client.get(
             f"/api/v1/expedientes/{EXPEDIENTE_ID}/aip", headers=TENANT_HEADERS
@@ -153,7 +153,7 @@ async def test_get_aip_expediente_does_not_exist_returns_404_neutral(
     mock_conn.fetchrow.side_effect = [{"is_root": True, "max_level": None}, None]
 
     with patch(
-        "app.clients.storage_client.get_aip", new=AsyncMock()
+        "archive.clients.storage_client.get_aip", new=AsyncMock()
     ) as mock_get_aip:
         response = await client.get(
             f"/api/v1/expedientes/{uuid.uuid4()}/aip", headers=TENANT_HEADERS
@@ -179,7 +179,7 @@ async def test_get_aip_visible_expediente_without_aip_returns_404_neutral(
     mock_conn.fetch.return_value = []
 
     with patch(
-        "app.clients.storage_client.get_aip", new=AsyncMock(return_value=None)
+        "archive.clients.storage_client.get_aip", new=AsyncMock(return_value=None)
     ) as mock_get_aip:
         response = await client.get(
             f"/api/v1/expedientes/{EXPEDIENTE_ID}/aip", headers=TENANT_HEADERS
@@ -204,7 +204,7 @@ async def test_get_aip_storage_unavailable_returns_503(
     mock_conn.fetch.return_value = []
 
     with patch(
-        "app.clients.storage_client.get_aip",
+        "archive.clients.storage_client.get_aip",
         new=AsyncMock(side_effect=StorageAipError("storage-service inalcanzable")),
     ):
         response = await client.get(
@@ -225,7 +225,7 @@ async def test_get_aip_requires_permission_gate(
     mock_conn.fetchval.return_value = None  # D-08 gate denied
 
     with patch(
-        "app.clients.storage_client.get_aip", new=AsyncMock()
+        "archive.clients.storage_client.get_aip", new=AsyncMock()
     ) as mock_get_aip:
         response = await client.get(
             f"/api/v1/expedientes/{EXPEDIENTE_ID}/aip", headers=TENANT_HEADERS

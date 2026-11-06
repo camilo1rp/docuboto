@@ -25,14 +25,14 @@ import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.core import http_clients
-from app.core.config import settings
-from app.core.http_clients import (
+from signature.core import http_clients
+from signature.core.config import settings
+from signature.core.http_clients import (
     HuellaNoVerificableError,
     HuellaSinContenidoError,
     ObjetoDesaparecidoError,
 )
-from app.main import app
+from signature.main import app
 from tests.conftest import TENANT_HEADERS, USER
 from tests.test_cadena import _clear, _make_conn, _override, _sol_row
 
@@ -269,7 +269,7 @@ async def test_firmar_sin_poder_consultar_al_productor_es_503(
 # ── el 503 no reenvía el cuerpo del productor (auditoría 2026-10-08) ─────────
 
 
-_SECRETO = "SECRETO-interno traza db-7:5432 /app/app/routers/x.py"
+_SECRETO = "SECRETO-interno traza db-7:5432 /app/signature/routers/x.py"
 
 
 @pytest.mark.asyncio
@@ -327,7 +327,7 @@ async def test_el_503_que_ve_el_firmante_no_lleva_el_cuerpo_del_productor(
     """De punta a punta: cliente real -> servicio -> respuesta HTTP al llamante."""
     _doblar_http(monkeypatch, lambda r: httpx.Response(500, text=_SECRETO))
     monkeypatch.setattr(
-        "app.services.cadena_service.get_huella_radicado", http_clients.get_huella_radicado
+        "signature.services.cadena_service.get_huella_radicado", http_clients.get_huella_radicado
     )
     _override(_conn_para_abrir())
     try:

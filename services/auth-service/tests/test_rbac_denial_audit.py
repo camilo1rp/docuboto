@@ -9,7 +9,7 @@
 
 """Auditoría best-effort de accesos DENEGADOS por el gate RBAC (RF-SEG / MoReq).
 
-``require_permission`` (``app/core/authz.py``) levanta el 403 antes de que la
+``require_permission`` (``auth/core/authz.py``) levanta el 403 antes de que la
 lógica de negocio (y su propia llamada a ``audit.append``) se ejecute — sin este
 seguimiento, ninguna denegación de permiso quedaba registrada en ``audit_log``.
 Cubre:
@@ -32,9 +32,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.database import get_tenant_conn
-from app.main import app
+from auth.core.authz import Caller, get_caller
+from auth.core.database import get_tenant_conn
+from auth.main import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 USER = uuid.uuid4()
@@ -126,7 +126,7 @@ async def test_denial_survives_audit_failure(client: AsyncClient) -> None:
     _override_caller(conn, _NON_ADMIN)
 
     with patch(
-        "app.core.authz.audit.append_denial",
+        "auth.core.authz.audit.append_denial",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.post(

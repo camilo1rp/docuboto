@@ -22,8 +22,8 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.repositories.aip_repository import AipRepository
+from archive.core.database import tenant_schema
+from archive.repositories.aip_repository import AipRepository
 
 from .test_aip_wiring_atomicity import _seed_ready
 

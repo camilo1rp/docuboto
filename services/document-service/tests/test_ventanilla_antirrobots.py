@@ -32,12 +32,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.core import altcha
-from app.core.config import settings
-from app.core.database import get_redis
-from app.main import app
-from app.schemas.public import VentanillaRespuesta
-from app.services.ventanilla_service import VentanillaService
+from document.core import altcha
+from document.core.config import settings
+from document.core.database import get_redis
+from document.main import app
+from document.schemas.public import VentanillaRespuesta
+from document.services.ventanilla_service import VentanillaService
 from tests.test_ventanilla import (
     BASE,
     PDF,
@@ -92,7 +92,7 @@ def _preparar(conn) -> None:
 
 def _crear():
     return patch(
-        "app.services.document_service.DocumentService.create",
+        "document.services.document_service.DocumentService.create",
         AsyncMock(return_value=_resultado_radicado()),
     )
 
@@ -245,7 +245,7 @@ async def test_redis_caido_es_503_y_no_sube_anexos_ni_gasta_numero(client_with_c
     payload = await _payload_valido(client)
 
     with (
-        patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
+        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
         _crear() as crear,
     ):
         resp = await client.post(
@@ -356,7 +356,7 @@ async def test_el_gate_va_antes_de_subir_anexos(client_with_conn, redis_doble) -
     client, conn = client_with_conn
     _preparar(conn)
     with (
-        patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
+        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
         _crear(),
     ):
         resp = await client.post(

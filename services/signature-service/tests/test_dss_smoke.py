@@ -37,8 +37,8 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from app.providers.base import PreparedDoc, SignerRef
-from app.providers.local import LocalSigner
+from signature.providers.base import PreparedDoc, SignerRef
+from signature.providers.local import LocalSigner
 
 DSS_URL = os.getenv("DSS_URL")
 pytestmark = pytest.mark.skipif(not DSS_URL, reason="DSS_URL no definido: humo contra EU DSS omitido")
@@ -117,7 +117,7 @@ def exigir_criptografia_integra(informe: dict) -> tuple[str, str | None]:
 async def test_sello_institucional_xades_t_valida_en_dss(monkeypatch: pytest.MonkeyPatch) -> None:
     tsa_key, tsa_cert = _cert("tsa-dss", tsa_eku=True)
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem(tsa_cert), key_pem=_pem_key(tsa_key)),
     )
     key, cert = _cert("sello-dss")
@@ -134,7 +134,7 @@ async def test_sello_institucional_xades_t_valida_en_dss(monkeypatch: pytest.Mon
 async def test_firma_personal_valida_en_dss(monkeypatch: pytest.MonkeyPatch) -> None:
     tsa_key, tsa_cert = _cert("tsa-dss", tsa_eku=True)
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem(tsa_cert), key_pem=_pem_key(tsa_key)),
     )
     ca_key, ca_cert = _cert("ca-dss", ca=True)
@@ -162,7 +162,7 @@ async def test_firma_personal_valida_en_dss(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_sello_xades_lta_valida_en_dss(monkeypatch: pytest.MonkeyPatch) -> None:
     """Incluye el ARCHIVE_TIMESTAMP: su imprint (EN 319 132-1 §5.5.2) debe ser
     íntegro para DSS, no solo para nuestro verificador."""
-    from app.core.config import settings
+    from signature.core.config import settings
     from tests.test_sign_xml_xades import (
         _build_crl,
         _ca_cert_pem,
@@ -174,7 +174,7 @@ async def test_sello_xades_lta_valida_en_dss(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     tsa_key, tsa_cert = _cert("tsa-dss", tsa_eku=True)
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem(tsa_cert), key_pem=_pem_key(tsa_key)),
     )
     ca_key, ca_cert = _generate_ca()
@@ -195,8 +195,8 @@ async def test_sello_xades_lta_valida_en_dss(monkeypatch: pytest.MonkeyPatch) ->
 async def test_dss_lta_renovada(monkeypatch: pytest.MonkeyPatch) -> None:
     """B10 §8: la firma LTA con el `ArchiveTimeStamp` RENOVADO (TimeStampValidationData + un
     segundo ATS que cubre al primero) la valida un tercero: todos los sellos íntegros."""
-    from app.core.config import settings
-    from app.providers.local import renovar_archive_timestamp
+    from signature.core.config import settings
+    from signature.providers.local import renovar_archive_timestamp
     from tests.test_sign_xml_xades import (
         _build_crl,
         _ca_cert_pem,
@@ -208,7 +208,7 @@ async def test_dss_lta_renovada(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     tsa_key, tsa_cert = _cert("tsa-dss", tsa_eku=True)
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=_pem(tsa_cert), key_pem=_pem_key(tsa_key)),
     )
     ca_key, ca_cert = _generate_ca()
@@ -228,8 +228,8 @@ async def test_dss_lta_renovada(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _lta_renovada_con_ocsp_de_tsa(monkeypatch: pytest.MonkeyPatch, tmp_path):  # noqa: ANN001, ANN202
     """Firma LTA cuyo ATS 0 selló una TSA emitida por una CA con AIA OCSP y SIN punto de distribución de
     CRL; se renueva con la revocación de esa TSA por OCSP (C-6). Devuelve (xml renovado, certificado de la CA de la TSA)."""
-    from app.core.config import settings
-    from app.providers.local import renovar_archive_timestamp
+    from signature.core.config import settings
+    from signature.providers.local import renovar_archive_timestamp
     from tests import c6_pki as pki
     from tests.test_sign_xml_xades import (
         _build_crl,

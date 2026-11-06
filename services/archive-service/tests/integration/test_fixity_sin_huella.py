@@ -38,10 +38,10 @@ from contextlib import nullcontext
 import asyncpg
 import pytest
 
-from app.core.clearance import CLEARANCE_SIN_RESTRICCION
-from app.schemas.archive import ExpedienteCreate, RadicadoLink
-from app.services.archive_service import ArchiveService
-from app.services.index_service import IndexService
+from archive.core.clearance import CLEARANCE_SIN_RESTRICCION
+from archive.schemas.archive import ExpedienteCreate, RadicadoLink
+from archive.services.archive_service import ArchiveService
+from archive.services.index_service import IndexService
 from tests.conftest import registrar_radicado
 
 from .conftest import huella_en_almacen

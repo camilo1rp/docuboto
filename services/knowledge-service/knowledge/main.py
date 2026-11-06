@@ -1,0 +1,81 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from orpycamcp_common import events, request_log, usuario
+
+from knowledge.core import salida_http
+from knowledge.core.config import settings
+from knowledge.core.database import close_pool, create_pool
+from knowledge.core.redis_client import close_redis, init_redis
+from knowledge.routers.health import router as health_router
+from knowledge.routers.inteligencia import router as inteligencia_router
+from knowledge.routers.knowledge import router as knowledge_router
+from knowledge.routers.metrics import router as metrics_router
+from knowledge.routers.retorno import Problema, respuesta_problema
+from knowledge.routers.retorno import router as retorno_router
+from knowledge.workers import intelligence_consumer
+
+logging.basicConfig(level=settings.log_level.upper())
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    logger.info("knowledge-service starting up")
+    app.state.db_pool = await create_pool(settings.database_url_asyncpg)
+    await init_redis(settings.redis_url)
+    consumidor = events.spawn_supervised(
+        intelligence_consumer.run, name="intelligence-gateway", logger=logger
+    )
+    yield
+    logger.info("knowledge-service shutting down")
+    consumidor.cancel()
+    try:
+        await consumidor
+    except asyncio.CancelledError:
+        pass
+    await salida_http.cerrar_consulta()
+    await close_redis()
+    await close_pool()
+
+
+app = FastAPI(
+    title="OrpycaMCP — Knowledge Service",
+    description=(
+        "Pasarela de conocimiento (ADR-045, ADR-046). Sin proveedor (`local`), buscar y "
+        "antecedentes responden con la búsqueda de texto completo de document-service, "
+        "consultada como el usuario, y no hay generación. Con `ppi`, buscar y preguntar "
+        "delegan; si el proveedor no responde, vuelve el índice local."
+    ),
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
+# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
+# escribe, que es el mismo defecto de partida movido un salto más allá.
+# El llamante sale del JWT (`UsuarioActualMiddleware`). Un `X-User-Id` de
+# cliente no cuenta. Va el primero porque es la decisión que precede a todas.
+app.add_middleware(usuario.UsuarioActualMiddleware)
+app.add_middleware(request_log.RequestLogMiddleware, servicio="knowledge-service")
+
+app.add_exception_handler(Problema, respuesta_problema)
+DOMAIN_ROUTERS = (knowledge_router, retorno_router, inteligencia_router)
+for _router in DOMAIN_ROUTERS:
+    app.include_router(_router)
+app.include_router(health_router)
+app.include_router(metrics_router)  # ADR-041: GET /metrics, nunca vía gateway

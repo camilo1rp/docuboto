@@ -28,10 +28,10 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from app.core.config import settings
-from app.core.database import _schema as tenant_schema
-from app.repositories.firma_repository import FirmaRepository
-from app.services import signer
+from signature.core.config import settings
+from signature.core.database import _schema as tenant_schema
+from signature.repositories.firma_repository import FirmaRepository
+from signature.services import signer
 
 pytestmark = pytest.mark.asyncio
 

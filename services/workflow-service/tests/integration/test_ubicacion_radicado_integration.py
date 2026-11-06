@@ -30,8 +30,8 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
-from app.services.estado_radicado import PasoUbicacion, Ubicacion, derivar_ubicacion
+from workflow.core.database import tenant_schema
+from workflow.services.estado_radicado import PasoUbicacion, Ubicacion, derivar_ubicacion
 from migrations import runner
 
 # Los fixtures y ayudas del carril de ADR-028 (mismo arnés: RBAC concedido, Redis
@@ -133,7 +133,7 @@ async def test_rollback_y_luego_completar_se_queda_donde_se_completo(ctx: Any) -
     """El paso cancelado por el rollback tiene el número MÁS ALTO pero se cerró
     ANTES: ordenar el «último» por `step_number` lo pondría en Archivo."""
     svc, conn, _ = ctx
-    from app.schemas.workflow import FlowStepComplete
+    from workflow.schemas.workflow import FlowStepComplete
 
     rid = await _radicado(conn)
     u1, u2 = await _user(conn, DEP_JUR[0]), await _user(conn, DEP_ARC[0])
@@ -267,7 +267,7 @@ async def test_si_la_auditoria_falla_no_queda_ubicacion(ctx: Any) -> None:
     antes = await _ubic(conn, rid)
 
     with (
-        patch("app.services.workflow_service.audit.append", new=AsyncMock(side_effect=RuntimeError("audit caído"))),
+        patch("workflow.services.workflow_service.audit.append", new=AsyncMock(side_effect=RuntimeError("audit caído"))),
         pytest.raises(RuntimeError, match="audit caído"),
     ):
         await svc.assign(_assign(rid, DEP_JUR[1], u), u)

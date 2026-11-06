@@ -32,9 +32,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from app.core import tsa as tsa_module
-from app.core.config import settings
-from app.providers.base import SignerRef
+from signature.core import tsa as tsa_module
+from signature.core.config import settings
+from signature.providers.base import SignerRef
 from tests.test_sign_xml_xades import _generate_cert, _generate_tsa_cert
 
 IMPRINT_SRC = b"<ds:SignatureValue>firma de prueba</ds:SignatureValue>"
@@ -44,7 +44,7 @@ IMPRINT_SRC = b"<ds:SignatureValue>firma de prueba</ds:SignatureValue>"
 def token_y_tsa(monkeypatch: pytest.MonkeyPatch):
     cert_pem, key_pem = _generate_tsa_cert()
     monkeypatch.setattr(
-        "app.core.tsa.load_tsa_seal",
+        "signature.core.tsa.load_tsa_seal",
         lambda: SignerRef(cert_pem=cert_pem, key_pem=key_pem, key_password=None),
     )
     token = tsa_module.build_timestamp_token(IMPRINT_SRC)
@@ -201,7 +201,7 @@ def test_el_instante_del_corte_ya_exige_esscertid(
 def test_corte_de_entorno_sin_zona_se_interpreta_como_utc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.core.config import Settings
+    from signature.core.config import Settings
 
     monkeypatch.setenv("TSA_ESSCERTID_CORTE", "2027-01-01T00:00:00")
     assert Settings().tsa_esscertid_corte == datetime(2027, 1, 1, tzinfo=UTC)

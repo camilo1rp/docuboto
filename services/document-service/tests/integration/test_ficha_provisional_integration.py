@@ -33,9 +33,9 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 
-from app.core.database import tenant_schema
-from app.repositories.tercero_repository import TerceroRepository
-from app.services.tercero_service import TerceroService
+from document.core.database import tenant_schema
+from document.repositories.tercero_repository import TerceroRepository
+from document.services.tercero_service import TerceroService
 from tests.integration.test_ventanilla_directorio_integration import (
     _preparar_ventanilla,
     _radicar_por_ventanilla,
@@ -159,7 +159,7 @@ async def test_el_asiento_de_la_provisional_no_lleva_el_documento(tenant_ctx) ->
 @pytest.mark.asyncio
 async def test_sin_radicado_no_queda_ficha_huerfana(tenant_ctx) -> None:
     slug, conn = await _entorno(tenant_ctx)
-    from app.services.document_service import DocumentService
+    from document.services.document_service import DocumentService
 
     async def _falla(self, radicado, actor):
         raise RuntimeError("falla después de crear la ficha")
@@ -202,8 +202,8 @@ async def test_una_provisional_no_aparece_en_el_directorio(tenant_ctx) -> None:
 async def test_el_radicador_interno_no_puede_vincular_una_provisional(tenant_ctx) -> None:
     slug, conn = await _entorno(tenant_ctx)
     provisional = await _anonimo(conn, slug, asunto="Vinc")
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     otro = (
         await DocumentService(conn, slug).create(
@@ -434,7 +434,7 @@ async def test_si_falla_el_asiento_no_queda_conciliada(tenant_ctx) -> None:
     async def _falla(*a, **k):
         raise RuntimeError("audit caído")
 
-    with patch("app.services.tercero_service.audit.append", _falla):
+    with patch("document.services.tercero_service.audit.append", _falla):
         with pytest.raises(RuntimeError):
             await _conciliar(conn, slug, provisional, "vincular", destino_id=real)
 

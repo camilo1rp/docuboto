@@ -28,8 +28,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from tenant.core.database import get_tenant_conn
+from tenant.main import app
 
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}
 
@@ -59,7 +59,7 @@ async def client_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
         yield conn
 
     app.dependency_overrides[get_tenant_conn] = override
-    with patch("app.core.audit._audit.append", new=AsyncMock(return_value="h")) as audit_append:
+    with patch("tenant.core.audit._audit.append", new=AsyncMock(return_value="h")) as audit_append:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             ac.audit_append = audit_append  # type: ignore[attr-defined]
             yield ac, conn

@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from app.core.aceptacion import Declaracion, aceptar, rutas_de, vista
+from knowledge.core.aceptacion import Declaracion, aceptar, rutas_de, vista
 
 SHA = "ab" * 32
 OTRA = "cd" * 32
@@ -110,7 +110,7 @@ class _Conn:
 
 
 def _leer(sha: str, niveles: tuple[str, ...] = ("public", "reserved")) -> Any:
-    async def _impl(_cliente: object) -> Declaracion:
+    async def _impl(_conn: object, _slug: str, _cliente: object) -> Declaracion:
         return Declaracion(
             True,
             "ok",
@@ -127,7 +127,7 @@ def _leer(sha: str, niveles: tuple[str, ...] = ("public", "reserved")) -> Any:
 async def test_no_levanta_hasta_que_cada_nivel_habilitado_coincide(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("app.core.aceptacion.leer", _leer(SHA))
+    monkeypatch.setattr("knowledge.core.aceptacion.leer", _leer(SHA))
     conn = _Conn([1, 2])
     assert await aceptar(conn, "demo", object(), nivel=1, sha256=SHA) == ""
     assert conn.fijado is None
@@ -137,7 +137,7 @@ async def test_no_levanta_hasta_que_cada_nivel_habilitado_coincide(
 
 @pytest.mark.asyncio
 async def test_una_huella_distinta_no_se_anota(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("app.core.aceptacion.leer", _leer(OTRA))
+    monkeypatch.setattr("knowledge.core.aceptacion.leer", _leer(OTRA))
     conn = _Conn([1])
     assert await aceptar(conn, "demo", object(), nivel=1, sha256=SHA) == "distinta"
     assert conn.aceptados == {}

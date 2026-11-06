@@ -28,11 +28,11 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.clients import storage_client
-from app.clients.storage_client import ResultadoPurga, StorageContentError
-from app.core.database import tenant_schema
-from app.services.import_huerfanos_service import ImportHuerfanosService
-from app.services.import_service import ImportService
+from document.clients import storage_client
+from document.clients.storage_client import ResultadoPurga, StorageContentError
+from document.core.database import tenant_schema
+from document.services.import_huerfanos_service import ImportHuerfanosService
+from document.services.import_service import ImportService
 from tests.test_import import _pkg
 
 pytestmark = pytest.mark.integration
@@ -59,12 +59,12 @@ async def _importar_que_falla(conn, slug, storage: _Storage) -> uuid.UUID:
     subido = uuid.uuid4()
     with (
         patch(
-            "app.services.import_service.storage_client.upload_bytes",
+            "document.services.import_service.storage_client.upload_bytes",
             new=AsyncMock(return_value=storage_client.ArchivoSubido(file_id=subido, sha256="a" * 64)),
         ),
-        patch("app.services.import_service.ImportRepository.insert_radicado",
+        patch("document.services.import_service.ImportRepository.insert_radicado",
               new=AsyncMock(side_effect=RuntimeError("falla de BD"))),
-        patch("app.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=storage.purgar),
+        patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=storage.purgar),
     ):
         with pytest.raises(RuntimeError):
             await ImportService(conn, slug).import_package(
@@ -127,14 +127,14 @@ async def test_si_storage_cae_queda_pendiente_con_su_asiento_y_el_barrido_la_rec
 
     # El barrido, con storage ya disponible, la resuelve.
     st = _Storage("purgado")
-    with patch("app.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=st.purgar):
+    with patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=st.purgar):
         resultado = await ImportHuerfanosService(conn, slug).purgar()
     assert resultado == {"purgado": 1}
     assert (await _estado(conn, fid))["estado"] == "purgado"
     assert (await _acciones(conn, slug))[-1] == "document.import_binarios_purgados"
     # Y una segunda pasada no vuelve a pedir nada ni duplica el asiento.
     st2 = _Storage("purgado")
-    with patch("app.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=st2.purgar):
+    with patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=st2.purgar):
         assert await ImportHuerfanosService(conn, slug).purgar() == {}
     assert st2.pedidos == []
     assert (await _acciones(conn, slug)).count("document.import_binarios_purgados") == 1
@@ -169,9 +169,9 @@ async def test_agotados_los_reintentos_pasa_a_agotado_para_revision(ctx) -> None
     fid = await _importar_que_falla(conn, slug, _Storage(cae=True))
     for _ in range(3):
         with (
-            patch("app.services.import_huerfanos_service.storage_client.purgar_huerfanos",
+            patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos",
                   new=_Storage(cae=True).purgar),
-            patch("app.services.import_huerfanos_service.settings.purga_huerfanos_max_intentos", 3),
+            patch("document.services.import_huerfanos_service.settings.purga_huerfanos_max_intentos", 3),
         ):
             await ImportHuerfanosService(conn, slug).purgar()
     est = await _estado(conn, fid)
@@ -198,10 +198,10 @@ async def test_si_falla_el_asiento_de_agotado_la_fila_no_pasa_a_agotado(ctx) -> 
     slug, conn = ctx
     fid = await _importar_que_falla(conn, slug, _Storage(cae=True))
     with (
-        patch("app.services.import_huerfanos_service.storage_client.purgar_huerfanos",
+        patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos",
               new=_Storage(cae=True).purgar),
-        patch("app.services.import_huerfanos_service.settings.purga_huerfanos_max_intentos", 2),
-        patch("app.services.import_huerfanos_service.audit.append",
+        patch("document.services.import_huerfanos_service.settings.purga_huerfanos_max_intentos", 2),
+        patch("document.services.import_huerfanos_service.audit.append",
               new=AsyncMock(side_effect=RuntimeError("boom"))),
     ):
         with pytest.raises(RuntimeError):
@@ -214,6 +214,6 @@ async def test_si_falla_el_asiento_de_agotado_la_fila_no_pasa_a_agotado(ctx) -> 
 async def test_si_falla_el_asiento_no_queda_nada_en_la_cola(ctx) -> None:
     """Cola y asiento son UN acto: sin asiento no hay fila (y viceversa)."""
     slug, conn = ctx
-    with patch("app.services.import_service.audit.append", new=AsyncMock(side_effect=RuntimeError("boom"))):
+    with patch("document.services.import_service.audit.append", new=AsyncMock(side_effect=RuntimeError("boom"))):
         fid = await _importar_que_falla(conn, slug, _Storage("purgado"))
     assert await _estado(conn, fid) is None

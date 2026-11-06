@@ -18,7 +18,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.clients import signature_client
+from document.clients import signature_client
 
 HUELLA = "c" * 64
 

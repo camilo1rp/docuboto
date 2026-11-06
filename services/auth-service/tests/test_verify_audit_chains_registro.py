@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock
 import pytest
 from orpycamcp_common.audit import ResultadoCadena, RoturaCadena
 
-from app.ops import verify_audit_chains as vac
+from auth.ops import verify_audit_chains as vac
 
 _ESTAD = {
     "tenants": 2,

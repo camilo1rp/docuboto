@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.core import config as cfg_module
+from document.core import config as cfg_module
 from tests.conftest import TENANT_SLUG
 
 _TOKEN = "test-document-internal-token-xxx"
@@ -60,7 +60,7 @@ async def test_la_respuesta_trae_el_numero_y_la_tipologia_del_radicado(
         }
     }
     with patch(
-        "app.routers.internal.DocumentRepository.list_radicado_metadata_internal",
+        "document.routers.internal.DocumentRepository.list_radicado_metadata_internal",
         AsyncMock(return_value=resuelto),
     ):
         resp = await client.post(_PATH, json={"radicado_ids": [str(rid)]}, headers=_HEADERS)
@@ -86,7 +86,7 @@ async def test_un_radicado_sin_tipologia_responde_null_y_no_se_inventa_una(
         }
     }
     with patch(
-        "app.routers.internal.DocumentRepository.list_radicado_metadata_internal",
+        "document.routers.internal.DocumentRepository.list_radicado_metadata_internal",
         AsyncMock(return_value=resuelto),
     ):
         resp = await client.post(_PATH, json={"radicado_ids": [str(rid)]}, headers=_HEADERS)
@@ -100,7 +100,7 @@ async def test_el_repositorio_pide_y_propaga_tracking_y_doc_class_de_la_tabla_ra
     """El SQL EMITIDO y el mapeo de la fila: el número y la tipología salen de
     `radicados`, no de ningún valor que el llamante pueda pasar, y llegan hasta
     el diccionario que el router devuelve (mutación: `None` en el mapeo)."""
-    from app.repositories.document_repository import DocumentRepository
+    from document.repositories.document_repository import DocumentRepository
 
     rid = uuid.uuid4()
     conn = AsyncMock()

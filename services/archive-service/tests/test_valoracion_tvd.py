@@ -33,11 +33,11 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from app.clients.storage_client import StorageLegalHoldError
-from app.core.config import settings
-from app.schemas.retencion_legal import ValoracionTvdRequest
-from app.services.retention_math import RetencionDiferida
-from app.services.valoracion_service import (
+from archive.clients.storage_client import StorageLegalHoldError
+from archive.core.config import settings
+from archive.schemas.retencion_legal import ValoracionTvdRequest
+from archive.services.retention_math import RetencionDiferida
+from archive.services.valoracion_service import (
     MOTIVO_VALORACION,
     ValoracionHoldError,
     ValoracionService,
@@ -48,8 +48,8 @@ SERIE_ID = uuid.uuid4()
 EXP_ID = uuid.uuid4()
 HOLD_ID = uuid.uuid4()
 ACTOR = uuid.uuid4()
-_AUDIT = "app.services.valoracion_service.audit.append"
-_ST = "app.services.valoracion_service.storage_client"
+_AUDIT = "archive.services.valoracion_service.audit.append"
+_ST = "archive.services.valoracion_service.storage_client"
 
 
 class _Tx:
@@ -319,7 +319,7 @@ def _hold(**over) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("accion", ["conservar", "descartar"])
 async def test_el_acto_de_seleccion_se_asienta_y_aplica(accion: str) -> None:
-    from app.schemas.retencion_legal import SeleccionValoracionRequest
+    from archive.schemas.retencion_legal import SeleccionValoracionRequest
 
     svc, _ = _svc()
     svc._repo.bloquear_hold_de_serie.return_value = _hold()
@@ -351,7 +351,7 @@ async def test_el_acto_de_seleccion_se_asienta_y_aplica(accion: str) -> None:
 async def test_la_seleccion_solo_se_registra_una_vez_y_sobre_una_valoracion_s(
     hold, codigo: str, http: int
 ) -> None:
-    from app.schemas.retencion_legal import SeleccionValoracionRequest
+    from archive.schemas.retencion_legal import SeleccionValoracionRequest
 
     svc, _ = _svc()
     svc._repo.bloquear_hold_de_serie.return_value = hold

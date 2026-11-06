@@ -89,7 +89,7 @@ def _make_envelope(*, tenant_slug: str = TENANT) -> dict:
 @pytest.mark.asyncio
 async def test_persist_dead_letter_insert_real_y_audit() -> None:
     """INSERT real → repo.insert_if_new devuelve fila → audit.append es llamado."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     conn = _make_conn(fetchrow_return={"event_id": EVENT_ID})  # INSERT real
     mock_audit = AsyncMock()
@@ -114,7 +114,7 @@ async def test_persist_dead_letter_insert_real_y_audit() -> None:
 @pytest.mark.asyncio
 async def test_persist_dead_letter_idempotente_no_re_audita() -> None:
     """ON CONFLICT (insert_if_new devuelve None) → audit.append NO es llamado."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     conn = _make_conn(fetchrow_return=None)  # ON CONFLICT → idempotent no-op
     mock_audit = AsyncMock()
@@ -134,7 +134,7 @@ async def test_persist_dead_letter_idempotente_no_re_audita() -> None:
 @pytest.mark.asyncio
 async def test_persist_dead_letter_error_transitorio_propaga() -> None:
     """Error de BD transitorio propaga (R-4: no ack sin traza durable)."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=AsyncMock())
@@ -151,7 +151,7 @@ async def test_persist_dead_letter_error_transitorio_propaga() -> None:
 async def test_persist_dead_letter_insert_real_sin_audit_disponible_propaga() -> None:
     """FIX 2(b): INSERT real + _AUDIT_AVAILABLE=False → propaga (no XACK, no
     persistido sin traza) en lugar de comitear el INSERT sin fila de auditoría."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     conn = _make_conn(fetchrow_return={"event_id": EVENT_ID})  # INSERT real
     mock_audit = AsyncMock()
@@ -176,7 +176,7 @@ async def test_persist_dead_letter_r1_sin_tenant_slug_audita_bajo_system_tenant(
     La función retorna normalmente para que el helper pueda XACK el poison pill.
     Loopear infinitamente en PEL por un evento sin tenant_slug sería inútil.
     """
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     # Simulate the public pool connection (no tenant schema).
     public_conn = AsyncMock()
@@ -209,7 +209,7 @@ async def test_persist_dead_letter_r1_sin_tenant_slug_audita_bajo_system_tenant(
 @pytest.mark.asyncio
 async def test_persist_dead_letter_r1_sin_audit_disponible_retorna_sin_lanzar() -> None:
     """R1 sin módulo de auditoría: retorna sin lanzar (poison pill sigue siendo acked)."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     envelope_no_tenant = _make_envelope(tenant_slug="")
     envelope_no_tenant["tenant_slug"] = ""
@@ -225,7 +225,7 @@ async def test_persist_dead_letter_r1_sin_audit_disponible_retorna_sin_lanzar() 
 @pytest.mark.asyncio
 async def test_persist_dead_letter_origin_stream_desde_failure_meta() -> None:
     """origin_stream en failure_meta se pasa correctamente a insert_if_new."""
-    from app.workers import stream_worker
+    from notification.workers import stream_worker
 
     conn = _make_conn(fetchrow_return={"event_id": EVENT_ID})
     mock_audit = AsyncMock()

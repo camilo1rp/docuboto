@@ -37,7 +37,7 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
@@ -68,8 +68,8 @@ async def test_radicar_una_entrada_congela_su_remitente(
     # El fixture aplica las migraciones con `SET LOCAL`, así que no deja el
     # `search_path` puesto: cada test lo fija, igual que los demás de este tier.
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     tercero_id = await _tercero(
         conn, "José Pérez", email="jose@ejemplo.co", direccion="Calle 1 #2-3"
@@ -119,8 +119,8 @@ async def test_una_salida_con_tres_destinatarios_conserva_los_tres(
     # El fixture aplica las migraciones con `SET LOCAL`, así que no deja el
     # `search_path` puesto: cada test lo fija, igual que los demás de este tier.
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     ids = [
         await _tercero(conn, "Ana Gómez"),
@@ -172,8 +172,8 @@ async def test_un_tercero_inexistente_no_deja_radicado_a_medias(
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     from fastapi import HTTPException
 
-    from app.schemas.document import DocumentCreate
-    from app.services.document_service import DocumentService
+    from document.schemas.document import DocumentCreate
+    from document.services.document_service import DocumentService
 
     antes = await conn.fetchval("SELECT count(*) FROM radicados")
 

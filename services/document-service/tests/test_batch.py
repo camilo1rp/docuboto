@@ -40,7 +40,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.batch_service import BatchService
+from document.services.batch_service import BatchService
 from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)
@@ -80,7 +80,7 @@ def _job_row(**kw) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Autorización — PERM_RADI (app/routers/batch.py:33 y :74)
+# Autorización — PERM_RADI (document/routers/batch.py:33 y :74)
 # ---------------------------------------------------------------------------
 
 
@@ -495,7 +495,7 @@ class TestLaTareaDeFondoNoUsaLaConexionDelRequest:
 
     async def test_procesar_lote_abre_su_propia_conexion_del_pool(self, monkeypatch):
         """`_procesar_lote` pide conexión al pool por tenant, no la recibe."""
-        from app.routers import batch as batch_router
+        from document.routers import batch as batch_router
 
         conexion_del_pool = AsyncMock()
         slugs_pedidos: list[str] = []
@@ -532,7 +532,7 @@ class TestLaTareaDeFondoNoUsaLaConexionDelRequest:
         lanzó el lote se queda mirando un «pendiente» que no va a cambiar
         nunca: un job reventado y uno trabajando eran indistinguibles.
         """
-        from app.routers import batch as batch_router
+        from document.routers import batch as batch_router
 
         conexion = AsyncMock()
 

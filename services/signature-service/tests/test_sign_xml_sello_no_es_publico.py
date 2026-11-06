@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.config import settings
-from app.core.constants import CADENA_OBJETO_TIPOS, XADES_ELIGIBLE_OBJETO_TIPOS
+from signature.core.config import settings
+from signature.core.constants import CADENA_OBJETO_TIPOS, XADES_ELIGIBLE_OBJETO_TIPOS
 from tests.conftest import TENANT_HEADERS
 
 _TOKEN = "itest-internal-token-abc123"
@@ -39,9 +39,9 @@ async def test_sello_sin_token_interno_se_rechaza_y_no_toca_sello_ni_storage(
 
     client, _conn = client_with_conn
     with (
-        patch("app.services.signing_service.load_seal", new=AsyncMock()) as seal,
+        patch("signature.services.signing_service.load_seal", new=AsyncMock()) as seal,
         patch(
-            "app.services.signing_service.storage_client.upload_signed_xml", new=AsyncMock()
+            "signature.services.signing_service.storage_client.upload_signed_xml", new=AsyncMock()
         ) as upload,
     ):
         resp = await client.post(
@@ -76,7 +76,7 @@ async def test_sello_con_token_interno_y_identidad_pasa_el_gate(
     monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
     client, _conn = client_with_conn
     with patch(
-        "app.routers.signature.signing_service.sign_payload", new=AsyncMock()
+        "signature.routers.signature.signing_service.sign_payload", new=AsyncMock()
     ) as sign:
         sign.side_effect = RuntimeError("llegó al servicio")
         with pytest.raises(RuntimeError, match="llegó al servicio"):
@@ -111,7 +111,7 @@ async def test_sello_con_token_del_servidor_sin_configurar_es_503_fail_closed(
 
     monkeypatch.setattr(settings, "signature_internal_token", "")
     client, _conn = client_with_conn
-    with patch("app.routers.signature.signing_service.sign_payload", new=AsyncMock()) as sign:
+    with patch("signature.routers.signature.signing_service.sign_payload", new=AsyncMock()) as sign:
         for hdr in ({}, {"X-Internal-Token": ""}, {"X-Internal-Token": "x"}):
             resp = await client.post(
                 "/api/v1/signature/sign-xml",
@@ -143,7 +143,7 @@ async def test_los_tipos_de_cadena_ya_no_se_firman_por_sign_xml(
     monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
     client, conn = client_with_conn
     headers = {**TENANT_HEADERS, **({"X-Internal-Token": _TOKEN} if token else {})}
-    with patch("app.routers.signature.signing_service.sign_payload", new=AsyncMock()) as sign:
+    with patch("signature.routers.signature.signing_service.sign_payload", new=AsyncMock()) as sign:
         resp = await client.post(
             "/api/v1/signature/sign-xml",
             json={"payload_xml": "<x/>", "objeto_tipo": tipo, "objeto_id": "o"},
@@ -164,7 +164,7 @@ async def test_sign_xml_sin_objeto_id_de_cadena_tampoco_firma(client_with_conn) 
     from unittest.mock import AsyncMock, patch
 
     client, _conn = client_with_conn
-    with patch("app.routers.signature.signing_service.sign_payload", new=AsyncMock()) as sign:
+    with patch("signature.routers.signature.signing_service.sign_payload", new=AsyncMock()) as sign:
         resp = await client.post(
             "/api/v1/signature/sign-xml",
             json={"payload_xml": "<x/>", "objeto_tipo": "radicado"},

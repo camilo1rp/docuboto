@@ -22,13 +22,13 @@ import uuid
 
 import pytest
 
-from app.services.totp_service import _casar_codigo
+from auth.services.totp_service import _casar_codigo
 
 
 def _candidato(codigo_real: str):
     import os
 
-    from app.core.recovery_codes import hash_recovery_code
+    from auth.core.recovery_codes import hash_recovery_code
 
     sal = os.urandom(16)
     return {"id": uuid.uuid4(), "code_salt": sal, "code_hash": hash_recovery_code(codigo_real, salt=sal)}

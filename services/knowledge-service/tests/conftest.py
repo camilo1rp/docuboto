@@ -18,8 +18,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_tenant_conn
-from app.main import app
+from knowledge.core.database import get_tenant_conn
+from knowledge.main import app
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -30,6 +30,10 @@ from app.main import app
 # atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
+
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
 
 
 # Desde ADR-037 las rutas de consulta exigen identidad (``get_actor``): 401 sin X-User-Id.
@@ -71,7 +75,7 @@ def _gates_abiertos(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
     """
     if request.node.get_closest_marker("gates_reales"):
         return
-    from app.core import clearance
+    from knowledge.core import clearance
 
     monkeypatch.setattr(clearance, "check_permission", AsyncMock(return_value=True))
     monkeypatch.setattr(clearance, "asistente_habilitado", AsyncMock(return_value=True))

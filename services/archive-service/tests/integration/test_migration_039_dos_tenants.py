@@ -32,7 +32,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from app.core.database import tenant_schema
+from archive.core.database import tenant_schema
 from migrations import runner
 
 from .conftest import _require_dsn

@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.services.ventanilla_service import VentanillaService
+from document.services.ventanilla_service import VentanillaService
 from tests.test_ventanilla import (
     BASE,
     _cuerpo,
@@ -43,7 +43,7 @@ from tests.test_ventanilla import (
     _multipart,
 )
 
-_RAIZ_APP = Path(__file__).resolve().parent.parent / "app"
+_RAIZ_APP = Path(__file__).resolve().parent.parent / "document"
 
 #: Rutas públicas que radican y DEBEN pasar por el gate -> cómo se les envía un cuerpo válido.
 _PQRS = {
@@ -65,7 +65,7 @@ _EXENTAS = {
 
 
 def _posts_publicas() -> set[str]:
-    from app.main import app
+    from document.main import app
 
     rutas: set[str] = set()
     for incluido in app.routes:
@@ -118,8 +118,8 @@ async def test_cada_ruta_publica_que_radica_alcanza_el_gate(client_with_conn, ru
 
     with (
         patch.object(VentanillaService, "_exigir_antirrobots", centinela),
-        patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
-        patch("app.services.document_service.DocumentService.create", AsyncMock()) as crear,
+        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
+        patch("document.services.document_service.DocumentService.create", AsyncMock()) as crear,
     ):
         resp = await _CON_GATE[ruta](client)
 

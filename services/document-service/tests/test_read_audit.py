@@ -352,7 +352,7 @@ async def test_get_document_read_audit_best_effort_survives_failure(
     mock_conn.fetch.return_value = []
 
     with patch(
-        "app.services.document_service.audit.append",
+        "document.services.document_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         resp = await client.get(
@@ -373,7 +373,7 @@ async def test_list_documents_search_audit_best_effort_survives_failure(
     mock_conn.fetch.return_value = [make_radicado_record()]
 
     with patch(
-        "app.services.document_service.audit.append",
+        "document.services.document_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         resp = await client.get(
@@ -394,7 +394,7 @@ async def test_search_documents_audit_best_effort_survives_failure(
     mock_conn.fetch.return_value = [_hit_row()]
 
     with patch(
-        "app.services.document_service.audit.append",
+        "document.services.document_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         resp = await client.get(
@@ -511,7 +511,7 @@ async def test_listar_respuestas_audit_best_effort_survives_failure(
     mock_conn.fetch.return_value = [_respuesta_row()]
 
     with patch(
-        "app.services.document_service.audit.append",
+        "document.services.document_service.audit.append",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         doc_id = uuid.uuid4()

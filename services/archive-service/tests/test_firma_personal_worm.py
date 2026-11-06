@@ -26,11 +26,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.signature_client import SignPersonalOutcome
-from app.clients.storage_client import WormProtectionOutcome
-from app.core.actor import Actor
-from app.core.config import settings
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.signature_client import SignPersonalOutcome
+from archive.clients.storage_client import WormProtectionOutcome
+from archive.core.actor import Actor
+from archive.core.config import settings
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import (
     PROTEGER_WORM_FIRMA_PERSONAL_REAL,
     USER_ID,
@@ -91,7 +91,7 @@ async def test_firmar_personal_deja_la_fila_pendiente_en_la_tx_y_dispara_el_worm
     svc = TransferenciaService(conn, TENANT)
 
     with patch(
-        "app.clients.signature_client.sign_personal",
+        "archive.clients.signature_client.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ):
         await svc.firmar_personal(tid, Actor(id=USER_ID), "123456", "Bearer x")
@@ -121,7 +121,7 @@ async def test_la_proteccion_pide_el_tipo_del_rol_y_marca_el_asiento(rol: str) -
     salida = WormProtectionOutcome(ok=True, worm_object_id=worm_id, retain_until=datetime(2036, 10, 1, tzinfo=UTC))
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=salida)
+        "archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=salida)
     ) as proteger:
         resultado = await PROTEGER_WORM_FIRMA_PERSONAL_REAL(
             svc, fila["id"], actor_id=str(USER_ID), origen="close"
@@ -154,9 +154,9 @@ async def test_la_reconciliacion_usa_la_puerta_interna() -> None:
     salida = WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=None)
 
     with (
-        patch("app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as humano,
+        patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as humano,
         patch(
-            "app.clients.storage_client.proteger_artefacto_worm_internal",
+            "archive.clients.storage_client.proteger_artefacto_worm_internal",
             new=AsyncMock(return_value=salida),
         ) as interna,
     ):
@@ -179,7 +179,7 @@ async def test_si_el_almacen_falla_reprograma_y_no_lanza(monkeypatch) -> None:
     _con_retencion(svc)
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm",
+        "archive.clients.storage_client.proteger_artefacto_worm",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=False, transient=True)),
     ):
         resultado = await PROTEGER_WORM_FIRMA_PERSONAL_REAL(
@@ -200,7 +200,7 @@ async def test_sin_retencion_resoluble_no_se_protege_con_una_fecha_inventada() -
     svc = TransferenciaService(conn, TENANT)
     _con_retencion(svc, resultado=None)
 
-    with patch("app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as proteger:
+    with patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as proteger:
         resultado = await PROTEGER_WORM_FIRMA_PERSONAL_REAL(
             svc, fila["id"], actor_id=str(USER_ID), origen="close"
         )
@@ -215,7 +215,7 @@ async def test_sin_retencion_resoluble_no_se_protege_con_una_fecha_inventada() -
 async def test_ya_protegida_o_sin_archivo_se_omite() -> None:
     svc = TransferenciaService(_conn(), TENANT)
     svc._conn.fetchrow.return_value = _fila_worm(worm_protegido_at=datetime.now(tz=UTC))  # type: ignore[attr-defined]
-    with patch("app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as proteger:
+    with patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()) as proteger:
         assert await PROTEGER_WORM_FIRMA_PERSONAL_REAL(svc, uuid.uuid4(), actor_id="x", origen="close") == "omitido"
         svc._conn.fetchrow.return_value = _fila_worm(minio_key_firmado=None)  # type: ignore[attr-defined]
         assert await PROTEGER_WORM_FIRMA_PERSONAL_REAL(svc, uuid.uuid4(), actor_id="x", origen="close") == "omitido"
@@ -231,7 +231,7 @@ async def test_el_metodo_real_nunca_lanza() -> None:
 
 @pytest.mark.asyncio
 async def test_la_barrida_recoge_las_firmas_sin_proteger() -> None:
-    from app.jobs import indice_reconciliation
+    from archive.jobs import indice_reconciliation
 
     pool = MagicMock()
     glob = AsyncMock()
@@ -255,8 +255,8 @@ async def test_la_barrida_recoge_las_firmas_sin_proteger() -> None:
 
     proteger = AsyncMock(return_value="protegido")
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", _acquire),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", _acquire),
         patch.object(TransferenciaService, "proteger_worm_firma_personal", proteger),
     ):
         resumen = await indice_reconciliation.run_once_firmas_personales_worm()
@@ -271,7 +271,7 @@ async def test_la_barrida_recoge_las_firmas_sin_proteger() -> None:
 async def test_la_misma_barrida_protege_las_constancias_de_firma_inobtenible() -> None:
     """Migración 061: el sello y la firma personal del declarante que no pudieron protegerse
     post-commit se repiten con backoff en la barrida de las firmas del acta."""
-    from app.jobs import indice_reconciliation
+    from archive.jobs import indice_reconciliation
 
     pool = MagicMock()
     glob = AsyncMock()
@@ -298,8 +298,8 @@ async def test_la_misma_barrida_protege_las_constancias_de_firma_inobtenible() -
 
     proteger = AsyncMock(side_effect=["protegido", "agotado"])
     with (
-        patch("app.jobs.indice_reconciliation.get_pool", return_value=pool),
-        patch("app.jobs.indice_reconciliation.acquire_tenant", _acquire),
+        patch("archive.jobs.indice_reconciliation.get_pool", return_value=pool),
+        patch("archive.jobs.indice_reconciliation.acquire_tenant", _acquire),
         patch.object(TransferenciaService, "proteger_worm_firma_excepcion", proteger),
     ):
         resumen = await indice_reconciliation.run_once_firmas_personales_worm()

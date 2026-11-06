@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.batch_service import BatchArchiveService
+from archive.services.batch_service import BatchArchiveService
 from tests.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)

@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.jobs import disposicion_alerta
+from archive.jobs import disposicion_alerta
 
 
 class _FakeRepo:

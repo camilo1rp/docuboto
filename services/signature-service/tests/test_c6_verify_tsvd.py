@@ -35,9 +35,9 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID
 from lxml import etree
 
-from app.core import algoritmos, tsa
-from app.providers import local
-from app.providers.local import renovar_archive_timestamp, verify_xades
+from signature.core import algoritmos, tsa
+from signature.providers import local
+from signature.providers.local import renovar_archive_timestamp, verify_xades
 from tests import c6_pki as pki
 from tests.test_vigencia_del_certificado_y_sellos import _reloj_adelantado
 from tests.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)

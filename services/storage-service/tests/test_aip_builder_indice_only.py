@@ -38,7 +38,7 @@ from pathlib import Path
 import bagit
 import pytest
 
-from app.services.aip_builder import (
+from storage.services.aip_builder import (
     AipDocMaterial,
     EmptyPayloadBagError,
     build_bag,
@@ -193,7 +193,7 @@ def test_hypothetical_empty_payload_bag_is_rejected_by_reference_bagit_library(
     ``bagit`` lo rechaza — confirma que la excepción del builder no es
     paranoia sino la traducción de una regla RFC 8493 real, verificable
     externamente."""
-    from app.services.aip_builder import (
+    from storage.services.aip_builder import (
         bag_info_txt,
         bagit_txt,
         build_zip,
@@ -288,7 +288,7 @@ def test_build_bag_normal_mode_without_indice_still_bagit_valid(tmp_path: Path) 
 
 
 def test_premis_content_location_is_data_path_in_indice_only_mode() -> None:
-    from app.services.aip_builder import _PREMIS_NS
+    from storage.services.aip_builder import _PREMIS_NS
 
     indice = _indice_material()
     xml_text = build_premis_v3(
@@ -310,7 +310,7 @@ def test_premis_content_location_is_data_path_in_indice_only_mode() -> None:
 
 
 def test_premis_content_location_is_tag_path_in_normal_mode_with_docs() -> None:
-    from app.services.aip_builder import _PREMIS_NS
+    from storage.services.aip_builder import _PREMIS_NS
 
     doc = _doc_material()
     indice = _indice_material()
@@ -345,7 +345,7 @@ def test_premis_indice_only_still_validates_against_official_premis_v3_xsd() -> 
     """El PREMIS emitido en modo índice-only sigue conforme al XSD OFICIAL de
     la LoC (E10 Increment C1a) -- el cambio de `contentLocation` no rompe la
     conformidad plena."""
-    from app.services.aip_builder import validate_premis_xml
+    from storage.services.aip_builder import validate_premis_xml
 
     indice = _indice_material()
     xml_text = build_premis_v3(
@@ -368,7 +368,7 @@ def test_premis_indice_only_still_validates_against_official_premis_v3_xsd() -> 
 
 
 def _ingestion_event_outcome_detail_note(xml_text: str) -> str | None:
-    from app.services.aip_builder import _PREMIS_NS
+    from storage.services.aip_builder import _PREMIS_NS
 
     root = etree_fromstring(xml_text)
     for event in root.findall(f"{{{_PREMIS_NS}}}event"):
@@ -395,7 +395,7 @@ def test_premis_indice_only_ingestion_event_carries_affirmative_conformance_note
     expediente es físico/índice-only -- no basta con la ausencia de un
     `object` de documento fabricado (honesto por omisión); debe ser legible
     sin ambigüedad por una institución receptora del AIP."""
-    from app.services.aip_builder import _INDICE_ONLY_INGESTION_NOTE, validate_premis_xml
+    from storage.services.aip_builder import _INDICE_ONLY_INGESTION_NOTE, validate_premis_xml
 
     indice = _indice_material()
     xml_text = build_premis_v3(
@@ -418,7 +418,7 @@ def test_premis_normal_mode_ingestion_event_has_no_affirmative_note() -> None:
     expediente sí tiene documentos-objeto reales en el Bag, así que no hay
     nada que aclarar sobre soporte físico. El evento `ingestion` sigue
     validando, simplemente sin `eventOutcomeDetail`."""
-    from app.services.aip_builder import validate_premis_xml
+    from storage.services.aip_builder import validate_premis_xml
 
     doc = _doc_material()
     indice = _indice_material()

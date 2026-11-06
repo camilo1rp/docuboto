@@ -29,7 +29,7 @@ import uuid
 import asyncpg
 import pytest
 
-from app.core.database import tenant_schema
+from document.core.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 
@@ -174,7 +174,7 @@ async def test_dos_terceros_no_comparten_documento_de_identidad(tenant_ctx) -> N
 async def test_la_busqueda_encuentra_sin_tildes_ni_mayusculas(tenant_ctx) -> None:
     """La defensa que MÁS duplicados evita: los duplicados no se crean por
     saltarse un índice, se crean por no encontrar lo que ya está."""
-    from app.repositories.tercero_repository import TerceroRepository
+    from document.repositories.tercero_repository import TerceroRepository
 
     schema, conn = tenant_ctx
     await conn.execute(f"SET search_path TO {tenant_schema(schema)}")

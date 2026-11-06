@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.models.archive import Expediente, ExpedienteRadicado
-from app.services.archive_service import ArchiveService
+from archive.models.archive import Expediente, ExpedienteRadicado
+from archive.services.archive_service import ArchiveService
 
 NOW = datetime.now(tz=UTC)
 
@@ -90,9 +90,9 @@ async def test_export_manifest_shows_excluido_no_bytes(monkeypatch) -> None:
             str(excl.radicado_id): [],
         }
     )
-    monkeypatch.setattr("app.clients.document_client.fetch_anexos_internal", fetch_mock)
+    monkeypatch.setattr("archive.clients.document_client.fetch_anexos_internal", fetch_mock)
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(
             return_value={
                 str(vinc.radicado_id): {"subject": "Asunto del oficio", "doc_type": "E"},
@@ -108,9 +108,9 @@ async def test_export_manifest_shows_excluido_no_bytes(monkeypatch) -> None:
         captured["extra_files"] = extra_files
         return b"ZIPBYTES"
 
-    monkeypatch.setattr("app.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_xml",
+        "archive.services.index_service.IndexService.get_xml",
         AsyncMock(side_effect=HTTPException(status_code=404, detail="no indice")),
     )
 
@@ -152,9 +152,9 @@ async def test_export_omits_over_clearance_radicado(monkeypatch) -> None:
 
     # document-service solo devuelve el VISIBLE; el clasificado no aparece.
     fetch_mock = AsyncMock(return_value={str(visible.radicado_id): []})
-    monkeypatch.setattr("app.clients.document_client.fetch_anexos_internal", fetch_mock)
+    monkeypatch.setattr("archive.clients.document_client.fetch_anexos_internal", fetch_mock)
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(return_value={str(visible.radicado_id): {"subject": "x", "doc_type": "E"}}),
     )
     captured = {}
@@ -164,9 +164,9 @@ async def test_export_omits_over_clearance_radicado(monkeypatch) -> None:
         captured["items"] = items
         return b"ZIP"
 
-    monkeypatch.setattr("app.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_xml",
+        "archive.services.index_service.IndexService.get_xml",
         AsyncMock(side_effect=HTTPException(status_code=404, detail="no")),
     )
 
@@ -184,10 +184,10 @@ async def test_export_includes_indice_when_present(monkeypatch) -> None:
     vinc = _radicado(tracking="2026-DEMO-E-000001")
     svc = _service_with(_expediente([vinc]))
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
+        "archive.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
     )
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(return_value={}),
     )
     captured = {}
@@ -196,9 +196,9 @@ async def test_export_includes_indice_when_present(monkeypatch) -> None:
         captured["extra_files"] = extra_files
         return b"ZIP"
 
-    monkeypatch.setattr("app.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_xml",
+        "archive.services.index_service.IndexService.get_xml",
         AsyncMock(return_value="<indice/>"),
     )
 
@@ -226,11 +226,11 @@ async def test_leeme_no_afirma_una_firma_que_no_existe(monkeypatch) -> None:
     vinc = _radicado(tracking="2026-DEMO-E-000001", estado="vinculado")
     svc = _service_with(_expediente([vinc], status="open"))
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_anexos_internal",
+        "archive.clients.document_client.fetch_anexos_internal",
         AsyncMock(return_value={str(vinc.radicado_id): []}),
     )
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(return_value={str(vinc.radicado_id): {"subject": "Asunto", "doc_type": "E"}}),
     )
     captured = {}
@@ -239,13 +239,13 @@ async def test_leeme_no_afirma_una_firma_que_no_existe(monkeypatch) -> None:
         captured["extra_files"] = extra_files
         return b"ZIPBYTES"
 
-    monkeypatch.setattr("app.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_xml",
+        "archive.services.index_service.IndexService.get_xml",
         AsyncMock(return_value="<indice/>"),
     )
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_indice",
+        "archive.services.index_service.IndexService.get_indice",
         AsyncMock(return_value=SimpleNamespace(estado="pendiente_firma")),
     )
 
@@ -271,11 +271,11 @@ async def test_leeme_afirma_la_firma_cuando_el_indice_SI_esta_firmado(monkeypatc
     vinc = _radicado(tracking="2026-DEMO-E-000001", estado="vinculado")
     svc = _service_with(_expediente([vinc], status="closed"))
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_anexos_internal",
+        "archive.clients.document_client.fetch_anexos_internal",
         AsyncMock(return_value={str(vinc.radicado_id): []}),
     )
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_radicado_metadata_internal",
+        "archive.clients.document_client.fetch_radicado_metadata_internal",
         AsyncMock(return_value={str(vinc.radicado_id): {"subject": "Asunto", "doc_type": "E"}}),
     )
     captured = {}
@@ -284,13 +284,13 @@ async def test_leeme_afirma_la_firma_cuando_el_indice_SI_esta_firmado(monkeypatc
         captured["extra_files"] = extra_files
         return b"ZIPBYTES"
 
-    monkeypatch.setattr("app.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_xml",
+        "archive.services.index_service.IndexService.get_xml",
         AsyncMock(return_value="<indice/>"),
     )
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_indice",
+        "archive.services.index_service.IndexService.get_indice",
         AsyncMock(return_value=SimpleNamespace(estado="firmado")),
     )
 
@@ -316,14 +316,14 @@ def _patch_storage(monkeypatch, handler):
         kwargs["transport"] = httpx.MockTransport(handler)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr("app.clients.storage_client.httpx.AsyncClient", _factory)
+    monkeypatch.setattr("archive.clients.storage_client.httpx.AsyncClient", _factory)
 
 
 @pytest.mark.asyncio
 async def test_client_streams_chunks_without_buffering(monkeypatch) -> None:
     import httpx
 
-    from app.clients import storage_client
+    from archive.clients import storage_client
 
     trozos = [b"A" * 1000, b"B" * 500]
 
@@ -357,7 +357,7 @@ async def test_client_detects_truncated_stream(monkeypatch) -> None:
     """Content-Length dice 1500 y llegan 1000: error, no un ZIP corto «completo»."""
     import httpx
 
-    from app.clients import storage_client
+    from archive.clients import storage_client
 
     def _handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-length": "1500"}, content=_AsyncStream([b"A" * 1000]))
@@ -381,13 +381,13 @@ async def test_storage_error_maps_before_first_byte(
 
     svc = _service_with(_expediente([_radicado(tracking="2026-DEMO-E-000001", estado="vinculado")]))
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
+        "archive.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
     )
     monkeypatch.setattr(
-        "app.clients.document_client.fetch_radicado_metadata_internal", AsyncMock(return_value={})
+        "archive.clients.document_client.fetch_radicado_metadata_internal", AsyncMock(return_value={})
     )
     monkeypatch.setattr(
-        "app.services.index_service.IndexService.get_xml",
+        "archive.services.index_service.IndexService.get_xml",
         AsyncMock(side_effect=HTTPException(status_code=404, detail="no indice")),
     )
     _patch_storage(monkeypatch, lambda request: httpx.Response(status_storage))

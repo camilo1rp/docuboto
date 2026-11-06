@@ -32,17 +32,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from app.clients.storage_client import WormProtectionOutcome, WormRenewalOutcome
-from app.core.actor import Actor
-from app.schemas.transferencia import RevocarFirmaInobtenibleRequest
-from app.services.constancia_firma_excepcion import (
+from archive.clients.storage_client import WormProtectionOutcome, WormRenewalOutcome
+from archive.core.actor import Actor
+from archive.schemas.transferencia import RevocarFirmaInobtenibleRequest
+from archive.services.constancia_firma_excepcion import (
     Identidad,
     build_constancia_xml,
     build_revocacion_xml,
     huella_de_fundamento,
     sha256_c14n,
 )
-from app.services.transferencia_service import TransferenciaService
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import TENANT_HEADERS, USER_ID, make_expediente_record
 from tests.test_acta_firma_inobtenible import (
     ADMIN,
@@ -233,7 +233,7 @@ async def test_la_retencion_se_ancla_al_ultimo_acto_de_la_cadena_no_a_la_fecha_p
     ok = WormProtectionOutcome(
         ok=True, worm_object_id=uuid.uuid4(), retain_until=datetime(2053, 1, 1, tzinfo=UTC)
     )
-    with patch("app.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=ok)):
+    with patch("archive.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=ok)):
         await svc.proteger_worm_firma_excepcion(fila["id"], "sello", actor_id=None, origen="reconciliation")
     assert svc._resolve_worm_retention_acta.await_args.kwargs["firmado_at"] == ultimo
 
@@ -259,9 +259,9 @@ async def test_al_proteger_un_eslabon_nuevo_se_renuevan_los_anteriores_a_la_mism
     svc = _svc(conn, retencion=(25, date(2027, 3, 1)))
     ok = WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=nueva)
     with (
-        patch("app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=ok)),
+        patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=ok)),
         patch(
-            "app.clients.storage_client.renovar_retencion_worm_internal",
+            "archive.clients.storage_client.renovar_retencion_worm_internal",
             new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
         ) as renovar,
     ):
@@ -348,11 +348,11 @@ async def _leer_acta(puede_ver: bool):
     conn.fetch.side_effect = [[], [_excepcion_row(tid)]]
     with (
         patch(
-            "app.services.transferencia_service.check_permission",
+            "archive.services.transferencia_service.check_permission",
             new=AsyncMock(return_value=puede_ver),
         ),
         patch(
-            "app.clients.document_client.fetch_radicado_metadata_internal",
+            "archive.clients.document_client.fetch_radicado_metadata_internal",
             new=AsyncMock(return_value={str(RAD): {"tracking_number": NUMERO_RAD}}),
         ),
     ):
@@ -377,7 +377,7 @@ async def test_visitar_el_acta_no_devuelve_el_fundamento_ni_deja_asiento_de_lect
 def test_oai_y_cmis_no_leen_las_constancias_de_firma_inobtenible() -> None:
     """Dato de salud/fallecimiento (Ley 1581 art. 5) y clasificado (Ley 1712 art. 18 lit. a): ningún
     módulo de interoperabilidad de archive-service toca estas tablas ni su servicio."""
-    raiz = Path(__file__).resolve().parents[1] / "app"
+    raiz = Path(__file__).resolve().parents[1] / "archive"
     prohibidos = ("firma_excepcion", "constancia_firma_excepcion", "fundamento")
     revisados = 0
     for ruta in raiz.rglob("*.py"):

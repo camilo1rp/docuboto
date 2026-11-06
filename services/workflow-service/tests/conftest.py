@@ -26,9 +26,9 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.database import get_db_conn
-from app.main import app
-from app.repositories.workflow_repository import Tenencia
+from workflow.core.database import get_db_conn
+from workflow.main import app
+from workflow.repositories.workflow_repository import Tenencia
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -39,6 +39,10 @@ from app.repositories.workflow_repository import Tenencia
 # atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
+
+from orpycamcp_common.usuario import instalar_inyector
+
+instalar_inyector(app)
 
 
 TENANT_SLUG = "demo"
@@ -163,7 +167,7 @@ def _sin_sincronizacion_de_estado() -> Generator[AsyncMock, None, None]:
     paso activo ajeno y el contexto «no consta». Los tests que prueban ESA lógica
     sobrescriben estos mocks (`app.services.workflow_service.WorkflowRepository.*`).
     """
-    repo = "app.services.workflow_service.WorkflowRepository"
+    repo = "workflow.services.workflow_service.WorkflowRepository"
     with (
         patch(f"{repo}.sincronizar_estado_radicado", new=AsyncMock(return_value=None)) as sync,
         patch(f"{repo}.clearance_para_acto", new=AsyncMock(return_value=3)),
@@ -196,7 +200,7 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock, Mag
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    with patch("app.services.workflow_service.get_redis", return_value=mock_redis):
+    with patch("workflow.services.workflow_service.get_redis", return_value=mock_redis):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, mock_redis
 
@@ -214,7 +218,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    with patch("app.services.workflow_service.get_redis", return_value=mock_redis):
+    with patch("workflow.services.workflow_service.get_redis", return_value=mock_redis):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
 

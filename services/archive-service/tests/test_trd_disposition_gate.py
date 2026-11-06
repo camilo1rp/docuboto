@@ -24,7 +24,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.core.trd_disposition import (
+from archive.core.trd_disposition import (
     ESTADOS_QUE_GOBIERNAN_ELIMINACION_EFECTIVA,
     assert_disposicion_final_autorizada,
 )

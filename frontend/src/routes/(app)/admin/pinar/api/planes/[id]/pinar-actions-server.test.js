@@ -84,7 +84,7 @@ describe("POST /admin/pinar/api/planes/[id]/aprobar", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(capturedUrl).toBe(`http://api-gateway:8080/api/v1/pinar/planes/${PLAN_ID}/aprobar`);
+    expect(capturedUrl).toBe(`http://app:8000/api/v1/pinar/planes/${PLAN_ID}/aprobar`);
     expect(capturedBody).toEqual({ acto_administrativo: "Resolución 001 de 2026" });
   });
 
@@ -149,7 +149,7 @@ describe("POST /admin/pinar/api/planes/[id]/ejecutar", () => {
       return new Response(JSON.stringify({ id: PLAN_ID, estado: "en_ejecucion" }), { status: 200 });
     });
     await ejecutar({ locals: SESSION_LOCALS, params: { id: PLAN_ID } });
-    expect(capturedUrl).toBe(`http://api-gateway:8080/api/v1/pinar/planes/${PLAN_ID}/ejecutar`);
+    expect(capturedUrl).toBe(`http://app:8000/api/v1/pinar/planes/${PLAN_ID}/ejecutar`);
   });
 });
 
@@ -178,7 +178,7 @@ describe("POST /admin/pinar/api/planes/[id]/cerrar", () => {
     });
     const res = await cerrar({ locals: SESSION_LOCALS, params: { id: PLAN_ID } });
     expect(res.status).toBe(200);
-    expect(capturedUrl).toBe(`http://api-gateway:8080/api/v1/pinar/planes/${PLAN_ID}/cerrar`);
+    expect(capturedUrl).toBe(`http://app:8000/api/v1/pinar/planes/${PLAN_ID}/cerrar`);
   });
 });
 

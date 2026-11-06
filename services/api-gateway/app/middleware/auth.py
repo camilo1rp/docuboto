@@ -125,15 +125,16 @@ class JWTValidationMiddleware(BaseHTTPMiddleware):
             request.url.path,
             openapi_publico=bool(getattr(request.app.state, "openapi_publico", False)),
         ):
-            # Ruta pública: no hay persona que firmar, pero la IP del cliente
-            # (por saltos de confianza, NUNCA el X-Forwarded-For crudo) viaja
-            # firmada y ligada a la ruta para la constancia de autorización
-            # (Ley 1581, ADR-031). `x-real-ip` no está en la whitelist de
-            # reenvío, así que lo que el cliente mande se sobrescribe.
-            request.state.auth_headers = identidad.firmar_ip_publica(
-                resolve_client_ip(request, getattr(request.app.state, "trusted_proxies", "")),
-                request.url.path,
-            )
+            # Ruta pública: no hay persona. La IP sale de saltos de confianza
+            # (nunca el X-Forwarded-For crudo). `x-real-ip` no está en la
+            # whitelist de reenvío, así que lo que el cliente mande se
+            # sobrescribe. El proceso unificado deriva la misma IP; esta
+            # cabecera queda para el perfil split.
+            request.state.auth_headers = {
+                "X-Real-Ip": resolve_client_ip(
+                    request, getattr(request.app.state, "trusted_proxies", "")
+                ),
+            }
             return await call_next(request)
 
         authorization = request.headers.get("Authorization", "")
@@ -370,38 +371,11 @@ async def _continuar_con_identidad(request: Request, call_next, payload: dict) -
             request, getattr(request.app.state, "trusted_proxies", "")
         ),
     }
-    # Y se FIRMAN.
-    #
-    # Sin firma, estas cabeceras son una afirmación, no una identidad: el gateway
-    # no las reenvía si vienen del cliente, así que desde fuera no se pueden
-    # forjar, pero dentro de la red cualquiera que alcance el puerto de un
-    # servicio podía hablarle diciendo ser quien quisiera y de la entidad que
-    # quisiera. Es el mismo cierre que el sobre de eventos, en la otra dirección.
-    #
-    # Atada al MÉTODO y a la RUTA de esta petición (ADR-036): el proxy reenvía
-    # `upstream_base + "/" + path` con `path` = `scope["path"]`, así que la ruta que
-    # firma el gateway es la que verifica el destino. Si un día el gateway reescribiera
-    # prefijos, la firma tendría que moverse a `_handle_proxy` con la ruta del upstream.
-    try:
-        request.state.auth_headers = identidad.firmar(
-            request.state.auth_headers,
-            metodo=request.method,
-            ruta=request.scope["path"],
-        )
-    except identidad.IdentidadNoAutentica:
-        # Una ruta que no estabiliza al decodificar no es una ruta: el proxy la
-        # rechaza con este mismo 404 (`_normalize_path`); sin esto era un 500 con
-        # traceback por petición (B10 SEG #1).
-        return JSONResponse(
-            status_code=404,
-            content={
-                "error": "route_not_found",
-                "detail": "Ninguna ruta del sistema corresponde a la solicitud",
-                "status": 404,
-            },
-        )
-    # La IP real, además, con el secreto de ORIGEN: la verifica el mcp-server, que
-    # no posee el secreto maestro de identidad (AREA-11-08).
+    # El llamante del proceso unificado sale del JWT, no de estas cabeceras.
+    # En el perfil split el destino también valida el Bearer; `X-User-Id` es
+    # trazabilidad del propio gateway (cuota, log), no una identidad que el
+    # dominio acepte. La IP real sigue firmada con el secreto de ORIGEN: la
+    # verifica el mcp-server, que no posee el secreto maestro (AREA-11-08).
     request.state.auth_headers = identidad.firmar_ip_real(request.state.auth_headers)
 
     return await call_next(request)

@@ -29,9 +29,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.clients.storage_client import WormProtectionOutcome
-from app.core.config import settings
-from app.services.transferencia_service import TransferenciaService
+from archive.clients.storage_client import WormProtectionOutcome
+from archive.core.config import settings
+from archive.services.transferencia_service import TransferenciaService
 from tests.conftest import USER_ID, make_expediente_record, make_trd_serie_record
 
 TENANT = "demo"
@@ -331,13 +331,13 @@ async def test_proteger_worm_acta_close_uses_public_client_with_actor() -> None:
 
     with (
         patch(
-            "app.clients.storage_client.proteger_artefacto_worm",
+            "archive.clients.storage_client.proteger_artefacto_worm",
             new=AsyncMock(
                 return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4())
             ),
         ) as mock_public,
         patch(
-            "app.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock()
+            "archive.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock()
         ) as mock_internal,
     ):
         resultado = await service.proteger_worm_acta(
@@ -372,13 +372,13 @@ async def test_proteger_worm_acta_reconciliation_uses_internal_client() -> None:
 
     with (
         patch(
-            "app.clients.storage_client.proteger_artefacto_worm_internal",
+            "archive.clients.storage_client.proteger_artefacto_worm_internal",
             new=AsyncMock(
                 return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4())
             ),
         ) as mock_internal,
         patch(
-            "app.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()
+            "archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock()
         ) as mock_public,
     ):
         resultado = await service.proteger_worm_acta(
@@ -405,7 +405,7 @@ async def test_proteger_worm_acta_success_marks_atomically_and_audits() -> None:
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm",
+        "archive.clients.storage_client.proteger_artefacto_worm",
         new=AsyncMock(
             return_value=WormProtectionOutcome(
                 ok=True, worm_object_id=worm_object_id, retain_until=retain_until
@@ -461,7 +461,7 @@ async def test_proteger_worm_acta_lost_race_does_not_write_phantom_audit() -> No
     service._resolve_worm_retention_acta = AsyncMock(return_value=(5, date(2026, 1, 1)))
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm",
+        "archive.clients.storage_client.proteger_artefacto_worm",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4())),
     ):
         resultado = await service.proteger_worm_acta(
@@ -487,7 +487,7 @@ async def test_proteger_worm_acta_disabled_schedules_backoff_not_agotado() -> No
     service._resolve_worm_retention_acta = AsyncMock(return_value=(5, date(2026, 1, 1)))
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm",
+        "archive.clients.storage_client.proteger_artefacto_worm",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=False, disabled=True)),
     ):
         resultado = await service.proteger_worm_acta(
@@ -517,7 +517,7 @@ async def test_proteger_worm_acta_transient_failure_marks_worm_no_confirmado() -
     service._resolve_worm_retention_acta = AsyncMock(return_value=(5, date(2026, 1, 1)))
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=False, transient=True)),
     ):
         resultado = await service.proteger_worm_acta(
@@ -544,7 +544,7 @@ async def test_proteger_worm_acta_exhausts_after_max_intentos_and_audits() -> No
     service._resolve_worm_retention_acta = AsyncMock(return_value=(5, date(2026, 1, 1)))
 
     with patch(
-        "app.clients.storage_client.proteger_artefacto_worm_internal",
+        "archive.clients.storage_client.proteger_artefacto_worm_internal",
         new=AsyncMock(return_value=WormProtectionOutcome(ok=False, transient=True)),
     ):
         resultado = await service.proteger_worm_acta(

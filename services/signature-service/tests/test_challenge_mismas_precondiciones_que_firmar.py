@@ -29,9 +29,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
-from app.core.http_clients import HuellaNoVerificableError, SignerIdentity
-from app.services import cadena_service as mod
-from app.services.cadena_service import CadenaFirmaService
+from signature.core.http_clients import HuellaNoVerificableError, SignerIdentity
+from signature.services import cadena_service as mod
+from signature.services.cadena_service import CadenaFirmaService
 from tests.conftest import HUELLA_PRODUCTOR, USER
 
 SOL_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -160,7 +160,7 @@ async def test_challenge_sin_certificado_bajo_gate_xades_responde_422_sin_correo
 async def test_challenge_canal_de_credencial_caido_bajo_gate_responde_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.core.http_clients import SigningKeyStatusUnavailableError
+    from signature.core.http_clients import SigningKeyStatusUnavailableError
 
     svc, enviar, identidad = _servicio(monkeypatch)
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="todos"))

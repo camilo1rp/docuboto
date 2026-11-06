@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from starlette.datastructures import UploadFile
 
-from app.clients.storage_client import ArchivoSubido
+from document.clients.storage_client import ArchivoSubido
 
 BASE = "/api/v1/public/demo/ventanilla"
 
@@ -188,7 +188,7 @@ async def test_lo_radicado_LLEGA_a_la_dependencia_de_ventanilla(client_with_conn
 
     creado = _resultado_radicado()
     with patch(
-        "app.services.document_service.DocumentService.create",
+        "document.services.document_service.DocumentService.create",
         AsyncMock(return_value=creado),
     ) as mock_create:
         resp = await client.post(BASE, **_multipart(_cuerpo()))
@@ -227,7 +227,7 @@ async def test_una_ENTIDAD_remitente_no_se_escribe_en_el_campo_de_persona(
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with patch(
-        "app.services.document_service.DocumentService.create",
+        "document.services.document_service.DocumentService.create",
         AsyncMock(return_value=_resultado_radicado()),
     ) as mock_create:
         resp = await client.post(BASE, **_multipart(_cuerpo(
@@ -264,7 +264,7 @@ async def test_una_radicacion_ANONIMA_es_legitima(client_with_conn) -> None:
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with patch(
-        "app.services.document_service.DocumentService.create",
+        "document.services.document_service.DocumentService.create",
         AsyncMock(return_value=_resultado_radicado()),
     ):
         resp = await client.post(BASE, **_multipart(_cuerpo(
@@ -301,14 +301,14 @@ async def test_el_tipo_del_anexo_sale_del_CONTENIDO_no_de_lo_que_declare_el_clie
 
     with (
         patch(
-            "app.services.ventanilla_service.upload_anexo_externo",
+            "document.services.ventanilla_service.upload_anexo_externo",
             # ArchivoSubido, NO un dict con una clave inventada: un mock que
             # devuelve la forma equivocada comprueba que el código coincide con
             # la creencia de quien lo escribió, no con el servicio real.
             AsyncMock(return_value=ArchivoSubido(file_id=uuid.uuid4())),
         ) as mock_up,
         patch(
-            "app.services.document_service.DocumentService.create",
+            "document.services.document_service.DocumentService.create",
             AsyncMock(return_value=_resultado_radicado()),
         ) as mock_create,
     ):
@@ -336,9 +336,9 @@ async def test_un_formato_no_admitido_se_rechaza_y_NO_se_radica(client_with_conn
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with (
-        patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up,
+        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up,
         patch(
-            "app.services.document_service.DocumentService.create", AsyncMock()
+            "document.services.document_service.DocumentService.create", AsyncMock()
         ) as mock_create,
     ):
         resp = await client.post(
@@ -354,12 +354,12 @@ async def test_un_formato_no_admitido_se_rechaza_y_NO_se_radica(client_with_conn
 
 @pytest.mark.asyncio
 async def test_mas_anexos_de_la_cuenta_se_rechazan_ANTES_de_leerlos(client_with_conn) -> None:
-    from app.core.anexos_publicos import MAX_ANEXOS
+    from document.core.anexos_publicos import MAX_ANEXOS
 
     client, _ = client_with_conn
     ficheros = [(f"s{i}.pdf", PDF, "application/pdf") for i in range(MAX_ANEXOS + 1)]
 
-    with patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up:
+    with patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up:
         resp = await client.post(BASE, **_multipart(_cuerpo(), ficheros))
 
     assert resp.status_code == 422
@@ -373,15 +373,15 @@ async def test_si_falla_el_almacen_NO_queda_un_radicado_sin_soportes(client_with
     conn.fetchval.side_effect = _fetchval_por_consulta("Petición", "cod")
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
-    from app.clients.storage_client import StorageContentError
+    from document.clients.storage_client import StorageContentError
 
     with (
         patch(
-            "app.services.ventanilla_service.upload_anexo_externo",
+            "document.services.ventanilla_service.upload_anexo_externo",
             AsyncMock(side_effect=StorageContentError("caído")),
         ),
         patch(
-            "app.services.document_service.DocumentService.create", AsyncMock()
+            "document.services.document_service.DocumentService.create", AsyncMock()
         ) as mock_create,
     ):
         resp = await client.post(
@@ -402,7 +402,7 @@ async def test_radicar_SIN_anexos_sigue_siendo_valido(client_with_conn) -> None:
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with patch(
-        "app.services.document_service.DocumentService.create",
+        "document.services.document_service.DocumentService.create",
         AsyncMock(return_value=_resultado_radicado()),
     ) as mock_create:
         resp = await client.post(BASE, **_multipart(_cuerpo()))
@@ -422,7 +422,7 @@ async def test_un_anexo_gigante_no_llega_entero_a_memoria(client_with_conn) -> N
     La aserción NO puede ser solo el 422 —el código defectuoso también respondía
     422— así que se mide lo que de verdad distingue: cuántos bytes se leyeron.
     """
-    from app.core.anexos_publicos import MAX_BYTES_POR_ANEXO
+    from document.core.anexos_publicos import MAX_BYTES_POR_ANEXO
 
     client, _ = client_with_conn
     gigante = PDF + b"\x00" * (MAX_BYTES_POR_ANEXO + 4096)
@@ -436,7 +436,7 @@ async def test_un_anexo_gigante_no_llega_entero_a_memoria(client_with_conn) -> N
         return datos
 
     with patch.object(UploadFile, "read", read_contando):
-        with patch("app.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up:
+        with patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up:
             resp = await client.post(
                 BASE, **_multipart(_cuerpo(), [("enorme.pdf", gigante, "application/pdf")])
             )

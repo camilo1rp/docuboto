@@ -162,7 +162,7 @@ class Settings(BaseSettings):
     # Ahora el cuerpo se transmite por trozos y este tope es lo que lo acota.
     #
     # 512 MiB no es un número redondo elegido al azar: es el máximo que ya declara
-    # `document-service/app/routers/import_.py` para el ZIP de importación
+    # `document-service/document/routers/import_.py` para el ZIP de importación
     # interoperable, la carga legítima más grande del sistema. Bajarlo aquí rompería
     # esa función en silencio; subirlo no habilita nada que el servicio de destino
     # no vaya a rechazar igualmente.

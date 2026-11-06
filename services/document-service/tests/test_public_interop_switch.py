@@ -25,8 +25,8 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.core.config import settings
-from app.main import app
+from document.core.config import settings
+from document.main import app
 
 pytestmark = pytest.mark.asyncio
 
@@ -95,7 +95,7 @@ async def test_encendido_ya_no_da_404_de_ruta_inexistente(
     traduce a 400. Cualquiera de las dos cosas sirve de señal; lo único que NO puede
     ocurrir es un 404, que es la firma del guard.
     """
-    from app.core import config as cfg_module
+    from document.core import config as cfg_module
 
     monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
 

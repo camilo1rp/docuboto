@@ -38,10 +38,10 @@ import pytest
 from cryptography.exceptions import InvalidTag
 from httpx import AsyncClient
 
-from app.core.authz import Caller, get_caller
-from app.core.config import settings
-from app.core.database import get_db_conn, get_tenant_conn
-from app.core.totp import (
+from auth.core.authz import Caller, get_caller
+from auth.core.config import settings
+from auth.core.database import get_db_conn, get_tenant_conn
+from auth.core.totp import (
     _hotp,
     build_aad,
     build_otpauth_uri,
@@ -51,8 +51,8 @@ from app.core.totp import (
     encrypt_secret,
     generate_secret,
 )
-from app.main import app
-from app.services.totp_service import TotpService
+from auth.main import app
+from auth.services.totp_service import TotpService
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -84,7 +84,7 @@ def _totp_key(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock_append = AsyncMock(return_value="fakehash")
-    monkeypatch.setattr("app.services.totp_service._audit.append", mock_append)
+    monkeypatch.setattr("auth.services.totp_service._audit.append", mock_append)
     return mock_append
 
 
@@ -669,7 +669,7 @@ async def test_revoke_active_with_correct_step_up(client: AsyncClient) -> None:
 
 def _mock_validate_token(monkeypatch: pytest.MonkeyPatch, claims: dict) -> None:
     monkeypatch.setattr(
-        "app.routers.totp.validate_token", AsyncMock(return_value=claims)
+        "auth.routers.totp.validate_token", AsyncMock(return_value=claims)
     )
 
 
@@ -1327,7 +1327,7 @@ async def test_internal_verify_without_internal_token_returns_401(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     validate = AsyncMock(return_value={"user_id": "kc-sub", "tenant_slug": "demo"})
-    monkeypatch.setattr("app.routers.totp.validate_token", validate)
+    monkeypatch.setattr("auth.routers.totp.validate_token", validate)
     _override_internal(_make_conn())
     try:
         resp = await client.post(

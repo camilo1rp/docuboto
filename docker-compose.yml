@@ -24,13 +24,12 @@ volumes:
   keycloak-data:
   redis-data:
 
-# Migraciones al arrancar en DESARROLLO (C19, ADR-041): cada servicio con base de
-# datos espera a su `migrate-<servicio>`, un contenedor de un solo uso que corre
-# `migrations/runner.py` con la conexión del PROPIETARIO sobre la MISMA imagen que
-# va a servir (la construye el servicio; el migrador la reutiliza por nombre, sin
-# `build:` propio para no construirla dos veces). Si el runner falla, el servicio
-# no arranca (`service_completed_successfully`). Los nueve runners comparten un
-# cerrojo global, así que arrancar todo junto es seguro.
+# Migraciones al arrancar en DESARROLLO (C19, ADR-041): el proceso unificado
+# espera a `migrate-docuboto`, que aplica el baseline generado. Los nueve
+# `migrate-<servicio>` de dominio quedan en el perfil `split` (misma imagen que
+# el servicio, `command: python migrations/runner.py`, conexión del propietario).
+# Si el runner falla, el servicio no arranca (`service_completed_successfully`).
+# Todos los runners más `init_tenant.py` comparten un cerrojo global.
 #
 # Los servicios CONSERVAN `MIGRATIONS_DATABASE_URL` en dev: `scripts/init-tenant.sh`
 # hace `docker compose exec` y los conftest de integración la leen.
@@ -53,49 +52,63 @@ x-migracion-dev: &migracion-dev
 
 services:
 
-  # ─── Migraciones (un contenedor de un solo uso por servicio con base de datos) ───
+  # ─── Migraciones (un contenedor de un solo uso) ───
+  migrate-docuboto:
+    <<: *migracion-dev
+    image: orpycamcp/app:dev
+    container_name: orpycamcp-migrate-docuboto
+
   migrate-auth:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/auth-service:dev
     container_name: orpycamcp-migrate-auth
 
   migrate-tenant:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/tenant-service:dev
     container_name: orpycamcp-migrate-tenant
 
   migrate-document:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/document-service:dev
     container_name: orpycamcp-migrate-document
 
   migrate-storage:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/storage-service:dev
     container_name: orpycamcp-migrate-storage
 
   migrate-workflow:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/workflow-service:dev
     container_name: orpycamcp-migrate-workflow
 
   migrate-archive:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/archive-service:dev
     container_name: orpycamcp-migrate-archive
 
   migrate-notification:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/notification-service:dev
     container_name: orpycamcp-migrate-notification
 
   migrate-signature:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/signature-service:dev
     container_name: orpycamcp-migrate-signature
 
   migrate-knowledge:
     <<: *migracion-dev
+    profiles: ["split"]
     image: orpycamcp/knowledge-service:dev
     container_name: orpycamcp-migrate-knowledge
 
@@ -105,7 +118,7 @@ services:
     # Debian (bookworm), no alpine: la imagen anterior (pgvector) también era
     # bookworm, y cambiar de libc cambia la colación de los índices de un volumen
     # existente. Sin pgvector desde D0 (ADR-046 §4): ningún servicio lo usa.
-    image: postgres:15-bookworm@sha256:daeac543477e189e334f159133f4be6dae739b005cec2dfb9d482509fed05465
+    image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
     container_name: orpycamcp-postgres
     environment:
       POSTGRES_USER: orpycamcp
@@ -197,7 +210,7 @@ services:
       retries: 3
 
   keycloak:
-    image: quay.io/keycloak/keycloak:24.0.5@sha256:f8ade94c1d0ad2f2fa7734a455fee5392764f402c43ca35e9af6bf63a2541dc9
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
     container_name: orpycamcp-keycloak
     command: start-dev --import-realm
     environment:
@@ -206,8 +219,8 @@ services:
       KC_DB_USERNAME: orpycamcp
       KC_DB_PASSWORD: orpycamcp
       KC_DB_SCHEMA: keycloak
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: orpycamcp_dev
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: orpycamcp_dev
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
       # Fija las frontend-URLs (incluido el `iss` de los tokens) a la URL pública
@@ -215,7 +228,7 @@ services:
       # los backends alcancen Keycloak internamente por http://keycloak:8080, el
       # issuer emitido es SIEMPRE http://localhost:19180/realms/orpycamcp → así
       # navegador y servidor coinciden y la validación del `iss` no rechaza tokens.
-      KC_HOSTNAME_URL: http://localhost:19180
+      KC_HOSTNAME: http://localhost:19180
     ports:
       - "19180:8080"
     volumes:
@@ -238,8 +251,151 @@ services:
         condition: service_healthy
 
   # ─── Application Services ──────────────────────────────────────────────────────
+  # Default `up` is one HTTP process (`app`). The nine domain services stay on
+  # profile `split` for `docker compose run document-service pytest` and for
+  # debugging a module in isolation.
+
+  app:
+    image: orpycamcp/app:dev
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.app
+    container_name: orpycamcp-app
+    ports:
+      - "127.0.0.1:19000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
+      - APP_ENV=development
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
+      # Loopback: a module that still speaks HTTP talks to this same process.
+      - AUTH_SERVICE_URL=http://app:8000
+      - TENANT_SERVICE_URL=http://app:8000
+      - DOCUMENT_SERVICE_URL=http://app:8000
+      - ARCHIVE_SERVICE_URL=http://app:8000
+      - STORAGE_SERVICE_URL=http://app:8000
+      - WORKFLOW_SERVICE_URL=http://app:8000
+      - NOTIFICATION_SERVICE_URL=http://app:8000
+      - SIGNATURE_SERVICE_URL=http://app:8000
+      - KNOWLEDGE_SERVICE_URL=http://app:8000
+      - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
+      - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
+      - ARCHIVE_INTERNAL_TOKEN=${ARCHIVE_INTERNAL_TOKEN:-orpycamcp_archive_internal_dev}
+      - NOTIFICATION_INTERNAL_TOKEN=${NOTIFICATION_INTERNAL_TOKEN:-orpycamcp_notification_internal_dev}
+      - SIGNATURE_INTERNAL_TOKEN=${SIGNATURE_INTERNAL_TOKEN:-orpycamcp_signature_internal_dev}
+      - SIGNING_KEY_INTERNAL_TOKEN=${SIGNING_KEY_INTERNAL_TOKEN:-orpycamcp_signing_key_internal_dev}
+      - INTELLIGENCE_INTERNAL_TOKEN=${INTELLIGENCE_INTERNAL_TOKEN:-orpycamcp_intelligence_internal_dev}
+      - ALTCHA_HMAC_KEY=${ALTCHA_HMAC_KEY:-orpycamcp_altcha_dev_hmac_key_0000000000}
+      - SIGNATURE_SECRET=${SIGNATURE_SECRET:-change-me-in-production}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=orpycamcp
+      - MINIO_SECRET_KEY=orpycamcp_dev
+      - MINIO_USE_SSL=false
+      - RENDER_ENGINE=${RENDER_ENGINE:-weasyprint}
+      - WEBHOOK_SECRET_KEK=${WEBHOOK_SECRET_KEK:-FdATFrQDjvyBfvHjjZSLjrLyIQct0+dgsMz2TOycUnk=}
+      - WEBHOOK_SECRET_KEKS=${WEBHOOK_SECRET_KEKS:-{}}
+      - WEBHOOK_SECRET_KEK_ACTIVE_VERSION=${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
+      - SMTP_HOST=mailpit
+      - SMTP_PORT=1025
+      - SMTP_FROM=noreply@orpycamcp.local
+      - KEYCLOAK_URL=http://keycloak:8080
+      - KEYCLOAK_REALM=orpycamcp
+      - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
+      - KEYCLOAK_CLIENT_ID=auth-service
+      - KEYCLOAK_CLIENT_SECRET=change-me-in-production
+      - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
+      - SIGNING_KEY_ENCRYPTION_KEY=${SIGNING_KEY_ENCRYPTION_KEY:-}
+      - SIGNING_KEY_CA_USERS_CERT_PATH=/run/secrets/ca-users-public/ca-users.crt
+      - EMAIL_ENCRYPTION_KEY=${EMAIL_ENCRYPTION_KEY:-}
+      - EMAIL_SONDEO_ENABLED=${EMAIL_SONDEO_ENABLED:-false}
+      - EMAIL_SONDEO_TENANT_SLUG=${EMAIL_SONDEO_TENANT_SLUG:-}
+      - EMAIL_SONDEO_INTERVALO_SEGUNDOS=${EMAIL_SONDEO_INTERVALO_SEGUNDOS:-300}
+      - SIGNER_PROVIDER=${SIGNER_PROVIDER:-xades_local}
+      - SIGNER_CERT_DIR=/run/secrets/signing
+      - SIGNER_ALLOW_DEV_SEAL=${SIGNER_ALLOW_DEV_SEAL:-true}
+      - SIGNER_TIMESTAMP_ENABLED=${SIGNER_TIMESTAMP_ENABLED:-true}
+      - TSA_URL=${TSA_URL:-}
+      - TSA_CERT_DIR=/run/secrets/tsa
+      - TSA_ALLOW_DEV_SEAL=${TSA_ALLOW_DEV_SEAL:-true}
+      - SIGNER_LT_ENABLED=${SIGNER_LT_ENABLED:-false}
+      - SIGNER_LT_REQUIRE=${SIGNER_LT_REQUIRE:-false}
+      - SIGNER_OCSP_ENABLED=${SIGNER_OCSP_ENABLED:-true}
+      - SIGNER_OCSP_REQUIRE=${SIGNER_OCSP_REQUIRE:-false}
+    volumes:
+      - ./secrets/signing:/run/secrets/signing:ro
+      - ./secrets/tsa:/run/secrets/tsa:ro
+      - ./secrets/ca-users-public:/run/secrets/ca-users-public:ro
+    networks:
+      - orpycamcp-net
+    depends_on:
+      migrate-docuboto:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    restart: "no"
+    mem_limit: 4g
+    memswap_limit: 4g
+
+  worker:
+    image: orpycamcp/worker:dev
+    build:
+      context: .
+      dockerfile: infra/Dockerfile.worker
+    container_name: orpycamcp-worker
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
+      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
+      - APP_ENV=development
+      - DOCUMENT_SERVICE_URL=http://app:8000
+      - STORAGE_SERVICE_URL=http://app:8000
+      - SIGNATURE_SERVICE_URL=http://app:8000
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=orpycamcp
+      - MINIO_SECRET_KEY=orpycamcp_dev
+      - MINIO_USE_SSL=false
+      - RENDER_ENGINE=${RENDER_ENGINE:-weasyprint}
+      - FORMAT_MIGRATION_ENABLED=${FORMAT_MIGRATION_ENABLED:-true}
+      - SIGNATURE_SECRET=${SIGNATURE_SECRET:-change-me-in-production}
+      - SIGNER_PROVIDER=${SIGNER_PROVIDER:-xades_local}
+      - SIGNER_CERT_DIR=/run/secrets/signing
+      - SIGNER_ALLOW_DEV_SEAL=${SIGNER_ALLOW_DEV_SEAL:-true}
+      - SIGNER_TIMESTAMP_ENABLED=${SIGNER_TIMESTAMP_ENABLED:-true}
+      - TSA_URL=${TSA_URL:-}
+      - TSA_CERT_DIR=/run/secrets/tsa
+      - TSA_ALLOW_DEV_SEAL=${TSA_ALLOW_DEV_SEAL:-true}
+      - SIGNER_LT_ENABLED=${SIGNER_LT_ENABLED:-false}
+      - SIGNER_LT_REQUIRE=${SIGNER_LT_REQUIRE:-false}
+      - SIGNER_OCSP_ENABLED=${SIGNER_OCSP_ENABLED:-true}
+      - SIGNER_OCSP_REQUIRE=${SIGNER_OCSP_REQUIRE:-false}
+    volumes:
+      - ./secrets/signing:/run/secrets/signing:ro
+      - ./secrets/tsa:/run/secrets/tsa:ro
+    networks:
+      - orpycamcp-net
+    depends_on:
+      migrate-docuboto:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 4g
+    memswap_limit: 4g
 
   api-gateway:
+    profiles: ["split"]
     build:
       # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
       context: .
@@ -257,17 +413,18 @@ services:
       # describe la superficie entera —incluidos los endpoints internos que el
       # ruteo retira a propósito— y no se sirve sin credenciales.
       - OPENAPI_PUBLICO=${OPENAPI_PUBLICO:-true}
-      - AUTH_SERVICE_URL=http://auth-service:8001
+      - AUTH_SERVICE_URL=http://app:8000
       # Dev: la red por defecto de Compose está en 172.16/12. Sin esto el gateway
       # ignora X-Forwarded-For (fail-closed) y todo el SSR comparte un cubo.
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
-      - TENANT_SERVICE_URL=http://tenant-service:8002
-      - DOCUMENT_SERVICE_URL=http://document-service:8003
-      - ARCHIVE_SERVICE_URL=http://archive-service:8004
-      - STORAGE_SERVICE_URL=http://storage-service:8005
-      - WORKFLOW_SERVICE_URL=http://workflow-service:8006
-      - NOTIFICATION_SERVICE_URL=http://notification-service:8007
-      - SIGNATURE_SERVICE_URL=http://signature-service:8008
+      - TENANT_SERVICE_URL=http://app:8000
+      - DOCUMENT_SERVICE_URL=http://app:8000
+      - ARCHIVE_SERVICE_URL=http://app:8000
+      - STORAGE_SERVICE_URL=http://app:8000
+      - WORKFLOW_SERVICE_URL=http://app:8000
+      - NOTIFICATION_SERVICE_URL=http://app:8000
+      - SIGNATURE_SERVICE_URL=http://app:8000
+      - KNOWLEDGE_SERVICE_URL=http://app:8000
       - KEYCLOAK_URL=http://keycloak:8080
       - KEYCLOAK_REALM=orpycamcp
     networks:
@@ -288,7 +445,7 @@ services:
     ports:
       - "127.0.0.1:19009:8009"
     environment:
-      - GATEWAY_URL=http://api-gateway:8080
+      - GATEWAY_URL=http://app:8000
       # Clave de firma de las propuestas de escritura. Sin ella el servicio NO
       # arranca: una firma con clave vacía la reproduce cualquiera, y el gate
       # quedaría decorativo. En desarrollo se fija aquí, como el resto de
@@ -301,7 +458,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      - api-gateway
+      - app
     restart: "no"
     mem_limit: 2g
     memswap_limit: 2g
@@ -317,6 +474,7 @@ services:
       context: .
       dockerfile: services/signature-service/Dockerfile
     container_name: orpycamcp-signature
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19008:8008"
     environment:
@@ -430,6 +588,7 @@ services:
       context: .
       dockerfile: services/knowledge-service/Dockerfile
     container_name: orpycamcp-knowledge
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19011:8011"
     environment:
@@ -439,6 +598,7 @@ services:
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
       # Acto de configuración: tenant-service llama estas rutas. Vacío las cierra.
       - INTELLIGENCE_INTERNAL_TOKEN=${INTELLIGENCE_INTERNAL_TOKEN:-orpycamcp_intelligence_internal_dev}
+      - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
       # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
     networks:
       - orpycamcp-net
@@ -461,6 +621,7 @@ services:
       context: .
       dockerfile: services/auth-service/Dockerfile
     container_name: orpycamcp-auth
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19001:8001"
     environment:
@@ -530,6 +691,7 @@ services:
       context: .
       dockerfile: services/tenant-service/Dockerfile
     container_name: orpycamcp-tenant
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19002:8002"
     environment:
@@ -563,6 +725,7 @@ services:
       context: .
       dockerfile: services/document-service/Dockerfile
     container_name: orpycamcp-documents
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19003:8003"
     environment:
@@ -635,6 +798,7 @@ services:
       context: .
       dockerfile: services/archive-service/Dockerfile
     container_name: orpycamcp-archive
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19004:8004"
     environment:
@@ -697,6 +861,7 @@ services:
       dockerfile: services/storage-service/Dockerfile
       target: base
     container_name: orpycamcp-storage
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19005:8005"
     environment:
@@ -746,6 +911,7 @@ services:
       context: .
       dockerfile: services/workflow-service/Dockerfile
     container_name: orpycamcp-workflow
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19006:8006"
     environment:
@@ -780,6 +946,7 @@ services:
       context: .
       dockerfile: services/notification-service/Dockerfile
     container_name: orpycamcp-notifications
+    profiles: ["split"]
     ports:
       - "127.0.0.1:19007:8007"
     environment:
@@ -847,7 +1014,7 @@ services:
       # o usar PROTOCOL_HEADER=x-forwarded-proto + HOST_HEADER=x-forwarded-host.
       - ORIGIN=http://localhost:19300
       # Públicas — las construye y usa el JS del navegador (login PKCE, logout).
-      - PUBLIC_API_URL=http://localhost:19080
+      - PUBLIC_API_URL=http://localhost:19000
       - PUBLIC_KEYCLOAK_URL=http://localhost:19180
       # Entidad de las pantallas PÚBLICAS (ventanilla y consulta ciudadana).
       # En producción cada entidad despliega su sitio con SU slug; sin esta
@@ -858,12 +1025,12 @@ services:
       # la sirve la ventanilla (ADR-031): ya no se configura aquí.
       # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
       # back-channel logout y los proxys +server.js al gateway). Nunca llegan al cliente.
-      - INTERNAL_API_URL=http://api-gateway:8080
+      - INTERNAL_API_URL=http://app:8000
       - INTERNAL_KEYCLOAK_URL=http://keycloak:8080
     networks:
       - orpycamcp-net
     depends_on:
-      - api-gateway
+      - app
       - keycloak
     restart: "no"
 

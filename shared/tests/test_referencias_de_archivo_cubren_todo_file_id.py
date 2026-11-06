@@ -102,7 +102,7 @@ def _derivadas(raiz: str) -> set[tuple[str, str]]:
 
 def _declaradas(raiz: str) -> set[tuple[str, str]]:
     ruta = os.path.join(
-        raiz, "services", "storage-service", "app", "repositories", "file_repository.py"
+        raiz, "services", "storage-service", "storage", "repositories", "file_repository.py"
     )
     with open(ruta, encoding="utf-8") as fh:
         arbol = ast.parse(fh.read())

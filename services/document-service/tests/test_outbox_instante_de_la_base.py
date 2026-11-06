@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services import outbox
+from document.services import outbox
 
 _RELOJ_REAL = outbox._reloj_bd  # el conftest sustituye el reloj en las suites con mocks
 
