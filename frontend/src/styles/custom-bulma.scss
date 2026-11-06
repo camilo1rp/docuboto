@@ -27,11 +27,11 @@
 // Bulma en build-time. En TODOS los demás contextos (componentes, layout,
 // utilities) se consume var(--op-*). Esta es la ÚNICA excepción permitida.
 
-$op-primary: #2a8c3a;
-$op-primary-dark: #1c6b33;
-$op-primary-light: #dceed7;
-$op-brand-700: #173a22;
-$op-accent: #8dbf3c;
+$op-primary: #095ece;
+$op-primary-dark: #0747a6;
+$op-primary-light: #d6e8fb;
+$op-brand-700: #05356f;
+$op-accent: #00d4e0;
 $op-text: #232624;
 $op-text-secondary: #6e7370;
 $op-border: #e7eae2;
@@ -61,14 +61,9 @@ $op-radius-sm: 6px;
 $op-radius: 10px;
 $op-radius-lg: 16px;
 
-// Nota de contraste AA (WCAG 2.x, cálculo real — no estimado):
-//   $op-primary (#2a8c3a) sobre blanco/#fbfcf8 = 4.28:1 → NO cumple 4.5:1 para
-//   texto normal (solo sirve para bordes/iconos/foco, que exigen 3:1).
-//   Por eso $primary (alimenta clases de texto/botón autogeneradas por Bulma:
-//   .has-text-primary, .is-primary, enlaces) se declara con $op-primary-dark
-//   (#1c6b33 → 6.56:1 sobre blanco), que SÍ cumple AA como texto. El token
-//   runtime --op-primary (custom-bulma no lo toca) conserva el valor exacto
-//   de v1.0 para usos decorativos/foco.
+// Nota de contraste AA (WCAG 2.x): $op-primary (#095ece) sobre blanco ~5.65:1
+// cumple AA. $primary de Bulma usa $op-primary-dark (#0747a6 → ~8.5:1) para
+// texto autogenerado (.has-text-primary, enlaces).
 $op-primary-text: $op-primary-dark;
 
 // --- Overrides de variables Bulma (declarados antes del @import) -------------

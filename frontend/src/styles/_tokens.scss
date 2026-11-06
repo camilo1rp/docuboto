@@ -14,34 +14,34 @@
 //   60% neutros  (--op-bg, --op-surface, --op-border, --op-text)
 //   30% primario (--op-primary, --op-primary-dark, --op-primary-light)
 //   10% acento   (--op-accent)
-// No saturar de verde pantallas de uso prolongado; el verde es para acción/marca,
-// no para decoración. Los demás archivos SIEMPRE consumen estos tokens vía
-// `var(--op-*)` o las variables Sass de este archivo; nunca valores hex sueltos.
+// El verde queda en los estados de éxito. El primario es el azul `--db-brand`.
+// Los demás archivos SIEMPRE consumen estos tokens vía `var(--op-*)` o
+// `var(--db-*)`; nunca valores hex sueltos.
 // =============================================================================
 
 // -----------------------------------------------------------------------------
 // 1. Variables Sass (alimentan Bulma en tiempo de build)
 // -----------------------------------------------------------------------------
 
-// Paleta cromática — Sistema de Diseño OrpycaMCP v1.0
-// Fuente: DesignPhilosophyDocument/"Sistema de Diseno OrpycaMCP.dc.html"
-$op-primary: #2a8c3a; // marca 500 — acción principal
-$op-primary-dark: #1c6b33; // marca 600 — hover/activo, y color AA-seguro para TEXTO
-// sobre superficies claras u oscuras (ver nota de contraste más abajo)
-$op-primary-light: #dceed7; // fondos sutiles / selección (tinte pálido del verde 500)
-$op-on-primary: #ffffff; // texto sobre superficie primaria oscura (op-primary-dark: 6.56:1 AA)
-$op-accent: #8dbf3c; // marca lime 300 — acentos puntuales, NUNCA como texto sobre claro (2.18:1)
+// Paleta cromática — tokens de rediseno (`--db-*`) aliasados a `--op-*`.
+// El resto de la app se desplaza al azul/cian; las pantallas que no son la
+// entrada de radicar no se reconstruyen.
+$db-brand: #095ece; // acción principal
+$db-brand-dark: #0747a6; // hover/activo y texto AA (~8.5:1 sobre blanco)
+$db-brand-light: #d6e8fb; // fondos sutiles / selección
+$db-ai: #00d4e0; // acento de sugerencia (chip). No usar como texto sobre claro.
+$db-ai-fg: #0a5c63; // texto del chip (~7:1 sobre $db-ai-bg)
+$db-ai-bg: #e6fafc;
 
-// Extensión de marca (no listados como --op-primary/-dark pero útiles para degradados
-// y fondos de marca profundos; ver v1.0 "marca 700/deep" y "marca 400").
-$op-brand-700: #173a22; // marca 700/deep
-$op-brand-400: #4fa84b; // marca 400
-// marca 900 — verde casi negro. Es el fondo sobre el que el logotipo
-// institucional fue diseñado (véanse los originales de marca): el isotipo es un
-// anillo verde OSCURO, así que sobre `--op-primary` se empasta con el fondo y
-// pierde la silueta. Reservado a superficies de marca (panel de acceso), nunca
-// a superficies de trabajo.
-$op-brand-900: #0c1710;
+$op-primary: $db-brand;
+$op-primary-dark: $db-brand-dark;
+$op-primary-light: $db-brand-light;
+$op-on-primary: #ffffff;
+$op-accent: $db-ai;
+
+$op-brand-700: #05356f;
+$op-brand-400: #3d8ee0;
+$op-brand-900: #041e40;
 
 $op-text: #232624; // ink
 $op-text-secondary: #6e7370; // muted
@@ -61,7 +61,7 @@ $op-surface: #ffffff; // surface
 // Estados semánticos — color del borde/icono (border-left, dot). Estos valores
 // cumplen el mínimo de contraste no-textual (≥3:1) pero NO se usan como color de
 // texto directo (ver $op-*-fg más abajo, que sí están verificados a ≥4.5:1 AA).
-$op-success: #2a8c3a; // = $op-primary
+$op-success: #2a8c3a; // semántico: se queda verde, independiente del primario
 $op-warning: #c8881c;
 $op-error: #c4452c;
 $op-info: #2b6cb0;
@@ -73,8 +73,8 @@ $op-info: #2b6cb0;
 //   warning-bg/warning-fg  → 5.96:1 (además 6.58:1 sobre blanco)
 //   error-bg/error-fg      → 7.90:1
 //   info-bg/info-fg        → 7.53:1
-$op-success-bg: #dceed7; // = $op-primary-light  (reutiliza la paleta verde)
-$op-success-fg: #1c6b33; // = $op-primary-dark   (ratio 5.39:1 sobre success-bg, 6.56:1 sobre blanco)
+$op-success-bg: #dceed7; // tinte del verde de éxito (independiente del primario)
+$op-success-fg: #1c6b33; // ratio 5.39:1 sobre success-bg, 6.56:1 sobre blanco
 $op-warning-bg: #fdf3dc; // amarillo pálido        (ratio ~5.96:1 con fg)
 $op-warning-fg: #7a5700; // marrón oscuro           (ratio ~5.96:1)
 $op-error-bg: #fce8e8; // rojo pálido             (ratio ~7.9:1 con fg)
@@ -86,7 +86,7 @@ $op-error-strong-bg: #3b0000;
 $op-error-strong-fg: #ffdddd;
 
 // Focus rings tokenizados (halo no-textual, no exige 4.5:1; alfa sobre el color base)
-$op-focus-ring: rgba(42, 140, 58, 0.15); // primario (#2a8c3a) al 15%
+$op-focus-ring: rgba(9, 94, 206, 0.15); // primario (#095ece) al 15%
 $op-error-ring: rgba(196, 69, 44, 0.15); // error (#c4452c) al 15%
 
 // -----------------------------------------------------------------------------
@@ -189,7 +189,7 @@ $op-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.06); // alias de -lg mantenido (mismo 
 // hace falta más contraste y el verde profundo de la marca. Estaba escrita a
 // mano y por duplicado en dos rutas, que es como una sombra se convierte en dos
 // sombras parecidas.
-$op-shadow-sobre-oscuro: 0 12px 32px rgba(12, 23, 16, 0.28);
+$op-shadow-sobre-oscuro: 0 12px 32px rgba(4, 30, 64, 0.28);
 
 // Movimiento v1.0 — 120ms micro (hover/foco/toggles) · 200ms estándar
 // (modales/paneles/colapsos) · 300ms pantalla completa. Easing único.
@@ -242,12 +242,23 @@ $op-reading-max: 880px;
 // -----------------------------------------------------------------------------
 
 :root {
+  // Rediseno: fuente de la paleta. `--op-*` los aliasa para el resto de la app.
+  --db-brand: #{$db-brand};
+  --db-brand-dark: #{$db-brand-dark};
+  --db-brand-light: #{$db-brand-light};
+  --db-ai: #{$db-ai};
+  --db-ai-fg: #{$db-ai-fg};
+  --db-ai-bg: #{$db-ai-bg};
+
   // Paleta
   --op-primary: #{$op-primary};
   --op-primary-dark: #{$op-primary-dark};
   --op-primary-light: #{$op-primary-light};
   --op-on-primary: #{$op-on-primary};
   --op-accent: #{$op-accent};
+  --op-ai: #{$db-ai};
+  --op-ai-fg: #{$db-ai-fg};
+  --op-ai-bg: #{$db-ai-bg};
   --op-brand-700: #{$op-brand-700};
   --op-brand-400: #{$op-brand-400};
   --op-brand-900: #{$op-brand-900};
@@ -273,6 +284,7 @@ $op-reading-max: 880px;
   --op-success: #{$op-success};
   --op-warning: #{$op-warning};
   --op-error: #{$op-error};
+  --op-danger: #{$op-error};
   --op-info: #{$op-info};
 
   // Estados — fondos y textos para chips, toasts y semáforos

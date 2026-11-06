@@ -60,6 +60,10 @@
   export let subErrors = {};
   export let value = "";
   export let nested = false;
+  /** Chip de sugerencia (p. ej. «IA») en el control escalar. */
+  export let chip = "";
+  /** Se llama al editar el control escalar. */
+  export let onEdit = undefined;
 
   $: control = resolveSchemaControl(schema, nested ? 1 : 0);
   $: fieldLabel = schema?.title ?? propKey;
@@ -227,7 +231,11 @@
     {required}
     hint={fieldHint}
     {error}
+    {chip}
+    {onEdit}
     bind:value
+    on:input
+    on:change
   />
 {/if}
 

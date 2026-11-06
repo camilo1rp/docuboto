@@ -13,11 +13,12 @@
   radicar/+page.svelte — Radicación guiada E/S/I (T-09, RF-UI-04).
 
   Stepper en una sola vista — sin multi-pestaña:
-    Paso 0: Tipo de radicado (E / S / I)
-    Paso 1: Metadatos (asunto, remitente, dependencias, campos extra del tipo documental)
-    Paso 2: Anexos (drag-drop svelte-dnd-action)
-    Paso 3: Clasificación TRD/CCD
-    Paso 4: Flujo / destino
+    Paso 0: Documento (subir archivo o llenar el formulario)
+    Paso 1: Tipo de radicado (E / S / I)
+    Paso 2: Metadatos (asunto, remitente, dependencias, campos extra del tipo documental)
+    Paso 3: Anexos (drag-drop svelte-dnd-action)
+    Paso 4: Clasificación TRD/CCD
+    Paso 5: Flujo / destino
     [Confirmación atómica → POST /api/v1/documents]
 
   El número de radicado lo asigna el backend. Se muestra al confirmar.
@@ -29,6 +30,7 @@
 
 <script>
   import { goto } from "$app/navigation";
+  import { onDestroy } from "svelte";
   import { opcionesSerieTrd } from "$lib/utils/trd.js";
   import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { dndzone } from "svelte-dnd-action";
@@ -52,6 +54,12 @@
     coerceSchemaValue,
     ubicarErrorDeCampo,
   } from "$lib/utils/schemaField.js";
+  import {
+    TOPE_INGESTA_BYTES,
+    camposBase,
+    camposPlantilla,
+    aplicarExtracto,
+  } from "$lib/utils/extractFields.js";
   import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
   // Las llamadas al gateway (subida de archivos, creación de radicado, plantillas)
   // se realizan a través de los endpoints locales /radicar/api/* que leen la
@@ -63,7 +71,20 @@
   // ---------------------------------------------------------------------------
   // Stepper
   // ---------------------------------------------------------------------------
-  const STEP_LABELS = ["Tipo", "Metadatos", "Anexos", "Clasificación TRD", "Flujo / Destino"];
+  const STEP_DOCUMENTO = 0;
+  const STEP_TIPO = 1;
+  const STEP_METADATOS = 2;
+  const STEP_ANEXOS = 3;
+  const STEP_TRD = 4;
+  const STEP_FLUJO = 5;
+  const STEP_LABELS = [
+    "Documento",
+    "Tipo",
+    "Metadatos",
+    "Anexos",
+    "Clasificación TRD",
+    "Flujo / Destino",
+  ];
   let currentStep = 0;
 
   // ---------------------------------------------------------------------------
@@ -126,6 +147,92 @@
 
   // Errores de validación por campo
   let errors = /** @type {Record<string, string>} */ ({});
+
+  // ---------------------------------------------------------------------------
+  // Paso 0 — Documento (archivo o formulario)
+  // ---------------------------------------------------------------------------
+  /** @type {''|'form'|'file'} */
+  let entryMode = "";
+  /** @type {File|null} */
+  let entryFile = null;
+  /** @type {string|null} */
+  let entryFileId = null;
+  /** @type {string|null} */
+  let stagingRef = null;
+  /** @type {string|null} */
+  let fileRef = null;
+  /** @type {''|'received'|'processing'|'indexed'|'failed'} */
+  let ingestState = "";
+  let ingestError = "";
+  let ingestBusy = false;
+  /** @type {ReturnType<typeof setInterval>|null} */
+  let pollTimer = null;
+  /** Campos rellenados por extracto; editar uno quita su chip. */
+  let aiMarked = new Set();
+  /** Valor que dejó el extracto, para detectar edición. */
+  let aiValues = /** @type {Record<string, string>} */ ({});
+  const ETIQUETA_IA = "IA";
+  const ETIQUETA_ESTADO = {
+    received: "Recibido",
+    processing: "Procesando",
+    indexed: "Indexado",
+    failed: "Falló",
+  };
+
+  function chip(key) {
+    return aiMarked.has(key) ? ETIQUETA_IA : "";
+  }
+
+  function unmark(key) {
+    if (!aiMarked.has(key)) return;
+    const next = new Set(aiMarked);
+    next.delete(key);
+    aiMarked = next;
+  }
+
+  /**
+   * @param {Record<string, string>} applied
+   * @param {string} [prefix]
+   */
+  function markApplied(applied, prefix = "") {
+    const next = new Set(aiMarked);
+    const values = { ...aiValues };
+    for (const [k, v] of Object.entries(applied)) {
+      const key = `${prefix}${k}`;
+      next.add(key);
+      values[key] = v;
+    }
+    aiValues = values;
+    aiMarked = next;
+  }
+
+  /** @param {string} key @param {any} current */
+  function unmarkEdited(key, current) {
+    if (!aiMarked.has(key)) return;
+    if (String(current ?? "") === String(aiValues[key] ?? "")) return;
+    unmark(key);
+  }
+
+  $: unmarkEdited("direction", docType);
+  $: unmarkEdited("subject", subject);
+  $: unmarkEdited("doc_class", docClass);
+  $: unmarkEdited("nivel_seguridad", nivelSeguridad);
+  $: unmarkEdited("origin_dept_code", originDeptCode);
+  $: unmarkEdited("dest_dept_code", destDeptCode);
+  $: unmarkEdited("sender_name", senderName);
+  $: unmarkEdited("sender_entity", senderEntity);
+  $: unmarkEdited("pages", pages);
+  $: unmarkEdited("response_days", responseDays);
+  $: unmarkEdited("observations", observations);
+
+  onDestroy(() => detenerPoll());
+
+  function detenerPoll() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
 
   // Campos dinámicos de la plantilla de metadatos del tipo documental (E03).
   // SchemaField ya decide por sí mismo si un constructo es soportado, pero la
@@ -217,36 +324,250 @@
     return lista.map((a, i) => ({ ...a, canal: a.canal || null, principal: i === 0 }));
   }
 
-  async function onDocClassChange() {
+  /**
+   * @param {string} tipo
+   * @returns {Promise<any|null>}
+   */
+  async function cargarPlantilla(tipo) {
     activeTemplate = null;
     extraMetadata = {};
-    errors = { ...errors };
-    if (!docClass) return;
-
+    if (!tipo) return null;
     loadingTemplate = true;
     try {
       const params = new URLSearchParams();
-      params.set("tipo_documental", docClass);
+      params.set("tipo_documental", tipo);
       const res = await fetch(`/radicar/api/templates?${params}`);
       /** @type {any[]} */
       const templates = await res.json();
       if (!res.ok) throw templates;
-      // Tomar la plantilla activa (si existe)
       /** @type {any} */
       const found = Array.isArray(templates) ? templates.find((t) => t.activo) : null;
       activeTemplate = found ?? null;
-      // Inicializar los campos extra con valores vacíos
       if (activeTemplate?.json_schema?.properties) {
         extraMetadata = Object.fromEntries(
           Object.keys(activeTemplate.json_schema.properties).map((k) => [k, ""]),
         );
       }
+      return activeTemplate;
     } catch {
-      // Sin plantilla activa es válido; el backend valida de todas formas
       activeTemplate = null;
+      return null;
     } finally {
       loadingTemplate = false;
     }
+  }
+
+  function onDocClassChange() {
+    for (const key of [...aiMarked].filter((k) => k.startsWith("extra:"))) {
+      unmark(key);
+    }
+    unmark("doc_class");
+    void cargarPlantilla(docClass);
+  }
+
+  async function borrarPreparacion() {
+    const ref = stagingRef;
+    stagingRef = null;
+    fileRef = null;
+    ingestState = "";
+    ingestError = "";
+    detenerPoll();
+    if (!ref) return;
+    try {
+      await fetch(`/radicar/api/ingesta/${encodeURIComponent(ref)}`, { method: "DELETE" });
+    } catch {
+      // El stub puede quedar; el usuario ya salió de esta preparación.
+    }
+  }
+
+  function elegirFormulario() {
+    void borrarPreparacion();
+    entryMode = "form";
+    entryFile = null;
+    entryFileId = null;
+    aiMarked = new Set();
+    aiValues = {};
+    errors = {};
+    currentStep = STEP_TIPO;
+  }
+
+  function elegirArchivo() {
+    entryMode = "file";
+    errors = {};
+  }
+
+  /**
+   * @param {Event} e
+   */
+  function onEntryFile(e) {
+    const input = /** @type {HTMLInputElement} */ (e.currentTarget);
+    const file = input.files?.[0] ?? null;
+    input.value = "";
+    if (file) void recibirArchivo(file);
+  }
+
+  /**
+   * @param {DragEvent} e
+   */
+  function onEntryDrop(e) {
+    e.preventDefault();
+    dragOver = false;
+    const file = e.dataTransfer?.files?.[0];
+    if (file) void recibirArchivo(file);
+  }
+
+  /**
+   * @param {File} file
+   */
+  async function recibirArchivo(file) {
+    if (file.size > TOPE_INGESTA_BYTES) {
+      errors = { entry: "El archivo supera el tope de 100 MB." };
+      return;
+    }
+    await borrarPreparacion();
+    entryMode = "file";
+    entryFile = file;
+    entryFileId = null;
+    errors = {};
+    await iniciarIngesta();
+  }
+
+  async function iniciarIngesta() {
+    if (!entryFile) return;
+    ingestBusy = true;
+    ingestState = "received";
+    ingestError = "";
+    try {
+      const form = new FormData();
+      form.append("file", entryFile);
+      const up = await fetch("/radicar/api/storage", { method: "POST", body: form });
+      const stored = await up.json();
+      if (!up.ok) throw stored;
+      entryFileId = stored.id;
+      const ing = await fetch("/radicar/api/ingesta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_id: stored.id }),
+      });
+      const body = await ing.json();
+      if (!ing.ok) throw body;
+      stagingRef = body.staging_ref;
+      fileRef = body.file_ref;
+      ingestState = "received";
+      detenerPoll();
+      pollTimer = setInterval(() => void consultarEstado(), 2000);
+      await consultarEstado();
+    } catch (err) {
+      ingestState = "failed";
+      ingestError = mensajeError(err, "No se pudo ingerir el archivo");
+    } finally {
+      ingestBusy = false;
+    }
+  }
+
+  async function consultarEstado() {
+    if (!fileRef) return;
+    try {
+      const res = await fetch(`/radicar/api/ingesta/${encodeURIComponent(fileRef)}`);
+      const body = await res.json();
+      if (!res.ok) throw body;
+      ingestState = body.ingest_state ?? ingestState;
+      ingestError = typeof body.error_code === "string" ? body.error_code : ingestError;
+      if (ingestState === "indexed") {
+        detenerPoll();
+        await extraerYPrefill();
+      } else if (ingestState === "failed") {
+        detenerPoll();
+      }
+    } catch (err) {
+      ingestState = "failed";
+      ingestError = mensajeError(err, "No se pudo consultar el estado");
+      detenerPoll();
+    }
+  }
+
+  async function extraerYPrefill() {
+    if (!fileRef) return;
+    ingestBusy = true;
+    try {
+      const base = camposBase({
+        direccion: DOC_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
+        tipos: tiposOptions,
+        niveles: nivelSeguridadOptions,
+        dependencias: dependenciaOptions,
+      });
+      const valores = await pedirExtracto(fileRef, base);
+      const { applied } = aplicarExtracto(valores, base);
+      aplicarBase(applied);
+      markApplied(applied);
+      if (applied.doc_class) {
+        const plantilla = await cargarPlantilla(applied.doc_class);
+        const extras = camposPlantilla(plantilla?.json_schema?.properties);
+        if (extras.length) {
+          const extraVals = await pedirExtracto(fileRef, extras);
+          const extra = aplicarExtracto(extraVals, extras);
+          extraMetadata = { ...extraMetadata, ...extra.applied };
+          markApplied(extra.applied, "extra:");
+        }
+      }
+      ponerAnexoIngerido();
+      currentStep = STEP_TIPO;
+    } catch (err) {
+      ingestError = mensajeError(err, "No se pudieron extraer los datos");
+      ponerAnexoIngerido();
+    } finally {
+      ingestBusy = false;
+    }
+  }
+
+  /**
+   * @param {string} ref
+   * @param {object[]} fields
+   */
+  async function pedirExtracto(ref, fields) {
+    if (!fields.length) return {};
+    const res = await fetch("/radicar/api/ingesta/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ external_ref: ref, fields }),
+    });
+    const body = await res.json();
+    if (!res.ok) throw body;
+    return body.values ?? {};
+  }
+
+  /** @param {Record<string, string>} applied */
+  function aplicarBase(applied) {
+    if (applied.direction) docType = /** @type {'E'|'S'|'I'} */ (applied.direction);
+    if (applied.doc_class) docClass = applied.doc_class;
+    if (applied.nivel_seguridad) nivelSeguridad = applied.nivel_seguridad;
+    if (applied.origin_dept_code) originDeptCode = applied.origin_dept_code;
+    if (applied.dest_dept_code) destDeptCode = applied.dest_dept_code;
+    if (applied.subject) subject = applied.subject;
+    if (applied.sender_name) senderName = applied.sender_name;
+    if (applied.sender_entity) senderEntity = applied.sender_entity;
+    if (applied.pages) pages = applied.pages;
+    if (applied.response_days) responseDays = applied.response_days;
+    if (applied.observations) observations = applied.observations;
+  }
+
+  function ponerAnexoIngerido() {
+    if (!entryFile || !entryFileId) return;
+    if (anexos.some((a) => a.fileId === entryFileId)) return;
+    anexos = [
+      {
+        id: `anexo-${++_anexoSeq}`,
+        file: entryFile,
+        name: entryFile.name,
+        size: entryFile.size,
+        mime: entryFile.type,
+        uploading: false,
+        uploaded: true,
+        error: "",
+        fileId: entryFileId,
+      },
+      ...anexos,
+    ];
   }
 
   // Nivel de seguridad — opciones
@@ -390,7 +711,7 @@
   let destDeptCodeFlujo = "";
 
   // Sincroniza destDeptCodeFlujo con el del paso 1 al llegar al paso 4
-  $: if (currentStep === 4) {
+  $: if (currentStep === STEP_FLUJO) {
     if (!destDeptCodeFlujo && destDeptCode) destDeptCodeFlujo = destDeptCode;
   }
 
@@ -472,6 +793,7 @@
       if (!res.ok) throw doc;
       createdDocument = doc;
       showConfirmModal = false;
+      void borrarPreparacion();
       notify({ type: "success", message: `Radicado creado: ${doc.tracking_number}` });
     } catch (err) {
       // `mensajeError`/`codigoError` y no `err.detail`/`err.error`: el backend
@@ -515,13 +837,22 @@
   function validateStep(step) {
     errors = {};
     switch (step) {
-      case 0:
+      case STEP_DOCUMENTO:
+        if (entryMode === "form") return true;
+        if (entryMode === "file" && ingestState === "indexed") return true;
+        if (!entryMode) {
+          errors.entry = "Elige subir un documento o llenar el formulario.";
+          return false;
+        }
+        errors.entry = "Espera a que el documento esté indexado, o llena el formulario.";
+        return false;
+      case STEP_TIPO:
         if (!docType) {
           errors.docType = "Selecciona el tipo de radicado";
           return false;
         }
         break;
-      case 1:
+      case STEP_METADATOS:
         if (!subject.trim()) {
           errors.subject = "El asunto es obligatorio";
           return false;
@@ -531,8 +862,7 @@
           return false;
         }
         break;
-      case 2: {
-        // Verificar que todos los anexos agregados estén subidos
+      case STEP_ANEXOS: {
         const pending = anexos.filter((a) => !a.uploaded && !a.error);
         if (pending.length > 0) {
           errors.anexos = `Hay ${pending.length} archivo(s) sin subir. Usa "Subir archivos" antes de continuar.`;
@@ -545,11 +875,9 @@
         }
         break;
       }
-      case 3:
-        // TRD es opcional; no se bloquea
+      case STEP_TRD:
         break;
-      case 4:
-        // Flujo/destino — sin validación adicional
+      case STEP_FLUJO:
         break;
     }
     return true;
@@ -566,6 +894,12 @@
 
   // Resetear el formulario para una nueva radicación
   function resetForm() {
+    void borrarPreparacion();
+    entryMode = "";
+    entryFile = null;
+    entryFileId = null;
+    aiMarked = new Set();
+    aiValues = {};
     docType = "";
     subject = "";
     senderName = "";
@@ -681,12 +1015,118 @@
 
     <div class="radicar-content">
       <!-- ================================================================ -->
-      <!-- PASO 0 — Tipo de radicado                                        -->
+      <!-- PASO 0 — Documento                                               -->
       <!-- ================================================================ -->
-      {#if currentStep === 0}
+      {#if currentStep === STEP_DOCUMENTO}
         <section class="radicar-step" aria-labelledby="step0-title">
           <h2 id="step0-title" class="radicar-step__title">
+            ¿Empiezas con un documento o el formulario?
+          </h2>
+          <p class="radicar-step__subtitle">
+            Sube el archivo para que se lean los datos, o llena el formulario a mano.
+          </p>
+
+          <div class="entry-grid">
+            <button
+              type="button"
+              class="entry-card"
+              class:entry-card--selected={entryMode === "file"}
+              on:click={elegirArchivo}
+            >
+              <i class="fas fa-file-upload entry-card__icon" aria-hidden="true"></i>
+              <span class="entry-card__label">Subir documento</span>
+              <span class="entry-card__desc">Se lee el archivo y se proponen los campos</span>
+            </button>
+            <button
+              type="button"
+              class="entry-card"
+              class:entry-card--selected={entryMode === "form"}
+              on:click={elegirFormulario}
+            >
+              <i class="fas fa-keyboard entry-card__icon" aria-hidden="true"></i>
+              <span class="entry-card__label">Llenar el formulario</span>
+              <span class="entry-card__desc">Sigue los pasos actuales sin ingesta</span>
+            </button>
+          </div>
+
+          {#if entryMode === "file"}
+            <div
+              class="drop-zone"
+              class:drop-zone--over={dragOver}
+              role="region"
+              aria-label="Zona de carga del documento"
+              on:dragover|preventDefault={() => (dragOver = true)}
+              on:dragleave={() => (dragOver = false)}
+              on:drop={onEntryDrop}
+            >
+              <i class="fas fa-cloud-upload-alt drop-zone__icon" aria-hidden="true"></i>
+              <p class="drop-zone__text">Arrastra el archivo aquí o</p>
+              <label class="drop-zone__label">
+                <span class="button is-small">Seleccionar archivo</span>
+                <input
+                  type="file"
+                  class="sr-only"
+                  aria-label="Seleccionar archivo para radicar"
+                  on:change={onEntryFile}
+                />
+              </label>
+            </div>
+
+            {#if entryFile}
+              <p class="entry-file" data-testid="entry-file">
+                <i class="fas fa-file-alt" aria-hidden="true"></i>
+                {entryFile.name}
+                <span class="entry-file__size">{formatSize(entryFile.size)}</span>
+              </p>
+            {/if}
+
+            {#if ingestState}
+              <p
+                class="entry-status"
+                class:entry-status--failed={ingestState === "failed"}
+                data-testid="ingest-state"
+                aria-live="polite"
+              >
+                {ETIQUETA_ESTADO[ingestState] ?? ingestState}
+                {#if ingestState === "failed" && ingestError}
+                  <span class="entry-status__code">{ingestError}</span>
+                {/if}
+              </p>
+            {/if}
+
+            {#if ingestBusy}
+              <Loader size="sm" />
+            {/if}
+
+            {#if ingestState === "failed"}
+              <div class="entry-failed">
+                <Button
+                  variant="secondary"
+                  on:click={() => void iniciarIngesta()}
+                  disabled={!entryFile}
+                >
+                  Reintentar
+                </Button>
+                <Button variant="primary" on:click={elegirFormulario}>Llenar el formulario</Button>
+              </div>
+            {/if}
+          {/if}
+
+          {#if errors.entry}
+            <p class="radicar-step__error" role="alert">{errors.entry}</p>
+          {/if}
+        </section>
+
+        <!-- ================================================================ -->
+        <!-- PASO 1 — Tipo de radicado                                        -->
+        <!-- ================================================================ -->
+      {:else if currentStep === STEP_TIPO}
+        <section class="radicar-step" aria-labelledby="step1-tipo-title">
+          <h2 id="step1-tipo-title" class="radicar-step__title">
             ¿Qué tipo de documento vas a radicar?
+            {#if chip("direction")}
+              <span class="chip chip--ai">{ETIQUETA_IA}</span>
+            {/if}
           </h2>
 
           <div
@@ -704,6 +1144,7 @@
                   bind:group={docType}
                   class="sr-only"
                   aria-describedby="doc-type-desc-{opt.value}"
+                  on:change={() => unmark("direction")}
                 />
                 <i class="fas {opt.icon} doc-type-card__icon" aria-hidden="true"></i>
                 <span class="doc-type-card__label">{opt.label}</span>
@@ -723,7 +1164,7 @@
         <!-- ================================================================ -->
         <!-- PASO 1 — Metadatos                                               -->
         <!-- ================================================================ -->
-      {:else if currentStep === 1}
+      {:else if currentStep === STEP_METADATOS}
         <section class="radicar-step" aria-labelledby="step1-title">
           <h2 id="step1-title" class="radicar-step__title">
             Datos del documento
@@ -734,7 +1175,10 @@
 
           <div class="radicar-step__grid">
             <!-- Asunto -->
-            <div class="radicar-step__field radicar-step__field--full">
+            <div
+              class="radicar-step__field radicar-step__field--full"
+              on:input={() => unmark("subject")}
+            >
               <FormField
                 id="subject"
                 label="Asunto"
@@ -743,6 +1187,8 @@
                 required={true}
                 placeholder="Descripción concisa del documento"
                 error={errors.subject ?? ""}
+                chip={chip("subject")}
+                onEdit={() => unmark("subject")}
               />
             </div>
 
@@ -755,7 +1201,8 @@
                 bind:value={docClass}
                 options={tiposOptions}
                 hint="Clasifica el documento según el catálogo"
-                on:change={onDocClassChange}
+                chip={chip("doc_class")}
+                onEdit={onDocClassChange}
               />
               {#if loadingTemplate}
                 <Loader size="sm" />
@@ -775,7 +1222,7 @@
             </div>
 
             <!-- Nivel de seguridad -->
-            <div class="radicar-step__field">
+            <div class="radicar-step__field" on:change={() => unmark("nivel_seguridad")}>
               <FormField
                 id="nivel_seguridad"
                 label="Nivel de seguridad"
@@ -783,6 +1230,8 @@
                 bind:value={nivelSeguridad}
                 options={nivelSeguridadOptions}
                 hint="1=Pública por defecto (RF-SEG-08)"
+                chip={chip("nivel_seguridad")}
+                onEdit={() => unmark("nivel_seguridad")}
               />
             </div>
 
@@ -810,7 +1259,7 @@
 
             <!-- Remitente / entidad (solo E y S) -->
             {#if docType === "E" || docType === "S"}
-              <div class="radicar-step__field">
+              <div class="radicar-step__field" on:input={() => unmark("sender_name")}>
                 <FormField
                   id="sender_name"
                   label={docType === "E" ? "Nombre del remitente" : "Nombre del destinatario"}
@@ -819,21 +1268,25 @@
                   required={docType === "E"}
                   placeholder="Nombre completo"
                   error={errors.senderName ?? ""}
+                  chip={chip("sender_name")}
+                  onEdit={() => unmark("sender_name")}
                 />
               </div>
-              <div class="radicar-step__field">
+              <div class="radicar-step__field" on:input={() => unmark("sender_entity")}>
                 <FormField
                   id="sender_entity"
                   label={docType === "E" ? "Entidad del remitente" : "Entidad del destinatario"}
                   type="text"
                   bind:value={senderEntity}
                   placeholder="Empresa u organismo"
+                  chip={chip("sender_entity")}
+                  onEdit={() => unmark("sender_entity")}
                 />
               </div>
             {/if}
 
             <!-- Dependencia origen -->
-            <div class="radicar-step__field">
+            <div class="radicar-step__field" on:change={() => unmark("origin_dept_code")}>
               <FormField
                 id="origin_dept_code"
                 label="Dependencia origen"
@@ -841,11 +1294,13 @@
                 bind:value={originDeptCode}
                 options={dependenciaOptions}
                 error={errors.originDeptCode ?? ""}
+                chip={chip("origin_dept_code")}
+                onEdit={() => unmark("origin_dept_code")}
               />
             </div>
 
             <!-- Dependencia destino -->
-            <div class="radicar-step__field">
+            <div class="radicar-step__field" on:change={() => unmark("dest_dept_code")}>
               <FormField
                 id="dest_dept_code"
                 label="Dependencia destino"
@@ -853,11 +1308,13 @@
                 bind:value={destDeptCode}
                 options={dependenciaOptions}
                 error={errors.destDeptCode ?? ""}
+                chip={chip("dest_dept_code")}
+                onEdit={() => unmark("dest_dept_code")}
               />
             </div>
 
             <!-- Folios -->
-            <div class="radicar-step__field">
+            <div class="radicar-step__field" on:input={() => unmark("pages")}>
               <FormField
                 id="pages"
                 label="Folios"
@@ -865,12 +1322,14 @@
                 bind:value={pages}
                 placeholder="0"
                 hint="Número de páginas físicas"
+                chip={chip("pages")}
+                onEdit={() => unmark("pages")}
               />
             </div>
 
             <!-- Plazo de respuesta (días hábiles) -->
             {#if docType === "E"}
-              <div class="radicar-step__field">
+              <div class="radicar-step__field" on:input={() => unmark("response_days")}>
                 <FormField
                   id="response_days"
                   label="Plazo de respuesta (días hábiles)"
@@ -878,6 +1337,8 @@
                   bind:value={responseDays}
                   placeholder="ej. 15"
                   hint="Deja vacío si no aplica plazo (RF-RAD-04)"
+                  chip={chip("response_days")}
+                  onEdit={() => unmark("response_days")}
                 />
               </div>
             {/if}
@@ -906,7 +1367,10 @@
               </div>
             {:else}
               <!-- Observaciones para Entradas -->
-              <div class="radicar-step__field radicar-step__field--full">
+              <div
+                class="radicar-step__field radicar-step__field--full"
+                on:input={() => unmark("observations")}
+              >
                 <FormField
                   id="observations"
                   label="Observaciones"
@@ -914,6 +1378,8 @@
                   bind:value={observations}
                   rows={3}
                   placeholder="Notas adicionales (opcional)"
+                  chip={chip("observations")}
+                  onEdit={() => unmark("observations")}
                 />
               </div>
             {/if}
@@ -927,7 +1393,11 @@
                 </p>
                 <div class="radicar-step__grid">
                   {#each supportedTemplateProperties as [key, propSchema] (key)}
-                    <div class="radicar-step__field">
+                    <div
+                      class="radicar-step__field"
+                      on:input={() => unmark(`extra:${key}`)}
+                      on:change={() => unmark(`extra:${key}`)}
+                    >
                       <SchemaField
                         propKey={key}
                         schema={propSchema}
@@ -935,6 +1405,8 @@
                         bind:value={extraMetadata[key]}
                         error={errors[`meta_${key}`] ?? ""}
                         subErrors={errors.metaSub?.[key] ?? {}}
+                        chip={chip(`extra:${key}`)}
+                        onEdit={() => unmark(`extra:${key}`)}
                       />
                     </div>
                   {/each}
@@ -960,7 +1432,7 @@
         <!-- ================================================================ -->
         <!-- PASO 2 — Anexos                                                  -->
         <!-- ================================================================ -->
-      {:else if currentStep === 2}
+      {:else if currentStep === STEP_ANEXOS}
         <section class="radicar-step" aria-labelledby="step2-title">
           <h2 id="step2-title" class="radicar-step__title">Anexos</h2>
           <p class="radicar-step__subtitle">
@@ -1074,7 +1546,7 @@
         <!-- ================================================================ -->
         <!-- PASO 3 — Clasificación TRD/CCD                                  -->
         <!-- ================================================================ -->
-      {:else if currentStep === 3}
+      {:else if currentStep === STEP_TRD}
         <section class="radicar-step" aria-labelledby="step3-title">
           <h2 id="step3-title" class="radicar-step__title">Clasificación TRD/CCD</h2>
           <p class="radicar-step__subtitle">
@@ -1137,7 +1609,7 @@
         <!-- ================================================================ -->
         <!-- PASO 4 — Flujo / Destino                                         -->
         <!-- ================================================================ -->
-      {:else if currentStep === 4}
+      {:else if currentStep === STEP_FLUJO}
         <section class="radicar-step" aria-labelledby="step4-title">
           <h2 id="step4-title" class="radicar-step__title">Flujo y destino</h2>
           <p class="radicar-step__subtitle">
@@ -1233,12 +1705,19 @@
       <!-- Navegación del stepper                                             -->
       <!-- ---------------------------------------------------------------- -->
       <div class="radicar-nav">
-        <Button variant="secondary" disabled={currentStep === 0} on:click={goBack}>
+        <Button variant="secondary" disabled={currentStep === STEP_DOCUMENTO} on:click={goBack}>
           <i class="fas fa-arrow-left" aria-hidden="true"></i>
           Anterior
         </Button>
 
-        {#if currentStep < STEP_LABELS.length - 1}
+        {#if currentStep === STEP_DOCUMENTO}
+          {#if ingestState === "indexed"}
+            <Button variant="primary" on:click={goNext}>
+              Siguiente
+              <i class="fas fa-arrow-right" aria-hidden="true"></i>
+            </Button>
+          {/if}
+        {:else if currentStep < STEP_LABELS.length - 1}
           <Button variant="primary" on:click={goNext}>
             Siguiente
             <i class="fas fa-arrow-right" aria-hidden="true"></i>
@@ -1344,7 +1823,111 @@
     background: var(--op-surface);
     border: 1px solid var(--op-border);
     border-radius: var(--op-radius-lg);
-    padding: var(--op-space-5);
+    padding: var(--op-space-6);
+    box-shadow: var(--op-shadow-sm);
+  }
+
+  .entry-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--op-space-3);
+    margin-bottom: var(--op-space-5);
+  }
+
+  .entry-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--op-space-2);
+    padding: var(--op-space-5) var(--op-space-3);
+    border: 2px solid var(--op-border);
+    border-radius: var(--op-radius-lg);
+    background: var(--op-surface);
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    transition:
+      border-color var(--op-transition),
+      box-shadow var(--op-transition),
+      background var(--op-transition);
+
+    &:hover,
+    &:focus-visible {
+      border-color: var(--db-brand);
+      background: var(--db-brand-light);
+      outline: none;
+    }
+
+    &--selected {
+      border-color: var(--db-brand);
+      background: var(--db-brand-light);
+      box-shadow: 0 0 0 3px var(--op-focus-ring);
+    }
+
+    &__icon {
+      font-size: 1.75rem;
+      color: var(--db-brand);
+    }
+
+    &__label {
+      font-weight: var(--op-weight-bold);
+    }
+
+    &__desc {
+      font-size: var(--op-font-xs);
+      color: var(--op-text-secondary);
+      text-align: center;
+    }
+  }
+
+  .entry-file {
+    display: flex;
+    align-items: center;
+    gap: var(--op-space-2);
+    margin: 0 0 var(--op-space-3);
+    font-size: var(--op-font-sm);
+
+    &__size {
+      color: var(--op-text-secondary);
+    }
+  }
+
+  .entry-status {
+    font-size: var(--op-font-sm);
+    font-weight: var(--op-weight-medium);
+    color: var(--db-brand-dark);
+    margin: 0 0 var(--op-space-3);
+
+    &--failed {
+      color: var(--op-error-fg);
+    }
+
+    &__code {
+      display: block;
+      font-weight: var(--op-weight-regular);
+      margin-top: var(--op-space-1);
+    }
+  }
+
+  .entry-failed {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--op-space-2);
+    margin-bottom: var(--op-space-3);
+  }
+
+  .chip {
+    font-size: var(--op-font-xs);
+    font-weight: var(--op-weight-medium);
+    line-height: 1.4;
+    padding: 0 var(--op-space-2);
+    border-radius: var(--op-radius-full);
+  }
+
+  .chip--ai {
+    background: var(--db-ai-bg);
+    color: var(--db-ai-fg);
+    border: 1px solid var(--db-ai);
   }
 
   .radicar-step {
