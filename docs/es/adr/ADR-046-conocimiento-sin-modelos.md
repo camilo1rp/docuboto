@@ -13,7 +13,7 @@
 
 ## Contexto
 
-ADR-045 hace de knowledge-service la pasarela hacia un proveedor interno (el primero previsto es Proboto) y deja `local` como implementación por defecto y como respaldo: «el índice de hoy (pgvector) y la generación configurada por ADR-006». Así, Docuboto conserva **dos** caminos de inteligencia que hacen lo mismo con controles distintos:
+ADR-045 hace de knowledge-service la pasarela hacia un proveedor interno y deja `local` como implementación por defecto y como respaldo: «el índice de hoy (pgvector) y la generación configurada por ADR-006». Así, Docuboto conserva **dos** caminos de inteligencia que hacen lo mismo con controles distintos:
 
 - **`local`**: embeddings propios y generación propia con cuatro proveedores, elegidos por despliegue (ADR-006), con la barrera fija `is_generatable` / `is_embeddable`.
 - **`ppi`**: el proveedor, con su pasarela de modelos, su verificación de citas, una ruta de modelos por nivel y una declaración `capabilities` firmada que el administrador acepta nivel por nivel.
