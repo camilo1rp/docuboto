@@ -26,7 +26,7 @@ import httpx
 from knowledge.core import token_ppi
 
 #: Versión que esta pasarela habla. El proveedor la exige en `PPI-Version`.
-PPI_VERSION = "1.2.0"
+PPI_VERSION = "1.3.0"
 
 _consulta: TransporteHttp | None = None
 _llamada: ContextVar[tuple[Any, str] | None] = ContextVar("ppi_entidad", default=None)

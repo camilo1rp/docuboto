@@ -19,6 +19,7 @@ los tiene encendidos.
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import re
@@ -41,6 +42,53 @@ def trozos(lote: dict[str, Any], tope: int = _TOPE) -> list[dict[str, Any]]:
     if len(items) <= tope:
         return [lote]
     return [{"items": items[i : i + tope]} for i in range(0, len(items), tope)]
+
+
+def lote_preparacion(
+    *,
+    staging_id: str,
+    filename: str,
+    media_type: str,
+    size_bytes: int,
+    sha256: str,
+    contenido: bytes,
+    received_at: datetime,
+) -> dict[str, Any]:
+    """Record padre más el archivo en línea. El adjunto exige un padre."""
+    asunto = filename.strip()[:4000] or "documento"
+    instante = _instante(received_at)
+    record = {
+        "external_ref": staging_id,
+        "version": instante,
+        "sensitivity": "public",
+        "registration_number": staging_id[:128],
+        "received_at": instante,
+        "direction": "incoming",
+        "subject": asunto,
+        "channel": "counter",
+        "closed": False,
+    }
+    adjunto = {
+        "external_ref": f"{staging_id}.file",
+        "parent_ref": staging_id,
+        "version": sha256,
+        "sensitivity": "public",
+        "filename": filename.strip()[:512] or "documento",
+        "media_type": media_type[:255],
+        "role": "main",
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+        "content": {
+            "mode": "inline",
+            "bytes_base64": base64.b64encode(contenido).decode("ascii"),
+        },
+    }
+    return {
+        "items": [
+            {"type": "record", "record": record},
+            {"type": "attachment", "attachment": adjunto},
+        ]
+    }
 
 
 def lote(fila: Any, anexos: Any) -> dict[str, Any]:

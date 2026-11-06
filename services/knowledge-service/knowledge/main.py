@@ -22,6 +22,7 @@ from knowledge.core.config import settings
 from knowledge.core.database import close_pool, create_pool
 from knowledge.core.redis_client import close_redis, init_redis
 from knowledge.routers.health import router as health_router
+from knowledge.routers.ingesta import router as ingesta_router
 from knowledge.routers.inteligencia import router as inteligencia_router
 from knowledge.routers.knowledge import router as knowledge_router
 from knowledge.routers.metrics import router as metrics_router
@@ -74,7 +75,7 @@ app.add_middleware(usuario.UsuarioActualMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="knowledge-service")
 
 app.add_exception_handler(Problema, respuesta_problema)
-DOMAIN_ROUTERS = (knowledge_router, retorno_router, inteligencia_router)
+DOMAIN_ROUTERS = (knowledge_router, ingesta_router, retorno_router, inteligencia_router)
 for _router in DOMAIN_ROUTERS:
     app.include_router(_router)
 app.include_router(health_router)

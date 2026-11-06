@@ -16,7 +16,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from knowledge.core.traduccion import lote, trozos
+from knowledge.core.traduccion import lote, lote_preparacion, trozos
 
 RADICADO = uuid.UUID("00000000-0000-4000-8000-0000000000b2")
 ANEXO = uuid.UUID("00000000-0000-4000-8000-0000000000c3")
@@ -99,6 +99,27 @@ def test_el_tipo_documental_define_la_direccion(tipo: str, direction: str) -> No
 def test_sin_asunto_no_hay_lote() -> None:
     with pytest.raises(ValueError):
         lote(_fila(subject="  "), [])
+
+
+def test_la_preparacion_lleva_el_archivo_en_linea() -> None:
+    cuerpo = lote_preparacion(
+        staging_id="staging-1",
+        filename="solicitud.pdf",
+        media_type="application/pdf",
+        size_bytes=5,
+        sha256=SHA,
+        contenido=b"hello",
+        received_at=CUANDO,
+    )
+    record = cuerpo["items"][0]["record"]
+    adjunto = cuerpo["items"][1]["attachment"]
+    assert record["direction"] == "incoming"
+    assert record["registration_number"] == "staging-1"
+    assert record["subject"] == "solicitud.pdf"
+    assert adjunto["parent_ref"] == "staging-1"
+    assert adjunto["external_ref"] == "staging-1.file"
+    assert adjunto["content"]["mode"] == "inline"
+    assert adjunto["sha256"] == SHA
 
 
 def test_un_lote_largo_se_parte_en_tandas_de_cien() -> None:

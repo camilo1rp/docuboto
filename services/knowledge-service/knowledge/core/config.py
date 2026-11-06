@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # El mismo secreto que document-service exige en sus rutas internas.
     # Vacío: el retorno no pide bytes.
     document_internal_token: str = ""
+    # Bytes de un archivo ya subido, para la ingesta de preparación.
+    # Vacío: no se leen. El mismo secreto que storage-service exige.
+    storage_service_url: str = "http://storage-service:8005"
+    storage_internal_token: str = ""
     service_port: int = 8011
     log_level: str = "info"
     # El consumidor lee los dos streams de dominio. La URL vacía no es un

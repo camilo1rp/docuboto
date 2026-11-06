@@ -599,6 +599,8 @@ services:
       # Acto de configuración: tenant-service llama estas rutas. Vacío las cierra.
       - INTELLIGENCE_INTERNAL_TOKEN=${INTELLIGENCE_INTERNAL_TOKEN:-orpycamcp_intelligence_internal_dev}
       - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
+      - STORAGE_SERVICE_URL=http://storage-service:8005
+      - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
       # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
     networks:
       - orpycamcp-net
