@@ -11,7 +11,7 @@ openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: Intelligence Provider Protocol (PPI)
-  version: 1.2.0
+  version: 1.3.0
   summary: A neutral protocol between a records system (the host) and an intelligence provider.
   description: |
     PPI lets a **host** (a system of record) use an **intelligence provider** that runs
@@ -19,6 +19,10 @@ info:
 
     - The host **pushes** records and attachments (`ingest`). The provider never reads
       the host's database, storage or event bus.
+    - The host reads the ingest pipeline state of one object (`ingest` status) and asks
+      the provider to fill a list of fields from an indexed object (`extract`). Closed
+      fields travel with their allowed values; the provider returns only those values,
+      or none.
     - The host asks on behalf of one of its users (`query`) and gets answers that cite
       host references, or `insufficient_evidence`.
     - The provider sends typed, cited, **advisory** recommendations to a host callback
@@ -54,7 +58,9 @@ tags:
   - name: connection
     description: The host's declarations for its tenant at the provider.
   - name: ingest
-    description: Records, attachments and deletions pushed by the host.
+    description: Records, attachments and deletions pushed by the host, and the pipeline state of one object.
+  - name: extract
+    description: Fill a host form from an indexed object. Closed fields carry their allowed values.
   - name: query
     description: Search and ask on behalf of a host user.
   - name: run
@@ -222,6 +228,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/InventoryPage'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/ingest/{external_ref}/status:
+    get:
+      tags: [ingest]
+      operationId: getIngestStatus
+      summary: Pipeline state of one ingested object
+      description: |
+        The host polls this after an ingest item returns `stored`. The states are
+        `received`, `processing`, `indexed` and `failed`. `error_code` is set only
+        when the state is `failed`. A missing object is `scope_not_found`.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+        - name: external_ref
+          in: path
+          required: true
+          schema:
+            $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+      responses:
+        '200':
+          description: Current pipeline state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestStatus'
+        default:
+          $ref: '#/components/responses/Problem'
+
+  /v1/extract:
+    post:
+      tags: [extract]
+      operationId: extract
+      summary: Fill named fields from an indexed object
+      description: |
+        The object named by `external_ref` MUST already be `indexed`. Otherwise the
+        provider answers `not_indexed`. A missing object is `scope_not_found`.
+
+        Each field has a `kind`. A `choice` field MUST carry at least one allowed
+        value; the provider returns one of those values, or omits the key. `text`,
+        `number` and `date` fields are free. The provider MUST NOT invent a choice
+        that the host did not send. Values the host did not ask for are dropped.
+      parameters:
+        - $ref: '#/components/parameters/PpiVersion'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtractRequest'
+      responses:
+        '200':
+          description: One value per key the provider could fill.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExtractResponse'
         default:
           $ref: '#/components/responses/Problem'
 
@@ -487,7 +550,7 @@ components:
           description: |
             Stable machine-readable code. Codes defined by v1: `invalid_request`,
             `unauthenticated`, `not_enabled`, `level_not_accepted`,
-            `unknown_vocabulary_code`, `scope_not_found`, `unknown_task`,
+            `unknown_vocabulary_code`, `scope_not_found`, `not_indexed`, `unknown_task`,
             `unknown_kind`, `signature_invalid`, `replayed_nonce`, `content_mismatch`,
             `gone`, `rate_limited`, `unavailable`.
           type: string
@@ -1154,4 +1217,98 @@ components:
           maxLength: 1024
         sha256:
           $ref: './schemas/common.schema.json#/$defs/Sha256'
+      additionalProperties: false
+
+    IngestStatus:
+      type: object
+      required: [external_ref, ingest_state, error_code]
+      properties:
+        external_ref:
+          $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+        ingest_state:
+          enum: [received, processing, indexed, failed]
+        error_code:
+          oneOf:
+            - type: string
+              minLength: 1
+              maxLength: 64
+              pattern: '^[a-z][a-z0-9_]{1,63}$'
+            - type: 'null'
+      additionalProperties: false
+
+    ExtractChoice:
+      type: object
+      required: [value, label]
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 256
+        label:
+          type: string
+          minLength: 1
+          maxLength: 256
+      additionalProperties: false
+
+    ExtractField:
+      oneOf:
+        - type: object
+          required: [key, kind, choices]
+          properties:
+            key:
+              type: string
+              minLength: 1
+              maxLength: 128
+            kind:
+              const: choice
+            label:
+              type: string
+              minLength: 1
+              maxLength: 256
+            choices:
+              type: array
+              minItems: 1
+              maxItems: 500
+              items:
+                $ref: '#/components/schemas/ExtractChoice'
+          additionalProperties: false
+        - type: object
+          required: [key, kind]
+          properties:
+            key:
+              type: string
+              minLength: 1
+              maxLength: 128
+            kind:
+              enum: [text, number, date]
+            label:
+              type: string
+              minLength: 1
+              maxLength: 256
+          additionalProperties: false
+
+    ExtractRequest:
+      type: object
+      required: [external_ref, fields]
+      properties:
+        external_ref:
+          $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+        fields:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ExtractField'
+      additionalProperties: false
+
+    ExtractResponse:
+      type: object
+      required: [external_ref, values]
+      properties:
+        external_ref:
+          $ref: './schemas/common.schema.json#/$defs/ExternalRef'
+        values:
+          type: object
+          additionalProperties:
+            type: [string, number, boolean, 'null']
       additionalProperties: false

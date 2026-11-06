@@ -1,5 +1,5 @@
 {
-  "protocol_version": "1.2.0",
+  "protocol_version": "1.3.0",
   "description": "Conformance fixtures for PPI v1. Each entry names a fixture, the schema it is checked against (a JSON Schema file, or a component of the OpenAPI document), and whether it must validate. Paths are relative to this directory's parent.",
   "fixtures": [
     {
@@ -309,6 +309,32 @@
       "schema": "schemas/record.schema.json",
       "valid": false,
       "why": "`metadata` is flat: each value is a string, number, boolean or null. The host flattens nested template fields."
+    },
+    {
+      "file": "examples/valid/ingest-status.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/IngestStatus",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/ingest-status-failed.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/IngestStatus",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/extract-request.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/ExtractRequest",
+      "valid": true
+    },
+    {
+      "file": "examples/valid/extract-response.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/ExtractResponse",
+      "valid": true
+    },
+    {
+      "file": "examples/invalid/extract-choice-without-options.json",
+      "schema": "ppi-v1.openapi.yaml#/components/schemas/ExtractRequest",
+      "valid": false,
+      "why": "A choice field names at least one allowed value. Free text is a different kind."
     }
   ]
 }
