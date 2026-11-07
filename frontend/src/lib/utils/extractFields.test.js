@@ -14,6 +14,7 @@ import {
   camposPlantilla,
   campoDesdeSchema,
   aplicarExtracto,
+  extractoSeReintenta,
 } from "./extractFields.js";
 
 const DIRECCION = [
@@ -54,6 +55,12 @@ describe("camposBase", () => {
     expect(byKey.origin_dept_code.choices).toEqual([{ value: "100", label: "Jurídica" }]);
     expect(byKey.subject).toEqual({ key: "subject", kind: "text", label: "Asunto" });
     expect(byKey.pages).toEqual({ key: "pages", kind: "number", label: "Folios" });
+    expect(byKey.details).toEqual({
+      key: "details",
+      kind: "text",
+      label: "Hechos y detalles que constan en el documento",
+    });
+    expect(byKey.observations).toBeUndefined();
   });
 
   it("omite un choice si el catálogo no tiene opciones", () => {
@@ -142,5 +149,38 @@ describe("aplicarExtracto", () => {
     const { applied, marked } = aplicarExtracto({ direction: "E" }, fields);
     expect(applied.subject).toBeUndefined();
     expect(marked).toEqual(["direction"]);
+  });
+
+  it("details del extracto llena observaciones", () => {
+    const { applied, marked } = aplicarExtracto(
+      { details: "El oficio pide copia del acto administrativo." },
+      fields,
+    );
+    expect(applied.observations).toBe("El oficio pide copia del acto administrativo.");
+    expect(applied.details).toBeUndefined();
+    expect(marked).toEqual(["observations"]);
+  });
+});
+
+describe("extractoSeReintenta", () => {
+  it("reintenta 409 aunque traiga código", () => {
+    expect(extractoSeReintenta(409, "not_indexed")).toBe(true);
+    expect(extractoSeReintenta(409, null)).toBe(true);
+  });
+
+  it("reintenta 503 y 504 de infraestructura", () => {
+    expect(extractoSeReintenta(503, "upstream_unavailable")).toBe(true);
+    expect(extractoSeReintenta(503, "connection_error")).toBe(true);
+    expect(extractoSeReintenta(504, null)).toBe(true);
+  });
+
+  it("no reintenta un plazo agotado: repetirlo lo triplica", () => {
+    expect(extractoSeReintenta(504, "extract_timeout")).toBe(false);
+    expect(extractoSeReintenta(503, "proveedor")).toBe(false);
+  });
+
+  it("no reintenta un fallo atribuible a la petición", () => {
+    expect(extractoSeReintenta(422, "validation_error")).toBe(false);
+    expect(extractoSeReintenta(404, "not_found")).toBe(false);
   });
 });

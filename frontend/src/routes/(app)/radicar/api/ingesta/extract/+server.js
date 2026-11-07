@@ -17,6 +17,17 @@ import { API_V1 } from "$lib/utils/config.server.js";
 const REF_RE = /^[A-Za-z0-9._:~-]{1,256}$/;
 const KINDS = new Set(["choice", "text", "number", "date"]);
 
+/**
+ * Plazo de esta llamada al servicio, en ms.
+ *
+ * Queda por ENCIMA del plazo del proveedor (`PLAZO_EXTRACT_S` = 90 s en
+ * `knowledge/clients/ppi.py`) a propósito: así el primer error en llegar es el
+ * del proveedor —con su código y su mensaje— y no un corte de este proxy que
+ * la pantalla no puede distinguir de una caída de red. El presupuesto de
+ * reintentos y el plazo total viven en el cliente (`extractFields.js`).
+ */
+const PLAZO_MS = 95_000;
+
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, request }) {
   const token = locals.accessToken ?? "";
@@ -60,10 +71,27 @@ export async function POST({ locals, request }) {
       method: "POST",
       headers,
       body: JSON.stringify({ external_ref: externalRef, fields }),
+      ...(typeof AbortSignal.timeout === "function"
+        ? { signal: AbortSignal.timeout(PLAZO_MS) }
+        : {}),
     });
     const data = await res.json().catch(() => ({}));
     return json(data, { status: res.status });
-  } catch {
+  } catch (err) {
+    // Un plazo agotado y una red caída son fallos distintos para quien espera:
+    // el primero se reintenta a mano, el segundo suele ser momentáneo. Se
+    // distinguen por nombre porque `AbortSignal.timeout` lanza `TimeoutError`.
+    const agotado = err instanceof Error && err.name === "TimeoutError";
+    if (agotado) {
+      return json(
+        {
+          error: "extract_timeout",
+          detail: "La extracción tardó demasiado. Vuelve a extraer o llena el formulario.",
+          status: 504,
+        },
+        { status: 504 },
+      );
+    }
     return json(
       { error: "connection_error", detail: "No se pudo conectar con el servicio de conocimiento." },
       { status: 503 },

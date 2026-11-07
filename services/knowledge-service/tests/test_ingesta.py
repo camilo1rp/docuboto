@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 import pytest
 
-from knowledge.clients.ppi import ClientePpi
+from knowledge.clients.ppi import PLAZO_EXTRACT_S, ClientePpi
 from knowledge.clients.storage import TOPE, Archivo, Falta
 from knowledge.core import ingesta
 from tests.conftest import TENANT_HEADERS
@@ -59,6 +59,7 @@ class _Transporte:
         self.respuestas = respuestas or {}
         self.error = error
         self.llamadas: list[tuple[str, str, dict[str, Any] | None]] = []
+        self.timeouts: list[float | None] = []
 
     async def request(
         self,
@@ -69,8 +70,9 @@ class _Transporte:
         timeout: float | None = None,
         params: dict[str, Any] | None = None,
     ) -> Any:
-        del timeout, params
+        del params
         self.llamadas.append((method, url, json))
+        self.timeouts.append(timeout)
         if self.error is not None:
             raise self.error
         if url.endswith("/status"):
@@ -213,6 +215,7 @@ async def test_extraer_devuelve_el_valor_listado() -> None:
     metodo, url, cuerpo = transporte.llamadas[0]
     assert metodo == "POST" and url == "http://ppi.internal/v1/extract"
     assert cuerpo is not None and cuerpo["external_ref"] == "staging-1.file"
+    assert transporte.timeouts[0] == PLAZO_EXTRACT_S
 
 
 async def test_not_indexed_sale_como_motivo() -> None:

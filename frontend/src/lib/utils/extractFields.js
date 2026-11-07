@@ -12,6 +12,64 @@ import { resolveSchemaControl } from "./schemaField.js";
 /** Tope del proveedor para un archivo de preparación (100 MB). */
 export const TOPE_INGESTA_BYTES = 104857600;
 
+/** Intentos de POST extract: el índice puede adelantarse al texto, o el plazo cortarse. */
+export const EXTRACT_INTENTOS = 3;
+
+/** Espera base entre reintentos, en ms. Cada intento duplica esta espera. */
+export const EXTRACT_ESPERA_MS = 800;
+
+/**
+ * Plazo de UN intento de extracto, en ms. Tiene que superar el del servidor
+ * (`PLAZO_EXTRACT_S` = 90 s en `clients/ppi.py`) para que llegue su error y no
+ * el del navegador: así la persona ve el mensaje del proveedor y no un
+ * «connection_error» indistinguible de una caída de red.
+ */
+export const EXTRACT_PLAZO_MS = 95_000;
+
+/**
+ * Presupuesto TOTAL de la extracción, en ms. Sin él, reintentar un plazo
+ * agotado multiplica la espera: 90 s + espera + 90 s + espera + 90 s ≈ 271 s
+ * de rueda girando, y cada intento abandonado deja una petición huérfana viva
+ * en el servidor. Agotado el presupuesto no se reintenta aunque queden intentos.
+ */
+export const EXTRACT_PLAZO_TOTAL_MS = 110_000;
+
+/**
+ * ¿Vale la pena reintentar este fallo?
+ *
+ * Solo si es probable que se resuelva solo y rápido:
+ *
+ * - `409`: el índice del proveedor va por detrás del texto; esperar y repetir
+ *   es exactamente la respuesta correcta.
+ * - `503`/`504` de infraestructura (`upstream_unavailable`, `connection_error`):
+ *   un parpadeo; el reintento es barato porque el fallo fue rápido.
+ *
+ * NO se reintenta un plazo agotado (`extract_timeout`, o `proveedor`, que es
+ * como el router traduce el plazo del proveedor): repetirlo no lo acelera, lo
+ * triplica, y es justo el caso que el presupuesto total existe para acotar.
+ *
+ * @param {number} status
+ * @param {string|null} [error] código `error` del cuerpo
+ */
+export function extractoSeReintenta(status, error) {
+  if (status === 409) return true;
+  if (error === "extract_timeout" || error === "proveedor") return false;
+  return status === 503 || status === 504;
+}
+
+/**
+ * Clave que viaja a extract → campo del formulario. Extract pide hechos del
+ * documento (`details`); el radicado los guarda en observaciones.
+ */
+export const EXTRACT_A_FORMULARIO = Object.freeze({
+  details: "observations",
+});
+
+/** @param {string} extractKey */
+export function claveFormulario(extractKey) {
+  return EXTRACT_A_FORMULARIO[extractKey] ?? extractKey;
+}
+
 /**
  * @typedef {{ value: string, label: string }} Opcion
  * @typedef {{ key: string, kind: 'choice', label: string, choices: Opcion[] } | { key: string, kind: 'text'|'number'|'date', label: string }} CampoExtracto
@@ -63,7 +121,11 @@ export function camposBase(catalogos) {
     { key: "sender_entity", kind: "text", label: "Entidad" },
     { key: "pages", kind: "number", label: "Folios" },
     { key: "response_days", kind: "number", label: "Plazo" },
-    { key: "observations", kind: "text", label: "Observaciones" },
+    {
+      key: "details",
+      kind: "text",
+      label: "Hechos y detalles que constan en el documento",
+    },
   ].filter(Boolean);
 }
 
@@ -124,8 +186,9 @@ export function aplicarExtracto(values, fields) {
       const permitido = field.choices.some((c) => c.value === asString);
       if (!permitido) continue;
     }
-    applied[key] = asString;
-    marked.push(key);
+    const formKey = claveFormulario(key);
+    applied[formKey] = asString;
+    marked.push(formKey);
   }
   return { applied, marked };
 }

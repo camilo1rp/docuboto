@@ -56,9 +56,14 @@
   } from "$lib/utils/schemaField.js";
   import {
     TOPE_INGESTA_BYTES,
+    EXTRACT_INTENTOS,
+    EXTRACT_ESPERA_MS,
+    EXTRACT_PLAZO_MS,
+    EXTRACT_PLAZO_TOTAL_MS,
     camposBase,
     camposPlantilla,
     aplicarExtracto,
+    extractoSeReintenta,
   } from "$lib/utils/extractFields.js";
   import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
   // Las llamadas al gateway (subida de archivos, creación de radicado, plantillas)
@@ -165,6 +170,9 @@
   let ingestState = "";
   let ingestError = "";
   let ingestBusy = false;
+  /** Evita un segundo extracto si el poll y el arranque coinciden. */
+  let extractEnCurso = false;
+  let extractTerminado = false;
   /** @type {ReturnType<typeof setInterval>|null} */
   let pollTimer = null;
   /** Campos rellenados por extracto; editar uno quita su chip. */
@@ -371,6 +379,8 @@
     fileRef = null;
     ingestState = "";
     ingestError = "";
+    extractEnCurso = false;
+    extractTerminado = false;
     detenerPoll();
     if (!ref) return;
     try {
@@ -437,6 +447,8 @@
     ingestBusy = true;
     ingestState = "received";
     ingestError = "";
+    extractTerminado = false;
+    extractEnCurso = false;
     try {
       const form = new FormData();
       form.append("file", entryFile);
@@ -475,7 +487,7 @@
       ingestError = typeof body.error_code === "string" ? body.error_code : ingestError;
       if (ingestState === "indexed") {
         detenerPoll();
-        await extraerYPrefill();
+        if (!extractTerminado && !extractEnCurso) await extraerYPrefill();
       } else if (ingestState === "failed") {
         detenerPoll();
       }
@@ -487,8 +499,10 @@
   }
 
   async function extraerYPrefill() {
-    if (!fileRef) return;
+    if (!fileRef || extractEnCurso) return;
+    extractEnCurso = true;
     ingestBusy = true;
+    ingestError = "";
     try {
       const base = camposBase({
         direccion: DOC_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label })),
@@ -510,12 +524,23 @@
           markApplied(extra.applied, "extra:");
         }
       }
+      ingestError = "";
       ponerAnexoIngerido();
       currentStep = STEP_TIPO;
     } catch (err) {
-      ingestError = mensajeError(err, "No se pudieron extraer los datos");
+      const codigo = codigoError(err);
+      // El plazo agotado ya trae su mensaje del proxy (`extract_timeout`).
+      // `proveedor` es como el router traduce el plazo del proveedor cuando
+      // responde antes que el proxy; ambos significan lo mismo para quien espera.
+      ingestError =
+        codigo === "extract_timeout" || codigo === "proveedor"
+          ? "La extracción tardó demasiado. Vuelve a extraer o llena el formulario."
+          : mensajeError(err, "No se pudieron extraer los datos");
       ponerAnexoIngerido();
+      currentStep = STEP_TIPO;
     } finally {
+      extractTerminado = true;
+      extractEnCurso = false;
       ingestBusy = false;
     }
   }
@@ -526,14 +551,31 @@
    */
   async function pedirExtracto(ref, fields) {
     if (!fields.length) return {};
-    const res = await fetch("/radicar/api/ingesta/extract", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ external_ref: ref, fields }),
-    });
-    const body = await res.json();
-    if (!res.ok) throw body;
-    return body.values ?? {};
+    /** @type {any} */
+    let ultimo = { error: "connection_error" };
+    const limite = Date.now() + EXTRACT_PLAZO_TOTAL_MS;
+    for (let intento = 1; intento <= EXTRACT_INTENTOS; intento++) {
+      const res = await fetch("/radicar/api/ingesta/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ external_ref: ref, fields }),
+      });
+      const body = await res.json().catch(() => ({ error: "connection_error" }));
+      if (res.ok) return body.values ?? {};
+      ultimo = body;
+      // El presupuesto manda sobre el contador de intentos: si el siguiente no
+      // cabe, no se empieza. Así un fallo lento no se convierte en tres esperas.
+      const espera = EXTRACT_ESPERA_MS * 2 ** (intento - 1);
+      if (
+        !extractoSeReintenta(res.status, codigoError(body)) ||
+        intento === EXTRACT_INTENTOS ||
+        Date.now() + espera + EXTRACT_PLAZO_MS > limite
+      ) {
+        throw body;
+      }
+      await new Promise((r) => setTimeout(r, espera));
+    }
+    throw ultimo;
   }
 
   /** @param {Record<string, string>} applied */
@@ -1088,7 +1130,7 @@
                 aria-live="polite"
               >
                 {ETIQUETA_ESTADO[ingestState] ?? ingestState}
-                {#if ingestState === "failed" && ingestError}
+                {#if ingestError}
                   <span class="entry-status__code">{ingestError}</span>
                 {/if}
               </p>
@@ -1110,6 +1152,22 @@
                 <Button variant="primary" on:click={elegirFormulario}>Llenar el formulario</Button>
               </div>
             {/if}
+
+            {#if ingestState === "indexed" && ingestError}
+              <div class="entry-failed">
+                <Button
+                  variant="secondary"
+                  on:click={() => void extraerYPrefill()}
+                  disabled={ingestBusy}
+                  loading={ingestBusy}
+                >
+                  Volver a extraer
+                </Button>
+                <Button variant="primary" on:click={() => (currentStep = STEP_TIPO)}>
+                  Continuar el formulario
+                </Button>
+              </div>
+            {/if}
           {/if}
 
           {#if errors.entry}
@@ -1122,6 +1180,20 @@
         <!-- ================================================================ -->
       {:else if currentStep === STEP_TIPO}
         <section class="radicar-step" aria-labelledby="step1-tipo-title">
+          {#if ingestError && fileRef}
+            <div class="extract-retry" data-testid="extract-error" role="alert">
+              <p>{ingestError}</p>
+              <Button
+                variant="secondary"
+                size="sm"
+                on:click={() => void extraerYPrefill()}
+                disabled={ingestBusy}
+                loading={ingestBusy}
+              >
+                Volver a extraer
+              </Button>
+            </div>
+          {/if}
           <h2 id="step1-tipo-title" class="radicar-step__title">
             ¿Qué tipo de documento vas a radicar?
             {#if chip("direction")}
@@ -1914,6 +1986,25 @@
     flex-wrap: wrap;
     gap: var(--op-space-2);
     margin-bottom: var(--op-space-3);
+  }
+
+  .extract-retry {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--op-space-2);
+    margin: 0 0 var(--op-space-3);
+    padding: var(--op-space-3);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    background: var(--op-surface);
+
+    p {
+      margin: 0;
+      flex: 1 1 16rem;
+      font-size: var(--op-font-sm);
+      color: var(--op-text);
+    }
   }
 
   .chip {

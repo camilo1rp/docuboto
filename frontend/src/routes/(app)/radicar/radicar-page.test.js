@@ -530,7 +530,12 @@ describe("/radicar — ingesta indexada prefilla Tipo y Metadatos", () => {
         const body = JSON.parse(opts.body);
         const keys = body.fields.map((f) => f.key);
         const values = keys.includes("direction")
-          ? { direction: "E", subject: "Petición ciudadana", sender_name: "Ana Ruiz" }
+          ? {
+              direction: "E",
+              subject: "Petición ciudadana",
+              sender_name: "Ana Ruiz",
+              details: "El oficio pide copia del acto administrativo.",
+            }
           : {};
         return { ok: true, json: async () => ({ external_ref: body.external_ref, values }) };
       }
@@ -555,13 +560,141 @@ describe("/radicar — ingesta indexada prefilla Tipo y Metadatos", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
     expect(screen.getByLabelText("Asunto", { exact: false })).toHaveValue("Petición ciudadana");
     expect(screen.getByLabelText("Nombre del remitente", { exact: false })).toHaveValue("Ana Ruiz");
+    expect(screen.getByLabelText("Observaciones", { exact: false })).toHaveValue(
+      "El oficio pide copia del acto administrativo.",
+    );
     expect(screen.getAllByText("IA").length).toBeGreaterThan(0);
 
     expect(screen.getByTestId("ai-chip-subject")).toBeInTheDocument();
     expect(screen.getByTestId("ai-chip-sender_name")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-chip-observations")).toBeInTheDocument();
 
     await fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
     expect(screen.getByText("peticion.pdf")).toBeInTheDocument();
     expect(screen.getByLabelText("Subido correctamente")).toBeInTheDocument();
   });
+
+  it("si extract falla con 503, reintenta y rellena el formulario", async () => {
+    let extractCalls = 0;
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      const href = String(url);
+      if (href === "/radicar/api/storage") {
+        return { ok: true, json: async () => ({ id: FILE_ID }) };
+      }
+      if (href === "/radicar/api/ingesta" && opts?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ staging_ref: "staging-1", file_ref: "staging-1.file" }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/staging-1.file") {
+        return {
+          ok: true,
+          json: async () => ({
+            external_ref: "staging-1.file",
+            ingest_state: "indexed",
+            error_code: null,
+          }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/extract") {
+        extractCalls += 1;
+        if (extractCalls === 1) {
+          // Un parpadeo de infraestructura: falla rápido y el reintento lo salva.
+          return {
+            ok: false,
+            status: 503,
+            json: async () => ({
+              error: "upstream_unavailable",
+              detail: "No se pudo contactar el servicio",
+              status: 503,
+            }),
+          };
+        }
+        const body = JSON.parse(opts.body);
+        const keys = body.fields.map((f) => f.key);
+        const values = keys.includes("direction")
+          ? { direction: "E", subject: "Petición ciudadana", sender_name: "Ana Ruiz" }
+          : {};
+        return { ok: true, json: async () => ({ external_ref: body.external_ref, values }) };
+      }
+      if (href.startsWith("/radicar/api/templates")) {
+        return { ok: true, json: async () => [] };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(RadicarPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /Subir documento/i }));
+    const input = screen.getByLabelText("Seleccionar archivo para radicar");
+    await fireEvent.change(input, {
+      target: { files: [new File(["hola"], "peticion.pdf", { type: "application/pdf" })] },
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByRole("radio", { name: /Entrada/i })).toBeChecked();
+      },
+      { timeout: 4000 },
+    );
+    expect(extractCalls).toBeGreaterThanOrEqual(2);
+  }, 10_000);
+
+  it("si extract no responde, abre Tipo vacío y deja reintentar", async () => {
+    let extractCalls = 0;
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      const href = String(url);
+      if (href === "/radicar/api/storage") {
+        return { ok: true, json: async () => ({ id: FILE_ID }) };
+      }
+      if (href === "/radicar/api/ingesta" && opts?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ staging_ref: "staging-1", file_ref: "staging-1.file" }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/staging-1.file") {
+        return {
+          ok: true,
+          json: async () => ({
+            external_ref: "staging-1.file",
+            ingest_state: "indexed",
+            error_code: null,
+          }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/extract") {
+        extractCalls += 1;
+        return {
+          ok: false,
+          status: 504,
+          json: async () => ({
+            error: "extract_timeout",
+            detail: "La extracción tardó demasiado. Vuelve a extraer o llena el formulario.",
+            status: 504,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(RadicarPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /Subir documento/i }));
+    const input = screen.getByLabelText("Seleccionar archivo para radicar");
+    await fireEvent.change(input, {
+      target: { files: [new File(["hola"], "oficio.pdf", { type: "application/pdf" })] },
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("extract-error")).toBeInTheDocument();
+      },
+      { timeout: 8000 },
+    );
+    expect(screen.getByText(/tardó demasiado/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Volver a extraer/i })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Entrada/i })).not.toBeChecked();
+    // Un plazo agotado NO se reintenta solo: se espera una decisión humana.
+    expect(extractCalls).toBe(1);
+  }, 10_000);
 });

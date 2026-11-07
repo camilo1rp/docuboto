@@ -27,6 +27,8 @@ RUTA_CAPACIDADES = "/v1/capabilities"
 RUTA_CONEXION = "/v1/connection"
 RUTA_EXTRACT = "/v1/extract"
 _REF_SAFE = "._:~-"
+# Gemini extract-batch suele pasar de 30 s con un PDF recién indexado.
+PLAZO_EXTRACT_S = 90.0
 
 
 class Transporte(Protocol):
@@ -126,4 +128,5 @@ class ClientePpi:
             "POST",
             f"{self._base_url}{RUTA_EXTRACT}",
             json=cuerpo,
+            timeout=PLAZO_EXTRACT_S,
         )
