@@ -1,6 +1,7 @@
 # ADR-037: El asistente y la búsqueda semántica se activan por entidad, y consultarlos es un permiso
 
 **Estado**: Aceptado
+**Reducción**: [ADR-051](ADR-051-ppi-reducido-vive-en-la-app.md) retira la bandeja de sugerencias y las rutas de conocimiento de usuario que este ADR gobernaba; la bandera por entidad sobrevive como el interruptor de PPI.
 **Fecha**: 2026-10-20
 **Autores**: Giampiero (mantenedor principal); triage 2026-10-09, tanda C-1 (C1 y C2)
 **Relacionados**: [ADR-035](ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md) (`public.tenants` como registro leído en cada petición), [ADR-014](ADR-014-busqueda-postgresql-fts.md) (la búsqueda exacta no depende del asistente), [ADR-019](ADR-019-capa-mcp.md) (asistente), [ADR-021](ADR-021-reclamacion-deadletter-eventos.md) (ingesta por eventos)

@@ -1,6 +1,6 @@
 # ADR-012: Migraciones por tenant (runner global + tenant)
 
-**Estado**: Aceptado (implementado en F1 — runner de auth-service + plantilla)
+**Estado**: Aceptado (implementado en F1 — runner de auth-service + plantilla). **Ampliado por [ADR-053](ADR-053-esquema-legible-y-lanzamientos.md)**: el mecanismo (cerrojo global, libro único, `global/` y `tenant/`) se conserva y se colapsa a un solo runner; el contenido se regenera en migraciones legibles y el *baseline* generado se retira.
 **Fecha**: 2026-06-16
 **Autores**: Giampiero (mantenedor principal)
 

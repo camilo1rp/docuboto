@@ -1,7 +1,7 @@
 # ADR-001: Microservices Architecture with FastAPI
 
 **Date**: 2026-05-28
-**Status**: Accepted
+**Status**: Accepted — **amended by [ADR-047](ADR-047-un-proceso-y-cuatro-contenedores.md)**: the ten domain services are subpackages of one process and one image; the gateway, the per-service ports and the internal tokens are retired. Service boundaries survive as package boundaries.
 **Deciders**: Giampiero (orpyca.com)
 
 ## Context

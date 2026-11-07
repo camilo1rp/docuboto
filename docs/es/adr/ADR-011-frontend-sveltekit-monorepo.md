@@ -1,6 +1,7 @@
 # ADR-011: Frontend como app de presentación SvelteKit en el monorepo
 
 **Estado**: Propuesto
+**Enmienda**: [ADR-048](ADR-048-identidad-emitida-por-docuboto.md) sustituye el inicio de sesión contra Keycloak por uno propio; se conservan la cookie `httpOnly`, el acceso solo desde el servidor y la prohibición de que el navegador llame al API.
 **Fecha**: 2026-06-16
 **Autores**: Giampiero (mantenedor principal)
 

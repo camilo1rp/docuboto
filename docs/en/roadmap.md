@@ -2,6 +2,10 @@
 
 > Updated as of 2026-10-28.
 
+> **This document has a planned successor.** [ADR-055](adr/ADR-055-publicacion-publica-de-instrumentos.md) §6 replaces it with `conformidad.md`: one row per regulatory obligation, each with the test that proves it, because this file carries open pending items inside checked boxes and claims the code contradicts. Until that document exists, this one remains the reference for what is planned.
+>
+> The current work plan for slimming down and reaching conformance is the set of decisions [ADR-047](adr/ADR-047-un-proceso-y-cuatro-contenedores.md) through [ADR-056](adr/ADR-056-un-solo-proxy-bff.md).
+
 OrpycaMCP has followed **two complementary plans**:
 
 1. **Foundational roadmap** (Phases 1–6, below "Scaffolding"): stood up the 8 microservices with their basic CRUD, infrastructure and CI/CD. **Complete.**
