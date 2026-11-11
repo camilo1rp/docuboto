@@ -37,6 +37,13 @@ env/
 htmlcov/
 coverage.xml
 
+# ─── Dependencias de Node instaladas ────────────────────────────────────────────
+# La barra inicial la ancla a la raíz: cubre un `node_modules/` de la raíz (lo deja
+# un `vitest` lanzado desde ahí) y no pisa el de `frontend/`, que gobierna su
+# propio `.gitignore`. Sin esta regla, ese directorio de caché aparecía como no
+# rastreado en cada `git status` y se colaba en cualquier `git add .`.
+/node_modules/
+
 # ─── MkDocs generated site (built by CI, not tracked) ──────────────────────────
 public/
 site/
