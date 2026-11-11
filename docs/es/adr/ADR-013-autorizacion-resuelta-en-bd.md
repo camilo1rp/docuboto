@@ -1,6 +1,6 @@
 # ADR-013: Autorización resuelta en la BD por request (Keycloak autentica, la BD autoriza)
 
-**Estado**: Aceptado (decisión R4 de la Fase 1)
+**Estado**: Aceptado (decisión R4 de la Fase 1). **Matizado por [ADR-048](ADR-048-identidad-emitida-por-docuboto.md)**: el emisor de identidad deja de ser Keycloak y pasa a ser Docuboto; la regla central —la BD autoriza en cada request, sin caché— no cambia.
 **Fecha**: 2026-06-17
 **Autores**: Giampiero (mantenedor principal)
 

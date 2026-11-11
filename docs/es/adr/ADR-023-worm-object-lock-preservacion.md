@@ -1,6 +1,6 @@
 # ADR-023 — WORM / Object-Lock de preservación (MinIO) y hoja de ruta AIP/PREMIS
 
-**Estado**: Aceptado (Increment A). Ratificado por `orfeo-architect`; auditado APTO por `tenant-security-auditor` y `archival-compliance-auditor`.
+**Estado**: Aceptado (Increment A). Ratificado por `orfeo-architect`; auditado APTO por `tenant-security-auditor` y `archival-compliance-auditor`. **Reubicado por [ADR-050](ADR-050-bytes-en-disco-y-archivo-sellado.md)**: la inmutabilidad deja de ser una propiedad del almacén local y pasa a serlo del nivel sellado en la nube de la entidad; el almacén local deja de ser WORM.
 
 **Fecha**: 2026-07-06.
 

@@ -113,6 +113,16 @@ plugins:
             ADR-044 Identidad de un solo uso y search_path sin public: ADR-044 Single-use identity and a public-free search_path
             ADR-045 Pasarela de inteligencia y protocolo PPI: ADR-045 Intelligence gateway and the PPI protocol
             ADR-046 La capa de conocimiento no llama a modelos: ADR-046 The knowledge layer calls no models
+            ADR-047 Un proceso y cuatro contenedores: ADR-047 One process and four containers
+            ADR-048 Identidad emitida por Docuboto: ADR-048 Identity issued by Docuboto
+            ADR-049 Eventos en PostgreSQL sin Redis: ADR-049 Events in PostgreSQL without Redis
+            ADR-050 Bytes en disco y archivo sellado: ADR-050 Bytes on disk and a sealed archive
+            ADR-051 PPI reducido vive en la app: ADR-051 The reduced PPI lives inside the app
+            ADR-052 Librerías en vez de implementaciones propias: ADR-052 Libraries instead of hand-written implementations
+            ADR-053 Esquema legible y lanzamientos: ADR-053 A readable schema and versioned releases
+            ADR-054 La firma dice la verdad: ADR-054 The signature tells the truth
+            ADR-055 Publicación pública de instrumentos: ADR-055 Public publication of archival instruments
+            ADR-056 Un solo proxy BFF: ADR-056 A single BFF proxy
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -187,6 +197,16 @@ nav:
     - ADR-044 Identidad de un solo uso y search_path sin public: adr/ADR-044-identidad-de-un-solo-uso-y-search-path-sin-public.md
     - ADR-045 Pasarela de inteligencia y protocolo PPI: adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md
     - ADR-046 La capa de conocimiento no llama a modelos: adr/ADR-046-conocimiento-sin-modelos.md
+    - ADR-047 Un proceso y cuatro contenedores: adr/ADR-047-un-proceso-y-cuatro-contenedores.md
+    - ADR-048 Identidad emitida por Docuboto: adr/ADR-048-identidad-emitida-por-docuboto.md
+    - ADR-049 Eventos en PostgreSQL sin Redis: adr/ADR-049-eventos-en-postgresql-sin-redis.md
+    - ADR-050 Bytes en disco y archivo sellado: adr/ADR-050-bytes-en-disco-y-archivo-sellado.md
+    - ADR-051 PPI reducido vive en la app: adr/ADR-051-ppi-reducido-vive-en-la-app.md
+    - ADR-052 Librerías en vez de implementaciones propias: adr/ADR-052-librerias-en-vez-de-implementaciones-propias.md
+    - ADR-053 Esquema legible y lanzamientos: adr/ADR-053-esquema-legible-y-lanzamientos.md
+    - ADR-054 La firma dice la verdad: adr/ADR-054-la-firma-dice-la-verdad.md
+    - ADR-055 Publicación pública de instrumentos: adr/ADR-055-publicacion-publica-de-instrumentos.md
+    - ADR-056 Un solo proxy BFF: adr/ADR-056-un-solo-proxy-bff.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - API por flujos (MCP): mcp-flujos.md

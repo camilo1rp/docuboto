@@ -1,6 +1,7 @@
 # ADR-045: Pasarela de inteligencia — un proveedor interno elegido por entidad y hablado por un protocolo neutro (PPI)
 
 **Estado**: Propuesto
+**Reducción**: [ADR-051](ADR-051-ppi-reducido-vive-en-la-app.md) deja de este ADR solo lo construido. El contrato se publica como v1.4.0 inmutable sin `POST /v1/runs`, `GET /v1/runs/{ref}`, `POST /v1/decisions` ni el callback `recommend` —ninguna de las dos partes los implementó—, y la pasarela pasa a ser un paquete dentro del proceso único en vez de un servicio. El modelo de consentimiento por entidad y por niveles no cambia.
 **Fecha**: 2026-10-27
 **Autores**: Camilo Romero; borrador para revisión del responsable de producto y del mantenedor
 **Revisión 2026-10-27 (niveles por entidad)**: el proveedor interno corre dentro de la instalación y bajo contrato con la entidad, así que es un encargado, no un tercero externo. Cada entidad decide qué niveles le transmite (por defecto solo PÚBLICA), y el proveedor declara en su `capabilities` firmada con qué modelos procesa cada nivel. Cambian la condición 3, §2, §3, §4, §5, §9 y las consecuencias. El resto queda igual.

@@ -2,6 +2,10 @@
 
 > Actualizado al 2026-10-28.
 
+> **Este documento tiene sucesor planificado.** [ADR-055](adr/ADR-055-publicacion-publica-de-instrumentos.md) §6 decide sustituirlo por `conformidad.md`: una fila por obligación normativa, cada una con la prueba que la demuestra, porque aquí hay pendientes abiertos dentro de casillas marcadas como hechas y afirmaciones que el código contradice. Hasta que se escriba ese documento, este sigue siendo la referencia de lo planificado.
+>
+> El plan de trabajo vigente para el adelgazamiento y la puesta en conformidad es el conjunto [ADR-047](adr/ADR-047-un-proceso-y-cuatro-contenedores.md) a [ADR-056](adr/ADR-056-un-solo-proxy-bff.md).
+
 OrpycaMCP ha seguido **dos planificaciones complementarias**:
 
 1. **Roadmap fundacional** (Fases 1–6, abajo «Andamiaje»): levantó los 8 microservicios con su CRUD básico, infraestructura y CI/CD. **Completo.**

@@ -1,6 +1,6 @@
 # ADR-019: Capa MCP como fachada fina cliente del gateway
 
-**Estado**: Aceptado
+**Estado**: **Retirado** por [ADR-051](ADR-051-ppi-reducido-vive-en-la-app.md). `mcp-server` se borra entero (10.381 líneas, 217 herramientas, 85 brechas declaradas): ninguna de las dos partes de PPI lo usaba y la conexión con el proveedor no pasa por él. Se conserva este documento como historia de la decisión y de sus motivos.
 **Fecha**: 2026-06-22
 **Autores**: Giampiero (mantenedor principal)
 
