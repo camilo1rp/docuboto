@@ -17,6 +17,7 @@ si algo llama igual.
 from __future__ import annotations
 
 from typing import Any, Protocol
+from urllib.parse import quote
 
 RUTA_INGEST = "/v1/ingest"
 RUTA_QUERY = "/v1/query"
@@ -24,10 +25,22 @@ RUTA_INVENTARIO = "/v1/ingest/inventory"
 RUTA_PURGA = "/v1/ingest/purge"
 RUTA_CAPACIDADES = "/v1/capabilities"
 RUTA_CONEXION = "/v1/connection"
+RUTA_EXTRACT = "/v1/extract"
+_REF_SAFE = "._:~-"
+# Gemini extract-batch suele pasar de 30 s con un PDF recién indexado.
+PLAZO_EXTRACT_S = 90.0
 
 
 class Transporte(Protocol):
-    async def request(self, method: str, url: str, *, json: dict[str, Any]) -> Any:
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
         """Hace la petición y devuelve la respuesta del transporte."""
 
 
@@ -99,4 +112,21 @@ class ClientePpi:
             "POST",
             self.destino_purga,
             json=cuerpo,
+        )
+
+    async def estado(self, external_ref: str) -> Any:
+        """GET /v1/ingest/{external_ref}/status. El estado del objeto ingerido."""
+        ref = quote(external_ref, safe=_REF_SAFE)
+        return await self._transporte.request(
+            "GET",
+            f"{self._base_url}{RUTA_INGEST}/{ref}/status",
+        )
+
+    async def extraer(self, cuerpo: dict[str, Any]) -> Any:
+        """POST /v1/extract. Rellena campos desde un objeto ya indexado."""
+        return await self._transporte.request(
+            "POST",
+            f"{self._base_url}{RUTA_EXTRACT}",
+            json=cuerpo,
+            timeout=PLAZO_EXTRACT_S,
         )

@@ -579,6 +579,8 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/knowledge/rag": "http://knowledge:8011",
         "/api/v1/knowledge/availability": "http://knowledge:8011",
         "/api/v1/knowledge/transmission": "http://knowledge:8011",
+        "/api/v1/knowledge/ingesta": "http://knowledge:8011",
+        "/api/v1/knowledge/ingesta/staging-1.file": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
         # del storage-service se expone (el frontend sube directo);
         # /preservacion/ se admite SUBRUTA A SUBRUTA (AREA-08-16): plan,

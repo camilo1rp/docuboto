@@ -22,7 +22,7 @@
  * dependencia opcional solo usada en Salida/Interno).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/svelte";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/svelte";
 import { plantillaMetadatos } from "$lib/testing/plantillaMetadatos.js";
 
 const gotoMock = vi.fn();
@@ -70,8 +70,14 @@ function mockTemplatesFetch(templates) {
   });
 }
 
-/** Selecciona docType="Entrada", llena Asunto/Remitente y avanza al paso 1. */
+/** Elige el formulario vacío y abre el paso Tipo. */
+async function elegirFormulario() {
+  await fireEvent.click(screen.getByRole("button", { name: /Llenar el formulario/i }));
+}
+
+/** Selecciona docType="Entrada", llena Asunto/Remitente y avanza a Metadatos. */
 async function goToMetadataStep() {
+  await elegirFormulario();
   await fireEvent.click(screen.getByRole("radio", { name: /Entrada/i }));
   await fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
   await fireEvent.input(screen.getByLabelText("Asunto", { exact: false }), {
@@ -437,4 +443,258 @@ describe("/radicar — dos versiones de la misma serie TRD son distinguibles", (
       true,
     );
   });
+});
+
+describe("/radicar — el primer paso es Documento", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_RADI_ENTRADA"] }));
+  });
+  afterEach(() => {
+    clearSession();
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("llenar el formulario abre Tipo vacío, sin radios marcados", async () => {
+    render(RadicarPage, { props: { data: baseData() } });
+    expect(screen.getByRole("heading", { name: /documento o el formulario/i })).toBeInTheDocument();
+    await elegirFormulario();
+    expect(screen.getByRole("radiogroup", { name: /Tipo de radicado/i })).toBeInTheDocument();
+    for (const radio of screen.getAllByRole("radio")) {
+      expect(radio).not.toBeChecked();
+    }
+  });
+
+  it("subir documento muestra la zona de carga y el archivo elegido", async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      json: async () => ({ detail: "servicio no disponible" }),
+    }));
+    render(RadicarPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /Subir documento/i }));
+    const input = screen.getByLabelText("Seleccionar archivo para radicar");
+    const file = new File(["hola"], "oficio.pdf", { type: "application/pdf" });
+    await fireEvent.change(input, { target: { files: [file] } });
+    expect(screen.getByTestId("entry-file")).toHaveTextContent("oficio.pdf");
+  });
+
+  it("Anexos, TRD y Flujo siguen en el stepper después de Tipo", async () => {
+    render(RadicarPage, { props: { data: baseData() } });
+    await elegirFormulario();
+    expect(screen.getByText("Anexos")).toBeInTheDocument();
+    expect(screen.getByText("Clasificación TRD")).toBeInTheDocument();
+    expect(screen.getByText("Flujo / Destino")).toBeInTheDocument();
+  });
+});
+
+describe("/radicar — ingesta indexada prefilla Tipo y Metadatos", () => {
+  const originalFetch = globalThis.fetch;
+  const FILE_ID = "11111111-1111-4111-8111-111111111111";
+
+  beforeEach(() => {
+    clearSession();
+    initSession(sessionWith({ permissions: ["PERM_RADI_ENTRADA"] }));
+  });
+  afterEach(() => {
+    clearSession();
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("al indexar extrae, marca IA y deja el archivo en anexos", async () => {
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      const href = String(url);
+      if (href === "/radicar/api/storage") {
+        return { ok: true, json: async () => ({ id: FILE_ID }) };
+      }
+      if (href === "/radicar/api/ingesta" && opts?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ staging_ref: "staging-1", file_ref: "staging-1.file" }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/staging-1.file") {
+        return {
+          ok: true,
+          json: async () => ({
+            external_ref: "staging-1.file",
+            ingest_state: "indexed",
+            error_code: null,
+          }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/extract") {
+        const body = JSON.parse(opts.body);
+        const keys = body.fields.map((f) => f.key);
+        const values = keys.includes("direction")
+          ? {
+              direction: "E",
+              subject: "Petición ciudadana",
+              sender_name: "Ana Ruiz",
+              details: "El oficio pide copia del acto administrativo.",
+            }
+          : {};
+        return { ok: true, json: async () => ({ external_ref: body.external_ref, values }) };
+      }
+      if (href.startsWith("/radicar/api/templates")) {
+        return { ok: true, json: async () => [] };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(RadicarPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /Subir documento/i }));
+    const input = screen.getByLabelText("Seleccionar archivo para radicar");
+    await fireEvent.change(input, {
+      target: { files: [new File(["hola"], "peticion.pdf", { type: "application/pdf" })] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: /Entrada/i })).toBeChecked();
+    });
+    expect(screen.getByText("IA")).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
+    expect(screen.getByLabelText("Asunto", { exact: false })).toHaveValue("Petición ciudadana");
+    expect(screen.getByLabelText("Nombre del remitente", { exact: false })).toHaveValue("Ana Ruiz");
+    expect(screen.getByLabelText("Observaciones", { exact: false })).toHaveValue(
+      "El oficio pide copia del acto administrativo.",
+    );
+    expect(screen.getAllByText("IA").length).toBeGreaterThan(0);
+
+    expect(screen.getByTestId("ai-chip-subject")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-chip-sender_name")).toBeInTheDocument();
+    expect(screen.getByTestId("ai-chip-observations")).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
+    expect(screen.getByText("peticion.pdf")).toBeInTheDocument();
+    expect(screen.getByLabelText("Subido correctamente")).toBeInTheDocument();
+  });
+
+  it("si extract falla con 503, reintenta y rellena el formulario", async () => {
+    let extractCalls = 0;
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      const href = String(url);
+      if (href === "/radicar/api/storage") {
+        return { ok: true, json: async () => ({ id: FILE_ID }) };
+      }
+      if (href === "/radicar/api/ingesta" && opts?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ staging_ref: "staging-1", file_ref: "staging-1.file" }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/staging-1.file") {
+        return {
+          ok: true,
+          json: async () => ({
+            external_ref: "staging-1.file",
+            ingest_state: "indexed",
+            error_code: null,
+          }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/extract") {
+        extractCalls += 1;
+        if (extractCalls === 1) {
+          // Un parpadeo de infraestructura: falla rápido y el reintento lo salva.
+          return {
+            ok: false,
+            status: 503,
+            json: async () => ({
+              error: "upstream_unavailable",
+              detail: "No se pudo contactar el servicio",
+              status: 503,
+            }),
+          };
+        }
+        const body = JSON.parse(opts.body);
+        const keys = body.fields.map((f) => f.key);
+        const values = keys.includes("direction")
+          ? { direction: "E", subject: "Petición ciudadana", sender_name: "Ana Ruiz" }
+          : {};
+        return { ok: true, json: async () => ({ external_ref: body.external_ref, values }) };
+      }
+      if (href.startsWith("/radicar/api/templates")) {
+        return { ok: true, json: async () => [] };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(RadicarPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /Subir documento/i }));
+    const input = screen.getByLabelText("Seleccionar archivo para radicar");
+    await fireEvent.change(input, {
+      target: { files: [new File(["hola"], "peticion.pdf", { type: "application/pdf" })] },
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByRole("radio", { name: /Entrada/i })).toBeChecked();
+      },
+      { timeout: 4000 },
+    );
+    expect(extractCalls).toBeGreaterThanOrEqual(2);
+  }, 10_000);
+
+  it("si extract no responde, abre Tipo vacío y deja reintentar", async () => {
+    let extractCalls = 0;
+    globalThis.fetch = vi.fn(async (url, opts) => {
+      const href = String(url);
+      if (href === "/radicar/api/storage") {
+        return { ok: true, json: async () => ({ id: FILE_ID }) };
+      }
+      if (href === "/radicar/api/ingesta" && opts?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ staging_ref: "staging-1", file_ref: "staging-1.file" }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/staging-1.file") {
+        return {
+          ok: true,
+          json: async () => ({
+            external_ref: "staging-1.file",
+            ingest_state: "indexed",
+            error_code: null,
+          }),
+        };
+      }
+      if (href === "/radicar/api/ingesta/extract") {
+        extractCalls += 1;
+        return {
+          ok: false,
+          status: 504,
+          json: async () => ({
+            error: "extract_timeout",
+            detail: "La extracción tardó demasiado. Vuelve a extraer o llena el formulario.",
+            status: 504,
+          }),
+        };
+      }
+      return { ok: true, json: async () => ({}) };
+    });
+
+    render(RadicarPage, { props: { data: baseData() } });
+    await fireEvent.click(screen.getByRole("button", { name: /Subir documento/i }));
+    const input = screen.getByLabelText("Seleccionar archivo para radicar");
+    await fireEvent.change(input, {
+      target: { files: [new File(["hola"], "oficio.pdf", { type: "application/pdf" })] },
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("extract-error")).toBeInTheDocument();
+      },
+      { timeout: 8000 },
+    );
+    expect(screen.getByText(/tardó demasiado/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Volver a extraer/i })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Entrada/i })).not.toBeChecked();
+    // Un plazo agotado NO se reintenta solo: se espera una decisión humana.
+    expect(extractCalls).toBe(1);
+  }, 10_000);
 });

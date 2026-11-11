@@ -7,8 +7,8 @@
 // conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/svelte";
 import FormField from "./FormField.svelte";
 
 describe("FormField — label asociado y accesibilidad básica", () => {
@@ -171,5 +171,18 @@ describe("FormField — label asociado y accesibilidad básica", () => {
     const input = screen.getByLabelText("Asunto");
     expect(input).not.toHaveAttribute("inputmode");
     expect(input).not.toHaveAttribute("autocomplete");
+  });
+
+  it("el chip vive fuera del label y no cambia el nombre accesible", () => {
+    render(FormField, { props: { id: "asunto", label: "Asunto", chip: "IA" } });
+    expect(screen.getByLabelText("Asunto")).toBeInTheDocument();
+    expect(screen.getByText("IA")).toBeInTheDocument();
+  });
+
+  it("onEdit se llama al escribir", async () => {
+    const onEdit = vi.fn();
+    render(FormField, { props: { id: "asunto", label: "Asunto", onEdit } });
+    await fireEvent.input(screen.getByLabelText("Asunto"), { target: { value: "x" } });
+    expect(onEdit).toHaveBeenCalled();
   });
 });

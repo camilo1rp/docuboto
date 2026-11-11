@@ -36,6 +36,8 @@
     - aria-required, aria-invalid, aria-describedby apuntando a error/hint
 -->
 <script>
+  import { onMount } from "svelte";
+
   export let id = "";
   /** Atributo `name` del control HTML (default: `id`) — necesario para FormData nativo. */
   /** @type {string|null} */
@@ -56,6 +58,28 @@
   export let error = "";
   export let hint = "";
   export let rows = 3;
+  /** Chip de sugerencia junto al label (p. ej. «IA»). Fuera del <label>. */
+  export let chip = "";
+  /** Se llama al editar el control (input o change). */
+  export let onEdit = undefined;
+
+  /** @type {HTMLDivElement} */
+  let root;
+
+  function handleEdit() {
+    if (typeof onEdit === "function") onEdit();
+  }
+
+  onMount(() => {
+    const nodo = root;
+    if (!nodo) return;
+    nodo.addEventListener("input", handleEdit);
+    nodo.addEventListener("change", handleEdit);
+    return () => {
+      nodo.removeEventListener("input", handleEdit);
+      nodo.removeEventListener("change", handleEdit);
+    };
+  });
 
   /** @type {Array<{value: string; label: string}>} */
   export let options = [];
@@ -75,15 +99,20 @@
   $: describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
 </script>
 
-<div class="op-field" class:op-field--error={!!error}>
+<div bind:this={root} class="op-field" class:op-field--error={!!error}>
   {#if label}
-    <label class="op-field__label" for={id}>
-      {label}
-      {#if required}
-        <span class="op-field__required" aria-hidden="true">*</span>
-        <span class="sr-only">(obligatorio)</span>
+    <div class="op-field__label-row">
+      <label class="op-field__label" for={id}>
+        {label}
+        {#if required}
+          <span class="op-field__required" aria-hidden="true">*</span>
+          <span class="sr-only">(obligatorio)</span>
+        {/if}
+      </label>
+      {#if chip}
+        <span class="op-field__chip op-field__chip--ai" data-testid="ai-chip-{id}">{chip}</span>
       {/if}
-    </label>
+    </div>
   {/if}
 
   {#if type === "select"}
@@ -247,10 +276,31 @@
     flex-direction: column;
     gap: var(--op-space-1);
 
+    &__label-row {
+      display: flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      flex-wrap: wrap;
+    }
+
     &__label {
       font-size: var(--op-font-sm);
       font-weight: var(--op-weight-medium);
       color: var(--op-text);
+    }
+
+    &__chip {
+      font-size: var(--op-font-xs);
+      font-weight: var(--op-weight-medium);
+      line-height: 1.4;
+      padding: 0 var(--op-space-2);
+      border-radius: var(--op-radius-full);
+    }
+
+    &__chip--ai {
+      background: var(--db-ai-bg);
+      color: var(--db-ai-fg);
+      border: 1px solid var(--db-ai);
     }
 
     &__required {

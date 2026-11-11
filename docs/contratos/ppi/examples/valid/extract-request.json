@@ -1,0 +1,30 @@
+{
+  "external_ref": "6f1d2c3b-8a9e-4f70-b1c2-d3e4f5a6b7c8",
+  "fields": [
+    {
+      "key": "direction",
+      "kind": "choice",
+      "label": "Direction",
+      "choices": [
+        { "value": "E", "label": "Incoming" },
+        { "value": "S", "label": "Outgoing" },
+        { "value": "I", "label": "Internal" }
+      ]
+    },
+    {
+      "key": "subject",
+      "kind": "text",
+      "label": "Subject"
+    },
+    {
+      "key": "folios",
+      "kind": "number",
+      "label": "Pages"
+    },
+    {
+      "key": "due_date",
+      "kind": "date",
+      "label": "Due date"
+    }
+  ]
+}

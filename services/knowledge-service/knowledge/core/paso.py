@@ -35,6 +35,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import httpx
 from orpycamcp_common.tenant import slug_valido
 
 from knowledge.clients.ppi import ClientePpi
@@ -105,6 +106,10 @@ class _Salida(Protocol):
 
     async def purgar(self, cuerpo: dict[str, Any]) -> Any: ...
 
+    async def estado(self, external_ref: str) -> Any: ...
+
+    async def extraer(self, cuerpo: dict[str, Any]) -> Any: ...
+
 
 class _SinDestino:
     """No hay URL de proveedor. Llamar es un fallo, no un envío silencioso."""
@@ -129,6 +134,12 @@ class _SinDestino:
     destino_purga = ""
 
     async def purgar(self, cuerpo: dict[str, Any]) -> Any:
+        raise RuntimeError("PPI_PROVIDER_URL no está definido")
+
+    async def estado(self, external_ref: str) -> Any:
+        raise RuntimeError("PPI_PROVIDER_URL no está definido")
+
+    async def extraer(self, cuerpo: dict[str, Any]) -> Any:
         raise RuntimeError("PPI_PROVIDER_URL no está definido")
 
 
@@ -600,6 +611,107 @@ async def expulsar(
     }
     await _enviar_y_anotar(conn, slug, cliente, "purge", external_ref, None, lote)
     return Decision(True, "ok")
+
+
+_ESTADOS = frozenset({"received", "processing", "indexed", "failed"})
+
+
+async def enviar_preparacion(
+    conn: Any,
+    slug: str,
+    cliente: _Salida,
+    cuerpo: dict[str, Any],
+    record_ref: str,
+) -> Decision:
+    """Envía un lote de preparación que aún no es un radicado.
+
+    Relee el interruptor. No hay fila de radicado: la sensibilidad es la del
+    nivel habilitado más bajo. Si ninguno está habilitado, no llama.
+    """
+    politica = await leer_politica(conn, slug)
+    if not politica.completa or politica.motivo is not None:
+        return Decision(False, politica.motivo or "registro")
+    if not getattr(cliente, "destino", ""):
+        return Decision(False, "destino")
+    vivos = [n for n in politica.niveles if n in _SENSIBILIDAD]
+    if not vivos:
+        return Decision(False, "nivel")
+    nivel = min(vivos)
+    try:
+        lote = _estampar(cuerpo, _SENSIBILIDAD[nivel])
+    except ValueError:
+        return Decision(False, "cuerpo")
+    if not politica.metadata:
+        lote = _quitar_metadata(lote)
+    await _enviar_y_anotar(conn, slug, cliente, "push", record_ref, nivel, lote)
+    return Decision(True, "ok")
+
+
+async def estado_ingesta(
+    conn: Any,
+    slug: str,
+    cliente: _Salida,
+    external_ref: str,
+) -> Respuesta:
+    """El estado de un objeto ingerido. Con el interruptor apagado no llama."""
+    motivo = await _salida_abierta(conn, slug, cliente)
+    if motivo is not None:
+        return Respuesta(False, motivo, None)
+    if not external_ref or len(external_ref) > 256:
+        return Respuesta(False, "ref", None)
+    try:
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.estado(external_ref)
+    except httpx.HTTPStatusError as exc:
+        return Respuesta(False, _codigo_problema(exc) or "proveedor", None)
+    except Exception:
+        logger.warning("el estado de ingesta no respondió", exc_info=True)
+        return Respuesta(False, "proveedor", None)
+    if not _estado_valido(recibido):
+        return Respuesta(False, "proveedor", None)
+    return Respuesta(True, "ok", recibido)
+
+
+async def extraer_campos(
+    conn: Any,
+    slug: str,
+    cliente: _Salida,
+    cuerpo: dict[str, Any],
+) -> Respuesta:
+    """Rellena campos desde un objeto indexado. Con el interruptor apagado no llama."""
+    motivo = await _salida_abierta(conn, slug, cliente)
+    if motivo is not None:
+        return Respuesta(False, motivo, None)
+    try:
+        with salida_http.con_entidad(conn, slug):
+            recibido = await cliente.extraer(cuerpo)
+    except httpx.HTTPStatusError as exc:
+        return Respuesta(False, _codigo_problema(exc) or "proveedor", None)
+    except Exception:
+        logger.warning("la extracción no respondió", exc_info=True)
+        return Respuesta(False, "proveedor", None)
+    if not isinstance(recibido, dict) or "values" not in recibido:
+        return Respuesta(False, "proveedor", None)
+    return Respuesta(True, "ok", recibido)
+
+
+def _estado_valido(recibido: Any) -> bool:
+    if not isinstance(recibido, dict):
+        return False
+    if not isinstance(recibido.get("external_ref"), str):
+        return False
+    return recibido.get("ingest_state") in _ESTADOS
+
+
+def _codigo_problema(exc: httpx.HTTPStatusError) -> str | None:
+    try:
+        cuerpo = exc.response.json()
+    except ValueError:
+        return None
+    codigo = cuerpo.get("code") if isinstance(cuerpo, dict) else None
+    if isinstance(codigo, str) and codigo:
+        return codigo[:64]
+    return None
 
 
 async def _salida_abierta(conn: Any, slug: str, cliente: _Salida) -> str | None:

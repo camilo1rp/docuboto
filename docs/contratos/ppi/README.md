@@ -8,7 +8,7 @@
 > como todo el repositorio, bajo **AGPL-3.0-or-later**.
 > La decisión de arquitectura que la motiva es el ADR-045 de Docuboto, propuesto.
 
-**Status: draft, version 1.2.0, not yet implemented by any host or provider.**
+**Status: draft, version 1.3.0, not yet implemented by any host or provider.**
 
 ## Purpose
 
@@ -20,7 +20,8 @@ talk only over HTTP:
 | --- | --- | --- |
 | `capabilities` | host → provider | A statement, signed by the provider, of the sensitivity levels it accepts and how each level's model calls are routed, with its subprocessors |
 | `connection` | host → provider | The host declares its ordered sensitivity levels, its vocabularies (document types, units), its callback URLs and callback keys |
-| `ingest` | host → provider | The host pushes records and attachments, and deletes them. It can also purge everything, or only some levels, and list what the provider holds |
+| `ingest` | host → provider | The host pushes records and attachments, and deletes them. It can also purge everything, or only some levels, list what the provider holds, and read the pipeline state of one object (`received`, `processing`, `indexed`, `failed`) |
+| `extract` | host → provider | The host asks the provider to fill named fields from an indexed object. A `choice` field carries its allowed values; the provider returns only those, or none |
 | `query` | host → provider | Search and ask on behalf of a host user, with that user's clearance and an optional scope (a record and its children) |
 | `run` | host → provider | On-demand tasks, such as drafting a reply. Results come back as recommendations |
 | `recommend` | provider → host (callback) | Typed, cited, advisory recommendations: `classify`, `route`, `deadline`, `relate`, `link_party`, `draft`. An explicit "none" with a reason is also allowed |
@@ -127,6 +128,12 @@ prefix (`/v2`) and both prefixes are served during the migration.
 
 ### Changes
 
+- **1.3.0 (2026-11-06).** Additive endpoints: `GET /v1/ingest/{external_ref}/status`
+  (pipeline state of one object) and `POST /v1/extract` (fill named fields from an
+  indexed object). A `choice` field must carry at least one allowed value. New
+  problem code `not_indexed`. Fixtures: `ingest-status.json`, `ingest-status-failed.json`,
+  `extract-request.json`, `extract-response.json` (valid) and
+  `extract-choice-without-options.json` (invalid).
 - **1.2.0 (2026-10-28).** `record` gains an optional `metadata` object: flat, host-defined
   structured fields with scalar values. A host sends it only when its own policy allows
   it. Fixtures: `record-with-metadata.json` (valid) and `record-metadata-nested.json`

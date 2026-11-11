@@ -206,6 +206,7 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/knowledge/rag", app_state.knowledge_service_url),
         ("/api/v1/knowledge/availability", app_state.knowledge_service_url),
         ("/api/v1/knowledge/transmission", app_state.knowledge_service_url),
+        ("/api/v1/knowledge/ingesta", app_state.knowledge_service_url),
     ]
     # Límite de segmento: un prefijo sin barra final casa solo la ruta exacta o
     # sus subrutas (`/preservacion/eventos` NO casa `/preservacion/eventos-x`).
