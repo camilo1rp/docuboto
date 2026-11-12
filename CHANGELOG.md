@@ -33,6 +33,17 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/) + [Conventiona
 
 ### Fixed
 
+- `fix(ci,shared,knowledge,document,archive,storage,auth,signature,workflow,mcp,frontend)`: **La CI de GitHub Actions en verde sobre `main`.**
+  *Por qué*: la primera corrida de `ci.yml` en `main` salió roja, casi toda por deuda que la CI de GitLab nunca vio: lint (ruff y mypy) en ocho servicios, guardianes de `shared/` rotos y pruebas unitarias que no se habían corrido desde que el llamante sale del JWT (9c4e2613).
+  *Qué cambia*:
+  - **Pruebas obsoletas.** Una ruta `internal`/`*-internal` sin `X-Internal-Token` responde 404 `route_not_found` desde el middleware de identidad, antes del gate: las pruebas que esperaban 401 pasan a esperar 404. Los dobles de `request` llevan `state` (la identidad vive en `request.state.usuario`) y la identidad entre servicios es el `Authorization` del llamante, no `X-User-Id`.
+  - **knowledge-service.** Las rutas de `ingesta.py` declaran su gate en cada decorador (`require_asistente_habilitado` + `PERM_RADI`), visibles para los guardianes; quedan declaradas a nivel 1 como la radicación que preparan.
+  - **document-service.** `_internaldate` del adaptador IMAP leía como UTC una hora local: corría la fecha de recepción tantas horas como el desfase del servidor.
+  - **`/radicar`** deja de sondear el estado de la ingesta sin interacción real (`vigilarInactividad`), igual que `/correo`.
+  - **CI.** El trabajo de integración levanta Redis (`REDIS_URL`) para el antirreplay real; `scripts/ci-local.sh` hace lo mismo. Las pruebas de integración de auth-service salen `skipped` sin `RUN_INTEGRATION=1`. `test_orpyca_tag_is_gone` mira solo lo versionado (`git ls-files`).
+  - **Frontend.** Tiptap 3.33.1 y `npm audit fix`; tipos JSDoc corregidos para `svelte-check`.
+  *Impacto*: `npm audit --audit-level=high` sigue rojo por `vite` ≤ 6.4.3, que entra a producción como *peer* de `@sveltejs/kit`; arreglarlo exige vite 6, y con él Svelte 5: una migración aparte.
+
 - `fix(shared,gateway,auth,tenant,document,archive,storage,workflow,signature,notification,knowledge,mcp,infra,frontend)!`: **Bloque C — las 22 decisiones del triage del 2026-10-09 y la deuda abierta de B10: el asistente es opcional por entidad y un permiso de la persona, bajar lo clasificado exige a otra persona y la causal de reserva es un catálogo cerrado, la ventanilla pública pide una prueba de trabajo y ya no ata a un anónimo con la ficha de otro, la retención de la TRD tiene una sola fuente y el cuadro de clasificación sale del organigrama, la retención legal es por motivo y reversible, el préstamo identifica a quien recibe, el AIP se versiona al renovarse el sello, la identidad firmada es de un solo uso, el `search_path` es solo el tenant, hay `/metrics` y las migraciones tienen por fin el cerrojo que la documentación afirmaba.**
   *Por qué*: el triage del 2026-10-09 dejó 22 preguntas (C1-C22) que el usuario ordenó resolver con la recomendación del propio documento (2026-10-20), y B10 cerró con ocho ítems abiertos (a-h). Se agruparon en ocho tandas de código (C-1…C-8), una de documentación (tanda 9) y el censo del MCP (C22); cada decisión de arquitectura tiene su ADR (037-044). No pedían código C3 y C15 (el código de `aa3e9cf` ya hacía lo recomendado), C9 y C13 (solo documentación, tanda 9) ni B10 f (residuo declarado).
   *Qué cambia*:

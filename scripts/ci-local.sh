@@ -22,7 +22,7 @@
 # Requisitos: uv, Docker, y Node 22 para npm-audit y frontend (el npm 11 de
 # Node 24 rechaza el package-lock.json; CI usa Node 22). `lint` corre dentro de
 # python:3.11-slim porque scripts/lint.sh necesita bash 4 y macOS trae 3.2.
-# Cada trabajo de integración levanta su propio PostgreSQL desechable, y `worm`
+# Cada trabajo de integración levanta su propio PostgreSQL y Redis desechables, y `worm`
 # un RustFS; se borran al terminar.
 #
 # Resultado: un PASS/FAIL por trabajo en $OUT/results.txt y el log completo en
@@ -86,23 +86,25 @@ job_docs() {
     local B; B=$(venv docs mkdocs mkdocs-material mkdocs-static-i18n)
     "$B/mkdocs" build --strict --site-dir "$OUT/site"
 }
-job_integration_one() {  # fresh Postgres per service, like a CI job
-    local svc="$1" port="$2" B name="cilocal-pg-$1"
+job_integration_one() {  # fresh Postgres + Redis per service, like a CI job
+    local svc="$1" port="$2" B name="cilocal-pg-$1" rname="cilocal-redis-$1" rport=$(( $2 + 100 ))
     B=$(venv "$svc" ./shared -r "services/$svc/requirements.lock")
-    docker rm -f "$name" >/dev/null 2>&1
+    docker rm -f "$name" "$rname" >/dev/null 2>&1
     docker run -d --rm --name "$name" -e POSTGRES_USER=orpycamcp -e POSTGRES_PASSWORD=orpycamcp \
         -e POSTGRES_DB=orpycamcp_db -p "127.0.0.1:$port:5432" postgres:17-bookworm >/dev/null
+    docker run -d --rm --name "$rname" -p "127.0.0.1:$rport:6379" redis:7-alpine >/dev/null
     for _ in $(seq 1 60); do docker exec "$name" pg_isready -U orpycamcp -d orpycamcp_db -q && break; sleep 1; done
     sleep 2
     local rc=0
-    export DATABASE_URL="postgresql+asyncpg://orpycamcp:orpycamcp@localhost:$port/orpycamcp_db" RUN_INTEGRATION=1
+    export DATABASE_URL="postgresql+asyncpg://orpycamcp:orpycamcp@localhost:$port/orpycamcp_db" RUN_INTEGRATION=1 \
+        REDIS_URL="redis://localhost:$rport/0"
     "$B/python" services/docuboto/migrations/runner.py || rc=$?
     if [ $rc -eq 0 ]; then
         local extra=""
         [ "$svc" = storage-service ] && extra="--ignore=tests/integration/test_worm_object_lock_real_s3.py"
         (cd "services/$svc" && "$B/pytest" -q tests/integration --tb=short -p no:cacheprovider $extra) || rc=$?
     fi
-    docker rm -f "$name" >/dev/null 2>&1
+    docker rm -f "$name" "$rname" >/dev/null 2>&1
     return $rc
 }
 job_worm() {

@@ -168,8 +168,16 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U orpycamcp -d orpycamcp_db"
           --health-interval 2s --health-timeout 5s --health-retries 30
+      # Antirreplay y nonces contra Redis real (SET NX atómico).
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 5s --health-retries 30
     env:
       DATABASE_URL: postgresql+asyncpg://orpycamcp:orpycamcp@localhost:5432/orpycamcp_db
+      REDIS_URL: redis://localhost:6379/0
       RUN_INTEGRATION: "1"
     steps:
       - uses: actions/checkout@v4
