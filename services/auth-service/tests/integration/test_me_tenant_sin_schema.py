@@ -90,6 +90,9 @@ async def test_el_dependency_no_deja_el_search_path_pegado(pool: asyncpg.Pool) -
     class _Req:
         headers = {"X-Tenant-Slug": slug}  # noqa: RUF012
 
+        class state:  # noqa: N801 — sin persona: el slug sale de X-Tenant-Slug
+            usuario = None
+
         class app:  # noqa: N801
             class state:  # noqa: N801
                 db_pool = pool
@@ -115,6 +118,9 @@ async def test_entidad_con_schema_si_resuelve_la_consulta(
 
     class _Req:
         headers = {"X-Tenant-Slug": slug}  # noqa: RUF012
+
+        class state:  # noqa: N801 — sin persona: el slug sale de X-Tenant-Slug
+            usuario = None
 
         class app:  # noqa: N801
             class state:  # noqa: N801

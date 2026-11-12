@@ -42,7 +42,9 @@ def _token(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_sin_token_o_con_token_malo_no_entra_y_no_toca_la_base(client_with_conn) -> None:
     client, conn = client_with_conn
     r = await client.get(_PATH, headers={"X-Tenant-Slug": TENANT_SLUG})
-    assert r.status_code == 401 and r.json()["detail"]["error"] == "missing_internal_token"
+    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware de
+    # identidad responde 404 antes de cualquier gate.
+    assert r.status_code == 404 and r.json()["error"] == "route_not_found"
     r = await client.get(_PATH, headers={**HEADERS, "X-Internal-Token": "otro"})
     assert r.status_code == 403 and r.json()["detail"]["error"] == "invalid_internal_token"
     conn.fetchrow.assert_not_called()
@@ -65,7 +67,7 @@ async def test_una_cabecera_de_usuario_no_sustituye_al_token(client_with_conn) -
     r = await client.get(
         _PATH, headers={"X-Tenant-Slug": TENANT_SLUG, "X-User-Id": str(uuid.uuid4())}
     )
-    assert r.status_code == 401
+    assert r.status_code == 404
 
 
 @pytest.mark.asyncio

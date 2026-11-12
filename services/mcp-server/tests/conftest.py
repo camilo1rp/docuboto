@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 
@@ -18,7 +19,13 @@ import httpx
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
+# La clave que firma las propuestas es obligatoria: sin ella el
+# lifespan no arranca y `proponer` responde 500. Se fija ANTES de importar la
+# app porque `Settings()` se instancia al importar; `setdefault` respeta la del
+# entorno si quien corre la suite ya trae una.
+os.environ.setdefault("MCP_PROPOSAL_SECRET", "clave-de-pruebas")
+
+from app.main import app  # noqa: E402
 
 # Permisos que el `/auth/me` simulado concede por defecto. Se declaran aquí y no
 # en cada test porque el router resuelve la identidad de VERDAD desde que dejó de

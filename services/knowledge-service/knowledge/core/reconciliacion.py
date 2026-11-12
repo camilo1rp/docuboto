@@ -171,7 +171,8 @@ async def _item(
     ref = str(item.get("external_ref") or "")
     if not _REF.fullmatch(ref) or ref in hechos:
         return False
-    ilegal = _CODIGO.get(item.get("sensitivity")) not in habilitados
+    nivel = _CODIGO.get(str(item.get("sensitivity")))
+    ilegal = nivel is None or nivel not in habilitados
     tipo = item.get("type")
     ident = _uuid(ref)
     if tipo == "record" and ident is not None:

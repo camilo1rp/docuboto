@@ -277,11 +277,13 @@ async def test_fijar_con_un_motivo_fuera_del_catalogo_es_422(client_with_conn) -
 
 
 @pytest.mark.asyncio
-async def test_hold_sin_token_interno_es_401(client_with_conn) -> None:
+async def test_hold_sin_token_interno_es_404(client_with_conn) -> None:
     client, conn, minio = client_with_conn
     _Db().instalar(conn)
     resp = await client.post(_FIJAR, json=_CUERPO_FIJAR, headers=TENANT_HEADERS)
-    assert resp.status_code == 401
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
     minio.enable_object_legal_hold.assert_not_awaited()
 
 

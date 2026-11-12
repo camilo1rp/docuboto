@@ -361,6 +361,7 @@ async def enviar(
         if motivo in medidor.RAZONES_BARRERA:
             await medidor.anotar(conn, medidor.BARRERA, motivo)
         return Decision(False, motivo)
+    assert nivel is not None  # sin nivel vivo, motivo_salida ya dio un motivo
 
     sensibilidad = _SENSIBILIDAD[int(nivel)]
     try:

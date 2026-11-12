@@ -55,7 +55,9 @@ async def test_export_zip_endpoint_requires_internal_token(client_with_conn) -> 
     resp = await client.post(
         _URL, json={"items": [], "extra_files": []}, headers=TENANT_HEADERS
     )
-    assert resp.status_code == 401
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio

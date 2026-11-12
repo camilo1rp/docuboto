@@ -17,13 +17,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+from tests.conftest import TENANT_HEADERS, USER_ID
 from workflow.services.rules_engine import (
     eval_condition,
     matches_conditions,
     matches_legacy,
     rule_matches,
 )
-from tests.conftest import TENANT_HEADERS, USER_ID
 
 NOW = datetime.now(tz=UTC)
 

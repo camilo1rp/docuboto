@@ -25,10 +25,6 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from workflow.repositories.workflow_repository import Tenencia
-from workflow.schemas.workflow import FlowStepCreate
-from workflow.services.distribution import SYSTEM_USER, auto_distribute
-from workflow.services.workflow_service import WorkflowService
 from tests.conftest import (
     RADICADO_ID,
     TENANT_HEADERS,
@@ -37,6 +33,10 @@ from tests.conftest import (
     USER_ID,
     make_step_record,
 )
+from workflow.repositories.workflow_repository import Tenencia
+from workflow.schemas.workflow import FlowStepCreate
+from workflow.services.distribution import SYSTEM_USER, auto_distribute
+from workflow.services.workflow_service import WorkflowService
 
 Cliente = tuple[AsyncClient, AsyncMock, MagicMock]
 _REPO = "workflow.services.workflow_service.WorkflowRepository"

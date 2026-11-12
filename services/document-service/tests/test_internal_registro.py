@@ -65,10 +65,13 @@ def _consultas(fila: dict[str, Any] | None) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_sin_token_es_401(client_with_conn) -> None:
+async def test_sin_token_es_404(client_with_conn) -> None:
     client, _conn = client_with_conn
     resp = await client.get(RUTA, headers={"X-Tenant-Slug": TENANT_SLUG})
-    assert resp.status_code == 401
+    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware
+    # de identidad responde 404 antes de cualquier gate.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio

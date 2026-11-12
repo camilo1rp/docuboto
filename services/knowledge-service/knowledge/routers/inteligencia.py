@@ -17,7 +17,7 @@ cliente PPI solo lo toca el punto de paso.
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -49,7 +49,7 @@ class PurgaPedido(BaseModel):
     levels: list[Literal[1, 2, 3]] | None = None
 
 
-def _cliente() -> object:
+def _cliente() -> Any:
     return paso.destino_de(settings.ppi_provider_url, salida_http.transporte_de_consulta())
 
 

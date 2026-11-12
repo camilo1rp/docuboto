@@ -66,7 +66,9 @@ async def test_sin_token_interno_no_se_purga_nada(client) -> None:
     ) as purgar:
         resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=TENANT_HEADERS)
 
-    assert resp.status_code in (401, 403)
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
     purgar.assert_not_awaited()
 
 

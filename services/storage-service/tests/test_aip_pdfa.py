@@ -32,7 +32,12 @@ import pytest
 
 import storage.core.config as config_module
 from storage.services.aip_builder import validate_premis_xml
-from storage.services.pdfa import PdfaResult, StubPdfaValidator, get_pdfa_validator, run_pdfa_validation
+from storage.services.pdfa import (
+    PdfaResult,
+    StubPdfaValidator,
+    get_pdfa_validator,
+    run_pdfa_validation,
+)
 from tests.conftest import (
     INTERNAL_HEADERS,
     TENANT_SLUG,

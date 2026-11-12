@@ -436,15 +436,15 @@ def _iso(valor: object) -> str | None:
     return texto
 
 
-def _traza_transmision(
+async def _traza_transmision(
     conn: asyncpg.Connection,
     *,
     slug: str,
     numero: str,
     action: str,
     payload: dict[str, object],
-) -> object:
-    return audit.append(
+) -> None:
+    await audit.append(
         conn,
         tenant_slug=slug,
         service="document-service",

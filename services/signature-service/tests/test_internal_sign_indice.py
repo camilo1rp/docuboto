@@ -120,8 +120,10 @@ async def test_internal_sign_indice_rejects_without_token(client_with_conn, monk
         json=_internal_body(),
         headers={"X-Tenant-Slug": "demo"},  # sin X-Internal-Token
     )
-    assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "missing_internal_token"
+    # Sin token, el middleware de identidad responde como si la ruta no
+    # existiera: la superficie interna no se anuncia a quien no la conoce.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio

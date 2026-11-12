@@ -24,10 +24,10 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 from notification.repositories.webhook_entregas_repository import WebhookEntregasRepository
 from notification.services import webhook_service
 from notification.services.webhook_service import BitacoraEntregas
+from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 
 pytestmark = [
     pytest.mark.integration,

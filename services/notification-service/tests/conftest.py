@@ -162,8 +162,9 @@ def app_with_mocks(redis_mock: MagicMock, db_conn: AsyncMock):
             return_value=_FakeAcquire(db_conn),
         ),
     ):
-        from notification.main import app
         from orpycamcp_common.usuario import instalar_inyector
+
+        from notification.main import app
 
         if not getattr(app, "_inyector_ok", False):
             instalar_inyector(app)
@@ -234,9 +235,10 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     router tests, which need direct control over conn.fetchrow/fetch/execute
     without the notification/webhook-specific patches in app_with_mocks.
     """
+    from orpycamcp_common.usuario import instalar_inyector
+
     from notification.core.database import get_tenant_conn
     from notification.main import app
-    from orpycamcp_common.usuario import instalar_inyector
 
     if not getattr(app, "_inyector_ok", False):
         instalar_inyector(app)

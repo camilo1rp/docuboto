@@ -48,7 +48,6 @@ from pathlib import Path
 import asyncpg
 import pytest
 import pytest_asyncio
-
 from orpycamcp_common import migrations
 
 from workflow.core.database import tenant_schema

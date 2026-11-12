@@ -88,7 +88,7 @@ async def test_reprocesar_202_y_lanza_el_procesamiento_con_el_actor(client_with_
     monkeypatch.setattr(BatchService, "reprocesar", repro)
     vistos: list[tuple] = []
 
-    async def _fake(slug, job_id):
+    async def _fake(slug, job_id, http=None):
         vistos.append((slug, job_id))
 
     monkeypatch.setattr(batch_router, "_procesar_lote", _fake)

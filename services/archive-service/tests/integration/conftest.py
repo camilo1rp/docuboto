@@ -50,7 +50,6 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 import pytest_asyncio
-
 from orpycamcp_common import migrations
 
 from archive.core.database import tenant_schema

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib
+from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -49,19 +50,23 @@ async def crear_pool() -> asyncpg.Pool:
 
 def bind_pool(pool: asyncpg.Pool) -> None:
     for nombre in _MODULOS_DB:
-        importlib.import_module(nombre)._pool = pool
+        modulo: Any = importlib.import_module(nombre)
+        modulo._pool = pool
 
 
 def unbind_pool() -> None:
     for nombre in _MODULOS_DB:
-        importlib.import_module(nombre)._pool = None
+        modulo: Any = importlib.import_module(nombre)
+        modulo._pool = None
 
 
 def bind_redis(client: aioredis.Redis) -> None:
     for nombre in _MODULOS_REDIS:
-        importlib.import_module(nombre)._redis = client
+        modulo: Any = importlib.import_module(nombre)
+        modulo._redis = client
 
 
 def unbind_redis() -> None:
     for nombre in _MODULOS_REDIS:
-        importlib.import_module(nombre)._redis = None
+        modulo: Any = importlib.import_module(nombre)
+        modulo._redis = None

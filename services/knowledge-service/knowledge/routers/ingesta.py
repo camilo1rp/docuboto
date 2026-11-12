@@ -25,12 +25,6 @@ from knowledge.core.salida_http import transporte_de_consulta
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["ingesta"])
 
-_GATES = (
-    Depends(require_asistente_habilitado),
-    Depends(require_permission("PERM_RADI")),
-    Depends(get_actor),
-)
-
 _HTTP = {
     "ok": 200,
     "bandera": 403,
@@ -108,7 +102,14 @@ def _detalle(code: str) -> str:
     return "No se pudo completar la ingesta de preparación."
 
 
-@router.post("/ingesta", dependencies=_GATES)
+@router.post(
+    "/ingesta",
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_RADI")),
+        Depends(get_actor),
+    ],
+)
 async def crear(
     pedido: CrearPedido,
     request: Request,
@@ -120,7 +121,14 @@ async def crear(
     return resultado.cuerpo
 
 
-@router.post("/ingesta/extract", dependencies=_GATES)
+@router.post(
+    "/ingesta/extract",
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_RADI")),
+        Depends(get_actor),
+    ],
+)
 async def extraer(
     pedido: ExtraerPedido,
     request: Request,
@@ -134,7 +142,14 @@ async def extraer(
     return resultado.cuerpo
 
 
-@router.get("/ingesta/{external_ref}", dependencies=_GATES)
+@router.get(
+    "/ingesta/{external_ref}",
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_RADI")),
+        Depends(get_actor),
+    ],
+)
 async def estado(
     external_ref: str,
     request: Request,
@@ -149,7 +164,11 @@ async def estado(
 @router.delete(
     "/ingesta/{external_ref}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=_GATES,
+    dependencies=[
+        Depends(require_asistente_habilitado),
+        Depends(require_permission("PERM_RADI")),
+        Depends(get_actor),
+    ],
 )
 async def borrar(
     external_ref: str,

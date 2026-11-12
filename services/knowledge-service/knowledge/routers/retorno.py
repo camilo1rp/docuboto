@@ -48,7 +48,8 @@ class Problema(Exception):
         self.title = title
 
 
-def respuesta_problema(_request: Request, exc: Problema) -> JSONResponse:
+def respuesta_problema(_request: Request, exc: Exception) -> JSONResponse:
+    assert isinstance(exc, Problema)  # registrado solo para Problema
     return JSONResponse(
         {
             "type": "about:blank",

@@ -29,8 +29,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 from notification.repositories.dead_letter_repository import DeadLetterRepository
+from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 
 pytestmark = [
     pytest.mark.integration,

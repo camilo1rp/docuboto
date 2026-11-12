@@ -28,8 +28,8 @@ from urllib.parse import urlsplit
 import asyncpg
 import pytest
 import pytest_asyncio
-
 from orpycamcp_common.migrations import apply_chain
+
 from signature.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [

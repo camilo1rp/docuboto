@@ -160,6 +160,11 @@ SIN_NIVEL_DECLARADAS = frozenset({
     "signature-service::cadena.py::POST /requests::PERM_FIRMA",
     "workflow-service::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
     "workflow-service::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
+    # Ingesta de preparación del asistente de radicación: prepara el MISMO acto que
+    # `documents.py::POST` (PERM_RADI nivel 1) y sube de nivel con él, no antes.
+    "knowledge-service::ingesta.py::DELETE /ingesta/{external_ref}::PERM_RADI",
+    "knowledge-service::ingesta.py::POST /ingesta/extract::PERM_RADI",
+    "knowledge-service::ingesta.py::POST /ingesta::PERM_RADI",
 })
 
 

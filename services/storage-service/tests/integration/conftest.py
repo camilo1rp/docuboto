@@ -42,8 +42,8 @@ from pathlib import Path
 import asyncpg
 import pytest
 import pytest_asyncio
-
 from orpycamcp_common.migrations import apply_chain
+
 from storage.core.database import tenant_schema
 
 # La cadena única de migraciones (ADR-053).

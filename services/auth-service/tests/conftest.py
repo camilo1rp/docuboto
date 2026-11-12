@@ -41,9 +41,28 @@ from auth.services.auth_service import AuthService
 # y la comprobación contra la pila levantada.
 os.environ.pop("IDENTITY_SIGNING_SECRET", None)
 
+import pytest
+from orpycamcp_common import usuario
 from orpycamcp_common.usuario import instalar_inyector
 
 instalar_inyector(app)
+
+
+@pytest.fixture(autouse=True)
+def _bearer_aceptado_por_el_middleware(monkeypatch: pytest.MonkeyPatch) -> None:
+    """El `UsuarioActualMiddleware` da por bueno cualquier Bearer.
+
+    Aquí no hay `app.state.db_pool` ni `AUTH_SERVICE_URL`, así que el middleware
+    rechazaría todo Bearer con 401 antes de llegar al router. Lo que se prueba en
+    este servicio es cómo cada router resuelve la identidad desde el token
+    (`validate_token`, `AuthService.validate`); la validación del middleware la
+    cubren las pruebas de `shared/`. Sin tenant en el payload no hay veto.
+    """
+
+    async def _valido(scope: dict[str, Any], token: str) -> dict[str, Any]:
+        return {"valid": True}
+
+    monkeypatch.setattr(usuario, "_validar", _valido)
 
 
 

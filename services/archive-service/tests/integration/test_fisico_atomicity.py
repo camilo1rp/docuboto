@@ -48,7 +48,6 @@ from archive.schemas.fisico import (
 )
 from archive.services.fisico_service import FisicoService
 
-
 pytestmark = pytest.mark.integration
 
 ACTOR = uuid.uuid4()

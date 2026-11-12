@@ -26,7 +26,6 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION") != "1", reason="carril de integración: RUN_INTEGRATION=1"
 )

@@ -186,6 +186,6 @@ def test_el_alta_guarda_el_termino_inicial():
 def test_la_ruta_no_acepta_origen():
     router = (_RAIZ / "document/routers/documents.py").read_text()
     assert 'require_permission("PERM_DUE_DATE", min_crud=3)' in router
-    esquema = (_RAIZ / "app/schemas/document.py").read_text()
+    esquema = (_RAIZ / "document/schemas/document.py").read_text()
     bloque = esquema.split("class DueDateRequest", 1)[1].split("class DueDateResponse", 1)[0]
     assert "origen" not in bloque

@@ -49,7 +49,6 @@ from tests.conftest import datos_radicado
 
 from .conftest import DSN, convalidate_for_test
 
-
 # ---------------------------------------------------------------------------
 # (a) Persistencia real: CRUD de la serie con perfil.
 # ---------------------------------------------------------------------------

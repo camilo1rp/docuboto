@@ -26,7 +26,6 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 from notification.core.config import settings
 from notification.ops import cifrar_webhook_secrets as cifrar
 from notification.ops import rewrap_webhook_secrets as rewrap
@@ -35,6 +34,7 @@ from notification.routers import webhooks as router
 from notification.schemas.webhook import WebhookCreate
 from notification.services import webhook_service
 from tests.conftest import TEST_WEBHOOK_KEK_V2
+from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 
 pytestmark = [
     pytest.mark.integration,

@@ -102,5 +102,7 @@ async def test_sin_token_interno_no_se_alcanza(client_with_conn) -> None:
 
     r = await client.post(_URL, json={"file_id": str(_F)}, headers=TENANT_HEADERS)
 
-    assert r.status_code in (401, 403)
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert r.status_code == 404
+    assert r.json()["error"] == "route_not_found"
     conn.fetchrow.assert_not_called()
