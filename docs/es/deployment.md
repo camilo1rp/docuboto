@@ -21,12 +21,20 @@
 
 ### Hardware mínimo
 
-Para una institución pequeña a mediana (< 5000 usuarios):
+Una sola cifra, para una entidad de **hasta 50 funcionarios** (ADR-053 §6):
 
-- **CPU**: 4 cores (x86-64 o ARM64)
-- **RAM**: 16 GB
-- **Almacenamiento**: 500 GB SSD para PostgreSQL + 1-5 TB para el almacén de objetos (según volumen de documentos)
-- **Ancho de banda**: 100 Mbps
+**2 vCPU / 4 GB / 20 GB SSD**
+
+más el almacenamiento de objetos que pida el crecimiento del archivo (los anexos y
+los paquetes de preservación viven ahí, no en el disco del sistema). Es la única
+cifra de hardware de la documentación: cualquier otra es un error.
+
+Un guardián (`shared/tests/test_hardware_figure.py`) suma los `deploy.resources.limits`
+del perfil por defecto de `infra/docker-compose.prod.yml` y falla si exceden esta
+cifra. **Hoy la exceden** (13,5 CPU / 20,75 GB de límites: Keycloak y Redis siguen ahí, y eso sin contar
+el perfil `split`): la cifra es la meta del rediseño (ADR-047, ADR-048,
+ADR-049), y el guardián está marcado como fallo esperado estricto hasta que el
+manifiesto quepa. Cuando quepa, la marca se quita.
 
 ### Software
 

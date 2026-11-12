@@ -3,7 +3,7 @@
 ## Requisitos / Requirements
 
 - Docker 24+ y Docker Compose v2
-- 4 GB RAM mínimo (8 GB recomendado en producción)
+- Hardware: la única cifra está en [Despliegue](deployment.md#hardware-minimo)
 - Puertos libres: 19080, 19180, 15432, 19900, 16379
 
 > Los servicios internos siguen escuchando en 8001-8011/8080 dentro de la red Docker

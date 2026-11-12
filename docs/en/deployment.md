@@ -21,12 +21,20 @@
 
 ### Minimum hardware
 
-For a small to medium institution (< 5000 users):
+One figure, for an entity of **up to 50 staff** (ADR-053 §6):
 
-- **CPU**: 4 cores (x86-64 or ARM64)
-- **RAM**: 16 GB
-- **Storage**: 500 GB SSD for PostgreSQL + 1-5 TB for the object store (depending on document volume)
-- **Bandwidth**: 100 Mbps
+**2 vCPU / 4 GB / 20 GB SSD**
+
+plus whatever object storage the archive's growth needs (attachments and
+preservation packages live there, not on the system disk). This is the only
+hardware figure in the documentation: any other is a mistake.
+
+A guard (`shared/tests/test_hardware_figure.py`) adds up the `deploy.resources.limits`
+of the default profile in `infra/docker-compose.prod.yml` and fails if they exceed
+this figure. **Today they do** (13.5 CPU / 20.75 GB of limits: Keycloak and Redis are still there, not counting
+the `split` profile): the figure is the redesign's target (ADR-047,
+ADR-048, ADR-049), and the guard is marked as a strict expected failure until the
+manifest fits. When it fits, the mark comes off.
 
 ### Software
 
