@@ -814,12 +814,37 @@ export ORPYCA_TAG=<sha-anterior>
 docker compose -f infra/docker-compose.prod.yml up -d
 ```
 
-**Volver el CÓDIGO no vuelve el ESQUEMA.** Las migraciones no tienen `down`, y es
-deliberado: una bajada automática sobre datos de archivo es más peligrosa que el
-fallo que intenta reparar. Si la versión nueva cambió el esquema de forma
-incompatible, la vuelta atrás real es **restaurar el respaldo del paso 1** con
-`infra/restore.sh`, asumiendo la pérdida de lo ocurrido desde entonces. Por eso el
-paso 1 no es opcional y por eso conviene actualizar en ventana de baja actividad.
+### Expandir, desplegar, contraer (ADR-053 §4)
+
+Las migraciones no tienen `down`, y es deliberado: una bajada automática sobre datos
+de archivo es más peligrosa que el fallo que intenta reparar. Volver el código sí
+vuelve la instalación, **porque el esquema de un lanzamiento sigue sirviendo al
+código del anterior**. Eso no se espera: se exige.
+
+| Paso | Regla |
+|---|---|
+| Expandir | El esquema nuevo es compatible con el código anterior: tablas nuevas, columnas nuevas nulas o con `DEFAULT`, índices `CONCURRENTLY`. |
+| Desplegar | El código nuevo escribe en lo nuevo y sigue leyendo lo viejo si falta. |
+| Contraer | Solo en el **lanzamiento siguiente**, cuando ningún código lee lo viejo: se borran columnas y tablas en un archivo nuevo. |
+
+Un lanzamiento es un tag `X.Y.Z` (el primero será `1.0.0`). El guardián
+`shared/tests/test_expand_contract.py` toma como archivos del lanzamiento en curso
+los de la cadena que el último tag no tiene, y falla si alguno:
+
+- hace `DROP TABLE` o `DROP COLUMN` de algo creado en el mismo lanzamiento;
+- hace `ALTER COLUMN … SET NOT NULL` sobre una columna creada en el mismo lanzamiento;
+- añade una columna `NOT NULL` sin `DEFAULT` a una tabla que ya existía.
+
+Además, **un archivo que ya salió en un tag no se edita**: el runner lo anotó por
+nombre y no lo volverá a aplicar. El cambio va en un archivo nuevo. Lo que el
+guardián no puede ver —si el código del lanzamiento anterior todavía lee la columna
+que este borra— es parte de la revisión: se contrae solo lo que el código del
+lanzamiento anterior ya dejó de leer.
+
+Con la regla cumplida, la vuelta atrás es el bloque de arriba: apuntar a la versión
+anterior. **El respaldo del paso 1 no es el mecanismo de reversión**, sino la
+recuperación ante una catástrofe (servidor perdido, datos corrompidos); sigue
+siendo obligatorio por eso.
 
 ---
 

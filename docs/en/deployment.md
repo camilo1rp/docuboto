@@ -752,12 +752,36 @@ export ORPYCA_TAG=<previous-sha>
 docker compose -f infra/docker-compose.prod.yml up -d
 ```
 
-**Rolling back the CODE does not roll back the SCHEMA.** Migrations have no `down`,
-and that is deliberate: an automatic downgrade over archival data is more dangerous
-than the failure it tries to repair. If the new version changed the schema
-incompatibly, the real rollback is to **restore the step-1 backup** with
-`infra/restore.sh`, accepting the loss of everything since. That is why step 1 is
-not optional, and why upgrades belong in a low-activity window.
+### Expand, deploy, contract (ADR-053 §4)
+
+Migrations have no `down`, and that is deliberate: an automatic downgrade over
+archival data is more dangerous than the failure it tries to repair. Rolling back
+the code does roll back the installation, **because one release's schema still
+serves the previous release's code**. That is not hoped for: it is enforced.
+
+| Step | Rule |
+|---|---|
+| Expand | The new schema works with the previous code: new tables, new columns that are nullable or have a `DEFAULT`, indexes built `CONCURRENTLY`. |
+| Deploy | The new code writes to the new shape and still reads the old one when the new is missing. |
+| Contract | Only in the **next release**, once no code reads the old shape: drop columns and tables, in a new file. |
+
+A release is a git tag `X.Y.Z` (the first will be `1.0.0`). The guard
+`shared/tests/test_expand_contract.py` takes the chain files the latest tag does
+not have as the release in progress, and fails if any of them:
+
+- runs `DROP TABLE` or `DROP COLUMN` on something created in the same release;
+- runs `ALTER COLUMN … SET NOT NULL` on a column created in the same release;
+- adds a `NOT NULL` column without `DEFAULT` to a table that already existed.
+
+Also, **a file a tag already shipped is never edited**: the runner recorded it by
+name and will not apply it again. The change goes in a new file. What the guard
+cannot see (whether the previous release's code still reads the column this one
+drops) is a review item: contract only what the previous release's code stopped
+reading.
+
+With the rule kept, rolling back is the block above: point at the previous version.
+**The step-1 backup is not the rollback mechanism**; it is disaster recovery (a lost
+server, corrupted data), and it stays mandatory for that reason.
 
 ---
 
