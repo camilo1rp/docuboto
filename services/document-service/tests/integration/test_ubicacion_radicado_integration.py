@@ -10,9 +10,8 @@
 """ADR-029 contra Postgres REAL, en document-service: las columnas de ubicación.
 
 Lo que un mock no puede probar: que la columna GENERADA `ubicacion_*` se calcula
-por PARES en el motor, que nadie puede escribirla, que la migración 037 es
-idempotente y que el filtro por ubicación pone el no-read-up en el `WHERE` del
-`SELECT` y del `COUNT` (el total no delata filas que la página no puede mostrar).
+por PARES en el motor, que nadie puede escribirla y que el filtro por ubicación
+pone el no-read-up en el `WHERE` del `SELECT` y del `COUNT` (el total no delata filas que la página no puede mostrar).
 
 `flujo_*` las escribe workflow-service: aquí se simulan con un `UPDATE` directo.
 """
@@ -24,7 +23,6 @@ from datetime import date
 
 import asyncpg
 import pytest
-from migrations import runner
 
 from document.core.database import tenant_schema
 from document.repositories.document_repository import DocumentRepository
@@ -106,22 +104,6 @@ async def test_nadie_puede_escribir_la_columna_generada(tenant_ctx) -> None:
     ):
         with pytest.raises(asyncpg.PostgresError):
             await conn.execute(sql, rid)
-
-
-async def test_la_migracion_037_es_idempotente(tenant_ctx) -> None:
-    slug, conn = await _en_tenant(tenant_ctx)
-    rid = await _rad(conn, dest=("Tecnología", 300))
-    sql = next(p for p in runner._sql_files(runner.TENANT_DIR) if "037_radicado_ubicacion" in p.name)
-
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
-        await conn.execute(sql.read_text())
-
-    assert await _ubic(conn, rid) == ("Tecnología", 300)
-    assert await conn.fetchval(
-        "SELECT count(*) FROM pg_indexes WHERE schemaname = $1 AND indexname = 'ix_radicados_ubicacion_dept_code'",
-        tenant_schema(slug),
-    ) == 1
 
 
 async def test_el_filtro_por_ubicacion_va_en_el_where_del_select_y_del_count(tenant_ctx) -> None:
@@ -223,14 +205,10 @@ async def test_el_patch_de_dest_dept_mueve_la_ubicacion_solo_si_el_flujo_no_la_m
 
 
 async def _dependencias(conn: asyncpg.Connection) -> None:
-    # La tabla la crea tenant-service; el fixture solo aplica las de document-service.
     await conn.execute(
-        "CREATE TABLE IF NOT EXISTS dependencias (codigo int PRIMARY KEY, nombre text NOT NULL, "
-        "activo boolean NOT NULL DEFAULT true)"
-    )
-    await conn.execute(
-        "INSERT INTO dependencias (codigo, nombre, activo) VALUES "
-        "(400, 'Archivo', true), (401, 'Duplicada', true), (402, 'Duplicada', true), (403, 'Inactiva', false)"
+        "INSERT INTO dependencias (codigo, sigla, nombre, activo) VALUES "
+        "(400, 'ARC', 'Archivo', true), (401, 'DU1', 'Duplicada', true), "
+        "(402, 'DU2', 'Duplicada', true), (403, 'INA', 'Inactiva', false)"
     )
 
 

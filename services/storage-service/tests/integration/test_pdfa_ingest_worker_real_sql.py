@@ -23,8 +23,8 @@ También cubre, contra Postgres real:
     revienta;
   - correr el worker dos veces para el mismo `file_id` converge a un estado
     final coherente en `files.pdfa_status`;
-  - la migración 013 se reaplica idempotente sobre un schema ya migrado, y
-    su CHECK constraint rechaza de verdad un `pdfa_status` inválido;
+  - el CHECK constraint de `files.pdfa_status` rechaza de verdad un valor
+    inválido;
   - REMEDIADO (auditoría Media, E07): `tenant_ctx` (este mismo conftest) ya
     genera slugs con guion (`itest-xxxxxxxx`) -- la forma válida y habitual
     de un tenant_slug real en TODO el resto de OrpycaMCP.
@@ -49,9 +49,7 @@ import pytest_asyncio
 
 from storage.core.database import tenant_schema
 from storage.services.pdfa_ingest_service import run_ingest_validation_background
-from migrations import runner
-
-from .conftest import DSN
+from .conftest import DSN, provision_tenant_schema
 
 pytestmark = pytest.mark.integration
 
@@ -77,16 +75,14 @@ async def other_tenant(db_conn: asyncpg.Connection, request: pytest.FixtureReque
     schema = tenant_schema(slug)
     await db_conn.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        for path in runner._sql_files(runner.TENANT_DIR):
-            async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-                await db_conn.execute(path.read_text())
+        await provision_tenant_schema(db_conn, schema)
         yield slug
     finally:
         assert schema.startswith("tenant_itest_"), (
             f"guardarraíl: me niego a hacer DROP SCHEMA CASCADE de {schema!r}"
         )
         await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await db_conn.execute("DELETE FROM public.schema_migrations WHERE schema_name = $1", schema)
 
 
 async def _seed_file(
@@ -277,28 +273,12 @@ async def test_hyphenated_tenant_slug_worker_lands_verdict(
 
 
 # ---------------------------------------------------------------------------
-# Migración 013 contra Postgres real
+# CHECK de `files.pdfa_status` contra Postgres real
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-async def test_migration_013_reapplies_idempotently_on_real_postgres(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    """`tenant_ctx` ya aplicó las migraciones tenant UNA vez (incluida la
-    013); reaplicarla explícitamente una segunda vez sobre el MISMO schema
-    no debe lanzar."""
-    slug, conn = tenant_ctx
-    schema = tenant_schema(slug)
-    path = runner.TENANT_DIR / "013_files_pdfa_ingest.sql"
-
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        await conn.execute(path.read_text())  # segunda pasada
-
-
-@pytest.mark.integration
-async def test_migration_013_check_constraint_rejects_invalid_pdfa_status(
+async def test_files_check_constraint_rejects_invalid_pdfa_status(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx

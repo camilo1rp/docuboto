@@ -183,7 +183,7 @@ _CREA = re.compile(
     re.IGNORECASE,
 )
 #: Globales que el libro de migraciones crea fuera de `migrations/global/` (shared).
-_GLOBALES_EXTRA = {"schema_migrations", "_migrations", "_tenant_migrations"}
+_GLOBALES_EXTRA = {"schema_migrations"}
 
 
 def _nombres_creados(patron: str) -> set[str]:
@@ -310,7 +310,8 @@ def test_create_extension_dice_with_schema_public():
                 visto += 1
                 if not re.search(r"WITH\s+SCHEMA\s+public\b", m.group(0), re.IGNORECASE):
                     sin_esquema.append(f"{f.relative_to(RAIZ)}:{n}")
-    assert visto >= 3, visto
+    # Control positivo: `pg_trgm` y `unaccent` (ADR-053 retiró `pgcrypto`).
+    assert visto >= 2, visto
     assert not sin_esquema, (
         "`CREATE EXTENSION` sin `WITH SCHEMA public`: la extensión caería donde apunte el "
         "path de quien migre — " + ", ".join(sin_esquema)

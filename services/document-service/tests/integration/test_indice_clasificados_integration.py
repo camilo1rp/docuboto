@@ -119,16 +119,3 @@ async def test_indice_complete_and_orthogonal_to_clearance(tenant_ctx) -> None:
     trackings = {r["tracking_number"] for r in indice}
     pub_tracking = await conn.fetchval("SELECT tracking_number FROM radicados WHERE id=$1", pub)
     assert pub_tracking not in trackings
-
-
-@pytest.mark.asyncio
-async def test_migration_018_idempotent(tenant_ctx) -> None:
-    slug, conn = tenant_ctx
-    from pathlib import Path
-
-    sql = (
-        Path(__file__).parents[2] / "migrations" / "tenant" / "018_radicado_clasificacion_meta.sql"
-    ).read_text()
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
-        await conn.execute(sql)  # segunda pasada, no-op sin error

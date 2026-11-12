@@ -30,6 +30,7 @@ from document.schemas.borrador import BorradorCreate, BorradorRadicar
 from document.services.borrador_service import BorradorService
 from document.services.document_service import DocumentService
 from document.services.metadata_service import MetadataValidationError
+from tests.integration import conftest as ic
 
 pytestmark = pytest.mark.integration
 
@@ -59,11 +60,7 @@ async def _preparar(tenant_flujo):
     )
     await conn.execute("UPDATE borrador SET estado = 'aprobado' WHERE id = $1", b.id)
     # B6: el origen de una Salida debe ser una dependencia del actor (URD activa).
-    await conn.execute(
-        "INSERT INTO urd_usuaroldep (user_id, depe_id) SELECT $1, 1 "
-        "WHERE NOT EXISTS (SELECT 1 FROM urd_usuaroldep WHERE user_id = $1 AND depe_id = 1)",
-        AUTOR,
-    )
+    await ic.membership(conn, AUTOR, 1)
     return slug, conn, servicio, b
 
 

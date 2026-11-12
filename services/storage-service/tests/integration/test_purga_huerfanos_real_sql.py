@@ -32,31 +32,9 @@ import pytest_asyncio
 from storage.core.database import tenant_schema
 from storage.repositories.file_repository import FileRepository
 from storage.services.storage_service import StorageService
-from tests.integration.conftest import DDL_VISTA_CITAS_STUB, _require_dsn
+from tests.integration.conftest import _require_dsn
 
 pytestmark = pytest.mark.integration
-
-_DDL_AJENAS = """
-CREATE TABLE IF NOT EXISTS anexos (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), radicado_id UUID NOT NULL,
-    file_id UUID NOT NULL, filename TEXT NOT NULL DEFAULT 'x'
-);
--- `referencias()` falla cerrado si falta una tabla de la lista: las que son de
--- document-service se crean aquí (este carril solo aplica las migraciones de storage).
-CREATE TABLE IF NOT EXISTS email_mensaje (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), crudo_file_id UUID
-);
-CREATE TABLE IF NOT EXISTS borrador (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), documento_file_id UUID
-);
-CREATE TABLE IF NOT EXISTS postal_shipment (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), acuse_file_id UUID
-);
-CREATE TABLE IF NOT EXISTS expediente_aip_version (
-    expediente_id UUID, version INTEGER, indice_file_id UUID
-);
-""" + DDL_VISTA_CITAS_STUB
-
 
 async def _archivo(
     conn,
@@ -118,7 +96,6 @@ async def _asientos(conn, slug, fid) -> int:
 async def ctx(tenant_ctx):
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    await conn.execute(_DDL_AJENAS)
     return slug, conn
 
 
@@ -140,8 +117,13 @@ async def test_un_anexo_de_cualquier_radicado_lo_conserva(ctx) -> None:
     de un anexo de un radicado ajeno: borrarlo lo dejaría colgando."""
     slug, conn = ctx
     fid = await _archivo(conn, slug)
+    radicado_id = await conn.fetchval(
+        "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, tenant_code) "
+        "VALUES ($1, 'E', 2026, 1, 'itest', 'ITEST') RETURNING id",
+        f"2026-ITEST-E-{uuid.uuid4().hex[:8]}",
+    )
     await conn.execute(
-        "INSERT INTO anexos (radicado_id, file_id) VALUES ($1, $2)", uuid.uuid4(), fid
+        "INSERT INTO anexos (radicado_id, file_id, filename) VALUES ($1, $2, 'x')", radicado_id, fid
     )
     minio = _minio()
     r = await _purgar(conn, slug, fid, minio)
@@ -385,11 +367,11 @@ async def test_area_08_09_otro_autor_no_reutiliza_el_objeto_ni_ve_el_nombre_orig
 @pytest.mark.asyncio
 async def test_el_carril_crea_toda_tabla_ajena_que_la_purga_consulta(ctx) -> None:
     """Deriva de `REFERENCIAS_DE_ARCHIVO`: si alguien añade una referencia nueva (como
-    `postal_shipment.acuse_file_id`) y no la crea `_DDL_AJENAS`, `referencias()` falla
+    `postal_shipment.acuse_file_id`) y la cadena de migraciones no crea su tabla, `referencias()` falla
     cerrado y TODA la suite de purga cae con «referenciado» sin decir por qué (6 rojos
     reales). Aquí cae UNA prueba y con el nombre de la tabla."""
     from storage.repositories.file_repository import REFERENCIAS_DE_ARCHIVO
 
     _, conn = ctx
     faltan = [t for t, _ in REFERENCIAS_DE_ARCHIVO if await conn.fetchval("SELECT to_regclass($1)", t) is None]
-    assert not faltan, f"el carril de integración no crea estas tablas de referencias: {sorted(set(faltan))}"
+    assert not faltan, f"la cadena de migraciones no crea estas tablas de referencias: {sorted(set(faltan))}"

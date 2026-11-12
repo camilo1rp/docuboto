@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._chain import chain_text
+
 _RAIZ = Path(__file__).resolve().parents[2]
 _DOCS = _RAIZ / "docs"
 _SERVICIOS = _RAIZ / "services"
@@ -136,6 +138,7 @@ def test_la_cabecera_del_roadmap_tiene_fecha_igual_en_los_dos_idiomas() -> None:
 #: Páginas de `docs/es/` que a propósito no tienen versión inglesa, con su motivo.
 _SOLO_EN_ESPANOL: dict[str, str] = {
     "adr/": "las decisiones de arquitectura se escriben y se razonan en español",
+    "historia/": "archivo de las cadenas de migraciones anteriores a ADR-053; no se ejecuta",
     "mcp-flujos.md": "censo interno de cobertura del MCP; se regenera con scripts/censo_mcp.py",
     "plan-pruebas.md": "plan de pruebas del proyecto, de uso interno",
     "politica-tratamiento-plantilla.md": "plantilla legal colombiana (Ley 1581) que adapta cada entidad",
@@ -285,11 +288,7 @@ def test_adr_018_no_promete_entregas_registradas_ni_deja_el_ssrf_como_evolutivo(
     adr = "docs/es/adr/ADR-018-interoperabilidad-webhooks.md"
     assert not _contiene(adr, "el endurecimiento fino queda como evolutivo")
     # La afirmación «registrando entregas» solo sería cierta con una tabla de entregas.
-    migraciones = " ".join(
-        p.read_text(encoding="utf-8")
-        for p in (_SERVICIOS / "notification-service" / "migrations").rglob("*.sql")
-    )
-    if "webhook_entregas" not in migraciones:
+    if "webhook_entregas" not in chain_text("tenant"):
         assert not _contiene(adr, "y registrando entregas;")
 
 
@@ -315,17 +314,15 @@ def test_ni_el_catalogo_ni_el_repositorio_dicen_que_la_cofirma_entrega_no_tiene_
     assert "roles.add(\"entrega\")" in _leer("services/archive-service/archive/services/transferencia_service.py")
     repo = _leer("services/archive-service/archive/repositories/transferencia_repository.py")
     assert "hoy, a lo sumo" not in _plano(repo)
-    # El COMMENT vigente es el de la ÚLTIMA migración que lo escribe (028 corrigió el de la 027).
-    escriben = sorted(
-        p
-        for p in (_SERVICIOS / "archive-service" / "migrations" / "tenant").glob("*.sql")
-        if "COMMENT ON COLUMN transferencia_acta_firma_personal.rol" in p.read_text(encoding="utf-8")
+    # La cadena lo escribe una sola vez (ADR-053): ese es el COMMENT vigente.
+    comentarios = re.findall(
+        r"^COMMENT ON COLUMN transferencia_acta_firma_personal\.rol IS .*?;$",
+        chain_text("tenant"),
+        re.M | re.S,
     )
-    assert len(escriben) >= 2, "el censo de migraciones que comentan `rol` salió corto"
-    vigente = escriben[-1].read_text(encoding="utf-8").split(
-        "COMMENT ON COLUMN transferencia_acta_firma_personal.rol", 1
-    )[1]
-    assert "sin escritor" not in vigente
+    assert len(comentarios) == 1, "el censo del COMMENT de `rol` no encontró exactamente uno"
+    assert "entrega (remitente" in comentarios[0]
+    assert "sin escritor" not in comentarios[0]
 
 
 def test_los_comentarios_de_deuda_ya_cerrada_se_corrigieron() -> None:

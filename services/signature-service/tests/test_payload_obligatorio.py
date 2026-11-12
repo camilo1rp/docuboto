@@ -111,25 +111,30 @@ class TestHuellaObligatoria:
             _crear(payload_sha256="a" * 63)
 
 
-def test_la_migracion_ya_no_documenta_el_fallback() -> None:
+def test_el_esquema_ya_no_documenta_el_fallback() -> None:
     """Un comentario obsoleto ha mantenido cinco defectos vivos en este proyecto.
 
-    La 003 decía «si no se provee, la firma se produce sobre
-    objeto_tipo:objeto_id». Con la huella obligatoria para borrador/documento
-    eso describe un comportamiento que ya no existe para el caso que importa, y
-    quien lo leyera creería que el fallback sigue siendo la norma.
+    El de `firma_solicitud.payload_sha256` decía «si no se provee, la firma se
+    produce sobre objeto_tipo:objeto_id». Con la huella obligatoria para
+    borrador/documento eso describe un comportamiento que ya no existe para el
+    caso que importa, y quien lo leyera creería que el fallback sigue siendo la
+    norma.
     """
     sql = (
-        Path(__file__).resolve().parents[1]
+        Path(__file__).resolve().parents[2]
+        / "docuboto"
         / "migrations"
         / "tenant"
-        / "003_firma_cadena.sql"
+        / "600_firma.sql"
     ).read_text(encoding="utf-8")
+    m = re.search(r"^COMMENT ON COLUMN firma_solicitud\.payload_sha256 IS '(.*)';$", sql, re.M)
+    assert m, "firma_solicitud.payload_sha256 tiene que llevar su comentario en 600_firma.sql"
+    comentario = m.group(1)
     assert "Si no se provee, la firma se produce" not in sql
-    assert re.search(r"documento es OBLIGATORIO", sql), (
+    assert re.search(r"documento es OBLIGATORIO", comentario), (
         "el comentario tiene que decir la regla NUEVA, no solo callar la vieja"
     )
-    assert "resuelve el SERVIDOR contra document-service" in sql, (
+    assert "resuelve el SERVIDOR contra document-service" in comentario, (
         "y tiene que decir que la de `borrador` la resuelve el servidor: si solo "
         "dijera que es obligatoria, describiría el contrato que se acaba de retirar"
     )

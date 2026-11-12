@@ -10,7 +10,7 @@
 
 """C4/C12 (ADR-039) contra Postgres REAL: lo que un mock no puede decir.
 
-Que el trigger de frontera existe y rechaza, que los CHECK son los de la migración 050, que
+Que el trigger de frontera existe y rechaza, que los CHECK de la tabla de solicitudes rigen, que
 dos aprobaciones concurrentes dan UNA ejecución, que un fallo del asiento o del outbox se
 lleva el nivel, la aprobación y el evento, y que los `WHERE` de la solicitud (separación de
 funciones, vigencia, clearance) son los que deciden — no el diagnóstico.
@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from pathlib import Path
 
 import asyncpg
 import pytest
@@ -47,10 +46,6 @@ from document.services.document_service import DocumentService
 from tests.integration import conftest as ic
 
 pytestmark = pytest.mark.integration
-
-_MIGRACION = (
-    Path(__file__).parents[2] / "migrations" / "tenant" / "050_reserva_catalogo_y_desclasificacion.sql"
-)
 
 ANA = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")  # solicita
 BETO = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")  # aprueba
@@ -316,30 +311,6 @@ async def test_la_purga_del_radicado_se_lleva_sus_solicitudes(tenant_ctx) -> Non
     await _solicitud(conn, rid)
     await conn.execute("DELETE FROM radicados WHERE id = $1", rid)
     assert await conn.fetchval("SELECT count(*) FROM reclasificacion_solicitudes") == 0
-
-
-@pytest.mark.asyncio
-async def test_la_migracion_es_idempotente_y_pasa_lo_viejo_a_por_clasificar(tenant_ctx) -> None:
-    slug, conn = await _en(tenant_ctx)
-    rid = await _radicado(conn, nivel=1)
-    await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_causal_catalogo")
-    # La 051 (posterior) también impide guardar un plazo fuera de tope: este test es de la 050.
-    await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_reserva_tope_15_anios")
-    await conn.execute(
-        "UPDATE radicados SET nivel_seguridad = 2, clasificacion_causal = 'Defensa y seguridad nacional', "
-        "clasificacion_plazo_meses = 600, clasificacion_fundamento = 'F' WHERE id = $1", rid)
-    bien = await _radicado(conn, nivel=2)
-    sql = _MIGRACION.read_text()
-    await conn.execute(sql)
-    await conn.execute(sql)  # idempotente
-    fila = await conn.fetchrow(
-        "SELECT clasificacion_causal, clasificacion_plazo_meses FROM radicados WHERE id = $1", rid)
-    assert fila["clasificacion_causal"] == "por_clasificar"
-    assert await conn.fetchval(
-        "SELECT clasificacion_causal FROM radicados WHERE id = $1", bien) == "art19_i_salud_publica"
-    assert await conn.fetchval(
-        "SELECT convalidated FROM pg_constraint WHERE conname = 'radicados_causal_catalogo' "
-        "AND conrelid = 'radicados'::regclass")
 
 
 # --------------------------------------------------------------------- aprobar ejecuta
@@ -687,9 +658,7 @@ async def test_el_select_interno_es_content_free(tenant_ctx) -> None:
         }
 
 
-# --------------------------------------------------------- 051: tope de 15 años desde la generación
-
-_MIGRACION_051 = _MIGRACION.parent / "051_reserva_tope_y_norma.sql"
+# --------------------------------------------------------- tope de 15 años desde la generación
 
 
 def _utc(texto: str):
@@ -741,19 +710,3 @@ async def test_la_norma_publicable_es_una_cita_no_una_frase(tenant_ctx) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
         await _reservado(conn, plazo=12, generado="2026-01-01", clasificado="2026-01-02",
                          norma="el expediente de Juan Pérez")
-
-
-@pytest.mark.asyncio
-async def test_la_051_es_idempotente_y_pasa_lo_que_excede_el_tope_a_por_clasificar(tenant_ctx) -> None:
-    slug, conn = await _en(tenant_ctx)
-    rid = await _reservado(conn, plazo=24, generado="2016-10-01", clasificado="2026-10-01")
-    await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_reserva_tope_15_anios")
-    await conn.execute("UPDATE radicados SET clasificacion_plazo_meses = 170 WHERE id = $1", rid)
-    sql = _MIGRACION_051.read_text()
-    await conn.execute(sql)
-    await conn.execute(sql)  # idempotente
-    assert await conn.fetchval(
-        "SELECT clasificacion_causal FROM radicados WHERE id = $1", rid) == "por_clasificar"
-    assert await conn.fetchval(
-        "SELECT convalidated FROM pg_constraint WHERE conname = 'radicados_reserva_tope_15_anios' "
-        "AND conrelid = 'radicados'::regclass")

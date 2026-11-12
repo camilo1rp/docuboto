@@ -163,8 +163,8 @@ async def verify_radicado(
 ) -> PublicVerifyResponse:
     # NO-READ-UP EN UNA SUPERFICIE ANÓNIMA (RF-SEG-08).
     #
-    # `verification_code` lo tiene **todo** radicado: la migración 010 lo
-    # añadió con `DEFAULT gen_random_uuid()`, así que existe también para
+    # `verification_code` lo tiene **todo** radicado: la columna nace
+    # con `DEFAULT gen_random_uuid()`, así que existe también para
     # los internos y para los clasificados, que nunca tuvieron un ciudadano
     # detrás. Sin este filtro, quien tuviera el código de un radicado
     # RESERVADO obtenía, sin autenticarse y a través del gateway, su número

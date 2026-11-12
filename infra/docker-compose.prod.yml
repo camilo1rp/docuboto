@@ -53,21 +53,20 @@ volumes:
   redis-data:
   # Keycloak uses external PostgreSQL, no separate volume
 
-# Migraciones al arrancar (AREA-13-08). El proceso unificado espera a
-# `migrate-docuboto` (imagen `app`, `command: python migrations/runner.py`,
-# conexión del propietario). Los nueve `migrate-<servicio>` de dominio quedan
-# en el perfil `split`. Si la migración falla, el servicio no arranca
-# (`service_completed_successfully`, fail-closed). El runner es idempotente y
-# todos los `migrate-*` (y `scripts/init_tenant.py`) se serializan con UN
-# cerrojo global: `orpycamcp_common.migrations.cerrojo` (`pg_try_advisory_lock`,
-# plazo `MIGRATIONS_LOCK_TIMEOUT_S`, 600 s por defecto; si vence, el migrador
-# sale con error y el servicio no arranca). Ese cerrojo no existía cuando este
-# comentario lo afirmaba (C19, ADR-041). Repetir `up -d` o escalar réplicas es
-# seguro.
+# Migraciones al arrancar (AREA-13-08, ADR-053). Todo servicio espera a
+# `migrate-docuboto`, el único migrador (imagen `app`,
+# `command: python migrations/runner.py`, conexión del propietario). Si la
+# migración falla, el servicio no arranca (`service_completed_successfully`,
+# fail-closed). El runner es idempotente y se serializa con
+# `scripts/init_tenant.py` por UN cerrojo global:
+# `orpycamcp_common.migrations.cerrojo` (`pg_try_advisory_lock`, plazo
+# `MIGRATIONS_LOCK_TIMEOUT_S`, 600 s por defecto; si vence, el migrador sale con
+# error y el servicio no arranca; C19, ADR-041). Repetir `up -d` o escalar
+# réplicas es seguro.
 x-migracion: &migracion
   restart: "no"
   command: ["python", "migrations/runner.py"]
-  # Sin esta línea los `migrate-*` caían en la red `default`, donde `postgres` no
+  # Sin esta línea el migrador caía en la red `default`, donde `postgres` no
   # está: el runner no resolvía el host, ninguna migración terminaba y, como cada
   # servicio espera `service_completed_successfully`, no arrancaba ninguno.
   networks:
@@ -126,8 +125,8 @@ services:
       - postgres-data:/var/lib/postgresql/data
       # OJO con la ruta: este compose vive en infra/, el script en la raíz. Con
       # `./scripts/...` Docker no falla — crea un DIRECTORIO vacío y lo monta, así
-      # que el init no corre y no existen ni el schema `keycloak` ni la extensión
-      # `vector` ni public._migrations. El fallo aparece después, en Keycloak.
+      # que el init no corre y no existe el schema `keycloak`. El fallo aparece
+      # después, en Keycloak.
       - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       # Optional: database backup script
       # - ./infra/postgres/backup.sh:/usr/local/bin/backup.sh:ro
@@ -618,7 +617,7 @@ services:
     expose:
       - "8001"
     depends_on:
-      migrate-auth:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -666,7 +665,7 @@ services:
     expose:
       - "8002"
     depends_on:
-      migrate-tenant:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -733,7 +732,7 @@ services:
     expose:
       - "8003"
     depends_on:
-      migrate-document:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -808,7 +807,7 @@ services:
     expose:
       - "8005"
     depends_on:
-      migrate-storage:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -856,7 +855,7 @@ services:
     expose:
       - "8006"
     depends_on:
-      migrate-workflow:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -910,7 +909,7 @@ services:
     expose:
       - "8004"
     depends_on:
-      migrate-archive:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -971,7 +970,7 @@ services:
     expose:
       - "8007"
     depends_on:
-      migrate-notification:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -1062,7 +1061,7 @@ services:
     expose:
       - "8008"
     depends_on:
-      migrate-signature:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -1111,7 +1110,7 @@ services:
     expose:
       - "8011"
     depends_on:
-      migrate-knowledge:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -1302,65 +1301,11 @@ services:
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-auth:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/auth-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-tenant:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/tenant-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-document:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-storage:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-workflow:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/workflow-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-archive:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/archive-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-notification:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/notification-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-signature:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/signature-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  migrate-knowledge:
-    <<: *migracion
-    profiles: ["split"]
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/knowledge-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
-    environment:
-      MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}

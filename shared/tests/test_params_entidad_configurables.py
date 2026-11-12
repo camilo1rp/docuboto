@@ -15,7 +15,7 @@ Guardián: un parámetro que el código LEE tiene que poder configurarse.
 `document-service` resuelve los siete marcadores del grupo «Entidad» —el
 membrete de todo documento producido— desde siete claves de `sgd_param_admin`.
 Los nombres de esas claves existían ÚNICAMENTE dentro del diccionario
-`PARAMS_ENTIDAD`: ninguna migración de `tenant-service` las creaba, y
+`PARAMS_ENTIDAD`: ninguna migración las creaba, y
 `/admin/parametros` enseña las filas que HAY. Resultado: el membrete salía en
 blanco en todos los oficios y no había ninguna pantalla desde la que
 rellenarlo.
@@ -24,7 +24,7 @@ El comentario que encabeza `PARAMS_ENTIDAD` ya lo advertía —«un parámetro c
 nombre solo vive en la cabeza de quien lo configuró no se puede configurar»— y
 el código hacía exactamente eso. Es un cruce entre dos servicios, así que
 ninguna suite por-servicio podía verlo: el contenedor de tests de
-document-service no contiene las migraciones de tenant-service.
+document-service no contenía las migraciones de tenant-service.
 """
 
 from __future__ import annotations
@@ -33,9 +33,10 @@ import ast
 import re
 from pathlib import Path
 
+from tests._chain import seed_rows
+
 RAIZ = Path(__file__).resolve().parents[2]
 FUENTE = RAIZ / "services" / "document-service" / "document" / "services" / "contexto_combinacion.py"
-MIGRACION = RAIZ / "services" / "tenant-service" / "migrations" / "tenant" / "009_params_entidad.sql"
 
 
 def _claves_que_lee_el_codigo() -> set[str]:
@@ -56,7 +57,7 @@ def _claves_que_lee_el_codigo() -> set[str]:
 
 
 def _claves_que_siembra_la_migracion() -> set[str]:
-    return set(re.findall(r"\('(entidad_[a-z_]+)'", MIGRACION.read_text(encoding="utf-8")))
+    return set(re.findall(r"\('(entidad_[a-z_]+)'", seed_rows("sgd_param_admin")))
 
 
 def test_toda_clave_del_membrete_se_siembra() -> None:

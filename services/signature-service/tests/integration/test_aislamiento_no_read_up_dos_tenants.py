@@ -30,26 +30,16 @@ import pytest
 
 from signature.core.database import _schema as tenant_schema
 from signature.repositories.firma_repository import FirmaRepository
+from tests.integration.conftest import insert_radicado
 
 pytestmark = pytest.mark.asyncio
 
 
 async def _poblar(conn: asyncpg.Connection, slug: str, nivel: int) -> uuid.UUID:
-    """Crea las tablas dueñas del nivel en el schema del tenant y una firma
-    sobre el radicado ``R-COMUN`` con el ``nivel`` dado. Devuelve el id de firma."""
+    """Crea en el schema del tenant el radicado ``R-COMUN`` con el ``nivel`` dado
+    y una firma sobre él. Devuelve el id de firma."""
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    await conn.execute(
-        "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "tracking_number text, nivel_seguridad int NOT NULL)"
-    )
-    await conn.execute(
-        "CREATE TABLE expedientes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "code text, nivel_seguridad int NOT NULL)"
-    )
-    await conn.execute(
-        "INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ('R-COMUN', $1)",
-        nivel,
-    )
+    await insert_radicado(conn, "R-COMUN", nivel)
     return await conn.fetchval(
         """INSERT INTO firma (objeto_tipo, objeto_id, firmante_id, payload_sha256,
                               firma_blob, provider, sello_tiempo, tipo_firma, key_version)

@@ -14,12 +14,13 @@ Postgres REAL. La premisa que se prueba: el servicio hace todo lo suyo (alta del
 registro con asiento atómico, cambio de estado, parámetros, dependencias) con un
 rol que no puede ejecutar DDL ni mutar `audit_log`.
 
-El rol es DESECHABLE (`itest_app_<hex>`): lo crea y lo borra la propia prueba con
-los mismos privilegios que la migración 008 de auth-service concede a
-`orpycamcp_app`. NO se toca `orpycamcp_app` ni su LOGIN.
+El rol es DESECHABLE (`itest_app_<hex>`): lo crea y lo borra la propia prueba, y es
+MIEMBRO de `orpycamcp_app`, así que lo que puede y no puede hacer es exactamente lo
+que la cadena global (`020_app_role.sql`, `030_audit_log.sql`) concede y revoca al
+rol de aplicación. NO se toca `orpycamcp_app` ni su LOGIN.
 
 Gate: solo corre con `RUN_INTEGRATION=1`. Nunca re-ejecuta migraciones globales:
-solo aplica las de tenant sobre un esquema `tenant_itest_<hex>` propio.
+solo aplica la cadena de tenant sobre un esquema `tenant_itest_<hex>` propio.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from tenant.repositories.config_repository import ConfigRepository
 from tenant.repositories.dependencias_repository import DependenciaRepository
 from tenant.schemas.tenant import TenantCreate, TenantUpdate
 from tenant.services.tenant_service import TenantService
-from migrations import runner
+from tests.integration.provision import drop_schema, provision_schema, seed_row
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION") != "1", reason="carril de integración: RUN_INTEGRATION=1"
@@ -71,38 +72,12 @@ async def ctx() -> AsyncGenerator[Ctx, None]:
     app: asyncpg.Connection | None = None
     try:
         db = await owner.fetchval("SELECT current_database()")
-        await owner.execute(f'CREATE SCHEMA "{schema}"')
-        for path in runner._sql_files(runner.TENANT_DIR):
-            async with owner.transaction():
-                await owner.execute(f'SET LOCAL search_path = "{schema}"')
-                await owner.execute(path.read_text())
-        # Tablas mínimas de workflow-service (otro servicio) para la correlación por código.
-        await owner.execute(
-            f'CREATE TABLE "{schema}".flow_steps (id serial PRIMARY KEY, '
-            "to_dept_code int, status varchar(20))"
-        )
-        await owner.execute(
-            f'CREATE TABLE "{schema}".workflow_rules (id serial PRIMARY KEY, '
-            "assign_to_dept_code int, dest_dept_code int, conditions jsonb NOT NULL DEFAULT '[]')"
-        )
-        # Mismos privilegios que 008 concede a orpycamcp_app.
-        await owner.execute(f"CREATE ROLE {role} LOGIN PASSWORD '{password}'")
-        await owner.execute(f'GRANT CONNECT ON DATABASE "{db}" TO {role}')
-        for esq in ("public", schema):
-            await owner.execute(f'GRANT USAGE ON SCHEMA "{esq}" TO {role}')
-            await owner.execute(
-                f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "{esq}" TO {role}'
-            )
-            await owner.execute(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA "{esq}" TO {role}')
-            await owner.execute(f'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA "{esq}" TO {role}')
-        await owner.execute(f"REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.audit_log FROM {role}")
-        for parte in await owner.fetch(
-            "SELECT c.relname FROM pg_class c JOIN pg_inherits i ON i.inhrelid = c.oid "
-            "JOIN pg_class p ON p.oid = i.inhparent WHERE p.relname = 'audit_log'"
-        ):
-            await owner.execute(
-                f'REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public."{parte["relname"]}" FROM {role}'
-            )
+        await provision_schema(owner, schema)
+        await owner.execute("RESET search_path")
+        # Igual que `scripts/init_tenant.py` al dar de alta una entidad: las tablas ya
+        # traen sus privilegios por defecto; solo falta el USAGE del schema.
+        await owner.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO orpycamcp_app')
+        await owner.execute(f"CREATE ROLE {role} LOGIN PASSWORD '{password}' IN ROLE orpycamcp_app")
         p = urllib.parse.urlparse(_OWNER_DSN)
         app = await asyncpg.connect(
             host=p.hostname, port=p.port or 5432, user=role, password=password, database=db
@@ -111,8 +86,7 @@ async def ctx() -> AsyncGenerator[Ctx, None]:
     finally:
         if app is not None:
             await app.close()
-        assert schema.startswith("tenant_itest_")
-        await owner.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await drop_schema(owner, schema)
         await owner.execute("DELETE FROM public.tenants WHERE slug = $1", slug)
         await owner.execute(f"DROP OWNED BY {role}")
         await owner.execute(f"DROP ROLE IF EXISTS {role}")
@@ -181,19 +155,15 @@ async def test_parametro_asienta_valor_previo(ctx: Ctx) -> None:
     await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     repo = ConfigRepository(ctx.app)
     existia, antes = await repo.upsert_param("consec_digits", 9, None)
-    assert existia is True and antes == 6  # sembrado por 002_params.sql
+    assert existia is True and antes == 6  # sembrado por tenant/120_sgd_param_admin.sql
     existia, antes = await repo.upsert_param("consec_digits", 10, None)
     assert antes == 9
 
 
 async def test_dependencia_con_paso_vivo_se_detecta_por_codigo(ctx: Ctx) -> None:
-    await ctx.owner.execute(
-        f'INSERT INTO "{ctx.schema}".flow_steps (to_dept_code, status) VALUES '
-        "(901, 'pending'), (901, 'completed'), (902, 'pending')"
-    )
-    await ctx.owner.execute(
-        f'INSERT INTO "{ctx.schema}".workflow_rules (assign_to_dept_code) VALUES (901)'
-    )
+    for codigo, estado in ((901, "pending"), (901, "completed"), (902, "pending")):
+        await seed_row(ctx.owner, "flow_steps", schema=ctx.schema, to_dept_code=codigo, status=estado)
+    await seed_row(ctx.owner, "workflow_rules", schema=ctx.schema, assign_to_dept_code=901)
     await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     vivos = await DependenciaRepository(ctx.app).tramites_vivos(901)
     assert vivos == {"pasos_vivos": 1, "reglas": 1}
@@ -205,10 +175,8 @@ async def test_dependencia_con_paso_vivo_se_detecta_por_codigo(ctx: Ctx) -> None
 
 async def test_paso_en_curso_cuenta_como_tramite_vivo(ctx: Ctx) -> None:
     """`in_progress` es estado vivo igual que `pending` (columnas reales de workflow)."""
-    await ctx.owner.execute(
-        f'INSERT INTO "{ctx.schema}".flow_steps (to_dept_code, status) VALUES '
-        "(903, 'in_progress'), (903, 'completed'), (903, 'cancelled')"
-    )
+    for estado in ("in_progress", "completed", "cancelled"):
+        await seed_row(ctx.owner, "flow_steps", schema=ctx.schema, to_dept_code=903, status=estado)
     await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     vivos = await DependenciaRepository(ctx.app).tramites_vivos(903)
     assert vivos == {"pasos_vivos": 1, "reglas": 0}
@@ -216,12 +184,14 @@ async def test_paso_en_curso_cuenta_como_tramite_vivo(ctx: Ctx) -> None:
 
 async def test_regla_con_condicion_por_codigo_cuenta_como_viva(ctx: Ctx) -> None:
     """Una condición `dest_dept_code` (escalar o lista) cita la dependencia."""
-    await ctx.owner.execute(
-        f'INSERT INTO "{ctx.schema}".workflow_rules (assign_to_dept_code, conditions) VALUES '
-        "(1, '[{\"field\": \"dest_dept_code\", \"op\": \"eq\", \"value\": 905}]'), "
-        "(1, '[{\"field\": \"origin_dept_code\", \"op\": \"in\", \"value\": [906, 907]}]'), "
-        "(1, '[{\"field\": \"subject\", \"op\": \"contains\", \"value\": \"905\"}]')"
-    )
+    for condicion in (
+        {"field": "dest_dept_code", "op": "eq", "value": 905},
+        {"field": "origin_dept_code", "op": "in", "value": [906, 907]},
+        {"field": "subject", "op": "contains", "value": "905"},
+    ):
+        await seed_row(
+            ctx.owner, "workflow_rules", schema=ctx.schema, assign_to_dept_code=1, conditions=[condicion]
+        )
     await ctx.app.execute(f'SET search_path = "{ctx.schema}"')
     repo = DependenciaRepository(ctx.app)
     assert (await repo.tramites_vivos(905))["reglas"] == 1

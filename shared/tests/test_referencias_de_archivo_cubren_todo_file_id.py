@@ -43,7 +43,7 @@ NO_REFERENCIAN: dict[tuple[str, str], str] = {
 # Vistas CONTRATO (no tablas): el parser de arriba solo ve `CREATE TABLE`. Se verifica aparte que
 # la vista exista y exponga la columna, para que no sea una excusa caducada.
 VISTAS_CONTRATO: dict[tuple[str, str], str] = {
-    ("v_anexo_citado_vigente", "file_id"): "archive-service/migrations/tenant",
+    ("v_anexo_citado_vigente", "file_id"): "docuboto/migrations/tenant",
 }
 
 _CREATE = re.compile(
@@ -89,14 +89,11 @@ def _raiz_repo() -> str | None:
 def _derivadas(raiz: str) -> set[tuple[str, str]]:
     todas: set[tuple[str, str]] = set()
     servicios = os.path.join(raiz, "services")
-    for svc in sorted(os.listdir(servicios)):
-        d = os.path.join(servicios, svc, "migrations", "tenant")
-        if not os.path.isdir(d):
-            continue
-        for f in sorted(os.listdir(d)):
-            if f.endswith(".sql"):
-                with open(os.path.join(d, f), encoding="utf-8") as fh:
-                    todas |= columnas_file_id(fh.read())
+    d = os.path.join(servicios, "docuboto", "migrations", "tenant")
+    for f in sorted(os.listdir(d)):
+        if f.endswith(".sql"):
+            with open(os.path.join(d, f), encoding="utf-8") as fh:
+                todas |= columnas_file_id(fh.read())
     return todas
 
 

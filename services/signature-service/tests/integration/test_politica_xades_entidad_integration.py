@@ -10,10 +10,10 @@
 
 """La política XAdES por entidad contra Postgres REAL (AREA-04-12).
 
-`leer_param` es SQL sobre `sgd_param_admin` (tabla que crea tenant-service, no
-signature-service): lo que un doble de conexión no ve es el `jsonb` real
-(`'"clasificados"'::jsonb` llega como TEXTO JSON), la tabla inexistente de un
-tenant que aún no migró tenant-service, y que una clave ausente da `None`.
+`leer_param` es SQL sobre `sgd_param_admin` (`120_sgd_param_admin.sql` de la cadena
+única, que siembra la clave en JSON null): lo que un doble de conexión no ve es el
+`jsonb` real (`'"clasificados"'::jsonb` llega como TEXTO JSON), la tabla inexistente,
+y que una clave ausente da `None`.
 """
 
 from __future__ import annotations
@@ -27,16 +27,6 @@ from signature.core.database import _schema as tenant_schema
 
 pytestmark = pytest.mark.asyncio
 
-# Mismo DDL que tenant-service 002_params.sql (solo lo que lee signature-service).
-_DDL = """
-CREATE TABLE sgd_param_admin (
-    key        VARCHAR(100) NOT NULL PRIMARY KEY,
-    value      JSONB NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_by UUID
-)
-"""
-
 
 async def _en_tenant(tenant_ctx) -> asyncpg.Connection:
     slug, conn = tenant_ctx
@@ -48,13 +38,11 @@ async def test_la_clave_sembrada_en_null_deja_mandar_al_entorno_y_cada_valor_se_
     tenant_ctx, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     conn = await _en_tenant(tenant_ctx)
-    await conn.execute(_DDL)
-    # El INSERT de tenant-service 010_params_firma.sql: JSON null = «la entidad no
-    # lo define». Sembrar "off" anulaba el respaldo del entorno en silencio.
-    await conn.execute(
-        "INSERT INTO sgd_param_admin (key, value) VALUES "
-        "('firma_personal_require_xades', 'null'::jsonb) ON CONFLICT (key) DO NOTHING"
-    )
+    # La siembra de la cadena: JSON null = «la entidad no lo define». Sembrar "off"
+    # anulaba el respaldo del entorno en silencio.
+    assert await conn.fetchval(
+        "SELECT value = 'null'::jsonb FROM sgd_param_admin WHERE key = 'firma_personal_require_xades'"
+    ), "la cadena tiene que sembrar firma_personal_require_xades en JSON null"
     monkeypatch.setattr(settings, "firma_personal_require_xades", "todos")
     assert await params_entidad.leer_param(conn, "firma_personal_require_xades") is None
     # Sembrada en null: manda el ENTORNO (aquí estricto), no un "off" heredado.
@@ -72,7 +60,7 @@ async def test_sin_fila_manda_el_entorno_y_un_valor_corrupto_es_todos(
     tenant_ctx, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     conn = await _en_tenant(tenant_ctx)
-    await conn.execute(_DDL)
+    await conn.execute("DELETE FROM sgd_param_admin WHERE key = 'firma_personal_require_xades'")
     monkeypatch.setattr(settings, "firma_personal_require_xades", "clasificados")
     assert await params_entidad.leer_param(conn, "firma_personal_require_xades") is None
     assert await params_entidad.modo_xades_de_la_entidad(conn) == "clasificados"
@@ -90,7 +78,8 @@ async def test_sin_fila_manda_el_entorno_y_un_valor_corrupto_es_todos(
 async def test_sin_tabla_de_parametros_respalda_el_entorno_sin_romper_la_conexion(
     tenant_ctx, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    conn = await _en_tenant(tenant_ctx)  # este schema NO tiene sgd_param_admin
+    conn = await _en_tenant(tenant_ctx)
+    await conn.execute("DROP TABLE sgd_param_admin")
     monkeypatch.setattr(settings, "firma_personal_require_xades", "off")
     assert await params_entidad.modo_xades_de_la_entidad(conn) == "off"
     # La conexión sigue sana (fuera de transacción el error no la envenena).

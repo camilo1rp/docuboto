@@ -12,7 +12,7 @@
 
 El campo canónico es `*_dept_code`. `*_dept` (nombre) sobrevive como ALIAS
 deprecado un ciclo: se resuelve con `resolver_codigo_dependencia(nombre, false)`
-(migración 013 de tenant-service: UNA definición del criterio, solo dependencias
+(`tenant/100_dependencias.sql`: UNA definición del criterio, solo dependencias
 ACTIVAS con ese nombre actual). Un nombre que casa con dos NO se desempata
 —`ORDER BY codigo LIMIT 1` radicaba hacia la menor en silencio—: 422.
 

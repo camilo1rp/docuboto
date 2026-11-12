@@ -7,9 +7,8 @@
 """Secreto HMAC de webhooks cifrado en reposo, contra Postgres REAL.
 
 Un mock solo prueba que se LLAMA al cifrado; que la base no conserve el claro, que
-la migración sea idempotente y deje pasar las filas heredadas, que el cifrado de
-los existentes sea idempotente y que la entrega salga firmada con el secreto
-original lo dice únicamente la base.
+el re-wrap a una KEK nueva no pierda el secreto y que la entrega salga firmada con
+el secreto original lo dice únicamente la base.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ import hmac
 import os
 import uuid
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -28,7 +26,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from notification.core import webhook_secrets
+from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 from notification.core.config import settings
 from notification.ops import cifrar_webhook_secrets as cifrar
 from notification.ops import rewrap_webhook_secrets as rewrap
@@ -43,7 +41,6 @@ pytestmark = [
     pytest.mark.skipif(os.environ.get("RUN_INTEGRATION") != "1", reason="requiere RUN_INTEGRATION=1"),
 ]
 
-_MIGRACIONES = Path(__file__).resolve().parents[2] / "migrations" / "tenant"
 _HOSTS = frozenset({"postgres", "localhost", "127.0.0.1", "db"})
 SECRETO = "secreto-heredado-en-claro-xyz"
 
@@ -61,7 +58,7 @@ class _Audit:
 
 @pytest_asyncio.fixture
 async def ctx() -> AsyncGenerator[tuple[asyncpg.Connection, str, str], None]:
-    """(conexión, schema, slug) con la tabla en su estado PREVIO a la 009."""
+    """(conexión, schema, slug) con la cadena de tenant real (ADR-053)."""
     raw = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
     assert raw, "RUN_INTEGRATION=1 sin DATABASE_URL"
     dsn = raw.replace("postgresql+asyncpg://", "postgresql://")
@@ -69,19 +66,13 @@ async def ctx() -> AsyncGenerator[tuple[asyncpg.Connection, str, str], None]:
     c = await asyncpg.connect(dsn)
     sufijo = uuid.uuid4().hex[:8]
     schema = f"tenant_itest_{sufijo}"
-    await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
+        await provision_tenant_schema(c, schema)
         await c.execute(f'SET search_path TO "{schema}"')
-        await c.execute((_MIGRACIONES / "003_webhooks.sql").read_text())
         yield c, schema, f"itest-{sufijo}"
     finally:
-        assert schema.startswith("tenant_itest_")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await drop_tenant_schema(c, schema)
         await c.close()
-
-
-async def _m009(c: asyncpg.Connection) -> None:
-    await c.execute((_MIGRACIONES / "009_webhook_secret_cifrado.sql").read_text())
 
 
 async def _legacy(c: asyncpg.Connection, secret: str | None = SECRETO) -> uuid.UUID:
@@ -129,18 +120,8 @@ def _firma(secreto: str) -> str:
 
 # ── migración ──────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
-async def test_migracion_idempotente_y_deja_pasar_la_fila_heredada(ctx) -> None:
-    c, _, _ = ctx
-    wid = await _legacy(c)  # en claro, ANTES de la 009
-    await _m009(c)
-    await _m009(c)  # re-ejecutable
-    assert await c.fetchval("SELECT secret FROM webhook_subscription WHERE id=$1", wid) == SECRETO
-
-
-@pytest.mark.asyncio
 async def test_la_base_rechaza_escribir_un_secreto_nuevo_en_claro(ctx) -> None:
     c, _, _ = ctx
-    await _m009(c)
     with pytest.raises(asyncpg.CheckViolationError):
         await _legacy(c)
     # Tampoco mediante UPDATE.
@@ -152,7 +133,6 @@ async def test_la_base_rechaza_escribir_un_secreto_nuevo_en_claro(ctx) -> None:
 @pytest.mark.asyncio
 async def test_el_cifrado_incompleto_se_rechaza(ctx) -> None:
     c, _, _ = ctx
-    await _m009(c)
     with pytest.raises(asyncpg.CheckViolationError):
         await c.execute(
             "INSERT INTO webhook_subscription (url, secret_cifrado) VALUES ('https://x.example/', '\\x01')"
@@ -163,7 +143,6 @@ async def test_el_cifrado_incompleto_se_rechaza(ctx) -> None:
 @pytest.mark.asyncio
 async def test_crear_por_el_router_no_deja_el_claro_en_ninguna_columna(ctx, monkeypatch, _dns) -> None:
     c, _, slug = ctx
-    await _m009(c)
     monkeypatch.setattr(router, "_audit", _Audit())
     resp = await router.create_webhook(
         WebhookCreate(url="https://ext.example.com/h", secret=SECRETO), uuid.uuid4(), slug, c
@@ -182,7 +161,6 @@ async def test_crear_por_el_router_no_deja_el_claro_en_ninguna_columna(ctx, monk
 @pytest.mark.asyncio
 async def test_listar_no_devuelve_el_secreto_con_filas_reales(ctx, monkeypatch) -> None:
     c, _, slug = ctx
-    await _m009(c)
     monkeypatch.setattr(router, "_audit", _Audit())
     await router.create_webhook(
         WebhookCreate(url="https://ext.example.com/h", secret=SECRETO), uuid.uuid4(), slug, c
@@ -195,88 +173,10 @@ async def test_listar_no_devuelve_el_secreto_con_filas_reales(ctx, monkeypatch) 
 
 
 # ── cifrado de los heredados ───────────────────────────────────────────────
-@pytest.mark.asyncio
-async def test_cifrar_existentes_idempotente_con_asiento_y_firma_verificable(ctx, audit, _dns) -> None:
-    c, schema, slug = ctx
-    wid = await _legacy(c)
-    await _m009(c)
-    # Mientras esté en claro: NO se entrega (fail-closed), y no se firma con él.
-    assert await _entregar(c, slug) == []
-
-    assert await cifrar.cifrar_tenant(c, schema=schema) == (1, 0)
-    fila = await c.fetchrow("SELECT * FROM webhook_subscription WHERE id=$1", wid)
-    assert fila["secret"] is None
-    assert fila["secret_kek_version"] == 1
-    assert (
-        webhook_secrets.decrypt_secret(
-            bytes(fila["secret_cifrado"]), nonce=bytes(fila["secret_nonce"]), version=1,
-            tenant_slug=slug, webhook_id=wid,
-        )
-        == SECRETO
-    )
-    # Asiento ancla escrito por la aplicación, sin el secreto.
-    assert len(audit.asientos) == 1
-    a = audit.asientos[0]
-    assert a["action"] == "notification.webhook.secret_cifrado" and a["object_ref"] == str(wid)
-    assert a["tenant_slug"] == slug and a["actor"].startswith("system:")
-    assert SECRETO not in str(a)
-    # El CHECK pasó a validado y la fila ya se entrega firmada con el original.
-    assert await c.fetchval(
-        "SELECT convalidated FROM pg_constraint WHERE conname='chk_webhook_secret_sin_claro' "
-        "AND conrelid='webhook_subscription'::regclass"
-    )
-    vistas = await _entregar(c, slug)
-    assert len(vistas) == 1 and vistas[0].headers["X-OrpycaMCP-Signature"] == _firma(SECRETO)
-
-    # Idempotente: una segunda corrida no toca nada ni escribe más asientos.
-    antes = bytes(fila["secret_cifrado"])
-    assert await cifrar.cifrar_tenant(c, schema=schema) == (0, 0)
-    assert bytes(await c.fetchval("SELECT secret_cifrado FROM webhook_subscription")) == antes
-    assert len(audit.asientos) == 1
-    assert await WebhookRepository(c).count_plaintext() == 0
-
-
-@pytest.mark.asyncio
-async def test_cifrar_sin_migracion_009_omite_el_tenant(ctx, audit) -> None:
-    c, schema, _ = ctx
-    await _legacy(c)
-    assert await cifrar.cifrar_tenant(c, schema=schema) == (0, 0)
-    assert await c.fetchval("SELECT secret FROM webhook_subscription") == SECRETO
-
-
-@pytest.mark.asyncio
-async def test_cifrar_sin_kek_falla_cerrado_y_no_toca_la_fila(ctx, audit) -> None:
-    c, schema, _ = ctx
-    await _legacy(c)
-    await _m009(c)
-    settings.webhook_secret_kek = ""
-    with pytest.raises(RuntimeError):
-        await cifrar.cifrar_tenant(c, schema=schema)
-    assert await c.fetchval("SELECT secret FROM webhook_subscription") == SECRETO
-    assert audit.asientos == []
-
-
-@pytest.mark.asyncio
-async def test_si_el_asiento_falla_la_fila_sigue_en_claro_y_se_cuenta_fallida(ctx, monkeypatch) -> None:
-    c, schema, _ = ctx
-    await _legacy(c)
-    await _m009(c)
-
-    class _Roto:
-        async def append(self, *a: Any, **k: Any) -> str:
-            raise RuntimeError("audit_log caído")
-
-    monkeypatch.setattr(cifrar, "_audit", _Roto())
-    assert await cifrar.cifrar_tenant(c, schema=schema) == (0, 1)
-    fila = await c.fetchrow("SELECT secret, secret_cifrado FROM webhook_subscription")
-    assert fila["secret"] == SECRETO and fila["secret_cifrado"] is None  # atómico con el asiento
-
-
 # ── re-wrap ────────────────────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_rewrap_a_la_kek_nueva_conserva_el_secreto_y_la_firma(ctx, audit, monkeypatch, _dns) -> None:
     c, schema, slug = ctx
-    await _m009(c)
     monkeypatch.setattr(router, "_audit", _Audit())
     resp = await router.create_webhook(
         WebhookCreate(url="https://ext.example.com/h", secret=SECRETO), uuid.uuid4(), slug, c
@@ -310,7 +210,6 @@ async def test_rewrap_a_la_kek_nueva_conserva_el_secreto_y_la_firma(ctx, audit, 
 @pytest.mark.asyncio
 async def test_rewrap_sin_la_kek_vieja_falla_esa_fila_y_no_la_pierde(ctx, audit, monkeypatch) -> None:
     c, schema, slug = ctx
-    await _m009(c)
     monkeypatch.setattr(router, "_audit", _Audit())
     await router.create_webhook(
         WebhookCreate(url="https://ext.example.com/h", secret=SECRETO), uuid.uuid4(), slug, c
@@ -324,13 +223,11 @@ async def test_rewrap_sin_la_kek_vieja_falla_esa_fila_y_no_la_pierde(ctx, audit,
 
 
 @pytest.mark.asyncio
-async def test_sin_filas_en_claro_el_check_igual_se_valida(ctx, audit) -> None:
+async def test_el_check_nace_validado_y_cifrar_no_encuentra_nada(ctx, audit) -> None:
     c, schema, _ = ctx
-    await _m009(c)
     q = (
         "SELECT convalidated FROM pg_constraint WHERE conname='chk_webhook_secret_sin_claro' "
         "AND conrelid='webhook_subscription'::regclass"
     )
-    assert not await c.fetchval(q)
-    assert await cifrar.cifrar_tenant(c, schema=schema) == (0, 0)
     assert await c.fetchval(q)
+    assert await cifrar.cifrar_tenant(c, schema=schema) == (0, 0)

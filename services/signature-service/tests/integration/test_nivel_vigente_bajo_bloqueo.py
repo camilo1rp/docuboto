@@ -31,7 +31,7 @@ import pytest
 
 from signature.core.database import _schema as tenant_schema
 from signature.repositories.cadena_repository import CadenaRepository
-from tests.integration.conftest import _require_dsn
+from tests.integration.conftest import _require_dsn, insert_radicado
 
 pytestmark = pytest.mark.asyncio
 
@@ -39,15 +39,7 @@ pytestmark = pytest.mark.asyncio
 async def _montar(tenant_ctx, *, copia: int, vivo: int, tipo: str = "radicado"):
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    await conn.execute(
-        "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "tracking_number text, nivel_seguridad int NOT NULL)"
-    )
-    rid = await conn.fetchval(
-        "INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ('R-1', $1) "
-        "RETURNING id",
-        vivo,
-    )
+    rid = await insert_radicado(conn, "R-1", vivo)
     sol_id = await conn.fetchval(
         "INSERT INTO firma_solicitud (objeto_tipo, objeto_id, creado_por, nivel_seguridad) "
         "VALUES ($1, $2, $3, $4) RETURNING id",

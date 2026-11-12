@@ -104,7 +104,7 @@ class ImportRepository:
             "UPDATE radicados SET responde_a = $2 WHERE id = $1", radicado_id, antecedente_id
         )
 
-    # --- cola de purga de binarios huérfanos (migración 038, AREA-09-14) ----------
+    # --- cola de purga de binarios huérfanos (AREA-09-14) ----------
 
     async def registrar_huerfanos(
         self,

@@ -11,7 +11,7 @@
 """Catálogo cerrado de causales de reserva (C12, ADR-039): la regla, y que no diverja.
 
 El catálogo vive en TRES sitios que deben decir lo mismo: la constante `CAUSALES`, el
-CHECK de la migración 050 (y el de la tabla de solicitudes) y el `enum` de la tool MCP.
+CHECK `radicados_causal_catalogo` (y el de la tabla de solicitudes) y el `enum` de la tool MCP.
 Este guardián ata los dos primeros (el tercero lo ata
 `shared/tests/test_causales_reserva_una_sola_lista.py`, que ve ambos servicios).
 """
@@ -27,8 +27,10 @@ import pytest
 from document.core import causales_reserva as cr
 from tests.conftest import TENANT_HEADERS
 
+# La cadena única de migraciones (ADR-053); `radicados` y su tabla de solicitudes
+# de reclasificación viven en un solo archivo.
 _SQL = (
-    Path(__file__).parents[1] / "migrations" / "tenant" / "050_reserva_catalogo_y_desclasificacion.sql"
+    Path(__file__).parents[2] / "docuboto" / "migrations" / "tenant" / "210_radicados.sql"
 ).read_text()
 
 
@@ -36,9 +38,10 @@ def _codigos(texto: str, prefijo: str) -> set[str]:
     return set(re.findall(rf"'({prefijo}_[a-z_]+)'", texto))
 
 
-def _bloque(inicio: str, fin: str) -> str:
-    i = _SQL.index(inicio)
-    return _SQL[i : _SQL.index(fin, i)]
+def _restriccion(nombre: str) -> str:
+    """El texto de la restricción *nombre*: pg_dump la escribe en UNA línea."""
+    (linea,) = re.findall(rf"^\s*CONSTRAINT {nombre} CHECK .*$", _SQL, flags=re.MULTILINE)
+    return linea
 
 
 def test_la_constante_y_el_literal_dicen_lo_mismo() -> None:
@@ -47,31 +50,32 @@ def test_la_constante_y_el_literal_dicen_lo_mismo() -> None:
 
 
 def test_el_check_de_radicados_lista_exactamente_el_catalogo() -> None:
-    check = _bloque("ADD CONSTRAINT radicados_causal_catalogo", "NOT VALID")
+    check = _restriccion("radicados_causal_catalogo")
     assert _codigos(check, "art18") == {c for c in cr.CAUSALES if c.startswith("art18")}
     assert _codigos(check, "art19") == {c for c in cr.CAUSALES if c.startswith("art19")}
     assert f"'{cr.POR_CLASIFICAR}'" in check
 
 
-def test_el_backfill_de_la_migracion_usa_el_mismo_catalogo() -> None:
-    sentencia = _bloque("SET clasificacion_causal = 'por_clasificar'", "-- 2) CHECK")
-    assert _codigos(sentencia, "art18") | _codigos(sentencia, "art19") == set(cr.CAUSALES)
-
-
 def test_la_tabla_de_solicitudes_admite_solo_causales_art19_como_destino() -> None:
-    destino = _bloque("CONSTRAINT rs_causal_destino", "CONSTRAINT rs_resuelta_forma")
+    destino = _restriccion("rs_causal_destino")
     assert _codigos(destino, "art19") == {c for c in cr.CAUSALES if c.startswith("art19")}
     assert not _codigos(destino, "art18"), "bajar a nivel 2 no se motiva con el art. 18"
 
 
 def test_el_umbral_de_doble_firma_es_el_mismo_en_codigo_tabla_y_trigger() -> None:
     assert cr.NIVEL_DOBLE_FIRMA == 3
-    assert f"CHECK (nivel_anterior = {cr.NIVEL_DOBLE_FIRMA})" in _SQL
+    assert f"CHECK ((nivel_anterior = {cr.NIVEL_DOBLE_FIRMA}))" in _SQL
     assert f"OLD.nivel_seguridad >= {cr.NIVEL_DOBLE_FIRMA}" in _SQL
 
 
 def test_el_plazo_maximo_del_codigo_es_el_del_check() -> None:
-    assert f"BETWEEN 1 AND {cr.PLAZO_MAX_MESES}" in _SQL
+    for restriccion, columna in (
+        ("radicados_causal_catalogo", "clasificacion_plazo_meses"),
+        ("rs_causal_destino", "plazo_meses"),
+    ):
+        assert (
+            f"(({columna} >= 1) AND ({columna} <= {cr.PLAZO_MAX_MESES}))" in _restriccion(restriccion)
+        )
 
 
 def test_cada_causal_es_coherente_con_su_nivel() -> None:
@@ -176,9 +180,6 @@ def test_una_frase_libre_no_es_una_cita_normativa(cita: str) -> None:
 
 
 def test_la_cita_del_codigo_y_la_del_check_son_la_misma() -> None:
-    import pathlib
-
     from document.core.causales_reserva import CITA_NORMA_PATRON
 
-    sql = (pathlib.Path(__file__).parents[1] / "migrations/tenant/051_reserva_tope_y_norma.sql").read_text()
-    assert f"'{CITA_NORMA_PATRON}'" in sql
+    assert f"'{CITA_NORMA_PATRON}'" in _restriccion("radicados_norma_controlada")

@@ -123,17 +123,18 @@ def test_el_runtime_de_produccion_no_lleva_el_propietario_en_el_entorno() -> Non
     """Hallazgo T14: `MIGRATIONS_DATABASE_URL` (propietario) seguía en el entorno de
     los servicios EN EJECUCIÓN. Un RCE o un volcado del entorno de cualquiera que el
     gateway alcance entregaba el rol que puede `ALTER TABLE public.audit_log DISABLE
-    TRIGGER`. Solo los contenedores `migrate-<svc>` (un solo uso) la llevan."""
+    TRIGGER`. Solo el contenedor `migrate-docuboto` (un solo uso, ADR-053) la lleva."""
     compose = REPO / "infra" / "docker-compose.prod.yml"
     mig = _migrates_prod(compose)
-    assert len(mig) >= 9, f"solo {sorted(mig)}: guardián ciego (¿cambió el parseo?)"
     runtime = {s: u for s, u in mig.items() if not s.startswith("migrate-")}
     assert not runtime, (
         "servicios que SIRVEN con el propietario en el entorno (quitar "
-        f"MIGRATIONS_DATABASE_URL, déjala solo en migrate-<svc>): {sorted(runtime)}"
+        f"MIGRATIONS_DATABASE_URL, déjala solo en migrate-docuboto): {sorted(runtime)}"
     )
     # Control positivo: el migrador SÍ la lleva (si no, el runner no podría hacer DDL).
-    assert "migrate-tenant" in mig and "DB_APP_USER" not in mig["migrate-tenant"]
+    # Es también el control contra un parseo ciego: sin él, `runtime` vacío no probaría nada.
+    assert sorted(mig) == ["migrate-docuboto"], sorted(mig)
+    assert "DB_APP_USER" not in mig["migrate-docuboto"]
     # El propio tenant-service (enrutado por el gateway) no la lleva.
     assert "MIGRATIONS_DATABASE_URL" not in _bloque_de_servicio(compose, "tenant-service")
 
@@ -145,7 +146,7 @@ def _migrates_prod(compose: Path) -> dict[str, str]:
 def test_el_dev_conserva_el_propietario_para_el_runner_de_tenant() -> None:
     """En desarrollo la variable sigue viviendo en el servicio (decisión de dev, no de prod).
 
-    Desde C19 (ADR-041) dev SÍ tiene `migrate-<svc>`, así que ya no es por el runner: la
+    Dev SÍ tiene su migrador (`migrate-docuboto`), así que ya no es por el runner: la
     razón vigente es que `scripts/init-tenant.sh` hace `docker compose exec` dentro del
     servicio y los conftest de integración la leen. Quitarla de dev los rompe."""
     mig = _migrations_url(REPO / "docker-compose.yml")

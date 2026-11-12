@@ -24,7 +24,7 @@ the others' registry; critical finding, 2026-07). It is done by `scripts/init_te
 This:
 1. Validates the slug (`^[a-z0-9-]+$`: lowercase, digits and **hyphen**, no underscore) and registers it in `public.tenants`
 2. Creates the `tenant_gobernacion_caldas` schema (the hyphen becomes an underscore) and the application role's `GRANT USAGE`
-3. Applies each service's numbered `.sql` migrations (`migrations/global/` and `migrations/tenant/`) through `migrations/runner.py` and the single `public.schema_migrations` ledger
+3. Applies the migration chain in `services/docuboto/migrations/` (`global/` to `public`, `tenant/` to the new schema) and records it in the `public.schema_migrations` ledger (ADR-053)
 4. Moves the institution from `provisioning_status='pending'` to `active`
 
 tenant-service's `POST /tenants` (internal, no gateway route) only registers the `pending` row and writes

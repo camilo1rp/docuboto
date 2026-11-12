@@ -69,7 +69,7 @@ async def _build_summary(
 
 # `SGD_PERM_ESTADISTICA` era un control que vivía SOLO en el navegador.
 #
-# El permiso está sembrado desde la migración 004 y la interfaz lo honra: el
+# El permiso está sembrado en `tenant/020_auth_groups.sql` y la interfaz lo honra: el
 # menú «Reportes» y la sección de métricas del panel se muestran solo a quien lo
 # tiene (`SidebarNav`). Pero estos dos endpoints no lo exigían, así que cualquier
 # autenticado de la entidad podía pedirlos directamente. Una entidad que lo

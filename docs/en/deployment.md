@@ -495,13 +495,13 @@ The identity the gateway signs for each service is **single-use**: it carries a 
 
 - **Redis is a hard dependency of every request carrying a person identity.** With Redis down those requests answer `503 identidad_no_verificable` (`Retry-After: 1`); the public window, `/health`, public webhooks and internal calls without `X-User-Id` stay up. **`storage-service` now needs `REDIS_URL` too** (and `depends_on: redis`); all ten components holding `IDENTITY_SIGNING_SECRET` need it. A service with the secret and no `REDIS_URL` **refuses to start** (`lifespan.startup.failed`). Do not set `maxmemory-policy allkeys-*` on that Redis: it could evict a nonce and reopen replay (the default, `noeviction`, is correct). In production keep `--appendonly yes`; without it a Redis restart forgets up to 180 s of nonces.
 - **Atomic cut-over.** Going from v2 to v3 changes the HMAC base and there is no compatibility branch: rebuild and start the gateway and the nine services **at the same time** (`docker compose up -d --build api-gateway auth-service tenant-service document-service archive-service storage-service workflow-service notification-service signature-service knowledge-service`). If versions coexist, every authenticated request answers 401.
-- **`search_path` = the tenant only.** This change does **not** need an atomic cut-over: apply the migrations (`migrate-<service>`), then rebuild the services. The `pg_trgm`, `unaccent`, `pgcrypto` and `vector` extensions **must live in `public`**; global migrations `document/005` and `knowledge/002` abort with a clear message otherwise. Migration `tenant-service/global/005` removes the 14 tenant tables that had landed in `public`.
+- **`search_path` = the tenant only.** This change does **not** need an atomic cut-over: apply the migrations (`migrate-docuboto`), then rebuild the services. The `pg_trgm`, `unaccent`, `pgcrypto` and `vector` extensions **must live in `public`**; global migrations `document/005` and `knowledge/002` abort with a clear message otherwise. Migration `tenant-service/global/005` removes the 14 tenant tables that had landed in `public`.
 - Check on the stack: an authenticated GET through the gateway answers 200; the same request replayed straight at the service with the captured headers, 401; with `docker compose stop redis`, the authenticated GET answers 503 while `/health` and a public route answer 200.
 
 ### Option 2: Kubernetes (not supported yet)
 
 **The repository ships no Kubernetes manifests or Helm charts** (no `Chart.yaml`, no
-`kustomization`), and automatic conversion from Compose has not been tested: the `migrate-<service>`
+`kustomization`), and automatic conversion from Compose has not been tested: the `migrate-docuboto`
 containers, the `service_completed_successfully` dependencies and file-based secrets do not translate
 by themselves. The supported route is Docker Compose (Option 1) or Swarm. If you scale replicas on any
 orchestrator, **review the in-memory state first**: the api-gateway limiter counts in Redis, but the
@@ -676,34 +676,38 @@ docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.ym
 
 ### Migrations on startup
 
-Every service with a database waits for its `migrate-<service>` (`auth`, `tenant`,
-`document`, `storage`, `workflow`, `archive`, `notification`, `signature`, `knowledge`): a
-one-shot container that runs `migrations/runner.py` with the owner connection on the
-**same immutable image** that is going to serve, and the service only starts if it
-finished successfully (`service_completed_successfully`). If a migration fails, the new
-version does not serve against a schema that is not its own.
+Every service with a database waits for `migrate-docuboto`: a one-shot container that
+runs `migrations/runner.py` with the owner connection on the `app` image. The service only
+starts if the migrator finished successfully (`service_completed_successfully`). If a
+migration fails, the new version doesn't serve against a schema that isn't its own.
 
-**The lock (ADR-041).** The nine `migrate-*` containers — and `scripts/init_tenant.py` — are serialized by **one
+**One chain (ADR-053).** The migrations live in `services/docuboto/migrations/`: `global/`
+goes to `public` and `tenant/` goes to every `tenant_*` schema. Each file is named after
+what it creates (`210_radicados.sql`, `510_expedientes.sql`), runs in its own transaction,
+and is recorded in `public.schema_migrations` under the key `(schema_name, filename)`. The
+chains each service had before ADR-053 are archived, not executable, in
+`docs/es/historia/esquema/`.
+
+**The lock (ADR-041).** The migrator and `scripts/init_tenant.py` are serialized by **one
 global lock** (`orpycamcp_common.migrations.cerrojo`, `pg_try_advisory_lock` on a fixed constant, visible in
-`pg_locks`). Whoever does not get it retries every half second up to `MIGRATIONS_LOCK_TIMEOUT_S` (600 s by
-default); when the deadline passes it exits with a readable error ("another migration has held the lock for N s
-(pid …)"), `service_completed_successfully` is not met and **the service does not start**. Until C19 this text
-claimed a `pg_advisory_lock` that the code did not have. Global migrations run in a transaction (a mid-way failure no
-longer leaves DDL without a ledger entry). Repeating `up -d` or scaling replicas is safe. Step 4 below remains valid
-to run them by hand **before** starting (e.g. to watch their output).
+`pg_locks`). Whoever doesn't get it retries every half second up to `MIGRATIONS_LOCK_TIMEOUT_S` (600 s by
+default). When the deadline passes, it exits with a readable error ("another migration has held the lock for N s
+(pid …)"), `service_completed_successfully` isn't met, and **the service doesn't start**. Repeating `up -d` or
+scaling replicas is safe. Step 4 below remains valid to run the migrations by hand **before** starting, for
+example to watch their output.
 
-**Development.** `docker-compose.yml` does the same: `docker compose up -d --build` builds the images, runs the nine
-`migrate-<svc>` containers and only then starts each service. Each service carries
-`image: orpycamcp/<svc>-service:dev` and the migrator reuses it (`pull_policy: never`, no `build:` of its own). To
-recreate **one** service with a new image (the `--no-deps` form skips the migrator on purpose):
+**Development.** `docker-compose.yml` does the same: `docker compose up -d --build` builds the images, runs
+`migrate-docuboto`, and only then starts each service. The migrator reuses the `orpycamcp/app:dev` image
+(`pull_policy: never`, no `build:` of its own). To recreate **one** service with a new image (the `--no-deps`
+form skips the migrator on purpose):
 
 ```bash
-docker compose build <svc>-service \
-  && docker compose run --rm --no-deps migrate-<svc> \
+docker compose build app <svc>-service \
+  && docker compose run --rm --no-deps migrate-docuboto \
   && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose up -d --no-build --no-deps <svc>-service
 ```
 
-If the migrator fails, the `&&` does not recreate the service. Recreating with the **same** image
+If the migrator fails, the `&&` doesn't recreate the service. Recreating with the **same** image
 (`up -d --no-build --no-deps <svc>-service`) needs no migration: the migrator already applied it.
 
 ### Procedure
@@ -720,15 +724,12 @@ export ORPYCA_REGISTRY=<registry/project>   # e.g. registry.gitlab.com/group/orp
 export ORPYCA_TAG=<commit-sha>
 docker compose -f infra/docker-compose.prod.yml pull
 
-# 4. Migrations. Each service applies its own, and the runner walks EVERY
+# 4. Migrations. The runner applies the chain to `public` and walks EVERY
 #    tenant_* schema it finds, so a newly provisioned tenant is not left behind.
-#    They are idempotent by convention (ADR-012): re-running them is safe.
-#    NOTE: it is `python migrations/runner.py`, a script — NOT
-#    `python -m app.migrations.runner`, which is a module that does not exist.
-for svc in auth tenant document archive storage workflow notification signature knowledge; do
-  docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-    "${svc}-service" python migrations/runner.py
-done
+#    What is already applied is skipped: re-running is safe.
+#    Run them with the `migrate-docuboto` container, the only one that carries
+#    the OWNER connection.
+docker compose -f infra/docker-compose.prod.yml run --rm --no-deps migrate-docuboto
 
 # 5. Deploy.
 docker compose -f infra/docker-compose.prod.yml up -d

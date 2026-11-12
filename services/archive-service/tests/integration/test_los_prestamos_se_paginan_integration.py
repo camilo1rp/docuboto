@@ -31,7 +31,6 @@ import pytest
 from archive.core.database import tenant_schema
 from archive.repositories.fisico_repository import FisicoRepository
 
-from ._auth_minimo import crear_tablas_auth
 
 pytestmark = pytest.mark.integration
 
@@ -42,7 +41,6 @@ async def _en_tenant(tenant_ctx) -> tuple[str, asyncpg.Connection]:
     inventado — con un slug cualquiera apunta a un schema que no existe."""
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
-    await crear_tablas_auth(conn, slug)  # `list_prestamos` une `auth_users` (la crea auth-service)
     return slug, conn
 
 

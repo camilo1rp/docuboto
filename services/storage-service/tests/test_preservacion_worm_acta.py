@@ -445,48 +445,34 @@ async def test_proteger_indice_internal_alias_forces_tipo_indice_even_if_body_de
 
 
 # ---------------------------------------------------------------------------
-# Migración 010 (CHECK constraint ampliado + índice único parcial del acta)
-# -- chequeo ESTÁTICO del SQL, mismo patrón que
-# `test_aip_pdfa.py::test_migration_008_check_constraint_admits_no_evaluado`:
-# storage-service no tiene tier de integración contra Postgres real (el run
-# mandatado usa `--no-deps`), así que esto es lo más cerca que este
-# repositorio llega de validar la migración sin levantar infraestructura
-# nueva. Ver el hueco de cobertura declarado en el informe de esta tarea.
+# CHECK de `tipo` + índice único parcial del acta -- chequeo ESTÁTICO del SQL
+# de la cadena única (ADR-053), mismo patrón que
+# `test_aip_pdfa.py::test_preservacion_evento_check_constraint_admits_no_evaluado`
+# (el carril unit corre con `--no-deps`, sin Postgres).
 # ---------------------------------------------------------------------------
 
-_MIGRATION_010_PATH = (
-    Path(__file__).resolve().parent.parent / "migrations" / "tenant" / "010_preservacion_worm_acta.sql"
+_PRESERVACION_SQL_PATH = (
+    Path(__file__).resolve().parents[2] / "docuboto" / "migrations" / "tenant" / "320_preservacion.sql"
 )
 
 
-def test_migration_010_check_constraint_admits_acta_transferencia() -> None:
-    sql = _MIGRATION_010_PATH.read_text(encoding="utf-8")
+def test_schema_check_constraint_admits_acta_transferencia() -> None:
+    sql = _PRESERVACION_SQL_PATH.read_text(encoding="utf-8")
 
-    check_match = re.search(r"CHECK\s*\(tipo IN \(([^)]+)\)\)", sql)
-    assert check_match, "no se encontró el CHECK constraint de tipo en la migración 010"
-    allowed_values = {v.strip().strip("'") for v in check_match.group(1).split(",")}
-    assert allowed_values == {"indice", "aip", "acta_transferencia"}
+    check_match = re.search(
+        r"CONSTRAINT preservacion_worm_objeto_tipo_check CHECK \(\(tipo = ANY \(ARRAY\[([^\]]+)\]\)\)\)", sql
+    )
+    assert check_match, "no se encontró el CHECK constraint de tipo en 320_preservacion.sql"
+    allowed_values = set(re.findall(r"'([^']+)'::text", check_match.group(1)))
+    # El conjunto exacto lo ata `test_preservacion_tipos_guard`.
+    assert {"indice", "aip", "acta_transferencia"} <= allowed_values
 
     # Índice único parcial de idempotencia del acta -- espejo EXACTO del
-    # índice (migración 009).
-    assert "ux_preservacion_worm_objeto_expediente_acta" in sql
-    assert "WHERE tipo = 'acta_transferencia'" in sql
-
-
-def test_migration_010_ddl_is_idempotent_by_construction() -> None:
-    """La migración es segura de re-ejecutar sobre un schema ya migrado:
-    `DROP CONSTRAINT IF EXISTS` + `ADD CONSTRAINT` (el CHECK en sí no admite
-    `IF NOT EXISTS`, de ahí el drop-then-add) y `CREATE ... INDEX IF NOT
-    EXISTS` -- ninguna sentencia asume estado previo sin comprobarlo."""
-    sql = _MIGRATION_010_PATH.read_text(encoding="utf-8")
-
-    assert "DROP CONSTRAINT IF EXISTS preservacion_worm_objeto_tipo_check" in sql
-    assert "ADD CONSTRAINT preservacion_worm_objeto_tipo_check" in sql
-    assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_preservacion_worm_objeto_expediente_acta" in sql
-    # Ninguna sentencia `CREATE TABLE`/`DROP TABLE` -- puramente aditiva
-    # sobre la tabla ya provista por la migración 006.
-    assert "CREATE TABLE" not in sql
-    assert "DROP TABLE" not in sql
+    # del índice (`ux_preservacion_worm_objeto_expediente_indice`).
+    assert (
+        "CREATE UNIQUE INDEX ux_preservacion_worm_objeto_expediente_acta ON preservacion_worm_objeto "
+        "USING btree (expediente_id) WHERE (tipo = 'acta_transferencia'::text);"
+    ) in sql
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +516,7 @@ async def test_proteger_artefacto_firma_personal_por_rol(client_with_conn, tipo:
 
 def test_las_firmas_personales_son_instrumentos_de_control_y_estan_en_la_migracion() -> None:
     """No postergan la disposición del contenido (como el acta que firman) y el CHECK de la
-    migración 018 los admite: el guard `test_preservacion_tipos_guard` ata las dos listas."""
+    esquema los admite: el guard `test_preservacion_tipos_guard` ata las dos listas."""
     from storage.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
 
     for t in ("acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"):

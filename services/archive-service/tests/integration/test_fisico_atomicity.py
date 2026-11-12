@@ -48,7 +48,6 @@ from archive.schemas.fisico import (
 )
 from archive.services.fisico_service import FisicoService
 
-from ._auth_minimo import crear_tablas_auth
 
 pytestmark = pytest.mark.integration
 
@@ -86,7 +85,6 @@ async def _asientos(conn: asyncpg.Connection, slug: str, accion: str) -> int:
 
 
 async def _con_unidad(ctx: Contexto) -> None:
-    await crear_tablas_auth(ctx.conn, ctx.slug)  # el INSERT del préstamo las lee (C11)
     ub = await ctx.servicio.create_ubicacion(
         UbicacionCreate(nivel="deposito", codigo="DEP-1", nombre="Depósito 1"), actor=ACTOR
     )

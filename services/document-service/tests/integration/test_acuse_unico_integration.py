@@ -7,11 +7,11 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""El acuse de recibo es de UN solo envío: guarda de motor (B2, ADR-031, migración 045).
+"""El acuse de recibo es de UN solo envío: guarda de motor (B2, ADR-031).
 
 Contra Postgres REAL: el servicio rechaza un acuse ya referenciado, pero la carrera
 entre dos registros simultáneos que pasan el cotejo a la vez solo la cierra el índice
-único parcial. Mutación verificada: quitar el índice de la 045 → el segundo UPDATE pasa.
+único parcial. Mutación verificada: quitar el índice `postal_shipment_acuse_file_id_uq` → el segundo UPDATE pasa.
 """
 
 from __future__ import annotations
@@ -84,26 +84,3 @@ async def test_envios_sin_acuse_no_chocan_entre_si(
     assert await conn.fetchval(
         "SELECT count(*) FROM postal_shipment WHERE acuse_file_id IS NULL"
     ) == 2
-
-
-@pytest.mark.asyncio
-async def test_la_045_aborta_si_ya_hay_acuses_repetidos(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    """Datos previos a la guarda: no se escoge cuál conservar, se corta y se dice."""
-    from pathlib import Path
-
-    slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    a, b = await _envio(conn, 1), await _envio(conn, 2)
-    acuse = uuid.uuid4()
-    await conn.execute("DROP INDEX IF EXISTS postal_shipment_acuse_file_id_uq")
-    await conn.execute(
-        "UPDATE postal_shipment SET acuse_file_id = $1 WHERE id = ANY($2::uuid[])",
-        acuse, [a["id"], b["id"]],
-    )
-    sql = (
-        Path(__file__).resolve().parents[2] / "migrations" / "tenant" / "045_acuse_unico.sql"
-    ).read_text(encoding="utf-8")
-    with pytest.raises(asyncpg.RaiseError, match=str(acuse)):
-        await conn.execute(sql)

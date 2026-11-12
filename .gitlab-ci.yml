@@ -208,20 +208,12 @@ test-integration:
     - pip install --quiet -r "services/$SERVICE/requirements.lock"
   script:
     - cd "services/$SERVICE"
-    # Las migraciones GLOBALES primero. El conftest de integración provisiona
-    # schemas de tenant desechables, pero da por hechas las de `public` — que en
-    # una máquina de desarrollo ya corrieron alguna vez y en un Postgres recién
-    # creado no. Sin esto, la provisión muere con
-    # «operator class "gin_trgm_ops" does not exist»: la extensión `pg_trgm` la
-    # crea `migrations/global/001_extensions.sql` de document-service.
-    #
-    # Antes de la propia, las migraciones GLOBALES REALES de auth-service (dueño
-    # de `public.audit_log`, 002-008): así los conftest de integración entran por
-    # su rama de VERIFICACIÓN y los tests ejercen los triggers append-only de
-    # producción —incluido el de sentencia de 004— y no una copia propia del
-    # conftest (AREA-03-05; con `CI` definido, esa copia es un fallo).
-    - '[ "$SERVICE" = "auth-service" ] || python ../auth-service/migrations/runner.py'
-    - python migrations/runner.py
+    # La cadena única primero (ADR-053). El conftest de integración provisiona
+    # schemas de tenant desechables con `orpycamcp_common.migrations.apply_chain`,
+    # pero da por hechas las migraciones de `public`: extensiones, rol de
+    # aplicación y `public.audit_log` con sus guardianes de solo-anexar, que los
+    # tests ejercen tal como van a producción y no en una copia del conftest.
+    - python ../docuboto/migrations/runner.py
     # SIN `-m integration`: la convención de marcado NO es uniforme entre
     # servicios. archive-service marca `pytest.mark.integration`; auth-service
     # gatea con `skipif(not RUN_INTEGRATION)` y no lleva esa marca, así que

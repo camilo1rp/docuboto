@@ -12,7 +12,7 @@
 La autorización que da quien radica por la ventanilla pública (Ley 1581/2012
 art. 12) solo es informada si se le mostró el aviso de privacidad de ESTA
 entidad (DUR 1074/2015 art. 2.2.2.25.3.2). La política vive en los parámetros de
-la entidad (`sgd_param_admin`, sembrados por la migración 012 de tenant-service),
+la entidad (`sgd_param_admin`, sembrados por `tenant/120_sgd_param_admin.sql`),
 la sirve este servicio y el servidor la relee al radicar: la versión, la URL y la
 huella de la constancia las pone el servidor, nunca el cliente.
 """

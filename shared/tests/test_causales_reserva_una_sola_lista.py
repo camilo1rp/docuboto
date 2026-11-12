@@ -11,7 +11,8 @@
 """El catálogo de causales de reserva vive en TRES sitios: que digan lo mismo (C12, ADR-039).
 
 La lista cerrada de la Ley 1712/2014 arts. 18-19 está en `document-service`
-(`app/core/causales_reserva.py`, que manda), en el CHECK de su migración 050 y en el `enum`
+(`app/core/causales_reserva.py`, que manda), en el CHECK `radicados_causal_catalogo` de la
+tabla `radicados` y en el `enum`
 de la tool MCP `reclasificar_radicado`. Una lista de admisión que crece aparte de quien la
 consume acaba cubriendo lo que alguien recordó: aquí se compara, desde fuera de los dos
 servicios, que no diverjan. (Los dos primeros ya se comparan dentro de document-service; este
@@ -25,14 +26,15 @@ from pathlib import Path
 
 import pytest
 
+from tests._chain import create_table
+
 _RAIZ = Path(__file__).resolve().parents[2]
 _DOC = _RAIZ / "services" / "document-service"
 _CATALOGO_MCP = _RAIZ / "services" / "mcp-server" / "app" / "tools" / "catalog.py"
-_SQL = _DOC / "migrations" / "tenant" / "050_reserva_catalogo_y_desclasificacion.sql"
 _CAUSALES_PY = _DOC / "document" / "core" / "causales_reserva.py"
 
 pytestmark = pytest.mark.skipif(
-    not (_SQL.is_file() and _CATALOGO_MCP.is_file() and _CAUSALES_PY.is_file()),
+    not (_CATALOGO_MCP.is_file() and _CAUSALES_PY.is_file()),
     reason="el árbol de los servicios no está montado",
 )
 
@@ -61,14 +63,18 @@ def _enum_mcp() -> set[str]:
 
 
 def _check_sql() -> set[str]:
-    texto = _SQL.read_text()
-    i = texto.index("ADD CONSTRAINT radicados_causal_catalogo")
-    return set(re.findall(r"'((?:art18|art19)_[a-z_]+)'", texto[i : texto.index("NOT VALID", i)]))
+    lineas = [
+        linea
+        for linea in create_table("radicados").splitlines()
+        if linea.strip().startswith("CONSTRAINT radicados_causal_catalogo CHECK")
+    ]
+    assert len(lineas) == 1, "radicados sin el CHECK radicados_causal_catalogo"
+    return set(re.findall(r"'((?:art18|art19)_[a-z_]+)'", lineas[0]))
 
 
 def test_codigo_check_y_enum_mcp_listan_las_mismas_causales() -> None:
     py, _ = _constante_python()
-    assert py == _check_sql(), "la constante de Python y el CHECK de la migración 050 divergen"
+    assert py == _check_sql(), "la constante de Python y el CHECK de `radicados` divergen"
     assert py == _enum_mcp(), "la constante de Python y el enum de la tool MCP divergen"
 
 

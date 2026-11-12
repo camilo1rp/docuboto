@@ -19,6 +19,7 @@ admitida reabre el buzón. Se compara en las dos direcciones, leyendo el fuente.
 
 from __future__ import annotations
 
+from tests._chain import CHAIN, seed_rows
 from tests._compose import glob_src
 
 import ast
@@ -28,7 +29,7 @@ from pathlib import Path
 import pytest
 
 RAIZ = Path(__file__).resolve().parents[2]
-MIGRACIONES = RAIZ / "services" / "tenant-service" / "migrations" / "tenant"
+MIGRACIONES = CHAIN / "tenant"
 ROUTER = RAIZ / "services" / "tenant-service" / "tenant" / "routers" / "config.py"
 
 _necesita_arbol = pytest.mark.skipif(
@@ -56,14 +57,7 @@ def _inertes() -> set[str]:
 
 
 def _sembradas() -> set[str]:
-    claves: set[str] = set()
-    for f in sorted(MIGRACIONES.glob("*.sql")):
-        sql = f.read_text(encoding="utf-8")
-        for bloque in re.finditer(
-            r"INSERT INTO sgd_param_admin[^;]*?;", sql, re.IGNORECASE | re.DOTALL
-        ):
-            claves.update(re.findall(r"\(\s*'([a-z][a-z0-9_]*)'\s*,", bloque.group(0)))
-    return claves
+    return set(re.findall(r"\(\s*'([a-z][a-z0-9_]*)'\s*,", seed_rows("sgd_param_admin")))
 
 
 @_necesita_arbol

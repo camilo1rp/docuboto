@@ -248,7 +248,7 @@ async def me(
     mínimo (``require_permission(name, min_crud=...)``, RF-SEG-03). Por eso se
     añade ``permission_levels: dict[str, int]`` (mismas claves, nivel 0-5):
     0=Ninguno 1=Leer 2=Editar 3=Crear/Borrar 4=Nivel_1 5=Nivel_2
-    (``migrations/tenant/001_rbac.sql``). ROOT resuelve ``USUA_PERM_ROOT: 5``.
+    (``services/docuboto/migrations/tenant/020_auth_groups.sql``). ROOT resuelve ``USUA_PERM_ROOT: 5``.
 
     Fail-closed en ambos campos: sin contexto de tenant o con usuario no
     aprovisionado, ambos quedan vacíos (nunca ausentes ni null) — un consumidor

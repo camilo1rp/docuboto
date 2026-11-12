@@ -60,6 +60,18 @@ async def _en(conn: asyncpg.Connection, slug: str) -> None:
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
+async def _inyectar_ciclo(conn: asyncpg.Connection) -> None:
+    """100 -> 120 -> 100 saltándose la prevención (`trg_dependencias_sin_ciclos`), como lo
+    haría un UPDATE a mano o un dato heredado: el cuadro debe DETECTARLO igual. El trigger
+    se deshabilita solo para esta sentencia, en el schema desechable del test."""
+    async with conn.transaction():
+        await conn.execute("ALTER TABLE dependencias DISABLE TRIGGER trg_dependencias_sin_ciclos")
+        await conn.execute(
+            "UPDATE dependencias SET parent_id = (SELECT id FROM dependencias WHERE codigo = 120) WHERE codigo = 100"
+        )
+        await conn.execute("ALTER TABLE dependencias ENABLE TRIGGER trg_dependencias_sin_ciclos")
+
+
 async def _serie(archive: ArchiveService, code: str, productoras: list[int] | None = None, **kw):
     return await archive.create_trd_serie(
         TrdSerieCreate(
@@ -421,8 +433,7 @@ async def test_una_productora_inactiva_no_se_hereda_en_silencio(tenant_con_organ
 
 @pytest.mark.asyncio
 async def test_un_ciclo_inyectado_es_409_no_un_cuadro_incompleto(tenant_con_organigrama) -> None:
-    """El stub de este tier NO lleva el trigger anticiclos de la 015 (a propósito): se inyecta
-    A -> B -> A y el cuadro debe DETECTARLO. Control positivo: sin el ciclo, 200.
+    """Se inyecta A -> B -> A saltándose el trigger anticiclos y el cuadro debe DETECTARLO. Control positivo: sin el ciclo, 200.
 
     Mutación: quitar `CYCLE id SET es_ciclo USING ruta` de la CTE cambia el desenlace (el tope
     de profundidad lo atrapa como otra cosa, `organigrama_demasiado_profundo`) y este test cae."""
@@ -436,9 +447,7 @@ async def test_un_ciclo_inyectado_es_409_no_un_cuadro_incompleto(tenant_con_orga
 
     assert (await archive.get_cuadro_clasificacion()).secciones  # control positivo: sin ciclo, hay cuadro
 
-    await conn.execute(
-        "UPDATE dependencias SET parent_id = (SELECT id FROM dependencias WHERE codigo = 120) WHERE codigo = 100"
-    )  # 100 -> 120 -> 100
+    await _inyectar_ciclo(conn)  # 100 -> 120 -> 100
     with pytest.raises(HTTPException) as exc:
         await archive.get_cuadro_clasificacion()
     assert exc.value.status_code == 409
@@ -454,9 +463,7 @@ async def test_un_ciclo_tambien_impide_convalidar(tenant_con_organigrama) -> Non
     await _serie(archive, code, [120])
     await archive.aprobar_trd_serie_version(code, 1, _ACTA, actor=None)
     await _en(conn, slug)
-    await conn.execute(
-        "UPDATE dependencias SET parent_id = (SELECT id FROM dependencias WHERE codigo = 120) WHERE codigo = 100"
-    )
+    await _inyectar_ciclo(conn)
     with pytest.raises(HTTPException) as exc:
         await archive.convalidar_trd_serie_version(code, 1, _CONV, actor=None)
     assert exc.value.detail["error"] == "organigrama_con_ciclo"
@@ -488,7 +495,9 @@ async def test_el_cuadro_incluye_borradores_y_vacias_solo_si_se_piden(tenant_con
 
 @pytest.mark.asyncio
 async def test_sin_la_tabla_de_dependencias_el_cuadro_es_503(tenant_ctx) -> None:
-    slug, conn = tenant_ctx  # SIN organigrama: la tabla de tenant-service no existe
+    slug, conn = tenant_ctx
+    # El catálogo no se puede leer: se aparta la tabla en el schema desechable del test.
+    await conn.execute(f'ALTER TABLE "{tenant_schema(slug)}".dependencias RENAME TO dependencias_fuera')
     archive = ArchiveService(conn, slug)
     with pytest.raises(HTTPException) as exc:
         await archive.get_cuadro_clasificacion()
@@ -530,16 +539,17 @@ async def test_desmarcar_cuenta_los_radicados_aun_publicados_o_dice_que_no_sabe(
     t = await svc.create(TipoDocumentalCreate(code="RES", nombre="Resolución", publicable=True).model_dump(), actor=None)
     await _en(conn, slug)
 
-    # `radicados` no existe en este schema (es de document-service): «no sé», jamás «cero».
+    # Si `radicados` no se puede leer: «no sé», jamás «cero».
+    await conn.execute("ALTER TABLE radicados RENAME TO radicados_fuera")
     sin_tabla = await svc.update(t.id, {"publicable": False}, actor=None)
     assert sin_tabla.publicados_vigentes is None
+    await conn.execute("ALTER TABLE radicados_fuera RENAME TO radicados")
 
     t = await svc.update(t.id, {"publicable": True}, actor=None)
     await conn.execute(
-        "CREATE TABLE radicados (id SERIAL PRIMARY KEY, doc_class TEXT, publicable BOOLEAN NOT NULL DEFAULT false)"
-    )
-    await conn.execute(
-        "INSERT INTO radicados (doc_class, publicable) VALUES ('RES', true), ('RES', true), ('RES', false), ('OTRO', true)"
+        "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, tenant_code, doc_class, publicable) "
+        "SELECT '2026-ITEST-' || n, '1', 2026, n, 'itest', 'ITEST', c, p "
+        "FROM (VALUES (1, 'RES', true), (2, 'RES', true), (3, 'RES', false), (4, 'OTRO', true)) v(n, c, p)"
     )
     con_tabla = await svc.update(t.id, {"publicable": False}, actor=None)
     assert con_tabla.publicados_vigentes == 2  # solo los de ESTE tipo y publicados
@@ -604,9 +614,7 @@ async def test_si_la_ratificacion_falla_la_productora_declarada_se_revierte(tena
     code = f"RAR{uuid.uuid4().hex[:6]}"
     s = await _migrada_sin_productora(conn, archive, code)
     await _en(conn, slug)
-    await conn.execute(
-        "UPDATE dependencias SET parent_id = (SELECT id FROM dependencias WHERE codigo = 120) WHERE codigo = 100"
-    )
+    await _inyectar_ciclo(conn)
     with pytest.raises(HTTPException) as exc:
         await archive.convalidar_trd_serie_version(
             code, 1, _CONV.model_copy(update={"dependencias_productoras": [120]}), actor=None

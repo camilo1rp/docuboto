@@ -53,7 +53,7 @@ _RAIZ_SHARED = _raiz_con_shared()
 
 # `INSERT INTO auth_permissions (nombre, descripcion) VALUES ('PERM_X', '...')`
 # Escala real de `auth_group_permissions.crud`
-# (auth-service/migrations/tenant/001_rbac.sql):
+# (services/docuboto/migrations/tenant/020_auth_groups.sql):
 # 0=Ninguno 1=Leer 2=Editar 3=Crear/Borrar 4=Nivel_1 5=Nivel_2
 _CRUD_MIN, _CRUD_MAX = 0, 5
 

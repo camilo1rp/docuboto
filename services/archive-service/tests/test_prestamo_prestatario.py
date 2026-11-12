@@ -504,29 +504,43 @@ async def test_transferir_un_expediente_con_unidad_prestada_es_409() -> None:
     await svc._rechazar_si_unidad_prestada(uuid.uuid4())
 
 
-def test_la_migracion_072_declara_las_garantias_del_motor() -> None:
+def test_la_cadena_declara_las_garantias_del_motor_sobre_el_prestamo() -> None:
     """Guardián de texto: cada garantía de C11 que NO es del servicio tiene que seguir
     escrita en el DDL. Quitar cualquiera de estas líneas deja pasar un caso que el
     servicio por sí solo no puede cerrar (otro cliente, un UPDATE a mano)."""
+    import re
     from pathlib import Path
 
-    sql = (
-        Path(__file__).resolve().parents[1] / "migrations/tenant/072_prestamo_prestatario.sql"
-    ).read_text()
+    cadena = Path(__file__).resolve().parents[2] / "docuboto" / "migrations" / "tenant"
+    archivos = sorted(cadena.glob("*.sql"))
+    assert archivos, f"no encuentro la cadena de migraciones en {cadena}"
+    sql = "\n".join(a.read_text(encoding="utf-8") for a in archivos)
     for pieza in (
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_prestamo_unidad_activo",
-        "ON prestamo (unidad_id) WHERE estado = 'prestado'",
-        "ON DELETE RESTRICT",  # la traza no la borra el borrado de la unidad
-        "ck_prestamo_prestatario_forma",
-        "ck_prestamo_devolucion_coherente",
-        "BEFORE UPDATE OR DELETE ON prestamo",
-        "BEFORE TRUNCATE ON prestamo",
-        "BEFORE INSERT OR UPDATE OF estado ON transferencias",
-        "BEFORE DELETE ON expedientes",
-        "pg_advisory_xact_lock",
+        "CREATE UNIQUE INDEX ux_prestamo_unidad_activo ON prestamo USING btree (unidad_id) "
+        "WHERE ((estado)::text = 'prestado'::text);",
+        # la traza no la borra el borrado de la unidad
+        "CONSTRAINT prestamo_unidad_id_fkey FOREIGN KEY (unidad_id) "
+        "REFERENCES unidad_conservacion(id) ON DELETE RESTRICT",
+        "CONSTRAINT ck_prestamo_prestatario_forma CHECK (",
+        "CONSTRAINT ck_prestamo_devolucion_coherente CHECK (",
+        "BEFORE DELETE OR UPDATE ON prestamo FOR EACH ROW",
+        "BEFORE TRUNCATE ON prestamo FOR EACH STATEMENT",
+        "BEFORE INSERT OR UPDATE OF estado ON transferencias FOR EACH ROW",
+        "BEFORE DELETE ON expedientes FOR EACH ROW EXECUTE FUNCTION expediente_guard_unidad_prestada()",
+        "BEFORE INSERT ON prestamo FOR EACH ROW EXECUTE FUNCTION prestamo_guard_insert()",
     ):
         assert pieza in sql, pieza
-    assert "ON DELETE CASCADE" not in sql.split("prestamo_unidad_id_fkey")[1].split(";")[0]
+
+    def cuerpo(funcion: str) -> str:
+        m = re.search(rf"CREATE FUNCTION {funcion}\(.*?\$\$(.*?)\$\$;", sql, re.S)
+        assert m, funcion
+        return m.group(1)
+
+    # el bloqueo por árbol es de transacción, y quien presta lo toma antes de comprobar
+    assert "pg_advisory_xact_lock" in cuerpo("unidad_lock_arbol")
+    guard = cuerpo("prestamo_guard_insert")
+    assert "PERFORM unidad_lock_arbol(NEW.unidad_id)" in guard
+    assert guard.index("unidad_lock_arbol") < guard.index("unidad_con_prestamo_en_arbol")
 
 
 # ---------------------------------------------------------------------------

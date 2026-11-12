@@ -29,6 +29,7 @@ import uuid
 import asyncpg
 import pytest
 
+from tests.integration.conftest import insert_radicado
 from workflow.core.database import tenant_schema
 from workflow.repositories.workflow_repository import WorkflowRepository
 
@@ -36,11 +37,7 @@ pytestmark = pytest.mark.integration
 
 
 async def _radicado(conn: asyncpg.Connection, nivel: int) -> uuid.UUID:
-    return await conn.fetchval(
-        "INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ($1, $2) RETURNING id",
-        f"2026-IT-E-{uuid.uuid4().hex[:6]}",
-        nivel,
-    )
+    return await insert_radicado(conn, f"2026-IT-E-{uuid.uuid4().hex[:6]}", nivel=nivel)
 
 
 async def _paso(conn: asyncpg.Connection, rid: uuid.UUID) -> None:

@@ -23,10 +23,12 @@ from typing import Any
 
 import pytest
 
+from tests._chain import CHAIN, create_table
+
 RAIZ = Path(__file__).resolve().parents[2]
 SCRIPT = RAIZ / "scripts" / "init_tenant.py"
-GLOBAL = RAIZ / "services/tenant-service/migrations/global/006_tenants_intelligence.sql"
-TENANT = RAIZ / "services/knowledge-service/migrations/tenant/016_intelligence.sql"
+TENANT = CHAIN / "tenant" / "800_intelligence_state.sql"
+APP_ROLE = CHAIN / "global" / "020_app_role.sql"
 CONFIG = (RAIZ / "services/auth-service/auth/core/config.py").read_text(encoding="utf-8")
 
 
@@ -364,17 +366,30 @@ async def test_el_error_de_keycloak_no_incluye_el_secreto() -> None:
 
 
 def test_las_migraciones_dejan_local_y_el_libro_solo_acepta_inserciones() -> None:
-    global_sql = GLOBAL.read_text(encoding="utf-8")
+    # El texto es el que imprime pg_dump (ADR-053).
+    global_sql = create_table("tenants", "global")
     tenant_sql = TENANT.read_text(encoding="utf-8")
-    assert "DEFAULT 'local'" in global_sql
-    assert "IN ('local', 'ppi')" in global_sql
-    assert "DEFAULT '{1}'" in global_sql
-    assert "ARRAY[1, 2, 3]" in global_sql
-    assert "intelligence_send_metadata BOOLEAN NOT NULL DEFAULT false" in global_sql
-    assert "BEFORE UPDATE OR DELETE" in tenant_sql
-    assert "BEFORE TRUNCATE" in tenant_sql
-    assert "REVOKE UPDATE, DELETE, TRUNCATE" in tenant_sql
-    assert "'service_client', 'hmac_return', 'pseudonym'" in tenant_sql
+    assert "intelligence_provider text DEFAULT 'local'::text NOT NULL" in global_sql
+    assert "CHECK ((intelligence_provider = ANY (ARRAY['local'::text, 'ppi'::text])))" in global_sql
+    assert "intelligence_levels smallint[] DEFAULT '{1}'::smallint[] NOT NULL" in global_sql
+    assert (
+        "CHECK ((intelligence_levels <@ ARRAY[(1)::smallint, (2)::smallint, (3)::smallint]))"
+        in global_sql
+    )
+    assert "intelligence_send_metadata boolean DEFAULT false NOT NULL" in global_sql
+    assert "BEFORE DELETE OR UPDATE ON intelligence_send_log FOR EACH ROW" in tenant_sql
+    assert "BEFORE TRUNCATE ON intelligence_send_log FOR EACH STATEMENT" in tenant_sql
+    # El rol de aplicación no puede UPDATE/DELETE (se revoca) ni TRUNCATE (nunca se concede:
+    # los privilegios por defecto son solo SELECT, INSERT, UPDATE, DELETE).
+    assert "REVOKE UPDATE, DELETE ON TABLE intelligence_send_log FROM orpycamcp_app;" in tenant_sql
+    app_role = APP_ROLE.read_text(encoding="utf-8")
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO orpycamcp_app" in app_role
+    assert "TRUNCATE" not in app_role and "GRANT ALL" not in app_role
+    assert "GRANT" not in tenant_sql
+    assert (
+        "CHECK ((purpose = ANY (ARRAY['service_client'::text, 'hmac_return'::text, 'pseudonym'::text])))"
+        in tenant_sql
+    )
     assert "send_suspended" in tenant_sql
     assert "backfill_cursor" in tenant_sql
-    assert "secret TEXT" not in tenant_sql
+    assert "secret text" not in tenant_sql

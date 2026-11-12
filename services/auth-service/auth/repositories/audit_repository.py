@@ -9,8 +9,8 @@
 
 """Auditoría de eventos de autenticación.
 
-Desde ADR-010, auth-service NO escribe en su tabla propia (`auth_audit_logs`,
-obsoleta): delega en la librería compartida `orpycamcp_common.audit`, que escribe
+Desde ADR-010, auth-service NO escribe en una tabla propia (la antigua
+`auth_audit_logs` ya no existe): delega en la librería compartida `orpycamcp_common.audit`, que escribe
 en `public.audit_log` (canónico, encadenado por hash — ADR-008).
 
 Se conserva la firma `log(...)` para no alterar los routers; internamente mapea

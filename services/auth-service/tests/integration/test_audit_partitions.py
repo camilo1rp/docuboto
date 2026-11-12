@@ -14,7 +14,7 @@ PostgreSQL con particiones y triggers —dónde aterriza una fila, qué rechaza 
 tabla—, y ninguna de esas dos cosas se puede afirmar con un mock.
 
 El riesgo que cubren estos tests no es que falten particiones: es que **existan
-sin endurecer**. Los guards de inmutabilidad de 003/004 se aplican tabla por
+sin endurecer**. Los guards de inmutabilidad de `global/030_audit_log.sql` se aplican tabla por
 tabla, y una partición recién creada no los hereda. Un job que crease
 particiones mensuales sin llamar a `harden_audit_partition` abriría, mes a mes,
 un agujero en el registro cuya inmutabilidad sostiene el valor probatorio de
@@ -31,7 +31,7 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
-# Hash con la FORMA que exige `chk_audit_log_hash_forma` (migración global 006):
+# Hash con la FORMA que exige `chk_audit_log_hash_forma` (`global/030_audit_log.sql`):
 # SHA-256 en 64 hex. Estos tests insertan por SQL a propósito —comprueban el
 # enrutado a la partición y su inmutabilidad, no el encadenado—, pero un hash de
 # juguete ya no entra, y con razón: escribir basura en el registro legal es
@@ -172,16 +172,14 @@ async def test_la_sonda_marca_degraded_si_falta_el_mes_siguiente_y_ok_al_crearlo
         await tx.rollback()
 
 
-async def test_el_trigger_de_sentencia_de_004_bloquea_incluso_sin_filas(db_conn: asyncpg.Connection):
+async def test_el_trigger_de_sentencia_bloquea_incluso_sin_filas(db_conn: asyncpg.Connection):
     """AREA-03-05. UPDATE/DELETE con 0 filas afectadas NO disparan el trigger de
-    FILA de 002: solo el de SENTENCIA (`trg_audit_log_no_mutation`, migración 004)
-    los rechaza. Con 1 fila, cualquiera de los dos bastaba y ningún test distinguía
-    a 004.
+    FILA (`trg_audit_log_immutable`): solo el de SENTENCIA
+    (`trg_audit_log_no_mutation`) los rechaza. Con 1 fila, cualquiera de los dos
+    bastaba y ningún test los distinguía.
 
-    Mutación: quitar `CREATE TRIGGER trg_audit_log_no_mutation` de 004 -> estas
-    sentencias dejan de fallar y el test cae. Solo es ejercible de verdad cuando el
-    job corre las migraciones REALES de auth-service (el conftest de archive/document
-    ya no crea su copia en CI)."""
+    Mutación: quitar `CREATE TRIGGER trg_audit_log_no_mutation` de
+    `global/030_audit_log.sql` -> estas sentencias dejan de fallar y el test cae."""
     for sentencia in (
         "UPDATE public.audit_log SET action = 'x' WHERE false",
         "DELETE FROM public.audit_log_default WHERE false",

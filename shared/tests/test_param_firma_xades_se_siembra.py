@@ -12,7 +12,7 @@
 Guardián: la política XAdES por entidad se LEE, se SIEMBRA y se VALIDA con el mismo nombre.
 
 signature-service lee `firma_personal_require_xades` de `sgd_param_admin`; la
-clave nace por migración de tenant-service (un parámetro cuyo nombre solo vive
+clave nace sembrada en la cadena de migraciones (un parámetro cuyo nombre solo vive
 en el código no se puede configurar, ver `test_params_entidad_configurables`) y
 tenant-service valida su vocabulario al escribir. Son tres sitios en dos
 servicios: ninguna suite por-servicio los ve juntos.
@@ -24,10 +24,11 @@ import ast
 import re
 from pathlib import Path
 
+from tests._chain import seed_rows
+
 RAIZ = Path(__file__).resolve().parents[2]
 LECTOR = RAIZ / "services" / "signature-service" / "signature" / "core" / "params_entidad.py"
 ESCRITOR = RAIZ / "services" / "tenant-service" / "tenant" / "routers" / "config.py"
-MIGRACION = RAIZ / "services" / "tenant-service" / "migrations" / "tenant" / "010_params_firma.sql"
 
 
 def _literal(fuente: Path, nombre: str):
@@ -41,10 +42,10 @@ def _literal(fuente: Path, nombre: str):
 def test_la_clave_que_lee_signature_se_siembra_en_null_no_en_off() -> None:
     clave = _literal(LECTOR, "PARAM_REQUIRE_XADES")
     assert clave == "firma_personal_require_xades"
-    sql = MIGRACION.read_text(encoding="utf-8")
-    assert re.search(rf"\('{clave}',\s*'null'::jsonb\)", sql), (
-        "la clave que signature-service lee no la siembra la migración 010 de "
-        "tenant-service con JSON null: /admin/parametros no la ofrece, o la siembra "
+    sql = seed_rows("sgd_param_admin")
+    assert re.search(rf"\('{clave}',\s*'null',", sql), (
+        "la clave que signature-service lee no la siembra la cadena de migraciones "
+        "con JSON null: /admin/parametros no la ofrece, o la siembra "
         "en \"off\" y anula el respaldo del entorno (FIRMA_PERSONAL_REQUIRE_XADES)"
     )
 

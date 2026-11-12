@@ -105,7 +105,7 @@ class ActorVincular(BaseModel):
     # Por dónde se le atiende. `None` = todavía sin decidir, y se admite a
     # propósito: obligar a elegirlo al vincular empujaría a poner un canal
     # cualquiera para poder seguir, que es peor que decir que no se sabe.
-    # Cada canal exige su dato en la copia congelada (CHECK de la migración 026).
+    # Cada canal exige su dato en la copia congelada (CHECK de `radicado_actor`).
     canal: Literal["email", "fisico", "ambos"] | None = None
     nombre: str | None = Field(default=None, min_length=2, max_length=255)
     entidad: str | None = Field(default=None, max_length=255)

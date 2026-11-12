@@ -18,21 +18,16 @@ Mutaciones demostradas (cada una cae):
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 
 import asyncpg
 import pytest
 
 from signature.core.database import _schema as tenant_schema
 from signature.repositories.cadena_repository import CadenaRepository
+from tests.integration.conftest import insert_radicado
 
 pytestmark = pytest.mark.asyncio
 
-_MIG_025 = (
-    Path(__file__).resolve().parents[2]
-    / "migrations" / "tenant" / "025_firma_nativa_exige_key_version.sql"
-)
-_FILA_SINTETICA = "d4e62969-824d-4802-9e40-b402d977b6fc"
 
 
 async def _fijar(conn, slug: str) -> None:
@@ -40,16 +35,7 @@ async def _fijar(conn, slug: str) -> None:
 
 
 async def _radicado(conn, nivel: int) -> str:
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "tracking_number text, nivel_seguridad int NOT NULL)"
-    )
-    return str(
-        await conn.fetchval(
-            "INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ($1, $2) RETURNING id",
-            f"R-{uuid.uuid4().hex[:6]}", nivel,
-        )
-    )
+    return str(await insert_radicado(conn, f"R-{uuid.uuid4().hex[:6]}", nivel))
 
 
 async def _cadena(conn, objeto_id: str, *, copia: int, estado: str = "pendiente", firmante=None):
@@ -113,11 +99,9 @@ async def test_s1_la_bandeja_oculta_la_cadena_cuyo_objeto_vivo_supera_el_clearan
     reintento con las tablas presentes) y con las dos tablas."""
     slug, conn = tenant_ctx
     await _fijar(conn, slug)
-    if con_expedientes:
-        await conn.execute(
-            "CREATE TABLE expedientes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-            "code text, nivel_seguridad int NOT NULL)"
-        )
+    if not con_expedientes:
+        # La cadena crea `expedientes` en todo tenant: su ausencia se simula.
+        await conn.execute("DROP TABLE expedientes CASCADE")
     rid = await _radicado(conn, 2)
     firmante = uuid.uuid4()
     await _cadena(conn, rid, copia=1, firmante=firmante)
@@ -162,27 +146,3 @@ async def test_s7_control_positivo_nativa_con_1_y_no_nativa_con_0(tenant_ctx) ->
     await _fijar(conn, slug)
     await conn.execute(_INSERT_FIRMA, uuid.uuid4(), "nativa", "nativa", 1)
     await conn.execute(_INSERT_FIRMA, uuid.uuid4(), "xades_local", "nativa", 0)
-
-
-async def test_s7_la_025_borra_la_fila_sintetica_y_es_idempotente(tenant_ctx) -> None:
-    """Se simula el estado previo (sin CHECK, con la fila sintética v0), se aplica la 025
-    dos veces: la fila desaparece, el CHECK queda y las demás firmas no se tocan."""
-    slug, conn = tenant_ctx
-    await _fijar(conn, slug)
-    await conn.execute("ALTER TABLE firma DROP CONSTRAINT firma_nativa_exige_key_version")
-    await conn.execute(
-        "INSERT INTO firma (id, objeto_tipo, objeto_id, firmante_id, payload_sha256, firma_blob, "
-        "provider, sello_tiempo, tipo_firma, key_version) "
-        "VALUES ($1, 'radicado', 'x', $2, 'a', 'b', 'nativa', now(), 'nativa', 0)",
-        uuid.UUID(_FILA_SINTETICA), uuid.uuid4(),
-    )
-    await conn.execute(_INSERT_FIRMA, uuid.uuid4(), "nativa", "nativa", 1)
-    sql = _MIG_025.read_text(encoding="utf-8")
-    await conn.execute(sql)
-    await conn.execute(sql)
-    assert await conn.fetchval("SELECT count(*) FROM firma WHERE id = $1", uuid.UUID(_FILA_SINTETICA)) == 0
-    assert await conn.fetchval("SELECT count(*) FROM firma") == 1
-    assert await conn.fetchval(
-        "SELECT count(*) FROM pg_constraint WHERE conname = 'firma_nativa_exige_key_version' "
-        "AND conrelid = 'firma'::regclass"
-    ) == 1

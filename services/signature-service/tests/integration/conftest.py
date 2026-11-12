@@ -26,6 +26,11 @@ ni una firma `nativa`; el camino nunca había llegado a la base.
 Es la clase de defecto que este tier existe para cazar: los que solo aparecen
 cuando quien valida es Postgres y no un doble.
 
+El schema del tenant se provisiona con la cadena ÚNICA de migraciones (ADR-053,
+`services/docuboto/migrations/tenant`). `public` (incluido `public.audit_log`
+con sus triggers append-only) lo migra ANTES
+`services/docuboto/migrations/runner.py`: este conftest solo lo verifica.
+
 Gating idéntico: `RUN_INTEGRATION=1` (ver `pytest_collection_modifyitems`).
 El carril unit normal (`docker compose run --rm --no-deps signature-service
 pytest -q`) no tiene Postgres arriba (`--no-deps`); sin el gate, la sola
@@ -46,10 +51,13 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from orpycamcp_common.migrations import apply_chain
 from signature.core.database import _schema as tenant_schema
-from migrations import runner
 
-# Mismo cálculo que `migrations/runner.py` — DSN "pelado" para conectar con
+# La cadena única de migraciones (ADR-053).
+CHAIN = Path(__file__).resolve().parents[3] / "docuboto" / "migrations"
+
+# DSN "pelado" (mismo cálculo que el runner de migraciones) para conectar con
 # `asyncpg.connect` directamente (sin pasar por el pool de la app). Calculado
 # perezosamente (no a nivel de módulo con `os.environ[...]`) porque este
 # archivo se importa también cuando el carril UNIT recoge `tests/` completo,
@@ -145,136 +153,43 @@ _EXPECTED_AUDIT_TRIGGERS = frozenset(
     }
 )
 
-# INVARIANTE: este bloque se emite completo dentro de UNA sola transacción
-# (`_audit_log_ready` lo envuelve en `async with conn.transaction()`) — no
-# trocear en varias llamadas a `execute`. Es la contraparte de 002/003/004 de
-# auth-service, PERO sin `CREATE ROLE`/`GRANT`/`REVOKE` (A1) y sin la tabla
-# legacy `auth_audit_logs` (solo existía para que un `COMMENT` no fallara).
-_AUDIT_LOG_CREATE_DDL = """
-CREATE TABLE public.audit_log (
-    id           BIGINT      GENERATED ALWAYS AS IDENTITY,
-    tenant_slug  TEXT        NOT NULL,
-    ts           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    service      TEXT        NOT NULL,
-    actor        TEXT,
-    canal        TEXT        NOT NULL DEFAULT 'api',
-    action       TEXT        NOT NULL,
-    object_type  TEXT        NOT NULL,
-    object_ref   TEXT,
-    payload      JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    prev_hash    TEXT,
-    hash         TEXT        NOT NULL,
-    PRIMARY KEY (id, ts)
-) PARTITION BY RANGE (ts);
-
-CREATE TABLE public.audit_log_default
-    PARTITION OF public.audit_log DEFAULT;
-
-CREATE INDEX ix_audit_tenant_ts ON public.audit_log (tenant_slug, ts);
-CREATE INDEX ix_audit_object    ON public.audit_log (object_type, object_ref);
-
-ALTER TABLE public.audit_log
-    ADD CONSTRAINT chk_audit_log_canal
-    CHECK (canal IN ('api', 'ui', 'mcp', 'system'));
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation() RETURNS trigger AS $$
-BEGIN
-    RAISE EXCEPTION 'public.audit_log is append-only (Ley 594/2000, ADR-008)';
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_audit_log_immutable
-    BEFORE UPDATE OR DELETE ON public.audit_log
-    FOR EACH ROW EXECUTE FUNCTION public.reject_audit_log_mutation();
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_truncate()
-RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION
-        'TRUNCATE on public.audit_log is prohibited (ADR-008, Ley 594/2000, D-03)';
-END;
-$$;
-
-CREATE TRIGGER trg_audit_log_no_truncate
-    BEFORE TRUNCATE ON public.audit_log
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
-
-CREATE TRIGGER trg_audit_log_default_no_truncate
-    BEFORE TRUNCATE ON public.audit_log_default
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation_d03()
-RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION
-        'UPDATE/DELETE on public.audit_log is prohibited '
-        '(ADR-008, Ley 594/2000, D-03): table is append-only';
-END;
-$$;
-
-CREATE TRIGGER trg_audit_log_no_mutation
-    BEFORE UPDATE OR DELETE ON public.audit_log
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
-
-CREATE TRIGGER trg_audit_log_default_no_mutation
-    BEFORE UPDATE OR DELETE ON public.audit_log_default
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
-"""
-
-
 @pytest_asyncio.fixture(scope="session")
 async def _audit_log_ready() -> None:
-    """Asegura que `public.audit_log` (+ triggers append-only) exista antes de
-    cualquier test de este carril. Verificar-primero / crear-solo-si-no-existe
-    (A2): jamás re-emite DDL de seguridad sobre una tabla que ya existe."""
+    """Verifica que `public.audit_log` (+ triggers append-only) exista antes de
+    cualquier test de este carril. Nunca lo crea: una copia propia del DDL haría
+    que estos tests probaran el trigger de ESTE fichero y no el de producción."""
     dsn = _require_dsn()
     conn = await asyncpg.connect(dsn=dsn)
     try:
-        already_exists = await conn.fetchval("SELECT to_regclass('public.audit_log')")
-        if already_exists is not None:
-            # (G3) `tgenabled <> 'D'`: un trigger DESHABILITADO (`ALTER TABLE ...
-            # DISABLE TRIGGER`, o un `session_replication_role = replica` en la
-            # sesión) sigue figurando en `pg_trigger` — sin este filtro, el
-            # guardarraíl daba luz verde a un `audit_log` MUTABLE, que es
-            # exactamente la condición que existe para descartar.
-            rows = await conn.fetch(
-                """
-                SELECT tgname
-                FROM pg_trigger
-                WHERE tgrelid = ANY(
-                    ARRAY['public.audit_log'::regclass, 'public.audit_log_default'::regclass]
-                )
-                  AND NOT tgisinternal
-                  AND tgenabled <> 'D'
-                """
-            )
-            found = {row["tgname"] for row in rows}
-            missing = _EXPECTED_AUDIT_TRIGGERS - found
-            if missing:
-                raise RuntimeError(
-                    "public.audit_log ya existe pero le faltan triggers append-only "
-                    f"esperados: {sorted(missing)}. Este conftest de TESTS no repara "
-                    "DDL de seguridad de producción — corrige las migraciones de "
-                    "auth-service (o el estado de esta base) antes de reintentar."
-                )
-            return
-
-        if os.environ.get("CI"):
-            # AREA-03-05: en CI la base nace virgen y el job aplica ANTES las
-            # migraciones globales REALES de auth-service (002-008). Crear aquí una
-            # copia propia del DDL haría que estos tests probaran el trigger de ESTE
-            # fichero y no el de producción: el trigger de sentencia de 004 quedaría
-            # sin ejercer. Si llegamos aquí en CI, el job olvidó migrar auth-service.
+        if await conn.fetchval("SELECT to_regclass('public.audit_log')") is None:
             raise RuntimeError(
-                "public.audit_log no existe en CI: aplica antes las migraciones "
-                "globales de auth-service (`python ../auth-service/migrations/runner.py`)."
+                "public.audit_log no existe: migra `public` antes de correr este carril "
+                "(`python services/docuboto/migrations/runner.py`)."
             )
-
-        async with conn.transaction():
-            await conn.execute("SET LOCAL lock_timeout = '5s'")
-            await conn.execute(_AUDIT_LOG_CREATE_DDL)
+        # (G3) `tgenabled <> 'D'`: un trigger DESHABILITADO (`ALTER TABLE ...
+        # DISABLE TRIGGER`, o un `session_replication_role = replica` en la
+        # sesión) sigue figurando en `pg_trigger` — sin este filtro, el
+        # guardarraíl daba luz verde a un `audit_log` MUTABLE, que es
+        # exactamente la condición que existe para descartar.
+        rows = await conn.fetch(
+            """
+            SELECT tgname
+            FROM pg_trigger
+            WHERE tgrelid = ANY(
+                ARRAY['public.audit_log'::regclass, 'public.audit_log_default'::regclass]
+            )
+              AND NOT tgisinternal
+              AND tgenabled <> 'D'
+            """
+        )
+        missing = _EXPECTED_AUDIT_TRIGGERS - {row["tgname"] for row in rows}
+        if missing:
+            raise RuntimeError(
+                "public.audit_log existe pero le faltan triggers append-only "
+                f"esperados: {sorted(missing)}. Este conftest de TESTS no repara "
+                "DDL de seguridad de producción — corrige el estado de esta base "
+                "antes de reintentar."
+            )
     finally:
         await conn.close()
 
@@ -305,15 +220,12 @@ async def db_conn(_audit_log_ready: None) -> AsyncGenerator[asyncpg.Connection, 
 
 
 async def _provision_tenant_schema(conn: asyncpg.Connection, slug: str) -> str:
-    """Crea `tenant_itest_<hex8>` y aplica las tenant migrations de
-    signature-service dentro de él. Devuelve el nombre de schema ya
-    entrecomillado-listo (`tenant_schema(slug)`)."""
+    """Crea `tenant_itest_<hex8>` y aplica dentro la cadena de tenant.
+    Devuelve el nombre de schema ya entrecomillado-listo (`tenant_schema(slug)`)."""
+    assert (CHAIN / "tenant").is_dir(), f"no encuentro la cadena de migraciones en {CHAIN}"
     schema = tenant_schema(slug)
     await conn.execute(f'CREATE SCHEMA "{schema}"')
-    for path in runner._sql_files(runner.TENANT_DIR):
-        async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await conn.execute(path.read_text())
+    await apply_chain(conn, CHAIN / "tenant", schema, log=lambda _msg: None)
     return schema
 
 
@@ -323,14 +235,15 @@ async def _drop_tenant_schema(conn: asyncpg.Connection, schema: str) -> None:
         "no tiene el prefijo tenant_itest_ esperado del schema de un test"
     )
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await conn.execute("DELETE FROM public.schema_migrations WHERE schema_name = $1", schema)
 
 
 @pytest_asyncio.fixture
 async def tenant_ctx(
     db_conn: asyncpg.Connection, request: pytest.FixtureRequest
 ) -> AsyncGenerator[tuple[str, asyncpg.Connection], None]:
-    """Provisiona UN schema `tenant_itest_<hex8>` desechable con las tenant
-    migrations de signature-service aplicadas, y lo destruye
+    """Provisiona UN schema `tenant_itest_<hex8>` desechable con la cadena de
+    tenant aplicada, y lo destruye
     (`DROP SCHEMA CASCADE`) al terminar el test.
 
     Yields ``(slug, conn)``: ``slug`` es el tenant_slug "crudo" (p. ej.
@@ -362,3 +275,41 @@ async def two_tenant_ctx(
     finally:
         await _drop_tenant_schema(db_conn, schema_a)
         await _drop_tenant_schema(db_conn, schema_b)
+
+
+# ---------------------------------------------------------------------------
+# Filas mínimas VÁLIDAS en las tablas reales de otros servicios que el gate de
+# no-read-up lee (`radicados`, `expedientes`). La cadena única las crea en todo
+# tenant: ya no hay stubs, así que cada fila tiene que pasar sus CHECK reales.
+# ---------------------------------------------------------------------------
+
+
+async def insert_radicado(conn: asyncpg.Connection, tracking_number: str, nivel: int) -> uuid.UUID:
+    """Inserta un radicado real con `nivel_seguridad = nivel` en el search_path actual.
+
+    Un nivel >= 2 exige causal y fundamento (`radicados_causal_catalogo`,
+    `radicados_clasificado_con_fundamento`): se usa `por_clasificar`.
+    """
+    clasificado = nivel >= 2
+    return await conn.fetchval(
+        """
+        INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, tenant_code,
+                               nivel_seguridad, clasificacion_causal, clasificacion_fundamento)
+        VALUES ($1, 'E', 2026, $2, 'itest', 'ITEST', $3, $4, $5)
+        RETURNING id
+        """,
+        tracking_number,
+        next(_slug_counter),
+        nivel,
+        "por_clasificar" if clasificado else None,
+        "Fundamento de prueba de integración" if clasificado else None,
+    )
+
+
+async def insert_expediente(conn: asyncpg.Connection, code: str, nivel: int) -> uuid.UUID:
+    """Inserta un expediente real con `nivel_seguridad = nivel` en el search_path actual."""
+    return await conn.fetchval(
+        "INSERT INTO expedientes (code, name, nivel_seguridad) VALUES ($1, 'itest', $2) RETURNING id",
+        code,
+        nivel,
+    )

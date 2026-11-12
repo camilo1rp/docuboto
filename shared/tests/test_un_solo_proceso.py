@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from tests._chain import create_table
 from tests._compose import COMPOSE_DEV, RAIZ, ruta_src, servicios
 
 _DOMINIO = (
@@ -154,8 +155,8 @@ def test_el_nonce_ppi_vive_en_tabla() -> None:
     texto = ruta_src("knowledge-service", "routers/retorno.py").read_text(encoding="utf-8")
     assert "ppi_nonces" in texto
     assert "orpycamcp:ppi:nonce" not in texto
-    assert (RAIZ / "services/knowledge-service/migrations/tenant/021_ppi_nonces.sql").is_file()
-    assert (RAIZ / "services/document-service/migrations/tenant/054_trabajo_fuera.sql").is_file()
+    assert create_table("ppi_nonces")
+    assert create_table("trabajo_fuera")
     admin = ruta_src("document-service", "routers/trabajo.py").read_text(encoding="utf-8")
     assert "reintentar" in admin
     assert "USUA_PERM_ADMIN" in admin

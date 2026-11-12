@@ -25,11 +25,12 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 import pytest_asyncio
+from orpycamcp_common import migrations
 from orpycamcp_common.tenant import EstadoEntidad, estado_entidad
 
 from auth.core.database import tenant_schema
 from auth.services.auth_service import AuthService
-from tests.integration.conftest import RUN_INTEGRATION
+from tests.integration.conftest import CHAIN, RUN_INTEGRATION
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -63,6 +64,9 @@ async def entidad(db_conn: asyncpg.Connection) -> AsyncGenerator:
         assert slug.startswith("itest-est-"), "guardarraíl: solo se limpian entidades itest"
         await db_conn.execute(f'DROP SCHEMA IF EXISTS "{tenant_schema(slug)}" CASCADE')
         await db_conn.execute("DELETE FROM public.tenants WHERE slug = $1", slug)
+        await db_conn.execute(
+            "DELETE FROM public.schema_migrations WHERE schema_name = $1", tenant_schema(slug)
+        )
 
 
 @pytest.mark.parametrize(
@@ -113,14 +117,9 @@ async def test_validate_de_una_entidad_suspendida_no_aprovisiona_usuarios(
 ) -> None:
     """Sin el estado primero, el alta perezosa creaba `auth_users` dentro de una
     entidad suspendida."""
-    from migrations import runner
-
     slug = await entidad("suspended", "active", True)
     schema = tenant_schema(slug)
-    for path in runner._sql_files(runner.TENANT_DIR):
-        async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await db_conn.execute(path.read_text())
+    await migrations.apply_chain(db_conn, CHAIN / "tenant", schema, log=lambda _linea: None)
 
     claims, resp = await _validar(db_conn, slug)
 
@@ -133,14 +132,9 @@ async def test_validate_de_una_entidad_suspendida_no_aprovisiona_usuarios(
 async def test_validate_de_una_entidad_operativa_dice_operativa(
     db_conn: asyncpg.Connection, entidad
 ) -> None:
-    from migrations import runner
-
     slug = await entidad("active", "active", True)
     schema = tenant_schema(slug)
-    for path in runner._sql_files(runner.TENANT_DIR):
-        async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await db_conn.execute(path.read_text())
+    await migrations.apply_chain(db_conn, CHAIN / "tenant", schema, log=lambda _linea: None)
 
     _, resp = await _validar(db_conn, slug)
 

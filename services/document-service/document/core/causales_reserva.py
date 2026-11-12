@@ -13,7 +13,7 @@
 Ley 1712/2014 arts. 18 (información CLASIFICADA, nivel 3) y 19 (información
 RESERVADA, nivel 2) enumeran las únicas excepciones al acceso: ninguna entidad
 inventa una causal propia. Por eso el catálogo es una constante del código y un
-CHECK de la base (migración 050), no una tabla editable: un cambio de ley es UNA
+CHECK de la base (`radicados_causal_catalogo`), no una tabla editable: un cambio de ley es UNA
 migración, no un dato que alguien pueda tocar. Los tres lugares que lo repiten
 (esta constante, el CHECK y el `enum` de la tool MCP) los ata el guardián
 `tests/test_causales_reserva.py`.
@@ -44,7 +44,7 @@ from typing import Literal
 #: la protección de derechos de PERSONAS no se levanta con una sola firma. Bajar de
 #: 2 a 1 (reservada art. 19, intereses públicos) sigue siendo directo. Para cambiarlo
 #: hay que tocar esta constante, el CHECK `nivel_anterior = N` de la tabla y el
-#: trigger de frontera de la migración 050; el guardián las compara.
+#: trigger de frontera `radicados_desclasificacion_guard`; el guardián las compara.
 NIVEL_DOBLE_FIRMA = 3
 
 #: Tope del plazo de una reserva art. 19: 15 AÑOS contados desde la GENERACIÓN de la
@@ -55,7 +55,7 @@ PLAZO_MAX_MESES = 180
 #: Cita normativa PUBLICABLE (Decreto 103/2015 art. 40, «fundamento constitucional o legal»),
 #: controlada por formato: tipo de norma + número/artículo, sin frases. El texto libre
 #: (`fundamento_juridico`) es interno y puede transportar contenido; esta cita no. Es la
-#: misma regla que el CHECK `radicados_norma_controlada` (migración 051; el guardián las
+#: misma regla que el CHECK `radicados_norma_controlada` (el guardián las
 #: compara).
 CITA_NORMA_PATRON = (
     r"^(Constitución Política|Ley|Decreto-Ley|Decreto|Acuerdo|Resolución|Código)"

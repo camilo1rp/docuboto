@@ -30,7 +30,7 @@ De ahí salen dos comportamientos que parecen detalles y no lo son:
 **Y el canal de envío, que es una condición material y no una preferencia.** Un
 destinatario se atiende por correo electrónico, en físico o por los dos, y cada
 canal **exige su dato**: sin correo no hay envío electrónico, sin dirección no
-hay envío físico. Lo imponen dos `CHECK` de la migración 026 —un envío imposible
+hay envío físico. Lo imponen dos `CHECK` de `radicado_actor` —un envío imposible
 no se puede ni registrar—, y aquí se comprueba antes para poder decir **quién**
 y **qué falta**, en vez de dejar que suba una violación de restricción que no
 nombra a nadie.
@@ -263,7 +263,7 @@ class TerceroService:
         Atómico con su asiento. `actor` es `auth_users.id` (el `X-User-Id` que
         FIRMA el gateway), nunca el `sub` de Keycloak; sin actor no se concilia.
         El número del radicado no se toca: ni `radicados` ni `radicado_actor` se
-        escriben (el trigger de la 026 lo impide de todos modos).
+        escriben (el trigger de `radicado_actor` lo impide de todos modos).
 
         Visibilidad: la ficha se lee con el clearance en el `WHERE`; invisible o
         inexistente es 404 (indistinguibles), visible y no pendiente es 409.

@@ -11,8 +11,7 @@
 
 Lo que un mock no puede probar: que el paso, el estado del radicado, el evento
 operativo y el asiento commitean o revierten JUNTOS; que un radicado terminal no
-cambia ni un recuento; que el cerrojo de tenencia lo decide la base; y que el
-backfill SQL coincide fila a fila con la función pura.
+cambia ni un recuento; y que el cerrojo de tenencia lo decide la base.
 
 Carril de integración (`RUN_INTEGRATION=1`, ver `conftest.py`).
 """
@@ -20,7 +19,6 @@ Carril de integración (`RUN_INTEGRATION=1`, ver `conftest.py`).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -37,14 +35,20 @@ from httpx import ASGITransport, AsyncClient
 from workflow.core.database import get_db_conn, tenant_schema
 from workflow.main import app
 from workflow.schemas.workflow import FlowStepComplete, FlowStepCreate, TransactionRequest
-from workflow.services.estado_radicado import derivar_estado_radicado
 from workflow.services.workflow_service import (
     RollbackError,
     TransactionError,
     WorkflowService,
     YaDistribuidoError,
 )
-from migrations import runner
+from tests.integration.conftest import (
+    add_user_to_dependencia,
+    grant_clearance,
+    insert_dependencia,
+    insert_radicado,
+    insert_user,
+    set_security_level,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -106,14 +110,14 @@ async def ctx(
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     for cod, nombre in (DEP_JUR, DEP_ARC):
-        await conn.execute("INSERT INTO dependencias (codigo, nombre) VALUES ($1, $2)", cod, nombre)
+        await insert_dependencia(conn, cod, nombre)
     yield _ServicioConRadicador(conn, slug), conn, slug
 
 
 async def _user(conn: asyncpg.Connection, dep: str | None = None) -> uuid.UUID:
-    uid = await conn.fetchval("INSERT INTO auth_users DEFAULT VALUES RETURNING id")
+    uid = await insert_user(conn)
     if dep is not None:
-        await conn.execute("INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, $2)", uid, dep)
+        await add_user_to_dependencia(conn, uid, dep)
     return uid
 
 
@@ -121,11 +125,7 @@ _seq = iter(range(1, 10_000))
 
 
 async def _radicado(conn: asyncpg.Connection, status: str = "registered") -> uuid.UUID:
-    return await conn.fetchval(
-        "INSERT INTO radicados (tracking_number, status) VALUES ($1, $2) RETURNING id",
-        f"2026-ITEST-E-{next(_seq):06d}",
-        status,
-    )
+    return await insert_radicado(conn, f"2026-ITEST-E-{next(_seq):06d}", status=status)
 
 
 async def _estado(conn: asyncpg.Connection, rid: uuid.UUID) -> str:
@@ -486,7 +486,7 @@ async def test_cascada_devuelve_a_pending_excluye_terminales_y_asienta_por_radic
 
 
 # ---------------------------------------------------------------------------
-# backfill (013): fila a fila contra la función pura, e idempotente
+# Un paso escrito a mano (deriva, zombis): lo usan las pruebas de más abajo
 # ---------------------------------------------------------------------------
 
 
@@ -499,73 +499,6 @@ async def _paso(conn: asyncpg.Connection, rid: uuid.UUID, n: int, status: str) -
         n,
         status,
     )
-
-
-async def test_backfill_coincide_con_la_funcion_pura_y_es_idempotente(ctx: Any) -> None:
-    _, conn, slug = ctx
-    casos: list[tuple[str, list[str]]] = [
-        ("registered", []),
-        ("registered", ["pending"]),
-        ("registered", ["in_progress"]),
-        ("registered", ["completed"]),
-        ("registered", ["cancelled", "returned"]),
-        ("distributed", []),
-        ("distributed", ["pending"]),
-        ("distributed", ["in_progress"]),
-        ("distributed", ["completed"]),
-        ("in_progress", ["pending"]),
-        ("in_progress", ["completed"]),
-        ("in_progress", ["completed", "pending"]),
-        ("in_progress", ["pending", "in_progress"]),  # anómalo: 2 activos, gana el último
-        ("closed", ["pending"]),
-        ("closed", ["completed"]),
-        ("anulado", ["in_progress"]),
-        ("anulado", []),
-    ]
-    ids: list[uuid.UUID] = []
-    for estado, pasos in casos:
-        rid = await _radicado(conn, estado)
-        for n, st in enumerate(pasos, start=1):
-            await _paso(conn, rid, n, st)
-        ids.append(rid)
-    sql = next(p for p in runner._sql_files(runner.TENANT_DIR) if "radicado_estado_desde_flujo" in p.name)
-
-    async def _correr() -> None:
-        async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
-            await conn.execute(sql.read_text())
-
-    previos = {rid: await _estado(conn, rid) for rid in ids}
-    await _correr()
-
-    for rid in ids:
-        pasos = await conn.fetch(
-            "SELECT status FROM flow_steps WHERE radicado_id = $1 "
-            "AND status IN ('pending','in_progress') ORDER BY step_number DESC",
-            rid,
-        )
-        tiene = bool(await conn.fetchval("SELECT count(*) FROM flow_steps WHERE radicado_id = $1", rid))
-        esperado = derivar_estado_radicado(
-            previos[rid], pasos[0]["status"] if pasos else None, tiene_pasos=tiene
-        )
-        assert await _estado(conn, rid) == esperado, (previos[rid], [p["status"] for p in pasos])
-
-    evidencia = await conn.fetch("SELECT radicado_id, antes, despues FROM radicado_estado_recalculo")
-    cambiados = {rid for rid in ids if await _estado(conn, rid) != previos[rid]}
-    assert {e["radicado_id"] for e in evidencia} == cambiados
-    for e in evidencia:
-        assert (e["antes"], e["despues"]) == (previos[e["radicado_id"]], await _estado(conn, e["radicado_id"]))
-    # Terminales intactos.
-    for rid in ids:
-        if previos[rid] in ("closed", "anulado"):
-            assert await _estado(conn, rid) == previos[rid]
-
-    # Segunda corrida: 0 filas cambiadas y 0 evidencia nueva.
-    foto = {rid: await _estado(conn, rid) for rid in ids}
-    n_evidencia = len(evidencia)
-    await _correr()
-    assert {rid: await _estado(conn, rid) for rid in ids} == foto
-    assert await conn.fetchval("SELECT count(*) FROM radicado_estado_recalculo") == n_evidencia
 
 
 # ===========================================================================
@@ -1106,50 +1039,6 @@ async def test_complete_de_un_paso_leido_conserva_in_progress(ctx: Any) -> None:
     assert await _estado(conn, rid) == "in_progress"
 
 
-# ---------------------------------------------------------------------------
-# Migración 013: sobre un schema SIN `radicados` no falla
-# ---------------------------------------------------------------------------
-
-
-async def test_migracion_013_sobre_schema_sin_radicados_no_falla_y_es_idempotente(
-    db_conn: asyncpg.Connection,
-) -> None:
-    """Tenant nuevo: el workflow-service migra antes de que el document-service cree
-    `radicados`. La guarda debe saltar el backfill (NOTICE) sin error, y dejar la
-    tabla de evidencia creada y vacía. Se corren TODAS las migraciones de tenant en
-    un schema vacío, como lo haría el runner en un tenant recién aprovisionado."""
-    schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
-    avisos: list[str] = []
-
-    def _escucha(_conn: Any, msg: Any) -> None:
-        avisos.append(msg.message)
-
-    db_conn.add_log_listener(_escucha)
-    await db_conn.execute(f'CREATE SCHEMA "{schema}"')
-    try:
-        archivos = list(runner._sql_files(runner.TENANT_DIR))
-        sql_013 = next(p for p in archivos if "radicado_estado_desde_flujo" in p.name)
-        for path in archivos:
-            async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-                await db_conn.execute(path.read_text())
-        assert any("backfill de estado omitido" in a for a in avisos), avisos
-
-        # Segunda corrida de 013 sobre el mismo schema vacío: tampoco falla.
-        avisos.clear()
-        async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await db_conn.execute(sql_013.read_text())
-        assert any("backfill de estado omitido" in a for a in avisos), avisos
-
-        assert await db_conn.fetchval("SELECT to_regclass($1)", f'"{schema}".radicados') is None
-        assert await db_conn.fetchval(f'SELECT count(*) FROM "{schema}".radicado_estado_recalculo') == 0
-    finally:
-        db_conn.remove_log_listener(_escucha)
-        assert schema.startswith("tenant_itest_")
-        await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-
-
 # ===========================================================================
 # Remediación de auditoría (tenant-security-auditor + archival-compliance-auditor)
 # ===========================================================================
@@ -1158,15 +1047,13 @@ async def test_migracion_013_sobre_schema_sin_radicados_no_falla_y_es_idempotent
 async def _user_nivel(conn: asyncpg.Connection, nivel: int, dep: str | None = None) -> uuid.UUID:
     """Usuario cuyo clearance máximo es `nivel` (membresía + `role_clearance`)."""
     uid = await _user(conn, dep)
-    grupo = uuid.uuid4()
-    await conn.execute("INSERT INTO auth_memberships (user_id, group_id) VALUES ($1, $2)", uid, grupo)
-    await conn.execute("INSERT INTO role_clearance (group_id, max_level) VALUES ($1, $2)", grupo, nivel)
+    await grant_clearance(conn, uid, nivel)
     return uid
 
 
 async def _radicado_nivel(conn: asyncpg.Connection, nivel: int) -> uuid.UUID:
     rid = await _radicado(conn)
-    await conn.execute("UPDATE radicados SET nivel_seguridad = $2 WHERE id = $1", rid, nivel)
+    await set_security_level(conn, rid, nivel)
     return rid
 
 
@@ -1423,110 +1310,28 @@ async def test_bandeja_pending_y_vencidos_excluyen_los_pasos_de_radicados_termin
     assert {p.radicado_id for p in vencidos} == {vivo}
 
 
-# --- 7. migración 015: saneamiento de zombis ------------------------------------------
+# --- 7/9. las tablas de evidencia de recálculo son de SOLO inserción ---------------
 
 
-def _sql_de(nombre: str) -> str:
-    return next(p for p in runner._sql_files(runner.TENANT_DIR) if nombre in p.name).read_text()
-
-
-async def _correr_sql(conn: asyncpg.Connection, slug: str, nombre: str) -> None:
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
-        await conn.execute(_sql_de(nombre))
-
-
-async def test_migracion_015_sanea_zombis_con_evidencia_inmutable_y_es_idempotente(ctx: Any) -> None:
-    _, conn, slug = ctx
-    anulado, cerrado, vivo = await _radicado(conn, "anulado"), await _radicado(conn, "closed"), await _radicado(conn)
-    await _paso(conn, anulado, 1, "in_progress")
-    await _paso(conn, cerrado, 1, "pending")
-    await _paso(conn, vivo, 1, "pending")
-
-    await _correr_sql(conn, slug, "sanear_pasos_zombi")
-
-    estados = {
-        r["radicado_id"]: r["status"] for r in await conn.fetch("SELECT radicado_id, status FROM flow_steps")
-    }
-    assert estados == {anulado: "cancelled", cerrado: "completed", vivo: "pending"}
-    ev = await conn.fetch("SELECT * FROM flow_step_saneamiento ORDER BY estado_radicado")
-    assert [(e["estado_radicado"], e["paso_antes"], e["paso_despues"], e["origen"]) for e in ev] == [
-        ("anulado", "in_progress", "cancelled", "migracion_015"),
-        ("closed", "pending", "completed", "migracion_015"),
-    ]
-    # Cada saneamiento dejó su evento operativo append-only, enlazado por id.
-    for e in ev:
-        assert await conn.fetchval(
-            "SELECT tipo_tx FROM flow_events WHERE id = $1", e["flow_event_id"]
-        ) == "saneamiento_terminal"
-    # La evidencia es de SOLO inserción.
-    for sql in ("UPDATE flow_step_saneamiento SET paso_despues = 'x'", "DELETE FROM flow_step_saneamiento"):
-        with pytest.raises(asyncpg.PostgresError, match="append-only"):
-            await conn.execute(sql)
-
-    # Idempotente: sin zombis, la 2.ª corrida no cambia nada ni añade evidencia.
-    n_pasos, n_ev = await _snapshot_pasos(conn), await conn.fetchval("SELECT count(*) FROM flow_step_saneamiento")
-    await _correr_sql(conn, slug, "sanear_pasos_zombi")
-    assert await _snapshot_pasos(conn) == n_pasos
-    assert await conn.fetchval("SELECT count(*) FROM flow_step_saneamiento") == n_ev == 2
-    # Y el radicado vivo no se tocó.
-    assert await _estado(conn, vivo) == "registered"
-
-
-# --- 9. backfill 013: evidencia inmutable, sin tocar updated_at, ancla en audit_log ---
-
-
-async def test_backfill_013_deja_evidencia_inmutable_no_toca_updated_at_y_ancla_en_audit_log(ctx: Any) -> None:
-    _, conn, slug = ctx
-    a, b, c = await _radicado(conn), await _radicado(conn), await _radicado(conn, "closed")
-    await _paso(conn, a, 1, "pending")
-    await _paso(conn, b, 1, "in_progress")
-    await _paso(conn, c, 1, "pending")
-    antes_fechas = {r["id"]: r["updated_at"] for r in await conn.fetch("SELECT id, updated_at FROM radicados")}
-
-    await _correr_sql(conn, slug, "radicado_estado_desde_flujo")
-
-    # `updated_at` NO se movió: recalcular un estado derivado no es editar el radicado.
-    assert {r["id"]: r["updated_at"] for r in await conn.fetch("SELECT id, updated_at FROM radicados")} == antes_fechas
-    ev = {e["radicado_id"]: e for e in await conn.fetch("SELECT * FROM radicado_estado_recalculo")}
-    assert set(ev) == {a, b}  # el cerrado no se toca
-    assert ev[a]["tracking_number"] == await _tracking(conn, a)
-    assert (ev[a]["antes"], ev[a]["despues"], ev[a]["paso_activo"], ev[a]["origen"]) == (
-        "registered", "distributed", "pending", "migracion_013",
+async def test_las_tablas_de_evidencia_de_saneamiento_y_recalculo_son_append_only(ctx: Any) -> None:
+    _, conn, _ = ctx
+    rid = await _radicado(conn)
+    await conn.execute(
+        "INSERT INTO flow_step_saneamiento (step_id, radicado_id, tracking_number, estado_radicado, "
+        "paso_antes, paso_despues, flow_event_id) "
+        "VALUES (gen_random_uuid(), $1, 'T-1', 'anulado', 'pending', 'cancelled', gen_random_uuid())",
+        rid,
     )
-    assert (ev[b]["despues"], ev[b]["paso_activo"]) == ("in_progress", "in_progress")
-    for sql in ("UPDATE radicado_estado_recalculo SET antes = 'x'", "DELETE FROM radicado_estado_recalculo"):
-        with pytest.raises(asyncpg.PostgresError, match="append-only"):
-            await conn.execute(sql)
-
-    # Asiento-ancla: lo escribe la APLICACIÓN (el runner), con conteo y SHA-256 reproducible.
-    nombre = "013_radicado_estado_desde_flujo.sql"
-    async with conn.transaction():
-        assert await runner.anclar_evidencia(conn, tenant_schema(slug), nombre, tenant_slug=slug) is True
-        # Una vez por tenant: la 2.ª llamada no escribe otro.
-        assert await runner.anclar_evidencia(conn, tenant_schema(slug), nombre, tenant_slug=slug) is False
-    (ancla,) = await _asientos(conn, slug, "workflow.estado_radicado.backfill")
-    assert ancla["object_ref"] == "radicado_estado_recalculo"
-    assert ancla["payload"]["filas"] == 2
-    filas = await conn.fetch(
-        "SELECT radicado_id, tracking_number, antes, despues, paso_activo, origen "
-        "FROM radicado_estado_recalculo ORDER BY radicado_id, id"
+    await conn.execute(
+        "INSERT INTO radicado_estado_recalculo (radicado_id, tracking_number, antes, despues) "
+        "VALUES ($1, 'T-1', 'registered', 'distributed')",
+        rid,
     )
-    contenido = "\n".join("|".join(str(v) for v in f.values()) for f in filas)
-    assert ancla["payload"]["sha256"] == hashlib.sha256(contenido.encode()).hexdigest()
-    # La cadena de hash sigue verificando (el asiento lo firmó la aplicación).
-    from orpycamcp_common import audit as _audit
-
-    assert (await _audit.verify_chain(conn, slug)).ok
-
-
-async def test_el_runner_no_ancla_si_la_migracion_no_cambio_nada(ctx: Any) -> None:
-    _, conn, slug = ctx
-    async with conn.transaction():
-        assert await runner.anclar_evidencia(
-            conn, tenant_schema(slug), "013_radicado_estado_desde_flujo.sql", tenant_slug=slug
-        ) is False
-    assert await _asientos(conn, slug, "workflow.estado_radicado.backfill") == []
+    for tabla, columna in (("flow_step_saneamiento", "paso_despues"), ("radicado_estado_recalculo", "antes")):
+        assert await conn.fetchval(f"SELECT count(*) FROM {tabla}") == 1
+        for sql in (f"UPDATE {tabla} SET {columna} = 'x'", f"DELETE FROM {tabla}"):
+            with pytest.raises(asyncpg.PostgresError, match="append-only"):
+                await conn.execute(sql)
 
 
 # --- 10/11/12. finalizar: motivo, evidencia en el asiento, sin paso activo ----------
@@ -1537,13 +1342,16 @@ async def test_finalizar_deja_motivo_y_evidencia_en_el_evento_y_en_el_asiento(ct
     rid, u1 = await _radicado(conn), await _user(conn, DEP_JUR[0])
     paso = await svc.assign(_assign(rid, DEP_JUR[1], u1, due_at=datetime(2020, 1, 1, tzinfo=UTC)), u1)
     # Una salida que responde a este radicado, y vinculado a un expediente.
-    await conn.execute(
-        "INSERT INTO radicados (tracking_number, doc_type, responde_a) VALUES ('2026-ITEST-S-000001', 'S', $1)", rid
+    await insert_radicado(conn, "2026-ITEST-S-000001", doc_type="S", responde_a=rid)
+    expediente = await conn.fetchval(
+        "INSERT INTO expedientes (code, name) VALUES ('ITEST-EXP-1', 'Expediente de prueba') RETURNING id"
     )
     await conn.execute(
-        "CREATE TABLE expediente_radicados (radicado_id UUID NOT NULL, estado VARCHAR(20) NOT NULL)"
+        "INSERT INTO expediente_radicados (expediente_id, radicado_id, tracking_number, estado) "
+        "SELECT $1, id, tracking_number, 'vinculado' FROM radicados WHERE id = $2",
+        expediente,
+        rid,
     )
-    await conn.execute("INSERT INTO expediente_radicados VALUES ($1, 'vinculado')", rid)
 
     await svc.finalizar(rid, comentario="Trámite concluido", motivo_cierre="respondido", actor=u1)
 
@@ -1563,9 +1371,9 @@ async def test_finalizar_sin_respuesta_ni_expediente_ni_plazo_lo_dice_tal_cual(c
     await svc.finalizar(rid, comentario="No requiere respuesta", motivo_cierre="nrr", actor=u1)
     (asiento,) = await _asientos(conn, slug, "workflow.finalizar")
     p = asiento["payload"]
-    # `expediente_radicados` no existe en este tenant: «no consta» (None), no un falso `False`
-    # y, sobre todo, no aborta la transacción del cierre.
-    assert (p["tiene_respuesta"], p["en_expediente"], p["fuera_de_plazo"]) == (False, None, None)
+    # La cadena completa crea `expediente_radicados`: el radicado no está en ninguno (`False`);
+    # sin plazo que conste, `fuera_de_plazo` sigue siendo «no consta» (None).
+    assert (p["tiene_respuesta"], p["en_expediente"], p["fuera_de_plazo"]) == (False, False, None)
     assert p["motivo_cierre"] == "nrr" and await _estado(conn, rid) == "closed"
 
 
@@ -1625,44 +1433,6 @@ async def test_http_finalizar_exige_motivo_tipificado(http: Any) -> None:
     assert r.status_code == 200 and await _estado(conn, rid) == "closed"
 
 
-async def test_el_runner_aplica_013_y_015_y_ancla_en_la_misma_transaccion(
-    ctx: Any, tmp_path: Any
-) -> None:
-    """El CABLEADO del runner (no solo `anclar_evidencia` suelta): al aplicar 013 y
-    015 sobre un tenant con datos, cada una deja su asiento-ancla en `audit_log`,
-    atómico con la migración y registrado en el libro."""
-    _, conn, slug = ctx
-    schema = tenant_schema(slug)
-    a, z = await _radicado(conn), await _radicado(conn, "anulado")
-    await _paso(conn, a, 1, "pending")
-    await _paso(conn, z, 1, "pending")
-    for nombre in ("013_radicado_estado_desde_flujo.sql", "015_sanear_pasos_zombi.sql"):
-        (tmp_path / nombre).write_text((runner.TENANT_DIR / nombre).read_text())
-
-    async def _schemas(_c: Any) -> list[str]:
-        return [schema]
-
-    try:
-        with (
-            patch.object(runner, "TENANT_DIR", tmp_path),
-            patch.object(runner, "_tenant_schemas", new=_schemas),
-        ):
-            await runner._apply_tenant(conn)
-        await conn.execute(f'SET search_path TO "{schema}"')  # el runner lo deja en `public`
-        slug_audit = schema.removeprefix("tenant_")  # sin fila en `public.tenants`: sufijo del schema
-        acciones = {
-            r["action"]: json.loads(r["payload"])
-            for r in await conn.fetch(
-                "SELECT action, payload FROM public.audit_log WHERE tenant_slug = $1", slug_audit
-            )
-        }
-        assert acciones["workflow.estado_radicado.backfill"]["filas"] == 1
-        assert acciones["workflow.flow_step.saneamiento"]["filas"] == 1
-        assert await conn.fetchval("SELECT status FROM flow_steps WHERE radicado_id = $1", z) == "cancelled"
-    finally:
-        await conn.execute("DELETE FROM public.schema_migrations WHERE schema_name = $1", schema)
-
-
 # ---------------------------------------------------------------------------
 # Re-auditoría de seguridad: residuales A-E y RN-8
 # ---------------------------------------------------------------------------
@@ -1717,7 +1487,7 @@ async def test_a_el_asignado_cuyo_nivel_ya_no_alcanza_el_radicado_tampoco_actua(
     u1 = await _user_nivel(conn, 1, DEP_JUR[0])
     rid = await _radicado(conn)
     paso = await svc.assign(_assign(rid, DEP_JUR[1], u1), u1)
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3 WHERE id = $1", rid)
+    await set_security_level(conn, rid, 3)
     antes = (await _conteos(conn, slug), await _snapshot_pasos(conn))
 
     await _intenta_todo(svc, rid, paso.id, u1)
@@ -2027,7 +1797,7 @@ async def test_d_los_apply_tambien_exigen_el_nivel_del_radicado_en_el_update(ctx
     svc, conn, _ = ctx
     rid, u1, u2, paso = await _circuito_dos_pasos(svc, conn)
     previo = await svc._repo.get_previous_step(rid, paso.step_number)
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3 WHERE id = $1", rid)
+    await set_security_level(conn, rid, 3)
     antes = await _snapshot_pasos(conn)
     async with conn.transaction():
         assert await svc._repo.apply_rollback(
@@ -2104,9 +1874,8 @@ async def test_b_el_radicador_tampoco_reparte_lo_que_esta_por_encima_de_su_clear
     svc, conn, _ = ctx
     radicador = await _user(conn, DEP_JUR[0])
     rid = await _radicado(conn)
-    await conn.execute(
-        "UPDATE radicados SET registered_by = $2, nivel_seguridad = 3 WHERE id = $1", rid, radicador
-    )
+    await conn.execute("UPDATE radicados SET registered_by = $2 WHERE id = $1", rid, radicador)
+    await set_security_level(conn, rid, 3)
     repo = svc._repo
     assert await repo.puede_repartir_sin_paso_activo(rid, radicador, max_clearance=1) is False
     assert await repo.puede_repartir_sin_paso_activo(rid, radicador, max_clearance=3) is True  # control

@@ -94,7 +94,7 @@ async def search_documents(
         q_idx = idx
         idx += 1
         # La configuración de texto va CUALIFICADA y es LA MISMA que construye el
-        # `search_vector` (tenant/020_search_unaccent.sql). Consulta e índice
+        # `search_vector` (tenant/210_radicados.sql). Consulta e índice
         # tienen que hablar el mismo idioma: con `'spanish'` a secas, buscar
         # «certificacion» devolvía CERO radicados mientras «certificación»
         # devolvía tres, y la pantalla decía «Sin resultados» — indistinguible

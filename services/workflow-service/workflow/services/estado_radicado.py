@@ -10,9 +10,7 @@
 """Estado del radicado derivado del flujo (ADR-028).
 
 Una sola función pura: la decide el workflow-service en la MISMA transacción que
-el paso, y el backfill SQL (`migrations/tenant/013_radicado_estado_desde_flujo.sql`)
-es su gemelo literal. Si se toca una, se toca la otra: la prueba de integración
-compara cada fila del backfill con esta función.
+el paso.
 
 Estados: `registered` -> `distributed` -> `in_progress` -> `closed`; `anulado` lo
 escribe la anulación (document-service) y, junto con `closed`, es terminal.
@@ -125,9 +123,6 @@ def derivar_ubicacion(
     - Sin paso activo: el paso que se cerró más recientemente (`completed_at`
       DESC, desempate `step_number` DESC), en CUALQUIER estado.
     - Sin pasos: `None` — la lectura cae a la dependencia de radicación.
-
-    Gemela de `migrations/tenant/016_radicado_ubicacion_desde_flujo.sql`; la
-    prueba de integración compara cada fila del backfill con esta función.
     """
     if actual in ESTADOS_TERMINALES and congelada is not None:
         return congelada

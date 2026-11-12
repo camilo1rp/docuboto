@@ -20,11 +20,10 @@ con la base SIMULADA: un mock acepta cualquier cadena. Una restricción de
 integridad no se prueba con mocks. Este censo la prueba sin necesitar Postgres:
 compara las dos listas que el defecto dejó separarse.
 
-CÓMO DECIDE CUÁL ES EL CHECK VIGENTE. No sirve "la migración de número más alto
-que lo mencione": la 015 lo re-crea con la lista ANTIGUA, pero guardada tras un
-`IF NOT EXISTS`, así que sobre un tenant migrado no hace nada. La que fija el
-estado final es la última que lo DROPea incondicionalmente y lo vuelve a crear
-(013, hoy 016) — y eso es justo lo que se busca aquí.
+CÓMO ENCUENTRA EL CHECK. El esquema es una sola cadena legible (ADR-053,
+`services/docuboto/migrations/tenant`): cada CHECK se declara UNA vez, dentro
+de su `CREATE TABLE`. Se recorre la cadena entera y se exige que la
+restricción aparezca exactamente una vez.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ import pytest
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = SERVICE_ROOT / "signature"
-TENANT_MIGRATIONS = SERVICE_ROOT / "migrations" / "tenant"
+TENANT_MIGRATIONS = SERVICE_ROOT.parent / "docuboto" / "migrations" / "tenant"
 
 CAMPO = "nivel_conformidad"
 CONSTRAINT = "firma_nivel_conformidad_check"
@@ -56,19 +55,9 @@ _COMENTARIO_SQL = re.compile(r"--[^\n]*")
 _LITERAL_SQL = re.compile(r"'([^']*)'")
 
 
-def _re_drop(constraint: str) -> re.Pattern[str]:
-    return re.compile(rf"DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+{constraint}\b", re.I)
-
-
-def _re_add(constraint: str) -> re.Pattern[str]:
-    return re.compile(
-        rf"ADD\s+CONSTRAINT\s+{constraint}\s+CHECK\s*\((?P<cuerpo>.*?)\)\s*\)\s*;",
-        re.I | re.S,
-    )
-
-
-_DROP = _re_drop(CONSTRAINT)
-_ADD = _re_add(CONSTRAINT)
+def _re_check(constraint: str) -> re.Pattern[str]:
+    """`CONSTRAINT <nombre> CHECK (...)` tal como lo imprime pg_dump: una línea, coma o fin."""
+    return re.compile(rf"CONSTRAINT\s+{constraint}\s+CHECK\s*(?P<cuerpo>\(.*\))\s*,?\s*$", re.M)
 
 
 def _literales_de(campo: str) -> tuple[set[str], list[str]]:
@@ -123,25 +112,21 @@ def _literales_del_codigo() -> tuple[set[str], list[str]]:
 
 
 def _admitidos_de(constraint: str) -> tuple[set[str], str]:
-    """Lista del último `DROP`+`ADD` incondicional del CHECK, y el archivo que lo fija."""
-    vigente: set[str] | None = None
-    origen = ""
-    drop, add = _re_drop(constraint), _re_add(constraint)
+    """Literales que admite el CHECK `constraint` de la cadena, y el archivo que lo declara."""
+    patron = _re_check(constraint)
+    hallazgos: list[tuple[set[str], str]] = []
 
     for sql in sorted(TENANT_MIGRATIONS.glob("*.sql")):
         texto = _COMENTARIO_SQL.sub("", sql.read_text(encoding="utf-8"))
-        if not drop.search(texto):
-            continue  # guardado por IF NOT EXISTS: repone, no define
-        m = add.search(texto)
-        if m is None:
-            continue
-        vigente = set(_LITERAL_SQL.findall(m.group("cuerpo")))
-        origen = sql.name
+        for m in patron.finditer(texto):
+            hallazgos.append((set(_LITERAL_SQL.findall(m.group("cuerpo"))), sql.name))
 
-    assert vigente, (
-        "Ninguna migración de tenant DROPea y re-crea "
-        f"{constraint}: el censo no tendría contra qué comparar."
+    assert len(hallazgos) == 1, (
+        f"{constraint} debe declararse exactamente una vez en la cadena de tenant; "
+        f"aparece {len(hallazgos)} veces: {[origen for _, origen in hallazgos]}"
     )
+    vigente, origen = hallazgos[0]
+    assert vigente, f"{constraint} (en {origen}) no admite ningún literal: el censo no tendría contra qué comparar."
     return vigente, origen
 
 
@@ -165,8 +150,7 @@ def test_todo_nivel_conformidad_escrito_esta_admitido_por_el_check() -> None:
     assert not huerfanos, (
         f"El código escribe {CAMPO} con valores que {CONSTRAINT} NO admite: "
         f"{huerfanos}. El INSERT morirá con CheckViolationError DESPUÉS de firmar, "
-        f"sellar y subir el XML. Añádelos en una migración nueva que DROPee y "
-        f"re-cree el CHECK (la vigente la fija {origen}), no en un backfill guardado. "
+        f"sellar y subir el XML. Añádelos al CHECK (lo declara {origen}). "
         f"Puntos con valor dinámico, fuera del alcance de este censo: {dinamicos or 'ninguno'}."
     )
 
@@ -192,8 +176,7 @@ def test_todo_literal_escrito_esta_admitido_por_su_check(campo: str, constraint:
     huerfanos = sorted(literales - admitidos)
     assert not huerfanos, (
         f"El codigo escribe {campo} con valores que {constraint} NO admite: "
-        f"{huerfanos}. Anadelos en una migracion que DROPee y re-cree el CHECK "
-        f"(la vigente la fija {origen}), no en un backfill guardado. "
+        f"{huerfanos}. Anadelos al CHECK (lo declara {origen}). "
         f"Dinamicos, fuera de alcance: {dinamicos or 'ninguno'}."
     )
 
@@ -209,7 +192,7 @@ def test_los_estados_de_una_cadena_estan_declarados_en_el_sql() -> None:
     """
     admitidos, origen = _admitidos_de("firma_solicitud_estado_check")
     assert {"pendiente", "firmado", "rechazado", "invalidada"} <= admitidos, (
-        f"El CHECK de estado que fija {origen} no admite los cuatro estados del "
+        f"El CHECK de estado que declara {origen} no admite los cuatro estados del "
         f"circuito: {sorted(admitidos)}. Sin 'invalidada', una cadena sobre un "
         "texto que cambio se quedaria 'pendiente' o, peor, 'firmada'."
     )

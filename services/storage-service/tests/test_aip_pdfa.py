@@ -41,11 +41,12 @@ from tests.conftest import (
     minio_get_object,
 )
 
-_MIGRATION_008_PATH = (
-    Path(__file__).resolve().parent.parent
+_PRESERVACION_SQL_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docuboto"
     / "migrations"
     / "tenant"
-    / "008_preservacion_evento_no_evaluado.sql"
+    / "320_preservacion.sql"
 )
 
 _PDF_CONTENT = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ncontenido pdf real de prueba\n%%EOF"
@@ -401,24 +402,28 @@ async def test_run_pdfa_validation_never_raises_on_validator_error() -> None:
     assert result.profile == "2b"
 
 
-def test_migration_008_check_constraint_admits_no_evaluado() -> None:
-    """La migración 008 ensancha `resultado` a VARCHAR(16) y su CHECK admite
+def test_preservacion_evento_check_constraint_admits_no_evaluado() -> None:
+    """`preservacion_evento.resultado` es `character varying(16)` y su CHECK admite
     'no_evaluado' junto a 'ok'/'fallo' — sin esto, el INSERT del evento
     VALIDACION_PDFA con `resultado="no_evaluado"` violaría la constraint en
     Postgres real (el mock de `mock_conn` no lo verifica: los tests HTTP de
     arriba solo comprueban que el código INTENTA insertar ese valor, no que
     la BD lo aceptaría). Chequeo estático del SQL — sin abrir una conexión
     real (el run mandatado usa `--no-deps`, sin Postgres disponible)."""
-    sql = _MIGRATION_008_PATH.read_text(encoding="utf-8")
+    sql = _PRESERVACION_SQL_PATH.read_text(encoding="utf-8")
+    table_match = re.search(r"CREATE TABLE preservacion_evento \((.*?)\n\);", sql, re.DOTALL)
+    assert table_match, "no se encontró CREATE TABLE preservacion_evento en 320_preservacion.sql"
+    table = table_match.group(1)
 
-    assert "VARCHAR(16)" in sql
-    check_match = re.search(r"CHECK\s*\(resultado IN \(([^)]+)\)\)", sql)
-    assert check_match, "no se encontró el CHECK constraint de resultado en la migración 008"
+    assert re.search(r"^\s*resultado character varying\(16\) ", table, re.MULTILINE)
+    check_match = re.search(
+        r"CONSTRAINT preservacion_evento_resultado_check CHECK \(\(resultado IN \(([^)]+)\)\)\)", table
+    )
+    assert check_match, "no se encontró el CHECK constraint de resultado en 320_preservacion.sql"
     allowed_values = {v.strip().strip("'") for v in check_match.group(1).split(",")}
     assert allowed_values == {"ok", "fallo", "no_evaluado"}
 
-    # 'no_evaluado' (11 caracteres) debe caber en VARCHAR(16) — el motivo
-    # explícito por el que la migración ensancha la columna desde VARCHAR(8).
+    # 'no_evaluado' (11 caracteres) debe caber en la columna.
     assert len("no_evaluado") <= 16
 
 

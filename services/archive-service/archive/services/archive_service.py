@@ -836,7 +836,7 @@ class ArchiveService:
         cierre del no-read-up en `GET /preservacion/aip/{id}` de
         storage-service, RF-SEG-08). storage-service no modela
         `nivel_seguridad` sobre `aip` (solo conoce `expediente_id` como
-        string libre, ver `storage-service/migrations/tenant/004_aip.sql`) —
+        string libre, ver `services/docuboto/migrations/tenant/310_aip.sql`) —
         archive-service SÍ conoce la clasificación VIGENTE del expediente, así
         que resuelve el clearance del llamante y confirma visibilidad ANTES de
         mediar la llamada a storage-service, mismo criterio no-read-up que

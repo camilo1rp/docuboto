@@ -163,7 +163,7 @@ async def test_area_07_04_el_acta_ata_la_firma_y_la_huella_del_indice(
 # --- AREA-07-09: objeto obligatorio en la base (sin romper el histórico) -------
 
 
-async def test_area_07_09_objeto_obligatorio_en_bd_y_el_historico_sigue_operable(
+async def test_area_07_09_objeto_obligatorio_en_bd(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
@@ -177,26 +177,12 @@ async def test_area_07_09_objeto_obligatorio_en_bd_y_el_historico_sigue_operable
         Actor(id=uuid.uuid4(), username="itest"),
     )
 
-    # fila NUEVA (created_at = ahora) sin objeto: la base la rechaza
+    # sin objeto, o con uno de menos de tres caracteres: la base lo rechaza
     for malo in (None, "  ", "ab"):
         with pytest.raises(asyncpg.CheckViolationError):
             await conn.execute(
                 f'UPDATE "{schema}".transferencias SET objeto = $2 WHERE id = $1', resp.id, malo
             )
-
-    # fila ANTERIOR a la migración: sin objeto, y sigue pudiendo cambiar de estado (un
-    # CHECK ... NOT VALID a secas la dejaría sin poder avanzar nunca)
-    await conn.execute(
-        f'UPDATE "{schema}".transferencias SET objeto = NULL, '
-        "created_at = '2026-01-01T00:00:00+00' WHERE id = $1",
-        resp.id,
-    )
-    await conn.execute(
-        f"UPDATE \"{schema}\".transferencias SET estado = 'enviada' WHERE id = $1", resp.id
-    )
-    assert await conn.fetchval(
-        f'SELECT estado FROM "{schema}".transferencias WHERE id = $1', resp.id
-    ) == "enviada"
 
 
 # --- AREA-07-08: capa de privilegios sobre el acta -----------------------------
@@ -218,17 +204,9 @@ async def test_area_07_08_el_rol_de_la_app_no_puede_actualizar_el_acta(
     await TransferenciaService(conn, slug).recibir(
         transferencia.id, Actor(id=uuid.uuid4(), username="itest-recibe")
     )
-    # Estado equivalente al de producción (auth 008: UPDATE/DELETE sobre todo el tenant) y,
-    # encima, la migración 054 (idempotente) que retira lo concedido sobre el acta.
+    # Los privilegios sobre las tablas son los que deja la cadena (privilegios por defecto
+    # + el REVOKE sobre el acta); aquí solo se da el USAGE del schema desechable.
     await conn.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO orpycamcp_app')
-    await conn.execute(
-        f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "{schema}" TO orpycamcp_app'
-    )
-    from migrations import runner
-
-    revoke = next(p for p in runner._sql_files(runner.TENANT_DIR) if "054_" in p.name)
-    await conn.execute(f'SET search_path = "{schema}"')
-    await conn.execute(revoke.read_text())
 
     try:
         await conn.execute("SET ROLE orpycamcp_app")

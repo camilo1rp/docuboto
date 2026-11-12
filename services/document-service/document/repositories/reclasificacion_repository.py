@@ -24,7 +24,7 @@ import uuid
 import asyncpg
 
 #: Vigencia de una solicitud sin resolver. Está también como DEFAULT de la columna
-#: `vence_at` (migración 050); aquí solo se documenta, el valor lo pone la base.
+#: `vence_at` (`tenant/210_radicados.sql`); aquí solo se documenta, el valor lo pone la base.
 VIGENCIA_DIAS = 15
 
 _ESTADO_EFECTIVO = (

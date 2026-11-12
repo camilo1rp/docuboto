@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -428,51 +427,3 @@ async def test_list_worm_pending_actas_respects_backoff_and_agotado(
     assert backoff_futuro_id not in pending_ids
     assert agotado_id not in pending_ids
     assert ya_protegido_id not in pending_ids
-
-
-# ---------------------------------------------------------------------------
-# (g) Migración 030 -- idempotencia REAL (re-ejecución contra Postgres): el
-# schema del `tenant_ctx` ya aplicó esta migración una vez durante el
-# provisioning (`migrations/runner.py`); re-emitirla una SEGUNDA vez sobre el
-# MISMO schema no debe fallar (`ADD COLUMN IF NOT EXISTS` + `CREATE INDEX IF
-# NOT EXISTS`, sin ninguna sentencia que asuma estado previo sin
-# comprobarlo) y las columnas/índice deben seguir sirviendo el resto del
-# cableado con normalidad.
-# ---------------------------------------------------------------------------
-
-_MIGRATION_030_PATH = (
-    Path(__file__).resolve().parent.parent.parent
-    / "migrations"
-    / "tenant"
-    / "030_transferencia_acta_worm.sql"
-)
-
-
-@pytest.mark.integration
-async def test_migration_030_is_idempotent_on_real_postgres(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    slug, conn = tenant_ctx
-    schema = tenant_schema(slug)
-    sql = _MIGRATION_030_PATH.read_text(encoding="utf-8")
-
-    # Re-ejecuta la migración completa una SEGUNDA vez sobre el schema ya
-    # migrado por `tenant_ctx` -- no debe lanzar ninguna excepción.
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        await conn.execute(sql)
-
-    # El cableado sigue funcionando con normalidad tras la re-ejecución: se
-    # puede sembrar y proteger una acta como en cualquier otro test de este
-    # módulo.
-    transferencia_id, row = await _seed_acta_firmada(conn, slug, "itest migracion 030 idempotente")
-
-    with patch(
-        "archive.clients.storage_client.proteger_artefacto_worm_internal",
-        new=AsyncMock(return_value=_ok_outcome()),
-    ):
-        resultado = await TransferenciaService(conn, slug).proteger_worm_acta(
-            transferencia_id, actor_id=None, origen="reconciliation"
-        )
-
-    assert resultado == "protegido"

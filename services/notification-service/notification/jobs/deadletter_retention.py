@@ -63,9 +63,7 @@ logger = logging.getLogger(__name__)
 async def list_active_tenants(pool: asyncpg.Pool) -> list[str]:
     """Return the slugs of all tenants with status='active' and provisioning_status='active'.
 
-    Column names verified against tenant-service migrations:
-    - 001_create_tenants.sql   → slug, status
-    - 002_provisioning_status.sql → provisioning_status
+    Columns from `services/docuboto/migrations/global/040_tenants.sql`.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(

@@ -34,11 +34,12 @@ from storage.core.preservacion_tipos import (
 from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
 from tests.conftest import INTERNAL_HEADERS, make_worm_row
 
-_MIGRACION = (
-    pathlib.Path(__file__).resolve().parent.parent
+_PRESERVACION_SQL = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "docuboto"
     / "migrations"
     / "tenant"
-    / "021_preservacion_worm_sobre_fundamento.sql"
+    / "320_preservacion.sql"
 )
 
 
@@ -53,16 +54,20 @@ def test_son_dieciocho_y_son_instrumentos_de_control() -> None:
 
 
 def test_la_migracion_indexa_exactamente_los_dieciocho_por_expediente_tipo_file_id() -> None:
-    sql = _MIGRACION.read_text(encoding="utf-8")
-    sql_020 = (_MIGRACION.parent / "020_preservacion_worm_multi_artefacto.sql").read_text(encoding="utf-8")
-    m = re.search(r"ux_pwo_multi_artefacto_file\s+ON preservacion_worm_objeto \(([^)]*)\)(.*?);", sql, re.S)
+    sql = _PRESERVACION_SQL.read_text(encoding="utf-8")
+    m = re.search(
+        r"CREATE UNIQUE INDEX ux_pwo_multi_artefacto_file\s+ON preservacion_worm_objeto "
+        r"USING btree \(([^)]*)\)(.*?);",
+        sql,
+        re.S,
+    )
     assert m is not None
     assert [c.strip() for c in m.group(1).split(",")] == ["expediente_id", "tipo", "file_id"]
     assert frozenset(re.findall(r"'([^']+)'", m.group(2))) == MULTI_ARTEFACTO_TIPOS
-    # los singleton por (expediente) de la 019 desaparecen: dejarían bloqueada la 2.ª constancia
+    # no hay singleton por (expediente) para las constancias: dejaría bloqueada la 2.ª
     for r in ("elabora", "entrega", "recibe"):
-        assert f"DROP INDEX IF EXISTS ux_pwo_acta_firma_excepcion_{r};" in sql_020
-        assert f"DROP INDEX IF EXISTS ux_pwo_acta_firma_excepcion_personal_{r};" in sql_020
+        assert f"ux_pwo_acta_firma_excepcion_{r}" not in sql
+        assert f"ux_pwo_acta_firma_excepcion_personal_{r}" not in sql
 
 
 @pytest.mark.asyncio

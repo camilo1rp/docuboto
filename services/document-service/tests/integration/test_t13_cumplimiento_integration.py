@@ -38,6 +38,7 @@ import pytest
 from document.core.database import tenant_schema
 from document.schemas.document import DocumentCreate
 from document.services.document_service import DocumentService
+from tests.integration import conftest as ic
 from tests.integration.politica_stub import ENTIDAD, TenantConPolitica
 
 pytestmark = pytest.mark.integration
@@ -401,23 +402,6 @@ async def test_clasificar_retira_tambien_la_marca_de_los_anexos(tenant_ctx) -> N
     assert await conn.fetchval("SELECT publicable FROM anexos WHERE id = $1", anexo) is False
 
 
-@pytest.mark.asyncio
-async def test_la_migracion_040_conserva_lo_ya_publicado_y_es_idempotente(tenant_ctx) -> None:
-    from pathlib import Path
-
-    slug, conn = await _en(tenant_ctx)
-    pub, priv = await _radicado(conn, slug), await _radicado(conn, slug)
-    a_pub, a_priv = await _anexo(conn, pub), await _anexo(conn, priv)
-    await conn.execute("UPDATE radicados SET publicable = TRUE WHERE id = $1", pub)
-    # Simula el estado ANTERIOR a la migración: sin la columna.
-    await conn.execute("ALTER TABLE anexos DROP COLUMN publicable")
-    sql = (Path(__file__).parents[2] / "migrations/tenant/040_anexo_publicable.sql").read_text()
-    await conn.execute(sql)
-    assert await conn.fetchval("SELECT publicable FROM anexos WHERE id = $1", a_pub) is True
-    assert await conn.fetchval("SELECT publicable FROM anexos WHERE id = $1", a_priv) is False
-    await conn.execute(sql)  # idempotente: no vuelve a tocar nada
-
-
 # --------------------------------------------------------------------- AREA-09-04
 
 
@@ -439,27 +423,6 @@ async def test_un_insert_directo_clasificado_sin_fundamento_viola_el_check(tenan
         "clasificacion_causal = 'por_clasificar' WHERE id = $1",
         rid,
     )
-
-
-@pytest.mark.asyncio
-async def test_la_migracion_041_rellena_lo_heredado_y_valida(tenant_ctx) -> None:
-    from pathlib import Path
-
-    slug, conn = await _en(tenant_ctx)
-    rid = await _radicado(conn, slug)
-    await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_clasificado_con_fundamento")
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_causal = 'por_clasificar' WHERE id = $1", rid)  # heredado
-    sql = (
-        Path(__file__).parents[2] / "migrations/tenant/041_clasificado_con_fundamento.sql"
-    ).read_text()
-    await conn.execute(sql)
-    texto = await conn.fetchval("SELECT clasificacion_fundamento FROM radicados WHERE id = $1", rid)
-    assert texto.startswith("PENDIENTE DE MOTIVAR")
-    assert await conn.fetchval(
-        "SELECT convalidated FROM pg_constraint WHERE conname = 'radicados_clasificado_con_fundamento' "
-        "AND conrelid = 'radicados'::regclass"
-    ) is True
-    await conn.execute(sql)  # idempotente
 
 
 @pytest.mark.asyncio
@@ -652,8 +615,8 @@ async def test_alta_y_anulacion_tambien_pasan_por_el_outbox(tenant_ctx) -> None:
 
 async def _ventanilla_lista(conn) -> None:
     await conn.execute(
-        "INSERT INTO dependencias (codigo, nombre, activo, depe_rad_tp2) "
-        "VALUES (901, 'Ventanilla Única', true, true) ON CONFLICT DO NOTHING"
+        "INSERT INTO dependencias (codigo, sigla, nombre, activo, depe_rad_tp2) "
+        "VALUES (901, 'VU', 'Ventanilla Única', true, true) ON CONFLICT DO NOTHING"
     )
     await conn.execute(
         "INSERT INTO tipos_documentales (code, nombre, activo, admite_ventanilla_publica) "
@@ -809,9 +772,7 @@ async def test_el_lote_con_dependencia_inexistente_falla_el_item_sin_gastar_nume
     async with _tenant_registrado(conn, slug):
         actor = uuid.uuid4()
         # Límite de origen de la Salida: el responsable del lote tiene URD activa en la 1.
-        await conn.execute(
-            "INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 1)", actor
-        )
+        await ic.membership(conn, actor, 1)
         servicio = BatchService(conn, slug)
         job = await servicio.create_batch_documents(
             BatchDocumentsRequest(
@@ -856,11 +817,10 @@ async def test_la_derivacion_del_borrador_contra_las_tablas_reales(tenant_ctx) -
     slug, conn = await _en(tenant_ctx)
     autor = uuid.uuid4()
     await conn.execute(
-        "INSERT INTO dependencias (codigo, nombre) VALUES (20, 'Jurídica'), (9, 'Archivo')"
+        "INSERT INTO dependencias (codigo, sigla, nombre) VALUES (20, 'JUR', 'Jurídica'), (9, 'ARC', 'Archivo')"
     )
-    await conn.execute(
-        "INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 20), ($1, 9)", autor
-    )
+    await ic.membership(conn, autor, 20)
+    await ic.membership(conn, autor, 9)
     plantilla = await conn.fetchval(
         "INSERT INTO plantilla (nombre, tipo_documental, cuerpo) VALUES ('P', 'Oficio', 'x') "
         "RETURNING id"

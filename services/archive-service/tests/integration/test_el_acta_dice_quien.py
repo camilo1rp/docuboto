@@ -50,8 +50,9 @@ async def _sp(conn: asyncpg.Connection, slug: str) -> None:
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
-async def _crear_auth_users(conn: asyncpg.Connection, slug: str, columnas: str) -> None:
-    """Crea el catálogo de usuarios **con el esquema escrito en la sentencia**.
+async def _apartar_auth_users(conn: asyncpg.Connection, slug: str, columnas: str | None = None) -> None:
+    """Aparta el catálogo de usuarios real (despliegue parcial) y, si se pide, deja en su
+    lugar uno con OTRA forma, **con el esquema escrito en la sentencia**.
 
     Un `CREATE TABLE` sin cualificar depende del `search_path`, y si el primer
     esquema de la lista no está donde se cree, la tabla aterriza en `public` —
@@ -60,9 +61,10 @@ async def _crear_auth_users(conn: asyncpg.Connection, slug: str, columnas: str) 
     demás tests (pasó: dejó un `public.auth_users` sin `is_root` que tumbó ocho
     pruebas de otros ficheros, y el fallo apareció lejos de aquí).
     """
-    await conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{tenant_schema(slug)}".auth_users ({columnas})'
-    )
+    schema = tenant_schema(slug)
+    await conn.execute(f'ALTER TABLE "{schema}".auth_users RENAME TO auth_users_fuera')
+    if columnas is not None:
+        await conn.execute(f'CREATE TABLE "{schema}".auth_users ({columnas})')
 
 
 async def _acta_de_prueba(conn: asyncpg.Connection, slug: str, responsable: str):
@@ -93,7 +95,6 @@ async def _acta_de_prueba(conn: asyncpg.Connection, slug: str, responsable: str)
 async def test_los_tres_responsables_salen_con_su_nombre(tenant_ctx) -> None:
     slug, conn = tenant_ctx
     user_id = uuid.uuid4()
-    await _crear_auth_users(conn, slug, "id UUID PRIMARY KEY, username TEXT")
     await _sp(conn, slug)
     await conn.execute(
         "INSERT INTO auth_users (id, username) VALUES ($1, 'ARCHIVISTA')", user_id
@@ -114,7 +115,6 @@ async def test_un_responsable_que_no_es_usuario_no_rompe_la_lectura(tenant_ctx) 
     TEXTO a propósito — un `::uuid` haría fallar la consulta entera por una
     fila que ni se estaba preguntando."""
     slug, conn = tenant_ctx
-    await _crear_auth_users(conn, slug, "id UUID PRIMARY KEY, username TEXT")
 
     repo, transferencia_id = await _acta_de_prueba(conn, slug, "migracion-2019")
     acta = await repo.get_acta(transferencia_id)
@@ -125,10 +125,11 @@ async def test_un_responsable_que_no_es_usuario_no_rompe_la_lectura(tenant_ctx) 
 
 
 async def test_sin_catalogo_de_usuarios_el_acta_se_sigue_leyendo(tenant_ctx) -> None:
-    """El esquema de este tier NO tiene `auth_users`: es el caso del despliegue
-    parcial. El acta es el documento probatorio; el nombre, una cortesía."""
+    """Sin `auth_users` (despliegue parcial): el acta es el documento probatorio;
+    el nombre, una cortesía."""
     slug, conn = tenant_ctx
     responsable = str(uuid.uuid4())
+    await _apartar_auth_users(conn, slug)
 
     repo, transferencia_id = await _acta_de_prueba(conn, slug, responsable)
     acta = await repo.get_acta(transferencia_id)
@@ -144,7 +145,7 @@ async def test_auth_users_sin_columna_username_tampoco_rompe(tenant_ctx) -> None
     consulta moriría igual en `ue.username`."""
     slug, conn = tenant_ctx
     responsable = str(uuid.uuid4())
-    await _crear_auth_users(conn, slug, "id UUID PRIMARY KEY, is_root BOOLEAN")
+    await _apartar_auth_users(conn, slug, "id UUID PRIMARY KEY, is_root BOOLEAN")
 
     repo, transferencia_id = await _acta_de_prueba(conn, slug, responsable)
     acta = await repo.get_acta(transferencia_id)

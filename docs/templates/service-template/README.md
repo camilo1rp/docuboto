@@ -15,9 +15,6 @@ app/
   routers/health.py    # GET /health (verifica BD con SELECT 1)
   schemas/common.py    # HealthResponse
   services/  repositories/   # capas de negocio y acceso a datos (vacías)
-migrations/
-  runner.py            # aplica NNN_*.sql en orden; tracking en public._migrations
-  001_example.sql      # plantilla de migración (SQL crudo, idempotente)
 Dockerfile  requirements.txt  .env.example  pytest.ini  tests/test_health.py
 ```
 
@@ -39,7 +36,7 @@ Dockerfile  requirements.txt  .env.example  pytest.ini  tests/test_health.py
 3. **Registrar en `docker-compose.yml`** un bloque `build: ./services/<nombre>-service` con sus puertos, `DATABASE_URL`/`REDIS_URL`/Keycloak y `depends_on`.
 4. **Registrar las rutas** en `services/api-gateway/app/core/routes.py` (salvo `mcp-server`, que consume el gateway, no se enruta).
 5. **Cliente Keycloak** en el realm, si el servicio valida JWT.
-6. Renombrar/crear la primera migración `migrations/001_<algo>.sql` y borrar `001_example.sql`.
+6. Añadir las tablas del servicio a la cadena única, en `services/docuboto/migrations/` ([ADR-053](../../es/adr/ADR-053-esquema-legible-y-lanzamientos.md)).
 
 ## Convenciones que respeta (no romper)
 
@@ -48,13 +45,13 @@ Dockerfile  requirements.txt  .env.example  pytest.ini  tests/test_health.py
 - **Multi-tenant por schema** `tenant_{slug}` — [ADR-002](../../es/adr/ADR-002-multi-tenancy-schema-isolation.md); el `search_path` se fija por petición.
 - **Eventos** por Redis Streams `orpycamcp.<servicio>.events` — ver `documentos/specDrive/00-contrato-eventos.md`.
 - **Auditoría** vía la librería común contra `public.audit_log` — [ADR-008](../../es/adr/ADR-008-auditoria-inmutable.md).
-- **Migraciones** numeradas `NNN_*.sql`, idempotentes, aplicadas por `migrations/runner.py`.
+- **Migraciones** en la cadena única `services/docuboto/migrations/{global,tenant}/`, un archivo con nombre por tabla o grupo; las aplica `migrate-docuboto` — [ADR-053](../../es/adr/ADR-053-esquema-legible-y-lanzamientos.md).
 - Formato de error JSON `{error, detail, status}` y `redirect_slashes=False` (igual que los servicios existentes).
 
 ## Build y tests (siempre en Docker)
 
 ```bash
 docker compose up -d --build <nombre>-service
-docker compose exec <nombre>-service python migrations/runner.py
+docker compose run --rm migrate-docuboto
 docker compose exec <nombre>-service pytest -q
 ```

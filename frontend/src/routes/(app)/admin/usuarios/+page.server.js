@@ -15,7 +15,7 @@
  *   - usuarios (GET /auth/users, paginado, USUA_PERM_ADMIN en el backend)
  *   - grupos (GET /auth/groups) — el picker "rol" de la URD es en realidad
  *     un auth_groups (rol_id de urd_usuaroldep referencia auth_groups.id,
- *     ver services/auth-service/migrations/tenant/002_urd.sql)
+ *     ver services/docuboto/migrations/tenant/020_auth_groups.sql)
  *   - dependencias activas (GET /dependencias, tenant-service) — el picker
  *     "dependencia" de la URD usa `depe_id` = CÓDIGO entero de la dependencia
  *     (columna `codigo`), NO su UUID. No hay integridad referencial entre

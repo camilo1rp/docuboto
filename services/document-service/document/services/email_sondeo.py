@@ -30,8 +30,8 @@ correspondencia fuera de horario y quiere encontrarla ya en la bandeja.
 
 3. **No radicar sin responsable, tipo ni dependencia.** En modo automático nadie
    pulsa, así que la cuenta declara bajo qué funcionario radica
-   (`responsable_user_id`, migración 024), el código de la dependencia y el del
-   tipo documental (migración 053). Sin esos dos, una Entrada no puede nacer
+   (`responsable_user_id`), el código de la dependencia y el del
+   tipo documental. Sin esos dos, una Entrada no puede nacer
    (Ac. AGN 060/2001 §5.2) y reservar el correo solo lo retendría para fallar.
 
 El worker es **opt-in** (`EMAIL_SONDEO_ENABLED`) y arranca desactivado: un

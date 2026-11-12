@@ -10,15 +10,13 @@
 """
 init_tenant.py — Inicializar un nuevo tenant en OrpycaMCP.
 
-Aplica migraciones globales (public schema) y por-tenant para todos los servicios,
+Aplica la cadena de migraciones (ADR-053) a `public` y al esquema del tenant,
 registra el tenant en public.tenants y crea su cliente de servicio de inteligencia
 en el realm (ADR-045 §4). Ese cliente no entra en ALLOWED_AZP.
 
-Lo aplicado se anota en el libro único `public.schema_migrations`, compartido con
-`services/*/migrations/runner.py` (ver `orpycamcp_common.migrations`). Antes cada
-ejecutor llevaba su propia contabilidad con claves distintas y no se veían entre
-sí: uno reaplicaba lo que el otro ya había hecho, y el nombre desnudo del archivo
-—que se repite entre servicios— hacía saltar migraciones en silencio.
+Lo aplicado se anota en `public.schema_migrations`, el mismo libro y con el mismo
+cerrojo que `services/docuboto/migrations/runner.py` (ver
+`orpycamcp_common.migrations`).
 
 Uso:
     python scripts/init_tenant.py --slug icetex --name "ICETEX" --code "ICETEX"
@@ -40,120 +38,16 @@ import asyncpg
 from orpycamcp_common import migrations as ledger
 
 # ---------------------------------------------------------------------------
-# Rutas a las migraciones de cada servicio
-# (relativas a la raíz del proyecto, montada en /project dentro del contenedor)
+# The one migration chain (ADR-053): `global/` to `public`, `tenant/` to the
+# schema of the new tenant. Same ledger and same lock as the runner.
 # ---------------------------------------------------------------------------
 
 BASE = Path(__file__).parent.parent
-
-# Each entry points to the service root; _sql_files() appends the sub-dir.
-# Migrations live in migrations/global/*.sql  (schema public)
-#                  and migrations/tenant/*.sql  (schema tenant_{slug}).
-# Fuente numerada de cada dominio: el import del libro antiguo las usa para
-# devolverle el servicio a un nombre desnudo. El SQL que se APLICA en un
-# tenant nuevo es el baseline concatenado (APLICAR_*), no estas carpetas.
-GLOBAL_MIGRATIONS = [
-    BASE / "services" / "auth-service"   / "migrations" / "global",
-    BASE / "services" / "tenant-service" / "migrations" / "global",
-    BASE / "services" / "document-service"  / "migrations" / "global",
-]
-
-# ORDEN: `auth-service` primero (RBAC/usuarios) y `tenant-service` a continuación
-# por ser fundacional (dependencias, parámetros, catálogos, PINAR); los servicios
-# de dominio después; `knowledge-service` al final, por ser una capa DERIVADA
-# (no fuente de verdad — ADR-046).
-#
-# Esta lista debe cubrir TODO servicio con `migrations/tenant/`. Al añadir un
-# servicio nuevo, añadirlo también aquí Y regenerar el baseline: una omisión
-# no da error: el tenant se provisiona "bien" y el servicio falla en runtime
-# contra tablas inexistentes.
-TENANT_MIGRATIONS = [
-    BASE / "services" / "auth-service"    / "migrations" / "tenant",
-    BASE / "services" / "tenant-service"    / "migrations" / "tenant",
-    BASE / "services" / "document-service"  / "migrations" / "tenant",
-    BASE / "services" / "storage-service"   / "migrations" / "tenant",
-    BASE / "services" / "workflow-service"  / "migrations" / "tenant",
-    BASE / "services" / "archive-service"   / "migrations" / "tenant",
-    BASE / "services" / "signature-service" / "migrations" / "tenant",
-    BASE / "services" / "notification-service" / "migrations" / "tenant",
-    BASE / "services" / "knowledge-service" / "migrations" / "tenant",
-]
-
-APLICAR_GLOBAL = [BASE / "services" / "docuboto" / "migrations" / "global"]
-APLICAR_TENANT = [BASE / "services" / "docuboto" / "migrations" / "tenant"]
-SERVICIO_BASELINE = "docuboto"
+MIGRATIONS_DIR = BASE / "services" / "docuboto" / "migrations"
 
 
 def _dsn(raw: str) -> str:
     return raw.replace("postgresql+asyncpg://", "postgresql://")
-
-
-def _sql_files(directory: Path) -> list[Path]:
-    """Return sorted, numerically-prefixed .sql files in *directory*.
-
-    Returns an empty list when the directory does not exist so that services
-    without a given sub-dir (e.g. no global migrations) are silently skipped.
-    """
-    if not directory.is_dir():
-        return []
-    return sorted(
-        f for f in directory.glob("*.sql")
-        if re.match(r"^\d+_", f.name)
-    )
-
-
-def _servicio_de(migrations_dir: Path) -> str:
-    """…/services/<svc>/migrations/<ámbito> → `<svc>`."""
-    return migrations_dir.parent.parent.name
-
-
-def _mapa_servicios(dirs: list[Path]) -> dict[str, list[str]]:
-    """`{archivo: [servicios que lo declaran]}` para el import del libro único.
-
-    Es lo que permite devolverle el servicio a las entradas antiguas, que
-    guardaban el nombre desnudo. Cuatro nombres los declaran DOS servicios
-    (`002_batch_jobs.sql` en archive/document; `005`, `006` y `007` de
-    dead-letter en notification/signature): la ambigüedad no se puede resolver
-    leyendo el registro, y `orpycamcp_common.migrations` la resuelve avisando en
-    vez de en silencio.
-    """
-    mapa: dict[str, list[str]] = {}
-    for d in dirs:
-        for path in _sql_files(d):
-            mapa.setdefault(path.name, []).append(_servicio_de(d))
-    return mapa
-
-
-# ---------------------------------------------------------------------------
-# Migraciones globales — se anotan en el libro único public.schema_migrations
-# ---------------------------------------------------------------------------
-
-def _provision_antigua(aplicadas: set[tuple[str, str]]) -> bool:
-    return any(svc != SERVICIO_BASELINE for svc, _nombre in aplicadas)
-
-
-async def apply_global_migrations(conn: asyncpg.Connection) -> None:
-    aplicadas = await ledger.applied(conn, ledger.ESQUEMA_GLOBAL)
-    if _provision_antigua(aplicadas):
-        for migrations_dir in APLICAR_GLOBAL:
-            servicio = _servicio_de(migrations_dir)
-            for path in _sql_files(migrations_dir):
-                await ledger.record(conn, ledger.ESQUEMA_GLOBAL, servicio, path.name)
-                print(f"  [global] stamp {servicio}/{path.name}")
-        return
-    for migrations_dir in APLICAR_GLOBAL:
-        servicio = _servicio_de(migrations_dir)
-        for path in _sql_files(migrations_dir):
-            if (servicio, path.name) in aplicadas:
-                print(f"  [global] skip  {servicio}/{path.name}")
-                continue
-            print(f"  [global] apply {servicio}/{path.name}")
-            # En transacción, igual que los runners (C19): sin DDL huérfano del libro.
-            async with conn.transaction():
-                await conn.execute(path.read_text())
-                await ledger.record(conn, ledger.ESQUEMA_GLOBAL, servicio, path.name)
-            # Alimentar el conjunto en caliente: se leyó UNA vez antes del bucle.
-            aplicadas.add((servicio, path.name))
 
 
 # ---------------------------------------------------------------------------
@@ -169,41 +63,6 @@ async def provision_schema(conn: asyncpg.Connection, slug: str) -> None:
     if await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = 'orpycamcp_app'"):
         await conn.execute(f"GRANT USAGE ON SCHEMA {schema} TO orpycamcp_app")
         print(f"  [schema] GRANT USAGE ON {schema} TO orpycamcp_app")
-
-
-# ---------------------------------------------------------------------------
-# Migraciones por tenant — mismo libro único, con `schema_name = tenant_{slug}`.
-#
-# Antes vivían en `tenant_{slug}._migrations`, invisible para el registro que usa
-# `services/*/migrations/runner.py` (`public._tenant_migrations`): provisionar
-# con un ejecutor y actualizar con el otro reaplicaba TODAS las migraciones.
-# ---------------------------------------------------------------------------
-
-async def apply_tenant_migrations(conn: asyncpg.Connection, slug: str) -> None:
-    schema = f"tenant_{slug.replace('-', '_')}"
-    await conn.execute(f"SET search_path = \"{schema}\"")
-    aplicadas = await ledger.applied(conn, schema)
-    if _provision_antigua(aplicadas):
-        for migrations_dir in APLICAR_TENANT:
-            servicio = _servicio_de(migrations_dir)
-            for path in _sql_files(migrations_dir):
-                await ledger.record(conn, schema, servicio, path.name)
-                print(f"  [{schema}] stamp {servicio}/{path.name}")
-        await conn.execute("SET search_path = public")
-        return
-    for migrations_dir in APLICAR_TENANT:
-        servicio = _servicio_de(migrations_dir)
-        for path in _sql_files(migrations_dir):
-            if (servicio, path.name) in aplicadas:
-                print(f"  [{schema}] skip  {servicio}/{path.name}")
-                continue
-            print(f"  [{schema}] apply {servicio}/{path.name}")
-            async with conn.transaction():
-                await conn.execute(path.read_text())
-                await ledger.record(conn, schema, servicio, path.name)
-            aplicadas.add((servicio, path.name))
-    # Restaurar search_path al terminar
-    await conn.execute("SET search_path = public")
 
 
 # ---------------------------------------------------------------------------
@@ -791,34 +650,19 @@ async def main(slug: str, name: str, code: str) -> None:
     conn = await asyncpg.connect(dsn=dsn)
 
     try:
-        # Mismo cerrojo global que los runners (C19, ADR-041): provisionar un tenant
-        # mientras arranca un migrate-<svc> ya no los deja pisarse.
+        # Mismo cerrojo global que el runner (C19, ADR-041): provisionar un tenant
+        # mientras arranca `migrate-docuboto` no los deja pisarse.
         async with ledger.cerrojo(conn):
-            print("\n── Libro de migraciones ──────────────────────────────────────")
             await ledger.ensure_ledger(conn)
-            # Import único de los tres registros antiguos. Este ejecutor ve los
-            # directorios de todos los servicios, así que puede atribuir cada nombre
-            # desnudo; un nombre que no reconoce es una migración retirada del
-            # código y merece aviso (de ahí `ignorar_desconocidos` por defecto).
-            for aviso in await ledger.importar_libros_antiguos(
-                conn,
-                servicios_por_archivo_global=_mapa_servicios(
-                    GLOBAL_MIGRATIONS + APLICAR_GLOBAL
-                ),
-                servicios_por_archivo_tenant=_mapa_servicios(
-                    TENANT_MIGRATIONS + APLICAR_TENANT
-                ),
-            ):
-                print(aviso)
 
             print("\n── Migraciones globales (public schema) ──────────────────────")
-            await apply_global_migrations(conn)
+            await ledger.apply_chain(conn, MIGRATIONS_DIR / "global", ledger.ESQUEMA_GLOBAL)
 
-            print(f"\n── Schema del tenant: tenant_{slug.replace('-', '_')} ─────")
+            print(f"\n── Schema del tenant: {esquema_de(slug)} ─────")
             await provision_schema(conn, slug)
 
             print("\n── Migraciones por tenant ────────────────────────────────────")
-            await apply_tenant_migrations(conn, slug)
+            await ledger.apply_chain(conn, MIGRATIONS_DIR / "tenant", esquema_de(slug))
 
             print("\n── Registro en public.tenants ────────────────────────────────")
             await register_tenant(conn, slug, name, code)

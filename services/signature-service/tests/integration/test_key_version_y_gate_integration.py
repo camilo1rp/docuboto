@@ -32,6 +32,7 @@ from signature.core.config import settings
 from signature.core.database import _schema as tenant_schema
 from signature.repositories.firma_repository import FirmaRepository
 from signature.services import signer
+from tests.integration.conftest import insert_expediente, insert_radicado
 
 pytestmark = pytest.mark.asyncio
 
@@ -131,21 +132,9 @@ async def test_gate_no_read_up_contra_radicados_y_expedientes_reales(tenant_ctx)
     """El gate en el WHERE: nivel del objeto > clearance -> la consulta no devuelve
     la fila. Por identidad natural (número/código) y por UUID."""
     slug, conn = await _en_tenant(tenant_ctx)
-    await conn.execute(
-        "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "tracking_number text, nivel_seguridad int NOT NULL)"
-    )
-    await conn.execute(
-        "CREATE TABLE expedientes (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "code text, nivel_seguridad int NOT NULL)"
-    )
-    pub = await conn.fetchval(
-        "INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ('R-PUB', 1) RETURNING id"
-    )
-    res = await conn.fetchval(
-        "INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ('R-RES', 3) RETURNING id"
-    )
-    await conn.execute("INSERT INTO expedientes (code, nivel_seguridad) VALUES ('E-RES', 2)")
+    pub = await insert_radicado(conn, "R-PUB", 1)
+    res = await insert_radicado(conn, "R-RES", 3)
+    await insert_expediente(conn, "E-RES", 2)
 
     repo = FirmaRepository(conn)
     f_pub = await _firma_sobre(conn, "R-PUB")
@@ -170,5 +159,7 @@ async def test_gate_sin_tablas_de_nivel_no_rompe_la_verificacion(tenant_ctx) -> 
     """Tenant sin document-/archive-service: sin ``radicados``/``expedientes`` la
     consulta cae al camino por tablas presentes y la firma se lee."""
     slug, conn = await _en_tenant(tenant_ctx)
+    # La cadena crea ambas tablas en todo tenant: su ausencia se simula.
+    await conn.execute("DROP TABLE radicados, expedientes CASCADE")
     f = await _firma_sobre(conn, "cualquiera")
     assert await FirmaRepository(conn).get(f, max_clearance=1) is not None

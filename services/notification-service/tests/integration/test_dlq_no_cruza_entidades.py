@@ -23,13 +23,13 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import asyncpg
 import pytest
 import pytest_asyncio
 
+from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 from notification.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [
@@ -41,7 +41,6 @@ GRUPO = "notification-service"
 # Dos entidades = dos schemas; el gate califica `radicados` con el de la entidad que pregunta.
 A = "itest-aa"
 B = "itest-bb"
-_MIGRACIONES = Path(__file__).resolve().parents[2] / "migrations" / "tenant"
 # Allowlist fail-closed del host: este tier crea y destruye un schema.
 _HOSTS = frozenset({"postgres", "localhost", "127.0.0.1", "db"})
 
@@ -60,31 +59,18 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     c = await asyncpg.connect(_dsn())
     schema = "tenant_itest_bb"
     schema_a = "tenant_itest_aa"
-    await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-    await c.execute(f'DROP SCHEMA IF EXISTS "{schema_a}" CASCADE')
-    await c.execute(f'CREATE SCHEMA "{schema}"')
-    await c.execute(f'CREATE SCHEMA "{schema_a}"')
-    radicados = (  # el gate de clearance de la DLQ lee `radicados` (document-service)
-        "CREATE TABLE {}.radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "tracking_number varchar(50) NOT NULL UNIQUE, nivel_seguridad smallint NOT NULL)"
-    )
+    for esquema in (schema, schema_a):
+        await drop_tenant_schema(c, esquema)
     try:
-        # La DLQ física es una (en `bb`); `aa` solo aporta su propia `radicados`.
+        # Las dos entidades con la cadena de tenant REAL; el `search_path` resuelve la
+        # DLQ en `bb`, y el gate califica `radicados` con el schema de quien pregunta.
+        for esquema in (schema, schema_a):
+            await provision_tenant_schema(c, esquema)
         await c.execute(f'SET search_path TO "{schema}", "{schema_a}"')
-        await c.execute(radicados.format(f'"{schema}"'))
-        await c.execute(radicados.format(f'"{schema_a}"'))
-        for nombre in (
-            "005_evento_dead_letter.sql",
-            "006_deadletter_status.sql",
-            "007_deadletter_origin_group_notnull_index.sql",
-            "010_dead_letter_pk_por_grupo.sql",  # el INSERT usa ON CONFLICT (origin_group, event_id)
-        ):
-            await c.execute((_MIGRACIONES / nombre).read_text())
         yield c
     finally:
-        assert schema.startswith("tenant_itest_")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await c.execute(f'DROP SCHEMA IF EXISTS "{schema_a}" CASCADE')
+        for esquema in (schema, schema_a):
+            await drop_tenant_schema(c, esquema)
         await c.close()
 
 

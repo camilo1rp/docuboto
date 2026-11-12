@@ -32,7 +32,7 @@ from auth.core.signing_keys import (
     private_key_to_pem,
 )
 from auth.jobs import signing_key_maintenance as job
-from tests.integration.conftest import DSN, RUN_INTEGRATION, ensure_audit_log
+from tests.integration.conftest import DSN, RUN_INTEGRATION
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -103,7 +103,6 @@ async def _run(conn: asyncpg.Connection, slug: str) -> job.TenantResult:
 
 async def _prep(tenant_ctx: tuple[str, asyncpg.Connection]) -> tuple[str, asyncpg.Connection]:
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
     return slug, conn
 
 

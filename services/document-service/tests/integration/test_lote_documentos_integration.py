@@ -46,6 +46,7 @@ import pytest_asyncio
 from document.core.database import acquire_tenant, close_pool, create_pool
 from document.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
 from document.services.batch_service import BatchService
+from tests.integration import conftest as ic
 
 pytestmark = pytest.mark.asyncio
 
@@ -182,9 +183,7 @@ async def test_los_items_quedan_con_su_numero_de_radicado(
 
         actor = uuid.uuid4()
         # Límite de origen de la Salida: el responsable del lote tiene URD activa en la 1.
-        await conn.execute(
-            "INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 1)", actor
-        )
+        await ic.membership(conn, actor, 1)
         servicio = BatchService(conn, slug)
         job_id = await servicio.create_batch_documents(
             BatchDocumentsRequest(

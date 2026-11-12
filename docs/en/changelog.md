@@ -10,6 +10,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(docuboto,shared,infra,scripts)!`: **ADR-053 §1–2 — one readable migration chain and one runner.**
+  *Why*: the schema lived in three places (289 numbered migrations across nine services, a generated 21,178-line baseline, and ten copies of `runner.py`), and nobody could read it at a glance. With no installation holding data, the history served no one.
+  *What changes*: the chain lives in `services/docuboto/migrations/`: 5 files in `global/` and 34 in `tenant/`, each named after what it creates (`210_radicados.sql`, `510_expedientes.sql`). One `runner.py`; `scripts/init_tenant.py` uses the same `orpycamcp_common.migrations` functions (`apply_chain`, `migrate`). The `public.schema_migrations` ledger is keyed by `(schema_name, filename)`. The nine `migrate-<service>` containers are gone from both manifests: every service waits on `migrate-docuboto`. `scripts/generar_baseline.py`, the legacy-ledger import and `public._migrations` in `scripts/init-db.sql` are removed. The previous chains are archived, not executable, in `docs/es/historia/esquema/`.
+  *Tests*: both chains applied to an empty PostgreSQL 17 give the same `pg_dump --schema-only` of the tenant schema, byte for byte and with two tenants, and the same seed data; a second run applies nothing. `shared/tests/test_migration_chain.py` requires one runner, no per-service chain, no baseline, and `NNN_name.sql` names with no repeated number.
+  *Impact*: deliberate differences in `public`: `auth_audit_logs` (obsolete since ADR-010), `_migrations` and `_tenant_migrations` no longer exist; `pgcrypto` is not installed; `chk_audit_log_hash_forma` is born validated; every monthly `audit_log` partition rejects `TRUNCATE` with `reject_audit_log_mutation_d03()`. An existing development volume must be recreated with `scripts/reset-entorno.sh`.
+
 ### Fixed
 
 - `fix(shared,gateway,auth,tenant,document,archive,storage,workflow,signature,notification,knowledge,mcp,infra,frontend)!`: **Block C — the 22 decisions of the 2026-10-09 triage and B10's open debt (ADR-037 to ADR-044).** This selection covers what an evaluator sees; the Spanish changelog has the complete record.

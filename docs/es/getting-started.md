@@ -114,7 +114,7 @@ Las disposiciones finales en español se mapean a los códigos de OrpycaMCP (`co
 python3 scripts/migrate_trd_from_fondecund.py \
   mi_entidad_trd.json \
   --tenant-slug mi_entidad \
-  --output services/archive-service/migrations/003_trd_mi_entidad.sql
+  --output services/archive-service/migrations/seeds/trd_mi_entidad.sql
 ```
 
 **3. Aplicar la migración en el schema del tenant:**
@@ -122,7 +122,7 @@ python3 scripts/migrate_trd_from_fondecund.py \
 ```bash
 docker compose exec postgres psql -U orpycamcp -d orpycamcp_db \
   -c "SET search_path TO tenant_mi_entidad;" \
-  -f services/archive-service/migrations/003_trd_mi_entidad.sql
+  -f services/archive-service/migrations/seeds/trd_mi_entidad.sql
 ```
 
 **Retención y dependencia productora (C-4).** El script exige `retencion_gestion` **y** `retencion_central` en el JSON de origen (se detiene nombrando la serie que no los traiga: no inventa tiempos de retención). Una serie sembrada así queda `migrada` o `borrador` y **sin dependencia productora**; para que gobierne y aparezca en el cuadro de clasificación, abra una versión nueva con `dependencias_productoras` (`POST /api/v1/trd/{code}/versiones`), apruébela y conválidela.

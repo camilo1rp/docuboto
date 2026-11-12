@@ -40,29 +40,6 @@ async def _sp(conn: asyncpg.Connection, slug: str) -> None:
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
-async def _crear_catalogos(conn: asyncpg.Connection, slug: str) -> None:
-    """`auth_users`, `urd_usuaroldep` y `dependencias` las crean auth-service y
-    tenant-service. Aquí se levantan con la forma MÍNIMA que la consulta usa, y
-    con el esquema escrito en la sentencia: un `CREATE TABLE` sin cualificar
-    aterriza en `public` —el único esquema compartido por todas las entidades—
-    y contamina el resto de la suite."""
-    schema = tenant_schema(slug)
-    await conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{schema}".auth_users '
-        "(id UUID PRIMARY KEY, username TEXT, active_depe_id INTEGER)"
-    )
-    await conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{schema}".urd_usuaroldep '
-        "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID, depe_id INTEGER, "
-        "es_principal BOOLEAN DEFAULT FALSE, is_active BOOLEAN DEFAULT TRUE)"
-    )
-    await conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{schema}".dependencias '
-        "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), parent_id UUID, "
-        "codigo INTEGER UNIQUE, sigla TEXT, nombre TEXT)"
-    )
-
-
 async def _sembrar_organigrama(conn: asyncpg.Connection) -> None:
     """Secretaría General (100) con la Oficina de Contratación (120) colgando."""
     padre = await conn.fetchval(
@@ -80,7 +57,6 @@ async def test_la_oficina_es_la_dependencia_activa_y_la_unidad_es_su_padre(
     tenant_ctx,
 ) -> None:
     slug, conn = tenant_ctx
-    await _crear_catalogos(conn, slug)
     await _sp(conn, slug)
     await _sembrar_organigrama(conn)
     user_id = uuid.uuid4()
@@ -104,7 +80,6 @@ async def test_sin_contexto_activo_manda_la_urd_principal(tenant_ctx) -> None:
     blanco sería perder el dato teniéndolo: su URD principal dice a qué
     dependencia pertenece."""
     slug, conn = tenant_ctx
-    await _crear_catalogos(conn, slug)
     await _sp(conn, slug)
     await _sembrar_organigrama(conn)
     user_id = uuid.uuid4()
@@ -113,8 +88,9 @@ async def test_sin_contexto_activo_manda_la_urd_principal(tenant_ctx) -> None:
         user_id,
     )
     await conn.execute(
-        "INSERT INTO urd_usuaroldep (user_id, depe_id, es_principal, is_active) "
-        "VALUES ($1, 120, TRUE, TRUE)",
+        "WITH rol AS (INSERT INTO auth_groups (name) VALUES ('itest-rol') RETURNING id) "
+        "INSERT INTO urd_usuaroldep (user_id, depe_id, rol_id, es_principal, is_active) "
+        "SELECT $1, 120, rol.id, TRUE, TRUE FROM rol",
         user_id,
     )
 
@@ -129,7 +105,6 @@ async def test_una_urd_inactiva_no_cuenta(tenant_ctx) -> None:
     """Control negativo: una URD dada de baja no puede seguir declarando la
     oficina productora de un acta que se firma."""
     slug, conn = tenant_ctx
-    await _crear_catalogos(conn, slug)
     await _sp(conn, slug)
     await _sembrar_organigrama(conn)
     user_id = uuid.uuid4()
@@ -138,8 +113,9 @@ async def test_una_urd_inactiva_no_cuenta(tenant_ctx) -> None:
         user_id,
     )
     await conn.execute(
-        "INSERT INTO urd_usuaroldep (user_id, depe_id, es_principal, is_active) "
-        "VALUES ($1, 120, TRUE, FALSE)",
+        "WITH rol AS (INSERT INTO auth_groups (name) VALUES ('itest-rol') RETURNING id) "
+        "INSERT INTO urd_usuaroldep (user_id, depe_id, rol_id, es_principal, is_active) "
+        "SELECT $1, 120, rol.id, TRUE, FALSE FROM rol",
         user_id,
     )
 
@@ -152,7 +128,6 @@ async def test_una_oficina_raiz_es_su_propia_unidad_administrativa(tenant_ctx) -
     """Sin padre no hay hueco que dejar: la oficina raíz ES su unidad
     administrativa. Repetirla dice la verdad; dejarla vacía no."""
     slug, conn = tenant_ctx
-    await _crear_catalogos(conn, slug)
     await _sp(conn, slug)
     await conn.execute(
         "INSERT INTO dependencias (codigo, sigla, nombre) "
@@ -173,11 +148,12 @@ async def test_una_oficina_raiz_es_su_propia_unidad_administrativa(tenant_ctx) -
 
 
 async def test_sin_los_catalogos_de_otros_servicios_degrada_a_none(tenant_ctx) -> None:
-    """Un esquema provisionado SOLO con las migraciones de archivo no tiene
-    `dependencias` ni `auth_users`. La preparación de la transferencia no puede
-    morir por eso: la cabecera queda declaradamente vacía, que es exactamente lo
-    que pasaba siempre antes de esta migración."""
+    """Sin `dependencias` ni `auth_users` (despliegue parcial), la preparación de la
+    transferencia no puede morir: la cabecera queda declaradamente vacía."""
     slug, conn = tenant_ctx
+    schema = tenant_schema(slug)
+    await conn.execute(f'ALTER TABLE "{schema}".dependencias RENAME TO dependencias_fuera')
+    await conn.execute(f'ALTER TABLE "{schema}".auth_users RENAME TO auth_users_fuera')
     await _sp(conn, slug)
 
     depe = await TransferenciaRepository(conn, slug).dependencia_de_usuario(uuid.uuid4())
@@ -192,9 +168,9 @@ async def test_auth_users_sin_active_depe_id_tambien_degrada(tenant_ctx) -> None
     y fallar igual. La guarda mira la COLUMNA."""
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
+    await conn.execute(f'ALTER TABLE "{schema}".auth_users RENAME TO auth_users_fuera')
     await conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{schema}".auth_users '
-        "(id UUID PRIMARY KEY, is_root BOOLEAN DEFAULT FALSE)"
+        f'CREATE TABLE "{schema}".auth_users (id UUID PRIMARY KEY, is_root BOOLEAN DEFAULT FALSE)'
     )
     await _sp(conn, slug)
 
