@@ -213,6 +213,7 @@ nano .env
 
 | Variable | Description | Example |
 |---|---|---|
+| `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 of 32 bytes) that encrypts the intelligence service client's secret. **`init_tenant.py` will not create an entity without it**, with or without the intelligence overlay (ADR-053 §5) | `<openssl rand -base64 32>` |
 | `DB_USER` | PostgreSQL user | `orpycamcp_prod` |
 | `DB_PASSWORD` | PostgreSQL password (32+ characters) | `<openssl rand -base64 32>` |
 | `REDIS_PASSWORD` | Redis password (32+ characters) | `<openssl rand -base64 32>` |
@@ -571,6 +572,39 @@ In cron, redirected to a log **someone actually reads**:
 ```bash
 0 2 * * * ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/backup.sh \
             >> /var/log/orpyca-backup.log 2>&1
+```
+
+### Secrets bundle (ADR-053 §5)
+
+The dump and the object store are useless without the keys that read them:
+`infra/.env` (every KEK; losing `SIGNING_KEY_ENCRYPTION_KEY` makes the held
+private signing keys unrecoverable) and `secrets/signing`, `secrets/tsa` and
+`secrets/ca-users-public`. They go into a **sealed bundle**, `gpg --symmetric`
+(AES-256) with a password the operator keeps **off the server**:
+
+```bash
+ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/seal-secrets.sh
+```
+
+It asks for the password twice (16 characters minimum) or reads it from
+`SECRETS_PASSPHRASE_FILE`; it writes `secrets-<date>.tar.gpg` to
+`$BACKUP_DIR/secrets/` and opens it again before accepting it. A cron job cannot
+type a password that is not on the server, so **sealing is manual**: at install
+time and after every secrets change (a new entity with its seal, the TSA, a KEK
+rotation, any `.env` change).
+
+Every `backup.sh` run copies the latest bundle into the backup (`secrets.tar.gpg`)
+and writes `secretos=OK|AUSENTE|DESACTUALIZADO` into the seal. If it is missing or
+any secret is newer than it, the backup still completes but **exits with 6**. The
+weekly drill fails when the latest backup lacks a current bundle; with
+`SECRETS_PASSPHRASE_FILE` it also opens it and compares it file by file with the
+live secrets.
+
+To recover it on a new server, from the project root:
+
+```bash
+gpg --pinentry-mode loopback --decrypt secrets-<date>.tar.gpg | tar -xf -
+sha256sum -c MANIFEST && rm MANIFEST
 ```
 
 ### Restore

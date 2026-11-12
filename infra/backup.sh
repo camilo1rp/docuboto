@@ -9,7 +9,8 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 #
 #
-# backup.sh — Respaldo completo de OrpycaMCP (PostgreSQL + MinIO).
+# backup.sh — Respaldo completo de OrpycaMCP (PostgreSQL + MinIO + el paquete de
+# secretos sellado por `seal-secrets.sh`, ADR-053 §5).
 #
 # Uso:
 #   ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
@@ -480,6 +481,28 @@ else
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# 4b. Paquete de secretos (ADR-053 §5)
+# ---------------------------------------------------------------------------
+# El volcado y el almacén no sirven sin `infra/.env` (las KEK) ni `secrets/`
+# (sellos, TSA, CA de usuarios): perder SIGNING_KEY_ENCRYPTION_KEY deja
+# irrecuperables las claves privadas custodiadas. Esos secretos los sella el
+# operador con `seal-secrets.sh` y una contraseña que NO está en este servidor
+# (un cron no puede teclearla). Aquí se copia el último paquete al respaldo y se
+# comprueba que ningún secreto es más nuevo que él. Si falta o está viejo, el
+# respaldo se completa igual (el paquete viejo se copia: es mejor que nada),
+# pero queda sellado con `secretos=AUSENTE|DESACTUALIZADO` y sale con 6.
+
+# shellcheck source=lib-secrets.sh
+. "$SCRIPT_DIR/lib-secrets.sh"
+SECRETS_BUNDLE_DIR="${SECRETS_BUNDLE_DIR:-$BACKUP_DIR/secrets}"
+echo "── Paquete de secretos..."
+SECRETOS="$(secrets_bundle_state "$SECRETS_BUNDLE_DIR" "$PROJECT_ROOT" "$ENV_FILE")"
+if [ "$SECRETOS" != "AUSENTE" ]; then
+    cp "$(latest_secrets_bundle "$SECRETS_BUNDLE_DIR")" "$DESTINO/secrets.tar.gpg"
+    chmod 600 "$DESTINO/secrets.tar.gpg"
+fi
+echo "   secretos=$SECRETOS"
 
 # ---------------------------------------------------------------------------
 # 5. Sellar y purgar
@@ -508,6 +531,7 @@ fi
     echo "verificacion_auditoria=$VERIFICACION_AUDITORIA"
     echo "retencion_capturada_completa=$RETENCION_COMPLETA"
     echo "versiones_previas_capturadas=$VERSIONES_PREVIAS_COMPLETAS"
+    echo "secretos=$SECRETOS"
 } > "$DESTINO/OK"
 chmod 600 "$DESTINO/OK"
 
@@ -535,4 +559,9 @@ if [ "$VERSIONES_PREVIAS_COMPLETAS" != "SI" ]; then
     echo "✗ ATENCIÓN: respaldo completo y sellado, pero las versiones PREVIAS bajo COMPLIANCE o" >&2
     echo "  retención legal no se respaldaron por completo (versiones_previas_capturadas=NO). Salida 5." >&2
     exit 5
+fi
+if [ "$SECRETOS" != "OK" ]; then
+    echo "✗ ATENCIÓN: respaldo completo y sellado, pero el paquete de secretos falta o es más" >&2
+    echo "  viejo que algún secreto (secretos=$SECRETOS). Corra infra/seal-secrets.sh. Salida 6." >&2
+    exit 6
 fi

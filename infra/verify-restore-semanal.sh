@@ -10,9 +10,16 @@
 #
 #
 # verify-restore-semanal.sh — Restaura el último respaldo OK en un Postgres
-# desechable y comprueba la cadena de auditoría. No toca el despliegue vivo.
+# desechable y comprueba la cadena de auditoría y el paquete de secretos
+# (ADR-053 §5). No toca el despliegue vivo.
 #
 #   ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/verify-restore-semanal.sh
+#
+# El paquete de secretos se sella con una contraseña que no está en el servidor,
+# así que el cron solo puede comprobar que está, que el sello lo da por vigente y
+# que su envoltura es la esperada. Con SECRETS_PASSPHRASE_FILE (el operador, a
+# mano, al menos una vez al mes y tras cada rotación) además se abre y se
+# compara, fichero a fichero, con `infra/.env` y `secrets/` vivos.
 #
 # En cron (domingo 03:00):
 #   0 3 * * 0 ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/verify-restore-semanal.sh \
@@ -99,3 +106,24 @@ if ! "${COMPOSE[@]}" run --rm --no-deps -T \
 fi
 rm -f "$ENTRADA"
 echo "── cadena de auditoría OK sobre $(basename "$ORIGEN")"
+
+# shellcheck source=lib-secrets.sh
+. "$SCRIPT_DIR/lib-secrets.sh"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PAQUETE="$ORIGEN/secrets.tar.gpg"
+SELLO_SECRETOS="$(sed -n 's/^secretos=//p' "$ORIGEN/OK")"
+if [ "$SELLO_SECRETOS" != "OK" ] || [ ! -s "$PAQUETE" ]; then
+    echo "ERROR: el respaldo no lleva un paquete de secretos vigente (secretos=${SELLO_SECRETOS:-sin anotar})." >&2
+    echo "       Sin infra/.env y secrets/ el volcado no se puede poner en marcha: corra infra/seal-secrets.sh." >&2
+    exit 1
+fi
+if ! secrets_bundle_looks_sealed "$PAQUETE"; then
+    echo "ERROR: $PAQUETE no es un paquete gpg simétrico AES-256." >&2
+    exit 1
+fi
+if [ -n "${SECRETS_PASSPHRASE_FILE:-}" ]; then
+    compare_secrets_bundle "$PAQUETE" "$SECRETS_PASSPHRASE_FILE" "$PROJECT_ROOT" "$ENV_FILE" || exit 1
+    echo "── paquete de secretos abierto y idéntico a lo vivo"
+else
+    echo "── paquete de secretos presente y vigente (sin SECRETS_PASSPHRASE_FILE no se abre)"
+fi

@@ -173,9 +173,10 @@ test-unit-shared:
     # `cryptography` es el extra `kek` de shared/: `test_kek.py` lo importa.
     - pip install --quiet pytest pytest-asyncio pyyaml packaging cryptography
     # git y los tags: el guardián de expandir/contraer (ADR-053 §4) sabe a qué
-    # lanzamiento pertenece cada migración por el último tag `X.Y.Z`. Sin git,
-    # en CI falla en vez de saltarse.
-    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
+    # lanzamiento pertenece cada migración por el último tag `X.Y.Z`. gnupg: las
+    # pruebas del paquete de secretos (ADR-053 §5) sellan y abren uno de verdad.
+    # Sin ellos, en CI fallan en vez de saltarse.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git gnupg >/dev/null
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
     - git fetch --tags --quiet || true
   script:

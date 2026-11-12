@@ -227,6 +227,7 @@ nano .env
 | `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar. **El servicio no arranca sin ella** | `<openssl rand -base64 32>` |
 | `MINIO_ROOT_USER` | Usuario del almacén de objetos. **storage-service no arranca sin él** | `orpyca_prod` |
 | `WEBHOOK_SECRET_KEK` | KEK (base64 de 32 bytes) que cifra en reposo el secreto HMAC de los webhooks. **notification-service no arranca sin ella**; distinta de las demás KEK | `<openssl rand -base64 32>` |
+| `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 de 32 bytes) que cifra el secreto del cliente de servicio de inteligencia. **`init_tenant.py` no da de alta una entidad sin ella**, con o sin el fragmento intelligence (ADR-053 §5) | `<openssl rand -base64 32>` |
 | `KNOWLEDGE_INTERNAL_TOKEN` | Token de ingesta interna (E21). Vacío ⇒ ingesta fail-closed | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | Host SMTP | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | Contraseña o token de aplicación SMTP | `app-specific-password` |
@@ -607,6 +608,39 @@ En cron, redirigiendo a un log **que alguien mire**:
 ```bash
 0 2 * * * ENV_FILE=/srv/orpyca/infra/.env /srv/orpyca/infra/backup.sh \
             >> /var/log/orpyca-backup.log 2>&1
+```
+
+### Paquete de secretos (ADR-053 §5)
+
+El volcado y el almacén no sirven sin las claves que los leen: `infra/.env` (todas
+las KEK; perder `SIGNING_KEY_ENCRYPTION_KEY` hace irrecuperables las claves
+privadas de firma custodiadas) y `secrets/signing`, `secrets/tsa` y
+`secrets/ca-users-public`. Esos secretos van en un **paquete sellado** con `gpg
+--symmetric` (AES-256) y una contraseña que el operador guarda **fuera del
+servidor**:
+
+```bash
+ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/seal-secrets.sh
+```
+
+Pide la contraseña dos veces (mínimo 16 caracteres) o la lee de
+`SECRETS_PASSPHRASE_FILE`; escribe `secrets-<fecha>.tar.gpg` en
+`$BACKUP_DIR/secrets/` y lo reabre antes de darlo por bueno. Un cron no puede
+teclear una contraseña que no está en el servidor, así que **se sella a mano**: al
+instalar y después de cada cambio de secretos (entidad nueva con su sello, TSA,
+rotación de una KEK, cambio del `.env`).
+
+Cada `backup.sh` copia el último paquete al respaldo (`secrets.tar.gpg`) y anota
+`secretos=OK|AUSENTE|DESACTUALIZADO` en el sello. Si falta o algún secreto es más
+nuevo que él, el respaldo se completa igual pero **sale con 6**. El ensayo semanal
+falla si el último respaldo no lo lleva vigente; con `SECRETS_PASSPHRASE_FILE`
+además lo abre y lo compara fichero a fichero con lo vivo.
+
+Recuperarlo en un servidor nuevo, desde la raíz del proyecto:
+
+```bash
+gpg --pinentry-mode loopback --decrypt secrets-<fecha>.tar.gpg | tar -xf -
+sha256sum -c MANIFEST && rm MANIFEST
 ```
 
 ### Restauración
