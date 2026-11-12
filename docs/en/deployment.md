@@ -703,6 +703,10 @@ A version is a **git tag `X.Y.Z`** (the first one, `1.0.0`). Pushing the tag run
    Release. Nothing is deployed by a loose SHA or a mutable tag.
 4. **Deploy**, one job per installation (see below).
 
+Without Actions minutes, `./scripts/ci-local.sh all` runs the same jobs as
+`ci.yml` locally (uv, Docker and Node 22) and writes one PASS/FAIL per job to
+`$TMPDIR/docuboto-ci-local/results.txt`. It mirrors `ci.yml`; it does not replace it.
+
 The production manifest **does not build**: every first-party service starts from
 `image: ${ORPYCA_REGISTRY}/<service>:${ORPYCA_VERSION}`, both mandatory (`:?`). A guard
 (`shared/tests/test_prod_inmutable.py`) prevents reintroducing `build:` or `latest`;
