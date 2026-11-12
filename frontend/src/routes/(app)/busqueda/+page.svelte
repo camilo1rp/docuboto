@@ -375,7 +375,10 @@
       const body = await res.json();
       if (!res.ok) {
         semanticaResults = null;
-        semanticaError = mensajeConocimiento(body, "No se pudo completar la búsqueda por conocimiento.");
+        semanticaError = mensajeConocimiento(
+          body,
+          "No se pudo completar la búsqueda por conocimiento.",
+        );
       } else {
         semanticaResults = body.results ?? [];
         semanticaError = null;
@@ -942,10 +945,7 @@
                   <StatusChip status={sim.variant} label={sim.label} dot={true} />
                 </div>
                 <p class="result-card__snippet">{hit.texto}</p>
-                <div
-                  class="result-card__score"
-                  title="Relevancia del ranking de texto completo"
-                >
+                <div class="result-card__score" title="Relevancia del ranking de texto completo">
                   <div class="result-card__score-track">
                     <div
                       class="result-card__score-fill"
@@ -1137,10 +1137,7 @@
                   <StatusChip status={sim.variant} label={sim.label} dot={true} />
                 </div>
                 <p class="result-card__snippet">{ant.snippet}</p>
-                <div
-                  class="result-card__score"
-                  title="Relevancia del ranking de texto completo"
-                >
+                <div class="result-card__score" title="Relevancia del ranking de texto completo">
                   <div class="result-card__score-track">
                     <div
                       class="result-card__score-fill"

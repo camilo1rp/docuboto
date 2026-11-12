@@ -110,23 +110,25 @@ function choice(key, label, options) {
  * @returns {CampoExtracto[]}
  */
 export function camposBase(catalogos) {
-  return [
-    choice("direction", "Tipo de radicado", catalogos.direccion),
-    choice("doc_class", "Tipo documental", catalogos.tipos),
-    choice("nivel_seguridad", "Nivel de seguridad", catalogos.niveles),
-    choice("origin_dept_code", "Dependencia origen", catalogos.dependencias),
-    choice("dest_dept_code", "Dependencia destino", catalogos.dependencias),
-    { key: "subject", kind: "text", label: "Asunto" },
-    { key: "sender_name", kind: "text", label: "Remitente" },
-    { key: "sender_entity", kind: "text", label: "Entidad" },
-    { key: "pages", kind: "number", label: "Folios" },
-    { key: "response_days", kind: "number", label: "Plazo" },
-    {
-      key: "details",
-      kind: "text",
-      label: "Hechos y detalles que constan en el documento",
-    },
-  ].filter(Boolean);
+  return /** @type {CampoExtracto[]} */ (
+    [
+      choice("direction", "Tipo de radicado", catalogos.direccion),
+      choice("doc_class", "Tipo documental", catalogos.tipos),
+      choice("nivel_seguridad", "Nivel de seguridad", catalogos.niveles),
+      choice("origin_dept_code", "Dependencia origen", catalogos.dependencias),
+      choice("dest_dept_code", "Dependencia destino", catalogos.dependencias),
+      { key: "subject", kind: "text", label: "Asunto" },
+      { key: "sender_name", kind: "text", label: "Remitente" },
+      { key: "sender_entity", kind: "text", label: "Entidad" },
+      { key: "pages", kind: "number", label: "Folios" },
+      { key: "response_days", kind: "number", label: "Plazo" },
+      {
+        key: "details",
+        kind: "text",
+        label: "Hechos y detalles que constan en el documento",
+      },
+    ].filter(Boolean)
+  );
 }
 
 /**

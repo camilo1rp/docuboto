@@ -354,6 +354,8 @@ export function clearPkceCookies(cookies) {
  *   `(app)/+layout.server.js`, best-effort (puede quedar `null`).
  * @property {boolean} [asistente_habilitado]
  *   La entidad activó el asistente (ADR-037, `GET /auth/me`); `false` si no se pudo comprobar.
+ * @property {"local"|"ppi"} [intelligence_provider]
+ *   Proveedor de inteligencia de la entidad (`GET /auth/me`); `"local"` si no se pudo comprobar.
  * @property {boolean} [permisosDegradados]
  *   `true` cuando `GET /auth/me` no respondió: la sesión sigue viva pero sin
  *   permisos granulares. Sin este campo, el menú vacío que resulta es

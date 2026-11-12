@@ -16,8 +16,7 @@
  * cuando el anexo está en el radicado abierto; si no, al radicado citado.
  */
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const ALOJAMIENTO = {
   installation: "de la instalación",

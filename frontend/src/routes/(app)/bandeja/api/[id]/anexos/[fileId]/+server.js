@@ -20,8 +20,7 @@
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** @type {import('./$types').RequestHandler} */
 export async function GET({ locals, params }) {

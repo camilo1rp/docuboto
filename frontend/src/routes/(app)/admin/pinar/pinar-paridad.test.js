@@ -24,7 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
-const ROUTER = resolve(AQUI, "../../../../../../services/tenant-service/app/routers/pinar.py");
+const ROUTER = resolve(AQUI, "../../../../../../services/tenant-service/tenant/routers/pinar.py");
 
 /** `"VERBO /ruta/{}"` → motivo. */
 const SIN_PUERTA = /** @type {Record<string, string>} */ ({});

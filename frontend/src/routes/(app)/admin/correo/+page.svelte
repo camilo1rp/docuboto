@@ -139,9 +139,7 @@
       }
       if (cuerpo.modo === "automatica") {
         if (!cuerpo.dest_dept_code || !cuerpo.doc_class || !cuerpo.responsable_user_id) {
-          notifyError(
-            "Una cuenta automática necesita la dependencia, el tipo y el responsable.",
-          );
+          notifyError("Una cuenta automática necesita la dependencia, el tipo y el responsable.");
           return;
         }
         cuerpo.dest_dept_code = Number(cuerpo.dest_dept_code);
