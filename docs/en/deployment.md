@@ -21,12 +21,20 @@
 
 ### Minimum hardware
 
-For a small to medium institution (< 5000 users):
+One figure, for an entity of **up to 50 staff** (ADR-053 §6):
 
-- **CPU**: 4 cores (x86-64 or ARM64)
-- **RAM**: 16 GB
-- **Storage**: 500 GB SSD for PostgreSQL + 1-5 TB for the object store (depending on document volume)
-- **Bandwidth**: 100 Mbps
+**2 vCPU / 4 GB / 20 GB SSD**
+
+plus whatever object storage the archive's growth needs (attachments and
+preservation packages live there, not on the system disk). This is the only
+hardware figure in the documentation: any other is a mistake.
+
+A guard (`shared/tests/test_hardware_figure.py`) adds up the `deploy.resources.limits`
+of the default profile in `infra/docker-compose.prod.yml` and fails if they exceed
+this figure. **Today they do** (13.5 CPU / 20.75 GB of limits: Keycloak and Redis are still there, not counting
+the `split` profile): the figure is the redesign's target (ADR-047,
+ADR-048, ADR-049), and the guard is marked as a strict expected failure until the
+manifest fits. When it fits, the mark comes off.
 
 ### Software
 
@@ -139,7 +147,7 @@ What each domain publishes:
 
 | Domain | Target | Note |
 |---|---|---|
-| `ORPYCA_REGISTRY` / `ORPYCA_TAG` | Image registry and the immutable tag to deploy (the commit SHA; never `latest`). **Mandatory** (`:?`): without them no `docker compose` command starts | `registry.example.org/orpyca` / `<sha>` |
+| `ORPYCA_REGISTRY` / `ORPYCA_VERSION` | Image registry and the version to deploy (an `X.Y.Z` tag; never `latest`). **Mandatory** (`:?`) in `docker-compose.prod.yml`; `release-<version>.yml` no longer uses them because it pins every image by digest | `ghcr.io/camilo1rp/docuboto` / `1.0.0` |
 | `FRONTEND_HOSTNAME` | `frontend:3000` | HSTS; the SSR emits the other headers |
 | `API_PUBLIC_HOSTNAME` | `api-gateway:8080` | `/health/ready` only from the `edge` container itself (`127.0.0.1`); probe it with `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. The network gateway's IP (`172.20.0.1`) is **not** allowed: it is what nginx sees for any internet client |
 | `KEYCLOAK_HOSTNAME` | `keycloak:8080` | **allow-list**: only `/realms/orpycamcp/` and `/resources/`; everything else (including `/admin/`, `/realms/master`, `/realms/master;x/…`) answers 404, and so does any path containing `;` |
@@ -205,6 +213,7 @@ nano .env
 
 | Variable | Description | Example |
 |---|---|---|
+| `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 of 32 bytes) that encrypts the intelligence service client's secret. **`init_tenant.py` will not create an entity without it**, with or without the intelligence overlay (ADR-053 §5) | `<openssl rand -base64 32>` |
 | `DB_USER` | PostgreSQL user | `orpycamcp_prod` |
 | `DB_PASSWORD` | PostgreSQL password (32+ characters) | `<openssl rand -base64 32>` |
 | `REDIS_PASSWORD` | Redis password (32+ characters) | `<openssl rand -base64 32>` |
@@ -392,8 +401,8 @@ docker compose restart document-service tenant-service auth-service
 
 ```bash
 # 1. Clone the repository
-git clone https://gitlab.com/orpyca/orfeo_mcp.git
-cd orfeo_mcp
+git clone https://github.com/camilo1rp/docuboto.git /srv/orpyca
+cd /srv/orpyca && git checkout 1.0.0
 
 # 2. Create the directory structure
 mkdir -p infra/certs infra/logs
@@ -565,6 +574,39 @@ In cron, redirected to a log **someone actually reads**:
             >> /var/log/orpyca-backup.log 2>&1
 ```
 
+### Secrets bundle (ADR-053 §5)
+
+The dump and the object store are useless without the keys that read them:
+`infra/.env` (every KEK; losing `SIGNING_KEY_ENCRYPTION_KEY` makes the held
+private signing keys unrecoverable) and `secrets/signing`, `secrets/tsa` and
+`secrets/ca-users-public`. They go into a **sealed bundle**, `gpg --symmetric`
+(AES-256) with a password the operator keeps **off the server**:
+
+```bash
+ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/seal-secrets.sh
+```
+
+It asks for the password twice (16 characters minimum) or reads it from
+`SECRETS_PASSPHRASE_FILE`; it writes `secrets-<date>.tar.gpg` to
+`$BACKUP_DIR/secrets/` and opens it again before accepting it. A cron job cannot
+type a password that is not on the server, so **sealing is manual**: at install
+time and after every secrets change (a new entity with its seal, the TSA, a KEK
+rotation, any `.env` change).
+
+Every `backup.sh` run copies the latest bundle into the backup (`secrets.tar.gpg`)
+and writes `secretos=OK|AUSENTE|DESACTUALIZADO` into the seal. If it is missing or
+any secret is newer than it, the backup still completes but **exits with 6**. The
+weekly drill fails when the latest backup lacks a current bundle; with
+`SECRETS_PASSPHRASE_FILE` it also opens it and compares it file by file with the
+live secrets.
+
+To recover it on a new server, from the project root:
+
+```bash
+gpg --pinentry-mode loopback --decrypt secrets-<date>.tar.gpg | tar -xf -
+sha256sum -c MANIFEST && rm MANIFEST
+```
+
 ### Restore
 
 ```bash
@@ -646,33 +688,50 @@ Repeat it on your own installation at least once, and after every major upgrade.
 
 ## Upgrades and rollback
 
-> **There was no procedure.** No upgrade section, no command to migrate tenants
-> that already exist —the only runner is `scripts/init_tenant.py`, designed for
-> PROVISIONING and with the source tree mounted—, and no immutable tag to return
-> to: the manifest builds from source on the server itself, so "the previous
-> version" was not a thing that existed anywhere.
+### Releases (ADR-053 §3)
 
-### First things first: the version has to be a thing
+A version is a **git tag `X.Y.Z`** (the first one, `1.0.0`). Pushing the tag runs
+`.github/workflows/release.yml`:
 
-The production manifest (`infra/docker-compose.prod.yml`) **does not build**: every
-first-party service starts from `image: ${ORPYCA_REGISTRY}/<service>:${ORPYCA_TAG}`, and
-both variables are **mandatory** (`:?`; without them no `docker compose` command starts).
-The GitLab `build-images` job publishes `$CI_REGISTRY_IMAGE/<service>:$CI_COMMIT_SHA`
-(scanned with Trivy first), so `ORPYCA_REGISTRY=$CI_REGISTRY_IMAGE` and `ORPYCA_TAG=<sha>`
-name a version that exists and can be returned to. A guard
-(`shared/tests/test_prod_inmutable.py`) prevents reintroducing `build:` or a `latest` tag.
+1. **Full CI** on the tag (`ci.yml`).
+2. **Images.** It builds every image in `scripts/release.py plan` (the same list as
+   `infra/docker-compose.build.yml`) with `ORPYCA_VERSION=<version>` baked in, scans
+   it with Trivy (a CRITICAL with a fix available stops everything **before** the
+   push) and publishes it as `ghcr.io/<owner>/docuboto/<service>:<version>`.
+3. **`release-<version>.yml`.** A copy of `infra/docker-compose.prod.yml` with every
+   image **pinned by digest** (`…:<version>@sha256:…`), attached to the GitHub
+   Release. Nothing is deployed by a loose SHA or a mutable tag.
+4. **Deploy**, one job per installation (see below).
 
-Without a registry, build on the server itself with the
-`infra/docker-compose.build.yml` override (it tags each image with the same name, so the
-SHA stays on the host and rollback still works):
+The production manifest **does not build**: every first-party service starts from
+`image: ${ORPYCA_REGISTRY}/<service>:${ORPYCA_VERSION}`, both mandatory (`:?`). A guard
+(`shared/tests/test_prod_inmutable.py`) prevents reintroducing `build:` or `latest`;
+another (`shared/tests/test_release.py`) requires the release manifest to pin every
+image by digest.
+
+**What runs in this municipality** is a query, not a guess:
 
 ```bash
-export ORPYCA_REGISTRY=local ORPYCA_TAG=$(git rev-parse HEAD)
-docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml build
+curl -s https://<domain>/health            # {"status":"ok","service":"docuboto","version":"1.0.0"}
+docker compose -f infra/docker-compose.prod.yml exec postgres \
+  psql -U "$DB_USER" -d "$DB_NAME" -c \
+  "SELECT version, applied_at FROM public.schema_version ORDER BY applied_at DESC LIMIT 1"
 ```
 
-`infra/DOCKER_REGISTRY.md` documents the GitLab registry (`build-images` in
-`.gitlab-ci.yml`); there is no GitHub Actions pipeline in this repository.
+The migrator records its version in `public.schema_version` every time it runs.
+
+GHCR images are private when first published: make them public (the code is AGPL)
+or, on the server, `docker login ghcr.io` with a `read:packages`-only token.
+
+Without a registry, build on the server itself from the tag with the
+`infra/docker-compose.build.yml` override:
+
+```bash
+git checkout 1.0.0
+export ORPYCA_REGISTRY=local ORPYCA_VERSION=1.0.0
+docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml \
+  build --build-arg ORPYCA_VERSION=1.0.0
+```
 
 ### Migrations on startup
 
@@ -693,8 +752,8 @@ global lock** (`orpycamcp_common.migrations.cerrojo`, `pg_try_advisory_lock` on 
 `pg_locks`). Whoever doesn't get it retries every half second up to `MIGRATIONS_LOCK_TIMEOUT_S` (600 s by
 default). When the deadline passes, it exits with a readable error ("another migration has held the lock for N s
 (pid …)"), `service_completed_successfully` isn't met, and **the service doesn't start**. Repeating `up -d` or
-scaling replicas is safe. Step 4 below remains valid to run the migrations by hand **before** starting, for
-example to watch their output.
+scaling replicas is safe. To watch them run by hand **before** starting:
+`docker compose -f infra/release-<version>.yml run --rm --no-deps migrate-docuboto`.
 
 **Development.** `docker-compose.yml` does the same: `docker compose up -d --build` builds the images, runs
 `migrate-docuboto`, and only then starts each service. The migrator reuses the `orpycamcp/app:dev` image
@@ -710,54 +769,81 @@ docker compose build app <svc>-service \
 If the migrator fails, the `&&` doesn't recreate the service. Recreating with the **same** image
 (`up -d --no-build --no-deps <svc>-service`) needs no migration: the migrator already applied it.
 
-### Procedure
+### Deploy
+
+The `deploy` job of `release.yml` runs once per installation: each municipality is a
+GitHub *environment* (with its own secrets and, optionally, a manual approval)
+listed in the repository variable `DEPLOY_TARGETS` (e.g. `["silvania"]`). Over SSH,
+with the server's host key pinned in `DEPLOY_KNOWN_HOSTS`, it:
+
+1. moves the server's clone (`DEPLOY_PATH`) to the tag;
+2. copies `release-<version>.yml` into `infra/`;
+3. runs `infra/deploy.sh <version>`.
+
+`infra/deploy.sh` does, in this order:
+
+1. **Backup, blocking.** `infra/backup.sh`; any exit other than 0 (including 3 to 6:
+   unanchored chain, incomplete retention, missing or stale secrets bundle) **stops
+   the deploy** and leaves the previous version running.
+2. `docker compose -f infra/release-<version>.yml pull`.
+3. `up -d`: `migrate-docuboto` runs first and the services wait for it to succeed.
+4. Waits until `app`'s `/health` answers with **that** version, and records it in
+   `infra/.deployed-version`.
+
+The SSH user needs Docker and write access to `DEPLOY_PATH`, nothing else; the key
+is used for this alone. By hand, on the server, it is the same:
 
 ```bash
-# 1. VERIFIED backup. Not "a backup": one that finished with the OK seal.
-ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
-
-# 2. Record the current version — this is what you go back to.
-docker compose -f infra/docker-compose.prod.yml images | tee /srv/orpyca/previous-version.txt
-
-# 3. Fetch the new version (without starting it yet).
-export ORPYCA_REGISTRY=<registry/project>   # e.g. registry.gitlab.com/group/orpycamcp
-export ORPYCA_TAG=<commit-sha>
-docker compose -f infra/docker-compose.prod.yml pull
-
-# 4. Migrations. The runner applies the chain to `public` and walks EVERY
-#    tenant_* schema it finds, so a newly provisioned tenant is not left behind.
-#    What is already applied is skipped: re-running is safe.
-#    Run them with the `migrate-docuboto` container, the only one that carries
-#    the OWNER connection.
-docker compose -f infra/docker-compose.prod.yml run --rm --no-deps migrate-docuboto
-
-# 5. Deploy.
-docker compose -f infra/docker-compose.prod.yml up -d
-
-# 6. Verify. The three checks that cover database, object store and identity:
-#    - a real user logging in
-#    - a radicado with an attachment: open it and DOWNLOAD it
-#    - GET /api/v1/audit/verify for one tenant
+cd /srv/orpyca && git fetch --tags && git checkout 1.0.0
+gh release download 1.0.0 -p 'release-1.0.0.yml' -D infra/   # or copy it from the Release
+./infra/deploy.sh 1.0.0
 ```
+
+Then check: a real user logging in, a radicado with an attachment (open it and
+**download** it) and `GET /api/v1/audit/verify` for one tenant.
 
 ### Rollback criteria
 
-Roll back if, after step 6, login fails, an attachment will not download, or the
-audit chain does not verify. Do not wait to "see if it settles": the cost of going
-back grows with every radicado that comes in.
+Roll back if login fails, an attachment will not download, or the audit chain does
+not verify. Do not wait to "see if it settles": the cost of going back grows with
+every radicado that comes in. Rolling back is deploying the previous version (its
+`release-<version>.yml` is still in `infra/`):
 
 ```bash
-export ORPYCA_REGISTRY=<registry/project>
-export ORPYCA_TAG=<previous-sha>
-docker compose -f infra/docker-compose.prod.yml up -d
+cat infra/.deployed-version        # the one running now
+git checkout 1.0.0 && ./infra/deploy.sh 1.0.0
 ```
 
-**Rolling back the CODE does not roll back the SCHEMA.** Migrations have no `down`,
-and that is deliberate: an automatic downgrade over archival data is more dangerous
-than the failure it tries to repair. If the new version changed the schema
-incompatibly, the real rollback is to **restore the step-1 backup** with
-`infra/restore.sh`, accepting the loss of everything since. That is why step 1 is
-not optional, and why upgrades belong in a low-activity window.
+### Expand, deploy, contract (ADR-053 §4)
+
+Migrations have no `down`, and that is deliberate: an automatic downgrade over
+archival data is more dangerous than the failure it tries to repair. Rolling back
+the code does roll back the installation, **because one release's schema still
+serves the previous release's code**. That is not hoped for: it is enforced.
+
+| Step | Rule |
+|---|---|
+| Expand | The new schema works with the previous code: new tables, new columns that are nullable or have a `DEFAULT`, indexes built `CONCURRENTLY`. |
+| Deploy | The new code writes to the new shape and still reads the old one when the new is missing. |
+| Contract | Only in the **next release**, once no code reads the old shape: drop columns and tables, in a new file. |
+
+A release is a git tag `X.Y.Z` (the first will be `1.0.0`). The guard
+`shared/tests/test_expand_contract.py` takes the chain files the latest tag does
+not have as the release in progress, and fails if any of them:
+
+- runs `DROP TABLE` or `DROP COLUMN` on something created in the same release;
+- runs `ALTER COLUMN … SET NOT NULL` on a column created in the same release;
+- adds a `NOT NULL` column without `DEFAULT` to a table that already existed.
+
+Also, **a file a tag already shipped is never edited**: the runner recorded it by
+name and will not apply it again. The change goes in a new file. What the guard
+cannot see (whether the previous release's code still reads the column this one
+drops) is a review item: contract only what the previous release's code stopped
+reading.
+
+With the rule kept, rolling back is the block above: point at the previous version.
+**The step-1 backup is not the rollback mechanism**; it is disaster recovery (a lost
+server, corrupted data), and it stays mandatory for that reason.
 
 ---
 
@@ -931,13 +1017,13 @@ differently per browser.
 ### Security audit
 
 `docker scan` has been **removed** from the Docker CLI. The pipeline scans every
-first-party image with [Trivy](https://trivy.dev) in the `build-images` job, **before**
+first-party image with [Trivy](https://trivy.dev) in the `images` job of `release.yml`, **before**
 publishing it: it fails on a `CRITICAL` vulnerability that has a fix available
 (`--ignore-unfixed`), so a vulnerable image never reaches the registry. By hand, with the
-immutable SHA tag (never `latest`):
+version (never `latest`):
 
 ```bash
-trivy image --severity CRITICAL --ignore-unfixed "$ORPYCA_REGISTRY/api-gateway:$ORPYCA_TAG"
+trivy image --severity CRITICAL --ignore-unfixed "$ORPYCA_REGISTRY/app:$ORPYCA_VERSION"
 trivy image --severity CRITICAL --ignore-unfixed postgres:15-bookworm
 ```
 

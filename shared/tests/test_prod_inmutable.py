@@ -10,13 +10,12 @@
 """Producción arranca de imágenes inmutables por SHA, o no hay vuelta atrás (AREA-13-09).
 
 `infra/docker-compose.prod.yml` tenía `build:` y ningún `image:`. Así, `docker
-compose pull` ignoraba los doce servicios propios y `ORPYCA_TAG=<sha-anterior>
-up -d` no volvía a ninguna versión: el procedimiento de vuelta atrás de
-`docs/es/deployment.md` no hacía nada, aunque `build-images` ya publicaba
-`$CI_REGISTRY_IMAGE/<svc>:$CI_COMMIT_SHA`.
+compose pull` ignoraba los doce servicios propios y volver a la versión anterior
+no volvía a nada: el procedimiento de vuelta atrás de `docs/es/deployment.md` no
+hacía nada. Hoy cada tag X.Y.Z publica `<registro>/<svc>:<versión>` (ADR-053 §3).
 
 Vigila: todo servicio propio del manifiesto de producción (los de `services/*/`
-con Dockerfile, más `frontend`) lleva `image:` con `${ORPYCA_TAG:?...}`
+con Dockerfile, más `frontend`) lleva `image:` con `${ORPYCA_VERSION:?...}`
 obligatorio, sin `latest` ni tag fijo escrito a mano, y NO lleva `build:` (la
 construcción local vive en `infra/docker-compose.build.yml`, que no se usa por
 defecto).
@@ -45,8 +44,8 @@ def test_todo_servicio_propio_lleva_imagen_con_tag_obligatorio() -> None:
         imagen = svc.get("image")
         if not isinstance(imagen, str):
             mal.append(f"{nombre}: sin `image:`")
-        elif "${ORPYCA_TAG:?" not in imagen:
-            mal.append(f"{nombre}: la imagen no exige `${{ORPYCA_TAG:?...}}`: {imagen}")
+        elif "${ORPYCA_VERSION:?" not in imagen:
+            mal.append(f"{nombre}: la imagen no exige `${{ORPYCA_VERSION:?...}}`: {imagen}")
         elif ":latest" in imagen:
             mal.append(f"{nombre}: usa latest: {imagen}")
         elif not imagen.rstrip().endswith("}") or "/" + nombre + ":" not in imagen:

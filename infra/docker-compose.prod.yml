@@ -323,10 +323,10 @@ services:
 
 
   app:
-    # Proceso unificado Docuboto 2.0. Imagen INMUTABLE publicada por
-    # `build-images` con el SHA del commit. Los nueve servicios de dominio y el
+    # Proceso unificado Docuboto 2.0. Imagen publicada por `release.yml` en cada
+    # tag X.Y.Z y fijada por digest en `release-<versión>.yml`. Los nueve servicios de dominio y el
     # api-gateway quedan en el perfil `split`.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/app:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/app:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
@@ -386,6 +386,10 @@ services:
       WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?WEBHOOK_SECRET_KEK es obligatoria (openssl rand -base64 32)}
       WEBHOOK_SECRET_KEKS: ${WEBHOOK_SECRET_KEKS:-{}}
       WEBHOOK_SECRET_KEK_ACTIVE_VERSION: ${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
+      # Cifra el secreto del cliente de servicio de inteligencia. `init_tenant.py`
+      # no da de alta una entidad sin ella (ADR-053 §5), con o sin el fragmento
+      # intelligence: por eso va aquí y no en docker-compose.intelligence.yml.
+      INTELLIGENCE_CREDENTIAL_KEK: ${INTELLIGENCE_CREDENTIAL_KEK:?INTELLIGENCE_CREDENTIAL_KEK es obligatoria (openssl rand -base64 32)}
       SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
       SIGNER_PROVIDER: ${SIGNER_PROVIDER:-xades_local}
       SIGNER_CERT_DIR: /run/secrets/signing
@@ -436,7 +440,7 @@ services:
         max-file: "3"
 
   worker:
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/worker:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/worker:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
@@ -505,10 +509,10 @@ services:
         max-file: "3"
 
   api-gateway:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/api-gateway:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/api-gateway:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     # Una réplica: 10 usuarios concurrentes no justifican más. Sin container_name
     # fijo, Compose nombra el contenedor.
     restart: unless-stopped
@@ -575,10 +579,10 @@ services:
         max-file: "3"
 
   auth-service:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/auth-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/auth-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-auth-service-prod
     restart: unless-stopped
     profiles: ["split"]
@@ -643,10 +647,10 @@ services:
         max-file: "3"
 
   tenant-service:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/tenant-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/tenant-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-tenant-service-prod
     restart: unless-stopped
     profiles: ["split"]
@@ -691,10 +695,10 @@ services:
         max-file: "3"
 
   document-service:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/document-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/document-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
     profiles: ["split"]
@@ -759,10 +763,10 @@ services:
         max-file: "3"
 
   storage-service:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/storage-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/storage-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
     profiles: ["split"]
@@ -836,10 +840,10 @@ services:
         max-file: "3"
 
   workflow-service:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/workflow-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/workflow-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-workflow-service-prod
     restart: unless-stopped
     profiles: ["split"]
@@ -881,10 +885,10 @@ services:
         max-file: "3"
 
   archive-service:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/archive-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/archive-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-archive-service-prod
     restart: unless-stopped
     profiles: ["split"]
@@ -935,10 +939,10 @@ services:
         max-file: "3"
 
   notification-service:
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/notification-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/notification-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-notification-service-prod
     restart: unless-stopped
     profiles: ["split"]
@@ -997,10 +1001,10 @@ services:
 
   signature-service:
     # Firma electrónica (E06). Contexto raíz: el Dockerfile instala shared/orpycamcp_common (ADR-010).
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/signature-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/signature-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-signature-service-prod
     restart: unless-stopped
     profiles: ["split"]
@@ -1089,10 +1093,10 @@ services:
   knowledge-service:
     # Capa de conocimiento (E21, ADR-046): sin modelos ni ingesta. /search y
     # /antecedentes consultan la búsqueda de texto completo de document-service.
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/knowledge-service:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/knowledge-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-knowledge-service-prod
     restart: unless-stopped
     profiles: ["split"]
@@ -1104,6 +1108,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
       DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
+      INTELLIGENCE_CREDENTIAL_KEK: ${INTELLIGENCE_CREDENTIAL_KEK:?INTELLIGENCE_CREDENTIAL_KEK es obligatoria (openssl rand -base64 32)}
       # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
     networks:
       - orpycamcp-net
@@ -1138,10 +1143,10 @@ services:
 
   mcp-server:
     # Capa MCP (E18): fachada cliente del api-gateway. Sin BD/Redis/MinIO.
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/mcp-server:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/mcp-server:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     container_name: orpycamcp-mcp-server-prod
     restart: unless-stopped
     environment:
@@ -1189,10 +1194,10 @@ services:
     #   - INTERNAL_* → cómo alcanza el SSR al gateway dentro de la red Docker
     # ORIGIN + PROTOCOL_HEADER/HOST_HEADER son IMPRESCINDIBLES tras un proxy: sin
     # ellos adapter-node deriva mal `url.origin` y arma un redirect_uri inválido.
-    # Imagen INMUTABLE publicada por `build-images` (.gitlab-ci.yml) con el SHA del
-    # commit. Volver a una versión anterior = `ORPYCA_TAG=<sha-anterior> up -d`.
+    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
+    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/frontend:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/frontend:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
     restart: unless-stopped
     environment:
@@ -1297,7 +1302,7 @@ services:
   # ─── Migraciones (un contenedor de un solo uso) ───
   migrate-docuboto:
     <<: *migracion
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. registry.gitlab.com/grupo/orpycamcp)}/app:${ORPYCA_TAG:?Tag inmutable requerido (SHA del commit; nunca latest)}
+    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/app:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 

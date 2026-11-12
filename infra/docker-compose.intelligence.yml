@@ -10,7 +10,6 @@ services:
   app:
     environment:
       PPI_PROVIDER_URL: ${PPI_PROVIDER_URL:?URL del proveedor en la red ppi}
-      INTELLIGENCE_CREDENTIAL_KEK: ${INTELLIGENCE_CREDENTIAL_KEK:?KEK del cliente de servicio}
       PPI_CAPABILITIES_PUBLIC_KEY: ${PPI_CAPABILITIES_PUBLIC_KEY:?clave pública de la declaración}
       PPI_CAPABILITIES_KID: ${PPI_CAPABILITIES_KID:?kid de la declaración}
       PPI_CALLBACK_BASE_URL: ${PPI_CALLBACK_BASE_URL:?origen de las URL de retorno}
@@ -19,7 +18,6 @@ services:
   knowledge-service:
     environment:
       PPI_PROVIDER_URL: ${PPI_PROVIDER_URL:?URL del proveedor en la red ppi}
-      INTELLIGENCE_CREDENTIAL_KEK: ${INTELLIGENCE_CREDENTIAL_KEK:?KEK del cliente de servicio}
       PPI_CAPABILITIES_PUBLIC_KEY: ${PPI_CAPABILITIES_PUBLIC_KEY:?clave pública de la declaración}
       PPI_CAPABILITIES_KID: ${PPI_CAPABILITIES_KID:?kid de la declaración}
       PPI_CALLBACK_BASE_URL: ${PPI_CALLBACK_BASE_URL:?origen de las URL de retorno}

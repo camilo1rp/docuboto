@@ -420,12 +420,19 @@ def test_backup_sale_con_5_si_las_versiones_previas_no_quedaron_respaldadas() ->
     _salida_final("OK", "NO", "NO", 4)
 
 
-def _salida_final(verif: str, ret: str, prev: str, codigo: int) -> None:
+def test_backup_sale_con_6_sin_paquete_de_secretos_vigente() -> None:
+    """ADR-053 §5: sin `infra/.env` ni `secrets/` el respaldo no se puede poner en marcha."""
+    _salida_final("OK", "SI", "SI", 6, secretos="AUSENTE")
+    _salida_final("OK", "SI", "SI", 6, secretos="DESACTUALIZADO")
+    _salida_final("OK", "NO", "SI", 4, secretos="AUSENTE")
+
+
+def _salida_final(verif: str, ret: str, prev: str, codigo: int, secretos: str = "OK") -> None:
     """El respaldo ya está completo y sellado: la supervisión se entera por el código de salida."""
     lineas = (RAIZ / "infra" / "backup.sh").read_text(encoding="utf-8").splitlines()
     i = next(n for n, l in enumerate(lineas) if l.startswith('echo "══ Respaldo COMPLETO'))
     r = subprocess.run(
-        ["bash", "-c", f'VERIFICACION_AUDITORIA={verif}\nRETENCION_COMPLETA={ret}\nVERSIONES_PREVIAS_COMPLETAS={prev}\nDESTINO=/x\n' + "\n".join(lineas[i:])],
+        ["bash", "-c", f'VERIFICACION_AUDITORIA={verif}\nRETENCION_COMPLETA={ret}\nVERSIONES_PREVIAS_COMPLETAS={prev}\nSECRETOS={secretos}\nDESTINO=/x\n' + "\n".join(lineas[i:])],
         capture_output=True, text=True, check=False, timeout=30,
     )
     assert r.returncode == codigo, r.stderr

@@ -25,13 +25,35 @@ RAIZ = Path(__file__).resolve().parents[2]
 COMPOSE_DEV = RAIZ / "docker-compose.yml"
 COMPOSE_E2E = RAIZ / "docker-compose.e2e.yml"
 COMPOSE_PROD = RAIZ / "infra" / "docker-compose.prod.yml"
-GITLAB_CI = RAIZ / ".gitlab-ci.yml"
+WORKFLOWS = RAIZ / ".github" / "workflows"
+CI_WORKFLOW = WORKFLOWS / "ci.yml"
+RELEASE_WORKFLOW = WORKFLOWS / "release.yml"
+AUDIT_WORKFLOW = WORKFLOWS / "dependency-audit.yml"
 
 
 def cargar(ruta: Path) -> dict[str, Any]:
     data = yaml.safe_load(ruta.read_text(encoding="utf-8"))
     assert isinstance(data, dict), f"{ruta} no es un mapa YAML"
     return data
+
+
+def job(ruta: Path, nombre: str) -> dict[str, Any]:
+    """Un trabajo de un workflow de GitHub Actions."""
+    jobs = cargar(ruta).get("jobs") or {}
+    assert nombre in jobs, f"{ruta.name} no tiene el trabajo {nombre!r}"
+    return dict(jobs[nombre])
+
+
+def disparadores(ruta: Path) -> dict[str, Any]:
+    """La clave `on:` de un workflow. PyYAML (YAML 1.1) la lee como `True`."""
+    data = cargar(ruta)
+    on = data.get("on", data.get(True))
+    return {on: None} if isinstance(on, str) else dict(on or {})
+
+
+def guion(trabajo: dict[str, Any]) -> str:
+    """El texto de todos los `run:` de un trabajo, en orden."""
+    return "\n".join(str(p.get("run", "")) for p in trabajo.get("steps") or [])
 
 
 def servicios(ruta: Path) -> dict[str, dict[str, Any]]:

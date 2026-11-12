@@ -3,7 +3,7 @@
 ## Requirements
 
 - Docker 24+ and Docker Compose v2
-- 4 GB RAM minimum (8 GB recommended in production)
+- Hardware: the only figure is in [Deployment](deployment.md#minimum-hardware)
 - Free ports: 19080, 19180, 15432, 19900, 16379
 
 > Internal services keep listening on 8001-8011/8080 inside the `orpycamcp-net`

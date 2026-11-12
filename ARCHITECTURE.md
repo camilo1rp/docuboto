@@ -104,7 +104,7 @@ docuboto/
 ├── docs/{es,en}/             # MkDocs site (Spanish is primary), ADRs in docs/es/adr/
 ├── docs/templates/service-template/   # Skeleton for a new service
 ├── docker-compose.yml        # Development stack
-└── .gitlab-ci.yml            # validate → test → review → docs → build → deploy
+└── .github/workflows/        # ci (PRs, main), dependency-audit, release (tag X.Y.Z → images → deploy)
 ```
 
 ---
@@ -466,9 +466,11 @@ Domain vocabulary (radicado, expediente, TRD, FUID, PINAR, …) is defined in
   edge is published. Required secrets are enforced with `${VAR:?}` and checked by
   `scripts/preflight-prod.sh`. Backups and restores (`infra/backup.sh`, `infra/restore.sh`)
   are fail-closed and respect Object Lock retention.
-- **CI** (`.gitlab-ci.yml`): `validate` (ruff + mypy through `scripts/lint.sh`, dependency
-  and npm audits) → `test` (unit per service, shared guards, integration, frontend, real WORM,
-  veraPDF, security smoke) → `review` → `docs` → `build` (images, MkDocs site) → `deploy`.
+- **CI** (`.github/workflows/`): `ci.yml` runs lint (`scripts/lint.sh`), shared guards,
+  security smoke and npm audit on every PR and push; the unit matrix, integration, frontend,
+  real WORM, veraPDF and the strict MkDocs build on PRs and tags. `dependency-audit.yml` runs
+  weekly and on PRs. `release.yml` (tag `X.Y.Z`, ADR-053 §3) builds and scans the images,
+  pins them by digest in `release-<version>.yml` and deploys over SSH behind a blocking backup.
 
 Full details in [`docs/en/deployment.md`](docs/en/deployment.md).
 

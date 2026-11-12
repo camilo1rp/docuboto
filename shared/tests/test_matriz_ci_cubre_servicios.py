@@ -15,21 +15,19 @@ no figuraba en la de `test-integration`.
 Una lista escrita a mano ya dejó fuera tres de once servicios del gate de tipos:
 es el mismo modo de fallo.
 
-Vigila, parseando `.gitlab-ci.yml`:
+Vigila, parseando `.github/workflows/ci.yml`:
 
-* cada `services/*/` con `tests/` está en `test-unit.parallel.matrix`;
+* cada `services/*/` con `tests/` está en `test-unit.strategy.matrix.service`;
 * cada `services/*/` con `tests/integration/test_*.py` está en
-  `test-integration.parallel.matrix`, o figura en `FUERA_DE_INTEGRACION` con su
+  `test-integration.strategy.matrix.service`, o figura en `FUERA_DE_INTEGRACION` con su
   motivo (y esa excepción no caduca: si entra a la matriz, se quita de aquí);
-* el job `test-security-smoke` corre automáticamente (sin `when: manual`) y cubre
+* el trabajo `test-security-smoke` corre siempre (sin `if:`) y cubre
   los gates de ruta interna.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
-from tests._compose import GITLAB_CI, RAIZ, cargar
+from tests._compose import CI_WORKFLOW, RAIZ, job
 
 #: Servicios con `tests/integration/` que NO están en la matriz, y por qué. Declarados,
 #: no aprobados.
@@ -39,13 +37,8 @@ FUERA_DE_INTEGRACION = {
 }
 
 
-def _matriz(job: str) -> set[str]:
-    cfg: dict[str, Any] = cargar(GITLAB_CI)[job]
-    servicios: set[str] = set()
-    for entrada in cfg["parallel"]["matrix"]:
-        valor = entrada["SERVICE"]
-        servicios |= set(valor) if isinstance(valor, list) else {valor}
-    return servicios
+def _matriz(nombre: str) -> set[str]:
+    return set(job(CI_WORKFLOW, nombre)["strategy"]["matrix"]["service"])
 
 
 def _con_tests() -> set[str]:
@@ -64,7 +57,7 @@ def test_se_encontraron_servicios_con_tests() -> None:
 def test_toda_suite_unitaria_esta_en_la_matriz() -> None:
     faltan = sorted(_con_tests() - _matriz("test-unit"))
     assert not faltan, (
-        f"servicios con tests/ fuera de test-unit.parallel.matrix (nunca corren en CI): {faltan}"
+        f"servicios con tests/ fuera de test-unit.strategy.matrix (nunca corren en CI): {faltan}"
     )
 
 
@@ -72,7 +65,7 @@ def test_toda_suite_de_integracion_esta_en_la_matriz_o_declarada() -> None:
     en_matriz = _matriz("test-integration")
     faltan = sorted(_con_integracion() - en_matriz - FUERA_DE_INTEGRACION.keys())
     assert not faltan, (
-        f"servicios con tests/integration/ ni en test-integration.parallel.matrix ni en "
+        f"servicios con tests/integration/ ni en test-integration.strategy.matrix ni en "
         f"FUERA_DE_INTEGRACION (salen `skipped` en CI): {faltan}"
     )
 
@@ -85,16 +78,14 @@ def test_la_lista_de_integracion_fuera_no_caduca() -> None:
 
 def test_la_matriz_no_nombra_servicios_inexistentes() -> None:
     existentes = {p.name for p in (RAIZ / "services").iterdir() if p.is_dir()}
-    for job in ("test-unit", "test-integration"):
-        assert _matriz(job) <= existentes, f"{job} nombra servicios que no existen"
+    for nombre in ("test-unit", "test-integration"):
+        assert _matriz(nombre) <= existentes, f"{nombre} nombra servicios que no existen"
 
 
 def test_el_humo_de_seguridad_corre_solo_y_cubre_las_puertas_internas() -> None:
-    job = cargar(GITLAB_CI)["test-security-smoke"]
-    assert "rules" not in job or all(r.get("when") != "manual" for r in job["rules"]), (
-        "el humo de seguridad no puede depender de un clic"
-    )
-    entradas = {e["SERVICE"]: e["TESTS"] for e in job["parallel"]["matrix"]}
+    trabajo = job(CI_WORKFLOW, "test-security-smoke")
+    assert "if" not in trabajo, "el humo de seguridad no puede depender de un clic"
+    entradas = {e["service"]: e["tests"] for e in trabajo["strategy"]["matrix"]["include"]}
     assert {"api-gateway", "storage-service"} <= set(entradas)
     assert "test_internal_token_gate" in entradas["storage-service"]
     for svc, tests in entradas.items():

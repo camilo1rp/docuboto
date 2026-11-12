@@ -21,7 +21,7 @@
 # CI, donde el job ya vive dentro de un contenedor y no hay Docker disponible.
 #
 # El modo importa porque el gate y CI tienen que ser LA MISMA COSA. Reimplementar
-# el gate en el .gitlab-ci.yml es cómo se llega a que CI apruebe lo que el gate
+# el gate en el workflow de CI es cómo se llega a que CI apruebe lo que el gate
 # local rechaza — que es exactamente lo que pasaba: el pipeline invocaba
 # `ruff check services/` desde la RAÍZ, y ruff resuelve la primera-parte de los
 # imports según el directorio de trabajo, así que las dos formas discrepan.

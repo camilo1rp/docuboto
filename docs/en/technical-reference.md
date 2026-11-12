@@ -629,7 +629,7 @@ Security is enforced in layers and checked by 81 architecture guard tests, but t
 | Keys at rest | Personal signing keys envelope-encrypted with a versioned KEK (AES-256-GCM) | `orpycamcp_common.kek`, auth-service |
 | SSRF | Outbound calls to user-set URLs block internal ranges | `orpycamcp_common.red_interna` |
 | Public forms | ALTCHA proof-of-work and provisional record for PQRSD | document-service, ADR-038 |
-| Supply chain | Images pinned by tag and digest, Trivy scans, `pip-audit` threshold (fail-closed), `npm audit` | `.gitlab-ci.yml`, `scripts/audit_umbral.py` |
+| Supply chain | Images pinned by tag and digest, Trivy scans, `pip-audit` threshold (fail-closed), `npm audit` | `.github/workflows/`, `scripts/audit_umbral.py` |
 
 Accepted residual risks: the rate limiter fails open without Redis; invalid tokens are not cached (one IP can force about 1,200 validations a minute); webhook deliveries are logged but have no durable table; no HSM/KMS, and the signing CA and TSA are local, verifiable but not accredited.
 
