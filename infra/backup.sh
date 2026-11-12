@@ -156,7 +156,7 @@ RED="$("${COMPOSE[@]}" config --format json \
     || echo "")"
 # La red es la del SERVICIO `minio`, con el nombre ya resuelto por compose. Antes se
 # tomaba la primera red declarada del fichero: en producción esa es `default` (la
-# de los `migrate-*`), en la que el almacén no está, y el espejo salía vacío.
+# del `migrate-docuboto`), en la que el almacén no está, y el espejo salía vacío.
 RED_ARG=()
 if [ -n "$RED" ]; then
     RED_ARG=(--network "$RED")

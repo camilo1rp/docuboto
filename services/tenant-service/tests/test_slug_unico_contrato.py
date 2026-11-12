@@ -32,17 +32,17 @@ def test_slug_valido_se_normaliza_y_el_tope_cabe_en_postgres() -> None:
     assert len(schema_de("a" * 54).encode()) <= 63
 
 
-def test_migracion_global_exige_la_misma_forma_que_la_aplicacion() -> None:
-    """La base y `SLUG_PATTERN` coinciden (AREA-02-05) y la migración aborta antes de endurecer.
+def test_la_base_exige_la_misma_forma_que_la_aplicacion() -> None:
+    """La base y `SLUG_PATTERN` coinciden (AREA-02-05).
 
-    Si el patrón cambia en common y no en la 003, una entidad aceptada por la base
-    sería rechazada por todos los servicios (o al revés): el fondo quedaría inaccesible.
+    Si el patrón cambia en common y no en el CHECK de `public.tenants`, una entidad
+    aceptada por la base sería rechazada por todos los servicios (o al revés): el fondo
+    quedaría inaccesible.
     """
     from pathlib import Path
 
     from orpycamcp_common.tenant import SLUG_PATTERN
 
-    sql = (Path(__file__).parents[1] / "migrations" / "global" / "003_slug_forma.sql").read_text()
-    assert f"slug !~ {SLUG_PATTERN!r}" in sql  # guarda previa
-    assert f"CHECK (slug ~ {SLUG_PATTERN!r})" in sql
-    assert sql.index("RAISE EXCEPTION") < sql.index("ADD CONSTRAINT")
+    chain = Path(__file__).resolve().parents[3] / "services" / "docuboto" / "migrations" / "global"
+    sql = "\n".join(p.read_text() for p in sorted(chain.glob("*.sql")))
+    assert f"CONSTRAINT tenants_slug_forma_chk CHECK (((slug)::text ~ {SLUG_PATTERN!r}::text))" in sql

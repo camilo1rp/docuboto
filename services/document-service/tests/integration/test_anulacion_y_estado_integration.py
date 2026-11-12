@@ -11,11 +11,7 @@
 
 1. Aprobar la anulación cancela el paso activo en la MISMA transacción: si la
    transacción exterior revierte, ni el radicado queda anulado ni el paso cancelado.
-2. `radicados.status` es de un conjunto cerrado (CHECK, migración 034), y la
-   migración no tumba el arranque si hay datos heredados fuera del conjunto.
-
-`flow_steps`/`flow_events` son del workflow-service y su DDL no viaja en esta imagen:
-aquí van sus MÍNIMOS (las columnas que la anulación escribe).
+2. `radicados.status` es de un conjunto cerrado (CHECK `radicados_status_check`).
 """
 
 from __future__ import annotations
@@ -25,34 +21,17 @@ import uuid
 
 import asyncpg
 import pytest
-from migrations import runner
 
 from document.core.database import tenant_schema
 from document.repositories.anulacion_repository import AnulacionRepository
 
 pytestmark = pytest.mark.asyncio
 
-_FLUJO_DDL = """
-CREATE TABLE flow_steps (
-    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    radicado_id UUID NOT NULL, tracking_number VARCHAR(50) NOT NULL, step_number INTEGER NOT NULL,
-    to_dept VARCHAR(100) NOT NULL, to_dept_code INTEGER,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    completed_at TIMESTAMPTZ
-);
-CREATE TABLE flow_events (
-    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    radicado_id UUID NOT NULL, tracking_number VARCHAR(50) NOT NULL, tipo_tx VARCHAR(40) NOT NULL,
-    from_dept TEXT, to_dept TEXT, from_dept_code INTEGER, to_dept_code INTEGER, actor UUID, comentario TEXT,
-    detalles JSONB NOT NULL DEFAULT '{}'::jsonb, ts TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
-
-
 async def _preparar(conn: asyncpg.Connection, slug: str, *, con_flujo: bool = True) -> AnulacionRepository:
     await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
-    if con_flujo:
-        await conn.execute(_FLUJO_DDL)
+    if not con_flujo:
+        # La cadena única siempre trae el flujo; el repositorio aún tolera su ausencia.
+        await conn.execute("DROP TABLE flow_steps, flow_events CASCADE")
     return AnulacionRepository(conn)
 
 
@@ -70,7 +49,8 @@ async def _radicado(conn: asyncpg.Connection, status: str = "registered") -> tup
 async def _paso(conn: asyncpg.Connection, rid: uuid.UUID, tn: str, n: int, status: str) -> uuid.UUID:
     return await conn.fetchval(
         "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, to_dept_code, "
-        "status) VALUES ($1, $2, $3, 'Jurídica', 410, $4) RETURNING id",
+        "assigned_by, action, status) "
+        "VALUES ($1, $2, $3, 'Jurídica', 410, gen_random_uuid(), 'derivar', $4) RETURNING id",
         rid,
         tn,
         n,
@@ -144,14 +124,7 @@ async def test_rechazar_no_cancela_el_paso(tenant_ctx) -> None:
     assert await conn.fetchval("SELECT status FROM radicados WHERE id = $1", rid) == "registered"
 
 
-# --- 034: CHECK del estado --------------------------------------------------------------
-
-
-async def _correr_034(conn: asyncpg.Connection, slug: str) -> None:
-    sql = next(p for p in runner._sql_files(runner.TENANT_DIR) if "radicado_status_check" in p.name)
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
-        await conn.execute(sql.read_text())
+# --- CHECK del estado ---- --------------------------------------------------------------
 
 
 async def test_el_check_rechaza_un_estado_fuera_del_conjunto_y_acepta_los_cinco(tenant_ctx) -> None:
@@ -161,31 +134,7 @@ async def test_el_check_rechaza_un_estado_fuera_del_conjunto_y_acepta_los_cinco(
         await _radicado(conn, estado)
     with pytest.raises(asyncpg.CheckViolationError, match="radicados_status_check"):
         await _radicado(conn, "archivado")
-    # La restricción nace validada en un tenant sin datos heredados.
-    assert await conn.fetchval(
-        "SELECT convalidated FROM pg_constraint WHERE conname = 'radicados_status_check' "
-        "AND conrelid = 'radicados'::regclass"
-    )
-
-
-async def test_034_con_datos_heredados_no_falla_deja_el_aviso_y_sigue_protegiendo_lo_nuevo(tenant_ctx) -> None:
-    slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
-    await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_status_check")
-    heredado, _ = await _radicado(conn, "recibido")  # un valor que ninguna máquina de estados conoce
-
-    await _correr_034(conn, slug)  # NO lanza
-
-    fila = await conn.fetchrow(
-        "SELECT convalidated FROM pg_constraint WHERE conname = 'radicados_status_check' "
-        "AND conrelid = 'radicados'::regclass"
-    )
-    assert fila is not None and fila["convalidated"] is False  # sin validar: rige solo lo nuevo
-    with pytest.raises(asyncpg.CheckViolationError):
-        await _radicado(conn, "otro_invento")
-    # Corregido el dato, la migración (idempotente) valida la restricción.
-    await conn.execute("UPDATE radicados SET status = 'closed' WHERE id = $1", heredado)
-    await _correr_034(conn, slug)
+    # La restricción nace validada.
     assert await conn.fetchval(
         "SELECT convalidated FROM pg_constraint WHERE conname = 'radicados_status_check' "
         "AND conrelid = 'radicados'::regclass"

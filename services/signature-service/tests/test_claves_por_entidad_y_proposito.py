@@ -190,15 +190,20 @@ async def test_verify_de_una_fila_nativa_key_version_0_dice_esquema_retirado(
     assert resp.json()["firma_criptograficamente_valida"] is None
 
 
-def test_la_migracion_020_sigue_siendo_la_que_agrego_la_columna() -> None:
-    """La 020 ya está aplicada y no se edita (el DEFAULT 0 se quita en la 024)."""
+def test_key_version_es_obligatoria_sin_default_y_solo_admite_0_o_1() -> None:
+    """`key_version` no tiene DEFAULT (quien inserta declara el esquema) y su CHECK
+    admite solo 0 (retirado) y 1 (HKDF por entidad), en `firma` y `firma_challenge`."""
     sql = (
-        Path(__file__).resolve().parents[1] / "migrations" / "tenant" / "020_key_version_hkdf.sql"
+        Path(__file__).resolve().parents[2]
+        / "docuboto" / "migrations" / "tenant" / "600_firma.sql"
     ).read_text(encoding="utf-8")
     sin_comentarios = re.sub(r"--[^\n]*", "", sql)
     for tabla in ("firma", "firma_challenge"):
+        m = re.search(rf"CREATE TABLE {tabla} \((.*?)\n\);", sin_comentarios, re.S)
+        assert m, tabla
+        cuerpo = m.group(1)
+        assert re.search(r"^\s*key_version smallint NOT NULL,$", cuerpo, re.M), tabla
         assert re.search(
-            rf"ALTER TABLE {tabla}\s+ADD COLUMN IF NOT EXISTS key_version SMALLINT NOT NULL "
-            r"DEFAULT 0\s+CHECK \(key_version IN \(0, 1\)\)",
-            sin_comentarios,
+            rf"CONSTRAINT {tabla}_key_version_check CHECK \(\(key_version = ANY \(ARRAY\[0, 1\]\)\)\)",
+            cuerpo,
         ), tabla

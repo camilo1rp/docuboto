@@ -14,15 +14,13 @@
 
 Lo que un mock no puede probar: que la ubicación se escribe en la MISMA transacción
 que el paso y el estado (y revierte con ellos); que la columna GENERADA
-`ubicacion_*` sale del `COALESCE` por pares; y que el backfill SQL coincide fila a
-fila con la función pura `derivar_ubicacion`.
+`ubicacion_*` sale del `COALESCE` por pares.
 
 Carril de integración (`RUN_INTEGRATION=1`, ver `conftest.py`).
 """
 
 from __future__ import annotations
 
-import hashlib
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -30,9 +28,7 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from workflow.core.database import tenant_schema
-from workflow.services.estado_radicado import PasoUbicacion, Ubicacion, derivar_ubicacion
-from migrations import runner
+from tests.integration.conftest import insert_dependencia
 
 # Los fixtures y ayudas del carril de ADR-028 (mismo arnés: RBAC concedido, Redis
 # mock, radicador del reparto). Importarlos es la forma de compartir fixtures
@@ -42,7 +38,6 @@ from tests.integration.test_estado_radicado_integration import (  # noqa: F401
     DEP_JUR,
     _asientos,
     _assign,
-    _correr_sql,
     _radicado,
     _sin_permisos_ni_redis,
     _user,
@@ -58,10 +53,7 @@ CI = (500, "Control Interno")
 
 async def _dependencias(conn: asyncpg.Connection, *filas: tuple[int, str, bool]) -> None:
     for codigo, nombre, activo in filas:
-        await conn.execute(
-            "INSERT INTO dependencias (codigo, nombre, activo) VALUES ($1, $2, $3)",
-            codigo, nombre, activo,
-        )
+        await insert_dependencia(conn, codigo, nombre, activo)
 
 
 async def _radicado_en(
@@ -277,183 +269,18 @@ async def test_si_la_auditoria_falla_no_queda_ubicacion(ctx: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Backfill 016: fila a fila contra la función pura, idempotente, con evidencia
+# La evidencia de recálculo de ubicación es de SOLO inserción
 # ---------------------------------------------------------------------------
 
 
-_AUTO: Any = object()
-
-
-async def _paso_en(
-    conn: asyncpg.Connection, rid: uuid.UUID, n: int, status: str, dept: str,
-    *, minutos: int | None = None, usuario: uuid.UUID | None = None, code: Any = _AUTO,
-) -> None:
-    """Un paso con su CÓDIGO (ADR-032). Por omisión, el de la dependencia ACTIVA de ese
-    nombre; un paso vivo exige código (`ck_flow_steps_vivo_con_codigo`), uno cerrado puede
-    llevarlo NULL (`code=None`: la historia que la 019 no pudo resolver)."""
-    if code is _AUTO:
-        code = await conn.fetchval(
-            "SELECT min(codigo) FROM dependencias WHERE nombre = $1 AND activo", dept
-        )
+async def test_la_evidencia_de_recalculo_de_ubicacion_es_append_only(ctx: Any) -> None:
+    _, conn, _ = ctx
+    rid = await _radicado(conn)
     await conn.execute(
-        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, to_dept_code, "
-        "assigned_to, assigned_by, action, status, completed_at) SELECT id, tracking_number, $2, $3, $7, $4, "
-        "gen_random_uuid(), 'assign', $5, "
-        "CASE WHEN $6::int IS NULL THEN NULL ELSE timestamptz '2026-10-01 08:00+00' + $6 * interval '1 minute' END "
-        "FROM radicados WHERE id = $1",
-        rid, n, dept, usuario, status, minutos, code,
+        "INSERT INTO radicado_ubicacion_recalculo (radicado_id, tracking_number, estado_radicado) "
+        "VALUES ($1, 'T-1', 'distributed')",
+        rid,
     )
-
-
-async def _casos_de_backfill(conn: asyncpg.Connection) -> list[uuid.UUID]:
-    await _dependencias(
-        conn, (*TEC, True), (*TH, True), (*CI, True),
-        (610, "Duplicada", True), (611, "Duplicada", True),
-        (620, "Solo", False), (621, "Solo", True), (630, "Cerrada", False),
-    )
-    u = await _user(conn)
-    ids: list[uuid.UUID] = []
-
-    async def caso(status: str, pasos: list[tuple], **previa: Any) -> None:
-        rid = await _radicado_en(conn, TEC, status)
-        for n, st, dept, min_, *code in pasos:
-            await _paso_en(conn, rid, n, st, dept, minutos=min_, usuario=u, **({"code": code[0]} if code else {}))
-        if previa:
-            await conn.execute(
-                "UPDATE radicados SET flujo_dept = $2, flujo_dept_code = $3 WHERE id = $1",
-                rid, previa["dept"], previa["code"],
-            )
-        ids.append(rid)
-
-    await caso("registered", [])
-    await caso("distributed", [(1, "pending", TH[1], None)])
-    await caso("in_progress", [(1, "returned", TH[1], 5), (2, "pending", CI[1], None)])
-    await caso("distributed", [(1, "completed", TH[1], 30), (2, "cancelled", CI[1], 10)])  # rollback + completar
-    await caso("distributed", [(1, "completed", TH[1], 5), (2, "completed", CI[1], 5)])  # empate
-    # ADR-032: el código es un DATO del paso, no se adivina por el nombre.
-    await caso("distributed", [(1, "pending", "Duplicada", None, 611)])  # homónimas: la del paso
-    await caso("distributed", [(1, "pending", "Solo", None, 621)])
-    await caso("distributed", [(1, "pending", "Renombrada", None, 300)])  # nombre que ya no existe
-    await caso("distributed", [(1, "completed", "Cerrada", 4, None)])  # historia sin código: NULL
-    await caso("closed", [(1, "completed", TH[1], 9)])  # cerrado anterior a ADR-029
-    await caso("anulado", [(1, "cancelled", CI[1], 9)])  # anulado anterior a ADR-029
-    await caso("closed", [(1, "completed", TH[1], 9)], dept="Antigua", code=1)  # ya escrito: se congela
-    await caso("distributed", [], dept="Sobra", code=2)  # sin pasos pero con valor previo
-    await caso("closed", [])
-    return ids
-
-
-async def _pasos_python(conn: asyncpg.Connection, rid: uuid.UUID) -> list[PasoUbicacion]:
-    return [
-        PasoUbicacion(
-            step_number=p["step_number"], status=p["status"], to_dept=p["to_dept"],
-            assigned_to=p["assigned_to"], completed_at=p["completed_at"],
-            to_dept_code=p["to_dept_code"],
-        )
-        for p in await conn.fetch("SELECT * FROM flow_steps WHERE radicado_id = $1", rid)
-    ]
-
-
-async def test_backfill_coincide_fila_a_fila_con_la_funcion_pura_y_la_2a_corrida_no_cambia_nada(ctx: Any) -> None:
-    _, conn, slug = ctx
-    ids = await _casos_de_backfill(conn)
-    previas: dict[uuid.UUID, Ubicacion | None] = {}
-    estados: dict[uuid.UUID, str] = {}
-    for rid in ids:
-        r = await conn.fetchrow(
-            "SELECT status, flujo_dept, flujo_dept_code, flujo_usuario FROM radicados WHERE id = $1", rid
-        )
-        estados[rid] = r["status"]
-        previas[rid] = (
-            Ubicacion(r["flujo_dept"], r["flujo_dept_code"], r["flujo_usuario"]) if r["flujo_dept"] else None
-        )
-    fechas = {r["id"]: r["updated_at"] for r in await conn.fetch("SELECT id, updated_at FROM radicados")}
-
-    # Gemelo de `derivar_ubicacion` en SQL: la FASE C de la 019 (el código sale del PASO).
-    await _correr_sql(conn, slug, "flujo_dependencia_por_codigo")
-
-    cambiados = 0
-    for rid in ids:
-        esperada = derivar_ubicacion(estados[rid], await _pasos_python(conn, rid), congelada=previas[rid])
-        r = await conn.fetchrow(
-            "SELECT flujo_dept, flujo_dept_code, flujo_usuario FROM radicados WHERE id = $1", rid
-        )
-        real = Ubicacion(r["flujo_dept"], r["flujo_dept_code"], r["flujo_usuario"]) if r["flujo_dept"] else None
-        assert real == esperada, (estados[rid], previas[rid])
-        cambiados += real != previas[rid]
-    # `updated_at` no se movió: recalcular un dato derivado no es editar el radicado.
-    assert {r["id"]: r["updated_at"] for r in await conn.fetch("SELECT id, updated_at FROM radicados")} == fechas
-    assert await conn.fetchval(
-        "SELECT count(*) FROM radicado_ubicacion_recalculo WHERE origen = 'migracion_019'"
-    ) == cambiados > 0
-
-    # El cerrado ya escrito se congela (la evidencia no lo menciona).
-    congelado = ids[11]
-    assert (await _ubic(conn, congelado))["flujo_dept"] == "Antigua"
-    assert congelado not in {e["radicado_id"] for e in await conn.fetch("SELECT radicado_id FROM radicado_ubicacion_recalculo")}
-
-    # 2.ª corrida: 0 cambios y 0 filas de evidencia nuevas.
-    antes = [await _ubic(conn, rid) for rid in ids]
-    await _correr_sql(conn, slug, "flujo_dependencia_por_codigo")
-    assert [await _ubic(conn, rid) for rid in ids] == antes
-    assert await conn.fetchval("SELECT count(*) FROM radicado_ubicacion_recalculo") == cambiados
-
-
-async def test_backfill_016_evidencia_inmutable_y_ancla_en_audit_log(ctx: Any) -> None:
-    _, conn, slug = ctx
-    rid = await _radicado_en(conn, None)
-    await _paso_en(conn, rid, 1, "pending", DEP_JUR[1])
-    await _correr_sql(conn, slug, "radicado_ubicacion_desde_flujo")
-
-    (ev,) = await conn.fetch("SELECT * FROM radicado_ubicacion_recalculo")
-    assert (ev["radicado_id"], ev["despues_dept"], ev["despues_dept_code"], ev["origen"]) == (
-        rid, DEP_JUR[1], 100, "migracion_016",
-    )
-    assert (ev["antes_dept"], ev["estado_radicado"]) == (None, "registered")
     for sql in ("UPDATE radicado_ubicacion_recalculo SET antes_dept = 'x'", "DELETE FROM radicado_ubicacion_recalculo"):
         with pytest.raises(asyncpg.PostgresError, match="append-only"):
             await conn.execute(sql)
-
-    nombre = "016_radicado_ubicacion_desde_flujo.sql"
-    async with conn.transaction():
-        assert await runner.anclar_evidencia(conn, tenant_schema(slug), nombre, tenant_slug=slug) is True
-        assert await runner.anclar_evidencia(conn, tenant_schema(slug), nombre, tenant_slug=slug) is False
-    (ancla,) = await _asientos(conn, slug, "workflow.ubicacion_radicado.backfill")
-    assert ancla["object_ref"] == "radicado_ubicacion_recalculo" and ancla["payload"]["filas"] == 1
-    filas = await conn.fetch(
-        "SELECT radicado_id, tracking_number, estado_radicado, antes_dept, antes_dept_code, antes_usuario, "
-        "despues_dept, despues_dept_code, despues_usuario, paso_id, origen "
-        "FROM radicado_ubicacion_recalculo ORDER BY radicado_id, id"
-    )
-    contenido = "\n".join("|".join(str(v) for v in f.values()) for f in filas)
-    assert ancla["payload"]["sha256"] == hashlib.sha256(contenido.encode()).hexdigest()
-
-
-async def test_016_guardas_de_orden_sin_radicados_omite_y_sin_columnas_falla(db_conn: asyncpg.Connection) -> None:
-    schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
-    avisos: list[str] = []
-
-    def _escucha(_c: Any, msg: Any) -> None:
-        avisos.append(msg.message)
-
-    sql = (runner.TENANT_DIR / "016_radicado_ubicacion_desde_flujo.sql").read_text()
-    db_conn.add_log_listener(_escucha)
-    await db_conn.execute(f'CREATE SCHEMA "{schema}"')
-    try:
-        async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await db_conn.execute(sql)
-        assert any("backfill de ubicación omitido" in a for a in avisos), avisos
-
-        # `radicados` existe pero document-service aún no migró: NO se omite en silencio.
-        async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await db_conn.execute("CREATE TABLE radicados (id UUID PRIMARY KEY, status VARCHAR(20))")
-        with pytest.raises(asyncpg.PostgresError, match="037"):
-            async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-                await db_conn.execute(sql)
-    finally:
-        db_conn.remove_log_listener(_escucha)
-        assert schema.startswith("tenant_itest_")
-        await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

@@ -12,7 +12,7 @@
 Guardián: las claves de la política de tratamiento se LEEN, se SIEMBRAN y se NOMBRAN igual.
 
 document-service lee `politica_tratamiento_{version,url,texto}` de `sgd_param_admin`
-(`app/core/politica.py`); las claves nacen por la migración 012 de tenant-service
+(`app/core/politica.py`); las claves nacen sembradas en la cadena de migraciones
 (un parámetro cuyo nombre solo vive en el código no se puede configurar, ver
 `test_params_entidad_configurables`). Son dos servicios: ninguna suite por-servicio
 los ve juntos. Sembrarlas con un valor NO vacío publicaría una política inventada
@@ -25,11 +25,10 @@ import ast
 import re
 from pathlib import Path
 
+from tests._chain import seed_rows
+
 RAIZ = Path(__file__).resolve().parents[2]
 LECTOR = RAIZ / "services" / "document-service" / "document" / "core" / "politica.py"
-MIGRACION = (
-    RAIZ / "services" / "tenant-service" / "migrations" / "tenant" / "012_politica_tratamiento.sql"
-)
 CONSTANTES = ("PARAM_VERSION", "PARAM_URL", "PARAM_TEXTO")
 
 
@@ -44,14 +43,9 @@ def _claves_que_lee_document() -> list[str]:
 
 
 def test_las_tres_claves_que_lee_document_las_siembra_tenant_vacias() -> None:
-    sql = MIGRACION.read_text(encoding="utf-8")
+    sql = seed_rows("sgd_param_admin")
     for clave in _claves_que_lee_document():
-        assert re.search(rf"\('{clave}',\s*'\"\"'::jsonb\)", sql), (
-            f"la clave {clave!r} que document-service lee no la siembra vacía la migración 012 "
-            "de tenant-service: /admin/parametros no la ofrece, o nace con una política inventada"
+        assert re.search(rf"\('{clave}',\s*'\"\"',", sql), (
+            f"la clave {clave!r} que document-service lee no la siembra vacía la cadena de "
+            "migraciones: /admin/parametros no la ofrece, o nace con una política inventada"
         )
-
-
-def test_la_siembra_no_pisa_lo_que_la_entidad_ya_publico() -> None:
-    sql = MIGRACION.read_text(encoding="utf-8")
-    assert "ON CONFLICT (key) DO NOTHING" in sql

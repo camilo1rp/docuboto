@@ -23,7 +23,6 @@ import json
 import os
 import uuid
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import asyncpg
@@ -31,6 +30,12 @@ import pytest
 import pytest_asyncio
 from orpycamcp_common.deadletter import RadicadosAusenteError
 
+from tests.integration.conftest import (
+    drop_tenant_schema,
+    insert_radicado,
+    provision_tenant_schema,
+    set_security_level,
+)
 from notification.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [
@@ -41,7 +46,6 @@ pytestmark = [
 GRUPO = "notification-service"
 OTRO_GRUPO = "workflow-service"
 TENANT = f"itest-{uuid.uuid4().hex[:8]}"  # su schema `tenant_itest_xxxxxxxx` es el que el gate califica
-_MIGRACIONES = Path(__file__).resolve().parents[2] / "migrations" / "tenant"
 _HOSTS = frozenset({"postgres", "localhost", "127.0.0.1", "db"})
 
 
@@ -58,33 +62,19 @@ def _dsn() -> str:
 async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     c = await asyncpg.connect(_dsn())
     schema = "tenant_" + TENANT.replace("-", "_")
-    await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
+        # La cadena de tenant REAL y completa: `radicados` y la DLQ tal como se despliegan.
+        await provision_tenant_schema(c, schema)
         await c.execute(f'SET search_path TO "{schema}"')
-        # `radicados` es de document-service: solo las columnas que el gate lee.
-        await c.execute(
-            "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-            "tracking_number varchar(50) NOT NULL UNIQUE, nivel_seguridad smallint NOT NULL)"
-        )
-        # Las migraciones REALES del servicio que tocan la DLQ, en orden.
-        for path in sorted(_MIGRACIONES.glob("*.sql")):
-            texto = path.read_text()
-            if "evento_dead_letter" in texto:
-                await c.execute(texto)
         yield c
     finally:
-        assert schema.startswith("tenant_itest_")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await drop_tenant_schema(c, schema)
         await c.close()
 
 
 async def _radicado(c: asyncpg.Connection, nivel: int) -> tuple[str, uuid.UUID]:
     tn = f"2026-ITEST-E-{uuid.uuid4().hex[:8]}"
-    rid = await c.fetchval(
-        "INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ($1, $2) RETURNING id",
-        tn,
-        nivel,
-    )
+    rid = await insert_radicado(c, tn, nivel=nivel)
     return tn, rid
 
 
@@ -168,11 +158,11 @@ async def test_la_paginacion_y_el_total_cuentan_solo_lo_visible(conn) -> None:
 @pytest.mark.asyncio
 async def test_reclasificado_hacia_arriba_tras_aparcar_se_oculta_en_todas_las_rutas(conn) -> None:
     repo = DeadLetterRepository(conn)
-    tn, _ = await _radicado(conn, 1)
+    tn, rid = await _radicado(conn, 1)
     eid = await _aparcar(conn, {"tracking_number": tn})
     assert await _ids(repo, 1) == [eid]
 
-    await conn.execute("UPDATE radicados SET nivel_seguridad = 3 WHERE tracking_number = $1", tn)
+    await set_security_level(conn, rid, 3)
 
     assert await _ids(repo, 1) == []
     ajeno = f"evt-{uuid.uuid4().hex[:10]}"
@@ -258,7 +248,7 @@ async def test_un_radicados_ajeno_en_el_search_path_no_se_lee(conn) -> None:
             f"INSERT INTO \"{ajeno}\".radicados (tracking_number, nivel_seguridad) VALUES ('X-1', 1)"
         )
         await _aparcar(conn, {"tracking_number": "X-1"})
-        await conn.execute("DROP TABLE radicados")
+        await conn.execute("DROP TABLE radicados CASCADE")
         schema = "tenant_" + TENANT.replace("-", "_")
         await conn.execute(f'SET search_path TO "{schema}", "{ajeno}"')
         with pytest.raises(RadicadosAusenteError):
@@ -271,7 +261,7 @@ async def test_un_radicados_ajeno_en_el_search_path_no_se_lee(conn) -> None:
 async def test_sin_tabla_radicados_es_error_explicito_no_lista_vacia(conn) -> None:
     repo = DeadLetterRepository(conn)
     eid = await _aparcar(conn, {"tracking_number": "x"})
-    await conn.execute("DROP TABLE radicados")
+    await conn.execute("DROP TABLE radicados CASCADE")
     with pytest.raises(RadicadosAusenteError):
         await repo.list_visible(TENANT, GRUPO, 3)
     with pytest.raises(RadicadosAusenteError):

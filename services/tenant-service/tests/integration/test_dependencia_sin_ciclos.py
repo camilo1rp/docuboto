@@ -8,18 +8,16 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 
-"""Migración 015 (C-4/C8, ADR-040) contra Postgres REAL: el organigrama es un ÁRBOL.
+"""El organigrama es un ÁRBOL (C-4/C8, ADR-040), contra Postgres REAL.
 
-Lo que un mock no puede decir: que el trigger rechaza A -> B -> A en el motor, que la migración
-ABORTA nombrando los códigos si ya hay un ciclo, y que el candado consultivo serializa dos
-cambios concurrentes que, cada uno por su lado, parecen inocentes.
+Lo que un mock no puede decir: que el trigger rechaza A -> B -> A en el motor y que el candado
+consultivo serializa dos cambios concurrentes que, cada uno por su lado, parecen inocentes.
 
 Mutaciones (verificadas):
 - quitar la CTE recursiva del trigger (dejar solo `NEW.parent_id = NEW.id`) →
   `test_un_ciclo_de_dos_y_de_tres_se_rechaza` cae;
 - quitar `pg_advisory_xact_lock` →
-  `test_dos_cambios_concurrentes_que_cierran_un_ciclo_no_pasan_los_dos` cae (ambos confirman);
-- quitar el DO de verificación previa → `test_la_015_aborta_si_ya_hay_un_ciclo_y_dice_cuales` cae.
+  `test_dos_cambios_concurrentes_que_cierran_un_ciclo_no_pasan_los_dos` cae (ambos confirman).
 
 Esquemas desechables `tenant_itest_*`.
 """
@@ -37,7 +35,7 @@ import pytest
 import pytest_asyncio
 
 from tenant.repositories.dependencias_repository import DependenciaRepository
-from migrations import runner
+from tests.integration.provision import drop_schema, provision_schema, seed_row
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION") != "1", reason="carril de integración: RUN_INTEGRATION=1"
@@ -45,11 +43,6 @@ pytestmark = pytest.mark.skipif(
 
 _RAW = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
 _OWNER_DSN = _RAW.replace("postgresql+asyncpg://", "postgresql://")
-
-
-def _migracion(num: str) -> str:
-    (ruta,) = [p for p in runner._sql_files(runner.TENANT_DIR) if p.name.startswith(num)]
-    return ruta.read_text()
 
 
 def _validar_host() -> None:
@@ -60,20 +53,15 @@ def _validar_host() -> None:
 
 @pytest_asyncio.fixture
 async def schema() -> AsyncGenerator[str, None]:
-    """Un schema con TODAS las migraciones de tenant, para varias conexiones."""
+    """Un schema con la cadena de tenant completa, para varias conexiones."""
     _validar_host()
     nombre = f"tenant_itest_{uuid.uuid4().hex[:8]}"
     c = await asyncpg.connect(_OWNER_DSN)
     try:
-        await c.execute(f'CREATE SCHEMA "{nombre}"')
-        await c.execute(f'SET search_path = "{nombre}"')
-        for ruta in runner._sql_files(runner.TENANT_DIR):
-            await c.execute(ruta.read_text())
+        await provision_schema(c, nombre)
         yield nombre
     finally:
-        assert nombre.startswith("tenant_itest_")
-        await c.execute("RESET search_path")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{nombre}" CASCADE')
+        await drop_schema(c, nombre)
         await c.close()
 
 
@@ -195,59 +183,17 @@ async def test_dos_cambios_concurrentes_que_cierran_un_ciclo_no_pasan_los_dos(sc
         await c1.close()
 
 
-# ── la migración ─────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_la_015_aborta_si_ya_hay_un_ciclo_y_dice_cuales() -> None:
-    _validar_host()
-    nombre = f"tenant_itest_{uuid.uuid4().hex[:8]}"
-    c = await asyncpg.connect(_OWNER_DSN)
-    try:
-        await c.execute(f'CREATE SCHEMA "{nombre}"')
-        await c.execute(f'SET search_path = "{nombre}"')
-        for ruta in runner._sql_files(runner.TENANT_DIR):
-            if ruta.name < "015":
-                await c.execute(ruta.read_text())
-        a = await _dep(c, 901)
-        b = await _dep(c, 902, a)
-        await _dep(c, 903)  # fuera del ciclo
-        await c.execute("UPDATE dependencias SET parent_id = $1 WHERE id = $2", b, a)  # A <-> B
-
-        with pytest.raises(asyncpg.RaiseError, match=r"901.*902|902.*901") as exc:
-            await c.execute(_migracion("015"))
-        assert "903" not in str(exc.value)  # solo los que están en el ciclo
-
-        # control positivo: rota la arista, la 015 se aplica, y es idempotente
-        await c.execute("UPDATE dependencias SET parent_id = NULL WHERE id = $1", a)
-        await c.execute(_migracion("015"))
-        await c.execute(_migracion("015"))
-        with pytest.raises(asyncpg.CheckViolationError, match="dependencia_ciclo"):
-            await c.execute("UPDATE dependencias SET parent_id = $1 WHERE id = $2", b, a)
-    finally:
-        assert nombre.startswith("tenant_itest_")
-        await c.execute("RESET search_path")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{nombre}" CASCADE')
-        await c.close()
-
-
 # ── el barrido de referencias cubre la columna nueva de archive ───────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_una_dependencia_citada_por_una_trd_no_se_puede_eliminar(conn: asyncpg.Connection) -> None:
-    """`trd_serie_dependencia_productora.dependencia_codigo` (archive 070) casa con
+    """`trd_serie_dependencia_productora.dependencia_codigo` (tabla real de la cadena) casa con
     `dependencia\\w*_codigo$`: `referencias()` la cuenta y el DELETE responde 409
     `dependencia_con_historia` SIN tocar tenant-service. Si alguien renombra la columna, esto cae."""
-    await conn.execute(
-        "CREATE TABLE trd_serie_dependencia_productora ("
-        " trd_serie_id uuid NOT NULL, dependencia_codigo integer NOT NULL, dependencia_nombre varchar(100) NOT NULL)"
-    )
     await _dep(conn, 901)
     await _dep(conn, 902)
-    await conn.execute(
-        "INSERT INTO trd_serie_dependencia_productora VALUES (gen_random_uuid(), 901, 'x')"
-    )
+    await seed_row(conn, "trd_serie_dependencia_productora", dependencia_codigo=901)
 
     repo = DependenciaRepository(conn)
     assert await repo.referencias(901) == {"trd_serie_dependencia_productora.dependencia_codigo": 1}

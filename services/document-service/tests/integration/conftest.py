@@ -14,13 +14,12 @@ Mismo patrón que `archive-service/tests/integration/conftest.py` y
 contra schemas de tenant desechables, con COMMITS reales y
 `DROP SCHEMA ... CASCADE` en el teardown — sin envolver en una tx externa.
 
-Alcance de este piloto: SOLO el aislamiento físico por schema del inventario
-TOTAL de anexos (`DocumentRepository.list_anexos_for_radicados_internal`,
-E10 debt, cableado del AIP al cierre del expediente) — no bootstrapea
-`public.audit_log` (portado de archive-service) para las rutas que SÍ
-auditan — hoy, el descarte de un correo de la bandeja, cuyo asiento va en la
-misma transacción que el acto y por tanto solo se puede probar contra
-Postgres real.
+Cada schema de prueba recibe la cadena ÚNICA de migraciones de tenant
+(`services/docuboto/migrations/tenant`, ADR-053): las tablas de todos los
+servicios, tal como salen a producción. `public` (con `public.audit_log`, la
+cadena inmutable que escriben las rutas que auditan) lo migra ANTES el runner
+único, `services/docuboto/migrations/runner.py`; este conftest solo comprueba
+que esté.
 
 Gating idéntico: `RUN_INTEGRATION=1` (ver `pytest_collection_modifyitems`).
 El carril unit normal (`docker compose run --rm --no-deps document-service
@@ -41,11 +40,11 @@ from pathlib import Path
 import asyncpg
 import pytest
 import pytest_asyncio
-from migrations import runner
+from orpycamcp_common import migrations
 
 from document.core.database import tenant_schema
 
-# Mismo cálculo que `migrations/runner.py` — DSN "pelado" para conectar con
+# Mismo cálculo que `services/docuboto/migrations/runner.py` — DSN "pelado" para conectar con
 # `asyncpg.connect` directamente (sin pasar por el pool de la app). Calculado
 # perezosamente (no a nivel de módulo con `os.environ[...]`) porque este
 # archivo se importa también cuando el carril UNIT recoge `tests/` completo,
@@ -57,6 +56,9 @@ _RAW_DSN = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATA
 DSN = _RAW_DSN.replace("postgresql+asyncpg://", "postgresql://") if _RAW_DSN else ""
 
 _INTEGRATION_DIR = Path(__file__).parent
+
+# La cadena única de migraciones (ADR-053): `services/docuboto/migrations`.
+CHAIN = Path(__file__).resolve().parents[3] / "docuboto" / "migrations"
 
 # Allowlist fail-closed del HOST del DSN (mismo criterio que archive-service/
 # storage-service): este tier crea/destruye schemas — sin allowlist, un
@@ -117,18 +119,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap de `public.audit_log` — PORTADO desde
-# `archive-service/tests/integration/conftest.py`, que es donde se escribió y se
-# validó. El docstring de este módulo decía «si este carril crece para cubrir
-# rutas que sí auditan, replicar el bootstrap de archive-service»: creció. El
-# descarte de un correo escribe en la cadena inmutable y su atomicidad no se
-# puede comprobar con un doble — el rollback lo produce Postgres.
-#
-# Verificar-primero / crear-solo-si-no-existe: si `public.audit_log` ya existe
-# (auth-service ya migró esta base compartida) NO se emite ninguna DDL, solo se
-# comprueba que los triggers append-only estén ahí y HABILITADOS; un fichero de
-# tests jamás repara DDL de seguridad de producción, porque un
-# `DROP TRIGGER; CREATE TRIGGER` deja la tabla mutable en la ventana intermedia.
+# `public.audit_log` — lo crea el runner único, nunca este fichero. Aquí solo se
+# comprueba que exista y que sus triggers append-only estén ahí y HABILITADOS:
+# un fichero de tests jamás emite ni repara DDL de seguridad de producción, y
+# una copia propia haría que estas pruebas ejercieran el trigger de ESTE fichero
+# y no el que sale a producción.
 # ---------------------------------------------------------------------------
 
 _EXPECTED_AUDIT_TRIGGERS = frozenset(
@@ -141,136 +136,46 @@ _EXPECTED_AUDIT_TRIGGERS = frozenset(
     }
 )
 
-# INVARIANTE: este bloque se emite completo dentro de UNA sola transacción
-# (`_audit_log_ready` lo envuelve en `async with conn.transaction()`) — no
-# trocear en varias llamadas a `execute`. Es la contraparte de 002/003/004 de
-# auth-service, PERO sin `CREATE ROLE`/`GRANT`/`REVOKE` (A1) y sin la tabla
-# legacy `auth_audit_logs` (solo existía para que un `COMMENT` no fallara).
-_AUDIT_LOG_CREATE_DDL = """
-CREATE TABLE public.audit_log (
-    id           BIGINT      GENERATED ALWAYS AS IDENTITY,
-    tenant_slug  TEXT        NOT NULL,
-    ts           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    service      TEXT        NOT NULL,
-    actor        TEXT,
-    canal        TEXT        NOT NULL DEFAULT 'api',
-    action       TEXT        NOT NULL,
-    object_type  TEXT        NOT NULL,
-    object_ref   TEXT,
-    payload      JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    prev_hash    TEXT,
-    hash         TEXT        NOT NULL,
-    PRIMARY KEY (id, ts)
-) PARTITION BY RANGE (ts);
-
-CREATE TABLE public.audit_log_default
-    PARTITION OF public.audit_log DEFAULT;
-
-CREATE INDEX ix_audit_tenant_ts ON public.audit_log (tenant_slug, ts);
-CREATE INDEX ix_audit_object    ON public.audit_log (object_type, object_ref);
-
-ALTER TABLE public.audit_log
-    ADD CONSTRAINT chk_audit_log_canal
-    CHECK (canal IN ('api', 'ui', 'mcp', 'system'));
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation() RETURNS trigger AS $$
-BEGIN
-    RAISE EXCEPTION 'public.audit_log is append-only (Ley 594/2000, ADR-008)';
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_audit_log_immutable
-    BEFORE UPDATE OR DELETE ON public.audit_log
-    FOR EACH ROW EXECUTE FUNCTION public.reject_audit_log_mutation();
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_truncate()
-RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION
-        'TRUNCATE on public.audit_log is prohibited (ADR-008, Ley 594/2000, D-03)';
-END;
-$$;
-
-CREATE TRIGGER trg_audit_log_no_truncate
-    BEFORE TRUNCATE ON public.audit_log
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
-
-CREATE TRIGGER trg_audit_log_default_no_truncate
-    BEFORE TRUNCATE ON public.audit_log_default
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation_d03()
-RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION
-        'UPDATE/DELETE on public.audit_log is prohibited '
-        '(ADR-008, Ley 594/2000, D-03): table is append-only';
-END;
-$$;
-
-CREATE TRIGGER trg_audit_log_no_mutation
-    BEFORE UPDATE OR DELETE ON public.audit_log
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
-
-CREATE TRIGGER trg_audit_log_default_no_mutation
-    BEFORE UPDATE OR DELETE ON public.audit_log_default
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
-"""
-
 
 @pytest_asyncio.fixture(scope="session")
 async def _audit_log_ready() -> None:
-    """Asegura que `public.audit_log` (+ triggers append-only) exista antes de
-    cualquier test de este carril. Verificar-primero / crear-solo-si-no-existe
-    (A2): jamás re-emite DDL de seguridad sobre una tabla que ya existe."""
+    """Comprueba que `public.audit_log` (+ triggers append-only) exista antes de
+    cualquier test de este carril. No emite DDL: si falta, falla diciendo cómo
+    migrar `public`."""
     dsn = _require_dsn()
     conn = await asyncpg.connect(dsn=dsn)
     try:
-        already_exists = await conn.fetchval("SELECT to_regclass('public.audit_log')")
-        if already_exists is not None:
-            # (G3) `tgenabled <> 'D'`: un trigger DESHABILITADO (`ALTER TABLE ...
-            # DISABLE TRIGGER`, o un `session_replication_role = replica` en la
-            # sesión) sigue figurando en `pg_trigger` — sin este filtro, el
-            # guardarraíl daba luz verde a un `audit_log` MUTABLE, que es
-            # exactamente la condición que existe para descartar.
-            rows = await conn.fetch(
-                """
-                SELECT tgname
-                FROM pg_trigger
-                WHERE tgrelid = ANY(
-                    ARRAY['public.audit_log'::regclass, 'public.audit_log_default'::regclass]
-                )
-                  AND NOT tgisinternal
-                  AND tgenabled <> 'D'
-                """
-            )
-            found = {row["tgname"] for row in rows}
-            missing = _EXPECTED_AUDIT_TRIGGERS - found
-            if missing:
-                raise RuntimeError(
-                    "public.audit_log ya existe pero le faltan triggers append-only "
-                    f"esperados: {sorted(missing)}. Este conftest de TESTS no repara "
-                    "DDL de seguridad de producción — corrige las migraciones de "
-                    "auth-service (o el estado de esta base) antes de reintentar."
-                )
-            return
-
-        if os.environ.get("CI"):
-            # AREA-03-05: en CI la base nace virgen y el job aplica ANTES las
-            # migraciones globales REALES de auth-service (002-008). Crear aquí una
-            # copia propia del DDL haría que estos tests probaran el trigger de ESTE
-            # fichero y no el de producción: el trigger de sentencia de 004 quedaría
-            # sin ejercer. Si llegamos aquí en CI, el job olvidó migrar auth-service.
+        if await conn.fetchval("SELECT to_regclass('public.audit_log')") is None:
             raise RuntimeError(
-                "public.audit_log no existe en CI: aplica antes las migraciones "
-                "globales de auth-service (`python ../auth-service/migrations/runner.py`)."
+                "public.audit_log no existe: `public` no está migrado. Ejecuta antes "
+                "el runner único (`python services/docuboto/migrations/runner.py`) "
+                "contra esta base."
             )
-
-        async with conn.transaction():
-            await conn.execute("SET LOCAL lock_timeout = '5s'")
-            await conn.execute(_AUDIT_LOG_CREATE_DDL)
+        # (G3) `tgenabled <> 'D'`: un trigger DESHABILITADO (`ALTER TABLE ...
+        # DISABLE TRIGGER`, o un `session_replication_role = replica` en la
+        # sesión) sigue figurando en `pg_trigger` — sin este filtro, el
+        # guardarraíl daba luz verde a un `audit_log` MUTABLE, que es
+        # exactamente la condición que existe para descartar.
+        rows = await conn.fetch(
+            """
+            SELECT tgname
+            FROM pg_trigger
+            WHERE tgrelid = ANY(
+                ARRAY['public.audit_log'::regclass, 'public.audit_log_default'::regclass]
+            )
+              AND NOT tgisinternal
+              AND tgenabled <> 'D'
+            """
+        )
+        found = {row["tgname"] for row in rows}
+        missing = _EXPECTED_AUDIT_TRIGGERS - found
+        if missing:
+            raise RuntimeError(
+                "public.audit_log existe pero le faltan triggers append-only "
+                f"esperados: {sorted(missing)}. Este conftest de TESTS no repara "
+                "DDL de seguridad de producción — vuelve a ejecutar "
+                "`services/docuboto/migrations/runner.py` sobre una base limpia."
+            )
     finally:
         await conn.close()
 
@@ -300,85 +205,58 @@ async def db_conn(_audit_log_ready: None) -> AsyncGenerator[asyncpg.Connection, 
         await conn.close()
 
 
-_OTROS_SERVICIOS_DDL = """
-CREATE TABLE IF NOT EXISTS dependencias (
-    codigo INT PRIMARY KEY, nombre TEXT NOT NULL,
-    activo BOOLEAN NOT NULL DEFAULT true, depe_rad_tp2 BOOLEAN NOT NULL DEFAULT false
-);
--- COPIA de tenant-service 013 (historial de nombres + criterio único nombre->código).
--- Su DDL no viaja en esta imagen; `tenant-service/tests/integration/test_dependencia_codigo.py`
--- fija los mismos casos contra la función REAL, así que si esta copia diverge
--- uno de los dos se pone en rojo.
-CREATE TABLE IF NOT EXISTS dependencia_nombre_historico (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, codigo INTEGER NOT NULL,
-    nombre TEXT NOT NULL, origen VARCHAR(30) NOT NULL
-        CHECK (origen IN ('renombre', 'mapeo_manual')),
-    motivo TEXT, registrado_por UUID, at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE OR REPLACE FUNCTION resolver_codigo_dependencia(p_nombre text, p_historico boolean)
-RETURNS TABLE (codigo integer, candidatos integer)
-LANGUAGE sql STABLE AS $$
-    WITH mapeo AS (
-        SELECT DISTINCT h.codigo AS cod FROM dependencia_nombre_historico h
-         WHERE p_historico AND h.origen = 'mapeo_manual' AND h.nombre = p_nombre
-    ),
-    c AS (
-        SELECT m.cod FROM mapeo m
-        UNION
-        SELECT d.codigo FROM dependencias d
-         WHERE NOT EXISTS (SELECT 1 FROM mapeo)
-           AND d.nombre = p_nombre AND (p_historico OR d.activo)
-        UNION
-        SELECT h.codigo FROM dependencia_nombre_historico h
-         WHERE p_historico AND NOT EXISTS (SELECT 1 FROM mapeo)
-           AND h.origen = 'renombre' AND h.nombre = p_nombre
-    )
-    SELECT CASE WHEN count(*) = 1 THEN min(c.cod) END, count(*)::int FROM c
-$$;
-CREATE TABLE IF NOT EXISTS tipos_documentales (
-    code TEXT PRIMARY KEY, nombre TEXT NOT NULL,
-    activo BOOLEAN NOT NULL DEFAULT true,
-    admite_ventanilla_publica BOOLEAN NOT NULL DEFAULT false,
-    -- C-4/C10 (archive 071): marca PROPIA del tipo para publicar de oficio. Opt-in.
-    publicable BOOLEAN NOT NULL DEFAULT false,
-    -- D2 (archive 077): días hábiles si una Entrada llega sin plazo. NULL = ninguno.
-    default_response_days INT NULL
-);
-CREATE TABLE IF NOT EXISTS urd_usuaroldep (
-    user_id UUID NOT NULL, depe_id INTEGER NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE
-);
-INSERT INTO dependencias (codigo, nombre) VALUES (1, 'Dirección General')
-    ON CONFLICT DO NOTHING;
--- B6: `DocumentService.create` exige un tipo ACTIVO del catálogo. Los que usan los
--- radicados de prueba; los de ventanilla/publicación (PQRS, OFICIO, DEM-PET) los
--- siembra cada prueba, porque su bandera `admite_ventanilla_publica` es parte de ella.
+# Lo que la cadena NO siembra y casi toda prueba necesita: la dependencia 1 (la
+# que usan los radicados de prueba desde que Ac. AGN 060/2001 §5.2 la hace
+# obligatoria, AREA-09-02) y los tipos documentales ACTIVOS del catálogo que
+# exige `DocumentService.create` (B6). Los de ventanilla/publicación (PQRS,
+# OFICIO, DEM-PET) los siembra cada prueba, porque su bandera
+# `admite_ventanilla_publica` es parte de ella.
+_SEED_SQL = """
+INSERT INTO dependencias (codigo, sigla, nombre) VALUES (1, 'DG', 'Dirección General');
 INSERT INTO tipos_documentales (code, nombre) VALUES
     ('Petición', 'Petición'), ('Oficio', 'Oficio'), ('Memorando', 'Memorando'),
-    ('TPLM', 'TPLM'), ('TPL', 'TPL'), ('Derechos de Petición', 'Derechos de Petición')
-    ON CONFLICT DO NOTHING;
+    ('TPLM', 'TPLM'), ('TPL', 'TPL'), ('Derechos de Petición', 'Derechos de Petición');
 """
 
 
 async def _provision_tenant_schema(conn: asyncpg.Connection, slug: str) -> str:
-    """Crea `tenant_itest_<hex8>` y aplica las tenant migrations de
-    document-service dentro de él. Devuelve el nombre de schema ya
-    entrecomillado-listo (`tenant_schema(slug)`)."""
+    """Crea `tenant_itest_<hex8>` y le aplica la cadena única de tenant
+    (`apply_chain`, la misma función que usan el runner e `init_tenant`).
+    Devuelve el nombre de schema (`tenant_schema(slug)`)."""
     schema = tenant_schema(slug)
     await conn.execute(f'CREATE SCHEMA "{schema}"')
-    # Tablas de OTROS servicios que document-service lee (su DDL no viaja en esta
-    # imagen): `dependencias` (tenant-service), `tipos_documentales` (archive-service)
-    # y `urd_usuaroldep` (auth). Forma mínima; la dependencia 1 es la que usan los
-    # radicados de prueba desde que Ac. AGN 060/2001 §5.2 hace obligatoria la dependencia
-    # (AREA-09-02). VAN ANTES de las migraciones: la 046 exige la función
-    # `resolver_codigo_dependencia` de tenant-service (mismo orden que `init_tenant`).
+    await migrations.apply_chain(conn, CHAIN / "tenant", schema, log=lambda _linea: None)
     async with conn.transaction():
         await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        await conn.execute(_OTROS_SERVICIOS_DDL)
-    for path in runner._sql_files(runner.TENANT_DIR):
-        async with conn.transaction():
-            await conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await conn.execute(path.read_text())
+        await conn.execute(_SEED_SQL)
     return schema
+
+
+async def membership(
+    conn: asyncpg.Connection, user_id: uuid.UUID, depe_id: int, *, is_active: bool = True
+) -> None:
+    """Pone a *user_id* en la dependencia *depe_id* (`urd_usuaroldep`).
+
+    La tabla real exige que el usuario exista y un rol: se crean si faltan.
+    Idempotente, como el `WHERE NOT EXISTS` al que sustituye.
+    """
+    await conn.execute(
+        "INSERT INTO auth_users (id, username) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING",
+        user_id,
+        f"itest-{user_id}",
+    )
+    rol = await conn.fetchval(
+        "INSERT INTO auth_groups (name) VALUES ('itest-rol') "
+        "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id"
+    )
+    await conn.execute(
+        "INSERT INTO urd_usuaroldep (user_id, depe_id, rol_id, is_active) VALUES ($1, $2, $3, $4) "
+        "ON CONFLICT (user_id, depe_id) DO NOTHING",
+        user_id,
+        depe_id,
+        rol,
+        is_active,
+    )
 
 
 async def _drop_tenant_schema(conn: asyncpg.Connection, schema: str) -> None:
@@ -387,14 +265,16 @@ async def _drop_tenant_schema(conn: asyncpg.Connection, schema: str) -> None:
         "no tiene el prefijo tenant_itest_ esperado del schema de un test"
     )
     await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    # El libro es de `public`: sin esto quedaría una fila por archivo y por test.
+    await conn.execute("DELETE FROM public.schema_migrations WHERE schema_name = $1", schema)
 
 
 @pytest_asyncio.fixture
 async def tenant_ctx(
     db_conn: asyncpg.Connection, request: pytest.FixtureRequest
 ) -> AsyncGenerator[tuple[str, asyncpg.Connection], None]:
-    """Provisiona UN schema `tenant_itest_<hex8>` desechable con las tenant
-    migrations de document-service aplicadas, y lo destruye
+    """Provisiona UN schema `tenant_itest_<hex8>` desechable con la cadena
+    única de tenant aplicada, y lo destruye
     (`DROP SCHEMA CASCADE`) al terminar el test.
 
     Yields ``(slug, conn)``: ``slug`` es el tenant_slug "crudo" (p. ej.
@@ -428,35 +308,15 @@ async def two_tenant_ctx(
         await _drop_tenant_schema(db_conn, schema_b)
 
 
-_FLUJO_MINIMO_DDL = """
-CREATE TABLE IF NOT EXISTS flow_steps (
-    id UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    radicado_id UUID NOT NULL, tracking_number VARCHAR(50) NOT NULL DEFAULT '',
-    step_number INTEGER NOT NULL, to_dept VARCHAR(100) NOT NULL, to_dept_code INTEGER,
-    assigned_to UUID, status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    completed_at TIMESTAMPTZ
-);
-CREATE TABLE IF NOT EXISTS dependencias (
-    codigo INT PRIMARY KEY, nombre TEXT NOT NULL,
-    activo BOOLEAN NOT NULL DEFAULT true, depe_rad_tp2 BOOLEAN NOT NULL DEFAULT false
-);
-CREATE TABLE IF NOT EXISTS urd_usuaroldep (
-    user_id UUID NOT NULL, depe_id INTEGER NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE
-);
-"""
-
-
 @pytest_asyncio.fixture
 async def tenant_flujo(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> tuple[str, asyncpg.Connection]:
-    """`tenant_ctx` + los MÍNIMOS de las tablas de otros servicios que lee la
-    tenencia de un borrador (`flow_steps` del workflow-service, `urd_usuaroldep`
-    de auth y `dependencias` de tenant-service). Su DDL no viaja en esta imagen;
-    se declaran con las columnas que el predicado usa."""
+    """`tenant_ctx` con el `search_path` de la sesión ya puesto en el schema.
+    Las tablas de flujo que lee la tenencia de un borrador (`flow_steps`,
+    `urd_usuaroldep`, `dependencias`) las trae la cadena única."""
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    await conn.execute(_FLUJO_MINIMO_DDL)
     return slug, conn
 
 

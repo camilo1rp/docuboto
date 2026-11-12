@@ -25,7 +25,6 @@ import json
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -60,9 +59,6 @@ RAD = uuid.uuid4()
 ANEXO = uuid.uuid4()
 NUMERO_RAD = "2026-ITEST-E-000001"
 SHA_ANEXO = "e" * 64
-_MIGRACIONES = Path(__file__).resolve().parents[2] / "migrations" / "tenant"
-_MIGRACION_061 = _MIGRACIONES / "061_transferencia_acta_firma_excepcion_constancia.sql"
-_MIGRACION_062 = _MIGRACIONES / "062_firma_excepcion_cadena_revocacion_firmada.sql"
 
 
 def _req(rol: str = "recibe", **kw) -> FirmaInobtenibleRequest:
@@ -166,9 +162,22 @@ async def _revocar(svc: TransferenciaService, tid, actor: Actor, req=None, auth=
         return await svc.revocar_firma_inobtenible(tid, actor, req or _rev(), auth)
 
 
+async def _anexo_en_almacen(conn: asyncpg.Connection, slug: str, anexo_id: uuid.UUID = ANEXO) -> None:
+    """storage-service guarda el anexo de soporte: la constancia lo bloquea `FOR SHARE` en
+    `files` (C14) y, si no está, la declaración es `referencia_documental_invalida`."""
+    await conn.execute(
+        f'INSERT INTO "{tenant_schema(slug)}".files (id, filename, file_size, sha256, bucket, object_key) '
+        "VALUES ($1, 'anexo-soporte.pdf', 1, repeat('0', 64), 'itest', 'anexo-soporte.pdf') "
+        "ON CONFLICT (id) DO NOTHING",
+        anexo_id,
+    )
+
+
 async def _acta_recibida(conn: asyncpg.Connection, slug: str, nombre: str, **seed_kw):
     """Transferencia recibida con dos identidades DISTINTAS: elabora (= entrega en este seed) y
-    recibe. Devuelve (created, transferencia_id, elabora, recibe)."""
+    recibe, y el anexo de soporte (`ANEXO`) en el almacén. Devuelve (created, transferencia_id,
+    elabora, recibe)."""
+    await _anexo_en_almacen(conn, slug)
     elabora = Actor(id=uuid.uuid4(), username="itest-elabora")
     recibe = Actor(id=uuid.uuid4(), username="itest-recibe")
     created, transferencia, _rid, _hash = await _seed_transferencia_lista_para_recibir_con_documento(
@@ -515,21 +524,6 @@ async def test_la_base_rechaza_fundamento_corto_motivo_fuera_de_catalogo_y_firma
             )
 
 
-async def test_la_061_es_idempotente_y_no_toca_lo_ya_declarado(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    slug, conn = tenant_ctx
-    schema = tenant_schema(slug)
-    _c, tid, _e, _r = await _acta_recibida(conn, slug, "itest 07-10 idempotente")
-    await _declarar(TransferenciaService(conn, slug), tid, Actor(id=uuid.uuid4()))
-    antes = await conn.fetchrow(f'SELECT * FROM "{schema}".transferencia_acta_firma_excepcion')
-    await conn.execute(f'SET search_path TO "{schema}"')
-    for migracion in (_MIGRACION_061, _MIGRACION_062):
-        await conn.execute(migracion.read_text(encoding="utf-8"))
-        await conn.execute(migracion.read_text(encoding="utf-8"))
-    assert dict(antes) == dict(await conn.fetchrow(f'SELECT * FROM "{schema}".transferencia_acta_firma_excepcion'))
-
-
 # --- el verificador ----------------------------------------------------------------------
 
 
@@ -588,20 +582,17 @@ async def test_el_verificador_nunca_promueve_a_firmada_completa_y_es_honesto_con
 async def test_firma_personal_pendiente_lee_la_politica_de_la_entidad_del_tenant(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """`sgd_param_admin` la crea tenant-service; aquí se crea en el schema desechable."""
+    """`sgd_param_admin` nace con la política sin fijar (`null`): la entidad no exige nada."""
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
     _c, tid, _e, _r = await _acta_recibida(conn, slug, "itest 07-10 politica")
-    await conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{schema}".sgd_param_admin (key TEXT PRIMARY KEY, value JSONB)'
-    )
     svc = TransferenciaService(conn, slug)
     with _verificacion():
         sin_param = await svc.acta_verificacion(tid, None)
         assert sin_param.completitud == "sellada" and sin_param.politica_xades == "off"
         await conn.execute(
-            f'INSERT INTO "{schema}".sgd_param_admin (key, value) VALUES '
-            "('firma_personal_require_xades', '\"todos\"'::jsonb)"
+            f'UPDATE "{schema}".sgd_param_admin SET value = \'"todos"\'::jsonb '
+            "WHERE key = 'firma_personal_require_xades'"
         )
         con_param = await svc.acta_verificacion(tid, None)
         assert con_param.completitud == "firma_personal_pendiente"
@@ -615,11 +606,8 @@ async def test_la_politica_de_la_entidad_hace_obligatoria_la_firma_personal_del_
     schema = tenant_schema(slug)
     _c, tid, _e, _r = await _acta_recibida(conn, slug, "itest 07-10 obligatoria")
     await conn.execute(
-        f'CREATE TABLE IF NOT EXISTS "{schema}".sgd_param_admin (key TEXT PRIMARY KEY, value JSONB)'
-    )
-    await conn.execute(
-        f'INSERT INTO "{schema}".sgd_param_admin (key, value) VALUES '
-        "('firma_personal_require_xades', '\"todos\"'::jsonb)"
+        f'UPDATE "{schema}".sgd_param_admin SET value = \'"todos"\'::jsonb '
+        "WHERE key = 'firma_personal_require_xades'"
     )
     svc = TransferenciaService(conn, slug)
     admin = Actor(id=uuid.uuid4())
@@ -1136,19 +1124,14 @@ async def test_la_identidad_sale_del_catalogo_y_el_certificado_activo_obliga_a_f
     _c, tid, _elabora, recibe = await _acta_recibida(conn, slug, "itest FIRMA-2 identidad")
     admin = Actor(id=uuid.uuid4(), username="adm")
     await conn.execute(
-        f'CREATE TABLE "{schema}".auth_users (id UUID PRIMARY KEY, username TEXT, is_root BOOLEAN DEFAULT FALSE)'
-    )
-    await conn.execute(
-        f'CREATE TABLE "{schema}".auth_user_signing_key (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), '
-        "user_id UUID, subject_dn TEXT, cargo TEXT, estado TEXT, cert_pem TEXT, not_after TIMESTAMPTZ)"
-    )
-    await conn.execute(
         f'INSERT INTO "{schema}".auth_users (id, username) VALUES ($1, \'adm\'), ($2, \'recibe.user\')',
         admin.id, recibe.id,
     )
     await conn.execute(
-        f'INSERT INTO "{schema}".auth_user_signing_key (user_id, subject_dn, cargo, estado, cert_pem, not_after) '
-        "VALUES ($1, 'CN=Ana Admin,O=Entidad,C=CO', 'Jefe de archivo', 'activo', 'PEM', now() + interval '1 year')",
+        f'INSERT INTO "{schema}".auth_user_signing_key (user_id, subject_dn, cargo, estado, cert_pem, not_after, '
+        "private_key_cifrado, private_key_nonce) "
+        "VALUES ($1, 'CN=Ana Admin,O=Entidad,C=CO', 'Jefe de archivo', 'activo', 'PEM', now() + interval '1 year', "
+        "'\\x00', '\\x00')",
         admin.id,
     )
     svc = TransferenciaService(conn, slug)
@@ -1473,10 +1456,6 @@ async def test_el_barrido_recoge_solo_los_sobres_sin_referencia_y_vencida_la_gra
     ref = await conn.fetchval(
         f'SELECT sobre_minio_key FROM "{schema}".transferencia_acta_firma_excepcion WHERE id = $1', c1.id
     )
-    # `files` es de storage-service: aquí solo las columnas que lee el barrido
-    await conn.execute(
-        f'CREATE TABLE "{schema}".files (id UUID PRIMARY KEY, filename TEXT, uploaded_at TIMESTAMPTZ)'
-    )
     huerfano, reciente, otro = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     nombre = lambda: f"acta-transferencia-sobre-{uuid.uuid4()}-v1-{uuid.uuid4()}-firmado.xml"  # noqa: E731
     for fid, fname, edad in (
@@ -1486,7 +1465,9 @@ async def test_el_barrido_recoge_solo_los_sobres_sin_referencia_y_vencida_la_gra
         (otro, f"acta-transferencia-{uuid.uuid4()}-v1-{uuid.uuid4()}-firmado.xml", timedelta(hours=3)),
     ):
         await conn.execute(
-            f'INSERT INTO "{schema}".files VALUES ($1, $2, now() - $3::interval)', fid, fname, edad
+            f'INSERT INTO "{schema}".files (id, filename, file_size, sha256, bucket, object_key, uploaded_at) '
+            "VALUES ($1, $2, 1, repeat('0', 64), 'itest', $2, now() - $3::interval)",
+            fid, fname, edad,
         )
     with patch(
         "archive.clients.storage_client.purgar_huerfanos_internal",

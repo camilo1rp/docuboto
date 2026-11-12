@@ -11,7 +11,7 @@
 renovación de retención WORM para series de Conservación Total).
 
 `trd_series.disposition` (columna `VARCHAR(20)`, SIN `CHECK` a nivel BD --
-verificado contra `migrations/tenant/001_create_archive.sql`/`006_trd_ccd.sql`)
+verificado contra `services/docuboto/migrations/tenant/500_trd_series.sql`)
 admite tanto los códigos AGN (``CT``/``E``/``S``/``M``) como alias de texto
 libre heredados (``conserve``/``eliminate``/``digitize``/``select``) — ver
 ``app.services.archive_service._agn_disposition`` (visualización). La

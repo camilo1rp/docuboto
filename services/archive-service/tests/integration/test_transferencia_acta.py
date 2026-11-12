@@ -82,44 +82,23 @@ def _num_registros(acta_xml: str) -> int:
 
 # ---------------------------------------------------------------------------
 # RBAC mínimo, provisionado a mano dentro del schema desechable: las tablas
-# `auth_users`/`auth_memberships`/`role_clearance` las crea auth-service (ADR-002/
-# ADR-012, ver `archive/core/clearance.py`), pero sus migraciones NO viajan en la
-# imagen de archive-service -- `resolve_caller_clearance` atrapa
-# `UndefinedTableError` y cae a PUBLICA(1) en su ausencia (fail-closed, ya
-# documentado en `test_atomicity.py:1202`). Para la garantía 5 hace falta
-# distinguir un "lector legítimo" (clearance CLASIFICADA real) de un
-# no-lector sobre el MISMO expediente reservado -- sin esto ambos resolverían
-# siempre a PUBLICA y el contraste sería vacío. Subconjunto MÍNIMO de columnas
-# que consulta `resolve_caller_clearance` (sin FKs: tabla de prueba
-# desechable, se destruye entera con el `DROP SCHEMA CASCADE` del fixture).
-# `IF NOT EXISTS`: si un futuro `migrations/tenant/*.sql` de archive-service
-# llegara a definir estos mismos nombres, no se pisa.
-_RBAC_MINIMAL_DDL = """
-CREATE TABLE IF NOT EXISTS auth_users (
-    id       UUID PRIMARY KEY,
-    is_root  BOOLEAN NOT NULL DEFAULT FALSE
-);
-CREATE TABLE IF NOT EXISTS auth_memberships (
-    user_id   UUID NOT NULL,
-    group_id  UUID NOT NULL,
-    PRIMARY KEY (user_id, group_id)
-);
-CREATE TABLE IF NOT EXISTS role_clearance (
-    group_id   UUID PRIMARY KEY,
-    max_level  SMALLINT NOT NULL
-);
-"""
+# Para la garantía 5 hace falta distinguir un "lector legítimo" (clearance
+# CLASIFICADA real, vía RBAC) de un no-lector sobre el MISMO expediente
+# reservado -- sin esto ambos resolverían a PUBLICA y el contraste sería vacío.
+# Las tablas RBAC las crea la cadena de migraciones; aquí solo se siembran.
 
 
 async def _grant_clearance(
     conn: asyncpg.Connection, schema: str, user_id: uuid.UUID, level: int
 ) -> None:
-    """Da a `user_id` un `max_level` real vía RBAC (provisiona las tablas
-    mínimas la primera vez, `IF NOT EXISTS`)."""
+    """Da a `user_id` un `max_level` real vía RBAC (usuario + grupo + membresía)."""
     await conn.execute(f'SET search_path TO "{schema}"')
-    await conn.execute(_RBAC_MINIMAL_DDL)
-    group_id = uuid.uuid4()
-    await conn.execute("INSERT INTO auth_users (id) VALUES ($1)", user_id)
+    await conn.execute(
+        "INSERT INTO auth_users (id, username) VALUES ($1, $2)", user_id, f"u-{user_id.hex[:12]}"
+    )
+    group_id = await conn.fetchval(
+        "INSERT INTO auth_groups (name) VALUES ($1) RETURNING id", f"g-{uuid.uuid4().hex[:12]}"
+    )
     await conn.execute(
         "INSERT INTO role_clearance (group_id, max_level) VALUES ($1, $2)", group_id, level
     )

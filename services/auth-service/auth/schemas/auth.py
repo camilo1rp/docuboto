@@ -86,7 +86,7 @@ class UserInfoResponse(BaseModel):
     treating any listed permission as full access.
 
     Values come straight from ``auth_group_permissions.crud``
-    (``migrations/tenant/001_rbac.sql``): 0=Ninguno 1=Leer 2=Editar
+    (``services/docuboto/migrations/tenant/020_auth_groups.sql``): 0=Ninguno 1=Leer 2=Editar
     3=Crear/Borrar 4=Nivel_1 5=Nivel_2. Root users get ``USUA_PERM_ROOT: 5``.
 
     Fail-closed like ``permissions``: empty dict (never omitted/null) when

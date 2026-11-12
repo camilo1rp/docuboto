@@ -15,6 +15,7 @@ Python sobre un tope de 1000 candidatas. Estos guardianes impiden que la copia v
 
 from __future__ import annotations
 
+from tests._chain import chain_text
 from tests._compose import paquete_de
 
 import re
@@ -65,21 +66,10 @@ def test_el_constructor_siempre_anade_el_gate() -> None:
     assert '"tenant_x".radicados' in sql and "FROM radicados" not in sql, "radicados va calificada"
 
 
-def test_el_indice_del_listado_es_identico_en_los_cuatro() -> None:
-    cuerpos = set()
-    for svc in DLQ:
-        hallados = [
-            f
-            for f in (SERVICIOS / svc / "migrations" / "tenant").glob("*.sql")
-            if "ix_edl_keyset" in f.read_text()
-        ]
-        assert len(hallados) == 1, f"{svc}: debe haber UNA migración del índice ix_edl_keyset"
-        sentencia = re.search(
-            r"CREATE INDEX IF NOT EXISTS ix_edl_keyset.*?;", hallados[0].read_text(), re.S
-        )
-        assert sentencia
-        cuerpos.add(re.sub(r"\s+", " ", sentencia.group(0)))
-    assert len(cuerpos) == 1, "el índice compartido debe ser idéntico en los cuatro servicios"
+def test_el_indice_del_listado_se_crea_una_sola_vez() -> None:
+    """La tabla es compartida por los consumidores: la cadena crea UN índice de keyset."""
+    sentencias = re.findall(r"^CREATE INDEX ix_edl_keyset ON (\w+) .*?;", chain_text("tenant"), re.M)
+    assert sentencias == ["evento_dead_letter"], sentencias
 
 
 # ---------------------------------------------------------------------------

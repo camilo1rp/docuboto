@@ -126,17 +126,3 @@ async def test_credential_and_delivery_tenant_isolation(two_tenant_ctx) -> None:
     repo_b = PostalRepository(conn)
     assert await repo_b.get_operator_credential("4-72") is None
     assert await conn.fetchval("SELECT COUNT(*) FROM postal_operator_credential") == 0
-
-
-@pytest.mark.asyncio
-async def test_migration_017_idempotent(tenant_ctx) -> None:
-    """Re-aplicar 017 sobre el schema no falla (IF NOT EXISTS / ADD COLUMN IF NOT EXISTS)."""
-    slug, conn = tenant_ctx
-    from pathlib import Path
-
-    sql = (
-        Path(__file__).parents[2] / "migrations" / "tenant" / "017_postal_webhook.sql"
-    ).read_text()
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{tenant_schema(slug)}"')
-        await conn.execute(sql)  # segunda pasada, debe ser no-op sin error

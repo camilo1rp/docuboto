@@ -142,10 +142,10 @@ class DocumentRepository:
             json.dumps(payload.metadata),
             metadata_template_id,
             payload.nivel_seguridad,
-            # El CHECK `radicados_clasificado_con_fundamento` (041) no es diferible:
+            # El CHECK `radicados_clasificado_con_fundamento` no es diferible:
             # el radicado nace YA motivado; `set_classification` completa el resto.
             payload.clasificacion_fundamento if payload.nivel_seguridad >= 2 else None,
-            # Igual el CHECK `radicados_causal_catalogo` (050): causal y plazo viajan en
+            # Igual el CHECK `radicados_causal_catalogo`: causal y plazo viajan en
             # el INSERT, no después. En nivel 1 el CHECK exige NULL.
             payload.clasificacion_causal if payload.nivel_seguridad >= 2 else None,
             payload.clasificacion_plazo_meses if payload.nivel_seguridad >= 2 else None,
@@ -709,7 +709,7 @@ class DocumentRepository:
             "registered_at, clasificado_at, "
             # Meses completos desde la GENERACIÓN: hasta hoy (si el nivel cambia,
             # `clasificado_at` pasa a ser hoy) y hasta la clasificación vigente (si no
-            # cambia, el reloj no se reinicia). La cuenta es la del CHECK (migración 051).
+            # cambia, el reloj no se reinicia). La cuenta es la del CHECK `radicados_reserva_tope_15_anios`.
             "reserva_meses_entre(registered_at, now()) AS meses_desde_generacion, "
             "reserva_meses_entre(registered_at, COALESCE(clasificado_at, registered_at)) "
             "AS meses_hasta_clasificacion "
@@ -751,7 +751,7 @@ class DocumentRepository:
         el recorte público exige las dos condiciones— y la siguiente
         desclasificación, hecha meses después y con otro propósito, devolvía el
         radicado a los canales de cosecha sin que nadie hubiera decidido
-        publicarlo. Es exactamente el modo de fallo que la migración 019 dice
+        publicarlo. Es exactamente el modo de fallo que `radicados.publicable` dice
         querer evitar, entrando por la otra puerta: no «marcar publicable algo
         reservado», sino «publicar primero y clasificar después». La reserva es un
         acto motivado que prevalece (Ley 1712 arts. 18-19), así que el retiro es su

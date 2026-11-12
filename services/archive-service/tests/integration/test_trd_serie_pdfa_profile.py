@@ -17,13 +17,11 @@ mockeado): aquí se prueba lo que un mock NO puede demostrar --
   (a) la persistencia REAL de `trd_series.pdfa_profile` a través de
       `ArchiveService.create_trd_serie`/`update_trd_serie`/
       `ArchiveRepository.get_trd_serie_by_id`;
-  (b) el CHECK de la migración 035 (última línea fail-closed, defensa en
+  (b) el CHECK de `trd_series.pdfa_profile` (última línea fail-closed, defensa en
       profundidad tras la validación Pydantic) rechazando un valor fuera de
       whitelist inyectado por SQL crudo (bypass deliberado de la capa
       Pydantic, mismo criterio que `test_worm_renovacion_ct_filter.py`
       prueba el filtro CT "en la consulta SQL, no en el código Python");
-  (c) la idempotencia REAL de la migración 035 (re-ejecución sobre un
-      schema ya migrado por `tenant_ctx`);
   (d) el cableado end-to-end de `AipWiringService._resolve_aip_pdfa_profile`
       leyendo una fila `trd_series` REAL (no un `TrdSerie` construido a
       mano) y entregando el perfil resuelto a `storage_client.
@@ -37,7 +35,6 @@ y el docstring de `tests/integration/conftest.py`).
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -51,9 +48,6 @@ from archive.services.archive_service import ArchiveService
 from tests.conftest import datos_radicado
 
 from .conftest import DSN, convalidate_for_test
-
-_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations" / "tenant"
-_MIGRATION_035_PATH = _MIGRATIONS_DIR / "035_trd_series_pdfa_profile.sql"
 
 
 # ---------------------------------------------------------------------------
@@ -173,49 +167,6 @@ async def test_check_constraint_accepts_null_and_all_valid_profiles_raw_sql(
                 profile,
             )
             assert row["pdfa_profile"] == profile
-
-
-# ---------------------------------------------------------------------------
-# (c) Migración 035 -- idempotencia REAL contra Postgres (gemelo de
-# `test_migration_034_is_idempotent_on_real_postgres` en
-# `test_worm_renovacion_ct_filter.py`).
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-async def test_migration_035_is_idempotent_on_real_postgres(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    slug, conn = tenant_ctx
-    schema = tenant_schema(slug)
-    sql = _MIGRATION_035_PATH.read_text(encoding="utf-8")
-
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        await conn.execute(sql)  # re-ejecución sobre el schema YA migrado por tenant_ctx
-
-    # El cableado sigue funcionando con normalidad tras la re-ejecución:
-    # columna + CHECK operativos.
-    archive = ArchiveService(conn, slug)
-    created = await archive.create_trd_serie(
-        TrdSerieCreate(
-            code=f"MIG{uuid.uuid4().hex[:6]}", name="itest post-idempotencia 035", pdfa_profile="1a",
-            archivo_gestion_years=5,
-            archivo_central_years=5,
-        ),
-        actor=None,
-    )
-    assert created.pdfa_profile == "1a"
-
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        with pytest.raises(asyncpg.exceptions.CheckViolationError):
-            await conn.execute(
-                "INSERT INTO trd_series (code, name, pdfa_profile, archivo_gestion_years, archivo_central_years) VALUES ($1, $2, $3, 5, 5)",
-                f"MIB{uuid.uuid4().hex[:6]}",
-                "itest CHECK sigue activo post-idempotencia",
-                "bad",
-            )
 
 
 # ---------------------------------------------------------------------------

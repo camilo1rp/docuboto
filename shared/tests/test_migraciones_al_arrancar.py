@@ -7,23 +7,21 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Un servicio con migraciones no arranca antes de aplicarlas (AREA-13-08).
+"""Ningún servicio que conecta a la base arranca antes de migrarla (AREA-13-08).
 
-Los doce Dockerfile tienen `CMD uvicorn` directo y la migración solo se
-ejecutaba a mano o en CI: una versión nueva podía servir tráfico contra un
-esquema viejo y fallar de forma parcial, ruta a ruta.
+Los Dockerfile tienen `CMD uvicorn` directo: sin un paso previo, una versión
+nueva podía servir tráfico contra un esquema viejo y fallar de forma parcial,
+ruta a ruta.
 
-Producción lo resuelve sin tocar las imágenes: cada servicio con
-`migrations/runner.py` tiene un `migrate-<servicio>` de un solo uso (misma
-imagen, `command: python migrations/runner.py`, conexión del propietario) y
-`depends_on: migrate-<servicio>: condition: service_completed_successfully`.
-Si el runner falla, el servicio no arranca (fail-closed). Se acepta también que
-el propio Dockerfile invoque `runner.py` antes de `uvicorn`.
+Desde ADR-053 hay UNA cadena (`services/docuboto/migrations`) y UN migrador de
+un solo uso, `migrate-docuboto` (imagen de `app`, `command: python
+migrations/runner.py`, conexión del propietario). Todo servicio que conecta a
+la base lleva `depends_on: migrate-docuboto: condition:
+service_completed_successfully`: si el runner falla, el servicio no arranca
+(fail-closed). Vale igual en desarrollo y en producción.
 
-C19 (ADR-041): desarrollo hace lo mismo (los `migrate-<svc>` de `docker-compose.yml`
-comparten el guardián con producción) y los nueve runners más `init_tenant.py` se
-serializan con UN cerrojo global (`orpycamcp_common.migrations.cerrojo`). Antes el
-manifiesto de producción afirmaba un `pg_advisory_lock` que el código no tenía.
+C19 (ADR-041): el runner e `init_tenant.py` se serializan con UN cerrojo global
+(`orpycamcp_common.migrations.cerrojo`).
 """
 
 from __future__ import annotations
@@ -34,146 +32,154 @@ import pytest
 
 from tests._compose import COMPOSE_DEV, COMPOSE_PROD, RAIZ, servicios
 
-_CON_MIGRACIONES = sorted(
-    p.parent.parent.name for p in (RAIZ / "services").glob("*/migrations/runner.py")
-)
-#: El paquete vive en `services/docuboto`; el servicio de Compose se llama `app`.
-_COMPOSE_DE = {"docuboto": "app"}
-_DOMINIO_MIGRA = (
-    "auth",
-    "tenant",
-    "document",
-    "storage",
-    "workflow",
-    "archive",
-    "notification",
-    "signature",
-    "knowledge",
-)
+MIGRATOR = "migrate-docuboto"
+CHAIN = RAIZ / "services" / "docuboto" / "migrations"
 
-
-def _compose_de(svc: str) -> str:
-    return _COMPOSE_DE.get(svc, svc)
-
-
-def _dockerfile_de(svc: str):
-    if svc == "docuboto":
-        return RAIZ / "infra" / "Dockerfile.app"
-    return RAIZ / "services" / svc / "Dockerfile"
-
-
-def _dockerfile_migra(svc: str) -> bool:
-    ruta = _dockerfile_de(svc)
-    if not ruta.is_file():
-        return False
-    texto = ruta.read_text(encoding="utf-8")
-    m = re.search(r"^(?:CMD|ENTRYPOINT)\s.*$", texto, re.MULTILINE)
-    return bool(m and "runner.py" in m.group(0) and m.group(0).index("runner.py") < m.group(0).find("uvicorn"))
-
-
-def _migrador_de(svc: str, todos: dict[str, dict]) -> str | None:
-    token = _compose_de(svc)
-    for nombre, s in todos.items():
-        cmd = s.get("command")
-        cmd_txt = " ".join(cmd) if isinstance(cmd, list) else str(cmd or "")
-        img = str(s.get("image", ""))
-        if nombre.startswith("migrate-") and "migrations/runner.py" in cmd_txt and f"/{token}:" in img:
-            return nombre
-    return None
-
-
-def test_se_encontraron_servicios_con_migraciones() -> None:
-    assert len(_CON_MIGRACIONES) >= 9, f"solo {_CON_MIGRACIONES}: guardián ciego"
-
+#: Lleva `DATABASE_URL` en el manifiesto de producción pero su código no la lee
+#: (lo comprueba `test_la_excepcion_del_gateway_sigue_siendo_cierta`).
+_NO_CONNECTION = {"api-gateway"}
 
 _MANIFIESTOS = [pytest.param(COMPOSE_PROD, id="prod"), pytest.param(COMPOSE_DEV, id="dev")]
 
 
+def _env_names(s: dict) -> set[str]:
+    env = s.get("environment") or {}
+    # prod: mapa; dev: lista `K=V`.
+    return set(env) if isinstance(env, dict) else {str(e).split("=", 1)[0] for e in env}
+
+
+def _db_services(todos: dict[str, dict]) -> list[str]:
+    """Servicios que sirven y conectan a la base: llevan `DATABASE_URL`."""
+    return sorted(
+        n
+        for n, s in todos.items()
+        if not n.startswith("migrate-") and "DATABASE_URL" in _env_names(s) and n not in _NO_CONNECTION
+    )
+
+
 @pytest.mark.parametrize("compose", _MANIFIESTOS)
-def test_todo_servicio_con_migraciones_las_aplica_antes_de_servir(compose) -> None:  # noqa: ANN001
+def test_todo_servicio_que_conecta_a_la_base_espera_al_migrador(compose) -> None:  # noqa: ANN001
     """Mutación que debe caer: quitar el `depends_on … service_completed_successfully`
     de un servicio en dev (o en prod) deja de migrar antes de servir."""
     todos = servicios(compose)
+    con_base = _db_services(todos)
+    # Control positivo: `app`, `worker` y los nueve de dominio del perfil `split`.
+    assert len(con_base) >= 11, f"solo {con_base}: guardián ciego"
+    assert MIGRATOR in todos, f"{compose.name}: falta {MIGRATOR}"
     mal: list[str] = []
-    for svc in _CON_MIGRACIONES:
-        if _dockerfile_migra(svc):
-            continue
-        migrador = _migrador_de(svc, todos)
-        if migrador is None:
-            mal.append(f"{svc}: ni el Dockerfile ni el manifiesto de producción migran antes de servir")
-            continue
-        nombre = _compose_de(svc)
+    for nombre in con_base:
         deps = todos[nombre].get("depends_on") or {}
-        cond = deps.get(migrador, {}).get("condition") if isinstance(deps, dict) else None
+        cond = deps.get(MIGRATOR, {}).get("condition") if isinstance(deps, dict) else None
         if cond != "service_completed_successfully":
-            mal.append(f"{nombre}: no depende de {migrador} con service_completed_successfully")
-        env = todos[migrador].get("environment") or {}
-        # prod: mapa; dev: lista `K=V`.
-        nombres = set(env) if isinstance(env, dict) else {str(e).split("=", 1)[0] for e in env}
-        if "MIGRATIONS_DATABASE_URL" not in nombres:
-            mal.append(f"{migrador}: no usa la conexión del propietario (MIGRATIONS_DATABASE_URL)")
-        if todos[migrador].get("image") != todos[nombre].get("image"):
-            mal.append(f"{migrador}: no usa la MISMA imagen que {nombre} (migraría otro código)")
+            mal.append(f"{nombre}: no depende de {MIGRATOR} con service_completed_successfully")
     assert not mal, "Migraciones al arrancar (fail-closed):\n  " + "\n  ".join(mal)
 
 
+def test_la_excepcion_del_gateway_sigue_siendo_cierta() -> None:
+    """Si el gateway empieza a leer `DATABASE_URL`, deja de estar exento."""
+    for svc in _NO_CONNECTION:
+        fuentes = [p for p in (RAIZ / "services" / svc).rglob("*.py") if "tests" not in p.parts]
+        assert fuentes, f"{svc}: sin fuentes; guardián ciego"
+        leen = [
+            p.relative_to(RAIZ).as_posix()
+            for p in fuentes
+            if re.search(r"DATABASE_URL|database_url|asyncpg", p.read_text(encoding="utf-8"))
+        ]
+        assert not leen, f"{svc} conecta a la base y debe esperar a {MIGRATOR}: {leen}"
+
+
 @pytest.mark.parametrize("compose", _MANIFIESTOS)
-def test_un_migrador_no_reinicia_ni_publica_puertos(compose) -> None:  # noqa: ANN001
-    migradores = {n: s for n, s in servicios(compose).items() if n.startswith("migrate-")}
-    assert len(migradores) >= 9, f"solo {sorted(migradores)}: guardián ciego"  # control positivo
-    for nombre, s in migradores.items():
-        assert s.get("restart") == "no", f"{nombre}: un migrador de un solo uso no se reinicia"
-        assert "ports" not in s, f"{nombre}: no publica puertos"
+def test_hay_un_solo_migrador_y_es_de_un_solo_uso(compose) -> None:  # noqa: ANN001
+    """Mutaciones que deben caer: migrar con la conexión de la aplicación; migrar con
+    otra imagen que la de `app`; dejar el migrador tras un perfil."""
+    todos = servicios(compose)
+    migradores = sorted(n for n in todos if n.startswith("migrate-"))
+    assert migradores == [MIGRATOR], f"{compose.name}: {migradores}"
+    s = todos[MIGRATOR]
+    assert s.get("restart") == "no", "un migrador de un solo uso no se reinicia"
+    assert "ports" not in s, "el migrador no publica puertos"
+    assert not s.get("profiles"), "el migrador corre siempre, no tras un perfil"
+    cmd = s.get("command")
+    cmd_txt = " ".join(cmd) if isinstance(cmd, list) else str(cmd or "")
+    assert "migrations/runner.py" in cmd_txt, f"{MIGRATOR} no ejecuta el runner: {cmd_txt!r}"
+    assert "MIGRATIONS_DATABASE_URL" in _env_names(s), (
+        f"{MIGRATOR}: no usa la conexión del propietario (MIGRATIONS_DATABASE_URL)"
+    )
+    assert s.get("image") and s.get("image") == todos["app"].get("image"), (
+        f"{MIGRATOR}: no usa la MISMA imagen que app (migraría otro código)"
+    )
 
 
-def test_en_dev_cada_servicio_con_runner_tiene_su_migrador() -> None:
+def test_en_dev_el_migrador_reutiliza_la_imagen_de_app() -> None:
     """Dev nombra la imagen (`image:`) para que el migrador la reutilice sin construirla aparte."""
     todos = servicios(COMPOSE_DEV)
-    for svc in _CON_MIGRACIONES:
-        nombre = _compose_de(svc)
-        migrador = f"migrate-{svc.removesuffix('-service')}"
-        assert migrador in todos, f"dev sin migrador para {svc}"
-        assert todos[nombre].get("image"), f"{nombre}: sin `image:` explícita; el migrador no la comparte"
-        assert "build" in todos[nombre], f"{nombre}: el servicio es quien construye la imagen"
-        assert "build" not in todos[migrador], (
-            "el migrador no construye: reutiliza la imagen del servicio"
-        )
+    assert todos["app"].get("image"), "app: sin `image:` explícita; el migrador no la comparte"
+    assert "build" in todos["app"], "app: el servicio es quien construye la imagen"
+    assert "build" not in todos[MIGRATOR], "el migrador no construye: reutiliza la imagen de app"
+
+
+@pytest.mark.parametrize("compose", _MANIFIESTOS)
+def test_el_proceso_unificado_solo_espera_a_su_migrador(compose) -> None:  # noqa: ANN001
+    todos = servicios(compose)
+    for nombre in ("app", "worker"):
+        deps = todos[nombre].get("depends_on") or {}
+        migradores = [k for k in deps if str(k).startswith("migrate-")]
+        assert migradores == [MIGRATOR], f"{nombre}: {migradores}"
+
+
+def test_la_imagen_app_copia_la_cadena() -> None:
+    texto = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8")
+    assert "COPY services/docuboto/migrations /app/migrations" in texto
 
 
 # ── El cerrojo global (C19) ──────────────────────────────────────────────────────
 
 
-def _runner(svc: str) -> str:
-    return (RAIZ / "services" / svc / "migrations" / "runner.py").read_text(encoding="utf-8")
+def _modulo() -> str:
+    return (RAIZ / "shared" / "orpycamcp_common" / "migrations.py").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("svc", _CON_MIGRACIONES)
-def test_cada_runner_toma_el_cerrojo_global_y_aplica_las_globales_en_transaccion(svc: str) -> None:
-    """Mutaciones que deben caer: quitar `ledger.cerrojo(conn)` de un runner; sacar el
-    `conn.execute(path.read_text())` global de `conn.transaction()`."""
-    texto = _runner(svc)
-    assert "async with ledger.cerrojo(conn):" in texto, f"{svc}: el runner no toma el cerrojo"
+def test_el_runner_toma_el_cerrojo_global_y_aplica_cada_archivo_en_transaccion() -> None:
+    """Mutaciones que deben caer: quitar `cerrojo(conn)` de `migrate`; sacar el
+    `conn.execute(path.read_text())` de `conn.transaction()`; que el runner deje de
+    llamar a `migrate`."""
+    runner = (CHAIN / "runner.py").read_text(encoding="utf-8")
+    assert "await migrations.migrate(conn, MIGRATIONS_DIR)" in runner, "el runner no usa `migrate`"
+    modulo = _modulo()
+    migrate = modulo[modulo.index("async def migrate("):]
+    assert "async with cerrojo(conn):" in migrate, "`migrate` no toma el cerrojo"
     # El cerrojo envuelve el libro, las globales y las de tenant (no solo parte).
-    cuerpo = texto[texto.index("async with ledger.cerrojo(conn):"):]
-    assert cuerpo.index("ensure_ledger") < cuerpo.index("_apply_global(conn)") < cuerpo.index("_apply_tenant(conn)")
-    global_ = texto[texto.index("async def _apply_global"):texto.index("async def _tenant_schemas")]
-    assert "async with conn.transaction():" in global_, f"{svc}: _apply_global sin transacción"
-    assert global_.index("conn.transaction()") < global_.index("path.read_text()") < global_.index("ledger.record")
+    cuerpo = migrate[migrate.index("async with cerrojo(conn):"):]
+    assert (
+        cuerpo.index("ensure_ledger")
+        < cuerpo.index('migrations_dir / "global"')
+        < cuerpo.index('migrations_dir / "tenant"')
+    )
+    chain = modulo[modulo.index("async def apply_chain("):modulo.index("async def migrate(")]
+    assert "async with conn.transaction():" in chain, "apply_chain sin transacción"
+    assert chain.index("conn.transaction()") < chain.index("path.read_text(") < chain.index("await record(")
 
 
 def test_init_tenant_toma_el_mismo_cerrojo() -> None:
+    """El alta de una entidad aplica las dos cadenas con `apply_chain` (una transacción
+    por archivo) y dentro del cerrojo."""
     texto = (RAIZ / "scripts" / "init_tenant.py").read_text(encoding="utf-8")
     assert "async with ledger.cerrojo(conn):" in texto
-    assert texto.count("async with conn.transaction():") >= 2  # globales y tenant
+    dentro = texto[texto.index("async with ledger.cerrojo(conn):"):]
+    assert dentro.index('ledger.apply_chain(conn, MIGRATIONS_DIR / "global"') < dentro.index(
+        'ledger.apply_chain(conn, MIGRATIONS_DIR / "tenant"'
+    )
+    antes = texto[: texto.index("async with ledger.cerrojo(conn):")]
+    assert "apply_chain(" not in antes, "init_tenant aplica migraciones fuera del cerrojo"
 
 
-def test_ninguna_migracion_global_es_incompatible_con_la_transaccion() -> None:
+def test_ninguna_migracion_es_incompatible_con_la_transaccion() -> None:
     """`CONCURRENTLY`, `ADD VALUE`, `VACUUM` y `BEGIN;` no corren dentro de una transacción."""
     prohibido = re.compile(
         r"(?im)^(?!\s*--).*\b(CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY|ADD\s+VALUE|VACUUM)\b|^\s*(BEGIN|COMMIT)\s*;"
     )
-    sqls = sorted((RAIZ / "services").glob("*/migrations/global/*.sql"))
-    assert len(sqls) >= 10, "censo de migraciones globales vacío: guardián ciego"
+    sqls = sorted(CHAIN.glob("global/*.sql")) + sorted(CHAIN.glob("tenant/*.sql"))
+    assert len(sqls) >= 30, "censo de migraciones vacío: guardián ciego"
     malas = [p.relative_to(RAIZ).as_posix() for p in sqls if prohibido.search(p.read_text(encoding="utf-8"))]
     assert not malas, f"incompatibles con aplicarse en una transacción: {malas}"
 
@@ -182,30 +188,16 @@ def test_el_texto_de_prod_y_la_doc_ya_no_afirman_un_cerrojo_que_no_existe() -> N
     """El cerrojo es real: el manifiesto lo nombra y el módulo compartido lo define."""
     prod = COMPOSE_PROD.read_text(encoding="utf-8")
     assert "orpycamcp_common.migrations.cerrojo" in prod
-    modulo = (RAIZ / "shared" / "orpycamcp_common" / "migrations.py").read_text(encoding="utf-8")
+    modulo = _modulo()
     assert "pg_try_advisory_lock" in modulo and "MIGRATIONS_LOCK_TIMEOUT_S" in modulo
 
 
-def test_el_baseline_es_el_generado_y_trae_los_catalogos() -> None:
-    """Mutación que debe caer: editar 001_baseline.sql a mano; omitir un catálogo."""
-    import importlib.util
-
-    script = RAIZ / "scripts" / "generar_baseline.py"
-    spec = importlib.util.spec_from_file_location("generar_baseline", script)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    for ambito in ("global", "tenant"):
-        dest = RAIZ / "services" / "docuboto" / "migrations" / ambito / "001_baseline.sql"
-        assert dest.is_file(), dest
-        assert dest.read_text(encoding="utf-8") == mod.concatenar(ambito)
-    global_ = (RAIZ / "services/docuboto/migrations/global/001_baseline.sql").read_text(
-        encoding="utf-8"
+def test_la_cadena_trae_los_catalogos() -> None:
+    """Mutación que debe caer: omitir de la cadena un catálogo que el proceso unificado usa."""
+    texto = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(CHAIN.glob("global/*.sql")) + sorted(CHAIN.glob("tenant/*.sql"))
     )
-    tenant = (RAIZ / "services/docuboto/migrations/tenant/001_baseline.sql").read_text(
-        encoding="utf-8"
-    )
-    texto = global_ + "\n" + tenant
     for marca in (
         "auth_permissions",
         "medios_recepcion",
@@ -214,33 +206,3 @@ def test_el_baseline_es_el_generado_y_trae_los_catalogos() -> None:
         "ppi_nonces",
     ):
         assert marca in texto, marca
-
-
-@pytest.mark.parametrize("compose", _MANIFIESTOS)
-def test_el_proceso_unificado_aplica_un_solo_baseline(compose) -> None:  # noqa: ANN001
-    todos = servicios(compose)
-    assert "migrate-docuboto" in todos
-    assert (todos["migrate-docuboto"].get("profiles") or []) in ([], None)
-    for corto in _DOMINIO_MIGRA:
-        perfiles = todos[f"migrate-{corto}"].get("profiles") or []
-        assert perfiles == ["split"], f"migrate-{corto} debe quedar en split"
-    for nombre in ("app", "worker"):
-        deps = todos[nombre].get("depends_on") or {}
-        migradores = [k for k in deps if str(k).startswith("migrate-")]
-        assert migradores == ["migrate-docuboto"], f"{nombre}: {migradores}"
-
-
-def test_la_imagen_app_copia_el_baseline() -> None:
-    texto = (RAIZ / "infra" / "Dockerfile.app").read_text(encoding="utf-8")
-    assert "COPY services/docuboto/migrations /app/migrations" in texto
-
-
-def test_los_nueve_runners_sellan_si_el_baseline_ya_corrio() -> None:
-    vistos = 0
-    for svc in _CON_MIGRACIONES:
-        if svc == "docuboto":
-            continue
-        texto = _runner(svc)
-        assert "sello_si_baseline" in texto, svc
-        vistos += 1
-    assert vistos >= 9

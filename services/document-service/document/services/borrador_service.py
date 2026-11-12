@@ -483,9 +483,9 @@ class BorradorService:
         # desaparecían sin explicación.
         #
         # La condición mira la HUELLA, no el campo enviado: `cuerpo` puede venir
-        # en el payload con el mismo texto de siempre, y el disparador de la
-        # migración 030 solo recalcula la huella cuando el contenido cambia de
-        # verdad. Disparar por «vino el campo» invalidaría circuitos vivos al
+        # en el payload con el mismo texto de siempre, y el disparador del
+        # borrador (`tenant/230_borrador.sql`) solo recalcula la huella cuando el
+        # contenido cambia de verdad. Disparar por «vino el campo» invalidaría circuitos vivos al
         # guardar un cambio de asunto.
         if antes["cuerpo_sha256"] != row["cuerpo_sha256"]:
             await self._signature_client.invalidar_circuitos(
@@ -625,7 +625,7 @@ class BorradorService:
         `aprobado` y ningún circuito ABIERTO— y ninguna de las dos se entera de
         una edición posterior al cierre: la cadena queda en `firmado`, así que
         no está pendiente, y el estado sigue en `aprobado` porque el disparador
-        de la migración 030 sube `version` y recalcula la huella pero no toca
+        de `tenant/230_borrador.sql` sube `version` y recalcula la huella pero no toca
         `estado`. El gate `documento_modificado` de signature-service protege
         cada TURNO mientras la cadena vive y desaparece justo cuando se cierra,
         de modo que el acto irreversible —consumir el consecutivo y emitir el
@@ -636,7 +636,7 @@ class BorradorService:
         La comparación es la autoridad y se hace PREGUNTANDO, igual que el gate
         de arriba: una marca copiada en `borrador` se queda rancia por caminos
         que no pasan por aquí, y rancia del lado permisivo es una puerta
-        abierta. La migración 018 ya había previsto este caso al crear el estado
+        abierta. El esquema de firma ya había previsto este caso al crear el estado
         `invalidada` —«o peor, "firmado" sobre uno que cambió después»— y dejó
         escrito que una solicitud invalidada no bloquea a la que la sustituye.
         """
@@ -683,7 +683,7 @@ class BorradorService:
         No toca el circuito de firma: reabrir no invalida nada por sí mismo, y
         no debe hacerlo — devolver a borrador y volver a aprobar sin tocar una
         letra deja las aprobaciones intactas, que es lo correcto. Lo que las
-        tira es **editar el texto**, porque el disparador de la 030 recalcula
+        tira es **editar el texto**, porque el disparador del borrador recalcula
         `cuerpo_sha256` y la cadena deja de casar. La invalidación se deriva del
         hecho, no del acto: si dependiera de que alguien pulse aquí, el caso en
         que se olvida sería exactamente el caso del fraude.
@@ -752,7 +752,7 @@ class BorradorService:
 
         - tipo documental: el de su plantilla (`plantilla.tipo_documental`);
         - destino: el código de la dependencia ACTIVA cuyo nombre coincide con
-          `dest_dept_code` del borrador, o —si es anterior a la 046— el único
+          `dest_dept_code` del borrador, o —si solo trae el nombre— el único
           candidato de `dest_dept` (sólo lo exige el Interno; ambiguo es 422);
         - origen (Salida): la dependencia del autor. Si responde a un radicado y
           el autor pertenece a la que lo recibió, esa; si no, la de menor código
@@ -767,7 +767,7 @@ class BorradorService:
         if dest_code is None:
             dest_code = row["dest_dept_code"]
         if dest_code is None and row["dest_dept"]:
-            # Borrador anterior a la 046 (solo nombre). Antes: `ORDER BY codigo LIMIT 1`,
+            # Borrador sin código (solo nombre). Antes: `ORDER BY codigo LIMIT 1`,
             # que con dos homónimas radicaba hacia la de menor código EN SILENCIO.
             # Ahora un nombre ambiguo es 422 (fail-closed) y uno que no es dependencia
             # deja el código en None, como antes (el Interno lo rechaza más abajo).

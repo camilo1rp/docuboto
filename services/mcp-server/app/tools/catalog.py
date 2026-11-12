@@ -154,8 +154,8 @@ class Tool:
     path: str  # ruta gateway, con {params}
     path_params: tuple[str, ...] = ()
     permission: str | None = None  # permiso atómico requerido (None = lectura básica)
-    # Nivel CRUD mínimo, en la escala REAL del sistema (auth-service
-    # `migrations/tenant/001_rbac.sql`): 0=Ninguno 1=Leer 2=Editar 3=Crear/Borrar
+    # Nivel CRUD mínimo, en la escala REAL del sistema
+    # (`services/docuboto/migrations/tenant/020_auth_groups.sql`): 0=Ninguno 1=Leer 2=Editar 3=Crear/Borrar
     # 4=Nivel_1 5=Nivel_2. Las escrituras del sistema exigen 3, y el default 1
     # es el mismo de `require_permission`.
     #

@@ -21,7 +21,7 @@ import asyncpg
 import pytest
 
 from auth.ops import grant_root
-from tests.integration.conftest import RUN_INTEGRATION, ensure_audit_log
+from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -51,7 +51,6 @@ async def test_la_concesion_deja_root_y_un_asiento(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
     await _user(conn, "ROOTEABLE")
 
     rc = await grant_root._grant(conn, tenant=slug, username="rooteable", dry_run=False)
@@ -67,7 +66,6 @@ async def test_segunda_ejecucion_es_idempotente_sin_asiento_nuevo(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
     await _user(conn, "DOS_VECES")
 
     await grant_root._grant(conn, tenant=slug, username="dos_veces", dry_run=False)
@@ -79,7 +77,6 @@ async def test_segunda_ejecucion_es_idempotente_sin_asiento_nuevo(
 
 async def test_dry_run_no_escribe_nada(tenant_ctx: tuple[str, asyncpg.Connection]) -> None:
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
     await _user(conn, "SOLO_MIRAR")
 
     rc = await grant_root._grant(conn, tenant=slug, username="solo_mirar", dry_run=True)
@@ -94,7 +91,6 @@ async def test_si_el_asiento_falla_no_queda_un_root_sin_traza(
 ) -> None:
     """Rollback conjunto: el UPDATE y el asiento son UNA transacción."""
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
     await _user(conn, "SIN_TRAZA")
 
     async def _falla(*_a: object, **_k: object) -> None:
@@ -116,7 +112,6 @@ async def test_slug_con_guion_resuelve_el_schema_con_guion_bajo(
     slug, conn = tenant_ctx
     assert "-" in slug
     assert grant_root._schema_for(slug) == f"tenant_{slug.replace('-', '_')}"
-    await ensure_audit_log(conn)
     await _user(conn, "CON_GUION")
     assert await grant_root._grant(conn, tenant=slug, username="con_guion", dry_run=False) == 0
     assert await _is_root(conn, "CON_GUION") is True

@@ -32,6 +32,7 @@ inicial) para el eje de renovación.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -697,26 +698,25 @@ async def test_renovar_retencion_audit_append_failure_propagates_and_releases_lo
 
 
 # ---------------------------------------------------------------------------
-# Migración 011 (idempotencia + columnas) -- storage-service NO tiene tier de
-# integración contra Postgres real (mismo hueco heredado que la 009/010, ver
-# memoria del proyecto) -- chequeo ESTÁTICO del SQL.
+# Columnas de renovación -- chequeo ESTÁTICO del SQL de la cadena única
+# (ADR-053); el carril unit corre con `--no-deps`, sin Postgres.
 # ---------------------------------------------------------------------------
 
-_MIGRATION_011_PATH = (
-    Path(__file__).resolve().parent.parent / "migrations" / "tenant" / "011_preservacion_worm_renovacion.sql"
+_PRESERVACION_SQL_PATH = (
+    Path(__file__).resolve().parents[2] / "docuboto" / "migrations" / "tenant" / "320_preservacion.sql"
 )
 
 
-def test_migration_011_is_additive_and_idempotent_by_construction() -> None:
-    """`ADD COLUMN IF NOT EXISTS` para ambas columnas nuevas -- re-ejecutar
-    la migración sobre un schema ya migrado no debe fallar. Chequeo estático
-    (sin abrir una conexión real, el run mandatado usa `--no-deps`) — mismo
-    patrón que `test_aip_pdfa.py::test_migration_008_check_constraint_admits_no_evaluado`."""
-    sql = _MIGRATION_011_PATH.read_text(encoding="utf-8")
+def test_schema_has_renovation_columns() -> None:
+    """`preservacion_worm_objeto` lleva `renovado_at` y `renovaciones`. Chequeo estático
+    (sin abrir una conexión real) — mismo patrón que
+    `test_aip_pdfa.py::test_preservacion_evento_check_constraint_admits_no_evaluado`."""
+    sql = _PRESERVACION_SQL_PATH.read_text(encoding="utf-8")
+    table_match = re.search(r"CREATE TABLE preservacion_worm_objeto \((.*?)\n\);", sql, re.DOTALL)
+    assert table_match, "no se encontró CREATE TABLE preservacion_worm_objeto en 320_preservacion.sql"
+    table = table_match.group(1)
 
-    assert "ADD COLUMN IF NOT EXISTS renovado_at" in sql
-    assert "ADD COLUMN IF NOT EXISTS renovaciones" in sql
-    assert "ALTER TABLE preservacion_worm_objeto" in sql
+    assert re.search(r"^\s*renovado_at timestamp with time zone,$", table, re.MULTILINE)
     # `renovaciones` arranca en 0 (nunca NULL) -- el repositorio hace
     # `renovaciones + 1` en el UPDATE, una fila NULL rompería esa aritmética.
-    assert "renovaciones  INT NOT NULL DEFAULT 0" in sql or "renovaciones INT NOT NULL DEFAULT 0" in sql
+    assert re.search(r"^\s*renovaciones integer DEFAULT 0 NOT NULL,$", table, re.MULTILINE)

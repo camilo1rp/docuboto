@@ -36,6 +36,7 @@ from signature.core.database import _schema as tenant_schema
 from signature.core.database import get_tenant_conn
 from signature.main import app
 from signature.repositories.firma_repository import FirmaRepository
+from tests.integration.conftest import insert_radicado
 
 pytestmark = pytest.mark.asyncio
 
@@ -183,11 +184,7 @@ async def test_el_aviso_de_sin_revocacion_o_tsa_revocada_tambien_cuenta(tenant_c
 
 async def _con_radicados(conn, slug) -> tuple[uuid.UUID, uuid.UUID]:  # noqa: ANN001
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    await conn.execute(
-        "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), tracking_number text, "
-        "nivel_seguridad int NOT NULL DEFAULT 1)"
-    )
-    await conn.execute("INSERT INTO radicados (tracking_number, nivel_seguridad) VALUES ('2026-X-E-000001', 3)")
+    await insert_radicado(conn, "2026-X-E-000001", 3)
     reservado = await _firma(conn, objeto_tipo="radicado", objeto_id="2026-X-E-000001")
     publico = await _firma(conn, objeto_tipo="indice", objeto_id="IDX")
     await _eslabon(conn, reservado, 0, vence_en_dias=10, fuente="ninguna")
@@ -200,6 +197,8 @@ async def test_el_objeto_reservado_se_acota_en_la_consulta(tenant_ctx) -> None: 
     administrador tiene que ver); lo que se acota es el CAMPO. Y sin `expedientes` en el schema no hay error."""
     slug, conn = tenant_ctx
     reservado, publico = await _con_radicados(conn, slug)
+    # La cadena crea `expedientes` en todo tenant: su ausencia se simula.
+    await conn.execute("DROP TABLE expedientes CASCADE")
 
     bajo, total = await _lista(conn, clearance=1)
     por = {r["firma_id"]: r for r in bajo}
@@ -281,13 +280,3 @@ async def test_el_check_exige_la_revocacion_previa_solo_en_los_renovados(tenant_
     await conn.execute(sql, *base, 1, "ocsp")
     with pytest.raises(asyncpg.CheckViolationError):
         await conn.execute(sql, *base, 2, "ninguna")  # `ninguna` no es una revocación que respaldara nada
-
-
-async def test_la_migracion_027_es_idempotente(tenant_ctx) -> None:  # noqa: ANN001
-    from migrations import runner
-
-    slug, conn = tenant_ctx
-    await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
-    sql = next(p for p in runner._sql_files(runner.TENANT_DIR) if p.name.startswith("027_")).read_text()
-    await conn.execute(sql)
-    await conn.execute(sql)

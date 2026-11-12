@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 _SERVICE = "document-service"
 _STREAM = "orpycamcp.document.events"
-#: Tope del cuerpo que se guarda en la cola de diferidos (CHECK de la migración 048).
+#: Tope del cuerpo que se guarda en la cola de diferidos (CHECK de `tenant/260_postal_shipment.sql`).
 _MAX_CUERPO_DIFERIDO = 65536
 #: Espacio del advisory lock que serializa el conteo del tope de la cola por tenant.
 _ESPACIO_LOCK_COLA_POSTAL = 0x50434351  # "PCCQ"
@@ -330,7 +330,7 @@ class PostalService:
                 await self._encolar_estado(row, payload.estado, str(actor) if actor else None)
         except asyncpg.UniqueViolationError as exc:
             # Carrera: otro envío tomó el mismo acuse entre el cotejo y el UPDATE.
-            # La guarda definitiva la da el índice único parcial (migración 045).
+            # La guarda definitiva la da el índice único parcial `postal_shipment_acuse_file_id_uq`.
             raise _acuse_ya_referenciado() from exc
         await self.enviar_pendientes()
         return await self._response(row)

@@ -161,7 +161,7 @@ class Settings(BaseSettings):
     #
     # **False por defecto, y no es una precaución genérica.** El único recorte que
     # aplican esos endpoints es `nivel_seguridad = 1`, y el nivel 1 es el DEFAULT
-    # de la columna (migración 016) y del schema de entrada: la reserva depende de
+    # de la columna y del schema de entrada: la reserva depende de
     # que un funcionario clasifique documento a documento, así que la polaridad
     # efectiva es «público salvo que alguien se acuerde». Las PQRS ciudadanas
     # entran por `routers/public.py` heredando ese nivel, con el asunto escrito por

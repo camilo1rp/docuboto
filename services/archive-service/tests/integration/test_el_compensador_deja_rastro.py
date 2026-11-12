@@ -49,20 +49,6 @@ async def _sp(conn: asyncpg.Connection, slug: str) -> None:
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
 
 
-async def _crear_tabla_firma(conn: asyncpg.Connection, slug: str) -> None:
-    """`firma` la crea signature-service; este esquema solo tiene las
-    migraciones de archivo. Se escribe el esquema EN la sentencia: un
-    `CREATE TABLE` sin cualificar depende del `search_path` y puede aterrizar
-    en `public`, que es el único esquema compartido por todas las entidades."""
-    await conn.execute(
-        f'''CREATE TABLE IF NOT EXISTS "{tenant_schema(slug)}".firma (
-               id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-               objeto_tipo text, objeto_id text, firmante_id uuid,
-               payload_sha256 text, provider text,
-               sello_tiempo timestamptz)'''
-    )
-
-
 async def _indice_firmado_por(
     conn: asyncpg.Connection,
     slug: str,
@@ -79,7 +65,6 @@ async def _indice_firmado_por(
         payload=ExpedienteCreate(name=f"itest sellado {firmante}", nivel_seguridad=1),
         opened_by=None,
     )
-    await _crear_tabla_firma(conn, slug)
     await _sp(conn, slug)
     if nivel != 1:
         await conn.execute(
@@ -88,8 +73,8 @@ async def _indice_firmado_por(
     firma_id = await conn.fetchval(
         """
         INSERT INTO firma (objeto_tipo, objeto_id, firmante_id, payload_sha256,
-                           provider, sello_tiempo)
-             VALUES ('indice', $1, $2, $3, 'xades_local', now())
+                           firma_blob, provider, key_version, sello_tiempo)
+             VALUES ('indice', $1, $2, $3, '<firma/>', 'xades_local', 1, now())
           RETURNING id
         """,
         str(exp.id),

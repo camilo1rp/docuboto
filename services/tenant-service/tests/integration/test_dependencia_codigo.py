@@ -8,19 +8,19 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 
-"""Migración 013 y PATCH de dependencias contra Postgres REAL (B5, ADR-032).
+"""Código de dependencia y PATCH de dependencias contra Postgres REAL (B5, ADR-032).
 
 Lo que un mock no puede probar: el trigger que congela `codigo`, el historial de
 solo inserción, la función `resolver_codigo_dependencia` (criterio único del
 alias, los backfills y el replay de la cola de fallidos) y que renombrar +
 historial + asiento son UN acto (si el asiento falla, el renombre se revierte).
 
-Esquemas desechables `tenant_itest_*`; nunca toca migraciones globales.
+Esquemas desechables `tenant_itest_*` con la cadena única de tenant; las tablas de otros
+módulos son las reales. Nunca toca migraciones globales.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import urllib.parse
 import uuid
@@ -34,7 +34,7 @@ from httpx import ASGITransport, AsyncClient
 
 from tenant.core.database import get_tenant_conn
 from tenant.main import app
-from migrations import runner
+from tests.integration.provision import drop_schema, provision_schema, seed_row
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION") != "1", reason="carril de integración: RUN_INTEGRATION=1"
@@ -42,11 +42,6 @@ pytestmark = pytest.mark.skipif(
 
 _RAW = os.environ.get("MIGRATIONS_DATABASE_URL", "") or os.environ.get("DATABASE_URL", "")
 _OWNER_DSN = _RAW.replace("postgresql+asyncpg://", "postgresql://")
-
-
-def _migracion(num: str) -> str:
-    (ruta,) = [p for p in runner._sql_files(runner.TENANT_DIR) if p.name.startswith(num)]
-    return ruta.read_text()
 
 
 @pytest_asyncio.fixture
@@ -57,15 +52,10 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
     c = await asyncpg.connect(_OWNER_DSN)
     try:
-        await c.execute(f'CREATE SCHEMA "{schema}"')
-        await c.execute(f'SET search_path = "{schema}"')
-        for ruta in runner._sql_files(runner.TENANT_DIR):
-            await c.execute(ruta.read_text())
+        await provision_schema(c, schema)
         yield c
     finally:
-        assert schema.startswith("tenant_itest_")
-        await c.execute("RESET search_path")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await drop_schema(c, schema)
         await c.close()
 
 
@@ -197,36 +187,6 @@ async def test_resolver_mapeo_manual_desambigua_un_huerfano(conn: asyncpg.Connec
     assert await _resolver(conn, "Archivo viejo", True) == (901, 1)
 
 
-@pytest.mark.asyncio
-async def test_la_013_es_idempotente(conn: asyncpg.Connection) -> None:
-    await _dep(conn, 901, "Archivo")
-    await conn.execute(_migracion("013"))
-    await conn.execute(_migracion("013"))
-    assert await _resolver(conn, "Archivo", True) == (901, 1)
-
-
-@pytest.mark.asyncio
-async def test_la_013_con_un_nombre_largo_aborta_nombrandolo() -> None:
-    host = urllib.parse.urlparse(_OWNER_DSN).hostname
-    assert host in {"postgres", "localhost", "127.0.0.1"}
-    schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
-    c = await asyncpg.connect(_OWNER_DSN)
-    try:
-        await c.execute(f'CREATE SCHEMA "{schema}"')
-        await c.execute(f'SET search_path = "{schema}"')
-        for ruta in runner._sql_files(runner.TENANT_DIR):
-            if ruta.name < "013":
-                await c.execute(ruta.read_text())
-        await _dep(c, 901, "x" * 150)
-        with pytest.raises(asyncpg.RaiseError, match="901"):
-            await c.execute(_migracion("013"))
-    finally:
-        assert schema.startswith("tenant_itest_")
-        await c.execute("RESET search_path")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await c.close()
-
-
 # --- PATCH por la API contra la base real ---------------------------------------
 
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}
@@ -268,8 +228,7 @@ async def test_renombrar_con_tramite_vivo_es_200_y_deja_el_nombre_anterior(
     client: AsyncClient, conn: asyncpg.Connection
 ) -> None:
     """Mutación: reintroducir la guarda 409 por nombre vuelve a bloquear este caso."""
-    await conn.execute("CREATE TABLE flow_steps (id serial PRIMARY KEY, to_dept_code int, status text)")
-    await conn.execute("INSERT INTO flow_steps (to_dept_code, status) VALUES (901, 'pending')")
+    await seed_row(conn, "flow_steps", to_dept_code=901, status="pending")
     dep_id = await _dep(conn, 901, "Archivo")
     r = await client.patch(
         f"/api/v1/dependencias/{dep_id}", json={"nombre": "Gestión Documental"}, headers=_HDRS
@@ -300,8 +259,7 @@ async def test_si_el_asiento_falla_el_renombre_y_el_historial_se_revierten(
 async def test_eliminar_con_solo_historia_409_y_virgen_204(
     client: AsyncClient, conn: asyncpg.Connection
 ) -> None:
-    await conn.execute("CREATE TABLE flow_events (id serial PRIMARY KEY, to_dept_code int)")
-    await conn.execute("INSERT INTO flow_events (to_dept_code) VALUES (901)")
+    await seed_row(conn, "flow_events", to_dept_code=901)
     usada = await _dep(conn, 901, "Usada")
     virgen = await _dep(conn, 902, "Virgen")
     r = await client.delete(f"/api/v1/dependencias/{usada}", headers=_HDRS)
@@ -326,7 +284,7 @@ async def test_mapeo_manual_por_la_api_resuelve_el_huerfano(
     assert client.audit_append.await_args.kwargs["action"] == "dependencia.mapeo_nombre"  # type: ignore[attr-defined]
 
 
-# --- 014: endurecimiento tras las auditorías -------------------------------------
+# --- endurecimiento tras las auditorías -------------------------------------
 
 
 @pytest.mark.asyncio
@@ -379,7 +337,7 @@ async def test_el_mapeo_gana_a_la_coincidencia_textual_y_al_renombre(
 
 
 @pytest.mark.asyncio
-async def test_las_funciones_de_la_013_y_014_fijan_su_search_path(conn: asyncpg.Connection) -> None:
+async def test_las_funciones_del_codigo_de_dependencia_fijan_su_search_path(conn: asyncpg.Connection) -> None:
     """Mutación: quitar `SET search_path FROM CURRENT` rompe la llamada desde otro schema."""
     await _dep(conn, 901, "Archivo")
     schema = await conn.fetchval("SELECT current_schema()")
@@ -468,28 +426,37 @@ async def test_si_el_asiento_del_borrado_falla_el_codigo_no_queda_retirado(
 async def test_referencias_barre_el_catalogo_e_incluye_las_columnas_de_los_otros_servicios(
     client: AsyncClient, conn: asyncpg.Connection
 ) -> None:
-    """Cada tabla/columna del barrido bloquea el borrado; mutación: quitar una del patrón."""
-    casos = [
-        ("transferencias", "oficina_productora_codigo"),
-        ("transferencias", "unidad_administrativa_codigo"),
-        ("expediente_indice_item", "dependencia_productora_codigo"),
-        ("plantilla_dependencia", "depe_codigo"),
-        ("auth_users", "active_depe_id"),
-        ("urd_usuaroldep", "depe_id"),
-        ("radicados", "ubicacion_dept_code"),
+    """Cada tabla/columna del barrido bloquea el borrado; mutación: quitar una del patrón.
+
+    Las tablas son las reales de la cadena. `radicados.ubicacion_dept_code` es una columna
+    GENERADA a partir de `flujo_dept_code`: no se puede citar una sin la otra, así que ese
+    caso espera las dos.
+    """
+    casos: list[tuple[str, dict[str, object], set[str]]] = [
+        ("transferencias", {"oficina_productora_codigo": None, "tipo": "primaria", "objeto": "itest"},
+         {"oficina_productora_codigo"}),
+        ("transferencias", {"unidad_administrativa_codigo": None, "tipo": "primaria", "objeto": "itest"},
+         {"unidad_administrativa_codigo"}),
+        ("expediente_indice_item", {"dependencia_productora_codigo": None},
+         {"dependencia_productora_codigo"}),
+        ("plantilla_dependencia", {"depe_codigo": None}, {"depe_codigo"}),
+        ("auth_users", {"active_depe_id": None}, {"active_depe_id"}),
+        ("urd_usuaroldep", {"depe_id": None}, {"depe_id"}),
+        ("radicados", {"flujo_dept_code": None, "flujo_dept": "Dep", "doc_type": "E"},
+         {"flujo_dept_code", "ubicacion_dept_code"}),
     ]
-    for tabla in {t for t, _ in casos}:
-        cols = ", ".join(f'"{c}" int' for t, c in casos if t == tabla)
-        await conn.execute(f'CREATE TABLE "{tabla}" (id serial PRIMARY KEY, {cols})')
-    for i, (tabla, col) in enumerate(casos):
-        dep_id = await _dep(conn, 910 + i, f"Dep {i}")
-        await conn.execute(f'INSERT INTO "{tabla}" ("{col}") VALUES ($1)', 910 + i)
+    for i, (tabla, valores, columnas) in enumerate(casos):
+        codigo = 910 + i
+        dep_id = await _dep(conn, codigo, f"Dep {i}")
+        fila = {c: (codigo if v is None else v) for c, v in valores.items()}
+        if tabla == "auth_users":
+            fila["username"] = f"ITEST{i}"
+        await seed_row(conn, tabla, **fila)
         r = await client.delete(f"/api/v1/dependencias/{dep_id}", headers=_HDRS)
-        assert r.status_code == 409, (tabla, col)
-        assert r.json()["detail"]["referencias"] == {f"{tabla}.{col}": 1}
+        assert r.status_code == 409, (tabla, columnas)
+        assert r.json()["detail"]["referencias"] == {f"{tabla}.{c}": 1 for c in columnas}
     # Una tabla de evidencia / columna no entera no cuenta.
-    await conn.execute("CREATE TABLE radicado_ubicacion_recalculo (id serial PRIMARY KEY, antes_dept_code int)")
-    await conn.execute("INSERT INTO radicado_ubicacion_recalculo (antes_dept_code) VALUES (999)")
+    await seed_row(conn, "radicado_ubicacion_recalculo", antes_dept_code=999)
     libre = await _dep(conn, 999, "Libre")
     assert (await client.delete(f"/api/v1/dependencias/{libre}", headers=_HDRS)).status_code == 204
 
@@ -559,50 +526,17 @@ async def test_patch_motivo_va_al_historial_y_al_asiento_y_no_es_columna(
 
 
 @pytest.mark.asyncio
-async def test_siembra_desde_el_audit_log_es_idempotente_y_solo_con_cambio_de_nombre(
-    conn: asyncpg.Connection,
-) -> None:
-    """El audit_log vivo es inmutable: el asiento de prueba se inserta y se REVIERTE."""
-    dep_id = await _dep(conn, 901, "Gestión")
-    slug = (await conn.fetchval("SELECT current_schema()")).removeprefix("tenant_")
-    tr = conn.transaction()
-    await tr.start()
-    try:
-        for antes, despues, extra in (
-            ("Archivo viejo", "Gestión", {}),                      # renombre real
-            ("Sin cambio", "Sin cambio", {}),                      # solo otro campo
-            ("Cambio sin codigo", "Algo", {"codigo": 777}),         # código en el payload
-        ):
-            await conn.execute(
-                "INSERT INTO public.audit_log (tenant_slug, service, actor, canal, action, object_type, "
-                "object_ref, payload, hash) VALUES ($1, 'tenant', 'x', 'api', 'dependencia.actualizada', "
-                "'dependencia', $2, $3::jsonb, repeat('a', 64))",
-                slug,
-                str(dep_id),
-                json.dumps({"antes": {"nombre": antes}, "despues": {"nombre": despues}, **extra}),
-            )
-        await conn.execute(_migracion("014"))
-        await conn.execute(_migracion("014"))
-        filas = await conn.fetch("SELECT codigo, nombre, origen FROM dependencia_nombre_historico ORDER BY nombre")
-        assert [(f["codigo"], f["nombre"], f["origen"]) for f in filas] == [
-            (901, "Archivo viejo", "renombre"),
-            (777, "Cambio sin codigo", "renombre"),
-        ]
-    finally:
-        await tr.rollback()
-
-
-@pytest.mark.asyncio
 async def test_referencias_incluye_las_condiciones_jsonb_de_las_reglas(
     client: AsyncClient, conn: asyncpg.Connection
 ) -> None:
     """Una regla que cita el código SOLO dentro de `conditions` bloquea el borrado."""
-    await conn.execute("CREATE TABLE workflow_rules (id serial PRIMARY KEY, conditions jsonb NOT NULL)")
     citada = await _dep(conn, 920, "Citada")
     libre = await _dep(conn, 921, "Libre")
-    await conn.execute(
-        "INSERT INTO workflow_rules (conditions) VALUES ($1::jsonb)",
-        '[{"field": "dest_dept_code", "op": "in", "value": [920, 5]}]',
+    await seed_row(
+        conn,
+        "workflow_rules",
+        assign_to_dept_code=1,
+        conditions=[{"field": "dest_dept_code", "op": "in", "value": [920, 5]}],
     )
     r = await client.delete(f"/api/v1/dependencias/{citada}", headers=_HDRS)
     assert r.status_code == 409

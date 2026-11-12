@@ -11,7 +11,7 @@
 
 NO prueba atomicidad ni reglas de negocio (eso lo cubre `testing-engineer` después):
 solo valida que la infra funciona de punta a punta — conexión real, provisión de
-schema + tenant migrations, bootstrap de `audit_log`, y que el commit real + la
+schema con la cadena de tenant, `public.audit_log` ya migrado, y que el commit real + la
 cadena de auditoría sobreviven fuera de la transacción del SUT.
 """
 

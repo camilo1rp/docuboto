@@ -81,31 +81,10 @@ async def _radicar_por_ventanilla(
 
 
 async def _preparar_ventanilla(conn: asyncpg.Connection) -> None:
-    """Las dos tablas de OTROS servicios que la ventanilla lee.
-
-    `dependencias` la crea tenant-service y `tipos_documentales` archive-service;
-    el fixture de este tier solo aplica las migraciones de document-service, así
-    que aquí se declaran con la forma mínima que la consulta usa. Se crean a mano
-    y no se importan las migraciones ajenas a propósito: copiarlas ataría este
-    test a los cambios de otro servicio, y lo que se prueba aquí no es su
-    esquema — es qué queda en `tercero` y `radicado_actor`.
-    """
+    """La dependencia de ventanilla y el tipo documental que la ventanilla ofrece."""
     await conn.execute(
-        "CREATE TABLE IF NOT EXISTS dependencias ("
-        "  codigo int PRIMARY KEY, nombre text NOT NULL,"
-        "  activo boolean NOT NULL DEFAULT true,"
-        "  depe_rad_tp2 boolean NOT NULL DEFAULT false)"
-    )
-    await conn.execute(
-        "INSERT INTO dependencias (codigo, nombre, activo, depe_rad_tp2) "
-        "VALUES (901, 'Ventanilla Única', true, true) ON CONFLICT DO NOTHING"
-    )
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS tipos_documentales ("
-        "  code text PRIMARY KEY, nombre text NOT NULL,"
-        "  activo boolean NOT NULL DEFAULT true,"
-        "  admite_ventanilla_publica boolean NOT NULL DEFAULT false,"
-        "  default_response_days int NULL)"
+        "INSERT INTO dependencias (codigo, sigla, nombre, activo, depe_rad_tp2) "
+        "VALUES (901, 'VU', 'Ventanilla Única', true, true) ON CONFLICT DO NOTHING"
     )
     await conn.execute(
         "INSERT INTO tipos_documentales (code, nombre, activo, admite_ventanilla_publica) "

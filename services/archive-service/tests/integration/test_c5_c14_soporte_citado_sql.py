@@ -305,9 +305,11 @@ async def test_for_share_espera_a_quien_purga(tenant_ctx: tuple[str, asyncpg.Con
     schema = tenant_schema(slug)
     await conn.execute(f'SET search_path TO "{schema}"')
     await conn.execute(
-        "CREATE TABLE IF NOT EXISTS files (id uuid PRIMARY KEY, deleted_at timestamptz)"
+        "INSERT INTO files (id, filename, file_size, sha256, bucket, object_key) "
+        "VALUES ($1, 'anexo.pdf', 1, repeat('0', 64), 'itest', 'anexo.pdf') "
+        "ON CONFLICT (id) DO NOTHING",
+        ANEXO,
     )
-    await conn.execute("INSERT INTO files (id) VALUES ($1)", ANEXO)
 
     purga = await asyncpg.connect(dsn=_require_dsn())
     try:
@@ -335,9 +337,11 @@ async def test_con_el_archivo_vivo_y_sin_purga_la_constancia_procede(
     slug, conn = tenant_ctx
     await conn.execute(f'SET search_path TO "{tenant_schema(slug)}"')
     await conn.execute(
-        "CREATE TABLE IF NOT EXISTS files (id uuid PRIMARY KEY, deleted_at timestamptz)"
+        "INSERT INTO files (id, filename, file_size, sha256, bucket, object_key) "
+        "VALUES ($1, 'anexo.pdf', 1, repeat('0', 64), 'itest', 'anexo.pdf') "
+        "ON CONFLICT (id) DO NOTHING",
+        ANEXO,
     )
-    await conn.execute("INSERT INTO files (id) VALUES ($1)", ANEXO)
     assert await TransferenciaRepository(conn, slug).asegurar_soporte_citable(RAD, ANEXO) is None
 
 

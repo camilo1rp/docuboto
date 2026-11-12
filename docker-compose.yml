@@ -24,19 +24,18 @@ volumes:
   keycloak-data:
   redis-data:
 
-# Migraciones al arrancar en DESARROLLO (C19, ADR-041): el proceso unificado
-# espera a `migrate-docuboto`, que aplica el baseline generado. Los nueve
-# `migrate-<servicio>` de dominio quedan en el perfil `split` (misma imagen que
-# el servicio, `command: python migrations/runner.py`, conexión del propietario).
+# Migraciones al arrancar en DESARROLLO (C19, ADR-041, ADR-053): todo servicio
+# espera a `migrate-docuboto`, el único migrador (imagen `app`,
+# `command: python migrations/runner.py`, conexión del propietario).
 # Si el runner falla, el servicio no arranca (`service_completed_successfully`).
-# Todos los runners más `init_tenant.py` comparten un cerrojo global.
+# El runner e `init_tenant.py` comparten un cerrojo global.
 #
 # Los servicios CONSERVAN `MIGRATIONS_DATABASE_URL` en dev: `scripts/init-tenant.sh`
 # hace `docker compose exec` y los conftest de integración la leen.
 #
-# Recrear UN servicio con `--no-deps` salta su migrador (a propósito): para una
-# imagen nueva, `docker compose build <svc> && docker compose run --rm --no-deps
-# migrate-<svc> && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose
+# Recrear UN servicio con `--no-deps` salta el migrador (a propósito): para una
+# imagen nueva, `docker compose build app <svc> && docker compose run --rm --no-deps
+# migrate-docuboto && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose
 # up -d --no-build --no-deps <svc>`. Ver .claude/docs/arranque.md.
 x-migracion-dev: &migracion-dev
   restart: "no"
@@ -57,60 +56,6 @@ services:
     <<: *migracion-dev
     image: orpycamcp/app:dev
     container_name: orpycamcp-migrate-docuboto
-
-  migrate-auth:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/auth-service:dev
-    container_name: orpycamcp-migrate-auth
-
-  migrate-tenant:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/tenant-service:dev
-    container_name: orpycamcp-migrate-tenant
-
-  migrate-document:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/document-service:dev
-    container_name: orpycamcp-migrate-document
-
-  migrate-storage:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/storage-service:dev
-    container_name: orpycamcp-migrate-storage
-
-  migrate-workflow:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/workflow-service:dev
-    container_name: orpycamcp-migrate-workflow
-
-  migrate-archive:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/archive-service:dev
-    container_name: orpycamcp-migrate-archive
-
-  migrate-notification:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/notification-service:dev
-    container_name: orpycamcp-migrate-notification
-
-  migrate-signature:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/signature-service:dev
-    container_name: orpycamcp-migrate-signature
-
-  migrate-knowledge:
-    <<: *migracion-dev
-    profiles: ["split"]
-    image: orpycamcp/knowledge-service:dev
-    container_name: orpycamcp-migrate-knowledge
 
   # ─── Infrastructure ───────────────────────────────────────────────────────────
 
@@ -568,7 +513,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-signature:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -605,7 +550,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-knowledge:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -675,7 +620,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-auth:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -709,7 +654,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-tenant:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -784,7 +729,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-document:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -840,7 +785,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-archive:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -895,7 +840,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-storage:
+      migrate-docuboto:
         condition: service_completed_successfully
       minio:
         condition: service_healthy
@@ -927,7 +872,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-workflow:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
@@ -977,7 +922,7 @@ services:
     networks:
       - orpycamcp-net
     depends_on:
-      migrate-notification:
+      migrate-docuboto:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy

@@ -17,6 +17,7 @@ AREA-13-12  el último barrido y el tamaño de la DLQ son visibles.
 
 from __future__ import annotations
 
+from tests._chain import create_table
 from tests._compose import glob_src, ruta_src
 
 import re
@@ -101,12 +102,8 @@ def test_todo_on_conflict_de_la_dlq_incluye_el_grupo() -> None:
             )
 
 
-def test_las_migraciones_de_pk_por_grupo_son_la_misma() -> None:
-    sqls = _fuentes("*/migrations/tenant/*_dead_letter_pk_por_grupo.sql")
-    assert len(sqls) == 4
-    cuerpos = {s.read_text() for s in sqls}
-    assert len(cuerpos) == 1, "las 4 copias deben ser idénticas (corre la primera que llegue)"
-    assert "PRIMARY KEY (origin_group, event_id)" in cuerpos.pop()
+def test_la_pk_de_la_dlq_es_por_grupo() -> None:
+    assert "PRIMARY KEY (origin_group, event_id)" in create_table("evento_dead_letter")
 
 
 # ---------------------------------------------------------------------------

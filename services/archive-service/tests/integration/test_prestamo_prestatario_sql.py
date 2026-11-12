@@ -39,7 +39,7 @@ from archive.core.database import tenant_schema
 from archive.schemas.fisico import ExpedienteUnidadLink, PrestamoCreate
 from archive.services.fisico_service import FisicoService
 
-from ._auth_minimo import crear_tablas_auth, crear_usuario
+from ._auth_minimo import crear_usuario
 from .conftest import DSN
 
 pytestmark = pytest.mark.integration
@@ -86,7 +86,6 @@ async def _expediente(conn, s: str, unidad: uuid.UUID | None = None, nivel: int 
 
 async def _armar(tenant_ctx):
     slug, conn = tenant_ctx
-    await crear_tablas_auth(conn, slug)
     # Los INSERT directos de estos tests disparan triggers que resuelven por `search_path`
     # (como en producción, donde la conexión ya lo trae fijado por la dependencia).
     await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')

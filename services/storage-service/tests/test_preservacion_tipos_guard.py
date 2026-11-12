@@ -11,7 +11,7 @@
 Guard de la taxonomía de `tipo` de `preservacion_worm_objeto` (E10, remedio del
 gate de disposición). Convierte en fallo de CI la ÚNICA vía de deriva
 peligrosa que los auditores de seguridad y conformidad señalaron: dos
-allowlists sincronizadas a mano (el CHECK de la migración 010 y las constantes
+allowlists sincronizadas a mano (el CHECK de `tipo` del esquema y las constantes
 de `app.core.preservacion_tipos`).
 
 Si alguien añade un `tipo` nuevo al CHECK sin clasificarlo como CONTENIDO o
@@ -31,34 +31,32 @@ from storage.core.preservacion_tipos import (
     CONTROL_INSTRUMENT_TIPOS,
 )
 
-_MIGRACIONES = pathlib.Path(__file__).resolve().parent.parent / "migrations" / "tenant"
+_MIGRACIONES = pathlib.Path(__file__).resolve().parents[2] / "docuboto" / "migrations" / "tenant"
 
 
 def _tipos_from_check() -> frozenset[str]:
-    """Extrae los valores del CHECK `tipo IN (...)` **vigente**.
+    """Extrae los valores del CHECK `preservacion_worm_objeto_tipo_check`.
 
-    Recorre TODAS las migraciones en orden y se queda con la ÚLTIMA definición,
-    que es la que manda en la base. Antes leía la migración 010 por su nombre, y
-    ese guardián tenía un punto ciego que se estrenó con este mismo cambio: la
-    migración 014 amplía el CHECK con `acta_eliminacion` y el guard habría
-    seguido leyendo la 010, dando por buena una taxonomía incompleta **sin
-    fallar**. Un guardián que apunta a un archivo fijo caduca el día que alguien
-    escribe el siguiente.
-
-    Ignora las líneas de rollback comentadas para no confundir un CHECK
-    derogado con el vigente.
+    Recorre TODA la cadena única (ADR-053) en vez de apuntar a un archivo por
+    su nombre, y exige que el CHECK esté definido exactamente una vez: un
+    guardián que apunta a un archivo fijo caduca el día que alguien mueve la
+    tabla.
     """
-    activos: list[str] = []
+    definiciones: list[list[str]] = []
     for archivo in sorted(_MIGRACIONES.glob("*.sql")):
         for linea in archivo.read_text(encoding="utf-8").splitlines():
             if linea.lstrip().startswith("--"):
                 continue
-            m = re.search(r"(?<![A-Za-z_])tipo\s+IN\s*\(([^)]*)\)", linea, re.IGNORECASE)
+            m = re.search(
+                r"CONSTRAINT preservacion_worm_objeto_tipo_check CHECK "
+                r"\(\(tipo = ANY \(ARRAY\[([^\]]*)\]\)\)\)",
+                linea,
+            )
             if m:
-                # Cada CHECK nuevo REEMPLAZA al anterior (`DROP CONSTRAINT` +
-                # `ADD CONSTRAINT`), así que se sustituye, no se acumula.
-                activos = re.findall(r"'([^']+)'", m.group(1))
-    return frozenset(activos)
+                definiciones.append(re.findall(r"'([^']+)'::text", m.group(1)))
+    assert len(definiciones) == 1, "se esperaba exactamente un CHECK de `tipo` en la cadena"
+    assert len(definiciones[0]) == len(set(definiciones[0]))
+    return frozenset(definiciones[0])
 
 
 def test_content_y_control_son_disjuntos():

@@ -315,16 +315,20 @@ sequenceDiagram
 database trigger rejects `UPDATE`/`DELETE`, and the application role only has
 `INSERT, SELECT`. Denials are audited too.
 
-### 5.6 Database roles and migrations (ADR-012, ADR-041)
+### 5.6 Database roles and migrations (ADR-012, ADR-041, ADR-053)
 
 - Two roles: the **owner** runs migrations; services connect as the **application role**
   (`DB_APP_USER`, member of `orpycamcp_app`) with only the grants they need. A guard test
   fails if a routed service connects as the owner.
-- `migrations/runner.py` in each service applies `global/` then `tenant/` files and records
-  them in a single ledger, `public.schema_migrations`, keyed by schema + service + file. All
-  runners share a global lock, so they can start concurrently.
-- In Compose, each service with a database waits on a one-shot `migrate-<service>` container
-  that runs the runner on the same image; if migrations fail, the service doesn't start.
+- One migration chain lives in `services/docuboto/migrations/` (ADR-053): named files, one
+  per table or coherent group. `runner.py` applies `global/` to `public` and `tenant/` to
+  every `tenant_*` schema, each file in its own transaction, and records them in the ledger
+  `public.schema_migrations`, keyed by schema + file. The runner and `scripts/init_tenant.py`
+  share a global lock.
+- In Compose, every service with a database waits on the one-shot `migrate-docuboto`
+  container (image `app`); if migrations fail, the service doesn't start.
+- The chains the services had before ADR-053 are archived, not executable, in
+  `docs/es/historia/esquema/`.
 
 ### 5.7 Files, signatures, and preservation
 
@@ -498,6 +502,6 @@ else has to change.
 - **New event**: publish through the outbox with the shared envelope; consumers must be
   idempotent on `event_id` and route failures to the dead-letter.
 - **New service**: start from `docs/templates/service-template/`, add it to both compose files
-  and its `migrate-<service>` job; the lint gate and CI matrix pick up `services/*/`
+  and its tables to the migration chain; the lint gate and CI matrix pick up `services/*/`
   automatically, and the guard tests check the rest.
 - **Architecture-level change**: write an ADR in `docs/es/adr/`.

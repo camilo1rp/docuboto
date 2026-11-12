@@ -24,7 +24,7 @@ el registro de las demás; hallazgo crítico 2026-07). La hace `scripts/init_ten
 Esto:
 1. Valida el slug (`^[a-z0-9-]+$`: minúsculas, dígitos y **guion**, sin guion bajo) y lo registra en `public.tenants`
 2. Crea el schema `tenant_gobernacion_caldas` (el guion pasa a guion bajo) y el `GRANT USAGE` del rol de aplicación
-3. Aplica las migraciones `.sql` numeradas de cada servicio (`migrations/global/` y `migrations/tenant/`), con el ejecutor `migrations/runner.py` y el libro único `public.schema_migrations`
+3. Aplica la cadena de migraciones de `services/docuboto/migrations/` (`global/` a `public`, `tenant/` al esquema nuevo) y la anota en el libro `public.schema_migrations` (ADR-053)
 4. Pasa la entidad de `provisioning_status='pending'` a `active`
 
 `POST /tenants` del tenant-service (interno, sin ruta en el gateway) solo registra la fila `pending` y deja

@@ -11,7 +11,7 @@
 audit_partitions.py — crea las particiones mensuales de `public.audit_log`.
 
 La lógica vive en la función SQL `public.ensure_audit_partitions(n)`
-(`services/auth-service/migrations/global/005_audit_partition_job.sql`), que es
+(`services/docuboto/migrations/global/030_audit_log.sql`), que es
 donde tiene que estar: así el mismo comportamiento vale desde una migración,
 desde `psql` y desde este script, y no hay dos versiones que puedan divergir.
 

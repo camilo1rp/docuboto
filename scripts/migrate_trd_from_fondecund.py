@@ -18,7 +18,7 @@ Usage:
     python3 migrate_trd_from_fondecund.py \
         /path/to/trdunificado.json \
         --tenant-slug fondecund \
-        --output migrations/002_trd_fondecund.sql
+        --output trd_fondecund.sql
 """
 
 import json

@@ -29,6 +29,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from orpycamcp_common.migrations import apply_chain
 from signature.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [
@@ -38,9 +39,7 @@ pytestmark = [
 
 GRUPO = "signature-service"
 OTRO_GRUPO = "workflow-service"
-_MIGRACIONES = Path(__file__).resolve().parents[2] / "migrations" / "tenant"
-_ANTES = ("005_evento_dead_letter.sql","006_deadletter_status.sql","007_deadletter_origin_group_notnull_index.sql")
-_PK = "021_dead_letter_pk_por_grupo.sql"
+_CADENA_TENANT = Path(__file__).resolve().parents[3] / "docuboto" / "migrations" / "tenant"
 _HOSTS = frozenset({"postgres", "localhost", "127.0.0.1", "db"})
 
 
@@ -53,22 +52,20 @@ def _dsn() -> str:
     return dsn
 
 
-async def _aplicar(c: asyncpg.Connection, nombres: tuple[str, ...]) -> None:
-    for nombre in nombres:
-        await c.execute((_MIGRACIONES / nombre).read_text())
-
-
 @pytest_asyncio.fixture
 async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     c = await asyncpg.connect(_dsn())
     schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
     await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
+        assert _CADENA_TENANT.is_dir(), f"no encuentro la cadena de migraciones en {_CADENA_TENANT}"
+        await apply_chain(c, _CADENA_TENANT, schema, log=lambda _msg: None)
         await c.execute(f'SET search_path TO "{schema}"')
         yield c
     finally:
         assert schema.startswith("tenant_itest_")
         await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await c.execute("DELETE FROM public.schema_migrations WHERE schema_name = $1", schema)
         await c.close()
 
 
@@ -100,7 +97,6 @@ async def _insertar(repo: DeadLetterRepository, eid: str, grupo: str):
 
 @pytest.mark.asyncio
 async def test_dos_grupos_aparcan_el_mismo_evento_y_cada_uno_deja_su_fila(conn) -> None:
-    await _aplicar(conn, _ANTES + (_PK,))
     repo = DeadLetterRepository(conn)
     eid = f"evt-{uuid.uuid4().hex[:8]}"
 
@@ -115,7 +111,6 @@ async def test_dos_grupos_aparcan_el_mismo_evento_y_cada_uno_deja_su_fila(conn) 
 
 @pytest.mark.asyncio
 async def test_repetir_el_mismo_grupo_y_evento_sigue_siendo_idempotente(conn) -> None:
-    await _aplicar(conn, _ANTES + (_PK,))
     repo = DeadLetterRepository(conn)
     eid = f"evt-{uuid.uuid4().hex[:8]}"
     assert await _insertar(repo, eid, GRUPO) is not None
@@ -125,20 +120,8 @@ async def test_repetir_el_mismo_grupo_y_evento_sigue_siendo_idempotente(conn) ->
 
 
 @pytest.mark.asyncio
-async def test_la_migracion_conserva_las_filas_y_es_idempotente(conn) -> None:
-    await _aplicar(conn, _ANTES)
-    assert await _pk(conn) == ["event_id"]  # el estado heredado
-    await conn.execute(
-        "INSERT INTO evento_dead_letter (event_id, tenant_slug, payload, failure, origin_group) "
-        "VALUES ('legado', 'itest', '{}', '{}', $1)", GRUPO)
-
-    await _aplicar(conn, (_PK,))
+async def test_la_pk_es_por_grupo_y_evento(conn) -> None:
     assert await _pk(conn) == ["origin_group", "event_id"]
-    assert await conn.fetchval("SELECT count(*) FROM evento_dead_letter") == 1
-
-    await _aplicar(conn, (_PK,))  # idempotente: otro servicio la corre después
-    assert await _pk(conn) == ["origin_group", "event_id"]
-    assert await conn.fetchval("SELECT count(*) FROM evento_dead_letter") == 1
 
 
 @pytest.mark.asyncio
@@ -151,7 +134,6 @@ async def test_la_ruta_del_worker_deja_un_asiento_por_grupo_y_no_repite(conn, mo
 
     from signature.workers import document_consumer as worker
 
-    await _aplicar(conn, _ANTES + (_PK,))
 
     @asynccontextmanager
     async def _acquire(_slug: str):

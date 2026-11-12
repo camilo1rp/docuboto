@@ -16,10 +16,10 @@ de fallo que importa aquí es exactamente ese: una entrada clasificada que se cu
 Se verifica por MUTACIÓN del clearance: la misma consulta, con el nivel subido,
 tiene que devolver las filas que antes ocultaba.
 
-Las tablas `radicados` / `expedientes` se crean aquí en su forma MÍNIMA — solo las
-columnas del contrato de la unión (`id`, identidad natural, `nivel_seguridad`). Si
-document-service o archive-service renombran alguna, este test cae, que es lo que
-se quiere: el acoplamiento es real y debe ser ruidoso.
+Las tablas `radicados` / `expedientes` / `expediente_indice` son las REALES de la
+cadena única (`services/docuboto/migrations/tenant`). Si alguna renombra una columna
+del contrato de la unión (`id`, identidad natural, `nivel_seguridad`), este test cae,
+que es lo que se quiere: el acoplamiento es real y debe ser ruidoso.
 """
 
 from __future__ import annotations
@@ -31,26 +31,27 @@ import pytest
 from orpycamcp_common import audit as audit_lib
 
 from auth.repositories.audit_query_repository import AuditQueryRepository
-from tests.integration.conftest import RUN_INTEGRATION, ensure_audit_log
+from tests.integration.conftest import RUN_INTEGRATION
 
 pytestmark = pytest.mark.skipif(
     not RUN_INTEGRATION, reason="requiere Postgres real (RUN_INTEGRATION=1)"
 )
 
-_MINIMAL_SOURCES = """
-CREATE TABLE radicados (
-    id              uuid PRIMARY KEY,
-    tracking_number text NOT NULL UNIQUE,
-    nivel_seguridad smallint NOT NULL DEFAULT 1
-);
-CREATE TABLE expedientes (
-    id              uuid PRIMARY KEY,
-    code            text NOT NULL UNIQUE,
-    nivel_seguridad smallint NOT NULL DEFAULT 1
-);
-"""
 
-
+async def _radicado(conn: asyncpg.Connection, rid: uuid.UUID, numero: str, nivel: int) -> None:
+    """Un radicado real con lo mínimo que exigen sus restricciones."""
+    clasificado = nivel == 3
+    await conn.execute(
+        "INSERT INTO radicados (id, tracking_number, doc_type, year, sequence, subject, "
+        "tenant_code, nivel_seguridad, clasificacion_causal, clasificacion_fundamento) "
+        "VALUES ($1, $2, 'E', 2026, $3, 'itest', 'ITEST', $4, $5, $6)",
+        rid,
+        numero,
+        int(numero[-6:]),
+        nivel,
+        "art18_a_intimidad" if clasificado else None,
+        "itest" if clasificado else None,
+    )
 
 
 @pytest.mark.asyncio
@@ -58,20 +59,14 @@ async def test_listado_recorta_por_clearance_y_es_fail_closed(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
-    await conn.execute(_MINIMAL_SOURCES)
-
     rad_publico = uuid.uuid4()
     rad_clasificado = uuid.uuid4()
     exp_reservado = uuid.uuid4()
+    await _radicado(conn, rad_publico, "2026-ITEST-E-000001", 1)
+    await _radicado(conn, rad_clasificado, "2026-ITEST-E-000002", 3)
     await conn.execute(
-        "INSERT INTO radicados (id, tracking_number, nivel_seguridad) VALUES "
-        "($1, '2026-ITEST-E-000001', 1), ($2, '2026-ITEST-E-000002', 3)",
-        rad_publico,
-        rad_clasificado,
-    )
-    await conn.execute(
-        "INSERT INTO expedientes (id, code, nivel_seguridad) VALUES ($1, 'EXP-ITEST-002', 2)",
+        "INSERT INTO expedientes (id, code, name, nivel_seguridad) "
+        "VALUES ($1, 'EXP-ITEST-002', 'itest', 2)",
         exp_reservado,
     )
 
@@ -159,14 +154,18 @@ async def test_listado_recorta_por_clearance_y_es_fail_closed(
 async def test_sin_tablas_fuente_las_entradas_clasificables_no_se_listan(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """Tenant aprovisionado sin las migraciones de document/archive-service.
+    """Schema de tenant al que le faltan `radicados` y `expedientes`.
+
+    La cadena única siempre las crea; aquí se retiran a propósito para ejercer el
+    guard (un schema a medio aprovisionar o dañado).
 
     Referenciar `radicados` reventaría con un 500; el guard convierte ese caso en
     fail-closed. El fallo silencioso que se evita es el contrario: dar por pública
     una entrada cuyo nivel no hay dónde consultar.
     """
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
+    await conn.execute("DROP TABLE radicados, expedientes CASCADE")
+    assert await conn.fetchval("SELECT to_regclass('radicados')") is None
 
     await audit_lib.append(
         conn,
@@ -210,19 +209,20 @@ async def test_filtro_por_object_ref_de_un_expediente_une_codigo_uuid_e_indice(
     Mutación: volver el filtro a `al.object_ref = $n` deja solo 1 de los 3.
     """
     slug, conn = tenant_ctx
-    await ensure_audit_log(conn)
-    await conn.execute(_MINIMAL_SOURCES)
-    await conn.execute(
-        "CREATE TABLE expediente_indice (id uuid PRIMARY KEY, expediente_id uuid NOT NULL)"
-    )
     exp, otro, indice = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     await conn.execute(
-        "INSERT INTO expedientes (id, code, nivel_seguridad) VALUES "
-        "($1, 'EXP-ITEST-010', 1), ($2, 'EXP-ITEST-011', 1)",
+        "INSERT INTO expedientes (id, code, name, nivel_seguridad) VALUES "
+        "($1, 'EXP-ITEST-010', 'itest', 1), ($2, 'EXP-ITEST-011', 'itest', 1)",
         exp,
         otro,
     )
-    await conn.execute("INSERT INTO expediente_indice VALUES ($1, $2)", indice, exp)
+    await conn.execute(
+        "INSERT INTO expediente_indice (id, expediente_id, version, xml, xml_sha256, "
+        "content_hash, num_documentos) VALUES ($1, $2, 1, '<indice/>', $3, $3, 0)",
+        indice,
+        exp,
+        "0" * 64,
+    )
 
     async def _append(object_type: str, object_ref: str, action: str) -> None:
         await audit_lib.append(

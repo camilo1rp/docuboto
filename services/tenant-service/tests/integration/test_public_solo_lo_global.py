@@ -11,7 +11,7 @@
 
 Cinco cosas que un mock no puede decir:
 
-1. Toda relación de `public` es global: la crea `migrations/global/` (de cualquier servicio),
+1. Toda relación de `public` es global: la crea `services/docuboto/migrations/global/`,
    es partición de `audit_log` o pertenece a una extensión. Ninguna tabla de TENANT quedó allí
    (hubo 14 copias huérfanas: causales, PINAR, admin_audit...).
 2. Ninguna función de `public`/`tenant_*` fija un `search_path` que nombre `public`.
@@ -22,8 +22,9 @@ Cinco cosas que un mock no puede decir:
 5. Fallback cerrado: sin su tabla, un tenant ya NO lee la homónima de `public`; y el runner
    contra un schema inexistente falla con 3F000, nunca crea una tabla en `public`.
 
-Mutaciones: quitar la migración tenant 016 cae en (2); quitar la global 005 cae en (1);
-devolver `, public` al runner cae en (5).
+Mutaciones: fijar en una función un `search_path` que incluya `public` de la cadena cae en (2);
+crear una tabla de tenant en `public` cae en (1); devolver `, public` al `search_path` de
+`apply_chain` cae en (5).
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from migrations import runner
+from tests.integration.provision import drop_schema, provision_schema
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("RUN_INTEGRATION") != "1", reason="carril de integración: RUN_INTEGRATION=1"
@@ -84,25 +85,22 @@ def _creados(patron: str) -> set[str]:
     return nombres
 
 
-#: Lo global conocido. DENTRO del contenedor de este servicio solo está su propio árbol, así que
-#: el censo derivado de `migrations/global/` (todos los servicios) se UNE a esta lista cuando el
-#: árbol completo está presente (`shared/tests` lo deriva siempre). Una tabla global nueva se añade
-#: aquí: un fallo de este test por ese motivo es la fricción buscada.
+#: Lo global conocido: lo que crea `services/docuboto/migrations/global/` más el libro del runner
+#: (`schema_migrations`). El censo derivado de la cadena se UNE a esta lista cuando el árbol
+#: completo está presente. Una tabla global nueva se añade aquí: un fallo de este test por ese
+#: motivo es la fricción buscada.
 _GLOBALES_CONOCIDOS = {
     "tenants",
     "audit_log",
     "audit_chain_runs",
-    "auth_audit_logs",
     "divipola_departamento",
     "divipola_municipio",
     "schema_migrations",
-    "_migrations",
-    "_tenant_migrations",
 }
 
 
 def _globales() -> set[str]:
-    return _GLOBALES_CONOCIDOS | _creados("*/migrations/global/*.sql")
+    return _GLOBALES_CONOCIDOS | _creados("docuboto/migrations/global/*.sql")
 
 
 @pytest_asyncio.fixture
@@ -118,16 +116,11 @@ async def owner() -> AsyncGenerator[asyncpg.Connection, None]:
 @pytest_asyncio.fixture
 async def schema(owner: asyncpg.Connection) -> AsyncGenerator[str, None]:
     nombre = f"tenant_itest_{uuid.uuid4().hex[:8]}"
-    await owner.execute(f'CREATE SCHEMA "{nombre}"')
     try:
-        await owner.execute(f'SET search_path = "{nombre}"')
-        for ruta in runner._sql_files(runner.TENANT_DIR):
-            await owner.execute(ruta.read_text())
+        await provision_schema(owner, nombre)
         yield nombre
     finally:
-        assert nombre.startswith("tenant_itest_")
-        await owner.execute("RESET search_path")
-        await owner.execute(f'DROP SCHEMA IF EXISTS "{nombre}" CASCADE')
+        await drop_schema(owner, nombre)
 
 
 @pytest.mark.asyncio
@@ -174,7 +167,7 @@ async def test_ninguna_funcion_fija_un_search_path_con_public(owner: asyncpg.Con
 
 @pytest.mark.asyncio
 async def test_ninguna_funcion_de_tenant_nombra_lo_global_sin_calificar(owner: asyncpg.Connection) -> None:
-    nombres = {n for n in _globales() - _creados("*/migrations/tenant/*.sql") if len(n) >= 4 and n != "public"}
+    nombres = {n for n in _globales() - _creados("docuboto/migrations/tenant/*.sql") if len(n) >= 4 and n != "public"}
     rx = re.compile(
         r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE|REFERENCES|PERFORM)\s+(?<![.\"])\b("
         + "|".join(sorted(nombres))

@@ -40,6 +40,7 @@ Las tres fuentes se derivan del código. No hay ninguna lista escrita a mano.
 
 from __future__ import annotations
 
+from tests._chain import chain_files, seed_rows
 from tests._compose import glob_src
 
 import ast
@@ -48,7 +49,6 @@ from pathlib import Path
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _SERVICIOS = _RAIZ / "services"
-_SEED = _SERVICIOS / "auth-service" / "migrations" / "tenant"
 
 # Un nombre de permiso: mayúsculas, dígitos y guión bajo. Se exige el prefijo
 # real del sistema para no confundir un permiso con cualquier otra constante en
@@ -58,15 +58,8 @@ _PERMISO = re.compile(r"\b((?:PERM|USUA_PERM|SGD_PERM)_[A-Z0-9_]+)\b")
 
 def permisos_sembrados() -> set[str]:
     """Los que existen de verdad, leídos de los `INSERT INTO auth_permissions`."""
-    nombres: set[str] = set()
-    for fichero in sorted(_SEED.glob("*.sql")):
-        sql = fichero.read_text(encoding="utf-8")
-        if "INSERT INTO auth_permissions" not in sql:
-            continue
-        bloque = sql[sql.index("INSERT INTO auth_permissions") :]
-        # Solo las tuplas de valores: `('PERM_X', 'descripción')`.
-        nombres.update(m.group(1) for m in re.finditer(r"\('([A-Z][A-Z0-9_]+)'", bloque))
-    return nombres
+    # Solo las tuplas de valores: `('PERM_X', 'descripción')`.
+    return {m.group(1) for m in re.finditer(r"\('([A-Z][A-Z0-9_]+)'", seed_rows("auth_permissions"))}
 
 
 def permisos_exigidos_por_los_gates() -> dict[str, set[str]]:
@@ -105,18 +98,16 @@ def permisos_exigidos_por_los_datos_sembrados() -> dict[str, set[str]]:
     `transaction_types.requires_permission` es el caso real: doce filas que
     nombran un permiso cada una. Es una exigencia tan efectiva como un decorador
     —el servicio la lee y autoriza contra ella— y no aparece en ningún `.py`.
+    Devuelve permiso → archivos de la cadena que lo nombran.
     """
+    # El propio seed de permisos los DEFINE, no los exige.
+    definicion = seed_rows("auth_permissions")
+    assert definicion, "la cadena no siembra `auth_permissions`: el parseo se rompió"
     exigidos: dict[str, set[str]] = {}
-    for fichero in sorted(_SERVICIOS.glob("*/migrations/**/*.sql")):
-        # El propio seed de permisos los DEFINE, no los exige.
-        if fichero.parent == _SEED:
-            continue
-        servicio = fichero.relative_to(_SERVICIOS).parts[0]
-        # El baseline concatena el seed: no es una fuente de exigencia nueva.
-        if servicio == "docuboto":
-            continue
-        for m in _PERMISO.finditer(fichero.read_text(encoding="utf-8")):
-            exigidos.setdefault(m.group(1), set()).add(servicio)
+    for fichero in chain_files():
+        texto = fichero.read_text(encoding="utf-8").replace(definicion, "")
+        for m in _PERMISO.finditer(texto):
+            exigidos.setdefault(m.group(1), set()).add(fichero.name)
     return exigidos
 
 
@@ -129,8 +120,8 @@ def test_todo_permiso_exigido_por_un_gate_existe_en_el_sistema() -> None:
         p: sorted(s) for p, s in permisos_exigidos_por_los_gates().items() if p not in sembrados
     }
     assert not fantasma, (
-        "estos permisos los exige un gate y NO los siembra ninguna migración de "
-        "auth-service: no se pueden conceder a ningún grupo, así que el endpoint "
+        "estos permisos los exige un gate y NO los siembra la cadena de "
+        "migraciones: no se pueden conceder a ningún grupo, así que el endpoint "
         f"queda inalcanzable salvo para ROOT: {fantasma}"
     )
 

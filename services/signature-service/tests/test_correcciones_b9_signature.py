@@ -322,12 +322,17 @@ def test_s11_el_404_neutro_tiene_una_sola_definicion_en_cadena_service() -> None
     assert exc.detail == REFERENCIA_404
 
 
-def test_s7_la_migracion_025_es_idempotente_y_nombra_la_fila_sintetica() -> None:
+def test_s7_el_esquema_exige_key_version_1_a_la_firma_nativa() -> None:
+    """Una firma NATIVA solo existe con `key_version = 1`: el CHECK lo cierra donde nace."""
     sql = (
-        Path(__file__).resolve().parents[1]
-        / "migrations" / "tenant" / "025_firma_nativa_exige_key_version.sql"
+        Path(__file__).resolve().parents[2]
+        / "docuboto" / "migrations" / "tenant" / "600_firma.sql"
     ).read_text(encoding="utf-8")
     sin = re.sub(r"--[^\n]*", "", sql)
-    assert "d4e62969-824d-4802-9e40-b402d977b6fc" in sin
-    assert "provider <> 'nativa' OR key_version = 1" in sin
-    assert "IF NOT EXISTS" in sin
+    tabla = re.search(r"CREATE TABLE firma \((.*?)\n\);", sin, re.S)
+    assert tabla, "no se encontró CREATE TABLE firma en 600_firma.sql"
+    assert re.search(
+        r"CONSTRAINT firma_nativa_exige_key_version CHECK "
+        r"\(\(\(\(provider\)::text <> 'nativa'::text\) OR \(key_version = 1\)\)\)",
+        tabla.group(1),
+    )

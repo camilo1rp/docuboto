@@ -16,6 +16,14 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/)
 
 ## [Unreleased]
 
+### Changed
+
+- `refactor(docuboto,shared,infra,scripts)!`: **ADR-053 §1–2 — una cadena de migraciones legible y un solo runner.**
+  *Por qué*: el esquema vivía en tres sitios (289 migraciones numeradas en nueve servicios, un *baseline* generado de 21.178 líneas y diez copias de `runner.py`) y nadie podía leerlo de un vistazo. Sin instalaciones con datos, la historia no tenía a quién servir.
+  *Qué cambia*: la cadena vive en `services/docuboto/migrations/`: 5 archivos en `global/` y 34 en `tenant/`, cada uno con el nombre de lo que crea (`210_radicados.sql`, `510_expedientes.sql`). Un solo `runner.py`; `scripts/init_tenant.py` usa las mismas funciones de `orpycamcp_common.migrations` (`apply_chain`, `migrate`). El libro `public.schema_migrations` pasa a la clave `(schema_name, filename)`. Los nueve `migrate-<servicio>` desaparecen de los dos manifiestos: todo servicio espera a `migrate-docuboto`. Se retiran `scripts/generar_baseline.py`, el import de los libros antiguos y la tabla `public._migrations` de `scripts/init-db.sql`. Las cadenas anteriores quedan archivadas, sin ejecutarse, en `docs/es/historia/esquema/`.
+  *Pruebas*: las dos cadenas aplicadas a PostgreSQL 17 vacío dan el mismo `pg_dump --schema-only` del esquema de entidad, byte a byte y con dos entidades, y los mismos datos sembrados; una segunda corrida no aplica nada. `shared/tests/test_migration_chain.py` exige un runner, ninguna cadena por servicio, ningún *baseline* y nombres `NNN_nombre.sql` sin números repetidos.
+  *Impacto*: diferencias deliberadas en `public`: no existen `auth_audit_logs` (obsoleta desde ADR-010), `_migrations` ni `_tenant_migrations`; no se instala `pgcrypto`; `chk_audit_log_hash_forma` nace validada; todas las particiones mensuales de `audit_log` rechazan `TRUNCATE` con `reject_audit_log_mutation_d03()`. Un volumen de desarrollo existente debe recrearse con `scripts/reset-entorno.sh`.
+
 ### Fixed
 
 - `fix(shared,gateway,auth,tenant,document,archive,storage,workflow,signature,notification,knowledge,mcp,infra,frontend)!`: **Bloque C — las 22 decisiones del triage del 2026-10-09 y la deuda abierta de B10: el asistente es opcional por entidad y un permiso de la persona, bajar lo clasificado exige a otra persona y la causal de reserva es un catálogo cerrado, la ventanilla pública pide una prueba de trabajo y ya no ata a un anónimo con la ficha de otro, la retención de la TRD tiene una sola fuente y el cuadro de clasificación sale del organigrama, la retención legal es por motivo y reversible, el préstamo identifica a quien recibe, el AIP se versiona al renovarse el sello, la identidad firmada es de un solo uso, el `search_path` es solo el tenant, hay `/metrics` y las migraciones tienen por fin el cerrojo que la documentación afirmaba.**

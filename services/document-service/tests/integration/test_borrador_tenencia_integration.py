@@ -33,6 +33,7 @@ pytestmark = pytest.mark.integration
 
 #: Ac. AGN 060/2001 §5.2: el borrador no guarda tipo ni dependencias; se aportan al radicar.
 from document.schemas.borrador import BorradorRadicar  # noqa: E402
+from tests.integration import conftest as ic
 
 _DATOS = BorradorRadicar(tipo_documental="Oficio", origin_dept_code=1, dest_dept_code=1)
 
@@ -77,8 +78,9 @@ async def _padre_y_borrador(tenant_ctx, *, con_padre: bool = True):
 
 async def _paso(conn, padre_id, n, status, *, asignado=None, dept="Jurídica") -> None:
     await conn.execute(
-        "INSERT INTO flow_steps (radicado_id, step_number, to_dept, to_dept_code, assigned_to, "
-        "status) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO flow_steps (radicado_id, tracking_number, step_number, to_dept, to_dept_code, "
+        "assigned_to, assigned_by, action, status) "
+        "VALUES ($1, '', $2, $3, $4, $5, gen_random_uuid(), 'derivar', $6)",
         padre_id, n, dept, {"Jurídica": 410, "Contratación": 420}.get(dept), asignado, status,
     )
 
@@ -126,16 +128,11 @@ async def test_con_paso_activo_asignado_edita_el_asignado_y_no_quien_radico(tena
 async def test_paso_sin_dueno_edita_cualquiera_de_la_dependencia(tenant_ctx) -> None:
     _, conn, servicio, padre, b = await _padre_y_borrador(tenant_ctx)
     miembro, ajeno, inactivo = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    await conn.execute("INSERT INTO dependencias (codigo, nombre) VALUES (410, 'Jurídica')")
-    await conn.execute("INSERT INTO dependencias (codigo, nombre) VALUES (420, 'Contratación')")
-    await conn.execute(
-        "INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 410), ($2, 420)",
-        miembro, ajeno,
-    )
-    await conn.execute(
-        "INSERT INTO urd_usuaroldep (user_id, depe_id, is_active) VALUES ($1, 410, false)",
-        inactivo,
-    )
+    await conn.execute("INSERT INTO dependencias (codigo, sigla, nombre) VALUES (410, 'JUR', 'Jurídica')")
+    await conn.execute("INSERT INTO dependencias (codigo, sigla, nombre) VALUES (420, 'CON', 'Contratación')")
+    await ic.membership(conn, miembro, 410)
+    await ic.membership(conn, ajeno, 420)
+    await ic.membership(conn, inactivo, 410, is_active=False)
     await _paso(conn, padre.id, 1, "pending", asignado=None, dept="Jurídica")
     assert not await _puede_editar(servicio, conn, b, ajeno)
     assert not await _puede_editar(servicio, conn, b, inactivo), "URD inactiva no cuenta"
@@ -151,8 +148,8 @@ async def test_renombrar_la_dependencia_no_quita_la_tenencia(tenant_ctx) -> None
     """
     _, conn, servicio, padre, b = await _padre_y_borrador(tenant_ctx)
     miembro = uuid.uuid4()
-    await conn.execute("INSERT INTO dependencias (codigo, nombre) VALUES (410, 'Jurídica')")
-    await conn.execute("INSERT INTO urd_usuaroldep (user_id, depe_id) VALUES ($1, 410)", miembro)
+    await conn.execute("INSERT INTO dependencias (codigo, sigla, nombre) VALUES (410, 'JUR', 'Jurídica')")
+    await ic.membership(conn, miembro, 410)
     await _paso(conn, padre.id, 1, "pending", asignado=None, dept="Jurídica")
     assert await _puede_editar(servicio, conn, b, miembro)  # control positivo antes del renombre
     await conn.execute("UPDATE dependencias SET nombre = 'Asuntos Jurídicos' WHERE codigo = 410")
@@ -216,11 +213,7 @@ async def _intenta_radicar(slug, conn, servicio, b, actor) -> bool:
     radicados = await conn.fetchval("SELECT count(*) FROM radicados")
     # B6: el origen de una Salida debe ser una dependencia del actor (URD activa).
     if actor is not None:
-        await conn.execute(
-            "INSERT INTO urd_usuaroldep (user_id, depe_id) SELECT $1, 1 "
-            "WHERE NOT EXISTS (SELECT 1 FROM urd_usuaroldep WHERE user_id = $1 AND depe_id = 1)",
-            actor,
-        )
+        await ic.membership(conn, actor, 1)
     try:
         await servicio.radicar(
             b.id, DocumentService(conn, slug), actor, max_clearance=3, datos=_DATOS

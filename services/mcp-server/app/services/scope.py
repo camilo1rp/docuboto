@@ -46,7 +46,7 @@ from app.services.identity import Identity
 from app.tools import catalog
 from app.tools.catalog import Tool
 
-# `security_levels` (auth-service/migrations/tenant/003_classification.sql).
+# `security_levels` (services/docuboto/migrations/tenant/030_security_levels.sql).
 _NIVELES = {1: "Pública", 2: "Reservada", 3: "Clasificada"}
 
 # Lo que el sistema NO distingue hoy, dicho en voz alta.

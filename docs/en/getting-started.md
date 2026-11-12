@@ -117,7 +117,7 @@ The Spanish final-disposition values are mapped to OrpycaMCP codes (`conserve`, 
 python3 scripts/migrate_trd_from_fondecund.py \
   mi_entidad_trd.json \
   --tenant-slug mi_entidad \
-  --output services/archive-service/migrations/003_trd_mi_entidad.sql
+  --output services/archive-service/migrations/seeds/trd_mi_entidad.sql
 ```
 
 **3. Apply the migration in the tenant's schema:**
@@ -125,7 +125,7 @@ python3 scripts/migrate_trd_from_fondecund.py \
 ```bash
 docker compose exec postgres psql -U orpycamcp -d orpycamcp_db \
   -c "SET search_path TO tenant_mi_entidad;" \
-  -f services/archive-service/migrations/003_trd_mi_entidad.sql
+  -f services/archive-service/migrations/seeds/trd_mi_entidad.sql
 ```
 
 **Retention and producing department (C-4).** The script requires `retencion_gestion` **and** `retencion_central` in the source JSON (it stops naming the series that lacks them: it does not invent retention times). A series seeded this way is `migrada` or `borrador` and has **no producing department**; for it to govern and appear in the classification scheme, open a new version with `dependencias_productoras` (`POST /api/v1/trd/{code}/versiones`), approve it and validate it.

@@ -49,10 +49,14 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from workflow.core.database import tenant_schema
-from migrations import runner
+from orpycamcp_common import migrations
 
-# Mismo cálculo que `migrations/runner.py:33` — DSN "pelado" (driver psycopg-style)
+from workflow.core.database import tenant_schema
+
+# La cadena única de migraciones (ADR-053): `global/` -> public, `tenant/` -> tenant_*.
+CHAIN = Path(__file__).resolve().parents[4] / "services" / "docuboto" / "migrations"
+
+# Mismo cálculo que `services/docuboto/migrations/runner.py` — DSN "pelado" (driver psycopg-style)
 # para conectar con `asyncpg.connect` directamente (sin pasar por el pool de la app).
 #
 # (A4) Deliberadamente NO se usa `os.environ["DATABASE_URL"]` (KeyError) a nivel de
@@ -219,32 +223,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 # ---------------------------------------------------------------------------
-# Bootstrap de `public.audit_log` (arruga cross-service) — VERIFICAR primero,
-# CREAR solo si no existe.
+# `public.audit_log`: se VERIFICA, nunca se crea aquí.
 #
-# La DDL de `audit_log` la posee auth-service (migrations/global/001..004) y NO
-# viaja en la imagen Docker de archive-service (cada Dockerfile solo hace
-# `COPY services/<svc>/ .`).
-#
-# (A2) Este fichero de TESTS ya no re-emite DDL de seguridad "por si acaso"
-# sobre la base de `DATABASE_URL` — esa base podría ser la de desarrollo del
-# usuario, no una desechable, y un `DROP TRIGGER ...; CREATE TRIGGER ...`
-# deja `public.audit_log` MUTABLE en la ventana intermedia. En vez de eso:
-#   1. Si `public.audit_log` YA EXISTE (auth-service ya migró este
-#      `orpycamcp_db` compartido): no se emite NINGUNA sentencia DDL. Se
-#      VERIFICA que los triggers append-only esperados estén presentes
-#      (`pg_trigger`); si falta alguno, se falla ruidoso — jamás se "arregla"
-#      desde el árbol de tests. Beneficio colateral: los tests de este tier
-#      (en particular (e), el trigger append-only) ejercitan los triggers
-#      REALES de producción, no unos que el propio conftest instaló.
-#   2. Si NO existe (base virgen, p. ej. Postgres de CI recién levantado): se
-#      crea tabla + partición default + índices + funciones + triggers en UNA
-#      ÚNICA transacción explícita — sin `CREATE ROLE`, sin `GRANT`/`REVOKE`
-#      (eso es aprovisionamiento de credenciales, no le compete a un fichero
-#      de tests, y menos con una contraseña de ejemplo publicada en un repo
-#      AGPL). Al ser una tabla nueva no hay ventana de desprotección: los
-#      triggers se crean en la misma tx que la tabla, antes de que exista
-#      ninguna fila que proteger.
+# `public` lo migra la cadena única (`services/docuboto/migrations/global`,
+# ADR-053) ANTES de los tests. Este fichero de TESTS no emite DDL de seguridad
+# sobre la base de `DATABASE_URL`: comprueba que la tabla y sus triggers
+# append-only estén presentes y habilitados, y si falta algo falla ruidoso.
+# Beneficio colateral: los tests de este tier ejercitan los triggers REALES de
+# producción, no unos que el propio conftest instaló.
 # ---------------------------------------------------------------------------
 
 _EXPECTED_AUDIT_TRIGGERS = frozenset(
@@ -257,135 +243,45 @@ _EXPECTED_AUDIT_TRIGGERS = frozenset(
     }
 )
 
-# INVARIANTE: este bloque se emite completo dentro de UNA sola transacción
-# (`_audit_log_ready` lo envuelve en `async with conn.transaction()`) — no
-# trocear en varias llamadas a `execute`. Es la contraparte de 002/003/004 de
-# auth-service, PERO sin `CREATE ROLE`/`GRANT`/`REVOKE` (A1) y sin la tabla
-# legacy `auth_audit_logs` (solo existía para que un `COMMENT` no fallara).
-_AUDIT_LOG_CREATE_DDL = """
-CREATE TABLE public.audit_log (
-    id           BIGINT      GENERATED ALWAYS AS IDENTITY,
-    tenant_slug  TEXT        NOT NULL,
-    ts           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    service      TEXT        NOT NULL,
-    actor        TEXT,
-    canal        TEXT        NOT NULL DEFAULT 'api',
-    action       TEXT        NOT NULL,
-    object_type  TEXT        NOT NULL,
-    object_ref   TEXT,
-    payload      JSONB       NOT NULL DEFAULT '{}'::jsonb,
-    prev_hash    TEXT,
-    hash         TEXT        NOT NULL,
-    PRIMARY KEY (id, ts)
-) PARTITION BY RANGE (ts);
-
-CREATE TABLE public.audit_log_default
-    PARTITION OF public.audit_log DEFAULT;
-
-CREATE INDEX ix_audit_tenant_ts ON public.audit_log (tenant_slug, ts);
-CREATE INDEX ix_audit_object    ON public.audit_log (object_type, object_ref);
-
-ALTER TABLE public.audit_log
-    ADD CONSTRAINT chk_audit_log_canal
-    CHECK (canal IN ('api', 'ui', 'mcp', 'system'));
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation() RETURNS trigger AS $$
-BEGIN
-    RAISE EXCEPTION 'public.audit_log is append-only (Ley 594/2000, ADR-008)';
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_audit_log_immutable
-    BEFORE UPDATE OR DELETE ON public.audit_log
-    FOR EACH ROW EXECUTE FUNCTION public.reject_audit_log_mutation();
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_truncate()
-RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION
-        'TRUNCATE on public.audit_log is prohibited (ADR-008, Ley 594/2000, D-03)';
-END;
-$$;
-
-CREATE TRIGGER trg_audit_log_no_truncate
-    BEFORE TRUNCATE ON public.audit_log
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
-
-CREATE TRIGGER trg_audit_log_default_no_truncate
-    BEFORE TRUNCATE ON public.audit_log_default
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_truncate();
-
-CREATE OR REPLACE FUNCTION public.reject_audit_log_mutation_d03()
-RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION
-        'UPDATE/DELETE on public.audit_log is prohibited '
-        '(ADR-008, Ley 594/2000, D-03): table is append-only';
-END;
-$$;
-
-CREATE TRIGGER trg_audit_log_no_mutation
-    BEFORE UPDATE OR DELETE ON public.audit_log
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
-
-CREATE TRIGGER trg_audit_log_default_no_mutation
-    BEFORE UPDATE OR DELETE ON public.audit_log_default
-    FOR EACH STATEMENT EXECUTE FUNCTION public.reject_audit_log_mutation_d03();
-"""
+_RUNNER_HINT = (
+    "Aplica antes la cadena única de migraciones: "
+    "`python services/docuboto/migrations/runner.py` (con MIGRATIONS_DATABASE_URL "
+    "o DATABASE_URL apuntando a esta base)."
+)
 
 
 @pytest_asyncio.fixture(scope="session")
 async def _audit_log_ready() -> None:
-    """Asegura que `public.audit_log` (+ triggers append-only) exista antes de
-    cualquier test de este carril. Verificar-primero / crear-solo-si-no-existe
-    (A2): jamás re-emite DDL de seguridad sobre una tabla que ya existe."""
+    """Verifica que `public.audit_log` (+ triggers append-only) exista antes de
+    cualquier test de este carril. Jamás emite DDL: `public` es del runner."""
     dsn = _require_dsn()
     conn = await asyncpg.connect(dsn=dsn)
     try:
-        already_exists = await conn.fetchval("SELECT to_regclass('public.audit_log')")
-        if already_exists is not None:
-            # (G3) `tgenabled <> 'D'`: un trigger DESHABILITADO (`ALTER TABLE ...
-            # DISABLE TRIGGER`, o un `session_replication_role = replica` en la
-            # sesión) sigue figurando en `pg_trigger` — sin este filtro, el
-            # guardarraíl daba luz verde a un `audit_log` MUTABLE, que es
-            # exactamente la condición que existe para descartar.
-            rows = await conn.fetch(
-                """
-                SELECT tgname
-                FROM pg_trigger
-                WHERE tgrelid = ANY(
-                    ARRAY['public.audit_log'::regclass, 'public.audit_log_default'::regclass]
-                )
-                  AND NOT tgisinternal
-                  AND tgenabled <> 'D'
-                """
+        if await conn.fetchval("SELECT to_regclass('public.audit_log')") is None:
+            raise RuntimeError(f"public.audit_log no existe en esta base. {_RUNNER_HINT}")
+        # (G3) `tgenabled <> 'D'`: un trigger DESHABILITADO (`ALTER TABLE ...
+        # DISABLE TRIGGER`, o un `session_replication_role = replica` en la
+        # sesión) sigue figurando en `pg_trigger` — sin este filtro, el
+        # guardarraíl daba luz verde a un `audit_log` MUTABLE, que es
+        # exactamente la condición que existe para descartar.
+        rows = await conn.fetch(
+            """
+            SELECT tgname
+            FROM pg_trigger
+            WHERE tgrelid = ANY(
+                ARRAY['public.audit_log'::regclass, 'public.audit_log_default'::regclass]
             )
-            found = {row["tgname"] for row in rows}
-            missing = _EXPECTED_AUDIT_TRIGGERS - found
-            if missing:
-                raise RuntimeError(
-                    "public.audit_log ya existe pero le faltan triggers append-only "
-                    f"esperados: {sorted(missing)}. Este conftest de TESTS no repara "
-                    "DDL de seguridad de producción — corrige las migraciones de "
-                    "auth-service (o el estado de esta base) antes de reintentar."
-                )
-            return
-
-        if os.environ.get("CI"):
-            # AREA-03-05: en CI la base nace virgen y el job aplica ANTES las
-            # migraciones globales REALES de auth-service (002-008); crear aquí una
-            # copia propia del DDL haría probar el trigger de ESTE fichero y no el de
-            # producción. Si llegamos aquí en CI, el job olvidó migrar auth-service.
+              AND NOT tgisinternal
+              AND tgenabled <> 'D'
+            """
+        )
+        missing = _EXPECTED_AUDIT_TRIGGERS - {row["tgname"] for row in rows}
+        if missing:
             raise RuntimeError(
-                "public.audit_log no existe en CI: aplica antes las migraciones "
-                "globales de auth-service (`python ../auth-service/migrations/runner.py`)."
+                "public.audit_log existe pero le faltan triggers append-only "
+                f"esperados: {sorted(missing)}. Este conftest de TESTS no repara "
+                f"DDL de seguridad de producción. {_RUNNER_HINT}"
             )
-
-        async with conn.transaction():
-            await conn.execute("SET LOCAL lock_timeout = '5s'")
-            await conn.execute(_AUDIT_LOG_CREATE_DDL)
     finally:
         await conn.close()
 
@@ -453,131 +349,132 @@ async def nueva_conexion(
             await c.close()
 
 
+async def provision_tenant_schema(conn: asyncpg.Connection, schema: str) -> None:
+    """Crea *schema* y le aplica la cadena de tenant COMPLETA (ADR-053), la misma
+    que corre en producción."""
+    await conn.execute(f'CREATE SCHEMA "{schema}"')
+    await migrations.apply_chain(conn, CHAIN / "tenant", schema, log=lambda _msg: None)
+
+
+async def drop_tenant_schema(conn: asyncpg.Connection, schema: str) -> None:
+    assert schema.startswith("tenant_itest_"), (
+        f"guardarraíl: me niego a hacer DROP SCHEMA CASCADE de {schema!r} — "
+        "no tiene el prefijo tenant_itest_ esperado del schema de un test"
+    )
+    await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+    await conn.execute("DELETE FROM public.schema_migrations WHERE schema_name = $1", schema)
+
+
 @pytest_asyncio.fixture
 async def tenant_ctx(
     db_conn: asyncpg.Connection, request: pytest.FixtureRequest
 ) -> AsyncGenerator[tuple[str, asyncpg.Connection], None]:
-    """Provisiona un schema `tenant_itest_<hex8>` desechable: primero las tablas
-    de OTROS servicios que el workflow-service lee/escribe (`radicados`,
-    `dependencias`, `urd_usuaroldep`, `auth_users` — su DDL vive en
-    document/tenant/auth-service y NO viaja en esta imagen, así que aquí van
-    como los MÍNIMOS que el SUT toca), luego las migraciones de tenant REALES de
-    workflow-service, y lo destruye (`DROP SCHEMA CASCADE`) al terminar.
+    """Provisiona un schema `tenant_itest_<hex8>` desechable con la cadena de
+    tenant REAL y completa (`services/docuboto/migrations/tenant`), y lo destruye
+    (`DROP SCHEMA CASCADE`) al terminar.
 
     Yields ``(slug, conn)`` con el slug "crudo" que consume `WorkflowService`.
     """
     slug = _make_slug(request.node.name)
     schema = tenant_schema(slug)
-    await db_conn.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        async with db_conn.transaction():
-            await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-            await db_conn.execute(_STUB_TABLES_DDL)
-        for path in runner._sql_files(runner.TENANT_DIR):
-            async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-                await db_conn.execute(path.read_text())
+        await provision_tenant_schema(db_conn, schema)
         yield slug, db_conn
     finally:
-        assert schema.startswith("tenant_itest_"), (
-            f"guardarraíl: me niego a hacer DROP SCHEMA CASCADE de {schema!r} — "
-            "no tiene el prefijo tenant_itest_ esperado del schema de un test"
-        )
-        await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await drop_tenant_schema(db_conn, schema)
 
 
-# Mínimos de las tablas de otros servicios (solo las columnas que el SUT usa).
-_STUB_TABLES_DDL = """
-CREATE TABLE radicados (
-    id              UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    tracking_number VARCHAR(50) NOT NULL,
-    status          VARCHAR(20) NOT NULL DEFAULT 'registered',
-    nivel_seguridad SMALLINT    NOT NULL DEFAULT 1,
-    doc_type        VARCHAR(1)  NOT NULL DEFAULT 'E',
-    responde_a      UUID,
-    registered_by   UUID,
-    due_date        DATE,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Dependencia de radicación + ubicación actual (document-service 005 y 037,
-    -- ADR-029). `flujo_*` las escribe el workflow-service; `ubicacion_*` son
-    -- GENERADAS, con la misma expresión que la migración 037: si divergen, las
-    -- pruebas de ubicación dejan de medir lo que la base real calcula.
-    origin_dept       VARCHAR(100),
-    dest_dept         VARCHAR(100),
-    origin_dept_code  INTEGER,
-    dest_dept_code    INTEGER,
-    flujo_dept_code   INTEGER,
-    flujo_dept        VARCHAR(100),
-    flujo_usuario     UUID,
-    ubicacion_dept_code INTEGER GENERATED ALWAYS AS (
-        CASE
-            WHEN flujo_dept IS NOT NULL THEN flujo_dept_code
-            WHEN dest_dept IS NOT NULL OR dest_dept_code IS NOT NULL THEN dest_dept_code
-            ELSE origin_dept_code
-        END
-    ) STORED,
-    ubicacion_dept VARCHAR(100) GENERATED ALWAYS AS (
-        CASE
-            WHEN flujo_dept IS NOT NULL THEN flujo_dept
-            WHEN dest_dept IS NOT NULL OR dest_dept_code IS NOT NULL THEN dest_dept
-            ELSE origin_dept
-        END
-    ) STORED
-);
-CREATE TABLE dependencias (
-    codigo  INTEGER      NOT NULL PRIMARY KEY,
-    nombre  VARCHAR(100) NOT NULL,
-    activo  BOOLEAN      NOT NULL DEFAULT TRUE
-);
--- COPIA de tenant-service 013 (historial de nombres + criterio ÚNICO nombre -> código).
--- Su DDL no viaja en esta imagen; `tenant-service/tests/integration/test_dependencia_codigo.py`
--- fija los mismos casos contra la función REAL: si esta copia diverge, uno de los dos
--- queda en rojo.
-CREATE TABLE dependencia_nombre_historico (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, codigo INTEGER NOT NULL,
-    nombre TEXT NOT NULL, origen VARCHAR(30) NOT NULL
-        CHECK (origen IN ('renombre', 'mapeo_manual')),
-    motivo TEXT, registrado_por UUID, at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE FUNCTION resolver_codigo_dependencia(p_nombre text, p_historico boolean)
-RETURNS TABLE (codigo integer, candidatos integer)
-LANGUAGE sql STABLE AS $$
-    WITH mapeo AS (
-        SELECT DISTINCT h.codigo AS cod FROM dependencia_nombre_historico h
-         WHERE p_historico AND h.origen = 'mapeo_manual' AND h.nombre = p_nombre
-    ),
-    c AS (
-        SELECT m.cod FROM mapeo m
-        UNION
-        SELECT d.codigo FROM dependencias d
-         WHERE NOT EXISTS (SELECT 1 FROM mapeo)
-           AND d.nombre = p_nombre AND (p_historico OR d.activo)
-        UNION
-        SELECT h.codigo FROM dependencia_nombre_historico h
-         WHERE p_historico AND NOT EXISTS (SELECT 1 FROM mapeo)
-           AND h.origen = 'renombre' AND h.nombre = p_nombre
+# ---------------------------------------------------------------------------
+# Filas mínimas VÁLIDAS para el esquema real. Las tablas ya no son stubs: cada
+# ayuda rellena lo que el esquema exige (NOT NULL, FK, CHECK) y nada más. Todas
+# asumen que el `search_path` de la conexión es el schema del tenant.
+# ---------------------------------------------------------------------------
+
+_row_counter = itertools.count(1)
+
+# Lo que `radicados` exige a un radicado clasificado (CHECK `radicados_causal_catalogo`
+# y `radicados_clasificado_con_fundamento`).
+_CAUSAL_BY_LEVEL = {1: None, 2: "por_clasificar", 3: "art18_a_intimidad"}
+
+
+async def insert_radicado(
+    conn: asyncpg.Connection,
+    tracking_number: str,
+    *,
+    status: str = "registered",
+    nivel: int = 1,
+    doc_type: str = "E",
+    responde_a: uuid.UUID | None = None,
+) -> uuid.UUID:
+    return await conn.fetchval(
+        "INSERT INTO radicados (tracking_number, doc_type, year, sequence, subject, tenant_code, "
+        "status, nivel_seguridad, clasificacion_causal, clasificacion_fundamento, responde_a) "
+        "VALUES ($1, $2, 2026, $3, 'Asunto de prueba', 'ITEST', $4, $5, $6, $7, $8) RETURNING id",
+        tracking_number,
+        doc_type,
+        next(_row_counter),
+        status,
+        nivel,
+        _CAUSAL_BY_LEVEL[nivel],
+        "Fundamento de prueba" if nivel >= 2 else None,
+        responde_a,
     )
-    SELECT CASE WHEN count(*) = 1 THEN min(c.cod) END, count(*)::int FROM c
-$$;
-CREATE TABLE auth_users (
-    id      UUID    NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-    is_root BOOLEAN NOT NULL DEFAULT FALSE
-);
--- Clearance del actor (`resolve_caller_clearance`): sin membresía => PUBLICA.
-CREATE TABLE auth_memberships (
-    user_id  UUID NOT NULL,
-    group_id UUID NOT NULL
-);
-CREATE TABLE role_clearance (
-    group_id  UUID     NOT NULL,
-    max_level SMALLINT NOT NULL
-);
-CREATE TABLE urd_usuaroldep (
-    user_id   UUID        NOT NULL,
-    depe_id   INTEGER     NOT NULL,
-    is_active BOOLEAN     NOT NULL DEFAULT TRUE
-);
-"""
+
+
+async def set_security_level(conn: asyncpg.Connection, radicado_id: uuid.UUID, nivel: int) -> None:
+    """Sube el nivel de un radicado con la causal y el fundamento que el esquema exige."""
+    await conn.execute(
+        "UPDATE radicados SET nivel_seguridad = $2, clasificacion_causal = $3, "
+        "clasificacion_fundamento = $4 WHERE id = $1",
+        radicado_id,
+        nivel,
+        _CAUSAL_BY_LEVEL[nivel],
+        "Fundamento de prueba" if nivel >= 2 else None,
+    )
+
+
+async def insert_user(conn: asyncpg.Connection) -> uuid.UUID:
+    return await conn.fetchval(
+        "INSERT INTO auth_users (username) VALUES ($1) RETURNING id", f"itest-{uuid.uuid4().hex[:12]}"
+    )
+
+
+async def insert_group(conn: asyncpg.Connection) -> uuid.UUID:
+    return await conn.fetchval(
+        "INSERT INTO auth_groups (name) VALUES ($1) RETURNING id", f"itest-{uuid.uuid4().hex[:12]}"
+    )
+
+
+async def add_user_to_dependencia(conn: asyncpg.Connection, user_id: uuid.UUID, depe_id: int) -> None:
+    await conn.execute(
+        "INSERT INTO urd_usuaroldep (user_id, depe_id, rol_id) VALUES ($1, $2, $3)",
+        user_id,
+        depe_id,
+        await insert_group(conn),
+    )
+
+
+async def grant_clearance(conn: asyncpg.Connection, user_id: uuid.UUID, nivel: int) -> None:
+    """Membresía en un grupo nuevo cuyo `role_clearance` es *nivel*."""
+    group_id = await insert_group(conn)
+    await conn.execute(
+        "INSERT INTO auth_memberships (user_id, group_id) VALUES ($1, $2)", user_id, group_id
+    )
+    await conn.execute(
+        "INSERT INTO role_clearance (group_id, max_level) VALUES ($1, $2)", group_id, nivel
+    )
+
+
+async def insert_dependencia(
+    conn: asyncpg.Connection, codigo: int, nombre: str, activo: bool = True
+) -> None:
+    await conn.execute(
+        "INSERT INTO dependencias (codigo, sigla, nombre, activo) VALUES ($1, $2, $3, $4)",
+        codigo,
+        f"D{codigo}",
+        nombre,
+        activo,
+    )
 
 
 @pytest.fixture(autouse=True)

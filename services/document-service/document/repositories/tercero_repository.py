@@ -16,7 +16,7 @@ distintos y no había forma de responder «¿qué le hemos enviado a esta person
 
 Dos defensas contra el duplicado, y hacen falta las dos:
 
-* **La dura**: índice único por documento de identidad (migración 026). Nadie
+* **La dura**: índice único por documento de identidad (`tenant/200_tercero.sql`). Nadie
   crea dos terceros con la misma cédula, ni desde la pantalla ni por la API.
 * **La blanda, que es la que evita la mayoría**: la búsqueda por nombre
   normalizado. Los duplicados no se crean por saltarse una restricción, se
@@ -685,7 +685,7 @@ class TerceroRepository:
 
         **No toca `radicado_actor`. Ni una fila.** El primer diseño repuntaba el
         `tercero_id` de los vínculos, y la base lo impidió: el trigger
-        `radicado_actor` inmutable de la migración 026 incluye `tercero_id`
+        `radicado_actor` inmutable (`tenant/210_radicados.sql`) incluye `tercero_id`
         entre las columnas que no se editan, con este mensaje —
 
             «los datos de contacto de un actor son los USADOS en el envío y no

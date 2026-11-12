@@ -58,42 +58,10 @@ async def _radicar(
     return doc.id, doc.tracking_number
 
 
-async def _tablas_rbac(conn: asyncpg.Connection) -> None:
-    """Las tablas de auth-service que la resolución de clearance lee.
-
-    Las crea auth-service; el fixture de este tier solo aplica las migraciones de
-    document-service. Se declaran aquí con la forma MÍNIMA que usa
-    `resolve_caller_clearance` —`auth_users`, `auth_memberships`,
-    `role_clearance`— en vez de importar migraciones ajenas, que ataría este test
-    a los cambios de otro servicio. Lo que se prueba aquí no es su esquema.
-
-    Ojo: sin ellas `resolve_caller_clearance` **no falla**, devuelve PUBLICA
-    (fail-closed, atrapa `UndefinedTableError`). Es correcto, y también es la
-    razón por la que este test tiene que crearlas: sin ellas todos los usuarios
-    serían nivel 1 y el caso del oráculo pasaría por el motivo equivocado.
-    """
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS auth_users ("
-        "  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), username text, email text,"
-        "  is_root boolean NOT NULL DEFAULT false)"
-    )
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS auth_groups ("
-        "  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL)"
-    )
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS auth_memberships (user_id uuid, group_id uuid)"
-    )
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS role_clearance (group_id uuid PRIMARY KEY, max_level int)"
-    )
-
-
 async def _clearance(
     conn: asyncpg.Connection, nivel: int, *, username: str | None = None
 ) -> uuid.UUID:
     """Un usuario con el clearance pedido, por SQL: aquí el sujeto es el acceso."""
-    await _tablas_rbac(conn)
     user_id = await conn.fetchval(
         "INSERT INTO auth_users (username, email) VALUES ($1, $2) RETURNING id",
         username or f"u{nivel}{uuid.uuid4().hex[:6]}",

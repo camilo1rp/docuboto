@@ -10,7 +10,7 @@
 """La métrica de WORM agotado cubre TODA tabla con un ciclo de reintento WORM (C18).
 
 Una lista de admisión que crece aparte del sistema que vigila cubre lo que alguien
-recordó, no lo que hay. Aquí se recalcula desde las migraciones de tenant de archive:
+recordó, no lo que hay. Aquí se recalcula desde la cadena de migraciones de tenant:
 toda tabla con columnas `worm_reconcile_agotado` / `worm_renovacion_agotado` (y el
 estado `'agotado'` del empaquetado del AIP) tiene su combinación en
 `COMBINACIONES`, y viceversa.
@@ -25,8 +25,10 @@ import importlib.util
 import re
 from pathlib import Path
 
+from tests._chain import CHAIN, create_table
+
 RAIZ = Path(__file__).resolve().parents[2]
-MIGRACIONES = RAIZ / "services" / "archive-service" / "migrations" / "tenant"
+MIGRACIONES = CHAIN / "tenant"
 REPO = RAIZ / "services" / "archive-service" / "archive" / "repositories" / "metricas_repository.py"
 
 _FASES = {"worm_reconcile_agotado": "reconcile", "worm_renovacion_agotado": "renewal"}
@@ -80,5 +82,6 @@ def test_toda_tabla_worm_tiene_su_metrica_y_viceversa() -> None:
 
 
 def test_el_estado_agotado_del_aip_existe_en_su_check() -> None:
-    sql = (MIGRACIONES / "033_expediente_aip.sql").read_text(encoding="utf-8")
-    assert re.search(r"estado\s+IN\s*\([^)]*'agotado'", sql)
+    sql = create_table("expediente_aip")
+    # pg_dump lo imprime como `estado IN (...)` o como `estado = ANY (ARRAY[...])`.
+    assert re.search(r"CHECK \(\(estado (?:IN \(|= ANY \(ARRAY\[)[^)\]]*'agotado'", sql)

@@ -15,13 +15,13 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from urllib.parse import urlsplit
 
 import asyncpg
 import pytest
 import pytest_asyncio
 
+from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 from notification.routers import webhooks as router
 from notification.schemas.webhook import WebhookCreate
 
@@ -30,7 +30,6 @@ pytestmark = [
     pytest.mark.skipif(os.environ.get("RUN_INTEGRATION") != "1", reason="requiere RUN_INTEGRATION=1"),
 ]
 
-_MIGRACIONES = Path(__file__).resolve().parents[2] / "migrations" / "tenant"
 _HOSTS = frozenset({"postgres", "localhost", "127.0.0.1", "db"})
 
 
@@ -56,15 +55,12 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
     assert (urlsplit(dsn).hostname or "") in _HOSTS
     c = await asyncpg.connect(dsn)
     schema = f"tenant_itest_{uuid.uuid4().hex[:8]}"
-    await c.execute(f'CREATE SCHEMA "{schema}"')
     try:
+        await provision_tenant_schema(c, schema)
         await c.execute(f'SET search_path TO "{schema}"')
-        await c.execute((_MIGRACIONES / "003_webhooks.sql").read_text())
-        await c.execute((_MIGRACIONES / "009_webhook_secret_cifrado.sql").read_text())
         yield c
     finally:
-        assert schema.startswith("tenant_itest_")
-        await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await drop_tenant_schema(c, schema)
         await c.close()
 
 

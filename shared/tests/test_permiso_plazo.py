@@ -12,17 +12,18 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
+
+from tests._chain import chain_text, seed_rows
 
 _RAIZ = Path(__file__).resolve().parents[2]
 
 
 def test_la_migracion_no_reparte_el_permiso():
-    sql = (
-        _RAIZ / "services/auth-service/migrations/tenant/021_permiso_plazo.sql"
-    ).read_text()
-    assert "PERM_DUE_DATE" in sql
-    assert "auth_group_permissions" not in sql
+    assert "('PERM_DUE_DATE'," in seed_rows("auth_permissions")
+    # La cadena crea el permiso y no siembra ninguna concesión.
+    assert re.findall(r"INSERT INTO auth_group_permissions\b", chain_text("tenant")) == []
 
 
 def test_el_usuario_de_consulta_no_lo_recibe():

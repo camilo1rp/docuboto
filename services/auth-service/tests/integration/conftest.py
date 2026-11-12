@@ -7,14 +7,12 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Infraestructura MÍNIMA de tests de integración contra Postgres REAL
-(piloto: validar el backfill SQL de ``migrations/tenant/012_signing_key_
-revocacion.sql`` — R3 del Incremento 2). Mismo espíritu que el carril de
-``archive-service/tests/integration`` (schema de tenant desechable, commits
-reales) pero deliberadamente MÁS LIGERO: este directorio hoy solo ejercita
-migraciones SQL crudas, no servicios completos, así que no necesita el
-bootstrap de ``public.audit_log`` ni la maquinaria anti-falso-verde de
-selección explícita — un ``skipif`` basta.
+"""Infraestructura de tests de integración contra Postgres REAL.
+
+Cada prueba recibe un schema de tenant desechable con la cadena única de
+migraciones (`services/docuboto/migrations/tenant`, ADR-053) y commits reales.
+`public` (rol de aplicación, `audit_log`, `tenants`) lo migra antes el runner
+`services/docuboto/migrations/runner.py`: aquí no se aplica nada global.
 
 Gating: ``RUN_INTEGRATION=1`` (y Postgres real alcanzable). Sin ella, estos
 tests salen ``skipped`` — el carril unit (``docker compose run --rm --no-deps
@@ -27,34 +25,19 @@ import os
 import urllib.parse
 import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import asyncpg
 import pytest_asyncio
+from orpycamcp_common import migrations
 
 from auth.core.database import tenant_schema
-from migrations import runner
 
 RUN_INTEGRATION = os.environ.get("RUN_INTEGRATION") == "1"
 
 
-async def ensure_audit_log(conn: asyncpg.Connection) -> None:
-    """Garantiza `public.audit_log` SIN re-ejecutar migraciones globales sobre una
-    base que ya las tiene.
-
-    Antes, dos pruebas aplicaban TODO `migrations/global/` en cada corrida «porque
-    son idempotentes». No lo son en lo que importa: la 007 hace
-    `ALTER ROLE orpycamcp_app NOLOGIN` sin condición, y esta base es la de la pila
-    de desarrollo (`orpycamcp_db`). Cada corrida del carril de integración dejaba
-    a todos los servicios sin poder conectar al recrearse (2026-10-02: dos veces
-    el mismo día, y la pila caída parecía un defecto del último despliegue).
-
-    Si la tabla existe, auth-service ya migró esta base: no se emite nada. Solo en
-    una base virgen (CI recién levantado) se aplican las globales.
-    """
-    if await conn.fetchval("SELECT to_regclass('public.audit_log')") is not None:
-        return
-    for path in runner._sql_files(runner.GLOBAL_DIR):
-        await conn.execute(path.read_text())
+#: The single migration chain of the repo (ADR-053).
+CHAIN = Path(__file__).resolve().parents[4] / "services" / "docuboto" / "migrations"
 
 # Este carril crea PARTICIONES y esquemas, que son actos del rol PROPIETARIO, no
 # del de la aplicación. Desde que ambos están separados, conectar con el de la
@@ -109,24 +92,18 @@ async def db_conn() -> AsyncGenerator[asyncpg.Connection, None]:
 async def tenant_ctx(
     db_conn: asyncpg.Connection,
 ) -> AsyncGenerator[tuple[str, asyncpg.Connection], None]:
-    """Provisiona un schema ``tenant_itest_<hex8>`` desechable con TODAS las
-    tenant migrations de auth-service aplicadas en orden (001..012 — 011/012
-    dependen de ``auth_users``, creada en 001), y lo destruye al terminar."""
+    """Provisiona un schema ``tenant_itest_<hex8>`` desechable con la cadena de
+    tenant completa aplicada, y lo destruye al terminar."""
     slug = f"itest-{uuid.uuid4().hex[:8]}"
     schema = tenant_schema(slug)
 
     await db_conn.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        for path in runner._sql_files(runner.TENANT_DIR):
-            async with db_conn.transaction():
-                await db_conn.execute(f'SET LOCAL search_path = "{schema}"')
-                await db_conn.execute(path.read_text())
-        # `SET LOCAL` (arriba) solo dura la transacción de cada archivo — sin
-        # esto, al terminar el loop el `search_path` de la CONEXIÓN vuelve al
-        # default y las queries que el test haga directamente contra `conn`
-        # (fuera de una tx propia) no verían las tablas del schema recién
-        # provisionado. `SET` (sin LOCAL) persiste para el resto de la sesión
-        # de esta conexión dedicada.
+        await migrations.apply_chain(db_conn, CHAIN / "tenant", schema, log=lambda _linea: None)
+        # `apply_chain` fija el `search_path` con `SET LOCAL`, que solo dura la
+        # transacción de cada archivo. `SET` (sin LOCAL) persiste para el resto
+        # de la sesión de esta conexión dedicada, de modo que las queries que el
+        # test haga directamente contra `conn` vean las tablas del schema.
         await db_conn.execute(f'SET search_path = "{schema}"')
         yield slug, db_conn
     finally:
@@ -134,3 +111,4 @@ async def tenant_ctx(
             f"guardarraíl: me niego a hacer DROP SCHEMA CASCADE de {schema!r}"
         )
         await db_conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await db_conn.execute("DELETE FROM public.schema_migrations WHERE schema_name = $1", schema)

@@ -41,7 +41,7 @@ pytestmark = [
 GRUPO = "signature-service"
 OTRO_GRUPO = "workflow-service"
 TENANT = f"itest-{uuid.uuid4().hex[:8]}"  # su schema `tenant_itest_xxxxxxxx` es el que el gate califica
-_MIGRACIONES = Path(__file__).resolve().parents[2] / "migrations" / "tenant"
+_CADENA_TENANT = Path(__file__).resolve().parents[3] / "docuboto" / "migrations" / "tenant"
 _HOSTS = frozenset({"postgres", "localhost", "127.0.0.1", "db"})
 
 
@@ -66,11 +66,13 @@ async def conn() -> AsyncGenerator[asyncpg.Connection, None]:
             "CREATE TABLE radicados (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
             "tracking_number varchar(50) NOT NULL UNIQUE, nivel_seguridad smallint NOT NULL)"
         )
-        # Las migraciones REALES del servicio que tocan la DLQ, en orden.
-        for path in sorted(_MIGRACIONES.glob("*.sql")):
-            texto = path.read_text()
-            if "evento_dead_letter" in texto:
-                await c.execute(texto)
+        # El DDL REAL de la DLQ: el archivo de la cadena única (ADR-053) que la crea.
+        dlq = [
+            p for p in sorted(_CADENA_TENANT.glob("*.sql"))
+            if "CREATE TABLE evento_dead_letter " in p.read_text()
+        ]
+        assert len(dlq) == 1, f"la cadena debe crear evento_dead_letter en un solo archivo: {dlq}"
+        await c.execute(dlq[0].read_text())
         yield c
     finally:
         assert schema.startswith("tenant_itest_")

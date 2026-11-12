@@ -212,10 +212,6 @@ async def test_operador_inexistente_aborta_sin_escribir(tenant_ctx, asientos, mo
 
     slug, conn = await _en_tenant(tenant_ctx)
     sid = await _solicitud(conn, "radicado", "R-1")
-    await conn.execute(
-        "CREATE TABLE IF NOT EXISTS auth_users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-        "username varchar(80) NOT NULL UNIQUE, is_active boolean NOT NULL DEFAULT true)"
-    )
     monkeypatch.setattr(ops, "_DSN", DSN)
     codigo = await ops.run(["--operador", "NADIE", "--tenant", slug])
     assert codigo != 0

@@ -160,8 +160,8 @@ Event envelope fields: `event_id`, `event_type`, `version`, `tenant_slug`, `occu
 ### Database roles and migrations
 
 - The **owner** role runs migrations; services connect as the **application role** (`DB_APP_USER`) with only the grants they need. A guard test fails if a routed service connects as owner.
-- Each service's `migrations/runner.py` applies `global/` then `tenant/` SQL files, recorded in `public.schema_migrations` under a shared lock (ADR-041).
-- In Compose, each service waits on a one-shot `migrate-<service>` container; if migrations fail, the service does not start.
+- One chain in `services/docuboto/migrations/` (ADR-053): `runner.py` applies `global/` to `public` and `tenant/` to every `tenant_*` schema, recorded in `public.schema_migrations` under a shared lock (ADR-041).
+- In Compose, every service waits on the one-shot `migrate-docuboto` container; if migrations fail, the service doesn't start.
 
 ## Core modules
 
@@ -776,7 +776,7 @@ Start every estimate by naming the owning service and the guard tests the change
 **New service**
 
 - [ ] Start from `docs/templates/service-template/`.
-- [ ] Add to both compose files with its `migrate-<service>` job; the lint gate and CI matrix pick up `services/*/` automatically.
+- [ ] Add to both compose files, and its tables to the migration chain; the lint gate and CI matrix pick up `services/*/` automatically.
 
 **Architecture-level change**
 

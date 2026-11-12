@@ -379,7 +379,7 @@ async def get_aip(
     TODOS los documentos del expediente: antes estaba gateado solo por
     `require_permission("USUA_PERM_EXPEDIENTE", min_crud=1)`, que NO conoce
     el `nivel_seguridad` del expediente (storage-service no lo modela, ver
-    `migrations/tenant/004_aip.sql`) — cualquier portador del permiso con
+    `services/docuboto/migrations/tenant/310_aip.sql`) — cualquier portador del permiso con
     clearance bajo podía cosechar el inventario de un expediente CLASIFICADO
     (hallazgo de auditoría Increment B/C, RF-SEG-08). El no-read-up real
     ahora se aplica AGUAS ARRIBA, en archive-service (dueño de la

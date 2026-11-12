@@ -18,8 +18,7 @@ puede demostrar con mocks (un mock de repositorio no ejecuta el `WHERE` real)
 — solo un `WHERE` real contra Postgres prueba que el filtro es estructural y
 no delegado (por accidente u omisión) al código Python que lo consume.
 
-También cubre: la idempotencia REAL de las migraciones 031/032 (re-ejecución
-sobre un schema ya migrado) y la atomicidad marca<->asiento de
+También cubre la atomicidad marca<->asiento de
 `IndexService.renovar_worm_indice`/`TransferenciaService.renovar_worm_acta`
 contra BD real (commit conjunto).
 
@@ -32,7 +31,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -606,76 +604,3 @@ async def test_renovar_worm_aip_commits_mirror_and_audit_together(
     assert aip_row["worm_renovacion_intentos"] == 0
     assert audit_row is not None
     assert audit_row["canal"] == "system"
-
-
-# ---------------------------------------------------------------------------
-# (d) Migraciones 031/032/034 -- idempotencia REAL contra Postgres.
-# ---------------------------------------------------------------------------
-
-_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent / "migrations" / "tenant"
-_MIGRATION_031_PATH = _MIGRATIONS_DIR / "031_expediente_indice_worm_renovacion.sql"
-_MIGRATION_032_PATH = _MIGRATIONS_DIR / "032_transferencia_acta_worm_renovacion.sql"
-_MIGRATION_034_PATH = _MIGRATIONS_DIR / "034_expediente_aip_worm_renovacion.sql"
-
-
-@pytest.mark.integration
-async def test_migration_031_is_idempotent_on_real_postgres(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    slug, conn = tenant_ctx
-    schema = tenant_schema(slug)
-    sql = _MIGRATION_031_PATH.read_text(encoding="utf-8")
-
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        await conn.execute(sql)  # re-ejecución sobre el schema YA migrado por tenant_ctx
-
-    # El cableado sigue funcionando con normalidad tras la re-ejecución.
-    repo = IndexRepository(conn)
-    expediente_id, row = await _seed_expediente_indice_firmado(conn, slug, "itest migracion 031")
-    await _mark_indice_protegido(conn, slug, row["id"], retain_until=_PRONTO_A_VENCER)
-    pending = await repo.list_worm_renovacion_pending(ventana_dias=400, ct_codes=_CT_CODES, limit=50)
-    assert expediente_id in {r["expediente_id"] for r in pending}
-
-
-@pytest.mark.integration
-async def test_migration_032_is_idempotent_on_real_postgres(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    slug, conn = tenant_ctx
-    schema = tenant_schema(slug)
-    sql = _MIGRATION_032_PATH.read_text(encoding="utf-8")
-
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        await conn.execute(sql)
-
-    repo = TransferenciaRepository(conn, slug)
-    transferencia_id, _ = await _seed_acta_firmada(conn, slug, "itest migracion 032")
-    await _mark_acta_protegido(conn, slug, transferencia_id, retain_until=_PRONTO_A_VENCER)
-    pending = await repo.list_worm_renovacion_pending(ventana_dias=400, ct_codes=_CT_CODES, limit=50)
-    assert transferencia_id in {r["transferencia_id"] for r in pending}
-
-
-@pytest.mark.integration
-async def test_migration_034_is_idempotent_on_real_postgres(
-    tenant_ctx: tuple[str, asyncpg.Connection],
-) -> None:
-    """Gemelo de `test_migration_031_is_idempotent_on_real_postgres` para la
-    migración 034 (`expediente_aip.worm_retain_until`/`worm_renovacion_*`,
-    E10 debt) -- re-ejecución sobre un schema YA migrado por `tenant_ctx` no
-    revienta (`ADD COLUMN IF NOT EXISTS`/`CREATE INDEX IF NOT EXISTS`) y el
-    cableado del AIP sigue funcionando con normalidad después."""
-    slug, conn = tenant_ctx
-    schema = tenant_schema(slug)
-    sql = _MIGRATION_034_PATH.read_text(encoding="utf-8")
-
-    async with conn.transaction():
-        await conn.execute(f'SET LOCAL search_path = "{schema}"')
-        await conn.execute(sql)  # re-ejecución sobre el schema YA migrado por tenant_ctx
-
-    repo = AipRepository(conn)
-    expediente_id = await _seed_expediente_aip_empaquetado(conn, slug, "itest migracion 034")
-    await _mark_aip_protegido(conn, slug, expediente_id, retain_until=_PRONTO_A_VENCER)
-    pending = await repo.list_worm_renovacion_pending(ventana_dias=400, ct_codes=_CT_CODES, limit=50)
-    assert expediente_id in {r["expediente_id"] for r in pending}
