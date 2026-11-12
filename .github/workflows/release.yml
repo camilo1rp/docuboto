@@ -1,0 +1,148 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Software libre (AGPL v3 o posterior). Véase el archivo LICENSE.
+#
+# Lanzamientos versionados y despliegue (ADR-053 §3).
+#
+# Un tag X.Y.Z (el primero será 1.0.0):
+#   1. `ci`      — la CI completa sobre el tag (ci.yml).
+#   2. `images`  — construye cada imagen de `scripts/release.py plan` (la misma
+#                  lista que `infra/docker-compose.build.yml`) con la versión dentro,
+#                  la escanea con Trivy ANTES de subirla, la publica en GHCR y anota
+#                  su digest. Con los digests genera `release-<versión>.yml` y lo
+#                  adjunta al Release de GitHub. No se despliega por SHA suelto.
+#   3. `deploy`  — un trabajo por instalación: por SSH deja el árbol del servidor en
+#                  el tag, copia `release-<versión>.yml` a `infra/` y corre
+#                  `infra/deploy.sh`, cuyo primer paso es el respaldo: si falla, no
+#                  se despliega.
+#
+# Configuración (Settings → Environments, una por alcaldía):
+#   vars.DEPLOY_TARGETS      (repositorio) JSON con los nombres de los environments,
+#                            p. ej. ["silvania"]. Vacío o ausente: no se despliega.
+#   secrets.DEPLOY_HOST      host o IP del servidor
+#   secrets.DEPLOY_USER      usuario SSH con permiso sobre docker y DEPLOY_PATH, nada más
+#   secrets.DEPLOY_SSH_KEY   clave privada (ed25519) solo para este fin
+#   secrets.DEPLOY_KNOWN_HOSTS  la línea de known_hosts del servidor: sin ella, SSH
+#                            no se conecta (nada de StrictHostKeyChecking=no)
+#   vars.DEPLOY_PATH         raíz del clon en el servidor, p. ej. /srv/orpyca
+# Un environment puede exigir aprobación manual («Required reviewers»).
+
+name: release
+
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  images:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ github.ref_name }}
+      TRIVY_VERSION: "0.58.0"
+    outputs:
+      version: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Registro
+        run: |
+          echo "REGISTRY=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      # Escáner de imágenes (AREA-13-13), versión FIJADA; escanea la imagen
+      # exportada, así que no necesita el socket de Docker.
+      - name: Trivy
+        run: |
+          curl -sSfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin trivy
+      - name: Construir, escanear, publicar
+        run: |
+          set -euo pipefail
+          # Falla con una CRÍTICA que tenga corrección disponible ANTES del push:
+          # una imagen vulnerable no llega al registro.
+          escanear() {
+            docker save "$1" -o /tmp/imagen.tar
+            trivy image --input /tmp/imagen.tar --exit-code 1 --severity CRITICAL --ignore-unfixed --no-progress
+            rm -f /tmp/imagen.tar
+          }
+          echo '{}' > digests.json
+          python3 scripts/release.py plan > plan.jsonl
+          while IFS= read -r entrada; do
+            svc=$(jq -r .service <<<"$entrada")
+            ctx=$(jq -r .context <<<"$entrada")
+            df=$(jq -r .dockerfile <<<"$entrada")
+            target=$(jq -r .target <<<"$entrada")
+            imagen="$REGISTRY/$svc:$VERSION"
+            echo "── $svc"
+            docker build -f "$df" ${target:+--target "$target"} \
+              --build-arg "ORPYCA_VERSION=$VERSION" -t "$imagen" "$ctx"
+            escanear "$imagen"
+            docker push "$imagen"
+            digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$imagen" | cut -d@ -f2)
+            jq --arg s "$svc" --arg d "$digest" '. + {($s): $d}' digests.json > digests.tmp && mv digests.tmp digests.json
+          done < plan.jsonl
+          cat digests.json
+      - name: release-<versión>.yml
+        run: |
+          python3 scripts/release.py manifest --version "$VERSION" --registry "$REGISTRY" \
+            --digests digests.json --out "release-$VERSION.yml"
+      - name: Release de GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$VERSION" >/dev/null 2>&1 \
+            || gh release create "$VERSION" --title "$VERSION" --notes "Imágenes fijadas por digest: release-$VERSION.yml"
+          gh release upload "$VERSION" "release-$VERSION.yml" digests.json --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release-${{ github.ref_name }}.yml
+
+  deploy:
+    needs: images
+    if: ${{ vars.DEPLOY_TARGETS != '' && vars.DEPLOY_TARGETS != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        target: ${{ fromJSON(vars.DEPLOY_TARGETS || '[]') }}
+    environment: ${{ matrix.target }}
+    env:
+      VERSION: ${{ needs.images.outputs.version }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+      - name: SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+          [ -s ~/.ssh/known_hosts ] || { echo "Falta DEPLOY_KNOWN_HOSTS: no se conecta a un host sin verificar."; exit 1; }
+          cat > ~/.ssh/config <<EOF
+          Host destino
+            HostName ${{ secrets.DEPLOY_HOST }}
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+      - name: Árbol en el tag
+        run: ssh destino "cd '$DEPLOY_PATH' && git fetch --quiet --force --tags origin && git checkout --quiet --detach '$VERSION'"
+      - name: Manifiesto del lanzamiento
+        run: scp "release-$VERSION.yml" "destino:$DEPLOY_PATH/infra/release-$VERSION.yml"
+      - name: Respaldo y despliegue
+        run: ssh destino "cd '$DEPLOY_PATH' && ./infra/deploy.sh '$VERSION'"

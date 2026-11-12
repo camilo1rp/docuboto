@@ -21,7 +21,7 @@ import json
 import re
 from pathlib import Path
 
-from tests._compose import GITLAB_CI, RAIZ, cargar
+from tests._compose import AUDIT_WORKFLOW, CI_WORKFLOW, RAIZ, disparadores, guion, job
 
 _spec = importlib.util.spec_from_file_location("audit_umbral", RAIZ / "scripts" / "audit_umbral.py")
 assert _spec and _spec.loader
@@ -76,8 +76,7 @@ def test_sin_lockfiles_no_es_una_auditoria_limpia(tmp_path: Path) -> None:
 
 
 def _script_del_job(nombre: str) -> str:
-    job = cargar(GITLAB_CI)[nombre]
-    return "\n".join(str(l) for l in job["script"])
+    return guion(job(AUDIT_WORKFLOW, nombre))
 
 
 def test_el_job_de_pip_audit_no_es_fail_open() -> None:
@@ -92,31 +91,26 @@ def test_el_job_de_pip_audit_no_es_fail_open() -> None:
 
 
 def test_el_veredicto_del_umbral_es_el_codigo_de_salida_del_job() -> None:
-    """El umbral decide, pero solo si su estado llega a `exit`. Tres eslabones y cada
-    uno, roto en silencio, deja el job en verde con vulnerabilidades corregibles:
-    capturar el código (`|| status=$?`), escribirlo y salir con ÉL (no con 0)."""
-    script = _script_del_job("dependency-audit")
-    assert re.search(r"audit_umbral\.py[^\n]*\|\| status=\$\?", script), (
-        "el código de audit_umbral.py debe capturarse con `|| status=$?`, no tragarse"
-    )
-    assert 'echo "$status" > audit-status.txt' in script
-    ultima = [l for l in script.splitlines() if l.strip()][-1].strip()
-    assert ultima == 'exit "$(cat audit-status.txt)"', (
-        f"el job debe terminar con el veredicto del umbral; termina con: {ultima!r}"
-    )
-    assert "|| true" not in script, "ninguna orden del job puede tragarse su fallo"
+    """El umbral decide solo si su código de salida es el del paso. Tragárselo
+    (`|| true`, `|| status=$?` sin `exit`, `continue-on-error`) deja el trabajo en
+    verde con vulnerabilidades corregibles."""
+    pasos = job(AUDIT_WORKFLOW, "dependency-audit")["steps"]
+    umbral = [p for p in pasos if "audit_umbral.py" in str(p.get("run", ""))]
+    assert len(umbral) == 1, "un solo paso corre el umbral"
+    assert str(umbral[0]["run"]).strip().startswith("python3 scripts/audit_umbral.py")
+    assert "||" not in str(umbral[0]["run"]), "el código del umbral no se captura ni se traga"
+    assert not umbral[0].get("continue-on-error"), "el paso del umbral no puede fallar en silencio"
+    assert "|| true" not in _script_del_job("dependency-audit")
 
 
-def test_el_job_corre_tambien_en_merge_request() -> None:
-    reglas = cargar(GITLAB_CI)["dependency-audit"]["rules"]
-    assert any(r.get("if") == '$CI_PIPELINE_SOURCE == "merge_request_event"' for r in reglas)
+def test_el_job_corre_tambien_en_pull_request_y_cada_semana() -> None:
+    on = disparadores(AUDIT_WORKFLOW)
+    assert "pull_request" in on and "schedule" in on
 
 
 def test_hay_npm_audit_automatico_sobre_el_frontend() -> None:
-    job = cargar(GITLAB_CI).get("npm-audit")
-    assert job is not None, "falta el job `npm-audit`"
-    assert job["stage"] == "validate"
-    texto = "\n".join(str(l) for l in job["script"] + job.get("before_script", []))
+    trabajo = job(CI_WORKFLOW, "npm-audit")
+    texto = guion(trabajo)
     assert "npm audit" in texto and "--omit=dev" in texto and "--audit-level=high" in texto
     assert "|| true" not in texto
-    assert "when" not in (job.get("rules") or [{}])[0] or (job["rules"][0].get("when") != "manual")
+    assert "if" not in trabajo, "npm-audit corre siempre, no a petición"

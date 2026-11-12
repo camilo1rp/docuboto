@@ -31,7 +31,7 @@ GATEADO por `VERAPDF_BINARY` (mismo patrón que `RUN_INTEGRATION=1` en
 `tests/integration/`): sin esa variable, todo el módulo se salta --
 el carril normal (`docker compose run --rm --no-deps storage-service
 pytest -q`) no la define, así que este archivo es un no-op ahí. El job de
-CI dedicado (`.gitlab-ci.yml::storage-verapdf-subprocess`) SÍ la define,
+CI dedicado (`.github/workflows/ci.yml::storage-verapdf-subprocess`) SÍ la define,
 apuntando a `tests/fakes/fake_verapdf.py`.
 """
 
@@ -52,7 +52,7 @@ pytestmark = pytest.mark.skipif(
     not _BINARY_USABLE,
     reason=(
         "requiere VERAPDF_BINARY (ruta absoluta ejecutable) -- gateado igual que "
-        "RUN_INTEGRATION=1 en tests/integration/. Ver .gitlab-ci.yml::"
+        "RUN_INTEGRATION=1 en tests/integration/. Ver .github/workflows/ci.yml::"
         "storage-verapdf-subprocess, que la fija al fake de tests/fakes/fake_verapdf.py."
     ),
 )

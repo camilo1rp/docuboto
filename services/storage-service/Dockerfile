@@ -63,6 +63,9 @@ COPY services/storage-service/ .
 # —lo dice su docstring— y el de uvicorn la reponía por detrás, así que la
 # garantía escrita no se cumplía. Se apaga el de uvicorn, no el propio:
 # la traza estructurada sigue emitiéndose, sin el contenido documental.
+# La versión del lanzamiento (ADR-053 §3): la expone /health y la anota el migrador.
+ARG ORPYCA_VERSION=dev
+ENV ORPYCA_VERSION=${ORPYCA_VERSION}
 CMD ["uvicorn", "storage.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8005"]
 
 # ─── Stage: verapdf-builder (SOLO alcanzado por el target "production") ───
@@ -182,4 +185,7 @@ RUN groupadd --system orpycamcp \
     && chown -R orpycamcp:orpycamcp /app
 USER orpycamcp
 
+# La versión del lanzamiento (ADR-053 §3): la expone /health y la anota el migrador.
+ARG ORPYCA_VERSION=dev
+ENV ORPYCA_VERSION=${ORPYCA_VERSION}
 CMD ["uvicorn", "storage.main:app", "--host", "0.0.0.0", "--port", "8005"]

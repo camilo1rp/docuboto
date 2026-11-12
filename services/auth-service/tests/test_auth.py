@@ -497,7 +497,7 @@ async def test_health_es_vivacidad_y_no_llama_a_keycloak(client: AsyncClient) ->
 
     assert kc.await_count == 0
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "auth-service"}
+    assert response.json() == {"status": "ok", "service": "auth-service", "version": "dev"}
 
 
 @pytest.mark.asyncio

@@ -96,3 +96,7 @@ config.txt
 # versionarse pese a estar documentada como entregada en Fase 8 (revisión UX
 # 2026-08-02, hallazgo de higiene de repo durante el lote 1).
 /documentos/
+
+# ADR-053 §3: lanzamientos generados por release.yml y la versión desplegada (en el servidor)
+infra/release-*.yml
+infra/.deployed-version

@@ -7,7 +7,11 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""The migration runner: `global/` to `public`, `tenant/` to every `tenant_*` schema."""
+"""The migration runner: `global/` to `public`, `tenant/` to every `tenant_*` schema.
+
+After the chain it records the image's `ORPYCA_VERSION` in `public.schema_version`
+(ADR-053 §3): the version is baked in at build time, `dev` when built locally.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,15 @@ import asyncpg
 from orpycamcp_common import migrations
 
 MIGRATIONS_DIR = Path(__file__).parent
+
+RECORD_VERSION = """
+INSERT INTO public.schema_version (version) VALUES ($1)
+ON CONFLICT (version) DO UPDATE SET applied_at = now()
+"""
+
+
+def version() -> str:
+    return os.environ.get("ORPYCA_VERSION", "").strip() or "dev"
 
 
 def dsn() -> str:
@@ -35,7 +48,8 @@ async def run() -> None:
     conn = await asyncpg.connect(dsn=dsn())
     try:
         await migrations.migrate(conn, MIGRATIONS_DIR)
-        print("migrations done")
+        await conn.execute(RECORD_VERSION, version())
+        print(f"migrations done ({version()})")
     finally:
         await conn.close()
 

@@ -221,7 +221,7 @@ nano .env
 | `KEYCLOAK_HOSTNAME` | Dominio FQDN de Keycloak | `keycloak.yourdomain.com` |
 | `KEYCLOAK_ADMIN_PASSWORD` | Contraseña admin Keycloak | `<secure password>` |
 | `KEYCLOAK_*_SECRET` | Secrets de clientes OAuth2 | `<32 char hex>` |
-| `ORPYCA_REGISTRY` / `ORPYCA_TAG` | Registro de imágenes y tag inmutable a desplegar (el SHA del commit; nunca `latest`). **Obligatorias** (`:?`): sin ellas ningún comando `docker compose` arranca | `registry.example.org/orpyca` / `<sha>` |
+| `ORPYCA_REGISTRY` / `ORPYCA_VERSION` | Registro de imágenes y versión a desplegar (un tag `X.Y.Z`; nunca `latest`). **Obligatorias** (`:?`) en `docker-compose.prod.yml`; `release-<versión>.yml` ya no las usa porque fija cada imagen por digest | `ghcr.io/camilo1rp/docuboto` / `1.0.0` |
 | `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN` y el `redirect_uri` del login) | `app.yourdomain.com` |
 | `API_PUBLIC_HOSTNAME` | FQDN público del api-gateway que ve el navegador | `api.yourdomain.com` |
 | `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar. **El servicio no arranca sin ella** | `<openssl rand -base64 32>` |
@@ -431,8 +431,8 @@ reanudable: si falla a medias, volver a ejecutarlo recoge el remanente.
 
 ```bash
 # 1. Clonar repositorio
-git clone https://gitlab.com/orpyca/orfeo_mcp.git
-cd orfeo_mcp
+git clone https://github.com/camilo1rp/docuboto.git /srv/orpyca
+cd /srv/orpyca && git checkout 1.0.0
 
 # 2. Crear estructura de directorios
 mkdir -p infra/certs infra/logs
@@ -732,34 +732,50 @@ Repítelo en tu instalación al menos una vez, y después de cada actualización
 
 ## Actualización y vuelta atrás
 
-> **No existía procedimiento.** Ni sección de actualización, ni comando para migrar
-> tenants ya dados de alta —el único ejecutor es `scripts/init_tenant.py`, pensado
-> para el ALTA y con el árbol de fuentes montado—, ni tag inmutable al que volver:
-> el manifiesto construye desde el fuente en el propio servidor, así que «la versión
-> anterior» no era una cosa que existiera en ningún sitio.
+### Lanzamientos (ADR-053 §3)
 
-### Antes de nada: la versión tiene que ser una cosa
+Una versión es un **tag de git `X.Y.Z`** (el primero, `1.0.0`). Empujar el tag
+dispara `.github/workflows/release.yml`:
 
-El manifiesto de producción (`infra/docker-compose.prod.yml`) **no construye**: cada
-servicio propio arranca de `image: ${ORPYCA_REGISTRY}/<servicio>:${ORPYCA_TAG}`, y
-ambas variables son **obligatorias** (`:?`; sin ellas ningún `docker compose` arranca).
-El job `build-images` de GitLab publica `$CI_REGISTRY_IMAGE/<servicio>:$CI_COMMIT_SHA`
-(y las escanea con Trivy antes), de modo que `ORPYCA_REGISTRY=$CI_REGISTRY_IMAGE` y
-`ORPYCA_TAG=<sha>` nombran una versión que existe y a la que se puede volver. Un
-guardián (`shared/tests/test_prod_inmutable.py`) impide reintroducir un `build:` o un
-tag `latest` en el manifiesto.
+1. **CI completa** sobre el tag (`ci.yml`).
+2. **Imágenes.** Construye cada imagen de `scripts/release.py plan` —la misma lista
+   que `infra/docker-compose.build.yml`— con `ORPYCA_VERSION=<versión>` dentro, la
+   escanea con Trivy (una CRÍTICA con corrección disponible detiene todo **antes** de
+   subirla) y la publica en `ghcr.io/<propietario>/docuboto/<servicio>:<versión>`.
+3. **`release-<versión>.yml`.** Copia de `infra/docker-compose.prod.yml` con cada
+   imagen **fijada por digest** (`…:<versión>@sha256:…`), adjunta al Release de
+   GitHub. No se despliega por SHA suelto ni por tag mutable.
+4. **Despliegue**, un trabajo por instalación (ver abajo).
 
-Sin registro, se construye en el propio servidor con el override
-`infra/docker-compose.build.yml` (etiqueta cada imagen con el mismo nombre, y el SHA
-queda en el host para poder volver):
+El manifiesto de producción **no construye**: cada servicio propio arranca de
+`image: ${ORPYCA_REGISTRY}/<servicio>:${ORPYCA_VERSION}`, ambas obligatorias (`:?`).
+Un guardián (`shared/tests/test_prod_inmutable.py`) impide reintroducir un `build:` o
+`latest`; otro (`shared/tests/test_release.py`) exige que el manifiesto del lanzamiento
+fije por digest todas las imágenes.
+
+**Qué corre en esta alcaldía** es una consulta, no una suposición:
 
 ```bash
-export ORPYCA_REGISTRY=local ORPYCA_TAG=$(git rev-parse HEAD)
-docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml build
+curl -s https://<dominio>/health            # {"status":"ok","service":"docuboto","version":"1.0.0"}
+docker compose -f infra/docker-compose.prod.yml exec postgres \
+  psql -U "$DB_USER" -d "$DB_NAME" -c \
+  "SELECT version, applied_at FROM public.schema_version ORDER BY applied_at DESC LIMIT 1"
 ```
 
-`infra/DOCKER_REGISTRY.md` documenta el registro de GitLab (`build-images` en
-`.gitlab-ci.yml`); no hay pipeline de GitHub Actions en este repositorio.
+El migrador anota su versión en `public.schema_version` cada vez que corre.
+
+Las imágenes de GHCR son privadas al publicarse: hágalas públicas (el código es AGPL)
+o, en el servidor, `docker login ghcr.io` con un token de solo `read:packages`.
+
+Sin registro, se construye en el propio servidor desde el tag con el override
+`infra/docker-compose.build.yml`:
+
+```bash
+git checkout 1.0.0
+export ORPYCA_REGISTRY=local ORPYCA_VERSION=1.0.0
+docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml \
+  build --build-arg ORPYCA_VERSION=1.0.0
+```
 
 ### Migraciones al arrancar
 
@@ -781,8 +797,8 @@ cerrojo global** (`orpycamcp_common.migrations.cerrojo`, `pg_try_advisory_lock` 
 `pg_locks`). Quien no lo obtiene reintenta cada medio segundo hasta `MIGRATIONS_LOCK_TIMEOUT_S` (600 s por
 defecto); vencido el plazo sale con un error legible («otra migración tiene el cerrojo desde hace N s (pid …)»), no
 se cumple `service_completed_successfully` y **el servicio no arranca**. Repetir `up -d` o escalar réplicas es
-seguro. El paso 4 de abajo sigue siendo válido para ejecutarlas a mano **antes** de arrancar (p. ej. para ver su
-salida).
+seguro. Para verlas correr a mano **antes** de arrancar:
+`docker compose -f infra/release-<versión>.yml run --rm --no-deps migrate-docuboto`.
 
 **Desarrollo.** `docker-compose.yml` hace lo mismo: `docker compose up -d --build` construye las imágenes, corre
 `migrate-docuboto` y solo entonces arranca cada servicio. El migrador reutiliza la imagen `orpycamcp/app:dev`
@@ -798,62 +814,50 @@ docker compose build app <svc>-service \
 Si el migrador falla, el `&&` no recrea el servicio. Recrear con la **misma** imagen
 (`up -d --no-build --no-deps <svc>-service`) no necesita migrar: el migrador ya la aplicó.
 
-### Procedimiento
+### Despliegue
+
+El trabajo `deploy` de `release.yml` corre una vez por instalación: cada alcaldía es
+un *environment* de GitHub (con sus secretos, y si se quiere, aprobación manual)
+listado en la variable de repositorio `DEPLOY_TARGETS` (p. ej. `["silvania"]`). Por
+SSH, con la clave del servidor fijada en `DEPLOY_KNOWN_HOSTS`:
+
+1. deja el clon del servidor (`DEPLOY_PATH`) en el tag;
+2. copia `release-<versión>.yml` a `infra/`;
+3. corre `infra/deploy.sh <versión>`.
+
+`infra/deploy.sh` hace, en este orden:
+
+1. **Respaldo, bloqueante.** `infra/backup.sh`; cualquier salida distinta de 0
+   —incluidas 3 a 6: cadena sin anclar, retención incompleta, paquete de secretos
+   ausente o viejo— **detiene el despliegue** y deja la versión anterior.
+2. `docker compose -f infra/release-<versión>.yml pull`.
+3. `up -d`: `migrate-docuboto` corre primero y los servicios esperan a que termine
+   bien.
+4. Espera a que `/health` de `app` responda con **esa** versión y la anota en
+   `infra/.deployed-version`.
+
+El usuario SSH necesita Docker y escritura en `DEPLOY_PATH`, nada más; la clave es
+exclusiva de este uso. A mano, en el servidor, es lo mismo:
 
 ```bash
-# 1. RESPALDO VERIFICADO. No "un respaldo": uno que terminó con el sello OK.
-ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
-
-# 2. Anotar la versión actual — es a lo que se vuelve si algo sale mal.
-docker compose -f infra/docker-compose.prod.yml images | tee /srv/orpyca/version-anterior.txt
-
-# 3. Traer la nueva versión (sin arrancarla todavía).
-export ORPYCA_REGISTRY=<registro/proyecto>   # p. ej. registry.gitlab.com/grupo/orpycamcp
-export ORPYCA_TAG=<sha-del-commit>
-docker compose -f infra/docker-compose.prod.yml pull
-
-# 4. Migraciones. El runner aplica la cadena a `public` y recorre TODOS los
-#    schemas tenant_* que encuentre, así que un tenant nuevo no se queda atrás.
-#    Lo ya aplicado se salta: re-ejecutarlo es seguro.
-#    Se corren con el contenedor `migrate-docuboto` (único con la conexión del
-#    PROPIETARIO): los servicios que sirven NO llevan `MIGRATIONS_DATABASE_URL`
-#    en su entorno, de modo que un RCE o un volcado del entorno de un servicio
-#    alcanzable por el gateway no entrega el rol que puede deshabilitar el
-#    trigger de `audit_log`.
-docker compose -f infra/docker-compose.prod.yml run --rm --no-deps migrate-docuboto
-
-# 4b. Cifrar en reposo los secretos de webhooks heredados (una vez, tras la
-#    migración 009 de notification y ANTES de desplegar). Idempotente: escribe el
-#    asiento `notification.webhook.secret_cifrado` desde la aplicación y deja
-#    `secret` en NULL. `--verify` sale con error si queda algún secreto en claro.
-#    El runtime ya no lleva la conexión del propietario: se la pasa el operador
-#    solo a este contenedor de un solo uso.
-docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-  -e "MIGRATIONS_DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-  notification-service python -m app.ops.cifrar_webhook_secrets
-docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-  -e "MIGRATIONS_DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-  notification-service python -m app.ops.cifrar_webhook_secrets --verify
-
-# 5. Desplegar.
-docker compose -f infra/docker-compose.prod.yml up -d
-
-# 6. Comprobar. Los tres que cubren base, almacén e identidad a la vez:
-#    - login de un usuario real
-#    - un radicado con anexo: consultarlo y DESCARGARLO
-#    - GET /api/v1/audit/verify de un tenant
+cd /srv/orpyca && git fetch --tags && git checkout 1.0.0
+gh release download 1.0.0 -p 'release-1.0.0.yml' -D infra/   # o cópielo del Release
+./infra/deploy.sh 1.0.0
 ```
+
+Después, compruebe: el login de un usuario real, un radicado con anexo (consultarlo
+y **descargarlo**) y `GET /api/v1/audit/verify` de un tenant.
 
 ### Criterio de vuelta atrás
 
-Vuelve atrás si tras el paso 6 falla el login, la descarga de un anexo o la
-verificación de la cadena de auditoría. No esperes a "ver si se estabiliza": el
-coste de volver crece con cada radicado que entra.
+Vuelva atrás si falla el login, la descarga de un anexo o la verificación de la
+cadena de auditoría. No espere a "ver si se estabiliza": el coste de volver crece
+con cada radicado que entra. Volver es desplegar la versión anterior (su
+`release-<versión>.yml` sigue en `infra/`):
 
 ```bash
-export ORPYCA_REGISTRY=<registro/proyecto>
-export ORPYCA_TAG=<sha-anterior>
-docker compose -f infra/docker-compose.prod.yml up -d
+cat infra/.deployed-version        # la que corre ahora
+git checkout 1.0.0 && ./infra/deploy.sh 1.0.0
 ```
 
 ### Expandir, desplegar, contraer (ADR-053 §4)
@@ -1060,13 +1064,13 @@ distintos de la misma cabecera dan un comportamiento que depende del navegador.
 ### Auditoría de seguridad
 
 `docker scan` está **retirado** del CLI de Docker. El pipeline escanea con
-[Trivy](https://trivy.dev) cada imagen propia en el job `build-images`, **antes** de
+[Trivy](https://trivy.dev) cada imagen propia en el trabajo `images` de `release.yml`, **antes** de
 publicarla: falla con una vulnerabilidad `CRITICAL` que tenga corrección disponible
 (`--ignore-unfixed`), así que una imagen vulnerable no llega al registro. A mano, con
-el tag inmutable por SHA (nunca `latest`):
+la versión (nunca `latest`):
 
 ```bash
-trivy image --severity CRITICAL --ignore-unfixed "$ORPYCA_REGISTRY/api-gateway:$ORPYCA_TAG"
+trivy image --severity CRITICAL --ignore-unfixed "$ORPYCA_REGISTRY/app:$ORPYCA_VERSION"
 trivy image --severity CRITICAL --ignore-unfixed postgres:15-bookworm
 ```
 

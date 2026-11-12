@@ -20,7 +20,6 @@ run alongside the others. Disk cannot be read from the manifest.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 

@@ -478,7 +478,7 @@ async def test_health_es_vivacidad_y_no_abre_conexiones(client: AsyncClient) -> 
         assert smtp.call_count == 0, "la vivacidad no abre SMTP"
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "notification-service"}
+    assert response.json() == {"status": "ok", "service": "notification-service", "version": "dev"}
 
 
 

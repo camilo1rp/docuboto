@@ -1007,7 +1007,7 @@ async def test_health_check(
     """
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "archive-service"}
+    assert response.json() == {"status": "ok", "service": "archive-service", "version": "dev"}
 
 
 @pytest.mark.asyncio

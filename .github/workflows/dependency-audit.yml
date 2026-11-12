@@ -1,0 +1,54 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Software libre (AGPL v3 o posterior). Véase el archivo LICENSE.
+#
+# Auditoría de dependencias Python (AREA-13-14): semanal y en cada PR.
+#
+# Fail-CLOSED y con umbral DETERMINISTA. `pip-audit` sale 0 (limpio) o 1 (hay
+# vulnerabilidades, legítimo); cualquier otro código es un fallo de la
+# herramienta que detiene el trabajo. `scripts/audit_umbral.py` exige un informe
+# válido por lockfile y falla si hay una vulnerabilidad con corrección
+# disponible. Nadie más decide si el trabajo falla.
+
+name: dependency-audit
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --quiet pip-audit
+      # Sin `-r`, pip-audit audita el entorno del propio trabajo: se auditan los
+      # `.lock`, que es lo que instalan los Dockerfile.
+      - name: pip-audit
+        run: |
+          set -u
+          for lock in services/*/requirements*.lock; do
+            id="$(basename "$(dirname "$lock")")-$(basename "$lock" .lock)"
+            echo "── auditando $id"
+            set +e
+            pip-audit -r "$lock" --format json --output "audit-$id.json"
+            rc=$?
+            set -e
+            [ $rc -le 1 ] || { echo "pip-audit falló (código $rc) en $id"; exit $rc; }
+          done
+      - name: Umbral
+        run: python3 scripts/audit_umbral.py . services/*/requirements*.lock
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-audit
+          path: |
+            audit.json
+            audit-*.json

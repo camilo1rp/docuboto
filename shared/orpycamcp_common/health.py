@@ -40,6 +40,7 @@ atiende el incidente.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -63,9 +64,17 @@ async def check(nombre: str, sonda: Callable[[], Awaitable[Any]]) -> str:
     return ESTADO_OK
 
 
+def version() -> str:
+    """La versión de la imagen (ADR-053 §3): `ORPYCA_VERSION` se fija al construirla."""
+    return os.environ.get("ORPYCA_VERSION", "").strip() or "dev"
+
+
 def liveness(service: str) -> dict[str, str]:
-    """Cuerpo de la sonda de vivacidad. Sin dependencias, por definición."""
-    return {"status": "ok", "service": service}
+    """Cuerpo de la sonda de vivacidad. Sin dependencias, por definición.
+
+    Lleva la versión: «qué corre en esta alcaldía» es un `curl`, no una suposición.
+    """
+    return {"status": "ok", "service": service, "version": version()}
 
 
 async def consumer_report(

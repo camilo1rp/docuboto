@@ -49,7 +49,7 @@ async def test_health_es_vivacidad_y_no_toca_nada() -> None:
         assert pool.call_count == 0
 
     assert respuesta.status_code == 200
-    assert respuesta.json() == {"status": "ok", "service": "knowledge-service"}
+    assert respuesta.json() == {"status": "ok", "service": "knowledge-service", "version": "dev"}
 
 
 async def test_ready_comprueba_la_base() -> None:

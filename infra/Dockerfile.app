@@ -60,4 +60,7 @@ COPY --chown=orpycamcp:orpycamcp services/storage-service/schemas/ /app/schemas/
 
 # `--no-access-log`: el registro de acceso de uvicorn incluye la CADENA DE
 # CONSULTA. El middleware propio la omite; el de uvicorn la reponía.
+# La versión del lanzamiento (ADR-053 §3): la expone /health y la anota el migrador.
+ARG ORPYCA_VERSION=dev
+ENV ORPYCA_VERSION=${ORPYCA_VERSION}
 CMD ["uvicorn", "docuboto.main:app", "--no-access-log", "--host", "0.0.0.0", "--port", "8000"]

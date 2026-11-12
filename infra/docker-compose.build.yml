@@ -10,14 +10,18 @@
 # OrpycaMCP — construir las imágenes de producción en el propio servidor.
 #
 # Override OPCIONAL de infra/docker-compose.prod.yml (AREA-13-09). La producción
-# arranca de imágenes inmutables por SHA publicadas por CI; este fichero solo
-# existe para quien no tiene registro y construye localmente:
+# arranca de las imágenes de un lanzamiento, fijadas por digest en
+# `release-<versión>.yml` (ADR-053 §3). Este fichero es también la lista de qué
+# se construye y con qué contexto: `scripts/release.py plan` la lee para
+# `release.yml`. A mano, sin registro, desde el tag:
 #
-#   export ORPYCA_REGISTRY=local ORPYCA_TAG=$(git rev-parse HEAD)
-#   docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml build
+#   git checkout 1.0.0
+#   export ORPYCA_REGISTRY=local ORPYCA_VERSION=1.0.0
+#   docker compose -f infra/docker-compose.prod.yml -f infra/docker-compose.build.yml \
+#     build --build-arg ORPYCA_VERSION=1.0.0
 #
-# `build` etiqueta cada imagen con el `image:` del manifiesto, así que el tag SHA
-# queda en el host y `ORPYCA_TAG=<sha-anterior> up -d` sigue pudiendo volver.
+# `build` etiqueta cada imagen con el `image:` del manifiesto y la versión queda
+# dentro (la expone /health); `ORPYCA_VERSION=<anterior> up -d` sigue pudiendo volver.
 
 services:
   app:
