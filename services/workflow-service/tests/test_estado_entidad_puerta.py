@@ -68,6 +68,7 @@ def _fila(status: str = "active", prov: str = "active", schema: bool = True) -> 
 
 def _request(conn: _Conn, cabeceras: dict[str, str]) -> SimpleNamespace:
     return SimpleNamespace(
+        state=SimpleNamespace(),
         headers=cabeceras, app=SimpleNamespace(state=SimpleNamespace(db_pool=_Pool(conn)))
     )
 

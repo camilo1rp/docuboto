@@ -31,6 +31,11 @@ import { RADICADO_ESTADO_LABEL, RADICADO_ESTADO_CHIP } from "./radicado.js";
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const SERVICIO = resolve(AQUI, "../../../../services/document-service");
+// ADR-053: las migraciones viven juntas en `services/docuboto/migrations`.
+const MIGRACION = resolve(
+  AQUI,
+  "../../../../services/docuboto/migrations/tenant/210_radicados.sql",
+);
 
 function archivos(dir) {
   /** @type {string[]} */
@@ -43,7 +48,7 @@ function archivos(dir) {
     if (entrada.isDirectory()) {
       if (entrada.name === "__pycache__") continue;
       salida.push(...archivos(ruta));
-    } else if (entrada.isFile() && (ruta.endsWith(".py") || ruta.endsWith(".sql"))) {
+    } else if (entrada.isFile() && ruta.endsWith(".py")) {
       salida.push(ruta);
     }
   }
@@ -68,11 +73,14 @@ function estadosDelBackend() {
     for (const m of fuente.matchAll(/UPDATE\s+radicados\b([\s\S]{0,400}?)(?:;|"|'\s*\))/gi)) {
       for (const s of m[1].matchAll(/status\s*=\s*'([a-z_]+)'/gi)) encontrados.add(s[1]);
     }
-    if (ruta.endsWith("001_create_documents.sql")) {
-      const m = fuente.match(/status\s+VARCHAR\(\d+\)[^\n]*DEFAULT\s+'([a-z_]+)'/i);
-      if (m) encontrados.add(m[1]);
-    }
   }
+  // El DEFAULT y el CHECK de la migración que crea la tabla: el CHECK es la
+  // lista cerrada de estados que la columna admite.
+  const ddl = readFileSync(MIGRACION, "utf8");
+  const def = ddl.match(/status\s+character varying\(\d+\)\s+DEFAULT\s+'([a-z_]+)'/i);
+  if (def) encontrados.add(def[1]);
+  const check = ddl.match(/radicados_status_check\s+CHECK\s*\(([^\n]*)/i);
+  if (check) for (const s of check[1].matchAll(/'([a-z_]+)'/g)) encontrados.add(s[1]);
   return encontrados;
 }
 

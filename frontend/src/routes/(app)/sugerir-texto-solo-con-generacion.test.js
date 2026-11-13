@@ -109,6 +109,8 @@ describe("vistas — el botón obedece a generationAvailable", () => {
         },
       },
     });
+    // Radicar abre en «¿documento o formulario?»: el formulario lleva a Tipo.
+    await fireEvent.click(screen.getByRole("button", { name: /Llenar el formulario/i }));
     await fireEvent.click(screen.getByRole("radio", { name: /Salida/i }));
     await fireEvent.click(screen.getByRole("button", { name: "Siguiente" }));
     // El editor del cuerpo marca que estamos en el paso donde vive el botón.

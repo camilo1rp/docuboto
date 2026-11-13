@@ -60,6 +60,7 @@ class _Pool:
 
 def _request(pool: _Pool) -> SimpleNamespace:
     return SimpleNamespace(
+        state=SimpleNamespace(),
         headers={"X-Tenant-Slug": "demo"},
         app=SimpleNamespace(state=SimpleNamespace(db_pool=pool)),
     )

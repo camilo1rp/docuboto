@@ -619,7 +619,9 @@ async def test_proteger_indice_internal_rejects_without_token(client_with_conn) 
         headers=TENANT_HEADERS,  # sin X-Internal-Token
     )
 
-    assert resp.status_code == 401
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
     mock_conn.fetchrow.assert_not_called()
 
 

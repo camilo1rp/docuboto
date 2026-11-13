@@ -28,12 +28,25 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import asyncpg
+import pytest
 import pytest_asyncio
 from orpycamcp_common import migrations
 
 from auth.core.database import tenant_schema
 
 RUN_INTEGRATION = os.environ.get("RUN_INTEGRATION") == "1"
+_INTEGRATION_DIR = Path(__file__).resolve().parent
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Gate: sin `RUN_INTEGRATION=1`, marca skip SOLO los tests de este directorio."""
+    if RUN_INTEGRATION:
+        return
+    saltar = pytest.mark.skip(reason="integration tests require RUN_INTEGRATION=1 and a live Postgres")
+    for item in items:
+        if _INTEGRATION_DIR in Path(str(item.fspath)).parents:
+            item.add_marker(saltar)
 
 
 #: The single migration chain of the repo (ADR-053).

@@ -32,6 +32,14 @@ import pytest_asyncio
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
+from tests.integration.conftest import (
+    add_user_to_dependencia,
+    grant_clearance,
+    insert_dependencia,
+    insert_radicado,
+    insert_user,
+    set_security_level,
+)
 from workflow.core.database import get_db_conn, tenant_schema
 from workflow.main import app
 from workflow.schemas.workflow import FlowStepComplete, FlowStepCreate, TransactionRequest
@@ -40,14 +48,6 @@ from workflow.services.workflow_service import (
     TransactionError,
     WorkflowService,
     YaDistribuidoError,
-)
-from tests.integration.conftest import (
-    add_user_to_dependencia,
-    grant_clearance,
-    insert_dependencia,
-    insert_radicado,
-    insert_user,
-    set_security_level,
 )
 
 pytestmark = pytest.mark.integration

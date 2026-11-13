@@ -1175,9 +1175,11 @@ class DocumentService:
                         "No hay calendario para calcular los días hábiles.",
                         502,
                     )
-                nueva = await self._tenant_client.calculate_due_date(
+                desde = _dia_de_radicacion(fila["registered_at"])
+                assert desde is not None  # registered_at es NOT NULL
+                nueva: date | None = await self._tenant_client.calculate_due_date(
                     tenant_slug=self._slug,
-                    from_date=_dia_de_radicacion(fila["registered_at"]),
+                    from_date=desde,
                     business_days=business_days,
                 )
             else:

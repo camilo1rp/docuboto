@@ -1243,8 +1243,10 @@ async def test_internal_totp_status_requires_internal_token(
         )
     finally:
         _clear()
-    assert resp.status_code == 401
-    assert bad.status_code in (401, 403)
+    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
+    assert bad.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -1323,7 +1325,7 @@ async def test_internal_verify_invalid_code_does_not_attribute_an_owner(
 
 
 @pytest.mark.asyncio
-async def test_internal_verify_without_internal_token_returns_401(
+async def test_internal_verify_without_internal_token_returns_404(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     validate = AsyncMock(return_value={"user_id": "kc-sub", "tenant_slug": "demo"})
@@ -1335,9 +1337,10 @@ async def test_internal_verify_without_internal_token_returns_401(
             json={"code": "123456"},
             headers={"Authorization": "Bearer faketoken"},
         )
-        assert resp.status_code == 401
-        assert resp.json()["detail"]["error"] == "missing_internal_token"
-        validate.assert_not_called()  # el gate precede a cualquier trabajo
+        # El middleware oculta la ruta interna antes de cualquier gate.
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "route_not_found"
+        validate.assert_not_called()
     finally:
         _clear()
 

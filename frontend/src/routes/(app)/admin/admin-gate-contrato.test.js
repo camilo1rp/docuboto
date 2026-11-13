@@ -16,7 +16,7 @@
  * routers) que nadie cruzaba. Este guardián las cruza leyendo la FUENTE de ambos
  * lados — no una fixture — así que no puede envejecer.
  *
- * Lee `services/*\/app/routers/*.py` (ver `$lib/guardianes/gatesFastapi.js`) y los
+ * Lee `services/*\/<paquete>/routers/*.py` (ver `$lib/guardianes/gatesFastapi.js`) y los
  * `+page.server.js` / `+server.js` de cada área (ver `frontAdminEndpoints.js`); las
  * reglas viven en `contratoAdmin.js`. Patrón de `pinar/pinar-paridad.test.js`.
  *
@@ -126,12 +126,17 @@ function walk(dir, pred) {
 function rutasBackend() {
   const out = [];
   for (const svc of readdirSync(SERVICIOS, { withFileTypes: true })) {
-    const dir = join(SERVICIOS, svc.name, "app", "routers");
-    if (!svc.isDirectory() || !existsSync(dir)) continue;
-    for (const f of readdirSync(dir).filter((n) => n.endsWith(".py"))) {
-      out.push(
-        ...extraerRutasFastapi(readFileSync(join(dir, f), "utf8"), `${svc.name}/app/routers/${f}`),
-      );
+    if (!svc.isDirectory()) continue;
+    // El paquete Python de cada servicio se llama como su carpeta (`archive/`,
+    // `tenant/`…); api-gateway y mcp-server siguen en `app/`. Se busca el
+    // `routers/` de cualquier paquete en vez de fijar el nombre.
+    for (const pkg of readdirSync(join(SERVICIOS, svc.name), { withFileTypes: true })) {
+      const dir = join(SERVICIOS, svc.name, pkg.name, "routers");
+      if (!pkg.isDirectory() || pkg.name === "tests" || !existsSync(dir)) continue;
+      for (const f of readdirSync(dir).filter((n) => n.endsWith(".py"))) {
+        const rel = `${svc.name}/${pkg.name}/routers/${f}`;
+        out.push(...extraerRutasFastapi(readFileSync(join(dir, f), "utf8"), rel));
+      }
     }
   }
   return out;

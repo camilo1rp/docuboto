@@ -630,8 +630,7 @@
     etPublicable = !!tipo.publicable;
     etPublicableOriginal = !!tipo.publicable;
     etMetadataTemplate = tipo.metadata_template ?? "";
-    etPlazo =
-      tipo.default_response_days == null ? "" : String(tipo.default_response_days);
+    etPlazo = tipo.default_response_days == null ? "" : String(tipo.default_response_days);
     etPlazoError = "";
     etActivo = tipo.activo !== false;
     tipoEditOpen = true;

@@ -177,7 +177,7 @@ _CUERPO = {
 
 
 @pytest.mark.asyncio
-async def test_post_evento_internal_sin_token_es_401_y_con_otro_403(
+async def test_post_evento_internal_sin_token_es_404_y_con_otro_403(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
@@ -187,7 +187,10 @@ async def test_post_evento_internal_sin_token_es_401_y_con_otro_403(
         _POST, json=_CUERPO, headers={**TENANT_HEADERS, "X-Internal-Token": "otro"}
     )
 
-    assert sin.status_code == 401
+    # Sin token, una ruta `-internal` no existe para el llamante: el middleware de
+    # identidad responde 404 antes de llegar al gate (ver `orpycamcp_common.usuario`).
+    assert sin.status_code == 404
+    assert sin.json()["error"] == "route_not_found"
     assert mal.status_code == 403
     mock_conn.fetchrow.assert_not_called()
 

@@ -45,9 +45,9 @@ con qué número es de `DocumentService`.
 from __future__ import annotations
 
 import asyncio
-import calendar
 import imaplib
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -70,13 +70,12 @@ def _internaldate(respuesta: bytes) -> datetime | None:
     marca = imaplib.Internaldate2tuple(respuesta)
     if marca is None:
         return None
-    # `Internaldate2tuple` devuelve una tupla en hora local; se normaliza a UTC,
-    # que es como el sistema almacena y compara todas las fechas.
-    # `calendar.timegm` y no `time.mktime`: la tupla ya viene normalizada a UTC
-    # por `Internaldate2tuple`, así que interpretarla como hora local
-    # desplazaría la fecha de recibo tantas horas como el huso del servidor —
-    # y en Colombia son cinco, suficientes para cambiar el día de un plazo.
-    return datetime.fromtimestamp(calendar.timegm(marca), tz=UTC)
+    # `Internaldate2tuple` devuelve una tupla en hora LOCAL (`time.localtime`);
+    # se normaliza a UTC, que es como el sistema almacena y compara las fechas.
+    # `time.mktime` y no `calendar.timegm`: leer esa tupla como UTC desplazaría
+    # la fecha de recibo tantas horas como el huso del servidor — y en Colombia
+    # son cinco, suficientes para cambiar el día de un plazo.
+    return datetime.fromtimestamp(time.mktime(marca), tz=UTC)
 
 
 class ErrorDeCorreo(RuntimeError):

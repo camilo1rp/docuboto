@@ -206,7 +206,7 @@ async def run() -> None:
         ultima = time.monotonic() - RECLAIM_INTERVAL
         while True:
             try:
-                messages = await redis.xreadgroup(
+                messages: Any = await redis.xreadgroup(
                     GROUP,
                     CONSUMER,
                     {stream: ">" for stream in STREAMS},
@@ -222,11 +222,11 @@ async def run() -> None:
                 await asyncio.sleep(5)
                 messages = []
 
-            for stream, entries in messages or []:
+            for flujo, entries in messages or []:
                 for msg_id, data in entries:
                     try:
                         await _handle(data, cliente)
-                        await redis.xack(stream, GROUP, msg_id)
+                        await redis.xack(flujo, GROUP, msg_id)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:

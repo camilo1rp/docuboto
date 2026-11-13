@@ -332,7 +332,7 @@ async def test_create_limita_el_origen_de_la_salida_a_las_dependencias_del_actor
 def test_las_puertas_de_salida_delegan_en_create_y_el_borrador_no_duplica() -> None:
     from pathlib import Path
 
-    raiz = Path(__file__).parents[1] / "app/services"
+    raiz = Path(__file__).parents[1] / "document/services"
     assert "origen_fuera_de_sus_dependencias" not in (raiz / "borrador_service.py").read_text()
     assert "origen_fuera_de_sus_dependencias" in (raiz / "document_service.py").read_text()
     # Respuesta rápida pasa por `create` con el actor.
@@ -420,8 +420,14 @@ async def test_metadata_invalida_falla_antes_de_renderizar_y_subir(
     client_with_conn, monkeypatch
 ) -> None:
     """El 422 llega ANTES de `_producir` (render + subida): ningún binario huérfano."""
+    from document.clients import signature_client
     from document.services import borrador_service as svc
     from document.services.metadata_service import MetadataValidationError
+    from tests.test_borradores import _sin_circuito
+
+    # `radicar` consulta antes si hay un circuito abierto; sin signature-service
+    # en el carril unitario respondería 503 en vez del 422 que se mide.
+    monkeypatch.setattr(signature_client, "get_estado_circuito", _sin_circuito)
 
     async def _minimos(self, row, registered_by, datos=None):
         return "Oficio", 1, 1

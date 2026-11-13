@@ -48,7 +48,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
-from workflow.repositories.workflow_repository import _holder_condition, _nivel_poseedor_condition
 from tests.conftest import (
     RADICADO_ID,
     STEP_ID,
@@ -59,6 +58,7 @@ from tests.conftest import (
     make_event_record,
     make_step_record,
 )
+from workflow.repositories.workflow_repository import _holder_condition, _nivel_poseedor_condition
 
 _ASSIGN_PAYLOAD = {
     "radicado_id": str(RADICADO_ID),

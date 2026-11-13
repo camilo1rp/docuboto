@@ -97,8 +97,7 @@
       declaracion_requerida: "Falta la declaración del administrador.",
       declaracion_incompleta: "La declaración no nombra lo que declara el proveedor.",
       bandera_apagada: "Encienda la capa de conocimiento antes de usar el proveedor.",
-      politica_no_publicada:
-        "Publique la política de tratamiento de datos antes de transmitir.",
+      politica_no_publicada: "Publique la política de tratamiento de datos antes de transmitir.",
       capacidades_no_disponibles: "No se pudo leer la declaración del proveedor.",
       capacidades_invalidas: "La declaración del proveedor no se pudo comprobar.",
       declaracion_distinta:
@@ -241,7 +240,7 @@
           enabled
             ? `${ETIQUETA_NIVEL[nivel]} queda habilitada.`
             : `${ETIQUETA_NIVEL[nivel]} queda deshabilitada ` +
-              "y se pidió el borrado de lo transmitido.",
+                "y se pidió el borrado de lo transmitido.",
         );
       }
       cerrar();
@@ -356,7 +355,14 @@
           Sin esa declaración no puede pasar al proveedor ni habilitar un nivel.
         </p>
       {:else if data.capabilities?.provider}
-        <div class="intel__scroll">
+        <!-- Técnica WCAG SCR29: región desplazable alcanzable con teclado (WCAG 2.1.1). -->
+        <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+        <div
+          class="op-table-scroll"
+          role="region"
+          aria-label="Subencargados y ruta de cada nivel"
+          tabindex="0"
+        >
           <table class="intel__rutas">
             <caption>Subencargados y ruta de cada nivel, según la declaración firmada.</caption>
             <thead>
@@ -458,8 +464,8 @@
                 <p>El proveedor no declara la ruta de {ETIQUETA_NIVEL[nivel]}.</p>
               {:else if !admitida}
                 <p>
-                  La ruta {etiquetaHosting(fila.hosting)} conserva o entrena con los datos. No se
-                  puede habilitar.
+                  La ruta {etiquetaHosting(fila.hosting)} conserva o entrena con los datos. No se puede
+                  habilitar.
                 </p>
               {:else if habilitado(nivel)}
                 {#if config.suspended}
@@ -541,8 +547,8 @@
     <p>Se pide el borrado de todo lo que el proveedor conserva de esta entidad.</p>
   {:else if dialogo === "nivel"}
     <p>
-      {ETIQUETA_NIVEL[nivelPendiente ?? 0]} deja de transmitirse y se ordena el borrado de lo ya
-      enviado de ese nivel.
+      {ETIQUETA_NIVEL[nivelPendiente ?? 0]} deja de transmitirse y se ordena el borrado de lo ya enviado
+      de ese nivel.
     </p>
   {/if}
   <svelte:fragment slot="footer">
@@ -622,11 +628,6 @@
     &__hint {
       font-size: var(--op-font-sm);
       overflow-wrap: anywhere;
-    }
-
-    &__scroll {
-      overflow-x: auto;
-      max-width: 100%;
     }
 
     &__rutas {

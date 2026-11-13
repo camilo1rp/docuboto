@@ -102,7 +102,8 @@ async def test_sin_token_no_se_responde(client_with_conn, monkeypatch) -> None:
 
     resp = await client.get(f"{_RUTA}/{uuid.uuid4()}", headers=_headers(token=None))
 
-    assert resp.status_code in (401, 403)
+    # Sin token, el middleware de identidad no anuncia la ruta interna.
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

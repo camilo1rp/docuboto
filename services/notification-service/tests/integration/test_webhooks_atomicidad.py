@@ -21,9 +21,9 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 from notification.routers import webhooks as router
 from notification.schemas.webhook import WebhookCreate
+from tests.integration.conftest import drop_tenant_schema, provision_tenant_schema
 
 pytestmark = [
     pytest.mark.integration,

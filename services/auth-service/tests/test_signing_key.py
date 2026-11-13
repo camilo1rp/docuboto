@@ -711,7 +711,9 @@ async def test_activate_requires_internal_token(client: AsyncClient) -> None:
         )
     finally:
         _clear()
-    assert resp.status_code == 401
+    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -756,7 +758,9 @@ async def test_internal_status_requires_internal_token(client: AsyncClient) -> N
         )
     finally:
         _clear()
-    assert resp.status_code == 401
+    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -978,7 +982,9 @@ async def test_sign_digest_requires_internal_token(client: AsyncClient) -> None:
         )
     finally:
         _clear()
-    assert resp.status_code == 401
+    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio
@@ -1545,7 +1551,9 @@ async def test_revocation_status_requires_internal_token(client: AsyncClient) ->
         )
     finally:
         _clear()
-    assert resp.status_code == 401
+    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 # ---------------------------------------------------------------------------

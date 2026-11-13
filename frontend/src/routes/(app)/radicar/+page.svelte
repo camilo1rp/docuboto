@@ -32,6 +32,7 @@
   import { goto } from "$app/navigation";
   import { onDestroy } from "svelte";
   import { opcionesSerieTrd } from "$lib/utils/trd.js";
+  import { vigilarInactividad } from "$lib/utils/inactividad.js";
   import { formatearFechaHora } from "$lib/utils/fecha.js";
   import { dndzone } from "svelte-dnd-action";
   import { permissions, puedeConsultarConocimiento } from "$lib/stores/auth.js";
@@ -233,7 +234,38 @@
   $: unmarkEdited("response_days", responseDays);
   $: unmarkEdited("observations", observations);
 
-  onDestroy(() => detenerPoll());
+  // Cada sondeo renueva la sesión de Keycloak: sin interacción real se para, y
+  // al volver se retoma si la ingesta seguía en curso.
+  const INACTIVIDAD_MS = 5 * 60 * 1000;
+  let sondeoPausado = false;
+  const dejarDeVigilarInactividad =
+    typeof window === "undefined"
+      ? () => {}
+      : vigilarInactividad({
+          msSinActividad: INACTIVIDAD_MS,
+          alInactivo: () => {
+            if (pollTimer) {
+              detenerPoll();
+              sondeoPausado = true;
+            }
+          },
+          alActivo: () => {
+            if (!sondeoPausado) return;
+            sondeoPausado = false;
+            iniciarPoll();
+            void consultarEstado();
+          },
+        });
+
+  onDestroy(() => {
+    dejarDeVigilarInactividad();
+    detenerPoll();
+  });
+
+  function iniciarPoll() {
+    detenerPoll();
+    pollTimer = setInterval(() => void consultarEstado(), 2000);
+  }
 
   function detenerPoll() {
     if (pollTimer) {
@@ -466,8 +498,8 @@
       stagingRef = body.staging_ref;
       fileRef = body.file_ref;
       ingestState = "received";
-      detenerPoll();
-      pollTimer = setInterval(() => void consultarEstado(), 2000);
+      sondeoPausado = false;
+      iniciarPoll();
       await consultarEstado();
     } catch (err) {
       ingestState = "failed";

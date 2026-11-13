@@ -19,7 +19,7 @@
 
 import { json } from "@sveltejs/kit";
 import { API_V1 } from "$lib/utils/config.server.js";
-import { mensajeError } from "$lib/utils/apiError.js";
+import { codigoError, mensajeError } from "$lib/utils/apiError.js";
 
 /** @type {import('./$types').RequestHandler} */
 export async function POST({ locals, params, request }) {
@@ -112,7 +112,7 @@ export async function POST({ locals, params, request }) {
     if (!res.ok) {
       return json(
         {
-          error: data.error ?? "error",
+          error: codigoError(data) ?? "error",
           detail: mensajeError(data, "No se pudo corregir el vencimiento."),
         },
         { status: res.status },

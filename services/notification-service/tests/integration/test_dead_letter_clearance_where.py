@@ -30,13 +30,13 @@ import pytest
 import pytest_asyncio
 from orpycamcp_common.deadletter import RadicadosAusenteError
 
+from notification.repositories.dead_letter_repository import DeadLetterRepository
 from tests.integration.conftest import (
     drop_tenant_schema,
     insert_radicado,
     provision_tenant_schema,
     set_security_level,
 )
-from notification.repositories.dead_letter_repository import DeadLetterRepository
 
 pytestmark = [
     pytest.mark.integration,

@@ -194,9 +194,7 @@ describe("radicar/api/rag/antecedentes POST", () => {
       ) {
         return new Response(JSON.stringify({ doc_class: "CDP" }), { status: 200 });
       }
-      if (
-        calledUrl === "http://app:8000/api/v1/documents/by-tracking/2024-ICETEX-E-000002"
-      ) {
+      if (calledUrl === "http://app:8000/api/v1/documents/by-tracking/2024-ICETEX-E-000002") {
         return new Response(JSON.stringify({ doc_class: "CDP" }), { status: 200 });
       }
       throw new Error(`URL inesperada: ${calledUrl}`);

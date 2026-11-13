@@ -70,6 +70,7 @@ def _request(
     conn: _Conn, cabeceras: dict[str, str], *, metodo: str = "GET", ruta: str = "/api/v1/storage/files"
 ) -> SimpleNamespace:
     return SimpleNamespace(
+        state=SimpleNamespace(),
         headers=cabeceras, method=metodo, scope={"path": ruta},
         app=SimpleNamespace(state=SimpleNamespace(db_pool=_Pool(conn))),
     )

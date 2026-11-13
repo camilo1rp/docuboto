@@ -133,7 +133,7 @@ def muestras_de(
 
 def _sumar_entero(acumulado: int, valor: object) -> int:
     try:
-        numero = int(valor)  # type: ignore[arg-type]
+        numero = int(valor)  # type: ignore[call-overload]
     except (TypeError, ValueError) as exc:
         raise MetricaInvalida(f"valor no entero: {valor!r}") from exc
     if numero < 0:

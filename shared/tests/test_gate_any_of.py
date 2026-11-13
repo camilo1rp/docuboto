@@ -23,6 +23,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common import rbac
+from orpycamcp_common.usuario import instalar_inyector
 
 
 def _app(concedidos: set[str]) -> tuple[FastAPI, AsyncMock]:
@@ -44,6 +45,7 @@ def _app(concedidos: set[str]) -> tuple[FastAPI, AsyncMock]:
     async def x() -> dict[str, bool]:
         return {"ok": True}
 
+    instalar_inyector(app)  # X-User-Id → request.state.usuario, como el middleware real
     return app, conn
 
 

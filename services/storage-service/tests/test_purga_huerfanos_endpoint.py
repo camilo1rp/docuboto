@@ -42,7 +42,9 @@ def _cuerpo(file_ids, **extra):
 async def test_sin_token_interno_no_se_borra_nada(client) -> None:
     with patch("storage.services.storage_service.StorageService.purge_orphan", AsyncMock()) as p:
         resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=TENANT_HEADERS)
-    assert resp.status_code in (401, 403)
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
     p.assert_not_awaited()
 
 

@@ -31,6 +31,7 @@ from archive.core.config import settings
 
 _SIG = "tok-firma"
 _STO = "tok-storage"
+_BEARER = "Bearer jwt-del-llamante"
 
 
 @pytest.fixture
@@ -54,8 +55,19 @@ def capturadas(monkeypatch):
     return peticiones
 
 
+@pytest.fixture
+def con_llamante():
+    """La petición en curso trae el JWT del humano: es lo que `cabeceras_internas`
+    reenvía como identidad (ya no hay `X-User-Id` entre servicios)."""
+    from orpycamcp_common.usuario import _autorizacion
+
+    marca = _autorizacion.set(_BEARER)
+    yield
+    _autorizacion.reset(marca)
+
+
 @pytest.mark.asyncio
-async def test_sign_xml_lleva_token_interno_e_identidad(capturadas) -> None:
+async def test_sign_xml_lleva_token_interno_e_identidad(capturadas, con_llamante) -> None:
     await signature_client.sign_xml(
         tenant_slug="demo", actor_id="u", payload_xml="<x/>",
         objeto_id="e", indice_id="i", version=1,
@@ -63,7 +75,8 @@ async def test_sign_xml_lleva_token_interno_e_identidad(capturadas) -> None:
     req = capturadas[-1]
     assert req.url.path.endswith("/sign-xml")
     assert req.headers["X-Internal-Token"] == _SIG
-    assert "X-User-Id" in req.headers
+    assert req.headers["Authorization"] == _BEARER
+    assert "X-User-Id" not in req.headers
 
 
 @pytest.mark.asyncio
@@ -134,7 +147,9 @@ async def test_sign_indice_internal_lleva_token(capturadas) -> None:
 
 
 @pytest.mark.asyncio
-async def test_fijar_legal_hold_lleva_token_identidad_y_va_a_la_ruta_interna(capturadas) -> None:
+async def test_fijar_legal_hold_lleva_token_identidad_y_va_a_la_ruta_interna(
+    capturadas, con_llamante
+) -> None:
     with pytest.raises(storage_client.StorageLegalHoldError):
         await storage_client.fijar_legal_hold(
             tenant_slug="demo",
@@ -147,16 +162,20 @@ async def test_fijar_legal_hold_lleva_token_identidad_y_va_a_la_ruta_interna(cap
     (req,) = capturadas
     assert req.url.path == "/api/v1/preservacion/legal-hold-internal/fijar"
     assert req.headers["x-internal-token"] == _STO
-    assert "x-user-id" in req.headers and "x-tenant-slug" in req.headers
+    assert req.headers["authorization"] == _BEARER and "x-tenant-slug" in req.headers
+    assert "x-user-id" not in req.headers
     cuerpo = json.loads(req.content)
     assert cuerpo["acta_ref"] == "A-1" and cuerpo["motivo_tipo"] == "judicial"
     assert "activo" not in cuerpo  # el booleano por objeto ya no existe (ADR-043)
 
 
 @pytest.mark.asyncio
-async def test_hold_de_sistema_va_sin_identidad_humana_pero_con_token(capturadas) -> None:
-    """`valoracion_pendiente` es un acto de SISTEMA: sin `X-User-Id` (storage lo atribuye a
-    SISTEMA) pero con el token interno. Mutación: mandar un actor inventado -> rojo."""
+async def test_hold_de_sistema_va_sin_identidad_humana_pero_con_token(
+    capturadas, con_llamante
+) -> None:
+    """`valoracion_pendiente` es un acto de SISTEMA: sin identidad humana (storage lo
+    atribuye a SISTEMA) aunque la petición en curso traiga un JWT, pero con el token
+    interno. Mutación: reenviar el `Authorization` del llamante -> rojo."""
     with pytest.raises(storage_client.StorageLegalHoldError):
         await storage_client.fijar_legal_hold(
             tenant_slug="demo",
@@ -168,7 +187,7 @@ async def test_hold_de_sistema_va_sin_identidad_humana_pero_con_token(capturadas
         )
     (req,) = capturadas
     assert req.headers["x-internal-token"] == _STO
-    assert "x-user-id" not in req.headers
+    assert "authorization" not in req.headers
 
 
 @pytest.mark.asyncio

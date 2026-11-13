@@ -389,7 +389,9 @@ async def test_ruta_exige_token_interno(client_with_conn) -> None:
         "firma_id": str(uuid.uuid4()), "ordinal": 1,
     }
     r = await client.post("/api/v1/preservacion/aip-reempaquetar-internal", json=body, headers=TENANT_HEADERS)
-    assert r.status_code in (401, 403)
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert r.status_code == 404
+    assert r.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio

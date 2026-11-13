@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { plantillaMetadatos } from "./plantillaMetadatos.js";
 
 const AQUI = dirname(fileURLToPath(import.meta.url));
-const FUENTE = resolve(AQUI, "../../../../services/document-service/app/schemas/metadata.py");
+const FUENTE = resolve(AQUI, "../../../../services/document-service/document/schemas/metadata.py");
 
 function camposDe(clase) {
   const src = readFileSync(FUENTE, "utf8");

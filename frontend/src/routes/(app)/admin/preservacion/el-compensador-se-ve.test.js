@@ -37,7 +37,7 @@ const CABECERA = "X-Sellado-Diferido-Count";
 
 describe("el recuento del compensador llega hasta la pantalla", () => {
   it("archive-service lo emite", () => {
-    const fuente = leer("../services/archive-service/app/routers/indice.py");
+    const fuente = leer("../services/archive-service/archive/routers/indice.py");
     expect(fuente).toContain(CABECERA);
     expect(fuente).toContain("count_sellado_diferido");
   });

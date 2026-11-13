@@ -37,7 +37,10 @@ from httpx import AsyncClient
 from storage.core import config as cfg_module
 from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.schemas.preservacion import AipResponse
-from storage.services.preservation_worm_service import FixityMismatchError, PreservationDisabledError
+from storage.services.preservation_worm_service import (
+    FixityMismatchError,
+    PreservationDisabledError,
+)
 from tests.conftest import TENANT_HEADERS, TENANT_SLUG, TEST_INTERNAL_TOKEN
 
 _PATH = "/api/v1/preservacion/aip-internal"
@@ -82,15 +85,16 @@ def _fake_aip_response(aip_id: uuid.UUID | None = None) -> AipResponse:
 
 
 @pytest.mark.asyncio
-async def test_without_token_is_401(
+async def test_without_token_is_404(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, _mock_conn, _mock_minio = client_with_conn
 
     resp = await client.post(_PATH, json=_payload(), headers=TENANT_HEADERS)
 
-    assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "missing_internal_token"
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio

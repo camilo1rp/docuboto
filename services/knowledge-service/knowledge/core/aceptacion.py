@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeGuard
 
 from knowledge.core import paso
 from knowledge.core.config import settings
@@ -135,8 +135,8 @@ def rutas_de(normal: dict[str, Any], habilitados: Iterable[int]) -> list[dict[st
     for fila in rutas:
         if not isinstance(fila, dict):
             return []
-        numero = _NIVELES.get(fila.get("level"))
-        if numero not in permitidos:
+        nivel = _NIVELES.get(str(fila.get("level")))
+        if nivel is None or nivel not in permitidos:
             continue
         alias = fila.get("model_aliases")
         sub_ids = fila.get("subprocessors")
@@ -153,7 +153,7 @@ def rutas_de(normal: dict[str, Any], habilitados: Iterable[int]) -> list[dict[st
             subencargados.append({"id": sid, "name": nombre})
         salida.append(
             {
-                "level": numero,
+                "level": nivel,
                 "hosting": hosting,
                 "model_aliases": list(alias),
                 "subprocessors": subencargados,
@@ -239,7 +239,7 @@ def _ruta(fila: Any, ids: set[str], vistos: set[str]) -> dict[str, Any] | None:
     }
 
 
-def _texto(valor: Any, tope: int) -> bool:
+def _texto(valor: Any, tope: int) -> TypeGuard[str]:
     return isinstance(valor, str) and 1 <= len(valor) <= tope and valor.strip() == valor
 
 

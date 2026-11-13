@@ -16,7 +16,7 @@ import { PARAMS_ADMITIDOS, clavesPorCrear } from "./paramsAdmitidos.js";
 // `process.getBuiltinModule`: `node:fs` resuelve al sustituto del navegador bajo Vitest.
 const { readFileSync } = process.getBuiltinModule("fs");
 
-const PY = readFileSync("../services/tenant-service/app/routers/config.py", "utf-8");
+const PY = readFileSync("../services/tenant-service/tenant/routers/config.py", "utf-8");
 
 function leerAllowlist(fuente) {
   const m = fuente.match(/PARAMS_ADMITIDOS[^=]*=\s*frozenset\(\{([\s\S]*?)\}\)/);

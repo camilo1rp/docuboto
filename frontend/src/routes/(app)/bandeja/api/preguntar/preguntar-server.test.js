@@ -50,8 +50,8 @@ describe("bandeja/api/preguntar", () => {
   });
 
   it("manda query, record_ref y top_k, y nada más", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ answer: null }), { status: 200 }),
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ answer: null }), { status: 200 }),
     );
     globalThis.fetch = fetchMock;
     await POST({
@@ -78,8 +78,8 @@ describe("bandeja/api/preguntar", () => {
 
 describe("bandeja/api/preguntar/transmision", () => {
   it("reenvía la lectura de la ruta sin cuerpo", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ transmits: false }), { status: 200 }),
+    const fetchMock = vi.fn(
+      async () => new Response(JSON.stringify({ transmits: false }), { status: 200 }),
     );
     globalThis.fetch = fetchMock;
     const res = await GET({ locals: SESSION });

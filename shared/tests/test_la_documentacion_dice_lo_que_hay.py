@@ -140,6 +140,7 @@ _SOLO_EN_ESPANOL: dict[str, str] = {
     "adr/": "las decisiones de arquitectura se escriben y se razonan en español",
     "historia/": "archivo de las cadenas de migraciones anteriores a ADR-053; no se ejecuta",
     "mcp-flujos.md": "censo interno de cobertura del MCP; se regenera con scripts/censo_mcp.py",
+    "plan-brechas-silvania.md": "plan interno de backend para las brechas de operación de Silvania",
     "plan-pruebas.md": "plan de pruebas del proyecto, de uso interno",
     "politica-tratamiento-plantilla.md": "plantilla legal colombiana (Ley 1581) que adapta cada entidad",
 }

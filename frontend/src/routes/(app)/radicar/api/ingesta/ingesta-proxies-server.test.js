@@ -164,8 +164,7 @@ describe("radicar/api/ingesta/[ref]", () => {
   it("GET consulta el estado con la referencia escapada", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ ingest_state: "indexed" }), { status: 200 }),
+      async () => new Response(JSON.stringify({ ingest_state: "indexed" }), { status: 200 }),
     );
     globalThis.fetch = fetchMock;
     try {

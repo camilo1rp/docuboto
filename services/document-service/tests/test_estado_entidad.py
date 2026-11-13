@@ -66,6 +66,7 @@ def _request(
     cabeceras: dict[str, str] | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
+        state=SimpleNamespace(),
         headers={"X-Tenant-Slug": "demo", **(cabeceras or {})},
         method=metodo,
         scope={"path": ruta},

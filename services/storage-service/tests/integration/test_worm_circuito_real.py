@@ -50,7 +50,10 @@ import storage.services.preservation_worm_service as worm_module
 import storage.services.storage_service as storage_module
 from storage.core.minio_client import ObjectLockNotEnabledError
 from storage.schemas.preservacion import ProtegerIndiceRequest, RenovarRetencionRequest
-from storage.services.preservation_worm_service import PreservationWormService, preservation_bucket_name
+from storage.services.preservation_worm_service import (
+    PreservationWormService,
+    preservation_bucket_name,
+)
 from storage.services.storage_service import StorageService, WormLockActiveError
 
 from .test_worm_object_lock_real_s3 import _endpoint

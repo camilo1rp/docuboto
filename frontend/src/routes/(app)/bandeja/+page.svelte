@@ -1131,17 +1131,14 @@
     else cuerpo.business_days = Number(dias);
     plazoLoading = true;
     try {
-      const res = await fetch(
-        `/bandeja/api/${encodeURIComponent(selectedDoc.id)}/due-date`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(cuerpo),
-        },
-      );
+      const res = await fetch(`/bandeja/api/${encodeURIComponent(selectedDoc.id)}/due-date`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cuerpo),
+      });
       const result = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(result.detail || "No se pudo corregir el vencimiento.");
+        notifyError(mensajeError(result, "No se pudo corregir el vencimiento."));
         return;
       }
       selectedDoc = { ...selectedDoc, due_date: result.due_date };

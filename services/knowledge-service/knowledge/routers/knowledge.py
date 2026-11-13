@@ -39,7 +39,7 @@ from knowledge.core.salida_http import transporte_de_consulta
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 
 #: Etiqueta de origen de todo lo que responde el respaldo sin proveedor.
-LOCAL_INDEX = "local_index"
+LOCAL_INDEX: Literal["local_index"] = "local_index"
 
 
 class SearchRequest(BaseModel):

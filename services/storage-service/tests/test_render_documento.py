@@ -225,7 +225,9 @@ class TestEndpointSellado:
             json={"cuerpo_html": "<p>x</p>", "pagina": {}},
             headers=TENANT_HEADERS,
         )
-        assert resp.status_code in (401, 403)
+        # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+        assert resp.status_code == 404
+        assert resp.json()["error"] == "route_not_found"
 
     @pytest.mark.asyncio
     async def test_sin_renderizador_responde_503_y_lo_dice(self, client, monkeypatch) -> None:

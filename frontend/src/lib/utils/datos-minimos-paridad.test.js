@@ -10,7 +10,7 @@
 /**
  * Guardián: la regla de datos mínimos del front es la del backend.
  *
- * `REQUERIDOS_POR_TIPO` vive en `services/document-service/app/core/datos_minimos.py`
+ * `REQUERIDOS_POR_TIPO` vive en `services/document-service/document/core/datos_minimos.py`
  * (fuente única). Si alguien cambia allí un campo y no aquí, la pantalla ofrecería
  * «Radicar» ante un 422 (o lo negaría ante un 201). Dos listas escritas aparte
  * divergen: este test las cruza leyendo la del backend.
@@ -20,7 +20,7 @@ import { REQUERIDOS_POR_TIPO, faltantes } from "./datosMinimos.js";
 // `process.getBuiltinModule`: `node:fs` resuelve al sustituto del navegador bajo Vitest.
 const { readFileSync } = process.getBuiltinModule("fs");
 
-const PY = readFileSync("../services/document-service/app/core/datos_minimos.py", "utf-8");
+const PY = readFileSync("../services/document-service/document/core/datos_minimos.py", "utf-8");
 
 /** Extrae `{tipo: [campos]}` del literal Python (sin ejecutarlo). */
 function leerDiccionarioPython(fuente) {

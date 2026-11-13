@@ -28,7 +28,10 @@ import pytest
 import pytest_asyncio
 
 from notification.services import devolucion
-from notification.services.devolucion import build_devolucion_notifications, resolver_contexto_devolucion
+from notification.services.devolucion import (
+    build_devolucion_notifications,
+    resolver_contexto_devolucion,
+)
 
 pytestmark = [
     pytest.mark.integration,

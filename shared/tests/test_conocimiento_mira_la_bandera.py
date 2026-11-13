@@ -115,6 +115,15 @@ def test_toda_ruta_de_knowledge_mira_la_bandera_y_las_de_consulta_el_permiso() -
     assert sin_permiso_knowledge(fuente) == []
 
 
+def test_la_ingesta_de_radicacion_mira_la_bandera_y_pide_radicar() -> None:
+    """La ingesta de preparación sale al proveedor: bandera del asistente y PERM_RADI."""
+    fuente = (KNOWLEDGE.parent / "ingesta.py").read_text()
+    assert len(_rutas(fuente)) >= 4, "el censo de rutas de ingesta se vació"
+    assert sin_bandera_knowledge(fuente) == []
+    assert sin_permiso_knowledge(fuente) == []
+    assert "PERM_RADI" in fuente
+
+
 def test_ninguna_otra_ruta_de_consulta_de_knowledge_queda_fuera() -> None:
     """Un router nuevo de consulta en el servicio tiene que decidir su postura aquí."""
     routers = {p.name for p in KNOWLEDGE.parent.glob("*.py")} - {"__init__.py"}
@@ -124,6 +133,7 @@ def test_ninguna_otra_ruta_de_consulta_de_knowledge_queda_fuera() -> None:
         "retorno.py",
         "metrics.py",
         "inteligencia.py",
+        "ingesta.py",
     }, (
         f"routers nuevos en knowledge-service: {sorted(routers)}. Si consultan la base de "
         "conocimiento deben llevar require_asistente_habilitado + PERM_CONOCIMIENTO; añádelo "

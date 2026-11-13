@@ -49,8 +49,21 @@ export function exigidosProveedor(vista) {
 }
 
 /**
- * @param {{routing?: {level: string}[]} | null | undefined} vista
+ * Una ruta de la declaración del proveedor: qué hace con los datos de un nivel.
+ * @typedef {{
+ *   level: string,
+ *   hosting: string,
+ *   model_aliases: string[],
+ *   subprocessors?: string[],
+ *   prompt_and_output_retention?: string,
+ *   trains_on_customer_data?: boolean,
+ * }} RutaNivel
+ */
+
+/**
+ * @param {{routing?: RutaNivel[]} | null | undefined} vista
  * @param {number} nivel
+ * @returns {RutaNivel | null}
  */
 export function filaDe(vista, nivel) {
   const codigo = CODIGO[nivel];
@@ -59,7 +72,7 @@ export function filaDe(vista, nivel) {
 }
 
 /**
- * @param {{subprocessors?: {id: string, name: string}[], routing?: object[]}} vista
+ * @param {{subprocessors?: {id: string, name: string}[], routing?: RutaNivel[]}} vista
  * @param {number} nivel
  * @returns {string[] | null}
  */
@@ -95,7 +108,7 @@ export function declaracionProveedor(vista) {
 }
 
 /**
- * @param {{subprocessors?: {id: string, name: string}[], routing?: object[]}} vista
+ * @param {{subprocessors?: {id: string, name: string}[], routing?: RutaNivel[]}} vista
  * @param {number} nivel
  */
 export function declaracionNivel(vista, nivel) {

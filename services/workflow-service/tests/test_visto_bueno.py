@@ -17,8 +17,8 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from workflow.core.database import tenant_schema
 from tests.conftest import TENANT_HEADERS
+from workflow.core.database import tenant_schema
 
 NOW = datetime.now(tz=UTC)
 

@@ -51,6 +51,6 @@ describe("/ — landing pública", () => {
   it("incluye las seis tarjetas de características", () => {
     render(LandingPage);
     expect(screen.getByText("Radicación E/S/I")).toBeInTheDocument();
-    expect(screen.getByText("IA / capa MCP")).toBeInTheDocument();
+    expect(screen.getByText("Capa MCP")).toBeInTheDocument();
   });
 });

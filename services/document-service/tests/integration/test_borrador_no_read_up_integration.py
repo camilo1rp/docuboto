@@ -23,13 +23,12 @@ import pytest
 from fastapi import HTTPException
 
 from document.core.database import tenant_schema
+from document.schemas.borrador import BorradorRadicar
+from tests.integration import conftest as ic
 
 pytestmark = pytest.mark.integration
 
 #: Ac. AGN 060/2001 §5.2: el borrador no guarda tipo ni dependencias; se aportan al radicar.
-from document.schemas.borrador import BorradorRadicar  # noqa: E402
-from tests.integration import conftest as ic
-
 _DATOS = BorradorRadicar(tipo_documental="Oficio", origin_dept_code=1, dest_dept_code=1)
 
 # Quien radicó el padre y creó los borradores: tiene el radicado (sin pasos de

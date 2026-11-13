@@ -31,7 +31,6 @@ import pytest
 from archive.core.database import tenant_schema
 from archive.repositories.fisico_repository import FisicoRepository
 
-
 pytestmark = pytest.mark.integration
 
 

@@ -51,7 +51,9 @@ def _storage(monkeypatch, *, huella=HUELLA, error=None) -> AsyncMock:
 @pytest.mark.asyncio
 async def test_sin_token_o_con_token_malo_no_entra(client_with_conn) -> None:
     client, conn = client_with_conn
-    assert (await client.get(_PATH, headers={"X-Tenant-Slug": TENANT_SLUG})).status_code == 401
+    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware
+    # de identidad responde 404 antes de cualquier gate.
+    assert (await client.get(_PATH, headers={"X-Tenant-Slug": TENANT_SLUG})).status_code == 404
     assert (
         await client.get(_PATH, headers={**HEADERS, "X-Internal-Token": "otro"})
     ).status_code == 403

@@ -41,7 +41,7 @@ import {
 const AQUI = dirname(fileURLToPath(import.meta.url));
 const SERVICIO = resolve(
   AQUI,
-  "../../../../services/archive-service/app/services/transferencia_service.py",
+  "../../../../services/archive-service/archive/services/transferencia_service.py",
 );
 
 /** `_VALID` del servicio, leído del fuente. */

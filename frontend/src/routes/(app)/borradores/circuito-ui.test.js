@@ -111,7 +111,10 @@ describe("el panel lee el contrato REAL de signature-service", () => {
   // `firmado_at`, y la respuesta tratada como lista— y el panel salía
   // «turno 1 de 0» con el circuito perfectamente creado en la base de datos.
   // El contrato de un servicio se lee, no se supone.
-  const ESQUEMA = readFileSync("../services/signature-service/app/schemas/cadena.py", "utf-8");
+  const ESQUEMA = readFileSync(
+    "../services/signature-service/signature/schemas/cadena.py",
+    "utf-8",
+  );
 
   /** Campos declarados en una clase Pydantic del esquema real. */
   function camposDe(clase) {

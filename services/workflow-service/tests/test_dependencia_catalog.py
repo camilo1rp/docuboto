@@ -33,8 +33,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from workflow.models.flow import FlowStep
 from tests.conftest import RADICADO_ID, TENANT_HEADERS, TRACKING_NUMBER, make_step_record
+from workflow.models.flow import FlowStep
 
 _ASSIGN_PAYLOAD = {
     "radicado_id": str(RADICADO_ID),

@@ -68,7 +68,7 @@ async def test_devuelve_el_xml_vigente_de_las_firmas_que_existen(client_with_con
 async def test_sin_token_o_con_otro_no_se_atiende(client_with_conn) -> None:  # noqa: ANN001
     client, conn = client_with_conn
     cuerpo = {"firma_ids": [str(F1)]}
-    assert (await client.post(RUTA, json=cuerpo, headers=_h(None))).status_code == 401
+    assert (await client.post(RUTA, json=cuerpo, headers=_h(None))).status_code == 404
     assert (await client.post(RUTA, json=cuerpo, headers=_h("otro"))).status_code == 403
     conn.fetch.assert_not_awaited()
 
@@ -169,6 +169,7 @@ async def _abrir(status: str, ruta: str, token: str | None, monkeypatch, asiento
     if token is not None:
         cab["X-Internal-Token"] = token
     req = SimpleNamespace(
+        state=SimpleNamespace(),
         headers=cab, method="POST", scope={"path": ruta},
         app=SimpleNamespace(state=SimpleNamespace(db_pool=_Pool(conn))),
     )

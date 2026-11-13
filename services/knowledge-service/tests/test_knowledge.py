@@ -23,7 +23,7 @@ import pytest
 
 from knowledge.clients import document_search
 from knowledge.routers.knowledge import ANTECEDENTES_ADVISORY
-from tests.conftest import TENANT_HEADERS, USER_ID
+from tests.conftest import TENANT_HEADERS
 
 pytestmark = pytest.mark.asyncio
 
@@ -83,7 +83,7 @@ async def test_search_consulta_document_service_como_el_usuario(client_with_conn
     resp = await client.post(
         "/api/v1/knowledge/search",
         json={"query": "contrato obra", "top_k": 7},
-        headers={**TENANT_HEADERS, "X-Canal": "ui"},
+        headers={**TENANT_HEADERS, "Authorization": "Bearer jwt-del-usuario"},
     )
 
     assert resp.status_code == 200, resp.text
@@ -100,9 +100,10 @@ async def test_search_consulta_document_service_como_el_usuario(client_with_conn
     assert req.url.path == "/api/v1/search"
     assert req.url.params["q"] == "contrato obra"
     assert req.url.params["size"] == "7"
-    assert req.headers["X-User-Id"] == USER_ID
+    # Como el usuario: viaja su Bearer, no una cabecera de identidad que nadie firma.
+    assert req.headers["Authorization"] == "Bearer jwt-del-usuario"
+    assert "X-User-Id" not in req.headers
     assert req.headers["X-Tenant-Slug"] == "demo"
-    assert req.headers["X-Canal"] == "ui"
 
 
 @pytest.mark.parametrize("respuesta", [httpx.Response(500), httpx.Response(200, json={"x": 1})])

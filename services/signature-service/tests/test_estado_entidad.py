@@ -60,6 +60,7 @@ class _Pool:
 
 def _request(pool: _Pool) -> SimpleNamespace:
     return SimpleNamespace(
+        state=SimpleNamespace(),
         headers={"X-Tenant-Slug": "demo"},
         method="POST",
         scope={"path": "/api/v1/signature/verify"},

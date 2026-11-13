@@ -868,7 +868,9 @@ async def test_artefacto_del_sistema_exige_token_interno(
         headers=TENANT_HEADERS,  # sin X-Internal-Token
     )
 
-    assert response.status_code in (401, 403)
+    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
+    assert response.status_code == 404
+    assert response.json()["error"] == "route_not_found"
     mock_minio.put_object.assert_not_awaited()
 
 

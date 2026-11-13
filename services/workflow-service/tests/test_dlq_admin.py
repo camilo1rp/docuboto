@@ -18,11 +18,14 @@ tenant mismatch (422).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.usuario import Usuario
 
+from tests.conftest import TENANT_HEADERS, USER_ID
 from workflow.core.clearance import (
     get_actor,
 )
@@ -30,7 +33,6 @@ from workflow.core.constants import DLQ_GROUP
 from workflow.repositories.dead_letter_repository import (
     DeadLetterRepository,
 )
-from tests.conftest import TENANT_HEADERS, USER_ID
 
 BASE = "/api/v1/workflow/admin/deadletter"
 EVT = "eeeeeeee-0000-0000-0000-000000000001"
@@ -158,19 +160,20 @@ async def test_list_missing_user_id_returns_403(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_get_actor_missing_header_raises_401() -> None:
-    """``get_actor`` en aislamiento: sin X-User-Id, 401 explícito (la rama que
-    en el listado queda ensombrecida por el 403 de ``require_permission``)."""
+    """``get_actor`` en aislamiento: sin persona en la petición, 401 explícito (la
+    rama que en el listado queda ensombrecida por el 403 de ``require_permission``)."""
     request = MagicMock()
-    request.headers = {}
+    request.state = SimpleNamespace(usuario=None)
     with pytest.raises(HTTPException) as exc:
         await get_actor(request)
     assert exc.value.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_get_actor_invalid_uuid_raises_401() -> None:
+async def test_get_actor_without_user_id_raises_401() -> None:
+    """Un llamante sin `auth_users.id` (cuenta interna, sin persona) tampoco es actor."""
     request = MagicMock()
-    request.headers = {"X-User-Id": "not-a-uuid"}
+    request.state = SimpleNamespace(usuario=Usuario(id=None, tenant_slug="demo"))
     with pytest.raises(HTTPException) as exc:
         await get_actor(request)
     assert exc.value.status_code == 401
@@ -179,7 +182,7 @@ async def test_get_actor_invalid_uuid_raises_401() -> None:
 @pytest.mark.asyncio
 async def test_get_actor_valid_uuid_returns_it() -> None:
     request = MagicMock()
-    request.headers = {"X-User-Id": str(USER_ID)}
+    request.state = SimpleNamespace(usuario=Usuario(id=USER_ID, tenant_slug="demo"))
     assert await get_actor(request) == USER_ID
 
 

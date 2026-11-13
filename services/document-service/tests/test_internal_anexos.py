@@ -52,7 +52,7 @@ def _internal_token_configured(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_without_token_is_401(client_with_conn) -> None:
+async def test_without_token_is_404(client_with_conn) -> None:
     client, _mock_conn = client_with_conn
 
     resp = await client.post(
@@ -61,8 +61,10 @@ async def test_without_token_is_401(client_with_conn) -> None:
         headers={"X-Tenant-Slug": TENANT_SLUG},  # sin X-Internal-Token
     )
 
-    assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "missing_internal_token"
+    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware
+    # de identidad responde 404 antes de cualquier gate.
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio

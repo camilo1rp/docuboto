@@ -747,6 +747,10 @@ dispara `.github/workflows/release.yml`:
    GitHub. No se despliega por SHA suelto ni por tag mutable.
 4. **Despliegue**, un trabajo por instalación (ver abajo).
 
+Sin minutos de Actions, `./scripts/ci-local.sh all` corre los mismos trabajos de
+`ci.yml` en local (uv, Docker y Node 22) y deja un PASS/FAIL por trabajo en
+`$TMPDIR/docuboto-ci-local/results.txt`. Es un espejo de `ci.yml`, no lo sustituye.
+
 El manifiesto de producción **no construye**: cada servicio propio arranca de
 `image: ${ORPYCA_REGISTRY}/<servicio>:${ORPYCA_VERSION}`, ambas obligatorias (`:?`).
 Un guardián (`shared/tests/test_prod_inmutable.py`) impide reintroducir un `build:` o

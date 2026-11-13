@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from workflow.services.distribution import auto_distribute
 from tests.conftest import RADICADO_ID, TRACKING_NUMBER, make_step_record
+from workflow.services.distribution import auto_distribute
 
 NOW = datetime.now(tz=UTC)
 

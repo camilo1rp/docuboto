@@ -161,7 +161,7 @@ async def test_sin_radicado_no_queda_ficha_huerfana(tenant_ctx) -> None:
     slug, conn = await _entorno(tenant_ctx)
     from document.services.document_service import DocumentService
 
-    async def _falla(self, radicado, actor):
+    async def _falla(self, radicado, actor, payload=None):
         raise RuntimeError("falla después de crear la ficha")
 
     with patch.object(DocumentService, "_encolar_created", _falla):

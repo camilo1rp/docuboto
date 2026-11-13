@@ -94,19 +94,17 @@ def test_the_release_file_refuses_what_it_cannot_pin(version: str, digests: dict
 
 
 def test_orpyca_tag_is_gone() -> None:
-    sitios = [
-        RAIZ / "infra",
-        RAIZ / "shared" / "tests",
-        RAIZ / ".github",
-        RAIZ / "docs" / "es" / "deployment.md",
-        RAIZ / "docs" / "en" / "deployment.md",
+    # Solo lo versionado: los .pyc y demás restos de una corrida no cuentan.
+    versionados = subprocess.run(
+        ["git", "ls-files", "infra", "shared/tests", ".github", "docs/es/deployment.md", "docs/en/deployment.md"],
+        cwd=RAIZ, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert versionados, "git ls-files no devolvió nada"
+    hallados = [
+        rel for rel in versionados
+        if rel != "shared/tests/test_release.py"
+        and "ORPYCA_TAG" in (RAIZ / rel).read_text(encoding="utf-8", errors="ignore")
     ]
-    hallados = []
-    for sitio in sitios:
-        for f in [sitio] if sitio.is_file() else sitio.rglob("*"):
-            if f.is_file() and f != RAIZ / "shared" / "tests" / "test_release.py":
-                if "ORPYCA_TAG" in f.read_text(encoding="utf-8", errors="ignore"):
-                    hallados.append(f.relative_to(RAIZ).as_posix())
     assert hallados == []
     assert not (RAIZ / ".gitlab-ci.yml").exists(), "CI vive en .github/workflows (ADR-053 §3)"
 
