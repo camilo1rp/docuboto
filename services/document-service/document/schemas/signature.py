@@ -17,12 +17,12 @@ electrónica verificable vive en signature-service.
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, Field
 
 #: ADR-054 §1: el mismo vocabulario que signature-service (`FirmaResponse.kind`).
-SIMPLE_SIGNATURE_RECORD = "simple_signature_record"
+SIMPLE_SIGNATURE_RECORD: Final = "simple_signature_record"
 
 
 class SignatureCreate(BaseModel):
