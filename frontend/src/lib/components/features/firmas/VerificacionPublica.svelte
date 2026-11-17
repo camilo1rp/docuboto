@@ -99,7 +99,7 @@
           </div>
           <div>
             <dt>Firmante</dt>
-            <dd>{verificacion.firmante ?? "No consta en el catálogo de usuarios"}</dd>
+            <dd>{verificacion.firmante_nombre ?? "No consta en el catálogo de usuarios"}</dd>
           </div>
           <div>
             <dt>Firmado en</dt>

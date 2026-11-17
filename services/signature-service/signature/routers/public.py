@@ -138,7 +138,7 @@ async def verificar_publica(
     comun = {
         "firma_id": row["id"],
         "kind": signature_kind(row["provider"]),
-        "firmante": row.get("firmante_nombre"),
+        "firmante_nombre": row.get("firmante_nombre"),
         "firmado_en": row["sello_tiempo"],
         "huella_documento": await _huella_documento(conn, row),
         "constancia": f"/api/v1/signature/firmas/{row['id']}",

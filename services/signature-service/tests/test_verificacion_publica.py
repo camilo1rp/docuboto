@@ -110,7 +110,7 @@ async def test_firma_xades_valida_sin_devolver_el_documento(publico) -> None:
     assert "<indice" not in resp.text and xml[:40] not in resp.text
     assert set(body) == {
         "firma_id", "kind", "valida", "firma_criptograficamente_valida", "revocacion_status",
-        "motivo", "nivel", "firmante", "firmado_en", "sello_tiempo", "huella_documento",
+        "motivo", "nivel", "firmante_nombre", "firmado_en", "sello_tiempo", "huella_documento",
         "acreditado", "constancia",
     }
 

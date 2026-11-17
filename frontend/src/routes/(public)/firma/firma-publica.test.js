@@ -35,7 +35,7 @@ const ELECTRONICA = {
   revocacion_status: "vigente",
   motivo: null,
   nivel: "XAdES-T",
-  firmante: "Ana Pérez",
+  firmante_nombre: "Ana Pérez",
   firmado_en: "2026-11-07T17:00:00Z",
   sello_tiempo: "2026-11-07T17:00:03Z",
   huella_documento: "sha256:" + "a".repeat(64),

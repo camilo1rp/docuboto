@@ -406,7 +406,9 @@ class PublicSignatureVerification(BaseModel):
     revocacion_status: str | None = None
     motivo: str | None = None
     nivel: str | None = None
-    firmante: str | None = None
+    # El NOMBRE de quien firmó, resuelto al leer (como `FirmaResponse.firmante_nombre`);
+    # `None` si el firmante no es un usuario del catálogo (sello del sistema).
+    firmante_nombre: str | None = None
     firmado_en: datetime
     sello_tiempo: datetime | None = None
     huella_documento: str

@@ -480,7 +480,7 @@
  * @property {string|null}   [revocacion_status]
  * @property {string|null}   [motivo]
  * @property {string|null}   [nivel]
- * @property {string|null}   [firmante]
+ * @property {string|null}   [firmante_nombre]
  * @property {string}        firmado_en
  * @property {string|null}   [sello_tiempo]
  * @property {string}        huella_documento
