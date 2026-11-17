@@ -25,7 +25,7 @@ docker compose --profile dev up -d
 docker compose ps
 ```
 
-To join a local provider over PPI, add `-f docker-compose.intelligence.yml` and set `PPI_PROVIDER_URL`. The start order, the `ppi` network, and the first **Inteligencia** / **Preguntar** check live in the provider's `docs/runbooks/local-dev.md` (section "Join a local Docuboto").
+To join a local provider over PPI, add `-f docker-compose.intelligence.yml` (it only adds `app` to the `ppi` network) and set `PPI_PROVIDER_URL`: with it set, the ingestion consumer starts in the app's lifespan; empty, no call leaves. The start order, the `ppi` network, and the first **Inteligencia** check live in the provider's `docs/runbooks/local-dev.md` (section "Join a local Docuboto").
 
 ## Access URLs
 
@@ -228,7 +228,7 @@ or rejected first.
 
 ### Search knowledge (full-text fallback, ADR-046)
 
-> **The knowledge layer is opt-in per entity (ADR-037).** New entities are born with it **off**: the entity administrator (`USUA_PERM_ADMIN` level 3) switches it on in **/admin/parametros** (or with `PUT /api/v1/config/asistente {"habilitado": true}`); until then knowledge routes answer `403 asistente_deshabilitado`. Each person also needs the **`PERM_CONOCIMIENTO`** permission (level 1 queries), granted per group in **/admin/grupos**. Docuboto does not call language models: `/search` and `/antecedentes` reuse document-service full-text search; `/rag` answers `503 rag_unavailable` until a PPI provider is configured.
+> **The knowledge layer is opt-in per entity (ADR-037).** New entities are born with it **off**: the entity administrator (`USUA_PERM_ADMIN` level 3) switches it on in **/admin/parametros** (or with `PUT /api/v1/config/asistente {"habilitado": true}`); until then knowledge routes answer `403 asistente_deshabilitado`. Each person also needs the **`PERM_CONOCIMIENTO`** permission (level 1 queries), granted per group in **/admin/grupos**. Docuboto does not call language models: `/search` and `/antecedentes` reuse document-service full-text search and, when the entity is on `ppi`, are delegated to the provider. There is no generation route.
 
 ```bash
 curl -X POST 'http://localhost:19080/api/v1/knowledge/search' \

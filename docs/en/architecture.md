@@ -29,7 +29,6 @@ graph TB
         WF["workflow-service"]
         NOT["notification-service"]
         SIG["signature-service"]
-        MCP["mcp-server"]
         KNO["knowledge-service"]
     end
 
@@ -50,7 +49,6 @@ graph TB
     GW --> WF
     GW --> NOT
     GW --> SIG
-    GW --> MCP
     GW --> KNO
 
     AUTH --> KC
@@ -69,15 +67,20 @@ graph TB
     SIG --> REDIS
     KNO --> PG
     KNO -->|search as the user| DOC
-    MCP -.->|gateway HTTP client only| GW
+    KNO -.->|PPI, only with PPI_PROVIDER_URL| PPI["Intelligence provider<br/>(optional)"]
 ```
 
-`mcp-server` is a **thin facade** (ADR-019): it has no database of its own and no
-business logic — it translates MCP protocol calls into requests to the
-`api-gateway`, exactly like any other authenticated client would. Docuboto does
-not call any language model
-([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)): anyone who wants AI over
-Docuboto uses an external MCP client with whatever model that client chooses.
+Docuboto does not call any language model
+([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)) and is **not a tool server for
+agents** ([ADR-051](adr/ADR-051-ppi-reducido-vive-en-la-app.md) §5): there is no MCP layer.
+An agent that has to act on Docuboto uses the HTTP API with a scoped service account, or
+the provider through PPI. Having an external MCP client (Claude Desktop, an IDE) operate the
+SGDEA is **not available**.
+
+The only outbound path to intelligence is PPI v1.4.0 (contract frozen in
+`contracts/ppi/v1.4.0/`): the ingestion consumer starts in the app's single lifespan only
+when `PPI_PROVIDER_URL` is set; with it empty, nothing is registered and no call leaves. A
+tenant starts at `intelligence_provider = 'local'`, which sends nothing.
 
 The gateway signs the identity it forwards to each service (HMAC with timestamp, method and
 canonical route, [ADR-036](adr/ADR-036-identidad-atada-a-metodo-y-ruta.md)) and enforces the
@@ -98,7 +101,6 @@ its public portal read-only and the preservation of its records
 | `workflow-service` | 8006 | **19006** | Distribution flows, approvals (vistos buenos), rules, dead-letter |
 | `notification-service` | 8007 | **19007** | Email/alerts, outgoing webhooks, dead-letter |
 | `signature-service` | 8008 | **19008** | XAdES-B/T/LT/LTA electronic signature verifiable by third parties (ADR-034): personal, institutional seal of the index/transfer minutes, and LTA archive time-stamp renewal |
-| `mcp-server` | 8009 | **19009** | Model Context Protocol layer for external clients (E18, ADR-019) |
 | `knowledge-service` | 8011 | **19011** | Model-free knowledge gateway: search and antecedents via full-text, as the user (ADR-046) |
 | `frontend` | 3000 | **19300** | SvelteKit SSR — presentation layer (E22) |
 | PostgreSQL | 5432 | **15432** | Single database, multi-schema |
@@ -193,15 +195,11 @@ Summary of what each one exposes:
 | `cadena` | Signature chain/batch |
 | `admin_deadletter` | Signature DLQ |
 
-### `mcp-server`
-| Router | What it manages |
-|---|---|
-| `mcp` | MCP catalog/protocol (**not** exposed by the gateway as a raw mount; routed under `/api/v1/mcp/`) |
-
 ### `knowledge-service`
 | Router | What it manages |
 |---|---|
-| `knowledge` | `/search`, `/antecedentes`, `/rag` (503 without a provider) and `/availability` |
+| `knowledge` | `/search` and `/antecedentes` (full-text, or delegated to PPI when the tenant is on `ppi`) |
+| `retorno` | PPI `content` callback: the provider asks for a document's content |
 
 ## Gateway proxy pattern
 
@@ -231,12 +229,7 @@ Security rules **by design** in the proxy (not accidental):
   `document-service` (`GET /api/v1/documents/{id}/anexos/{file_id}/download`), which
   revalidates the user's clearance before requesting the file from
   `storage-service` — the object store is never reached directly from outside.
-- **`mcp-server` scoped down**: only `/api/v1/mcp/` is routed (catalog, invoke,
-  proposals, and the streamable transport). Invoking a write that way returns a
-  signed proposal; executing it requires that token, bound to the person and their
-  time window.
-- **`knowledge-service` scoped down**: only `/search`, `/antecedentes`, `/rag` and
-  `/availability` are routed.
+- **`knowledge-service` scoped down**: only `/search` and `/antecedentes` are routed.
 
 ## Asynchronous orchestration — Redis Streams
 

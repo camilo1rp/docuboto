@@ -4,8 +4,8 @@ Docuboto is an **SGDEA** (*Sistema de Gestión Documental Electrónico de Archiv
 electronic records-management system for Colombian public institutions. It covers the full
 document lifecycle: registration (*radicación*), distribution, case files (*expedientes*),
 retention schedules (TRD/TVD), electronic signature, physical archive, digital preservation,
-public access (PQRSD, Ley 1712), and an MCP layer for external clients — with knowledge
-features that do not call language models (ADR-046).
+public access (PQRSD, Ley 1712), and an optional outbound gateway to an intelligence provider
+(PPI) — with knowledge features that do not call language models (ADR-046, ADR-051).
 
 It is a fork of [OrpycaMCP](https://gitlab.com/orpyca/orfeo_mcp) (AGPL-3.0). Internal
 identifiers still use the upstream prefix: the shared library is `orpycamcp_common`, Redis
@@ -23,7 +23,7 @@ References like *ADR-035* below point there.
 ```mermaid
 graph TB
     Browser["Browser"]
-    Ext["External MCP client"]
+    PPI["Intelligence provider (optional, PPI)"]
 
     subgraph edge["Edge (production)"]
         NGINX["edge — nginx<br/>TLS, host routing"]
@@ -45,7 +45,6 @@ graph TB
         NOT["notification-service"]
         SIG["signature-service"]
         KNO["knowledge-service<br/>(FTS proxy · no models)"]
-        MCP["mcp-server"]
     end
 
     subgraph infra["Infrastructure"]
@@ -58,11 +57,10 @@ graph TB
     Browser --> NGINX --> FE
     NGINX --> GW
     NGINX --> KC
-    Ext --> NGINX
     FE -->|server-side fetch, Bearer JWT| GW
-    GW --> AUTH & TEN & DOC & ARC & STO & WF & NOT & SIG & KNO & MCP
-    MCP -->|as the user| GW
+    GW --> AUTH & TEN & DOC & ARC & STO & WF & NOT & SIG & KNO
     KNO -->|FTS as the user| DOC
+    KNO -.->|"ingest · query (only with PPI_PROVIDER_URL)"| PPI
     DOC -->|X-Internal-Token| STO
     DOC & WF & SIG & NOT <-->|events| RD
     AUTH --> KC
@@ -78,7 +76,7 @@ graph TB
 | Messaging | Redis Streams with consumer groups |
 | Object storage | RustFS (S3-compatible), Object Lock for preservation (ADR-027, ADR-023) |
 | Identity | Keycloak (OIDC, Authorization Code + PKCE), TOTP 2FA in `auth-service` |
-| Intelligence | None in-process — external MCP clients + knowledge FTS fallback (ADR-046) |
+| Intelligence | None in-process (ADR-046). Optional external provider over PPI v1.4.0, off by default (ADR-045, ADR-051) |
 | Packaging | Docker Compose (dev and production), GitLab CI |
 
 ---
@@ -87,7 +85,7 @@ graph TB
 
 ```
 docuboto/
-├── services/                 # One directory per microservice (11)
+├── services/                 # One directory per microservice (10) + the `docuboto` app
 │   └── <service>/
 │       ├── <module>/         # FastAPI package (layout in §4)
 │       ├── migrations/       # runner.py + global/ + tenant/ SQL files
@@ -101,6 +99,7 @@ docuboto/
 ├── infra/                    # Production compose, nginx edge, Keycloak realms, backup/restore
 ├── scripts/                  # Tenant provisioning, seeds, lint gate, dev PKI, preflight checks
 ├── tests/e2e/                # Cross-service end-to-end tests against a running stack
+├── contracts/ppi/           # PPI contract, one frozen directory per version (v1.4.0)
 ├── docs/{es,en}/             # MkDocs site (Spanish is primary), ADRs in docs/es/adr/
 ├── docs/templates/service-template/   # Skeleton for a new service
 ├── docker-compose.yml        # Development stack
@@ -124,8 +123,7 @@ Each service owns one bounded context. Ports are internal (container) / host in 
 | `workflow-service` | 8006 / 19006 | Distribution flows, approval chains (*vistos buenos*), routing rules. Moves the radicado's state (ADR-028). |
 | `notification-service` | 8007 / 19007 | Email/alerts, signed outgoing webhooks. |
 | `signature-service` | 8008 / 19008 | XAdES-B/T/LT/LTA signatures verifiable by third parties (ADR-034), institutional seals, TSA/OCSP, LTA renewal. Pluggable `SignerProvider`. |
-| `knowledge-service` | 8011 / 19011 | Model-free knowledge gateway (ADR-046): `/search` and `/antecedentes` proxy `document-service` FTS as the user; `/rag` returns 503 `rag_unavailable` without a PPI provider; `/availability` reports generation availability. Gated by `asistente_habilitado` + `PERM_CONOCIMIENTO` (ADR-037). |
-| `mcp-server` | 8009 / 19009 | Thin MCP facade for external clients (ADR-019): tool catalog, write gate, transports (HTTP, streamable, stdio). **No database**, no assistant router — every call goes through the gateway as the user. |
+| `knowledge-service` | 8011 / 19011 | Model-free knowledge gateway (ADR-046): `/search` and `/antecedentes` proxy `document-service` FTS as the user, or delegate to the PPI provider when the tenant is on `ppi`; outbound PPI client and the `content` callback. Gated by `asistente_habilitado` + `PERM_CONOCIMIENTO` (ADR-037). |
 | `frontend` | 3000 / 19300 | SvelteKit SSR UI and backend-for-frontend. |
 
 The routing table that maps API prefixes to services is in
@@ -135,8 +133,7 @@ listed before `/api/v1/public/`).
 
 Deliberately **not** routed by the gateway: `storage-service` downloads (bytes go through
 `document-service`, which rechecks clearance first) and every `internal` router.
-`knowledge-service` is only routed for `/search`, `/antecedentes`, `/rag`, and
-`/availability`.
+`knowledge-service` is only routed for `/search` and `/antecedentes`.
 
 ---
 
@@ -148,7 +145,7 @@ Every Python service follows the same layered layout (see
 ```
 <module>/             # document, workflow, archive, storage, auth, tenant,
                       # notification, signature, knowledge.
-                      # api-gateway and mcp-server still use app/
+                      # api-gateway still uses app/
 ├── main.py           # App factory: lifespan (pools, clients, workers), middleware, routers
 ├── core/             # config (pydantic-settings), database, auth/clearance glue, constants
 ├── routers/          # HTTP layer — one file per resource; permission gates as dependencies
@@ -255,7 +252,7 @@ Key points:
 - **Identity headers are signed**, bound to method and canonical route, and single-use
   (nonce claimed with `SET NX EX`). A container that can reach a service port can't forge or
   replay an identity.
-- `X-Canal` (web, MCP, public, …) and `X-Real-Ip` are derived server-side from trusted
+- `X-Canal` (`api`, `ui`, `system`) and `X-Real-Ip` are derived server-side from trusted
   hops, never from client headers, because they're sealed into the audit log.
 - **Clearance (RF-SEG-08)**: users and objects carry a security level; reads follow a
   no-read-up rule, computed as `max(live level, embedded level)` with unknowns treated as
@@ -265,7 +262,7 @@ Key points:
 
 | Mechanism | Use |
 |---|---|
-| HTTP via the gateway | Every user operation, including MCP tools acting on the user's behalf. |
+| HTTP via the gateway | Every user operation, including an agent acting through a scoped service account (ADR-051 §5). |
 | Direct HTTP with `X-Internal-Token` | `internal` routers that only another service may call (for example `document-service` → `storage-service` for bytes, `signature-service` → `archive-service` for the index fingerprint it seals). The gateway never routes `/api/v1/internal/*`. |
 | Redis Streams events | Domain events consumed asynchronously by one or more services. |
 
@@ -399,34 +396,33 @@ See ADR-011 and ADR-020 (design system).
 
 ---
 
-## 8. MCP layer (ADR-019, ADR-037, ADR-046)
+## 8. Knowledge and intelligence (ADR-037, ADR-045, ADR-046, ADR-051)
 
 ```mermaid
 graph LR
-    X["External MCP client"] --> M["/api/v1/mcp (tools, invoke, stream)"]
-    M --> MCP["mcp-server<br/>one catalog · one write gate"]
-    MCP -->|"user's token"| GW["api-gateway"] --> S["domain services"]
-    GW --> K["knowledge-service"]
+    U["User (frontend)"] --> GW["api-gateway"] --> K["knowledge-service"]
     K -->|"FTS as the user"| DOC["document-service"]
+    K -.->|"PPI v1.4.0, tenant on ppi"| P["Intelligence provider"]
+    Q["Redis Streams"] --> C["ingestion consumer<br/>(app lifespan, only with PPI_PROVIDER_URL)"] -.-> P
+    P -.->|"content callback"| K
 ```
 
-Docuboto does **not** call language models (ADR-046). External MCP clients bring their own
-models; the installation only exposes tools and a model-free knowledge gateway.
+Docuboto does **not** call language models (ADR-046), and it is **not a tool server for
+agents** (ADR-051 §5): there is no MCP layer. An agent that has to act on Docuboto uses the
+HTTP API with a scoped service account (ADR-048), or the provider through PPI. External MCP
+clients (Claude Desktop, IDEs) can't operate the SGDEA; that capability isn't available.
 
-- **One tool catalog and one write gate** for external MCP clients and the stdio transport
-  (`app/tools/catalog.py`, `app/services/write_gate.py`). There is no conversational
-  assistant router.
-- **Runs as the user.** `mcp-server` has no database and no privileged credentials; every tool
-  call is a gateway request with the user's own token, so normal RBAC, clearance, and audit
-  apply. Calls are marked with a signed origin so the audit channel records *MCP*.
-- **Writes are proposed, not executed.** Invoking a write tool returns a signed proposal with a
-  confirmation card generated from the catalog. Executing it requires that token, bound to the
-  user and a time window.
-- **Knowledge without models.** `knowledge-service` proxies `/search` and `/antecedentes` to
-  `document-service` full-text search as the user; `/rag` returns 503 `rag_unavailable`
-  without a PPI provider; `/availability` reports whether generation is available for the
-  entity. Knowledge features stay gated per entity by `asistente_habilitado` +
-  `PERM_CONOCIMIENTO` (ADR-037).
+- **Knowledge without models.** `knowledge-service` exposes `/search` and `/antecedentes`:
+  `document-service` full-text search as the user, or delegated to the PPI provider when the
+  tenant is on `ppi`. There is no generation route (`/rag` was retired with ADR-051).
+  Knowledge features stay gated per entity by `asistente_habilitado` + `PERM_CONOCIMIENTO`
+  (ADR-037).
+- **PPI is outbound and opt-in.** A tenant starts at `intelligence_provider = 'local'`, which
+  sends nothing anywhere. The ingestion consumer starts in the app's single lifespan
+  (`services/docuboto/docuboto/core/lifespan.py`) only when `PPI_PROVIDER_URL` is set; with it
+  empty nothing is registered and no call leaves.
+- **The contract is frozen per version.** PPI v1.4.0 lives in `contracts/ppi/v1.4.0/`
+  (OpenAPI, schemas, fixtures, `SHA256SUMS`); a test fails if the frozen copy changes.
 
 ---
 

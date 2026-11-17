@@ -1,6 +1,6 @@
 # ADR-051: PPI se queda en lo construido y vive dentro de la app; se retira el MCP
 
-**Estado**: Aceptado
+**Estado**: **Implementado** (2026-11-17). `mcp-server` borrado entero, con su canal de auditoría `mcp`, la marca de origen y sus dos secretos. El consumidor de ingesta PPI arranca en el `lifespan` de la app, solo con `PPI_PROVIDER_URL`. `/rag`, `/availability` y `/transmission` retirados con «Preguntar» y los dos «Sugerir con antecedentes». PPI v1.4.0 publicado congelado en `contracts/ppi/v1.4.0/`. Pregunta abierta 1 resuelta por el usuario, dueño de ambos proyectos: se retiran. **Desviación declarada**: proboto-agent **sí** exige `callbacks.recommend_url` en su modelo de conexión, así que la retirada no es compatible con él hasta que lo haga opcional al re-anclarse a 1.4.0 (seguimiento en su repositorio). Queda para ADR-047/055: el paquete sigue llamándose `knowledge` y `/search` y `/antecedentes` siguen ahí.
 **Fecha**: 2026-11-07
 **Autores**: Camilo Romero
 **Relacionados**: [ADR-019](ADR-019-capa-mcp.md) (capa MCP; **se retira**), [ADR-045](ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md) (pasarela de inteligencia; **se reduce**), [ADR-046](ADR-046-conocimiento-sin-modelos.md) (conocimiento sin modelos; **se conserva**), [ADR-037](ADR-037-asistente-activable-por-entidad.md) (bandera por entidad; **se reduce a PPI**), [ADR-047](ADR-047-un-proceso-y-cuatro-contenedores.md), [ADR-048](ADR-048-identidad-emitida-por-docuboto.md)

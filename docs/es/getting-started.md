@@ -25,7 +25,7 @@ docker compose --profile dev up -d
 docker compose ps
 ```
 
-Para unir un proveedor local por PPI, suma `-f docker-compose.intelligence.yml` y fija `PPI_PROVIDER_URL`. El orden de arranque, la red `ppi` y la primera comprobación de **Inteligencia** / **Preguntar** están en `docs/runbooks/local-dev.md` del proveedor (sección "Join a local Docuboto").
+Para unir un proveedor local por PPI, suma `-f docker-compose.intelligence.yml` (solo añade `app` a la red `ppi`) y fija `PPI_PROVIDER_URL`: con ella fijada, el consumidor de ingesta arranca en el `lifespan` de la app; vacía, no sale ninguna llamada. El orden de arranque, la red `ppi` y la primera comprobación de **Inteligencia** están en `docs/runbooks/local-dev.md` del proveedor (sección "Join a local Docuboto").
 
 ## URLs de acceso / Access URLs
 
@@ -224,7 +224,7 @@ muestra y no deja abrir otra: hay que resolverla o rechazarla antes.
 
 ### Buscar en la capa de conocimiento (texto completo, ADR-046)
 
-> **La capa de conocimiento es opt-in por entidad (ADR-037).** Las entidades nuevas nacen con ella **apagada**: el administrador de la entidad (`USUA_PERM_ADMIN` nivel 3) la enciende en **/admin/parametros** (o con `PUT /api/v1/config/asistente {"habilitado": true}`); sin eso, las rutas de conocimiento responden `403 asistente_deshabilitado`. Además, cada persona necesita el permiso **`PERM_CONOCIMIENTO`** (nivel 1 consulta), que se reparte por grupo en **/admin/grupos**. Docuboto no llama a modelos de lenguaje: `/search` y `/antecedentes` reutilizan la búsqueda de texto completo de document-service; `/rag` responde `503 rag_unavailable` hasta que haya un proveedor PPI configurado.
+> **La capa de conocimiento es opt-in por entidad (ADR-037).** Las entidades nuevas nacen con ella **apagada**: el administrador de la entidad (`USUA_PERM_ADMIN` nivel 3) la enciende en **/admin/parametros** (o con `PUT /api/v1/config/asistente {"habilitado": true}`); sin eso, las rutas de conocimiento responden `403 asistente_deshabilitado`. Además, cada persona necesita el permiso **`PERM_CONOCIMIENTO`** (nivel 1 consulta), que se reparte por grupo en **/admin/grupos**. Docuboto no llama a modelos de lenguaje: `/search` y `/antecedentes` reutilizan la búsqueda de texto completo de document-service y, con la entidad en `ppi`, se delegan al proveedor. No hay ruta de generación.
 
 ```bash
 curl -X POST 'http://localhost:19080/api/v1/knowledge/search' \

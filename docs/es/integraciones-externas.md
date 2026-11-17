@@ -54,38 +54,14 @@ Principio común: el contrato (firmas de función / endpoints REST) **no cambia*
 
 ---
 
-## 4. Capa MCP — servidor MCP — `mcp-server`
+## 4. Agentes externos — **no disponible**
 
 | | |
 |---|---|
-| Estado actual | **Servidor MCP completo** (SDK oficial `mcp`) por **stdio** y **HTTP streamable**: expone **tools** (catálogo), **resources** (`orfeo://…`) y **prompts**, con **OAuth por sesión** (obtiene/refresca el token Keycloak vía auth-service). Refinamiento abierto: sincronización proactiva del refresh. |
-| Implementación | `services/mcp-server/app/mcp_app.py` (tools) + `app/mcp_resources.py` (resources+prompts) + `app/mcp_stdio.py` (entrypoint stdio) + endpoint **`/mcp`** en la app FastAPI (`app/main.py`, `StreamableHTTPSessionManager`). El núcleo `catalog.py` + `dispatcher.py` se reutiliza intacto. |
-| Norma/decisión | Constitución §1; ADR-019. |
+| Estado actual | **No hay servidor MCP.** `mcp-server` se retiró con [ADR-051](adr/ADR-051-ppi-reducido-vive-en-la-app.md), que marca [ADR-019](adr/ADR-019-capa-mcp.md) como retirado. Docuboto no es un servidor de herramientas para agentes (ADR-051 §5). |
+| Vía para un agente | La API HTTP con una cuenta de servicio de alcance acotado, con el mismo RBAC, clearance y auditoría que cualquier llamante; o el proveedor de inteligencia por PPI (§5). |
 
-**Transporte stdio (cliente local tipo escritorio):** el cliente lanza el proceso y habla por stdio; la sesión se configura por entorno. Para el **token** hay tres modos (precedencia de arriba abajo):
-
-```bash
-GATEWAY_URL=http://localhost:19080 \
-MCP_TENANT_SLUG=icetex \
-# (a) token estático (sin refresco):   MCP_BEARER_TOKEN=<jwt>
-# (b) refresh por sesión:              MCP_REFRESH_TOKEN=<refresh-token>
-# (c) ROPC (usuario/contraseña):       MCP_AUTH_USERNAME=ana MCP_AUTH_PASSWORD=...
-python -m app.mcp_stdio
-```
-
-Con (b)/(c) el mcp-server **obtiene y refresca** el access token Keycloak vía `auth-service` (`/api/v1/auth/token` y `/api/v1/auth/refresh`, públicos en el gateway) y lo cachea hasta su expiración.
-
-**Transporte HTTP streamable (clientes remotos):** **`POST https://<host>/api/v1/mcp/stream`** a través del api-gateway, que valida el JWT e inyecta `X-Tenant-Slug`. (`POST http://mcp-server:8009/mcp` sigue existiendo para acceso dentro de la red Docker.) El contexto de sesión llega por dos cabeceras y nada más: `Authorization: Bearer <jwt>` y `X-Tenant-Slug`.
-
-> **`X-User-Permissions` y `X-User-Roles` ya no se leen, y `MCP_USER_PERMISSIONS`/`MCP_USER_ROLES` se han retirado.** La primera no la producía ningún componente —el gateway la descarta por forjable—, así que llegaba siempre vacía y toda tool con permiso quedaba invisible por este transporte. Las variables de entorno eran peores: sí se podían poner, de modo que quien las configuraba creía estar concediendo algo, y lo único que conseguía era ver ofrecidas tools que el backend le negaría al usarlas. **Los permisos se resuelven contra `GET /api/v1/auth/me` con el token del llamante**, una sola resolución para los tres transportes.
-
-En ambos casos el servidor propaga `Authorization` + `X-Tenant-Slug` al gateway (que resuelve autenticación/RBAC/tenant) y filtra las tools visibles por permiso **y nivel CRUD** (ROOT ve todas). Las operaciones de escritura **no dependen de la aprobación del cliente**: invocarlas devuelve una **propuesta firmada** que no ejecuta nada, y ejecutarla exige presentar ese token (`confirmar_accion`, o `POST /api/v1/mcp/proposals/execute`). La aprobación del cliente MCP y las `annotations` son fricción añadida, no la garantía.
-
-**El marco de alcance** se ofrece por dos vías equivalentes: la tool **`mi_alcance`** y el resource **`orfeo://alcance`**. Devuelven lo que la persona puede ejecutar, lo que puede consultar, y lo que **no** puede con su motivo y su **vía alternativa** — que es lo que evita que un límite se descubra fallando.
-
-**Resources** (`orfeo://normativa`, `orfeo://alcance`, plantillas `orfeo://radicado/{id}`, `orfeo://expediente/{id}`, `orfeo://expediente/{id}/indice`) y **prompts** (`radicar_pqrsd`, `resumen_expediente`, `buscar_antecedentes`) están disponibles en ambos transportes.
-
-La capa MCP queda así **completa** (tools + resources + prompts + ambos transportes + OAuth por sesión).
+Que un cliente MCP externo (Claude Desktop, un IDE) opere el SGDEA **no está disponible**, y no figura como pendiente. Si algún día hace falta, se decide en su propio ADR.
 
 ---
 
@@ -93,12 +69,13 @@ La capa MCP queda así **completa** (tools + resources + prompts + ambos transpo
 
 | | |
 |---|---|
-| Estado actual | knowledge-service **ya no aloja embeddings** ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)). Pasarela FTS hacia document-service (`/search`, `/antecedentes`); `/rag` responde `503` sin un proveedor PPI externo; `/availability` reporta el modo. Sin pgvector, sin consumidor de ingesta, sin `kb_suggestions`. |
+| Estado actual | knowledge-service **ya no aloja embeddings** ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)). Pasarela FTS hacia document-service (`/search`, `/antecedentes`), delegada al proveedor por PPI cuando la entidad está en `ppi`. Sin ruta de generación, sin pgvector, sin `kb_suggestions`. |
+| PPI | Contrato **v1.4.0**, congelado en `contracts/ppi/v1.4.0/` (índice en `contracts/ppi/README.md`). Docuboto envía `PPI-Version: 1.4.0`. El consumidor de ingesta arranca en el `lifespan` de la app solo con `PPI_PROVIDER_URL` fijado; `docker-compose.intelligence.yml` solo añade `app` a la red `ppi`. La entidad empieza en `intelligence_provider = 'local'`. |
 | Inteligencia | Cuando hay PPI configurado, la inteligencia viene de ese proveedor externo; el respaldo local es FTS de document-service (no modelos en Docuboto). |
 | Gate | `asistente_habilitado` + `PERM_CONOCIMIENTO` ([ADR-037](adr/ADR-037-asistente-activable-por-entidad.md)). |
 | Decisión | [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md) (retira la capa local de modelos); [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md) (PPI); ADR-006 queda histórico para el diseño pluggable original. |
 
-**Qué quedó fuera de Docuboto (ADR-046):** no hay `embeddings.py`, `EMBEDDING_PROVIDER`, índice pgvector propio ni LLM local. Activar generación/RAG semántico es configurar un PPI externo, no enchufar un modelo dentro de knowledge-service.
+**Qué quedó fuera de Docuboto (ADR-046):** no hay `embeddings.py`, `EMBEDDING_PROVIDER`, índice pgvector propio ni LLM local. Una búsqueda semántica es cosa de un proveedor externo por PPI, no de un modelo enchufado dentro de knowledge-service.
 
 ---
 
@@ -165,7 +142,7 @@ fuera es el traductor** desde el sistema de origen hacia ese formato.
 | Firma digital PKI | signature-service | `signer.py` | cert X.509 + TSA + lib |
 | WORM (Object Lock) | storage-service | cliente S3 | RustFS con Object Lock (ADR-027) |
 | PDF/A | storage-service | normalización | veraPDF |
-| Protocolo MCP (tools+resources+prompts, stdio+HTTP, OAuth) ✅ | mcp-server | hecho (`mcp_app.py`+`mcp_resources.py`+`oauth.py`+`/mcp`) | — |
+| Clientes MCP externos | — | **no disponible** (ADR-051 §5) | — |
 | Conocimiento FTS / PPI | knowledge-service | pasarela a document-service (+ PPI externo si está configurado) | PPI externo (opcional); sin modelos locales |
 | Operador postal | document-service | `postal_provider.py` | credenciales API |
 | Migración desde Orfeo | — | **fuera de alcance** | traductor externo hacia `POST /api/v1/import` |

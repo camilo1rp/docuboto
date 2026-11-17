@@ -12,6 +12,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Changed
 
+- `refactor(mcp,knowledge,docuboto,gateway,shared,infra,ci,frontend,contracts)!`: **ADR-051 — the MCP is retired, PPI ingestion runs in the shipped topology, and the contract is published as frozen PPI v1.4.0.**
+  *Why*: the goal is connecting to proboto-agent, and neither the MCP nor the recommendation loop served that connection. In the default profile a tenant on `ppi` had no consumer: only the `split` profile with a live `knowledge-service` pushed anything. The contract published a loop (`runs`, `decisions`, `recommend`) nobody built, and proboto pinned a commit rather than a version.
+  *What changes*: `services/mcp-server/` is deleted with its containers, CI entries, census scripts, `MCP_ORIGIN_SECRET`/`MCP_PROPOSAL_SECRET`, the `X-Origen-Canal` origin mark and the `mcp` audit channel (`audit_log.canal` is now `api`, `ui` or `system`). The app's lifespan starts the PPI ingestion consumer only when `PPI_PROVIDER_URL` is set; knowledge-service no longer starts it, and the intelligence overlays only attach `app` to the `ppi` network. `/knowledge/rag`, `/availability` and `/transmission` are removed together with the «Preguntar» panel and the two «Sugerir con antecedentes» buttons; search and precedents stay. The contract moves to `contracts/ppi/v1.4.0/` with a `SHA256SUMS` guard, without `runs`, `decisions`, the `recommend` callback or `recommend_url`, and with 39 fixtures. `PPI-Version` still accepts any `1.x.y`.
+  *Impact*: proboto-agent still requires `callbacks.recommend_url`, so it must make it optional and re-pin to `contracts/ppi/v1.4.0`. External MCP clients can no longer operate Docuboto.
+
 - `feat(infra,ci,shared,docuboto,scripts)!`: **ADR-053 §3–6 — versioned releases, expand/contract, a backup of the secrets, and one hardware figure.**
   *Why*: there was no tag and no job that deployed (deploys were by SHA, by hand), rolling back the code did not roll back the schema so the only way out was restoring the backup, the backup did not keep `infra/.env` or `secrets/`, and the docs promised three different hardware figures. CI lived in `.gitlab-ci.yml` while the repository lives on GitHub, so pull requests got no checks.
   *What changes*:

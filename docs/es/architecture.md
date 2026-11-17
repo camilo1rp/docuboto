@@ -28,7 +28,6 @@ graph TB
         WF["workflow-service"]
         NOT["notification-service"]
         SIG["signature-service"]
-        MCP["mcp-server"]
         KNO["knowledge-service"]
     end
 
@@ -49,7 +48,6 @@ graph TB
     GW --> WF
     GW --> NOT
     GW --> SIG
-    GW --> MCP
     GW --> KNO
 
     AUTH --> KC
@@ -68,14 +66,20 @@ graph TB
     SIG --> REDIS
     KNO --> PG
     KNO -->|búsqueda como el usuario| DOC
-    MCP -.->|solo cliente HTTP del gateway| GW
+    KNO -.->|PPI, solo con PPI_PROVIDER_URL| PPI["Proveedor de inteligencia<br/>(opcional)"]
 ```
 
-`mcp-server` es una **fachada fina** (ADR-019): no tiene base de datos propia ni lógica
-de negocio — traduce llamadas del protocolo MCP en peticiones al `api-gateway`,
-exactamente como lo haría cualquier otro cliente autenticado. Docuboto no llama a ningún
-modelo de lenguaje ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)): quien quiera actuar
-con IA usa un cliente MCP externo, con el modelo que ese cliente elija.
+Docuboto no llama a ningún modelo de lenguaje
+([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)) y **no es un servidor de herramientas
+para agentes** ([ADR-051](adr/ADR-051-ppi-reducido-vive-en-la-app.md) §5): no hay capa MCP.
+Un agente que deba actuar sobre Docuboto usa la API HTTP con una cuenta de servicio de
+alcance acotado, o el proveedor por PPI. Que un cliente MCP externo (Claude Desktop, un IDE)
+opere el SGDEA **no está disponible**.
+
+La única salida hacia inteligencia es PPI v1.4.0 (contrato congelado en
+`contracts/ppi/v1.4.0/`): el consumidor de ingesta arranca en el `lifespan` único de la app
+solo con `PPI_PROVIDER_URL` fijado; vacío, no se registra nada y ninguna llamada sale. La
+entidad empieza en `intelligence_provider = 'local'`, que no envía nada.
 
 El gateway firma la identidad que reenvía a cada servicio (HMAC con instante, método y ruta
 canónica, [ADR-036](adr/ADR-036-identidad-atada-a-metodo-y-ruta.md)) y aplica el estado de la
@@ -96,7 +100,6 @@ su portal público y la conservación de sus documentos
 | `workflow-service` | 8006 | **19006** | Flujos de distribución, vistos buenos, reglas, dead-letter |
 | `notification-service` | 8007 | **19007** | Correo/alertas, webhooks salientes, dead-letter |
 | `signature-service` | 8008 | **19008** | Firma electrónica XAdES-B/T/LT/LTA verificable por terceros (ADR-034): personal, sello institucional del índice/acta y renovación del sello de archivo LTA |
-| `mcp-server` | 8009 | **19009** | Capa Model Context Protocol para clientes externos (E18, ADR-019) |
 | `knowledge-service` | 8011 | **19011** | Pasarela de conocimiento sin modelos: buscar y antecedentes por texto completo, como el usuario (ADR-046) |
 | `frontend` | 3000 | **19300** | SvelteKit SSR — capa de presentación (E22) |
 | PostgreSQL | 5432 | **15432** | Base de datos única, multi-schema |
@@ -191,15 +194,11 @@ lo que expone cada uno:
 | `cadena` | Cadena/lote de firmas |
 | `admin_deadletter` | DLQ de firma |
 
-### `mcp-server`
-| Router | Qué gestiona |
-|---|---|
-| `mcp` | Catálogo/protocolo MCP (**no** expuesto por el gateway) |
-
 ### `knowledge-service`
 | Router | Qué gestiona |
 |---|---|
-| `knowledge` | `/search`, `/antecedentes`, `/rag` (503 sin proveedor) y `/availability` |
+| `knowledge` | `/search` y `/antecedentes` (texto completo, o delegados a PPI con la entidad en `ppi`) |
+| `retorno` | Callback `content` de PPI: el proveedor pide el contenido de un documento |
 
 ## Patrón de proxy del gateway
 
@@ -229,11 +228,7 @@ Reglas de seguridad **por diseño** en el proxy (no accidentales):
   `document-service` (`GET /api/v1/documents/{id}/anexos/{file_id}/download`), que
   revalida el clearance del usuario antes de pedirle el archivo a `storage-service` —
   nunca se llega directo al almacén de objetos desde afuera.
-- **`mcp-server` acotado**: solo `/api/v1/mcp/` se enruta (catálogo, invocación,
-  propuestas y el transporte streamable). Invocar una escritura por ahí devuelve una
-  propuesta firmada; ejecutarla exige ese token, atado a la persona y a su ventana.
-- **`knowledge-service` acotado**: solo `/search`, `/antecedentes`, `/rag` y
-  `/availability` se enrutan.
+- **`knowledge-service` acotado**: solo `/search` y `/antecedentes` se enrutan.
 
 ## Orquestación asíncrona — Redis Streams
 
