@@ -565,36 +565,6 @@
  */
 
 /**
- * Cita de un precedente dentro de una respuesta del RAG (knowledge-service).
- *
- * @typedef {object} RagCitation
- * @property {string} cited_text
- * @property {string} source_type
- * @property {string} source_ref  — tracking_number del radicado fuente
- * @property {number} score
- * @property {number|null} [page] - página del anexo citado; null si no hay páginas
- * @property {string|null} [attachment_ref] - id del anexo citado
- * @property {string|null} [record_id] - id del radicado citado
- */
-
-/**
- * Forma de respuesta de POST /api/v1/knowledge/rag cuando hay proveedor PPI.
- * En despliegue local (ADR-046) el endpoint responde 503 `rag_unavailable`: no
- * hay generación en Docuboto. Si un proveedor externo responde, `answer` /
- * `modelo` / `suggestion_id` pueden ser `null` (Patrón A); el llamante NUNCA
- * debe ofrecer insertar en ese caso.
- *
- * @typedef {object} RagResponse
- * @property {string|null}     answer
- * @property {RagCitation[]}   citations
- * @property {string}          proveedor
- * @property {string|null}     modelo
- * @property {number}          confianza
- * @property {string|null}     suggestion_id
- * @property {string}          advisory
- */
-
-/**
  * Precedente citado, sin generación (knowledge-service POST /antecedentes, Patrón A).
  *
  * @typedef {object} Antecedente

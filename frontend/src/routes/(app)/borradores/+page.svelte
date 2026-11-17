@@ -41,8 +41,6 @@
   import Button from "$lib/components/ui/Button.svelte";
   import FormField from "$lib/components/ui/FormField.svelte";
   import RichEditor from "$lib/components/editor/RichEditor.svelte";
-  import RagSuggestButton from "$lib/components/features/rag/RagSuggestButton.svelte";
-  import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
   import SchemaField from "$lib/components/ui/SchemaField.svelte";
   import { mensajeError, codigoError, campoError } from "$lib/utils/apiError.js";
   import {
@@ -1093,18 +1091,6 @@
           radicar.
         </p>
       {/if}
-    {/if}
-
-    <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper crear/editar
-         el borrador si el servicio de conocimiento no responde. Solo se muestra si
-         la entidad tiene generación (ADR-046 §3). -->
-    {#if data.generationAvailable === true}
-      <RagSuggestButton
-        endpoint="/borradores/api/rag/suggest"
-        query={fSubject}
-        disabled={!hasPerm || (editingBorrador !== null && !canEdit)}
-        on:insert={(e) => (fCuerpo = appendGeneratedHtml(fCuerpo, e.detail.html))}
-      />
     {/if}
 
     <!-- Aviso persistente de campos sin dato (E23, RF-PRO-01).

@@ -8,18 +8,13 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * rag-proxies-server.test.js — proxies SSR de ayuda con RAG en radicación
- * (D-05, ADR-011, E21 Inc.2/3, F6 frontend).
+ * rag-proxies-server.test.js — proxy SSR de antecedentes en radicación
+ * (D-05, ADR-011, E21 Inc.2).
  *
- * Cubre: guard 401, allowlist campo a campo (anti mass-assignment: `query`/`top_k`
- * son los únicos campos que viajan al gateway, cualquier otro se descarta), 422 si
- * la consulta es demasiado corta (espejo del `min_length` del backend), passthrough
- * de errores/degradación 503 (regla dura #3: el fallo del servicio de conocimiento
- * nunca debe romper la radicación), y — para `antecedentes` — resolución honesta de
+ * Cubre: guard 401, passthrough de errores del gateway, y resolución honesta de
  * `doc_class` vía `GET /documents/by-tracking/{tracking}` con `encodeURIComponent`.
  */
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { POST as suggestPost } from "./suggest/+server.js";
 import { POST as antecedentesPost } from "./antecedentes/+server.js";
 
 const SESSION_LOCALS = {
@@ -40,92 +35,6 @@ function forbidFetch(msg) {
     throw new Error(msg ?? "fetch no debió invocarse");
   });
 }
-
-describe("radicar/api/rag/suggest POST", () => {
-  it("sin token: 401 unauthenticated, sin llamar al gateway", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = forbidFetch();
-    try {
-      const res = await suggestPost({ locals: {}, request: jsonRequest({ query: "algo" }) });
-      expect(res.status).toBe(401);
-      expect((await res.json()).error).toBe("unauthenticated");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("query demasiado corta: 422 validation_error, sin llamar al gateway", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = forbidFetch();
-    try {
-      const res = await suggestPost({
-        locals: SESSION_LOCALS,
-        request: jsonRequest({ query: "a" }),
-      });
-      expect(res.status).toBe(422);
-      expect((await res.json()).error).toBe("validation_error");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("allowlist: descarta cualquier campo fuera de query/top_k y fija top_k por defecto", async () => {
-    const originalFetch = globalThis.fetch;
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            answer: "texto",
-            citations: [],
-            proveedor: "disabled",
-            modelo: null,
-            confianza: 0,
-            suggestion_id: null,
-            advisory: "aviso",
-          }),
-          { status: 200 },
-        ),
-    );
-    globalThis.fetch = fetchMock;
-    try {
-      await suggestPost({
-        locals: SESSION_LOCALS,
-        request: jsonRequest({
-          query: "asunto del radicado",
-          top_k: 999, // fuera de rango — debe caer al default
-          suggestion_id: "forjado", // no debe viajar
-          confianza: 1.0, // no debe viajar
-        }),
-      });
-      const [calledUrl, opts] = fetchMock.mock.calls[0];
-      expect(calledUrl).toBe("http://app:8000/api/v1/knowledge/rag");
-      const body = JSON.parse(opts.body);
-      expect(body).toEqual({ query: "asunto del radicado", top_k: 5 });
-      expect(opts.headers.Authorization).toBe("Bearer tok-abc");
-      expect(opts.headers["X-Tenant-Slug"]).toBe("icetex");
-      expect(opts.headers["X-User-Id"]).toBe(SESSION_LOCALS.user.sub);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("caída del servicio de conocimiento: 503 connection_error, no lanza (degradación honesta)", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn(async () => {
-      throw new Error("network down");
-    });
-    try {
-      const res = await suggestPost({
-        locals: SESSION_LOCALS,
-        request: jsonRequest({ query: "asunto suficientemente largo" }),
-      });
-      expect(res.status).toBe(503);
-      expect((await res.json()).error).toBe("connection_error");
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});
 
 describe("radicar/api/rag/antecedentes POST", () => {
   it("sin token: 401 unauthenticated, sin llamar al gateway", async () => {
