@@ -1,6 +1,6 @@
 # ADR-054: La firma dice la verdad o no se llama firma
 
-**Estado**: Aceptado
+**Estado**: **Implementado** (2026-11-17) — §1 a §4. Lo que §5 deja fuera sigue fuera: no se sustituye la capa XAdES, el sello sigue `acreditado=False` y OCSP sigue apagado por defecto. Ver «Implementación» al final.
 **Fecha**: 2026-11-07
 **Autores**: Camilo Romero
 **Relacionados**: [ADR-016](ADR-016-firma-electronica.md) (firma electrónica), [ADR-034](ADR-034-xmldsig-conforme-firma-verificable-por-terceros.md) (XMLDSig conforme), [ADR-030](ADR-030-constancia-firma-inobtenible.md) (constancia de firma inobtenible), [ADR-052](ADR-052-librerias-en-vez-de-implementaciones-propias.md), [ADR-055](ADR-055-publicacion-publica-de-instrumentos.md)
@@ -122,3 +122,13 @@ Se añade una superficie pública, hermana de la consulta de radicado (`GET /api
 - **Una entidad puede nacer en `clasificados` y no poder firmar clasificados hasta enrolar certificados.** Ese es el punto: el fallo se ve el día uno, no en la auditoría.
 - **La verificación pública añade una superficie anónima.** Se acota con el límite de tasa de `edge` y con el identificador de 128 bits; no hay contenido que filtrar.
 - **Sigue sin haber firma cualificada.** Se declara en cada respuesta y en la documentación; el producto no la promete.
+
+## Implementación (2026-11-17)
+
+- **§1 Nombres.** signature-service deriva `kind` del proveedor y lo devuelve en `FirmaResponse`, `VerifyResponse` y en cada turno de la cadena: `electronic_signature` (XAdES: `xades_local`, `xades_personal`) o `simple_signature_record` (HMAC `nativa`). Lista cerrada por admisión: un proveedor nuevo es constancia simple hasta que se diga otra cosa. document-service marca sus registros declarativos con el mismo `kind`. La UI (certificado, asistente de firma, turnos de `/firmas`) dice «Firma electrónica» o «Constancia de firma simple», y si no conoce la clase no afirma ninguna.
+- **§1 Política.** `firma_personal_require_xades` nace en `clasificados` en la semilla (`migrations/tenant/120_sgd_param_admin.sql`) y en el respaldo del entorno; una variable vacía tampoco baja a `off`. Bajarla es un `PUT /config/params/...` con motivo, que deja asiento en `admin_audit`.
+- **§1 La pregunta probatoria.** `GET /api/v1/documents/{id}/signatures/verify` (`{valid}`) pasa a `/signatures/match` (`{matched, kind}`): el camino simple dice si una huella está entre sus constancias, no si una firma es válida.
+- **§2 Verificación pública.** `GET /api/v1/public/signature/{tenant}/{firma_id}`, con los campos del contrato de §2 más `kind` y `motivo`. La ruta lleva `signature/` antes del tenant (y no `/{tenant}/firma/`) para que el gateway la enrute por prefijo, igual que `/api/v1/public/archive/`. Usa el mismo `verificar_xades` que `POST /verify`, con el XML firmado vigente descargado de storage. Quien consulta sin sesión tiene clearance Pública (1): la firma de un objeto clasificado da el mismo 404 que un código inexistente, como la consulta de radicado por código. Una constancia simple responde `valida=null`. `constancia` es la ruta autenticada de los metadatos de la firma.
+- **§3** sin cambios: la revocación personal se sigue consultando en línea, también desde la superficie pública.
+- **§4.** El registro de deuda estaba desactualizado: `POST /api/v1/signature/verify` ya leía `firma`. La ruta que respondía con la tabla equivocada era la de document-service (arriba). Pantallas `/firma` y `/firma/[id]`, y enlace «Comprobar una firma» desde `/firmas`.
+

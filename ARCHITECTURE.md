@@ -130,8 +130,8 @@ Each service owns one bounded context. Ports are internal (container) / host in 
 
 The routing table that maps API prefixes to services is in
 [`services/api-gateway/app/routers/proxy.py`](services/api-gateway/app/routers/proxy.py).
-Order matters: the first matching prefix wins (for example `/api/v1/public/archive/` is
-listed before `/api/v1/public/`).
+Order matters: the first matching prefix wins (for example `/api/v1/public/archive/` and
+`/api/v1/public/signature/` are listed before `/api/v1/public/`).
 
 Deliberately **not** routed by the gateway: `storage-service` downloads (bytes go through
 `document-service`, which rechecks clearance first) and every `internal` router.
