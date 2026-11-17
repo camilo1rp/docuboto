@@ -27,7 +27,7 @@ INSERT INTO sgd_param_admin (key, value, updated_by) VALUES
     ('entidad_web', '""', NULL),
     ('expediente_number_format', '"EXP-{YEAR}-{SEQ:04d}"', NULL),
     ('firma_digital_provider', 'null', NULL),
-    ('firma_personal_require_xades', 'null', NULL),
+    ('firma_personal_require_xades', '"clasificados"', NULL),
     ('formato_numero_radicado', '"alfanumerico"', NULL),
     ('notificaciones_mail', 'true', NULL),
     ('politica_tratamiento_texto', '""', NULL),

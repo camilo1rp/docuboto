@@ -12,8 +12,9 @@
 Guardián: la política XAdES por entidad se LEE, se SIEMBRA y se VALIDA con el mismo nombre.
 
 signature-service lee `firma_personal_require_xades` de `sgd_param_admin`; la
-clave nace sembrada en la cadena de migraciones (un parámetro cuyo nombre solo vive
-en el código no se puede configurar, ver `test_params_entidad_configurables`) y
+clave nace sembrada en `"clasificados"` en la cadena de migraciones (ADR-054; un
+parámetro cuyo nombre solo vive en el código no se puede configurar, ver
+`test_params_entidad_configurables`) y
 tenant-service valida su vocabulario al escribir. Son tres sitios en dos
 servicios: ninguna suite por-servicio los ve juntos.
 """
@@ -39,15 +40,25 @@ def _literal(fuente: Path, nombre: str):
     raise AssertionError(f"{nombre} no encontrado en {fuente}")
 
 
-def test_la_clave_que_lee_signature_se_siembra_en_null_no_en_off() -> None:
+def test_la_clave_que_lee_signature_se_siembra_en_clasificados() -> None:
+    """ADR-054 §1: la entidad no nace con la política laxa (`off`) ni sin decidir."""
     clave = _literal(LECTOR, "PARAM_REQUIRE_XADES")
     assert clave == "firma_personal_require_xades"
     sql = seed_rows("sgd_param_admin")
-    assert re.search(rf"\('{clave}',\s*'null',", sql), (
+    assert re.search(rf"\('{clave}',\s*'\"clasificados\"',", sql), (
         "la clave que signature-service lee no la siembra la cadena de migraciones "
-        "con JSON null: /admin/parametros no la ofrece, o la siembra "
-        "en \"off\" y anula el respaldo del entorno (FIRMA_PERSONAL_REQUIRE_XADES)"
+        "en \"clasificados\": /admin/parametros no la ofrece, o una entidad nueva "
+        "nace permitiendo firmar un acto clasificado con HMAC (ADR-054)"
     )
+
+
+def test_el_respaldo_del_entorno_tambien_es_clasificados() -> None:
+    config = RAIZ / "services" / "signature-service" / "signature" / "core" / "config.py"
+    texto = config.read_text(encoding="utf-8")
+    assert re.search(
+        r'firma_personal_require_xades: Literal\["off", "clasificados", "todos"\] = "clasificados"',
+        texto,
+    ), "el respaldo del entorno de la política XAdES no es 'clasificados' (ADR-054)"
 
 
 def test_el_vocabulario_que_lee_signature_es_el_que_valida_tenant_service() -> None:

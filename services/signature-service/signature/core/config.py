@@ -347,35 +347,31 @@ class Settings(BaseSettings):
     # NUNCA cae en silencio al camino nativo por un simple timeout (eso solo
     # ocurre cuando GET /status responde limpiamente "no_activo"/"revocado").
     signing_key_sign_timeout_seconds: float = 5.0
-    # --- Gate XAdES de la firma personal (E17/F4, Incremento 3 — cierra Baja #3 del Inc.2) ---
-    # AHORA ES UN PARÁMETRO DE LA ENTIDAD (2026-10-04): la política la lee
-    # `app.core.params_entidad.modo_xades_de_la_entidad` de `sgd_param_admin`
-    # (clave `firma_personal_require_xades`, sembrada en "off" por la migración
-    # 010 de tenant-service). Este valor del entorno es solo el RESPALDO de la
-    # entidad que no define la clave.
-    # Controla si un certificado personal ausente o inaccesible puede caer a HMAC
-    # nativa (comportamiento histórico) o debe RECHAZAR el acto. Tres valores:
+    # --- Gate XAdES de la firma personal (E17/F4, Incremento 3; ADR-054 §1) ---
+    # ES UN PARÁMETRO DE LA ENTIDAD: la política la lee
+    # `signature.core.params_entidad.modo_xades_de_la_entidad` de `sgd_param_admin`
+    # (clave `firma_personal_require_xades`, sembrada en "clasificados" por
+    # `migrations/tenant/120_sgd_param_admin.sql`). Este valor del entorno es solo
+    # el RESPALDO de la entidad cuya fila falta o vale JSON null.
+    # Controla si un certificado personal ausente o inaccesible puede caer al HMAC
+    # nativo (constancia de firma simple) o debe RECHAZAR el acto. Tres valores:
     #
-    #   "off"          (default) — fail-open a nativa: actor sin cert -> HMAC; auth
-    #                  caído -> HMAC. Comportamiento byte-idéntico a Inc.1/2. NO sube
-    #                  el aseguramiento de no-repudio; la firma clasificada puede
-    #                  degradar en silencio. Postura out-of-the-box.
-    #   "clasificados" — exige XAdES personal para nivel_seguridad>=2 (RESERVADA/
-    #                  CLASIFICADA): actor sin cert -> 422 firma_xades_requerida;
-    #                  auth caído -> 503 canal_firma_personal_no_disponible
-    #                  (fail-closed). nivel 1 (PÚBLICA) conserva el fallback nativo.
-    #                  RECOMENDADO **una vez completo el enrolamiento de los firmantes
-    #                  con clearance>=2**. OJO: la emisión del cert es OFFLINE por-usuario
-    #                  (NO autoservicio, a diferencia del 2FA cuyo nivel>=2 SÍ es
-    #                  incondicional, ver firma_2fa_required) — habilitarlo antes de
-    #                  tener enrolados BLOQUEA la firma clasificada de quien no tenga cert.
-    #   "todos"        — exige XAdES personal para TODA firma de la cadena, sin fallback
-    #                  HMAC en ningún nivel.
+    #   "clasificados" (default, ADR-054) — exige XAdES personal para
+    #                  nivel_seguridad>=2 (RESERVADA/CLASIFICADA): actor sin cert ->
+    #                  422 firma_xades_requerida; auth caído -> 503
+    #                  canal_firma_personal_no_disponible (fail-closed). Nivel 1
+    #                  (PÚBLICA) conserva la constancia simple. Una entidad sin
+    #                  certificados enrolados no puede firmar clasificados hasta
+    #                  enrolarlos: el fallo se ve el día uno, no en la auditoría.
+    #   "off"          — la entidad lo elige EXPLÍCITAMENTE en /admin/parametros
+    #                  (queda en admin_audit): actor sin cert -> HMAC también en
+    #                  clasificados. No es fiabilidad presumible (Ley 527/1999 art. 7).
+    #   "todos"        — exige XAdES personal para TODA firma de la cadena.
     #
-    # Retrocompat: el env FIRMA_PERSONAL_REQUIRE_XADES admite el bool histórico —
-    # false/0/no/"" -> "off"; true/1/yes -> "todos". Un valor no reconocido ABORTA
+    # El env FIRMA_PERSONAL_REQUIRE_XADES admite además false/0/no -> "off" y
+    # true/1/yes -> "todos"; vacío -> "clasificados". Un valor no reconocido ABORTA
     # el arranque (fail-fast), nunca cae a "off" en silencio.
-    firma_personal_require_xades: Literal["off", "clasificados", "todos"] = "off"
+    firma_personal_require_xades: Literal["off", "clasificados", "todos"] = "clasificados"
 
     @field_validator("firma_personal_require_xades", mode="before")
     @classmethod
@@ -383,9 +379,11 @@ class Settings(BaseSettings):
         if isinstance(v, bool):
             return "todos" if v else "off"
         if v is None:
-            return "off"
+            return "clasificados"
         s = str(v).strip().lower()
-        if s in ("false", "0", "no", ""):
+        if s == "":
+            return "clasificados"
+        if s in ("false", "0", "no"):
             return "off"
         if s in ("true", "1", "yes"):
             return "todos"

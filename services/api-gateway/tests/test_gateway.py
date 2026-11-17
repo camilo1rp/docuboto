@@ -528,6 +528,10 @@ async def test_route_to_upstream_domain_prefixes():
     )
     cases = {
         "/api/v1/audit": "http://auth:8001",
+        # ADR-054 §2: la verificación pública de una firma va a signature-service,
+        # no al catch-all público de document-service.
+        "/api/v1/public/signature/demo/00000000-0000-0000-0000-000000000001": "http://signature:8008",
+        "/api/v1/public/demo/verify/abc": "http://document:8003",
         "/api/v1/dependencias/by-codigo/120": "http://tenant:8002",
         "/api/v1/business-days/calculate": "http://tenant:8002",
         "/api/v1/config/params": "http://tenant:8002",

@@ -41,6 +41,7 @@ from signature.core.clearance import get_actor, require_permission, resolve_call
 from signature.core.config import settings
 from signature.core.constants import (
     NIVELES_CONFORMIDAD_ACREDITADOS,
+    PROVIDERS_FIRMA_ELECTRONICA,
     SYSTEM_RECONCILER_ID,
 )
 from signature.core.database import get_tenant_conn
@@ -260,6 +261,191 @@ async def sign_personal(
     return await PersonalSigningService(conn, tenant_slug).sign(payload, actor, authorization)
 
 
+async def verificar_xades(
+    conn: asyncpg.Connection,
+    row: dict | asyncpg.Record,
+    payload_xml: str,
+    tenant_slug: str,
+) -> VerifyResponse:
+    """Veredicto de una firma XAdES (``xades_local`` | ``xades_personal``) sobre su XML firmado.
+
+    El MISMO motor para ``POST /verify`` (autenticado, el XML lo aporta quien
+    pregunta) y para la verificación pública por código (ADR-054 §2, el XML lo
+    descarga el servicio de storage): ninguna de las dos superficies tiene una
+    versión recortada de las comprobaciones. Ver el docstring de ``verify``.
+    """
+    provider_name = row["provider"]
+    is_personal = provider_name == "xades_personal"
+    fingerprint = row.get("certificado_fingerprint")
+    if not fingerprint:
+        return VerifyResponse(
+            firma_id=row["id"],
+            valida=False,
+            provider=provider_name,
+            xades_level=row.get("xades_level"),
+            nivel_conformidad=row.get("nivel_conformidad"),
+            acreditado=False,  # no valida -> no acredita (AREA-05-02)
+            motivo="firma_sin_huella_de_certificado_registrada",
+        )
+    # Ata la verificación a ESTA firma_id (migración 010): sin esto, el
+    # signed_xml de OTRO índice firmado con el MISMO sello institucional
+    # del tenant se reportaría `valida=True` para cualquier firma_id de
+    # ese tenant. `signed_xml_sha256` es NULL en filas anteriores a la
+    # migración — se degrada al comportamiento previo (solo huella de
+    # certificado) para no romper la verificación de firmas históricas.
+    expected_xml_sha256 = row.get("signed_xml_sha256")
+    # B10 §8: una firma LTA renovada tiene VARIOS XML válidos (el original y cada
+    # renovación) y varias TSA ancladas; ambos salen de `firma_sello_archivo`.
+    sellos = await _sellos_de_la_firma(conn, row["id"])
+    aceptados = {s["xml_sha256"] for s in sellos if s["estado"] in ("vigente", "caducado")}
+    if expected_xml_sha256:
+        aceptados.add(expected_xml_sha256)
+    if aceptados and hashlib.sha256(
+        payload_xml.encode()
+    ).hexdigest() not in aceptados:
+        return VerifyResponse(
+            firma_id=row["id"],
+            valida=False,
+            provider=provider_name,
+            xades_level=row.get("xades_level"),
+            nivel_conformidad=row.get("nivel_conformidad"),
+            acreditado=False,  # no valida -> no acredita (AREA-05-02)
+            motivo="documento_no_corresponde_a_firma_id",
+        )
+    advertencias: list[str] = []
+    outcome = verify_xades(
+        payload_xml.encode(),
+        fingerprint,
+        expected_tsa_fingerprint=row.get("tsa_cert_fingerprint"),
+        # `ca_fingerprint` (misma columna, dos semánticas mutuamente
+        # excluyentes por `provider`, ver docstring de la función): ancla
+        # LT institucional para xades_local, ancla de la sub-CA de
+        # usuarios para xades_personal — NUNCA ambos kwargs a la vez.
+        expected_ca_fingerprint=(None if is_personal else row.get("ca_fingerprint")),
+        expected_ocsp_responder_fingerprint=row.get("ocsp_responder_fingerprint"),
+        expected_user_ca_fingerprint=(row.get("ca_fingerprint") if is_personal else None),
+        advertencias=advertencias,
+        tsa_fingerprints_archivo=[s["tsa_cert_fingerprint"] for s in sellos],
+    )
+
+    # `firma_criptograficamente_valida`: el veredicto de `verify_xades`
+    # a secas (criptografía + cadena/anclaje), SIN la dimensión de
+    # revocación — NUNCA difama la cripto por un canal de revocación
+    # caído (ver docstring de `VerifyResponse`).
+    firma_criptograficamente_valida = outcome.valida
+    valida = outcome.valida
+    motivo = outcome.motivo
+    revocacion_status: str | None = None
+    revocacion_posterior: bool | None = None
+
+    # Revocación en línea (A2, Incremento 2) — SOLO firmas personales
+    # cuya cripto+cadena YA validó (revocar no tiene sentido evaluarlo
+    # sobre una firma ya inválida por otra causa, y evita una llamada de
+    # red innecesaria). `verify_xades` sigue siendo PURA — esta llamada
+    # vive aquí, en el router.
+    if is_personal and outcome.valida:
+        try:
+            status_body = await get_signing_key_revocation_status_remote(
+                fingerprint, tenant_slug
+            )
+            revocacion_status = status_body.get("status", "desconocido")
+        except SigningKeyRevocationStatusUnavailableError:
+            logger.warning(
+                "No se pudo consultar signing-key/revocation-status para "
+                "firma_id=%s; aplicando verify_personal_revocation_require",
+                row["id"],
+                exc_info=True,
+            )
+            revocacion_status = "no_verificable"
+            if settings.verify_personal_revocation_require:
+                valida = False
+                motivo = "revocacion_no_verificable"
+            # Fail-open (opt-in, NO default): la cripto ya validó, así
+            # que `valida` se queda en True — solo se informa el canal
+            # caído vía `revocacion_status`, sin invalidar.
+        else:
+            # Instante de la firma: SOLO el genTime de una TSA verificada
+            # es fecha cierta oponible (RFC 3161; DUR 1074 cap. 47-48). El
+            # `sello_tiempo` de la fila lo pone el propio servidor: no
+            # sirve para conservar la validez ante una revocación.
+            instante_cierto = (
+                outcome.tsa_timestamp
+                if outcome.sello_tiempo_valido and outcome.tsa_timestamp
+                else None
+            )
+            if (
+                revocacion_status == "revocado"
+                and status_body.get("motivo_revocacion") == "key_compromise"
+            ):
+                # Compromiso de la clave: lo firmado ANTES también queda en
+                # duda (ETSI EN 319 102-1) — invalida hacia atrás.
+                valida = False
+                motivo = "clave_comprometida"
+            elif (
+                revocacion_status == "revocado"
+                and instante_cierto is None
+                and status_body.get("revocado_at")
+            ):
+                # Sin TSA verificada no hay forma de probar que la
+                # revocación fue posterior: estado indeterminado, NO válida
+                # (`revocacion_posterior` queda None).
+                valida = False
+                motivo = "instante_firma_no_cierto"
+            elif revocacion_status == "revocado" and _revocada_despues_de_firmar(
+                status_body.get("revocado_at"), instante_cierto
+            ):
+                # La clave se revocó DESPUÉS de una firma con fecha cierta
+                # (AREA-04-13) y el motivo no es compromiso: la firma fue
+                # válida cuando se hizo; `valida` se queda como la dejó la
+                # cripto y se informa aparte.
+                revocacion_posterior = True
+            elif revocacion_status != "vigente":
+                valida = False
+                motivo = (
+                    "certificado_revocado"
+                    if revocacion_status == "revocado"
+                    # `desconocido` fail-closed (huella no encontrada en
+                    # este tenant — otro tenant, forjada, o el titular
+                    # borrado por CASCADE): NUNCA se reporta `vigente`.
+                    else "certificado_desconocido"
+                )
+
+    return VerifyResponse(
+        firma_id=row["id"],
+        valida=valida,
+        provider=provider_name,
+        # El nivel REALMENTE verificado para ESTE documento (RT-16, Pieza
+        # 6.4) — nunca el `xades_level` "intencionado" al firmar. Se cae
+        # al persistido en la fila solo si `verify_xades` no llegó a
+        # evaluar ningún nivel (p. ej. certificado fuera de vigencia).
+        xades_level=outcome.xades_level or row.get("xades_level"),
+        nivel_conformidad=row.get("nivel_conformidad"),
+        acreditado=_acreditado(row, valida=valida),
+        motivo=motivo,
+        # (Inc.4) None cuando la firma no lleva SignatureTimeStamp (no
+        # aplica, no es un fallo) — ver app.providers.local.VerifyOutcome.
+        sello_tiempo_valido=outcome.sello_tiempo_valido,
+        tsa_timestamp=outcome.tsa_timestamp,
+        lt_material_present=outcome.lt_material_present,
+        archive_timestamp_present=outcome.archive_timestamp_present,
+        lta_vigente=outcome.lta_vigente,
+        revocation_provenance=outcome.revocation_provenance,
+        crl_next_update=outcome.crl_next_update,
+        ocsp_present=outcome.ocsp_present,
+        ocsp_cert_status=outcome.ocsp_cert_status,
+        firma_criptograficamente_valida=firma_criptograficamente_valida,
+        revocacion_status=revocacion_status,
+        revocacion_posterior=revocacion_posterior,
+        # Solo se declaran sobre una firma que VALIDA: un aviso sobre un
+        # veredicto negativo sería ruido encima del motivo real.
+        advertencias=advertencias if valida else [],
+        archive_timestamps=(
+            [ArchiveTimestampInfo.model_validate(a) for a in outcome.archive_timestamps]
+            if valida else []
+        ),
+    )
+
+
 @router.post("/verify", response_model=VerifyResponse)
 async def verify(
     payload: VerifyRequest,
@@ -319,177 +505,9 @@ async def verify(
             detail={"error": "firma_not_found", "detail": str(payload.firma_id), "status": 404},
         )
 
-    if row.get("provider") in ("xades_local", "xades_personal"):
-        provider_name = row["provider"]
-        is_personal = provider_name == "xades_personal"
-        fingerprint = row.get("certificado_fingerprint")
-        if not fingerprint:
-            return VerifyResponse(
-                firma_id=row["id"],
-                valida=False,
-                provider=provider_name,
-                xades_level=row.get("xades_level"),
-                nivel_conformidad=row.get("nivel_conformidad"),
-                acreditado=False,  # no valida -> no acredita (AREA-05-02)
-                motivo="firma_sin_huella_de_certificado_registrada",
-            )
-        # Ata la verificación a ESTA firma_id (migración 010): sin esto, el
-        # signed_xml de OTRO índice firmado con el MISMO sello institucional
-        # del tenant se reportaría `valida=True` para cualquier firma_id de
-        # ese tenant. `signed_xml_sha256` es NULL en filas anteriores a la
-        # migración — se degrada al comportamiento previo (solo huella de
-        # certificado) para no romper la verificación de firmas históricas.
-        expected_xml_sha256 = row.get("signed_xml_sha256")
-        # B10 §8: una firma LTA renovada tiene VARIOS XML válidos (el original y cada
-        # renovación) y varias TSA ancladas; ambos salen de `firma_sello_archivo`.
-        sellos = await _sellos_de_la_firma(conn, row["id"])
-        aceptados = {s["xml_sha256"] for s in sellos if s["estado"] in ("vigente", "caducado")}
-        if expected_xml_sha256:
-            aceptados.add(expected_xml_sha256)
-        if aceptados and hashlib.sha256(
-            payload.payload_xml.encode()
-        ).hexdigest() not in aceptados:
-            return VerifyResponse(
-                firma_id=row["id"],
-                valida=False,
-                provider=provider_name,
-                xades_level=row.get("xades_level"),
-                nivel_conformidad=row.get("nivel_conformidad"),
-                acreditado=False,  # no valida -> no acredita (AREA-05-02)
-                motivo="documento_no_corresponde_a_firma_id",
-            )
-        advertencias: list[str] = []
-        outcome = verify_xades(
-            payload.payload_xml.encode(),
-            fingerprint,
-            expected_tsa_fingerprint=row.get("tsa_cert_fingerprint"),
-            # `ca_fingerprint` (misma columna, dos semánticas mutuamente
-            # excluyentes por `provider`, ver docstring de la función): ancla
-            # LT institucional para xades_local, ancla de la sub-CA de
-            # usuarios para xades_personal — NUNCA ambos kwargs a la vez.
-            expected_ca_fingerprint=(None if is_personal else row.get("ca_fingerprint")),
-            expected_ocsp_responder_fingerprint=row.get("ocsp_responder_fingerprint"),
-            expected_user_ca_fingerprint=(row.get("ca_fingerprint") if is_personal else None),
-            advertencias=advertencias,
-            tsa_fingerprints_archivo=[s["tsa_cert_fingerprint"] for s in sellos],
-        )
-
-        # `firma_criptograficamente_valida`: el veredicto de `verify_xades`
-        # a secas (criptografía + cadena/anclaje), SIN la dimensión de
-        # revocación — NUNCA difama la cripto por un canal de revocación
-        # caído (ver docstring de `VerifyResponse`).
-        firma_criptograficamente_valida = outcome.valida
-        valida = outcome.valida
-        motivo = outcome.motivo
-        revocacion_status: str | None = None
-        revocacion_posterior: bool | None = None
-
-        # Revocación en línea (A2, Incremento 2) — SOLO firmas personales
-        # cuya cripto+cadena YA validó (revocar no tiene sentido evaluarlo
-        # sobre una firma ya inválida por otra causa, y evita una llamada de
-        # red innecesaria). `verify_xades` sigue siendo PURA — esta llamada
-        # vive aquí, en el router.
-        if is_personal and outcome.valida:
-            tenant_slug = request.headers.get("X-Tenant-Slug", "")
-            try:
-                status_body = await get_signing_key_revocation_status_remote(
-                    fingerprint, tenant_slug
-                )
-                revocacion_status = status_body.get("status", "desconocido")
-            except SigningKeyRevocationStatusUnavailableError:
-                logger.warning(
-                    "No se pudo consultar signing-key/revocation-status para "
-                    "firma_id=%s; aplicando verify_personal_revocation_require",
-                    row["id"],
-                    exc_info=True,
-                )
-                revocacion_status = "no_verificable"
-                if settings.verify_personal_revocation_require:
-                    valida = False
-                    motivo = "revocacion_no_verificable"
-                # Fail-open (opt-in, NO default): la cripto ya validó, así
-                # que `valida` se queda en True — solo se informa el canal
-                # caído vía `revocacion_status`, sin invalidar.
-            else:
-                # Instante de la firma: SOLO el genTime de una TSA verificada
-                # es fecha cierta oponible (RFC 3161; DUR 1074 cap. 47-48). El
-                # `sello_tiempo` de la fila lo pone el propio servidor: no
-                # sirve para conservar la validez ante una revocación.
-                instante_cierto = (
-                    outcome.tsa_timestamp
-                    if outcome.sello_tiempo_valido and outcome.tsa_timestamp
-                    else None
-                )
-                if (
-                    revocacion_status == "revocado"
-                    and status_body.get("motivo_revocacion") == "key_compromise"
-                ):
-                    # Compromiso de la clave: lo firmado ANTES también queda en
-                    # duda (ETSI EN 319 102-1) — invalida hacia atrás.
-                    valida = False
-                    motivo = "clave_comprometida"
-                elif (
-                    revocacion_status == "revocado"
-                    and instante_cierto is None
-                    and status_body.get("revocado_at")
-                ):
-                    # Sin TSA verificada no hay forma de probar que la
-                    # revocación fue posterior: estado indeterminado, NO válida
-                    # (`revocacion_posterior` queda None).
-                    valida = False
-                    motivo = "instante_firma_no_cierto"
-                elif revocacion_status == "revocado" and _revocada_despues_de_firmar(
-                    status_body.get("revocado_at"), instante_cierto
-                ):
-                    # La clave se revocó DESPUÉS de una firma con fecha cierta
-                    # (AREA-04-13) y el motivo no es compromiso: la firma fue
-                    # válida cuando se hizo; `valida` se queda como la dejó la
-                    # cripto y se informa aparte.
-                    revocacion_posterior = True
-                elif revocacion_status != "vigente":
-                    valida = False
-                    motivo = (
-                        "certificado_revocado"
-                        if revocacion_status == "revocado"
-                        # `desconocido` fail-closed (huella no encontrada en
-                        # este tenant — otro tenant, forjada, o el titular
-                        # borrado por CASCADE): NUNCA se reporta `vigente`.
-                        else "certificado_desconocido"
-                    )
-
-        return VerifyResponse(
-            firma_id=row["id"],
-            valida=valida,
-            provider=provider_name,
-            # El nivel REALMENTE verificado para ESTE documento (RT-16, Pieza
-            # 6.4) — nunca el `xades_level` "intencionado" al firmar. Se cae
-            # al persistido en la fila solo si `verify_xades` no llegó a
-            # evaluar ningún nivel (p. ej. certificado fuera de vigencia).
-            xades_level=outcome.xades_level or row.get("xades_level"),
-            nivel_conformidad=row.get("nivel_conformidad"),
-            acreditado=_acreditado(row, valida=valida),
-            motivo=motivo,
-            # (Inc.4) None cuando la firma no lleva SignatureTimeStamp (no
-            # aplica, no es un fallo) — ver app.providers.local.VerifyOutcome.
-            sello_tiempo_valido=outcome.sello_tiempo_valido,
-            tsa_timestamp=outcome.tsa_timestamp,
-            lt_material_present=outcome.lt_material_present,
-            archive_timestamp_present=outcome.archive_timestamp_present,
-            lta_vigente=outcome.lta_vigente,
-            revocation_provenance=outcome.revocation_provenance,
-            crl_next_update=outcome.crl_next_update,
-            ocsp_present=outcome.ocsp_present,
-            ocsp_cert_status=outcome.ocsp_cert_status,
-            firma_criptograficamente_valida=firma_criptograficamente_valida,
-            revocacion_status=revocacion_status,
-            revocacion_posterior=revocacion_posterior,
-            # Solo se declaran sobre una firma que VALIDA: un aviso sobre un
-            # veredicto negativo sería ruido encima del motivo real.
-            advertencias=advertencias if valida else [],
-            archive_timestamps=(
-                [ArchiveTimestampInfo.model_validate(a) for a in outcome.archive_timestamps]
-                if valida else []
-            ),
+    if row.get("provider") in PROVIDERS_FIRMA_ELECTRONICA:
+        return await verificar_xades(
+            conn, row, payload.payload_xml, request.headers.get("X-Tenant-Slug", "")
         )
 
     firmante_id = str(row["firmante_id"]) if row["firmante_id"] else ""

@@ -163,6 +163,11 @@ class TurnoItem(BaseModel):
     firma_id: uuid.UUID | None = None
     comentario: str | None = None
     decidido_at: datetime | None = None
+    # ADR-054 §1: el turno «firmado» dice QUÉ firma dejó. `None` mientras no hay
+    # firma. `electronic_signature` (XAdES personal) o `simple_signature_record`
+    # (HMAC nativo: constancia de firma simple). Se deriva del proveedor de la
+    # fila `firma`, nunca lo declara el cliente.
+    kind: str | None = None
 
 
 class SolicitudResponse(BaseModel):

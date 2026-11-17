@@ -14,9 +14,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
-from signature.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
+from signature.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS, signature_kind
 
 
 class SignXmlRequest(BaseModel):
@@ -204,6 +204,15 @@ class FirmaResponse(BaseModel):
     # lt_material_present/archive_timestamp_present, migración 014.
     ocsp_present: bool = False
 
+    # ADR-054 §1: qué ES esta firma, derivado del proveedor y nunca elegido por el
+    # llamante. ``electronic_signature`` (XAdES, verificable por un tercero con el
+    # certificado) o ``simple_signature_record`` (HMAC nativo: constancia de firma
+    # simple, íntegra dentro del sistema, sin prueba de autoría fuera de él).
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def kind(self) -> str:
+        return signature_kind(self.provider)
+
 
 class VerifyRequest(BaseModel):
     """``payload_xml`` es el XML de entrada a verificar.
@@ -317,6 +326,15 @@ class VerifyResponse(BaseModel):
     # `tsa_revocada_despues_del_sello[i]`.
     archive_timestamps: list[ArchiveTimestampInfo] = Field(default_factory=list)
 
+    # ADR-054 §1: qué ES esta firma, derivado del proveedor y nunca elegido por el
+    # llamante. ``electronic_signature`` (XAdES, verificable por un tercero con el
+    # certificado) o ``simple_signature_record`` (HMAC nativo: constancia de firma
+    # simple, íntegra dentro del sistema, sin prueba de autoría fuera de él).
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def kind(self) -> str:
+        return signature_kind(self.provider)
+
 
 class SelloArchivoListItem(BaseModel):
     """Último eslabón de la cadena de sellos de archivo de una firma (C-6). Content-free: sin asunto,
@@ -362,3 +380,38 @@ class ArtefactoVigenteItem(BaseModel):
 
 class ArtefactosVigentesResponse(BaseModel):
     items: list[ArtefactoVigenteItem]
+
+
+class PublicSignatureVerification(BaseModel):
+    """Respuesta de la verificación PÚBLICA por código (ADR-054 §2).
+
+    Content-free: el veredicto y los metadatos que la propia firma declara,
+    nunca el XML ni el documento. Los nombres de campo son los del contrato del
+    ADR, en español como el resto de respuestas de firma.
+
+    ``kind`` dice qué se está verificando. Para una ``simple_signature_record``
+    (HMAC nativo) ``valida`` es ``None``: la constancia simple no la puede
+    verificar un tercero —la clave la custodia la plataforma— y responder
+    ``True`` se leería como una firma electrónica válida; responder ``False``
+    afirmaría una manipulación que no ocurrió.
+
+    ``acreditado`` se publica tal cual: es el campo que impide leer «válida»
+    como «cualificada».
+    """
+
+    firma_id: uuid.UUID
+    kind: str
+    valida: bool | None
+    firma_criptograficamente_valida: bool | None = None
+    revocacion_status: str | None = None
+    motivo: str | None = None
+    nivel: str | None = None
+    firmante: str | None = None
+    firmado_en: datetime
+    sello_tiempo: datetime | None = None
+    huella_documento: str
+    acreditado: bool = False
+    # Ruta AUTENTICADA de los metadatos completos de la firma, desde donde se
+    # llega al XML firmado con permiso y clearance. La verificación pública no lo
+    # entrega: sería una descarga de documentos sin control de acceso.
+    constancia: str

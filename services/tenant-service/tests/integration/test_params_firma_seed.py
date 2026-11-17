@@ -10,9 +10,10 @@
 
 """Semilla de la política XAdES por entidad contra Postgres REAL.
 
-Un valor presente GANA sobre el entorno: si la cadena sembrara `"off"`, anularía el
-respaldo `FIRMA_PERSONAL_REQUIRE_XADES`. Por eso una entidad nueva nace con JSON null
-(«sin decidir») y sin asiento en `admin_audit` para esa clave.
+ADR-054 §1: una entidad nueva nace en `"clasificados"` —un acto clasificado no se
+resuelve con la constancia de firma simple (HMAC)— y sin asiento en `admin_audit`
+para esa clave. Bajarla a `"off"` es un acto explícito de la entidad, que sí deja
+asiento.
 
 Esquemas desechables `tenant_itest_*`; nunca toca migraciones globales.
 """
@@ -57,7 +58,8 @@ _CLAVE = "firma_personal_require_xades"
 
 
 @pytest.mark.asyncio
-async def test_la_cadena_siembra_null_no_off(conn: asyncpg.Connection) -> None:
-    assert await conn.fetchval("SELECT value::text FROM sgd_param_admin WHERE key = $1", _CLAVE) == "null"
+async def test_la_cadena_siembra_clasificados(conn: asyncpg.Connection) -> None:
+    valor = await conn.fetchval("SELECT value #>> '{}' FROM sgd_param_admin WHERE key = $1", _CLAVE)
+    assert valor == "clasificados"
     n = await conn.fetchval("SELECT count(*) FROM admin_audit WHERE entity = 'param' AND entity_id = $1", _CLAVE)
     assert n == 0
