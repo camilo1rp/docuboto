@@ -139,7 +139,6 @@ def test_la_cabecera_del_roadmap_tiene_fecha_igual_en_los_dos_idiomas() -> None:
 _SOLO_EN_ESPANOL: dict[str, str] = {
     "adr/": "las decisiones de arquitectura se escriben y se razonan en español",
     "historia/": "archivo de las cadenas de migraciones anteriores a ADR-053; no se ejecuta",
-    "mcp-flujos.md": "censo interno de cobertura del MCP; se regenera con scripts/censo_mcp.py",
     "plan-brechas-silvania.md": "plan interno de backend para las brechas de operación de Silvania",
     "plan-pruebas.md": "plan de pruebas del proyecto, de uso interno",
     "politica-tratamiento-plantilla.md": "plantilla legal colombiana (Ley 1581) que adapta cada entidad",
@@ -378,49 +377,6 @@ def test_la_documentacion_de_registro_y_orquestacion_dice_lo_que_hay() -> None:
         for rel in ("docs/es/deployment.md", "docs/en/deployment.md"):
             assert not _contiene(rel, "Kubernetes (recomendado)")
             assert not _contiene(rel, "Kubernetes (recommended)")
-
-
-# --------------------------------------------------------------------------- AREA-11-05 (cifras del catálogo MCP)
-
-
-def _catalogo_mcp() -> tuple[int, int, int, int]:
-    """(tools, escrituras, irreversibles, con valor tecleado) leídos del AST de CATALOG."""
-    import ast
-
-    arbol = ast.parse(_leer("services/mcp-server/app/tools/catalog.py"))
-    elts = next(
-        n.value.elts  # type: ignore[union-attr]
-        for n in arbol.body
-        if isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "CATALOG"
-    )
-
-    def _con(e: ast.expr, kw: str, valor: object = True) -> bool:
-        return isinstance(e, ast.Call) and any(
-            k.arg == kw and (valor is None or getattr(k.value, "value", None) is valor) for k in e.keywords
-        )
-
-    return (
-        len(elts),
-        sum(_con(e, "write") for e in elts),
-        sum(_con(e, "destructive") for e in elts),
-        sum(_con(e, "confirmar_con", None) for e in elts),
-    )
-
-
-def test_las_cifras_del_catalogo_mcp_en_api_md_son_las_del_codigo() -> None:
-    tools, escrituras, irreversibles, tecleadas = _catalogo_mcp()
-    assert tools > 150 and 0 < escrituras < tools and irreversibles > 0 and tecleadas > 0
-    for rel in ("docs/es/api.md", "docs/en/api.md"):
-        texto = _leer(rel)
-        citas = re.findall(r"\*\*(\d+) tools\*\*", texto)
-        assert citas, f"{rel}: no cita el total de tools (el guardián vigilaría el vacío)"
-        assert set(citas) == {str(tools)}, f"{rel} cita {sorted(set(citas))} tools y el catálogo tiene {tools}"
-        m = re.search(r"\*\*(\d+) tools, (\d+) (?:of them writes|de escritura)\*\*", texto)
-        assert m, f"{rel}: falta la frase «N tools, M de escritura»"
-        assert (int(m.group(1)), int(m.group(2))) == (tools, escrituras), rel
-        assert f"**{irreversibles} " in texto and f"**{tecleadas} " in texto, (
-            f"{rel}: irreversibles ({irreversibles}) o con valor tecleado ({tecleadas}) desactualizados"
-        )
 
 
 # --------------------------------------------------------------------------- C-6 (ADR-042)

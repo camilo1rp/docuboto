@@ -1928,7 +1928,7 @@ def _audit_inserts(mock_conn, action: str) -> list:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canal", ["api", "ui", "mcp"])
+@pytest.mark.parametrize("canal", ["api", "ui"])
 async def test_get_expediente_audits_read_access_for_user_channels(
     client_with_conn: tuple[AsyncClient, AsyncMock], canal: str
 ) -> None:

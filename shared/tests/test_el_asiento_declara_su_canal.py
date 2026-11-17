@@ -155,9 +155,9 @@ async def test_peticion_sin_marca_del_gateway_asienta_api() -> None:
 
 @pytest.mark.asyncio
 async def test_peticion_hereda_el_canal_del_gateway() -> None:
-    token = request_log._canal.set("mcp")
+    token = request_log._canal.set("ui")
     try:
-        assert await _asentar(audit.CANAL_PETICION) == "mcp"
+        assert await _asentar(audit.CANAL_PETICION) == "ui"
     finally:
         request_log._canal.reset(token)
 

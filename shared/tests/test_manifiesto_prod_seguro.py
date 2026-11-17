@@ -45,9 +45,6 @@ _REF = re.compile(r"\$\{([A-Z][A-Z0-9_]*)(:\?|:-|-|\?)?")
 
 #: Referencias con valor por defecto que SÍ son legítimas, con su motivo.
 DEFECTO_DECLARADO = {
-    # Secreto ANTERIOR durante una rotación: vacío cuando no hay rotación en curso.
-    # El vigente (MCP_PROPOSAL_SECRET) es `:?`.
-    "MCP_PROPOSAL_SECRET_PREVIOUS",
     # Llavero versionado de webhooks: `{}` + versión 1 sin rotación; la clave
     # activa (WEBHOOK_SECRET_KEK) es `:?`.
     "WEBHOOK_SECRET_KEKS",

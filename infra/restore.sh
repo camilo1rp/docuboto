@@ -295,7 +295,7 @@ echo "── Parando servicios de aplicación..."
     app worker \
     api-gateway auth-service tenant-service document-service storage-service \
     workflow-service archive-service notification-service signature-service \
-    knowledge-service mcp-server frontend keycloak || true
+    knowledge-service frontend keycloak || true
 
 
 # ── Extremo de audit_log ANTES de restaurar (ARC-M4) ────────────────────────

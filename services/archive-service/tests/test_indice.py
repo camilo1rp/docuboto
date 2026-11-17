@@ -2192,7 +2192,7 @@ def _audit_inserts(mock_conn, action: str) -> list:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canal", ["api", "ui", "mcp"])
+@pytest.mark.parametrize("canal", ["api", "ui"])
 async def test_get_indice_audits_read_access_for_user_channels(client_with_conn, canal) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08 + advisory lock/prev_hash de audit.append

@@ -191,7 +191,7 @@ async def _consulta(client, mock_conn, monkeypatch, *, canal: str | None, header
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canal", ["api", "ui", "mcp"])
+@pytest.mark.parametrize("canal", ["api", "ui"])
 async def test_la_consulta_de_un_usuario_deja_un_asiento(
     client_with_conn, monkeypatch, canal
 ) -> None:

@@ -111,12 +111,12 @@ class SoporteCitadoNoAvaladoError(Exception):
     """Un expediente del lote tiene una constancia de firma inobtenible vigente que cita uno de sus
     anexos y el lote no trae la baja de soporte avalada (C14, ADR-043). El expediente no se toca."""
 
-# Canales que representan una consulta real de un usuario (gateway/mcp-server,
+# Canales que representan una consulta real de un usuario (gateway,
 # ADR-019/D-03) — 'system' (jobs/regeneraciones internas, o llamadas internas
 # que reutilizan `get_expediente` tras una mutación ya auditada aparte) queda
 # excluido: no ensucia la pista de acceso ni la duplica (E15 perfil v4, R3-a).
 # Espejo de `index_service._CANALES_AUDITABLES`.
-_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
+_CANALES_AUDITABLES = frozenset({"api", "ui"})
 
 
 def _csv_safe(value: object) -> object:

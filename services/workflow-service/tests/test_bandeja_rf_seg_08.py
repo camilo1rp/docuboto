@@ -206,7 +206,7 @@ async def test_inbox_audits_once_per_query(client_with_conn) -> None:
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchval.return_value = 2
     mock_conn.fetch.return_value = [make_step_record(), make_step_record()]
-    headers = {**TENANT_HEADERS, "X-Canal": "mcp"}
+    headers = {**TENANT_HEADERS, "X-Canal": "ui"}
 
     response = await client.get("/api/v1/workflows/inbox?box=entrada", headers=headers)
 
@@ -214,7 +214,7 @@ async def test_inbox_audits_once_per_query(client_with_conn) -> None:
     inserts = _audit_insert_calls(mock_conn)
     assert len(inserts) == 1
     args = inserts[0].args
-    assert args[4] == "mcp"
+    assert args[4] == "ui"
     assert args[5] == "workflow.bandeja_consultada"
 
 
@@ -423,7 +423,7 @@ async def test_get_flow_events_audits_once_per_query(client_with_conn) -> None:
         make_event_record(tipo_tx="assign"),
         make_event_record(tipo_tx="complete"),
     ]
-    headers = {**TENANT_HEADERS, "X-Canal": "mcp"}
+    headers = {**TENANT_HEADERS, "X-Canal": "ui"}
 
     response = await client.get(
         f"/api/v1/workflows/{RADICADO_ID}/events", headers=headers
@@ -434,7 +434,7 @@ async def test_get_flow_events_audits_once_per_query(client_with_conn) -> None:
     assert len(inserts) == 1  # UNA entrada, no una por cada uno de los 2 eventos
     args = inserts[0].args
     assert args[3] == str(USER_ID)
-    assert args[4] == "mcp"
+    assert args[4] == "ui"
     assert args[5] == "workflow.tramite_consultado"
     assert args[6] == "radicado"
     assert args[7] == TRACKING_NUMBER

@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Buscar y preguntar delegan, rechequean y vuelven al índice local si el proveedor no responde."""
+"""Buscar delega, rechequea y vuelve al índice local si el proveedor no responde."""
 
 from __future__ import annotations
 
@@ -23,8 +23,7 @@ from orpycamcp_common.kek import seal
 from knowledge.clients.ppi import ClientePpi
 from knowledge.core import consulta
 from knowledge.core.config import settings
-from knowledge.core.consulta import NO_DISPONIBLE
-from knowledge.core.rechequeo import Registro, filtrar_busqueda, filtrar_pregunta, refs_a_borrar
+from knowledge.core.rechequeo import Registro, filtrar_busqueda, refs_a_borrar
 from knowledge.core.seudonimo import aad, referenciar
 from knowledge.routers import knowledge as rutas
 from tests.conftest import TENANT_HEADERS
@@ -162,19 +161,6 @@ def test_un_nivel_que_esta_persona_no_alcanza_no_se_borra() -> None:
     assert descartes[0].motivo == "clearance"
 
 
-def test_una_afirmacion_sin_citas_vivas_no_se_muestra() -> None:
-    ident = uuid.uuid4()
-    vivos = {ident: Registro("2026-E-9", "anulado", 1)}
-    afirmaciones, descartes = filtrar_pregunta(
-        [{"text": "El plazo es de 15 días.", "citations": [_cita(ident, "quince")["citation"]]}],
-        vivos,
-        habilitados=[1],
-        clearance=1,
-    )
-    assert afirmaciones == []
-    assert refs_a_borrar(descartes) == [ident]
-
-
 async def test_en_local_no_hay_llamada(monkeypatch: pytest.MonkeyPatch) -> None:
     _kek(monkeypatch)
     transporte = _Transporte()
@@ -289,104 +275,6 @@ async def test_sin_clave_de_seudonimo_no_hay_llamada(monkeypatch: pytest.MonkeyP
     assert transporte.llamadas == []
 
 
-async def test_preguntar_devuelve_la_afirmacion_con_su_cita(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _kek(monkeypatch)
-    ident = uuid.uuid4()
-    transporte = _Transporte(
-        {
-            "mode": "ask",
-            "status": "answered",
-            "claims": [
-                {
-                    "text": "El plazo es de 15 días.",
-                    "citations": [_cita(ident, "quince días")["citation"]],
-                }
-            ],
-        }
-    )
-    resultado = await consulta.preguntar(
-        _Conn(credencial=_credencial(), filas=[_fila(ident, "2026-E-4")]),
-        "demo",
-        _cliente(transporte),
-        texto="¿cuál es el plazo?",
-        limite=5,
-        actor=ACTOR,
-    )
-    assert resultado.delegada is True
-    assert resultado.fallo is False
-    assert resultado.status == "answered"
-    assert resultado.answer == "El plazo es de 15 días."
-    assert resultado.citas[0].tracking == "2026-E-4"
-    assert transporte.llamadas[0][3] == consulta.PLAZO_PREGUNTAR
-
-
-async def test_preguntar_sin_citas_vivas_es_evidencia_insuficiente(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _kek(monkeypatch)
-    ident = uuid.uuid4()
-    transporte = _Transporte(
-        {
-            "mode": "ask",
-            "status": "answered",
-            "claims": [
-                {"text": "Sin fuente.", "citations": [_cita(ident, "nada")["citation"]]}
-            ],
-        }
-    )
-    resultado = await consulta.preguntar(
-        _Conn(credencial=_credencial(), filas=[_fila(ident, "2026-E-5", status="anulado")]),
-        "demo",
-        _cliente(transporte),
-        texto="¿cuál es el plazo?",
-        limite=5,
-        actor=ACTOR,
-    )
-    assert resultado.status == "insufficient_evidence"
-    assert resultado.answer is None
-    assert resultado.citas == ()
-    assert transporte.llamadas[1][0] == "POST"
-
-
-async def test_preguntar_si_el_proveedor_falla_pide_el_respaldo(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _kek(monkeypatch)
-    transporte = _Transporte(error=RuntimeError("500"))
-    conn = _Conn(credencial=_credencial(), filas=[])
-    resultado = await consulta.preguntar(
-        conn,
-        "demo",
-        _cliente(transporte),
-        texto="¿cuál es el plazo?",
-        limite=5,
-        actor=ACTOR,
-    )
-    assert resultado.delegada is True
-    assert resultado.fallo is True
-    assert resultado.advisory == NO_DISPONIBLE
-    assert conn.escrituras == [("fallback", "local")]
-
-
-async def test_en_local_preguntar_no_delega(monkeypatch: pytest.MonkeyPatch) -> None:
-    _kek(monkeypatch)
-    transporte = _Transporte()
-    conn = _Conn(credencial=_credencial(), filas=[], proveedor="local")
-    resultado = await consulta.preguntar(
-        conn,
-        "demo",
-        _cliente(transporte),
-        texto="¿cuál es el plazo?",
-        limite=5,
-        actor=ACTOR,
-    )
-    assert resultado.delegada is False
-    assert transporte.llamadas == []
-    assert conn.escrituras == []
-
-
 async def test_suspendido_buscar_anota_el_respaldo(monkeypatch: pytest.MonkeyPatch) -> None:
     _kek(monkeypatch)
     transporte = _Transporte()
@@ -397,25 +285,6 @@ async def test_suspendido_buscar_anota_el_respaldo(monkeypatch: pytest.MonkeyPat
     assert resultado.delegada is False
     assert transporte.llamadas == []
     assert conn.escrituras == [("fallback", "local")]
-
-
-async def test_suspendido_preguntar_no_cuenta_como_respaldo(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _kek(monkeypatch)
-    transporte = _Transporte()
-    conn = _Conn(credencial=_credencial(), filas=[], suspendido=True)
-    resultado = await consulta.preguntar(
-        conn,
-        "demo",
-        _cliente(transporte),
-        texto="¿cuál es el plazo?",
-        limite=5,
-        actor=ACTOR,
-    )
-    assert resultado.delegada is False
-    assert resultado.fallo is False
-    assert conn.escrituras == []
 
 
 async def test_search_publica_el_origen_cuando_delega(
@@ -445,131 +314,6 @@ async def test_search_publica_el_origen_cuando_delega(
     assert hit["origin"] == "ppi"
     assert hit["source_ref"] == "2026-E-1"
     assert hit["texto"] == "cita viva"
-
-
-async def test_rag_si_el_proveedor_falla_incluye_el_indice_local(
-    client_with_conn, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    client, _conn = client_with_conn
-
-    async def falla(*_args: Any, **_kwargs: Any) -> consulta.Pregunta:
-        return consulta.Pregunta(True, True, "unavailable", None, (), NO_DISPONIBLE)
-
-    ident = uuid.UUID("11111111-1111-4111-8111-111111111111")
-
-    async def local(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
-        return [
-            {
-                "id": str(ident),
-                "tracking_number": "2026-E-7",
-                "subject": "Plazo de respuesta",
-                "rank": 0.4,
-            }
-        ]
-
-    monkeypatch.setattr(rutas.consulta, "preguntar", falla)
-    monkeypatch.setattr(rutas.document_search, "search", local)
-
-    resp = await client.post(
-        "/api/v1/knowledge/rag",
-        json={"query": "plazo de respuesta"},
-        headers=TENANT_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-    cuerpo = resp.json()
-    assert cuerpo["answer"] is None
-    assert cuerpo["status"] == "unavailable"
-    assert cuerpo["origin"] == "local_index"
-    assert cuerpo["advisory"] == NO_DISPONIBLE
-    assert cuerpo["citations"] == [
-        {
-            "cited_text": "Plazo de respuesta",
-            "source_type": "radicado",
-            "source_ref": "2026-E-7",
-            "score": 0.4,
-            "page": None,
-            "attachment_ref": None,
-            "record_id": str(ident),
-        }
-    ]
-
-
-async def test_rag_publica_la_pagina_y_el_anexo(
-    client_with_conn, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    client, _conn = client_with_conn
-    ident = uuid.UUID("11111111-1111-4111-8111-111111111111")
-    anexo = "22222222-2222-4222-8222-222222222222"
-
-    async def responde(*_args: Any, **_kwargs: Any) -> consulta.Pregunta:
-        from knowledge.core.rechequeo import Hallazgo
-
-        cita = Hallazgo(ident, "2026-E-1", "quince días", 0.8, 3, anexo)
-        return consulta.Pregunta(
-            True, False, "answered", "El plazo es de quince días.", (cita,), "ok"
-        )
-
-    monkeypatch.setattr(rutas.consulta, "preguntar", responde)
-    resp = await client.post(
-        "/api/v1/knowledge/rag",
-        json={"query": "cuál es el plazo", "record_ref": str(ident)},
-        headers=TENANT_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
-    cuerpo = resp.json()
-    assert cuerpo["origin"] == "ppi"
-    assert cuerpo["citations"] == [
-        {
-            "cited_text": "quince días",
-            "source_type": "radicado",
-            "source_ref": "2026-E-1",
-            "score": 0.8,
-            "page": 3,
-            "attachment_ref": anexo,
-            "record_id": str(ident),
-        }
-    ]
-
-
-async def test_availability_en_ppi_declara_generacion(client_with_conn) -> None:
-    client, conn = client_with_conn
-
-    async def fetchrow(sql: str, *_args: Any) -> Any:
-        if "public.tenants" in sql:
-            return {
-                "asistente_habilitado": True,
-                "intelligence_provider": "ppi",
-                "intelligence_levels": [1],
-                "intelligence_send_metadata": False,
-            }
-        if "intelligence_state" in sql:
-            return {"send_suspended": False}
-        return None
-
-    conn.fetchrow = fetchrow
-    resp = await client.get("/api/v1/knowledge/availability", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json() == {"generation": True, "mode": "ppi"}
-
-
-async def test_availability_suspendida_no_genera(client_with_conn) -> None:
-    client, conn = client_with_conn
-
-    async def fetchrow(sql: str, *_args: Any) -> Any:
-        if "public.tenants" in sql:
-            return {
-                "asistente_habilitado": True,
-                "intelligence_provider": "ppi",
-                "intelligence_levels": [1],
-                "intelligence_send_metadata": False,
-            }
-        if "intelligence_state" in sql:
-            return {"send_suspended": True}
-        return None
-
-    conn.fetchrow = fetchrow
-    resp = await client.get("/api/v1/knowledge/availability", headers=TENANT_HEADERS)
-    assert resp.json() == {"generation": False, "mode": "ppi"}
 
 
 async def test_el_transporte_declara_la_version(monkeypatch: pytest.MonkeyPatch) -> None:

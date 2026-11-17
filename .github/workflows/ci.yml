@@ -133,7 +133,6 @@ jobs:
           - notification-service
           - signature-service
           - knowledge-service
-          - mcp-server
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

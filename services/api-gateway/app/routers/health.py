@@ -25,11 +25,10 @@ exige autenticación, así que el mapa de nombres y puertos internos estaba
 disponible para cualquiera que la consultara con un servicio caído. Ahora el
 estado es una palabra y el detalle va al log.
 
-**3. No cubría tres servicios.** La lista tenía siete entradas; el sistema tiene
-diez servicios detrás del gateway. signature (firma y sellado), knowledge
-(búsqueda y antecedentes) y mcp (catálogo MCP) podían estar caídos sin que el
-diagnóstico lo mencionara — y el diagnóstico se lee justo cuando algo va mal.
-La lista se deriva ahora de `_DOWNSTREAM`, que enumera los diez.
+**3. No cubría todos los servicios.** La lista tenía siete entradas. signature
+(firma y sellado) y knowledge (búsqueda y antecedentes) podían estar caídos sin
+que el diagnóstico lo mencionara — y el diagnóstico se lee justo cuando algo va
+mal. La lista se deriva ahora de `_DOWNSTREAM`, que enumera los nueve.
 """
 
 from __future__ import annotations
@@ -45,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["health"])
 
-# Los DIEZ servicios que el gateway enruta. Antes eran siete: faltaban
-# signature, knowledge y mcp.
+# Los NUEVE servicios que el gateway enruta. Antes eran siete: faltaban
+# signature y knowledge. (mcp-server se retiró, ADR-051.)
 _DOWNSTREAM = [
     ("auth-service", "auth_service_url"),
     ("tenant-service", "tenant_service_url"),
@@ -57,7 +56,6 @@ _DOWNSTREAM = [
     ("notification-service", "notification_service_url"),
     ("signature-service", "signature_service_url"),
     ("knowledge-service", "knowledge_service_url"),
-    ("mcp-server", "mcp_service_url"),
 ]
 
 

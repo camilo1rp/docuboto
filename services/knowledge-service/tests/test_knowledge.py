@@ -203,29 +203,15 @@ async def test_antecedentes_exige_exactamente_uno(client_with_conn, cuerpo) -> N
     assert resp.status_code == 422
 
 
-# --- /rag y /availability -----------------------------------------------------------
-
-
-async def test_rag_sin_proveedor_es_503_y_no_consulta_nada(client_with_conn, document_service) -> None:
-    client, _ = client_with_conn
-    recibidas = document_service(_por_q({}))
-
-    resp = await client.post("/api/v1/knowledge/rag", json={"query": "plazo de respuesta"}, headers=TENANT_HEADERS)
-
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["error"] == "rag_unavailable"
-    assert recibidas == []
-
-
-async def test_availability_dice_que_no_hay_generacion(client_with_conn) -> None:
-    client, _ = client_with_conn
-    resp = await client.get("/api/v1/knowledge/availability", headers=TENANT_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json() == {"generation": False, "mode": "local"}
-
-
 async def test_las_rutas_retiradas_ya_no_existen(client_with_conn) -> None:
     client, _ = client_with_conn
+    for metodo, ruta in (
+        ("POST", "/api/v1/knowledge/rag"),
+        ("GET", "/api/v1/knowledge/availability"),
+        ("GET", "/api/v1/knowledge/transmission"),
+    ):
+        resp = await client.request(metodo, ruta, headers=TENANT_HEADERS)
+        assert resp.status_code in (404, 405), ruta  # ADR-051 §2
     ingest = await client.post("/api/v1/knowledge/ingest", json={}, headers=TENANT_HEADERS)
     aceptar = await client.post(f"/api/v1/knowledge/suggestions/{uuid.uuid4()}/aceptar", headers=TENANT_HEADERS)
     assert ingest.status_code == 404

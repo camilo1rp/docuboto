@@ -82,10 +82,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SERVICE = "archive-service"
-# Canales que representan una consulta real de un usuario (gateway/mcp-server,
+# Canales que representan una consulta real de un usuario (gateway,
 # ADR-019/D-03) — 'system' (jobs/regeneraciones internas) queda excluido: no
 # ensucia la pista de acceso ni amplifica escrituras (E15 perfil v4, R3-a).
-_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
+_CANALES_AUDITABLES = frozenset({"api", "ui"})
 
 
 _TIPO_FIRMA_PERSONAL: dict[str, Literal["acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"]] = {

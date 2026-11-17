@@ -122,7 +122,7 @@ job_worm() {
     return $rc
 }
 
-UNIT=(api-gateway auth-service tenant-service document-service archive-service storage-service workflow-service notification-service signature-service knowledge-service mcp-server)
+UNIT=(api-gateway auth-service tenant-service document-service archive-service storage-service workflow-service notification-service signature-service knowledge-service)
 INTEG=(${INTEG_ONLY:-auth-service document-service archive-service storage-service signature-service workflow-service})
 
 [ $# -gt 0 ] || { sed -n '15,19p' "$0"; exit 2; }

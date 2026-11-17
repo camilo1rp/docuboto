@@ -50,7 +50,7 @@ def _con_integracion() -> set[str]:
 
 
 def test_se_encontraron_servicios_con_tests() -> None:
-    assert len(_con_tests()) >= 11, "el censo de servicios con tests se quedó corto: guardián ciego"
+    assert len(_con_tests()) >= 10, "el censo de servicios con tests se quedó corto: guardián ciego"
     assert len(_con_integracion()) >= 8
 
 

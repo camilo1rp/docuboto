@@ -19,17 +19,14 @@ from starlette.background import BackgroundTask
 #
 # Security note (D-03): "x-canal" is intentionally excluded so that clients
 # cannot forge the audit canal.  The gateway injects X-Canal server-side via
-# JWTValidationMiddleware.derive_canal() and adds it through extra_headers.
+# JWTValidationMiddleware (always "api") and adds it through extra_headers.
 FORWARDED_REQUEST_HEADERS = {
     "authorization",
     "content-type",
     "user-agent",
     "x-forwarded-for",
     "x-request-id",
-    # AREA-11-04: el `jti` de la propuesta que el mcp-server emite como
-    # `Idempotency-Key`. Los servicios lo copian a `payload.correlacion` solo en los
-    # asientos de canal 'mcp' (que es el gateway quien decide, no esta cabecera), así
-    # que reenviarla no concede nada: sin ella la correlación moría en el gateway.
+    # AREA-02-07: la ventanilla pública deduplica envíos por `Idempotency-Key`.
     "idempotency-key",
     "accept",
     "accept-language",
@@ -205,8 +202,8 @@ async def proxy_request(
     # El modo de fallo es el peor que hay: 200, sin error y con menos filas.
     # Quien pidiera dos estados recibiría uno y creería que ese es el total. Y
     # dejaba INALCANZABLE desde fuera cualquier parámetro repetible que un
-    # servicio declare, por bien que lo declare: el frontend y el mcp-server
-    # hablan siempre por aquí.
+    # servicio declare, por bien que lo declare: el frontend habla siempre
+    # por aquí.
     #
     # No lo cazaba ninguna suite porque los tests de cada servicio golpean su
     # propia app, donde el multidict llega intacto: el defecto vivía en el

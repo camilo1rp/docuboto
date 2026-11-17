@@ -12,16 +12,10 @@
 (ADR-037). Es una frontera por ADMISIÓN: una ruta nueva sin el chequeo rompe
 este test, en vez de quedar abierta en silencio.
 
-Dos comprobaciones, derivadas del árbol (no hay lista a mano):
-
-1. Toda ruta de ``knowledge-service/knowledge/routers/knowledge.py`` declara en su decorador
-   ``require_asistente_habilitado`` y ``require_permission("PERM_CONOCIMIENTO")``.
-2. Todo llamante de ``visible_tools`` / ``procedimientos_visibles`` / ``puede_usar`` /
-   ``authorize`` / ``procedure_runner.ejecutar`` en ``mcp-server/app`` pasa
-   ``asistente_habilitado=`` explícito: el default es ``False`` (fail-closed), así que
-   olvidarlo no abre nada, pero esconde las tools de conocimiento a quien sí puede verlas.
-
-Cada comprobación trae su control positivo sobre un fuente sintético.
+Derivada del árbol (no hay lista a mano): toda ruta de
+``knowledge-service/knowledge/routers/knowledge.py`` declara en su decorador
+``require_asistente_habilitado`` y ``require_permission("PERM_CONOCIMIENTO")``.
+Trae su control positivo sobre un fuente sintético.
 """
 
 from __future__ import annotations
@@ -31,16 +25,8 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
 KNOWLEDGE = RAIZ / "services" / "knowledge-service" / "knowledge" / "routers" / "knowledge.py"
-MCP_APP = RAIZ / "services" / "mcp-server" / "app"
 
 _METODOS = {"get", "post", "put", "patch", "delete"}
-_NECESITAN_BANDERA = {
-    "visible_tools",
-    "procedimientos_visibles",
-    "puede_usar",
-    "authorize",
-    "_tools_del_asistente",
-}
 
 
 def _nombres(nodo: ast.AST) -> set[str]:
@@ -86,31 +72,13 @@ def sin_permiso_knowledge(fuente: str) -> list[str]:
     return [f.name for f in _rutas(fuente) if "require_permission" not in _nombres(_decoradores(f))]
 
 
-def llamantes_sin_bandera(fuente: str) -> list[str]:
-    """Llamadas a las funciones sensibles a la bandera que no la pasan por nombre."""
-    arbol = ast.parse(fuente)
-    malas = []
-    for c in _llamadas(arbol):
-        nombre = _nombre_llamado(c)
-        es_runner = (
-            nombre == "ejecutar"
-            and isinstance(c.func, ast.Attribute)
-            and isinstance(c.func.value, ast.Name)
-            and c.func.value.id == "procedure_runner"
-        )
-        if (nombre in _NECESITAN_BANDERA or es_runner) and not any(
-            k.arg == "asistente_habilitado" for k in c.keywords
-        ):
-            malas.append(f"{nombre} (línea {c.lineno})")
-    return malas
-
 
 # --- 1. knowledge -------------------------------------------------------------------
 
 
 def test_toda_ruta_de_knowledge_mira_la_bandera_y_las_de_consulta_el_permiso() -> None:
     fuente = KNOWLEDGE.read_text()
-    assert len(_rutas(fuente)) >= 4, "el censo de rutas de knowledge se vació"
+    assert len(_rutas(fuente)) >= 2, "el censo de rutas de knowledge se vació"
     assert sin_bandera_knowledge(fuente) == []
     assert sin_permiso_knowledge(fuente) == []
 
@@ -185,25 +153,3 @@ async def sin_permiso(): ...
 '''
     assert sin_bandera_knowledge(sintetico) == ["sin_bandera"]
     assert sin_permiso_knowledge(sintetico) == ["sin_permiso"]
-
-
-# --- 2. los llamantes pasan la bandera ------------------------------------------------------
-
-
-def test_todo_llamante_del_catalogo_pasa_la_bandera() -> None:
-    malos: list[str] = []
-    for ruta in sorted(MCP_APP.rglob("*.py")):
-        for m in llamantes_sin_bandera(ruta.read_text()):
-            malos.append(f"{ruta.relative_to(RAIZ)}: {m}")
-    assert malos == [], "llamadas que no pasan asistente_habilitado=:\n  " + "\n  ".join(malos)
-
-
-def test_control_positivo_llamante_sin_bandera() -> None:
-    sintetico = '''
-def f(identidad):
-    visible_tools(identidad.permissions, is_root=False)
-    visible_tools(identidad.permissions, asistente_habilitado=identidad.asistente_habilitado)
-    procedure_runner.ejecutar(client, proc, args)
-    write_gate.ejecutar(client, token)
-'''
-    assert [m.split(" ")[0] for m in llamantes_sin_bandera(sintetico)] == ["visible_tools", "ejecutar"]

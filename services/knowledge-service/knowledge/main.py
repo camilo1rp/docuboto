@@ -9,13 +9,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from orpycamcp_common import events, request_log, usuario
+from orpycamcp_common import request_log, usuario
 
 from knowledge.core import salida_http
 from knowledge.core.config import settings
@@ -28,7 +27,6 @@ from knowledge.routers.knowledge import router as knowledge_router
 from knowledge.routers.metrics import router as metrics_router
 from knowledge.routers.retorno import Problema, respuesta_problema
 from knowledge.routers.retorno import router as retorno_router
-from knowledge.workers import intelligence_consumer
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
@@ -39,16 +37,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("knowledge-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
     await init_redis(settings.redis_url)
-    consumidor = events.spawn_supervised(
-        intelligence_consumer.run, name="intelligence-gateway", logger=logger
-    )
+    # The PPI consumer starts only in the Docuboto process (ADR-051 §2).
     yield
     logger.info("knowledge-service shutting down")
-    consumidor.cancel()
-    try:
-        await consumidor
-    except asyncio.CancelledError:
-        pass
     await salida_http.cerrar_consulta()
     await close_redis()
     await close_pool()
@@ -59,8 +50,8 @@ app = FastAPI(
     description=(
         "Pasarela de conocimiento (ADR-045, ADR-046). Sin proveedor (`local`), buscar y "
         "antecedentes responden con la búsqueda de texto completo de document-service, "
-        "consultada como el usuario, y no hay generación. Con `ppi`, buscar y preguntar "
-        "delegan; si el proveedor no responde, vuelve el índice local."
+        "consultada como el usuario, y no hay generación. Con `ppi`, buscar "
+        "delega; si el proveedor no responde, vuelve el índice local."
     ),
     version="2.0.0",
     lifespan=lifespan,

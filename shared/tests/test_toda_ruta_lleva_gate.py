@@ -74,9 +74,6 @@ MOTIVOS = {
     "clearance": (
         "Lectura/solicitud sobre un radicado: el gate es el clearance no-read-up en el WHERE de la consulta (RF-SEG-08), no un permiso funcional."
     ),
-    "delegado": (
-        "Asistente y MCP: ejecutan as-the-user contra los servicios, cuyos gates re-validan; el catálogo declara el permiso de cada herramienta."
-    ),
     "firma": (
         "Verificación de firmas (pública por diseño del verificador) y lectura de una firma por id con clearance; sin efecto de escritura."
     ),
@@ -124,11 +121,6 @@ EXCEPCIONES = {
     "turno": frozenset({
         "workflow-service::visto_bueno.py::GET /api/v1/workflows/{radicado_id}/vistos-buenos",
         "workflow-service::visto_bueno.py::POST /api/v1/workflows/{radicado_id}/vistos-buenos/decidir",
-    }),
-    "delegado": frozenset({
-        "mcp-server::mcp.py::GET /api/v1/mcp/tools",
-        "mcp-server::mcp.py::POST /api/v1/mcp/proposals/execute",
-        "mcp-server::mcp.py::POST /api/v1/mcp/tools/{name}/invoke",
     }),
     "firma": frozenset({
         "signature-service::signature.py::GET /api/v1/signature/firmas/{firma_id}",

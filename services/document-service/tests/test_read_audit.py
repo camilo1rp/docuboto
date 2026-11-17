@@ -80,7 +80,7 @@ def _hit_row(**kw) -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("canal", ["api", "ui", "mcp"])
+@pytest.mark.parametrize("canal", ["api", "ui"])
 async def test_get_document_by_id_audits_individual_read(
     client_with_conn: tuple[AsyncClient, AsyncMock], canal: str
 ) -> None:
@@ -197,7 +197,7 @@ async def test_get_document_by_tracking_no_audit_without_user_id(
 
     resp = await client.get(
         f"/api/v1/documents/by-tracking/{tracking}",
-        headers={"X-Tenant-Slug": TENANT_SLUG, "X-Canal": "mcp"},
+        headers={"X-Tenant-Slug": TENANT_SLUG, "X-Canal": "ui"},
     )
 
     assert resp.status_code == 200
@@ -274,7 +274,7 @@ async def test_search_documents_audits_once_not_per_hit(
 
     resp = await client.get(
         "/api/v1/search?q=tutela&doc_type=E",
-        headers={**TENANT_HEADERS, "X-Canal": "mcp"},
+        headers={**TENANT_HEADERS, "X-Canal": "ui"},
     )
 
     assert resp.status_code == 200
@@ -283,7 +283,7 @@ async def test_search_documents_audits_once_not_per_hit(
     inserts = _audit_insert_calls(mock_conn)
     assert len(inserts) == 1  # UNA sola entrada, jamás una por hit
     args = inserts[0].args
-    assert args[4] == "mcp"
+    assert args[4] == "ui"
     assert args[5] == "document.radicado_busqueda"
     assert args[6] == "radicado_busqueda"
     assert args[7] == "listado"
@@ -399,7 +399,7 @@ async def test_search_documents_audit_best_effort_survives_failure(
     ):
         resp = await client.get(
             "/api/v1/search?q=tutela",
-            headers={**TENANT_HEADERS, "X-Canal": "mcp"},
+            headers={**TENANT_HEADERS, "X-Canal": "ui"},
         )
 
     assert resp.status_code == 200
@@ -467,14 +467,14 @@ async def test_listar_respuestas_audits_aggregate_once(
     doc_id = uuid.uuid4()
     resp = await client.get(
         f"/api/v1/documents/{doc_id}/respuestas",
-        headers={**TENANT_HEADERS, "X-Canal": "mcp"},
+        headers={**TENANT_HEADERS, "X-Canal": "ui"},
     )
 
     assert resp.status_code == 200
     inserts = _audit_insert_calls(mock_conn)
     assert len(inserts) == 1  # UNA entrada agregada, jamás una por Salida
     args = inserts[0].args
-    assert args[4] == "mcp"
+    assert args[4] == "ui"
     assert args[5] == "document.radicado_busqueda"
     assert args[6] == "radicado_busqueda"
     payload = json.loads(args[8])

@@ -100,7 +100,6 @@ SIN_NIVEL_DECLARADAS = frozenset({
     # Consultas por POST (el cuerpo lleva la pregunta): PERM_CONOCIMIENTO nivel 1 es
     # «consultar con IA» (ADR-037). Lo que SÍ escribe —aceptar una sugerencia— exige 2.
     "knowledge-service::knowledge.py::POST /antecedentes::PERM_CONOCIMIENTO",
-    "knowledge-service::knowledge.py::POST /rag::PERM_CONOCIMIENTO",
     "knowledge-service::knowledge.py::POST /search::PERM_CONOCIMIENTO",
     "document-service::anulacion.py::POST /{document_id}/anulacion/aprobar::PERM_PANU_CODI",
     "document-service::anulacion.py::POST /{document_id}/anulacion/rechazar::PERM_PANU_CODI",

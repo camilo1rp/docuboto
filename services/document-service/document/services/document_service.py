@@ -71,12 +71,12 @@ logger = logging.getLogger(__name__)
 _SERVICE = "document-service"
 _STREAM = "orpycamcp.document.events"
 
-# Canales que representan una consulta real de un usuario (gateway/mcp-server,
+# Canales que representan una consulta real de un usuario (gateway,
 # ADR-019/D-03) — 'system' (llamadas internas, p. ej. `crear_respuesta`
 # leyendo el antecedente vía el repositorio directo) queda excluido: no
 # ensucia la pista de acceso con ruido interno. Espejo de
 # `archive_service.ArchiveService._CANALES_AUDITABLES`.
-_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
+_CANALES_AUDITABLES = frozenset({"api", "ui"})
 
 # Traza AGREGADA de listado/búsqueda (RF-BUS-10/E09; Ley 1712/2014, Decreto
 # 1081/2015): `object_type`/`object_ref` son constantes DEDICADAS, distintas

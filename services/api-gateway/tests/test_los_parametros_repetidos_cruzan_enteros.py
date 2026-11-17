@@ -18,7 +18,7 @@ contra Starlette, `?status=distributed&status=in_progress` salía de aquí como
 **El modo de fallo es el peor que hay**: 200, sin error, y con menos filas. Quien
 pidiera dos estados recibiría uno y creería que ese es el total. Y deja
 INALCANZABLE desde fuera cualquier parámetro repetible que un servicio declare,
-por bien que lo declare — el frontend y el mcp-server hablan siempre por aquí.
+por bien que lo declare — el frontend habla siempre por aquí.
 
 **Por qué ninguna suite lo cazaba, que es la parte que importa**: los tests de
 cada servicio golpean su propia app, donde el multidict llega intacto. El

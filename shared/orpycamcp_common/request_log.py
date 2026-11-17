@@ -42,14 +42,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 _request_id: ContextVar[str] = ContextVar("orpycamcp_request_id", default="")
 
 
-_idempotency_key: ContextVar[str] = ContextVar("orpycamcp_idempotency_key", default="")
-
 
 _canal: ContextVar[str] = ContextVar("orpycamcp_canal", default="")
 
 #: Canales que un servicio acepta de la cabecera `X-Canal` (los de persona; 'system'
 #: es el de las llamadas internas y se decide en cada llamada, no se hereda).
-_CANALES_HEREDABLES = frozenset({"api", "ui", "mcp"})
+_CANALES_HEREDABLES = frozenset({"api", "ui"})
 
 
 def canal_actual() -> str:
@@ -57,8 +55,7 @@ def canal_actual() -> str:
 
     El gateway lo deriva del lado del servidor (D-03) y va dentro de la identidad
     firmada. Lo lee `audit.append` cuando el llamante declara
-    `canal=CANAL_PETICION`: así el acto que el asistente confirma en nombre de una
-    persona se asienta 'mcp' y no 'api' (AREA-11-04). Los procesos de fondo lo
+    `canal=CANAL_PETICION`. Los procesos de fondo lo
     dejan en 'system' con :func:`canal_de_fondo` (AREA-03-07).
     """
     return _canal.get()
@@ -83,16 +80,6 @@ def request_id_actual() -> str:
     return _request_id.get()
 
 
-def idempotency_key_actual() -> str:
-    """`Idempotency-Key` de la petición en curso, o cadena vacía.
-
-    La emite el mcp-server (el `jti` de la propuesta firmada) y sirve para
-    correlacionar el asiento de auditoría con la propuesta que lo originó
-    (AREA-11-04); ver `audit.append`. Recortada a 128 caracteres.
-    """
-    return _idempotency_key.get()
-
-
 class RequestLogMiddleware:
     """Una línea JSON por petición, con el hilo de traza del gateway."""
 
@@ -111,11 +98,9 @@ class RequestLogMiddleware:
         tenant = cabeceras.get(b"x-tenant-slug", b"").decode("latin-1", "replace")
         usuario = cabeceras.get(b"x-user-id", b"").decode("latin-1", "replace")
 
-        idem = cabeceras.get(b"idempotency-key", b"").decode("latin-1", "replace")[:128]
         canal = cabeceras.get(b"x-canal", b"").decode("latin-1", "replace")
         token_canal = _canal.set(canal if canal in _CANALES_HEREDABLES else "")
         token = _request_id.set(request_id)
-        token_idem = _idempotency_key.set(idem)
         inicio = time.perf_counter()
         estado: dict[str, Any] = {"status": 0}
 
@@ -149,4 +134,3 @@ class RequestLogMiddleware:
             )
             _request_id.reset(token)
             _canal.reset(token_canal)
-            _idempotency_key.reset(token_idem)

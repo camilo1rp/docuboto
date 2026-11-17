@@ -10,9 +10,8 @@
 """
 Ninguna decisión de autorización depende de una cabecera que nadie emite.
 
-**Este defecto ha aparecido dos veces en el repositorio.** La primera en
-`mcp-server`, que resolvía permisos leyendo `X-User-Permissions` — sus propios
-tests lo dejan escrito: «cabecera que nadie producía». La segunda al construir
+**Este defecto ha aparecido dos veces en el repositorio.** La primera en el
+MCP (ya retirado, ADR-051), que resolvía permisos leyendo `X-User-Permissions`. La segunda al construir
 las cuentas de correo de E19, donde `_es_admin()` volvió a leerla.
 
 **Por qué se cuela.** El nombre es perfectamente plausible, el código parece

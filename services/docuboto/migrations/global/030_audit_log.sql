@@ -22,7 +22,7 @@ CREATE TABLE public.audit_log (
     payload jsonb DEFAULT '{}'::jsonb NOT NULL,
     prev_hash text,
     hash text NOT NULL,
-    CONSTRAINT chk_audit_log_canal CHECK ((canal = ANY (ARRAY['api'::text, 'ui'::text, 'mcp'::text, 'system'::text]))),
+    CONSTRAINT chk_audit_log_canal CHECK ((canal = ANY (ARRAY['api'::text, 'ui'::text, 'system'::text]))),
     CONSTRAINT chk_audit_log_hash_forma CHECK (((hash ~ '^[0-9a-f]{64}$'::text) AND ((prev_hash IS NULL) OR (prev_hash ~ '^[0-9a-f]{64}$'::text)))),
     CONSTRAINT audit_log_pkey PRIMARY KEY (id, ts)
 )

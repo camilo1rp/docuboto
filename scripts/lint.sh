@@ -32,16 +32,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # La lista de servicios se DERIVA del árbol, no se escribe a mano. La versión
-# escrita a mano estuvo tres servicios corta (signature, mcp-server, knowledge)
+# escrita a mano estuvo tres servicios corta (signature, el MCP ya retirado, knowledge)
 # y el gate pasaba por encima de ellos sin decirlo: no fallaba, sencillamente
 # no miraba — 108 errores invisibles entre los tres. Un servicio que se añada a
 # `services/` entra en el lint solo, sin que nadie tenga que acordarse.
 #
 # El criterio de "es un servicio Python" es tener requirements.txt y el
-# directorio-paquete (`document/`, `app/` en gateway y MCP).
+# directorio-paquete (`document/`, `app/` en el gateway).
 paquete_de() {
     case "$1" in
-        api-gateway|mcp-server) echo "app" ;;
+        api-gateway) echo "app" ;;
         *) echo "${1%-service}" ;;
     esac
 }

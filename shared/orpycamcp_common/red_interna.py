@@ -35,7 +35,6 @@ _DOCKER_SERVICE_HOSTNAMES = frozenset(
         "minio",
         "keycloak",
         "api-gateway",
-        "mcp-server",
         "signature-service",
         "knowledge-service",
         "auth-service",

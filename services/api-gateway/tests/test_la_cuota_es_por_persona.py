@@ -265,11 +265,10 @@ async def test_el_tenant_se_sanea_antes_de_entrar_en_la_clave(cliente):
 
 
 async def test_dos_entidades_tras_un_mismo_proxy_no_comparten_el_cubo_por_ip(cliente):
-    """AREA-11-08: el mcp-server es un proxy de confianza para TODAS las entidades.
+    """AREA-11-08: un proxy de confianza sirve a TODAS las entidades.
 
-    Como no reenviaba la IP del cliente, todas las llamadas del asistente caían en
-    el cubo por IP de su contenedor. Con la IP reenviada en `X-Forwarded-For`, dos
-    entidades que entran por el mismo salto de confianza cuentan aparte.
+    Con la IP reenviada en `X-Forwarded-For`, dos entidades que entran por el
+    mismo salto de confianza cuentan aparte.
     """
     client, _ = cliente
     app.state.trusted_proxies = "127.0.0.0/8"  # el par del transporte de prueba

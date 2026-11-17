@@ -118,10 +118,10 @@ async def test_append_uses_system_tenant_when_none() -> None:
 # ---------------------------------------------------------------------------
 
 def test_valid_canales_constant_contains_expected_values() -> None:
-    assert audit.VALID_CANALES == {"api", "ui", "mcp", "system"}
+    assert audit.VALID_CANALES == {"api", "ui", "system"}
 
 
-@pytest.mark.parametrize("canal", ["api", "ui", "mcp", "system"])
+@pytest.mark.parametrize("canal", ["api", "ui", "system"])
 def test_valid_canal_does_not_raise(canal: str) -> None:
     # _validate_canal is internal but testable via compute_hash (it calls append);
     # we call it through append to stay black-box.
@@ -155,20 +155,18 @@ async def test_append_rejects_invalid_canal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_append_accepts_mcp_canal() -> None:
+async def test_append_rejects_retired_mcp_canal() -> None:
+    """ADR-051: el canal 'mcp' se retiró con el mcp-server."""
     conn = _mock_conn()
-    row_hash = await audit.append(
-        conn,
-        tenant_slug="icetex",
-        service="mcp-server",
-        action="mcp.query",
-        object_type="radicado",
-        canal="mcp",
-    )
-    assert len(row_hash) == 64
-    insert_call = conn.execute.await_args_list[-1]
-    # canal is the 4th positional arg ($4) after tenant, service, actor
-    assert insert_call.args[4] == "mcp"
+    with pytest.raises(ValueError):
+        await audit.append(
+            conn,
+            tenant_slug="icetex",
+            service="document-service",
+            action="radicado.read",
+            object_type="radicado",
+            canal="mcp",
+        )
 
 
 # ---------------------------------------------------------------------------

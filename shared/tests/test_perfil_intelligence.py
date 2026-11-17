@@ -10,9 +10,10 @@
 """El fragmento `intelligence` no arranca al proveedor (ADR-045 §8).
 
 No va en `include`: Compose lo mezclaría aunque no lo pidas, y `up` exigiría
-la red `ppi`. Se suma con `-f`. Sin ese archivo, `app` y knowledge-service no
-entran en `ppi` y no reciben URL. Con él, solo se completan esos dos: la red
-es externa, la URL no tiene valor por defecto y ningún otro servicio se conecta.
+la red `ppi`. Se suma con `-f`. Sin ese archivo, `app` no entra en `ppi` y no
+recibe URL. Con él, solo se completa `app` (el consumidor de ingesta vive en su
+lifespan, ADR-051 §2): la red es externa, la URL no tiene valor por defecto y
+ningún otro servicio se conecta.
 """
 
 from __future__ import annotations
@@ -59,9 +60,9 @@ def test_el_perfil_no_define_servicios_nuevos() -> None:
     for base, extra in PARES:
         propios = set(servicios(base))
         añadidos = servicios(extra)
-        assert set(añadidos) == {"app", "knowledge-service"}
+        assert set(añadidos) == {"app"}
         assert set(añadidos) <= propios
-        for nombre in ("app", "knowledge-service"):
+        for nombre in ("app",):
             servicio = añadidos[nombre]
             assert "image" not in servicio
             assert "build" not in servicio
@@ -88,11 +89,11 @@ def test_sin_el_perfil_la_pasarela_no_sale_a_ppi() -> None:
             assert "PPI_PROVIDER_URL" not in _texto_entorno(servicio)
 
 
-def test_solo_app_y_knowledge_se_conectan_a_ppi() -> None:
+def test_solo_app_se_conecta_a_ppi() -> None:
     for base, extra in PARES:
         unidos = {**servicios(base), **servicios(extra)}
         en_ppi = sorted(nombre for nombre, svc in unidos.items() if "ppi" in _redes(svc))
-        assert en_ppi == ["app", "knowledge-service"]
+        assert en_ppi == ["app"]
 
 
 def test_la_red_ppi_es_externa_y_se_crea_internal() -> None:
@@ -109,7 +110,7 @@ def test_la_url_no_tiene_valor_por_defecto() -> None:
     for _base, extra in PARES:
         texto = extra.read_text(encoding="utf-8")
         assert url_sin_defecto(texto)
-        assert _URL.findall(texto) == ["${PPI_PROVIDER_URL:?", "${PPI_PROVIDER_URL:?"]
+        assert _URL.findall(texto) == ["${PPI_PROVIDER_URL:?"]
 
 
 def test_un_defecto_en_la_url_no_pasa() -> None:

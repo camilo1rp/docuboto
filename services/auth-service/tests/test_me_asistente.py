@@ -10,7 +10,7 @@
 
 """`/auth/me` publica `asistente_habilitado` (ADR-037) y falla cerrado.
 
-La UI y mcp-server toman la bandera de aquí; knowledge-service la vuelve a leer de la
+La UI toma la bandera de aquí; knowledge-service la vuelve a leer de la
 base. Lo que importa es que un error de lectura NUNCA se vea como «encendido».
 """
 

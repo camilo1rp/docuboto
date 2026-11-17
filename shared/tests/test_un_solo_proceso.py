@@ -7,11 +7,12 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""El proceso unificado monta los routers de dominio y no arranca intelligence.
+"""El proceso unificado monta los routers de dominio y arranca la ingesta PPI.
 
 AST y manifiestos, sin importar FastAPI: CI de `test-unit-shared` no instala
-las apps. Un `include_router` de health de cada módulo duplicaría `/health`;
-el consumidor de intelligence no debe vivir en este lifespan (ADR-045).
+las apps. Un `include_router` de health de cada módulo duplicaría `/health`.
+El consumidor de ingesta PPI arranca en el lifespan de la app, y solo con
+`PPI_PROVIDER_URL` (ADR-051 §2); ni el worker ni knowledge-service lo arrancan.
 """
 
 from __future__ import annotations
@@ -116,9 +117,27 @@ def test_los_batch_no_colisionan() -> None:
     assert '"/expedientes"' in archivo
 
 
-def test_el_lifespan_no_arranca_intelligence() -> None:
+def test_el_lifespan_arranca_la_ingesta_ppi_solo_con_proveedor() -> None:
     texto = (RAIZ / "services/docuboto/docuboto/core/lifespan.py").read_text(encoding="utf-8")
+    assert "intelligence_consumer.run" in texto
+    arbol = ast.parse(texto)
+    guardas = [
+        nodo
+        for nodo in ast.walk(arbol)
+        if isinstance(nodo, ast.If) and "ppi_provider_url" in ast.unparse(nodo.test)
+    ]
+    assert len(guardas) == 1, "la ingesta PPI tiene que arrancar bajo `if ...ppi_provider_url`"
+    assert "intelligence_consumer.run" in ast.unparse(guardas[0])
+    assert texto.count("intelligence_consumer.run") == 1, "la ingesta PPI arranca sin proveedor"
+
+
+def test_knowledge_service_no_arranca_la_ingesta() -> None:
+    texto = (RAIZ / "services/knowledge-service/knowledge/main.py").read_text(encoding="utf-8")
     assert "intelligence_consumer" not in texto
+
+
+def test_el_lifespan_arranca_los_bucles_del_proceso() -> None:
+    texto = (RAIZ / "services/docuboto/docuboto/core/lifespan.py").read_text(encoding="utf-8")
     arbol = ast.parse(texto)
     llamados = [
         nodo.func.attr if isinstance(nodo.func, ast.Attribute) else getattr(nodo.func, "id", "")
@@ -237,13 +256,6 @@ def test_el_trafico_no_pasa_por_el_gateway() -> None:
             pares[k] = v
     assert pares.get("INTERNAL_API_URL") == "http://app:8000"
     assert pares.get("PUBLIC_API_URL") == "http://localhost:19000"
-    mcp = svcs["mcp-server"].get("environment") or []
-    mcp_pares = {}
-    for item in mcp:
-        if isinstance(item, str) and "=" in item:
-            k, _, v = item.partition("=")
-            mcp_pares[k] = v
-    assert mcp_pares.get("GATEWAY_URL") == "http://app:8000"
 
 
 def test_el_gateway_apunta_al_proceso() -> None:

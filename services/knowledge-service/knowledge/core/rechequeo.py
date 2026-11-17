@@ -44,12 +44,6 @@ class Hallazgo:
 
 
 @dataclass(frozen=True)
-class Afirmacion:
-    texto: str
-    citas: tuple[Hallazgo, ...]
-
-
-@dataclass(frozen=True)
 class Descarte:
     ref: uuid.UUID
     borrar: bool
@@ -81,38 +75,6 @@ def filtrar_busqueda(
         if hallazgo is not None:
             utiles.append(hallazgo)
     return utiles, descartes
-
-
-def filtrar_pregunta(
-    claims: list[Any],
-    vivos: dict[uuid.UUID, Registro],
-    *,
-    habilitados: Iterable[int],
-    clearance: int,
-) -> tuple[list[Afirmacion], list[Descarte]]:
-    """Una afirmación sin citas que sobrevivan no se muestra."""
-    niveles = _niveles(habilitados)
-    afirmaciones: list[Afirmacion] = []
-    descartes: list[Descarte] = []
-    for claim in claims:
-        if not isinstance(claim, dict):
-            continue
-        texto = str(claim.get("text") or "").strip()
-        citas_in = claim.get("citations")
-        if not isinstance(citas_in, list):
-            citas_in = []
-        citas: list[Hallazgo] = []
-        for cita in citas_in:
-            hallazgo, descarte = _cita(
-                cita, vivos, niveles=niveles, clearance=clearance, score=0.0
-            )
-            if descarte is not None:
-                descartes.append(descarte)
-            if hallazgo is not None:
-                citas.append(hallazgo)
-        if texto and citas:
-            afirmaciones.append(Afirmacion(texto=texto, citas=tuple(citas)))
-    return afirmaciones, descartes
 
 
 def refs_a_borrar(descartes: list[Descarte]) -> list[uuid.UUID]:
