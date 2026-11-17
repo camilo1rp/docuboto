@@ -129,7 +129,13 @@
           {/if}
           <div>
             <dt>Huella del documento</dt>
-            <dd><code class="verif__mono">{verificacion.huella_documento}</code></dd>
+            <dd>
+              {#if verificacion.huella_documento}
+                <code class="verif__mono">{verificacion.huella_documento}</code>
+              {:else}
+                No consta: el trámite de firma no fijó la huella del documento
+              {/if}
+            </dd>
           </div>
         </dl>
         <p class="verif__nota">

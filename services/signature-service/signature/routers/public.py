@@ -100,24 +100,29 @@ async def get_public_tenant_conn(
             await conn.execute("SET search_path = public")
 
 
-async def _huella_documento(conn: asyncpg.Connection, row: asyncpg.Record) -> str:
+async def _huella_documento(conn: asyncpg.Connection, row: asyncpg.Record) -> str | None:
     """SHA-256 del documento firmado, no el de los bytes del HMAC o del envoltorio.
 
     ``firma.payload_sha256`` NO siempre es la huella del documento (ver
     ``FirmaResponse.payload_sha256``): en la cadena, la del documento es
-    ``firma_solicitud.payload_sha256``. Sin cadena (sello institucional de un
-    índice o acta), el XML sellado ES el documento y su huella es la de la fila.
+    ``firma_solicitud.payload_sha256``, y si esa solicitud no la fijó se responde
+    ``None`` antes que publicar una huella que no es la del documento. Sin cadena
+    (sello institucional de un índice o acta), el XML sellado ES el documento y su
+    huella es la de la fila.
     """
     try:
-        huella = await conn.fetchval(
+        solicitud = await conn.fetchrow(
             "SELECT s.payload_sha256 FROM firma_cadena c "
             "JOIN firma_solicitud s ON s.id = c.solicitud_id "
             "WHERE c.firma_id = $1 LIMIT 1",
             row["id"],
         )
     except asyncpg.UndefinedTableError:
-        huella = None
-    return f"sha256:{(huella or row['payload_sha256']).strip()}"
+        solicitud = None
+    if solicitud is not None:
+        huella = solicitud["payload_sha256"]
+        return f"sha256:{huella.strip()}" if huella else None
+    return f"sha256:{row['payload_sha256'].strip()}"
 
 
 @router.get(

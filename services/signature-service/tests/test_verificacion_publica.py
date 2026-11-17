@@ -68,16 +68,28 @@ def publico(signature_env, monkeypatch):  # noqa: F811
         raise preservacion_client.PreservacionError("no existe")
 
     monkeypatch.setattr(preservacion_client, "descargar_xml", _descargar)
+
+    # La huella del documento se busca en la cadena (`firma_cadena` ⨝ `firma_solicitud`).
+    # `table.cadena[firma_id]` es la fila de la solicitud; sin entrada, la firma no es de cadena.
+    table.cadena = {}
+    real = table.fetchrow
+
+    async def _con_cadena(query: str, *args):
+        if "FROM firma_cadena" in query:
+            return table.cadena.get(str(args[0]))
+        return await real(query, *args)
+
+    conn.fetchrow.side_effect = _con_cadena
     return client, conn, table, uploads
 
 
 async def _firmar(client, conn) -> dict:
     resp = await _sign_indice(client)
     assert resp.status_code == 201, resp.text
-    # Tras firmar: `FirmaRepository.get` pregunta si existe la columna del nombre
-    # (True) y la huella del documento por la cadena (un índice sellado no tiene).
+    # Tras firmar: `FirmaRepository.get` pregunta si existe la columna del nombre; la
+    # tabla falsa no tiene catálogo de usuarios.
     conn.fetchval.side_effect = None
-    conn.fetchval.return_value = None
+    conn.fetchval.return_value = False
     return resp.json()
 
 
@@ -121,7 +133,7 @@ async def test_el_anonimo_consulta_con_clearance_publico(publico) -> None:
     client, conn, table, uploads = publico
     firma = await _firmar(client, conn)
     vistos: list[tuple] = []
-    real = table.fetchrow
+    real = conn.fetchrow.side_effect
 
     async def _espia(query: str, *args):
         if "WHERE f.id" in query:
@@ -167,7 +179,8 @@ async def test_constancia_simple_no_se_reporta_valida(publico) -> None:
         "nivel_conformidad": None,
     }
     conn.fetchval.side_effect = None
-    conn.fetchval.side_effect = [True, "c" * 64]  # columna del nombre; huella de la cadena
+    conn.fetchval.return_value = False
+    table.cadena[str(firma_id)] = {"payload_sha256": "c" * 64}
     resp = await _publica(client, str(firma_id))
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -177,6 +190,23 @@ async def test_constancia_simple_no_se_reporta_valida(publico) -> None:
     assert body["acreditado"] is False
     # La huella es la del DOCUMENTO (firma_solicitud), no la de los bytes del HMAC.
     assert body["huella_documento"] == "sha256:" + "c" * 64
+
+
+@pytest.mark.asyncio
+async def test_cadena_sin_huella_no_publica_una_que_no_es_la_del_documento(publico) -> None:
+    client, conn, table, uploads = publico
+    firma_id = uuid.uuid4()
+    table.rows[str(firma_id)] = {
+        "id": firma_id, "provider": "nativa", "firmante_id": None, "payload_sha256": "b" * 64,
+        "sello_tiempo": datetime.now(UTC), "minio_key_firmado": None, "xades_level": None,
+        "nivel_conformidad": None,
+    }
+    conn.fetchval.side_effect = None
+    conn.fetchval.return_value = False
+    table.cadena[str(firma_id)] = {"payload_sha256": None}
+    resp = await _publica(client, str(firma_id))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["huella_documento"] is None
 
 
 @pytest.mark.asyncio

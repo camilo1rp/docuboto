@@ -483,7 +483,7 @@
  * @property {string|null}   [firmante_nombre]
  * @property {string}        firmado_en
  * @property {string|null}   [sello_tiempo]
- * @property {string}        huella_documento
+ * @property {string|null}   huella_documento
  * @property {boolean}       acreditado
  * @property {string}        constancia
  */

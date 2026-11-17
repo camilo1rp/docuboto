@@ -411,7 +411,8 @@ class PublicSignatureVerification(BaseModel):
     firmante_nombre: str | None = None
     firmado_en: datetime
     sello_tiempo: datetime | None = None
-    huella_documento: str
+    # `None` solo si la cadena no fijó la huella del documento (ver `routers/public.py`).
+    huella_documento: str | None = None
     acreditado: bool = False
     # Ruta AUTENTICADA de los metadatos completos de la firma, desde donde se
     # llega al XML firmado con permiso y clearance. La verificación pública no lo
