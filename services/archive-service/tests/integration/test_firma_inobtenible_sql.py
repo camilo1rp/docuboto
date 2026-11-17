@@ -582,14 +582,14 @@ async def test_el_verificador_nunca_promueve_a_firmada_completa_y_es_honesto_con
 async def test_firma_personal_pendiente_lee_la_politica_de_la_entidad_del_tenant(
     tenant_ctx: tuple[str, asyncpg.Connection],
 ) -> None:
-    """`sgd_param_admin` nace con la política sin fijar (`null`): la entidad no exige nada."""
+    """`sgd_param_admin` nace en `clasificados` (ADR-054): un expediente público queda sellado."""
     slug, conn = tenant_ctx
     schema = tenant_schema(slug)
     _c, tid, _e, _r = await _acta_recibida(conn, slug, "itest 07-10 politica")
     svc = TransferenciaService(conn, slug)
     with _verificacion():
         sin_param = await svc.acta_verificacion(tid, None)
-        assert sin_param.completitud == "sellada" and sin_param.politica_xades == "off"
+        assert sin_param.completitud == "sellada" and sin_param.politica_xades == "clasificados"
         await conn.execute(
             f'UPDATE "{schema}".sgd_param_admin SET value = \'"todos"\'::jsonb '
             "WHERE key = 'firma_personal_require_xades'"

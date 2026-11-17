@@ -170,14 +170,17 @@ class Settings(BaseSettings):
     # `firma_personal_pendiente` -- espeja `firma_personal_require_xades`
     # de signature-service (mismos tres valores, mismo criterio por
     # `nivel_seguridad` del expediente).
-    #   "off"          (default) -- la firma personal es SIEMPRE opcional;
-    #                  con el sello institucional solo, `completitud` queda
-    #                  en 'sellada'.
-    #   "clasificados" -- exige la firma del receptor para expedientes
+    #   "clasificados" (default, ADR-054 -- el mismo valor con que la cadena
+    #                  de migraciones siembra la clave de la entidad) -- exige
+    #                  la firma del receptor para expedientes
     #                  nivel_seguridad>=2 (RESERVADA/CLASIFICADA); nivel 1
     #                  (PÚBLICA) conserva 'sellada' como suficiente.
+    #   "off"          -- la firma personal es SIEMPRE opcional; con el sello
+    #                  institucional solo, `completitud` queda en 'sellada'.
     #   "todos"        -- exige la firma del receptor para TODA transferencia.
-    acta_firma_personal_require: Literal["off", "clasificados", "todos"] = "off"
+    # Es solo el RESPALDO de la entidad que no define la clave (ver
+    # `archive.core.params_entidad`).
+    acta_firma_personal_require: Literal["off", "clasificados", "todos"] = "clasificados"
 
     # --- Renovación de retención WORM para series CT (E10 debt) ---
     # Ventana de antelación (días) antes del vencimiento de `worm_retain_until`

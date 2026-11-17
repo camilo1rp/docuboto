@@ -27,6 +27,7 @@ from signature.routers.admin_sellos import router as admin_sellos_router
 from signature.routers.cadena import router as cadena_router
 from signature.routers.health import router as health_router
 from signature.routers.metrics import router as metrics_router
+from signature.routers.public import router as public_router
 from signature.routers.signature import router as signature_router
 from signature.workers import document_consumer
 
@@ -112,7 +113,13 @@ app = FastAPI(
 app.add_middleware(usuario.UsuarioActualMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="signature-service")
 
-DOMAIN_ROUTERS = (signature_router, cadena_router, admin_dlq_router, admin_sellos_router)
+DOMAIN_ROUTERS = (
+    signature_router,
+    cadena_router,
+    admin_dlq_router,
+    admin_sellos_router,
+    public_router,
+)
 for _router in DOMAIN_ROUTERS:
     app.include_router(_router)
 deadletter.instalar_manejador_radicados_ausente(app)

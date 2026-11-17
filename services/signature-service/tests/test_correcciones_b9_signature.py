@@ -35,6 +35,18 @@ from tests.test_challenge_mismas_precondiciones_que_firmar import (
     _turno,
 )
 
+
+@pytest.fixture(autouse=True)
+def _politica_xades_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Estas pruebas ejercitan los gates de 2FA/nivel con la constancia simple (HMAC) como
+    camino de firma, que era el respaldo antes de ADR-054. Desde ADR-054 el respaldo es
+    ``clasificados`` y un acto de nivel >= 2 sin certificado se rechaza antes de llegar a
+    esos gates; se fija ``off`` EXPLÍCITO para seguir probándolos. El valor por defecto
+    lo fijan ``test_firma_xades_gate`` y ``shared/tests/test_param_firma_xades_se_siembra``."""
+    from signature.core.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "firma_personal_require_xades", "off")
+
 REFERENCIA_404 = {
     "error": "solicitud_not_found",
     "detail": "No existe la solicitud de firma",

@@ -135,6 +135,8 @@ CON_GATE = {
     ("knowledge", "get_tenant_conn"),
     ("notification", "get_tenant_conn"),
     ("signature", "get_tenant_conn"),
+    # Verificación pública de una firma (ADR-054): mira `atencion_publica` antes del schema.
+    ("signature", "get_public_tenant_conn"),
     ("tenant", "get_tenant_conn"),
 }
 

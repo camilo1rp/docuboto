@@ -17,8 +17,11 @@ parámetros del tenant (la misma que edita ``/admin/parametros`` en
 tenant-service) y el ``FIRMA_PERSONAL_REQUIRE_XADES`` del entorno queda como
 RESPALDO para la entidad que no lo define.
 
-La clave nace por migración de tenant-service (``010_params_firma.sql``): un
-parámetro cuyo nombre solo vive en el código no se puede configurar.
+La clave nace sembrada en ``"clasificados"`` (ADR-054 §1) por la cadena de
+migraciones (``migrations/tenant/120_sgd_param_admin.sql``): un parámetro cuyo
+nombre solo vive en el código no se puede configurar, y una entidad no nace con
+la política laxa. Bajarla a ``off`` es un acto explícito que queda en
+``admin_audit``.
 """
 
 from __future__ import annotations
@@ -65,7 +68,7 @@ async def modo_xades_de_la_entidad(conn: asyncpg.Connection) -> str:
 
     1. Parámetro de la entidad, si lo define con un valor válido.
     2. Si no lo define (sin fila / null / sin tabla): el entorno
-       (``settings.firma_personal_require_xades``, default ``off``).
+       (``settings.firma_personal_require_xades``, default ``clasificados``).
     3. Si lo define con un valor NO reconocido (edición directa en SQL; la API
        de tenant-service lo valida): el más estricto, ``todos``, y un error en
        el log. Un valor corrupto no puede relajar en silencio una política de

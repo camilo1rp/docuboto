@@ -8,12 +8,16 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * /firmas/api/documento/[documentId]/verify — Proxy SSR para verificar un
- * hash de contenido contra las firmas de un radicado (E06, D-05).
+ * /firmas/api/documento/[documentId]/match — Proxy SSR para saber si un hash
+ * de contenido está entre las constancias de firma simple de un radicado
+ * (E06, D-05, ADR-054).
+ *
+ * No responde «¿es válida esta firma?»: una constancia simple no la verifica un
+ * tercero. Esa pregunta la contesta la verificación de la firma electrónica.
  *
  * GET ?content_hash=<sha256 hex>
- *   → GET /api/v1/documents/{document_id}/signatures/verify?content_hash=
- *   → SignatureVerifyResponse { content_hash, valid, signatures[] }
+ *   → GET /api/v1/documents/{document_id}/signatures/match?content_hash=
+ *   → SignatureMatchResponse { content_hash, matched, kind, signatures[] }
  *
  * Gateado igual que el listado (PERM_FIRMA + no-read-up): un 404 significa
  * "no visible", nunca se reinterpreta como "hash no encontrado".
@@ -61,7 +65,7 @@ export async function GET({ locals, params, url }) {
 
   try {
     const res = await fetch(
-      `${API_V1}/documents/${encodeURIComponent(documentId)}/signatures/verify?${params2.toString()}`,
+      `${API_V1}/documents/${encodeURIComponent(documentId)}/signatures/match?${params2.toString()}`,
       { headers },
     );
 

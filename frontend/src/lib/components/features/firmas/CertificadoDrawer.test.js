@@ -44,9 +44,43 @@ describe("CertificadoDrawer — honestidad del comprobante (art. 7, no art. 28)"
 
     render(CertificadoDrawer, { props: { open: true, firmaId: FIRMA_ID } });
 
-    await waitFor(() => expect(screen.getByText("Comprobante de firma")).toBeInTheDocument());
-    expect(screen.getByText(/No es firma digital acreditada/)).toBeInTheDocument();
+    // ADR-054 §1: una firma `nativa` (HMAC) es una CONSTANCIA DE FIRMA SIMPLE y se dice así.
+    await waitFor(() =>
+      expect(screen.getAllByText("Constancia de firma simple").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText("Comprobante de firma electrónica")).not.toBeInTheDocument();
+    expect(screen.getByText(/no firma electrónica verificable por terceros/)).toBeInTheDocument();
     expect(screen.getByText("No acreditada (ONAC)")).toBeInTheDocument();
+    // La constancia simple no ofrece verificación pública: un tercero no puede comprobarla.
+    expect(screen.queryByText(/verificación pública/)).not.toBeInTheDocument();
+  });
+
+  it("una firma XAdES se presenta como firma electrónica, no acreditada, con su código público", async () => {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            firma_id: FIRMA_ID,
+            objeto_tipo: "radicado",
+            objeto_id: "r1",
+            firmante_id: "u1",
+            provider: "xades_personal",
+            kind: "electronic_signature",
+            sello_tiempo: "2026-07-30T10:00:00Z",
+            acreditado: false,
+          }),
+          { status: 200 },
+        ),
+    );
+
+    render(CertificadoDrawer, { props: { open: true, firmaId: FIRMA_ID } });
+
+    await waitFor(() =>
+      expect(screen.getByText("Comprobante de firma electrónica")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/No es firma digital acreditada/)).toBeInTheDocument();
+    const enlace = screen.getByRole("link", { name: /verificación pública/ });
+    expect(enlace.getAttribute("href")).toBe(`/firma/${FIRMA_ID}`);
   });
 
   it("un fallo de red al cargar el certificado se muestra como error, no como 'sin datos'", async () => {
@@ -59,7 +93,7 @@ describe("CertificadoDrawer — honestidad del comprobante (art. 7, no art. 28)"
     await waitFor(() =>
       expect(screen.getByText(/No se pudo conectar al servidor de firmas/)).toBeInTheDocument(),
     );
-    expect(screen.queryByText("Comprobante de firma")).not.toBeInTheDocument();
+    expect(screen.queryByText("Comprobante de firma electrónica")).not.toBeInTheDocument();
   });
 
   it("404 se muestra como 'no encontrado', nunca silenciosamente vacío", async () => {
@@ -102,7 +136,9 @@ describe("CertificadoDrawer — advertencias de la verificación", () => {
     );
 
     render(CertificadoDrawer, { props: { open: true, firmaId: FIRMA_ID } });
-    await waitFor(() => expect(screen.getByText("Comprobante de firma")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("Comprobante de firma electrónica")).toBeInTheDocument(),
+    );
 
     await fireEvent.click(screen.getByRole("button", { name: /verificar firma/i }));
     await fireEvent.input(screen.getByLabelText(/documento firmado/i), {
