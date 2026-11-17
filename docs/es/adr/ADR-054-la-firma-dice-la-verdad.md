@@ -68,7 +68,9 @@ Reglas:
 
 Se añade una superficie pública, hermana de la consulta de radicado (`GET /api/v1/public/{tenant}/verify/{code}`), que responde a la pregunta probatoria sin exponer el documento:
 
-`GET /api/v1/public/{tenant}/firma/{firma_id}` →
+`GET /api/v1/public/signature/{tenant}/{firma_id}` →
+
+> **Nota de implementación (2026-11-17).** Este ADR proponía `GET /api/v1/public/{tenant}/firma/{firma_id}`. La ruta construida pone el segmento del servicio antes del tenant: el gateway enruta por prefijo, y todo `/api/v1/public/{tenant}/…` va a document-service. Con `/api/v1/public/signature/` delante, la petición llega a signature-service con una entrada más de la tabla de prefijos, como ya hace `/api/v1/public/archive/`, sin una regla de enrutamiento por expresión regular. El segmento va en inglés por la convención de identificadores nuevos.
 
 ```json
 {
