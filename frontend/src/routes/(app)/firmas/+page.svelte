@@ -286,10 +286,28 @@
     tick().then(() => tituloEl?.focus());
   }
 
+  // ADR-054 §1: lo que muestre «firmado» distingue firma electrónica de constancia simple.
+  const CLASE_FIRMA = /** @type {Record<string,string>} */ ({
+    electronic_signature: "Firma electrónica",
+    simple_signature_record: "Constancia de firma simple",
+  });
+
+  /** @param {any} solicitud */
+  function mensajeFirmado(solicitud) {
+    const ultimo = (solicitud?.items ?? [])
+      .filter((/** @type {any} */ t) => t.estado === "firmado" && t.firma_id)
+      .sort((/** @type {any} */ a, /** @type {any} */ b) =>
+        String(b.decidido_at ?? "").localeCompare(String(a.decidido_at ?? "")),
+      )[0];
+    if (ultimo?.kind === "electronic_signature") return "Firma electrónica registrada.";
+    if (ultimo?.kind === "simple_signature_record") return "Constancia de firma simple registrada.";
+    return "Turno de firma resuelto.";
+  }
+
   /** @param {CustomEvent<import('$lib/types/api.js').SignatureRequestResponse>} e */
   function onDocumentoFirmado(e) {
     const firmado = e.detail;
-    notifySuccess("Documento firmado correctamente.");
+    notifySuccess(mensajeFirmado(firmado));
     signAssistantOpen = false;
     closeDrawer();
     // Eliminar de la lista local; el item ya no está en el turno del usuario
@@ -590,6 +608,11 @@
   <header class="firmas-page__header">
     <div class="firmas-page__title-row">
       <h1 class="firmas-page__title" bind:this={tituloEl} tabindex="-1">Bandeja de firmas</h1>
+      <!-- ADR-054 §4: la verificación pública, la que puede hacer un tercero sin sesión. -->
+      <a class="firmas-page__comprobar" href="/firma">
+        <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+        Comprobar una firma
+      </a>
     </div>
 
     {#if data.loadError}
@@ -827,6 +850,14 @@
                   <p class="firma-chain__comentario">{turno.comentario}</p>
                 {/if}
                 {#if turno.estado === "firmado" && turno.firma_id}
+                  {#if turno.kind}
+                    <span
+                      class="firma-chain__clase"
+                      class:firma-chain__clase--simple={turno.kind === "simple_signature_record"}
+                    >
+                      {CLASE_FIRMA[turno.kind] ?? turno.kind}
+                    </span>
+                  {/if}
                   <Button
                     variant="ghost"
                     size="sm"
@@ -1037,6 +1068,14 @@
       font-weight: var(--op-weight-bold);
       color: var(--op-text);
       margin: 0;
+    }
+
+    &__comprobar {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--op-space-2);
+      font-size: var(--op-font-sm);
+      color: var(--op-primary);
     }
 
     &__load-error {
@@ -1373,6 +1412,22 @@
       // `--op-text` sí cumple sobre ese mismo fondo.
       .firma-chain__item--activo & {
         color: var(--op-text);
+      }
+    }
+
+    &__clase {
+      display: inline-block;
+      font-size: var(--op-font-xs);
+      font-weight: var(--op-weight-bold);
+      color: var(--op-success-fg, var(--op-text));
+      margin-right: var(--op-space-2);
+
+      &--simple {
+        color: var(--op-text-secondary);
+
+        .firma-chain__item--activo & {
+          color: var(--op-text);
+        }
       }
     }
 

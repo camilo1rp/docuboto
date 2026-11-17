@@ -114,6 +114,17 @@
   /** @type {import('$lib/types/api.js').SignatureRequestResponse|null} */
   let resultado = null;
 
+  // ADR-054 §1: qué dejó ESTE turno — firma electrónica o constancia de firma simple.
+  // El backend lo deriva del proveedor (`kind` de cada turno); se toma el turno firmado
+  // más reciente, que es el que se acaba de resolver.
+  $: claseFirmada = (() => {
+    const items = /** @type {any[]} */ (resultado?.items ?? []);
+    const firmados = items
+      .filter((t) => t.estado === "firmado" && t.firma_id)
+      .sort((a, b) => String(b.decidido_at ?? "").localeCompare(String(a.decidido_at ?? "")));
+    return firmados[0]?.kind ?? null;
+  })();
+
   function stopCountdown() {
     if (countdownTimer) {
       clearInterval(countdownTimer);
@@ -575,15 +586,38 @@
         </Button>
       {/if}
     {:else if step === 2 && resultado}
-      <p class="sign-assistant__success" role="status">
-        <i class="fas fa-check-circle" aria-hidden="true"></i>
-        Documento firmado correctamente.
-      </p>
-      <p class="sign-assistant__legal">
-        Comprobante generado por el sistema — firma bajo Ley 527/1999 art. 7, sin acreditación ONAC,
-        custodia de la clave en servidor institucional. No implica control exclusivo del firmante en
-        el sentido del art. 28.
-      </p>
+      {#if claseFirmada === "simple_signature_record"}
+        <p class="sign-assistant__success" role="status">
+          <i class="fas fa-check-circle" aria-hidden="true"></i>
+          Constancia de firma simple registrada.
+        </p>
+        <p class="sign-assistant__legal">
+          No es una firma electrónica verificable por terceros: el sistema registra con su propia
+          clave (HMAC) que usted declaró este documento en este instante. Íntegra dentro del
+          sistema, sin certificado personal (Ley 527/1999 art. 7; ADR-054).
+        </p>
+      {:else if claseFirmada === "electronic_signature"}
+        <p class="sign-assistant__success" role="status">
+          <i class="fas fa-check-circle" aria-hidden="true"></i>
+          Firma electrónica registrada.
+        </p>
+        <p class="sign-assistant__legal">
+          Firma XAdES con su certificado personal, verificable por un tercero con el código de la
+          firma. Ley 527/1999 art. 7, sin acreditación ONAC, custodia de la clave en servidor
+          institucional. No implica control exclusivo del firmante en el sentido del art. 28.
+        </p>
+      {:else}
+        <!-- Sin la clase de la firma no se afirma ninguna: ni «firma electrónica» ni
+             «constancia». El certificado del turno lo dice. -->
+        <p class="sign-assistant__success" role="status">
+          <i class="fas fa-check-circle" aria-hidden="true"></i>
+          Turno de firma resuelto.
+        </p>
+        <p class="sign-assistant__legal">
+          Consulte el certificado del turno para saber si quedó firma electrónica o constancia de
+          firma simple.
+        </p>
+      {/if}
     {/if}
   </div>
 

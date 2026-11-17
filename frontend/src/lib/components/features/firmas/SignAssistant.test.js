@@ -47,7 +47,51 @@ describe("SignAssistant — camino rápido (sin segundo factor, objeto PUBLICA)"
       solicitud_id: SOLICITUD_ID,
       estado: "firmado",
     });
-    expect(screen.getByText("Documento firmado correctamente.")).toBeInTheDocument();
+    expect(screen.getByText("Turno de firma resuelto.")).toBeInTheDocument();
+  });
+});
+
+describe("SignAssistant — el comprobante dice qué firma quedó (ADR-054)", () => {
+  /** @param {string} kind */
+  async function firmarCon(kind) {
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            solicitud_id: SOLICITUD_ID,
+            estado: "firmado",
+            items: [
+              {
+                orden: 1,
+                estado: "firmado",
+                firma_id: "f1",
+                decidido_at: "2026-11-17T10:00:00Z",
+                kind,
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+    );
+    render(SignAssistant, { props: { open: true, solicitudId: SOLICITUD_ID, titulo: "R" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Firmar" }));
+  }
+
+  it("una constancia de firma simple no se presenta como firma electrónica", async () => {
+    await firmarCon("simple_signature_record");
+    await waitFor(() =>
+      expect(screen.getByText("Constancia de firma simple registrada.")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Firma electrónica registrada.")).not.toBeInTheDocument();
+    expect(screen.getByText(/No es una firma electrónica verificable por terceros/)).toBeTruthy();
+  });
+
+  it("una firma XAdES se presenta como firma electrónica, sin acreditación", async () => {
+    await firmarCon("electronic_signature");
+    await waitFor(() =>
+      expect(screen.getByText("Firma electrónica registrada.")).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/sin acreditación ONAC/)).toBeTruthy();
   });
 });
 
@@ -136,7 +180,7 @@ describe("SignAssistant — segundo factor OTP (E06 Inc.2)", () => {
     );
     expect(screen.getByText(/2 intentos restantes/)).toBeInTheDocument();
     // Nunca debe aparecer el comprobante de éxito ante un OTP incorrecto.
-    expect(screen.queryByText("Documento firmado correctamente.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Turno de firma resuelto.")).not.toBeInTheDocument();
   });
 
   it("fallo de red al confirmar el código NUNCA se interpreta como éxito", async () => {
@@ -190,7 +234,7 @@ describe("SignAssistant — segundo factor OTP (E06 Inc.2)", () => {
     );
     expect(signAttempts).toBe(2);
     expect(onSigned).not.toHaveBeenCalled();
-    expect(screen.queryByText("Documento firmado correctamente.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Turno de firma resuelto.")).not.toBeInTheDocument();
   });
 });
 
