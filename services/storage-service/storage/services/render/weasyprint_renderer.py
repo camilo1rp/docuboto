@@ -126,7 +126,7 @@ def _sin_red_fetcher() -> Any:
     """
     from weasyprint.urls import URLFetcher  # noqa: PLC0415
 
-    class _SinRed(URLFetcher):  # type: ignore[misc]
+    class _SinRed(URLFetcher):
         def fetch(self, url: str, headers: Any = None) -> Any:
             if not url.startswith("data:"):
                 raise ValueError(
