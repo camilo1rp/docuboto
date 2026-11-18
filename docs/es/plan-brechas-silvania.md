@@ -9,7 +9,9 @@
 **Qué es este documento.** El plan de los cambios de backend que pide la revisión
 «Escenarios de operación en la Alcaldía de Silvania» (68 escenarios, 10 de noviembre de
 2026) y el lugar de cada uno en el orden de ejecución del rediseño (ADR-047 a ADR-056).
-El frontend queda fuera: se revisa aparte.
+El frontend queda fuera: se revisa aparte, en la solicitud de cambio
+[CR-001](cr/CR-001-interfaz-primer-corte-silvania.md) y el
+[ADR-057](adr/ADR-057-interfaz-por-perfil-para-la-primera-alcaldia.md).
 
 **Base.** Código de la rama `feat/radicar-ingest-entry` @ `cda9a956`: el proceso único, el
 esquema de base generado y el outbox `trabajo_fuera` ya están. El siguiente paso del

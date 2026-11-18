@@ -123,6 +123,8 @@ plugins:
             ADR-054 La firma dice la verdad: ADR-054 The signature tells the truth
             ADR-055 Publicación pública de instrumentos: ADR-055 Public publication of archival instruments
             ADR-056 Un solo proxy BFF: ADR-056 A single BFF proxy
+            ADR-057 Interfaz por perfil para la primera alcaldía: ADR-057 Interface organised by role for the first municipality
+            Solicitud de cambio CR-001 (interfaz de Silvania): CR-001 change request (Silvania interface)
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -207,6 +209,7 @@ nav:
     - ADR-054 La firma dice la verdad: adr/ADR-054-la-firma-dice-la-verdad.md
     - ADR-055 Publicación pública de instrumentos: adr/ADR-055-publicacion-publica-de-instrumentos.md
     - ADR-056 Un solo proxy BFF: adr/ADR-056-un-solo-proxy-bff.md
+    - ADR-057 Interfaz por perfil para la primera alcaldía: adr/ADR-057-interfaz-por-perfil-para-la-primera-alcaldia.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
   - Referencia API: api.md
@@ -215,6 +218,7 @@ nav:
   - Roadmap: roadmap.md
   - Plan de inteligencia: plan-inteligencia.md
   - Plan de brechas de Silvania: plan-brechas-silvania.md
+  - Solicitud de cambio CR-001 (interfaz de Silvania): cr/CR-001-interfaz-primer-corte-silvania.md
   - Contribuir: contributing.md
   - Seguridad: security-audit.md
   - Changelog: changelog.md
