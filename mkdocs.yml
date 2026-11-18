@@ -125,6 +125,7 @@ plugins:
             ADR-056 Un solo proxy BFF: ADR-056 A single BFF proxy
             ADR-057 Interfaz por perfil para la primera alcaldía: ADR-057 Interface organised by role for the first municipality
             Solicitud de cambio CR-001 (interfaz de Silvania): CR-001 change request (Silvania interface)
+            Plan de implementación del CR-001: CR-001 implementation plan
             Pantallas del sistema: System screens
             Referencia API: API reference
             Despliegue: Deployment
@@ -219,6 +220,7 @@ nav:
   - Plan de inteligencia: plan-inteligencia.md
   - Plan de brechas de Silvania: plan-brechas-silvania.md
   - Solicitud de cambio CR-001 (interfaz de Silvania): cr/CR-001-interfaz-primer-corte-silvania.md
+  - Plan de implementación del CR-001: cr/CR-001-plan-de-implementacion.md
   - Contribuir: contributing.md
   - Seguridad: security-audit.md
   - Changelog: changelog.md

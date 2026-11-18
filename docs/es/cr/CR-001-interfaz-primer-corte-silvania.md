@@ -12,6 +12,7 @@
 | Para | Equipo de desarrollo de Docuboto |
 | Estado | Propuesta |
 | Decisión que la sustenta | [ADR-057](../adr/ADR-057-interfaz-por-perfil-para-la-primera-alcaldia.md) |
+| Plan de implementación | [CR-001: plan de implementación](CR-001-plan-de-implementacion.md) |
 | Base revisada | `main` @ `15be6dc` (17-nov-2026) y rama `docs/rediseno-ui` @ `aa44976` |
 | Prioridad | Las fases 0 a 3 bloquean el arranque en Silvania; la 4 va en el primer trimestre |
 | Esfuerzo estimado | 9 a 13 semanas de una persona de frontend, por confirmar con desarrollo |
