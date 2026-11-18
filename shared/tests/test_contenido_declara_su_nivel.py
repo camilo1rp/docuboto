@@ -40,20 +40,20 @@ CAMPOS_DE_CONTENIDO = frozenset({"subject", "observations", "asunto"})
 #: son de LECTURA y siguen fuera de la barrera: deuda real, no un descuido del
 #: censo.
 EXCEPCIONES = frozenset({
-    "archive-service::fisico.py::FuidRow",
-    "document-service::anulacion.py::AnulacionPendiente",
-    "document-service::batch.py::BatchDocumentCreate",
-    "document-service::borrador.py::BorradorCreate",
-    "document-service::borrador.py::BorradorUpdate",
-    "document-service::document.py::DocumentUpdate",
-    "document-service::internal.py::RadicadoMetaItem",
-    "document-service::public.py::PqrsCreate",
-    "document-service::public.py::VentanillaRadicacion",
-    "document-service::respuesta.py::RespuestaRapidaCreate",
-    "document-service::search.py::SearchHit",
-    "notification-service::notification.py::NotificationResponse",
-    "notification-service::notification.py::NotificationSend",
-    "workflow-service::rules.py::RuleEvaluationRequest",
+    "archive::fisico.py::FuidRow",
+    "document::anulacion.py::AnulacionPendiente",
+    "document::batch.py::BatchDocumentCreate",
+    "document::borrador.py::BorradorCreate",
+    "document::borrador.py::BorradorUpdate",
+    "document::document.py::DocumentUpdate",
+    "document::internal.py::RadicadoMetaItem",
+    "document::public.py::PqrsCreate",
+    "document::public.py::VentanillaRadicacion",
+    "document::respuesta.py::RespuestaRapidaCreate",
+    "document::search.py::SearchHit",
+    "notification::notification.py::NotificationResponse",
+    "notification::notification.py::NotificationSend",
+    "workflow::rules.py::RuleEvaluationRequest",
 })
 
 
@@ -70,7 +70,7 @@ def _censo() -> dict[str, bool]:
                 if isinstance(s, ast.AnnAssign) and isinstance(s.target, ast.Name)
             }
             if campos & CAMPOS_DE_CONTENIDO:
-                censo[f"{f.parts[-4]}::{f.name}::{c.name}"] = "nivel_seguridad" in campos
+                censo[f"{f.parts[-3]}::{f.name}::{c.name}"] = "nivel_seguridad" in campos
     return censo
 
 
@@ -101,7 +101,7 @@ def _niveles_con_default() -> set[str]:
                     and st.target.id == "nivel_seguridad"
                     and st.value is not None
                 ):
-                    con_default.add(f"{f.parts[-4]}::{f.name}::{c.name}")
+                    con_default.add(f"{f.parts[-3]}::{f.name}::{c.name}")
     return con_default
 
 

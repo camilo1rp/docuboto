@@ -10,7 +10,7 @@
 """El cerrojo de migraciones, sin base: reintento, plazo, mensaje y liberación (C19).
 
 El comportamiento contra Postgres real (dos sesiones) vive en
-`services/auth-service/tests/integration/test_cerrojo_migraciones.py`.
+`services/docuboto/tests/auth/integration/test_cerrojo_migraciones.py`.
 
 Mutaciones que deben caer (descritas, no ejecutadas): no liberar en el `finally`;
 ignorar el plazo (esperar para siempre); aceptar `MIGRATIONS_LOCK_TIMEOUT_S` basura.

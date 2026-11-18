@@ -1,0 +1,209 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+
+"""
+AREA-04-11 — claves por entidad y por propósito; el OTP ata el desafío.
+
+El HMAC del OTP y el de la firma nativa usaban el mismo secreto raíz para todas
+las entidades. Ahora cada (propósito, entidad) tiene su clave HKDF, y el OTP ata
+además el ``challenge_id``. El esquema anterior (``key_version=0``) se retiró en B9:
+ya no verifica.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import re
+import uuid
+from pathlib import Path
+
+import pytest
+
+from signature.core.config import settings
+from signature.core.otp import hmac_otp, verify_otp
+from tests.signature.conftest import TENANT_HEADERS
+from tests.signature.test_sign_xml_xades import _FakeFirmaTable  # tabla `firma` falsa con INSERT/SELECT
+
+C1 = uuid.UUID("11111111-aaaa-aaaa-aaaa-111111111111")
+C2 = uuid.UUID("22222222-aaaa-aaaa-aaaa-222222222222")
+SECRETO = settings.signature_secret
+
+
+def _otp(otp="123456", *, tenant="a", challenge=C1, v=1) -> str:
+    return hmac_otp(otp, SECRETO, tenant_slug=tenant, challenge_id=challenge, key_version=v)
+
+
+def test_otp_hash_distinto_por_challenge() -> None:
+    """El mismo código en dos desafíos produce hashes distintos."""
+    assert _otp(challenge=C1) != _otp(challenge=C2)
+
+
+def test_otp_hash_distinto_por_tenant() -> None:
+    assert _otp(tenant="a") != _otp(tenant="b")
+
+
+def test_otp_verifica_solo_con_su_challenge_y_su_tenant() -> None:
+    h = _otp()
+    ok = {"key_version": 1, "tenant_slug": "a", "challenge_id": C1}
+    assert verify_otp("123456", h, SECRETO, **ok) is True
+    assert verify_otp("123456", h, SECRETO, **{**ok, "challenge_id": C2}) is False
+    assert verify_otp("123456", h, SECRETO, **{**ok, "tenant_slug": "b"}) is False
+    assert verify_otp("654321", h, SECRETO, **ok) is False
+
+
+def test_otp_key_version_0_ya_no_verifica() -> None:
+    """B9-5: el hash de un desafío anterior a la 020, calculado con la fórmula
+    literal de entonces (HMAC del código con la clave raíz), ya no se acepta.
+    Mutación: restaurar la rama v0 en ``otp._key_and_msg`` => ``True`` y cae."""
+    legado = hmac.new(SECRETO.encode(), b"123456", digestmod=hashlib.sha256).hexdigest()
+    for kv in (0, 1):
+        assert (
+            verify_otp(
+                "123456", legado, SECRETO, key_version=kv, tenant_slug="a", challenge_id=C1
+            )
+            is False
+        )
+
+
+def test_otp_key_version_desconocida_no_verifica() -> None:
+    assert (
+        verify_otp("123456", _otp(), SECRETO, key_version=9, tenant_slug="a", challenge_id=C1)
+        is False
+    )
+
+
+def test_el_mensaje_de_la_firma_nombra_entidad_y_objeto() -> None:
+    """Defensa en profundidad: además de la clave por entidad, el MENSAJE que se
+    autentica ata entidad, tipo y objeto (y es inequívoco: un ``|`` dentro de un
+    identificador no mueve la frontera entre campos)."""
+    from signature.services.signer import _mensaje_v1
+
+    base = {"tenant_slug": "a", "objeto_tipo": "radicado", "objeto_id": "X"}
+
+    def m(**o) -> bytes:
+        return _mensaje_v1("h", "f", "s", **{**base, **o})
+
+    assert m() != m(tenant_slug="b")
+    assert m() != m(objeto_tipo="expediente")
+    assert m() != m(objeto_id="Y")
+    assert m(objeto_id="a|b", objeto_tipo="c") != m(objeto_id="a", objeto_tipo="b|c")
+
+
+def test_la_clave_del_otp_no_es_la_de_la_firma_nativa() -> None:
+    """Dos propósitos, dos claves: el hash de un OTP no puede ser un MAC de firma."""
+    from signature.core.secret_derivation import derive_key
+
+    assert derive_key(SECRETO, purpose="otp", tenant_slug="a") != derive_key(
+        SECRETO, purpose="firma_nativa", tenant_slug="a"
+    )
+
+
+@pytest.mark.asyncio
+async def test_firma_nativa_de_sign_xml_verifica_de_punta_a_punta(
+    client_with_conn, monkeypatch
+) -> None:
+    """``/sign-xml`` nativa -> ``/verify``: la fila lleva el instante que quedó DENTRO
+    del HMAC (antes se persistía otro ``now()`` y ninguna firma nativa de este camino
+    llegó nunca a verificar) y la ``key_version`` con que se firmó."""
+    # Solo el sello institucional entra por aquí (B9-3), con token interno; con el
+    # proveedor distinto de `xades_local` el sello cae al HMAC nativo.
+    monkeypatch.setattr(settings, "signer_provider", "nativa")
+    monkeypatch.setattr(settings, "signature_internal_token", "tok-interno")
+    client, conn = client_with_conn
+    table = _FakeFirmaTable()
+    conn.fetchrow.side_effect = table.fetchrow
+    resp = await client.post(
+        "/api/v1/signature/sign-xml",
+        json={"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"},
+        headers={**TENANT_HEADERS, "X-Internal-Token": "tok-interno"},
+    )
+    assert resp.status_code == 201, resp.text
+    firma_id = resp.json()["firma_id"]
+    assert table.rows[firma_id]["key_version"] == 1
+
+    ok = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": "<indice/>"},
+        headers=TENANT_HEADERS,
+    )
+    assert ok.json()["valida"] is True, ok.json()
+    mal = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": "<indice ALTERADO/>"},
+        headers=TENANT_HEADERS,
+    )
+    assert mal.json()["valida"] is False
+
+    # Misma fila, otra entidad (restauración/import al schema de otro tenant): no verifica.
+    otra = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": firma_id, "payload_xml": "<indice/>"},
+        headers={**TENANT_HEADERS, "X-Tenant-Slug": "otro"},
+    )
+    assert otra.json()["valida"] is False
+
+
+@pytest.mark.asyncio
+async def test_verify_de_una_fila_nativa_key_version_0_dice_esquema_retirado(
+    client_with_conn,
+) -> None:
+    """B9-5: fila nativa ``key_version=0`` con el HMAC CORRECTO de aquel esquema
+    (fórmula literal anterior): ``valida=false`` con ``motivo=esquema_hmac_retirado``
+    —no ``hmac_no_coincide``, que acusaría una manipulación inexistente—.
+    Mutación: quitar el corte por ``key_version`` en ``/verify`` => cae el motivo
+    (``hmac_no_coincide``)."""
+    from datetime import UTC, datetime
+
+    client, conn = client_with_conn
+    firmante = uuid.uuid4()
+    sello = datetime(2024, 1, 1, tzinfo=UTC)
+    sha = hashlib.sha256(b"<indice/>").hexdigest()
+    blob = hmac.new(
+        SECRETO.encode(),
+        f"{sha}|{firmante}|{sello.astimezone(UTC).isoformat()}".encode(),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    fila = {
+        "id": uuid.uuid4(), "objeto_tipo": "indice", "objeto_id": "exp-1",
+        "firmante_id": firmante, "payload_sha256": sha, "firma_blob": blob,
+        "provider": "nativa", "sello_tiempo": sello, "created_at": sello,
+        "key_version": 0,
+    }
+    conn.fetchrow.side_effect = [{"is_root": False, "max_level": None}, fila]
+    resp = await client.post(
+        "/api/v1/signature/verify",
+        json={"firma_id": str(fila["id"]), "payload_xml": "<indice/>"},
+        headers=TENANT_HEADERS,
+    )
+    assert resp.json()["valida"] is False, resp.json()
+    assert resp.json()["motivo"] == "esquema_hmac_retirado"
+    # B9-S6: no se evaluó nada, así que NO es `False` (que afirmaría manipulación).
+    # Mutación: volver a `firma_criptograficamente_valida=False` => cae.
+    assert resp.json()["firma_criptograficamente_valida"] is None
+
+
+def test_key_version_es_obligatoria_sin_default_y_solo_admite_0_o_1() -> None:
+    """`key_version` no tiene DEFAULT (quien inserta declara el esquema) y su CHECK
+    admite solo 0 (retirado) y 1 (HKDF por entidad), en `firma` y `firma_challenge`."""
+    sql = (
+        Path(__file__).resolve().parents[3]
+        / "docuboto" / "migrations" / "tenant" / "600_firma.sql"
+    ).read_text(encoding="utf-8")
+    sin_comentarios = re.sub(r"--[^\n]*", "", sql)
+    for tabla in ("firma", "firma_challenge"):
+        m = re.search(rf"CREATE TABLE {tabla} \((.*?)\n\);", sin_comentarios, re.S)
+        assert m, tabla
+        cuerpo = m.group(1)
+        assert re.search(r"^\s*key_version smallint NOT NULL,$", cuerpo, re.M), tabla
+        assert re.search(
+            rf"CONSTRAINT {tabla}_key_version_check CHECK \(\(key_version = ANY \(ARRAY\[0, 1\]\)\)\)",
+            cuerpo,
+        ), tabla

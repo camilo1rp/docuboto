@@ -20,8 +20,8 @@ from tests._compose import COMPOSE_PROD, RAIZ, servicios
 
 BACKUP = RAIZ / "infra" / "backup.sh"
 POLITICA = RAIZ / "infra" / "politica-s3-app.json"
-STORAGE = RAIZ / "services" / "storage-service" / "storage" / "services" / "storage_service.py"
-REPLICA = RAIZ / "services" / "storage-service" / "storage" / "services" / "aip_replica_service.py"
+STORAGE = RAIZ / "services" / "docuboto" / "storage" / "services" / "storage_service.py"
+REPLICA = RAIZ / "services" / "docuboto" / "storage" / "services" / "aip_replica_service.py"
 
 
 def _sin_comentarios(ruta: Path) -> str:

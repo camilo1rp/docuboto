@@ -30,7 +30,7 @@ import pytest
 
 RAIZ = Path(__file__).resolve().parents[2]
 MIGRACIONES = CHAIN / "tenant"
-ROUTER = RAIZ / "services" / "tenant-service" / "tenant" / "routers" / "config.py"
+ROUTER = RAIZ / "services" / "docuboto" / "tenant" / "routers" / "config.py"
 
 _necesita_arbol = pytest.mark.skipif(
     not MIGRACIONES.is_dir(), reason="el árbol de servicios no está montado"
@@ -113,7 +113,7 @@ def test_el_censo_no_esta_vacio() -> None:
 def test_las_claves_que_lee_el_codigo_estan_admitidas() -> None:
     leidas = {"firma_personal_require_xades"}
     fuente = (
-        RAIZ / "services" / "document-service" / "document" / "services" / "contexto_combinacion.py"
+        RAIZ / "services" / "docuboto" / "document" / "services" / "contexto_combinacion.py"
     ).read_text(encoding="utf-8")
     leidas.update(re.findall(r'"(entidad_[a-z_]+)"', fuente))
     assert not leidas - _admitidas(), sorted(leidas - _admitidas())

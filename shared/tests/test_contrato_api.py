@@ -74,7 +74,7 @@ def test_el_cruce_workflow_document_pasa_por_api() -> None:
 def test_el_censo_ve_el_primer_cruce() -> None:
     """Anti-vacuidad: sin el import, el test de arriba pasaría sobre cero cruces."""
     repo = (
-        SERVICIOS / "workflow-service" / "workflow" / "repositories" / "workflow_repository.py"
+        SERVICIOS / "docuboto" / "workflow" / "repositories" / "workflow_repository.py"
     )
     texto = repo.read_text(encoding="utf-8")
     assert "from document.api import mover_flujo" in texto

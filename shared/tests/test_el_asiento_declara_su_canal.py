@@ -92,8 +92,8 @@ def test_los_trabajos_conocidos_asientan_system() -> None:
     """Los trabajos que la auditoría señaló (purga de disposición y renovaciones del
     cableado WORM) no pueden volver a decir 'api'."""
     esperados = {
-        "services/document-service/document/services/purga_service.py": "system",
-        "services/storage-service/storage/services/storage_service.py": "system",
+        "services/docuboto/document/services/purga_service.py": "system",
+        "services/docuboto/storage/services/storage_service.py": "system",
     }
     vistos: dict[str, set[str]] = {k: set() for k in esperados}
     for f, _, llamada in _llamadas_a_append():

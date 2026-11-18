@@ -28,7 +28,7 @@ from pathlib import Path
 from tests._chain import seed_rows
 
 RAIZ = Path(__file__).resolve().parents[2]
-LECTOR = RAIZ / "services" / "document-service" / "document" / "core" / "politica.py"
+LECTOR = RAIZ / "services" / "docuboto" / "document" / "core" / "politica.py"
 CONSTANTES = ("PARAM_VERSION", "PARAM_URL", "PARAM_TEXTO")
 
 

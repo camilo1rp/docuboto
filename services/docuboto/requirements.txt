@@ -1,3 +1,6 @@
+# El proceso Docuboto (ADR-047): una lista para los nueve paquetes de dominio.
+# `requirements.lock` se genera desde aquí:
+#   uv pip compile services/docuboto/requirements.txt -o services/docuboto/requirements.lock --no-header -p 3.11
 aiosmtplib>=3.0.0
 asn1crypto>=1.5.1
 asyncpg>=0.29.0
@@ -19,3 +22,7 @@ regex>=2024.5.15
 signxml>=3.2.2
 uvicorn[standard]>=0.29.0
 weasyprint>=62.0
+# Pruebas: se instalan con la imagen igual que antes en cada servicio.
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-timeout>=2.4.0

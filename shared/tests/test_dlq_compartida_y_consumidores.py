@@ -255,7 +255,7 @@ _NOMBRES = {
 
 
 def _worker(servicio: str) -> Path:
-    ws = [w for w in _fuentes(f"{servicio}/app/workers/*.py") if "events.reclaim_stale(" in w.read_text()]
+    ws = [w for w in _fuentes(f"docuboto/{_NOMBRES[servicio]}/workers/*.py") if "events.reclaim_stale(" in w.read_text()]
     assert len(ws) == 1, f"{servicio}: se esperaba exactamente un worker con reclaim_stale, hay {ws}"
     return ws[0]
 

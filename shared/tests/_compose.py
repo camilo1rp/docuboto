@@ -23,7 +23,6 @@ import yaml
 
 RAIZ = Path(__file__).resolve().parents[2]
 COMPOSE_DEV = RAIZ / "docker-compose.yml"
-COMPOSE_E2E = RAIZ / "docker-compose.e2e.yml"
 COMPOSE_PROD = RAIZ / "infra" / "docker-compose.prod.yml"
 WORKFLOWS = RAIZ / ".github" / "workflows"
 CI_WORKFLOW = WORKFLOWS / "ci.yml"
@@ -65,10 +64,13 @@ def servicios_propios() -> list[str]:
     return sorted(p.parent.name for p in (RAIZ / "services").glob("*/Dockerfile"))
 
 
-# Paquete Python de cada servicio. Los de dominio usan el nombre de la carpeta
-# (document, workflow, …). api-gateway sigue en `app`.
+#: El proceso único (ADR-047): los paquetes de dominio son directorios hermanos.
+APP = RAIZ / "services" / "docuboto"
+
+# Paquete Python de cada antiguo servicio. Los guardianes siguen nombrando el
+# dominio por su servicio de antes (`document-service`) o por el paquete
+# (`document`); los dos llevan al mismo directorio.
 DIR_PAQUETE = {
-    "api-gateway": "app",
     "document-service": "document",
     "workflow-service": "workflow",
     "archive-service": "archive",
@@ -78,38 +80,42 @@ DIR_PAQUETE = {
     "notification-service": "notification",
     "signature-service": "signature",
     "knowledge-service": "knowledge",
+    "docuboto": "docuboto",
 }
 PAQUETES = tuple(sorted(set(DIR_PAQUETE.values())))
 
 
 def dir_paquete(nombre: str) -> str:
-    """Nombre del directorio-paquete de un servicio (`document-service` → `document`)."""
+    """Nombre del directorio-paquete de un dominio (`document-service` → `document`)."""
     if nombre in DIR_PAQUETE:
         return DIR_PAQUETE[nombre]
-    if nombre.endswith("-service"):
-        corto = nombre[: -len("-service")]
-        if corto in DIR_PAQUETE.values():
-            return corto
-    return "app"
+    if nombre in PAQUETES:
+        return nombre
+    raise KeyError(f"dominio desconocido: {nombre}")
 
 
 def ruta_src(nombre: str, *partes: str) -> Path:
-    """Fuente de un servicio: `ruta_src("document-service", "main.py")`."""
-    return (RAIZ / "services" / nombre / dir_paquete(nombre)).joinpath(*partes)
+    """Fuente de un dominio: `ruta_src("document-service", "main.py")`."""
+    return (APP / dir_paquete(nombre)).joinpath(*partes)
+
+
+def ruta_tests(nombre: str, *partes: str) -> Path:
+    """Pruebas de un dominio: `ruta_tests("storage", "test_x.py")`."""
+    return (APP / "tests" / dir_paquete(nombre)).joinpath(*partes)
 
 
 def paquete_de(servicio: Path | str) -> Path | None:
-    """Ruta al paquete Python de un servicio, o None si no existe."""
-    raiz = servicio if isinstance(servicio, Path) else RAIZ / "services" / servicio
-    dest = raiz / dir_paquete(raiz.name)
+    """Ruta al paquete Python de un dominio, o None si no existe."""
+    nombre = servicio.name if isinstance(servicio, Path) else servicio
+    dest = APP / dir_paquete(nombre)
     return dest if dest.is_dir() else None
 
 
 def glob_src(raiz: Path, patron: str) -> list[Path]:
     """Expande el segmento de paquete `app` a cada nombre real.
 
-    Los guardianes escribían `services/*/app/**`. Tras el rename, nueve
-    servicios viven en `document/`, `workflow/`, … y dos siguen en `app/`.
+    Los guardianes escribían `services/*/app/**`. Los paquetes viven ahora en
+    `services/docuboto/<dominio>/` y el comodín de servicio los sigue cubriendo.
     """
     if "/app/" not in patron:
         return sorted(raiz.glob(patron))

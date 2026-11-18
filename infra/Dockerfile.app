@@ -31,19 +31,19 @@ RUN apt-get update \
 COPY shared /shared
 RUN pip install --no-cache-dir /shared
 
-COPY services/docuboto/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY services/docuboto/requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
-COPY services/auth-service/auth /app/auth
-COPY services/tenant-service/tenant /app/tenant
-COPY services/document-service/document /app/document
-COPY services/archive-service/archive /app/archive
-COPY services/storage-service/storage /app/storage
-COPY services/workflow-service/workflow /app/workflow
-COPY services/notification-service/notification /app/notification
-COPY services/signature-service/signature /app/signature
-COPY services/knowledge-service/knowledge /app/knowledge
 COPY services/docuboto/docuboto /app/docuboto
+COPY services/docuboto/auth /app/auth
+COPY services/docuboto/tenant /app/tenant
+COPY services/docuboto/document /app/document
+COPY services/docuboto/archive /app/archive
+COPY services/docuboto/storage /app/storage
+COPY services/docuboto/workflow /app/workflow
+COPY services/docuboto/notification /app/notification
+COPY services/docuboto/signature /app/signature
+COPY services/docuboto/knowledge /app/knowledge
 COPY services/docuboto/migrations /app/migrations
 
 ENV PYTHONPATH=/app
@@ -55,8 +55,7 @@ USER orpycamcp
 
 # XSD live next to the service trees, not inside the Python package.
 # `archive.services.index_xsd` and `storage.services.aip_builder` resolve them at `/app/schemas`.
-COPY --chown=orpycamcp:orpycamcp services/archive-service/schemas/ /app/schemas/
-COPY --chown=orpycamcp:orpycamcp services/storage-service/schemas/ /app/schemas/
+COPY --chown=orpycamcp:orpycamcp services/docuboto/schemas/ /app/schemas/
 
 # `--no-access-log`: el registro de acceso de uvicorn incluye la CADENA DE
 # CONSULTA. El middleware propio la omite; el de uvicorn la reponía.

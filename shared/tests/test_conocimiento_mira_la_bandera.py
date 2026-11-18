@@ -24,7 +24,7 @@ import ast
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-KNOWLEDGE = RAIZ / "services" / "knowledge-service" / "knowledge" / "routers" / "knowledge.py"
+KNOWLEDGE = RAIZ / "services" / "docuboto" / "knowledge" / "routers" / "knowledge.py"
 
 _METODOS = {"get", "post", "put", "patch", "delete"}
 

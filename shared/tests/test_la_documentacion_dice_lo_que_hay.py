@@ -60,7 +60,7 @@ def _contiene(rel: str, frase: str) -> bool:
 
 
 def test_el_roadmap_no_dice_que_la_disposicion_final_no_se_ejecuta() -> None:
-    router = _leer("services/archive-service/archive/routers/eliminacion.py")
+    router = _leer("services/docuboto/archive/routers/eliminacion.py")
     assert "/lotes/{lote_id}/ejecutar" in router, "el hecho que desmiente la frase ya no existe"
     for rel in ("docs/es/roadmap.md", "docs/en/roadmap.md"):
         for falsa in ("no destruye nunca", "never destroys", "La disposición final no se ejecuta"):
@@ -74,10 +74,10 @@ def test_el_roadmap_no_dice_que_la_disposicion_final_no_se_ejecuta() -> None:
 
 def test_el_roadmap_no_dice_que_las_escrituras_de_catalogos_y_metadatos_estan_abiertas() -> None:
     routers = (
-        "services/document-service/document/routers/metadata.py",
-        "services/document-service/document/routers/metadata_elements.py",
-        "services/tenant-service/tenant/routers/catalogos.py",
-        "services/tenant-service/tenant/routers/config.py",
+        "services/docuboto/document/routers/metadata.py",
+        "services/docuboto/document/routers/metadata_elements.py",
+        "services/docuboto/tenant/routers/catalogos.py",
+        "services/docuboto/tenant/routers/config.py",
     )
     for r in routers:
         # Toda escritura declara su gate: cada @router.post/patch/put/delete va
@@ -249,7 +249,7 @@ def test_los_slugs_de_los_ejemplos_casan_con_el_validador_de_tenant_service() ->
     # El validador es único (AREA-02-05): el alta de tenant-service lo importa.
     from orpycamcp_common.tenant import SLUG_RE as slug_re
 
-    assert "slug_valido" in _leer("services/tenant-service/tenant/schemas/tenant.py")
+    assert "slug_valido" in _leer("services/docuboto/tenant/schemas/tenant.py")
     vistos = 0
     for p in _DOCS.rglob("*multi-tenancy.md"):
         txt = p.read_text(encoding="utf-8")
@@ -275,7 +275,7 @@ def test_ningun_documento_manda_a_dar_de_alta_un_tenant_por_el_gateway() -> None
 
 
 def test_adr_021_no_dice_que_el_dlq_de_notification_esta_pendiente() -> None:
-    assert "/replay" in _leer("services/notification-service/notification/routers/admin_deadletter.py")
+    assert "/replay" in _leer("services/docuboto/notification/routers/admin_deadletter.py")
     adr = "docs/es/adr/ADR-021-reclamacion-deadletter-eventos.md"
     assert not _contiene(adr, "notification-service (Incremento 2) queda pendiente")
     assert not _contiene(adr, "notification queda acoplado al Inc. 2")
@@ -283,7 +283,7 @@ def test_adr_021_no_dice_que_el_dlq_de_notification_esta_pendiente() -> None:
 
 def test_adr_018_no_promete_entregas_registradas_ni_deja_el_ssrf_como_evolutivo() -> None:
     assert "def validate_webhook_target" in _leer(
-        "services/notification-service/notification/core/webhook_security.py"
+        "services/docuboto/notification/core/webhook_security.py"
     )
     adr = "docs/es/adr/ADR-018-interoperabilidad-webhooks.md"
     assert not _contiene(adr, "el endurecimiento fino queda como evolutivo")
@@ -293,11 +293,11 @@ def test_adr_018_no_promete_entregas_registradas_ni_deja_el_ssrf_como_evolutivo(
 
 
 def test_ningun_comentario_de_tsa_dice_stub_con_el_cliente_remoto_implementado() -> None:
-    assert "httpx.post(" in _leer("services/signature-service/signature/core/tsa.py")
+    assert "httpx.post(" in _leer("services/docuboto/signature/core/tsa.py")
     for rel in (
-        "services/signature-service/signature/core/tsa.py",
-        "services/signature-service/signature/core/config.py",
-        "services/signature-service/signature/schemas/firma.py",
+        "services/docuboto/signature/core/tsa.py",
+        "services/docuboto/signature/core/config.py",
+        "services/docuboto/signature/schemas/firma.py",
     ):
         for n, linea in enumerate(_leer(rel).splitlines(), 1):
             if "stub" in linea.lower() and re.search(r"tsa|remot", linea, re.I):
@@ -311,8 +311,8 @@ def test_ningun_comentario_de_tsa_dice_stub_con_el_cliente_remoto_implementado()
 
 
 def test_ni_el_catalogo_ni_el_repositorio_dicen_que_la_cofirma_entrega_no_tiene_escritor() -> None:
-    assert "roles.add(\"entrega\")" in _leer("services/archive-service/archive/services/transferencia_service.py")
-    repo = _leer("services/archive-service/archive/repositories/transferencia_repository.py")
+    assert "roles.add(\"entrega\")" in _leer("services/docuboto/archive/services/transferencia_service.py")
+    repo = _leer("services/docuboto/archive/repositories/transferencia_repository.py")
     assert "hoy, a lo sumo" not in _plano(repo)
     # La cadena lo escribe una sola vez (ADR-053): ese es el COMMENT vigente.
     comentarios = re.findall(
@@ -327,13 +327,13 @@ def test_ni_el_catalogo_ni_el_repositorio_dicen_que_la_cofirma_entrega_no_tiene_
 
 def test_los_comentarios_de_deuda_ya_cerrada_se_corrigieron() -> None:
     # B5 (ADR-032): la validación del destino de la regla pasó a resolverse por código.
-    assert "_resolver_dependencia" in _leer("services/workflow-service/workflow/services/rules_service.py")
-    dist = _plano(_leer("services/workflow-service/workflow/services/distribution.py"))
+    assert "_resolver_dependencia" in _leer("services/docuboto/workflow/services/rules_service.py")
+    dist = _plano(_leer("services/docuboto/workflow/services/distribution.py"))
     assert "no se valida al crear/editar la regla" not in dist
-    assert "def purge_for_disposition" in _leer("services/storage-service/storage/services/storage_service.py")
-    assert "es un roadmap item" not in _plano(_leer("services/storage-service/storage/schemas/preservacion.py"))
+    assert "def purge_for_disposition" in _leer("services/docuboto/storage/services/storage_service.py")
+    assert "es un roadmap item" not in _plano(_leer("services/docuboto/storage/schemas/preservacion.py"))
     # El hecho que sostiene la frase vive en el árbol versionado y se exige SIEMPRE.
-    assert (_SERVICIOS / "notification-service" / "notification" / "jobs" / "retention.py").is_file()
+    assert (_SERVICIOS / "docuboto" / "notification" / "jobs" / "retention.py").is_file()
     # El CLAUDE.md del servicio es infraestructura local (gitignored, symlink a
     # ~/Documents/claudeCode): no existe en CI ni, colgante, en un contenedor que no
     # monta ese directorio. Solo cuando es legible se le exige la frase; `is_file()` sigue
@@ -344,8 +344,8 @@ def test_los_comentarios_de_deuda_ya_cerrada_se_corrigieron() -> None:
 
 
 def test_oai_de_document_no_promete_un_fast_follow_que_ya_se_cerro() -> None:
-    assert "level" in _leer("services/archive-service/archive/services/oai_service.py")
-    src = _leer("services/document-service/document/services/oai_service.py")
+    assert "level" in _leer("services/docuboto/archive/services/oai_service.py")
+    src = _leer("services/docuboto/document/services/oai_service.py")
     assert "fast-follow" not in src and "monolvel" not in src
 
 
@@ -389,13 +389,13 @@ def test_c6_la_documentacion_no_afirma_la_deuda_lta_que_c6_cerro() -> None:
 
     Cada frase se prohíbe MIENTRAS el hecho del código exista. Quedan fuera a propósito los changelogs y el
     roadmap: son historia (cada línea fue cierta el día que se escribió)."""
-    local = _leer("services/signature-service/signature/providers/local.py")
-    tsa = _leer("services/signature-service/signature/core/tsa.py")
-    ocsp = _leer("services/signature-service/signature/core/ocsp.py")
+    local = _leer("services/docuboto/signature/providers/local.py")
+    tsa = _leer("services/docuboto/signature/core/tsa.py")
+    ocsp = _leer("services/docuboto/signature/core/ocsp.py")
     assert "def _evaluar_tsvd(" in local, "el hecho ya no existe: el guardián vigilaría el vacío"
     assert "def verify_ocsp_tsa(" in ocsp and "FUENTE_OCSP" in tsa
     # El barrido de archive existe: reempaquetar ya no «queda abierto».
-    reconciliacion = _leer("services/archive-service/archive/jobs/indice_reconciliation.py")
+    reconciliacion = _leer("services/docuboto/archive/jobs/indice_reconciliation.py")
     assert "run_once_aip_reempaquetado" in reconciliacion
 
     vigiladas = (
@@ -404,10 +404,10 @@ def test_c6_la_documentacion_no_afirma_la_deuda_lta_que_c6_cerro() -> None:
         "docs/en/api.md",
         "docs/es/domain.md",
         "docs/en/domain.md",
-        "services/signature-service/signature/providers/local.py",
-        "services/signature-service/signature/core/events.py",
-        "services/signature-service/signature/core/ocsp.py",
-        "services/signature-service/signature/jobs/renovacion_lta.py",
+        "services/docuboto/signature/providers/local.py",
+        "services/docuboto/signature/core/events.py",
+        "services/docuboto/signature/core/ocsp.py",
+        "services/docuboto/signature/jobs/renovacion_lta.py",
     )
     prohibidas = (
         "`/verify` NO evalúa el `TimeStampValidationData`",

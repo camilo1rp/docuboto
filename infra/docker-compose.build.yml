@@ -37,65 +37,6 @@ services:
       # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
       context: ..
       dockerfile: services/api-gateway/Dockerfile
-  auth-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/auth-service/.
-      context: ..
-      dockerfile: services/auth-service/Dockerfile
-  tenant-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/tenant-service/.
-      context: ..
-      dockerfile: services/tenant-service/Dockerfile
-  document-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/document-service/.
-      context: ..
-      dockerfile: services/document-service/Dockerfile
-  storage-service:
-    build:
-      # Contexto en la RAÍZ (ADR-010, mismo motivo que signature-service más
-      # abajo): el Dockerfile instala shared/orpycamcp_common, que NO existe
-      # dentro de services/storage-service/ -- `context: ../services/storage-service`
-      # (como estaba antes) rompería ese COPY. target=production (E10
-      # Increment C2b) añade Java + veraPDF CLI real y corre como usuario
-      # NO-root -- ver comentarios en services/storage-service/Dockerfile
-      # para el detalle completo (la imagen de dev, target por defecto, se
-      # mantiene slim, sin Java).
-      context: ..
-      dockerfile: services/storage-service/Dockerfile
-      target: production
-  workflow-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/workflow-service/.
-      context: ..
-      dockerfile: services/workflow-service/Dockerfile
-  archive-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/archive-service/.
-      context: ..
-      dockerfile: services/archive-service/Dockerfile
-  notification-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/notification-service/.
-      context: ..
-      dockerfile: services/notification-service/Dockerfile
-  signature-service:
-    build:
-      context: ..
-      dockerfile: services/signature-service/Dockerfile
-  knowledge-service:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common (ADR-010),
-      # que NO existe dentro de services/knowledge-service/.
-      context: ..
-      dockerfile: services/knowledge-service/Dockerfile
   frontend:
     build:
       context: ../frontend

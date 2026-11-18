@@ -85,85 +85,85 @@ def _gate_en(texto: str) -> tuple[str, bool] | None:
 #: aprobadas — ver el docstring. Formato:
 #: "<servicio>::<archivo>::<MÉTODO> <ruta>::<permiso>"
 SIN_NIVEL_DECLARADAS = frozenset({
-    "archive-service::batch.py::POST /expedientes::USUA_PERM_EXPEDIENTE",
-    "archive-service::fisico.py::POST /ubicaciones::USUA_PERM_EXPEDIENTE",
-    "archive-service::fisico.py::POST /unidades/{unidad_id}/expedientes::USUA_PERM_EXPEDIENTE",
-    "archive-service::fisico.py::POST /unidades::USUA_PERM_EXPEDIENTE",
-    "archive-service::indice.py::POST /{expediente_id}/indice/firmar::USUA_PERM_EXPEDIENTE",
-    "archive-service::indice.py::POST /{expediente_id}/indice/rebuild::USUA_PERM_EXPEDIENTE",
-    "archive-service::metadata.py::POST ::USUA_PERM_TRD",
-    "archive-service::tipos_documentales.py::PATCH /{tipo_id}::USUA_PERM_TRD",
-    "archive-service::tipos_documentales.py::POST ::USUA_PERM_TRD",
-    "archive-service::trd.py::POST ::USUA_PERM_TRD",
-    "archive-service::tvd.py::POST ::USUA_PERM_TRD",
-    "auth-service::signing_key.py::POST /enroll::PERM_FIRMA",
+    "archive::batch.py::POST /expedientes::USUA_PERM_EXPEDIENTE",
+    "archive::fisico.py::POST /ubicaciones::USUA_PERM_EXPEDIENTE",
+    "archive::fisico.py::POST /unidades/{unidad_id}/expedientes::USUA_PERM_EXPEDIENTE",
+    "archive::fisico.py::POST /unidades::USUA_PERM_EXPEDIENTE",
+    "archive::indice.py::POST /{expediente_id}/indice/firmar::USUA_PERM_EXPEDIENTE",
+    "archive::indice.py::POST /{expediente_id}/indice/rebuild::USUA_PERM_EXPEDIENTE",
+    "archive::metadata.py::POST ::USUA_PERM_TRD",
+    "archive::tipos_documentales.py::PATCH /{tipo_id}::USUA_PERM_TRD",
+    "archive::tipos_documentales.py::POST ::USUA_PERM_TRD",
+    "archive::trd.py::POST ::USUA_PERM_TRD",
+    "archive::tvd.py::POST ::USUA_PERM_TRD",
+    "auth::signing_key.py::POST /enroll::PERM_FIRMA",
     # Consultas por POST (el cuerpo lleva la pregunta): PERM_CONOCIMIENTO nivel 1 es
     # «consultar con IA» (ADR-037). Lo que SÍ escribe —aceptar una sugerencia— exige 2.
-    "knowledge-service::knowledge.py::POST /antecedentes::PERM_CONOCIMIENTO",
-    "knowledge-service::knowledge.py::POST /search::PERM_CONOCIMIENTO",
-    "document-service::anulacion.py::POST /{document_id}/anulacion/aprobar::PERM_PANU_CODI",
-    "document-service::anulacion.py::POST /{document_id}/anulacion/rechazar::PERM_PANU_CODI",
-    "document-service::anulacion.py::POST /{document_id}/anulacion::PERM_SOL_ANULAR",
-    "document-service::batch.py::POST /documents::PERM_RADI",
+    "knowledge::knowledge.py::POST /antecedentes::PERM_CONOCIMIENTO",
+    "knowledge::knowledge.py::POST /search::PERM_CONOCIMIENTO",
+    "document::anulacion.py::POST /{document_id}/anulacion/aprobar::PERM_PANU_CODI",
+    "document::anulacion.py::POST /{document_id}/anulacion/rechazar::PERM_PANU_CODI",
+    "document::anulacion.py::POST /{document_id}/anulacion::PERM_SOL_ANULAR",
+    "document::batch.py::POST /documents::PERM_RADI",
     # Reprocesar es retomar el MISMO acto que crear el lote, al mismo nivel que
     # radicar: su creador lo hace con PERM_RADI 1; un tercero necesita nivel 3, y
     # ese gate va en el WHERE del servicio (404 neutro), no en el decorador.
-    "document-service::batch.py::POST /documents/{job_id}/reprocesar::PERM_RADI",
-    "document-service::borradores.py::DELETE /api/v1/plantillas/{plantilla_id}::USUA_PERM_ADMIN",
-    "document-service::borradores.py::PATCH /api/v1/borradores/{borrador_id}::PERM_RADI",
-    "document-service::borradores.py::POST /api/v1/borradores/{borrador_id}/aprobar::PERM_RADI",
-    "document-service::borradores.py::POST /api/v1/borradores/{borrador_id}/devolver::PERM_RADI",
-    "document-service::borradores.py::POST /api/v1/borradores/{borrador_id}/previsualizar::PERM_RADI",
-    "document-service::borradores.py::POST /api/v1/borradores/{borrador_id}/radicar::PERM_RADI",
-    "document-service::borradores.py::POST /api/v1/borradores::PERM_RADI",
-    "document-service::borradores.py::POST /api/v1/plantillas/importar::USUA_PERM_ADMIN",
-    "document-service::borradores.py::POST /api/v1/plantillas/{plantilla_id}/combinar::PERM_RADI",
-    "document-service::borradores.py::POST /api/v1/plantillas::USUA_PERM_ADMIN",
-    "document-service::borradores.py::PUT /api/v1/plantillas/{plantilla_id}/alcance::USUA_PERM_ADMIN",
-    "document-service::documents.py::PATCH /{document_id}::PERM_RADI",
-    "document-service::documents.py::POST ::PERM_RADI",
-    "document-service::metadata.py::POST ::USUA_PERM_TRD",
-    "document-service::metadata_elements.py::PATCH /{element_id}::USUA_PERM_TRD",
-    "document-service::metadata_elements.py::POST ::USUA_PERM_TRD",
-    "document-service::respuesta.py::POST /{document_id}/respuesta::PERM_RESPUESTA_VINCULADA",
-    "signature-service::signature.py::POST /sign-personal::PERM_FIRMA",
-    "storage-service::storage.py::POST /upload::PERM_RADI",
-    "workflow-service::rules.py::DELETE /{rule_id}::USUA_PERM_ADMIN",
-    "workflow-service::rules.py::PATCH /{rule_id}::USUA_PERM_ADMIN",
-    "workflow-service::rules.py::POST /evaluate/batch::USUA_PERM_ADMIN",
-    "workflow-service::rules.py::POST /evaluate::USUA_PERM_ADMIN",
-    "workflow-service::rules.py::POST ::USUA_PERM_ADMIN",
-    "workflow-service::visto_bueno.py::POST /{radicado_id}/vistos-buenos::PERM_RADI",
-    "workflow-service::workflow.py::PATCH /{step_id}/complete::PERM_TRAMITAR",
-    "workflow-service::workflow.py::POST /assign::PERM_TRAMITAR",
-    "workflow-service::workflow.py::POST /overdue/scan::USUA_PERM_ADMIN",
-    "workflow-service::workflow.py::POST /reassign/cascade::USUA_PERM_ADMIN",
-    "workflow-service::workflow.py::POST /transfer::PERM_TRAMITAR",
-    "workflow-service::workflow.py::POST /{radicado_id}/devolver::PERM_TRAMITAR",
-    "workflow-service::workflow.py::POST /{radicado_id}/rollback::PERM_TRAMITAR",
+    "document::batch.py::POST /documents/{job_id}/reprocesar::PERM_RADI",
+    "document::borradores.py::DELETE /api/v1/plantillas/{plantilla_id}::USUA_PERM_ADMIN",
+    "document::borradores.py::PATCH /api/v1/borradores/{borrador_id}::PERM_RADI",
+    "document::borradores.py::POST /api/v1/borradores/{borrador_id}/aprobar::PERM_RADI",
+    "document::borradores.py::POST /api/v1/borradores/{borrador_id}/devolver::PERM_RADI",
+    "document::borradores.py::POST /api/v1/borradores/{borrador_id}/previsualizar::PERM_RADI",
+    "document::borradores.py::POST /api/v1/borradores/{borrador_id}/radicar::PERM_RADI",
+    "document::borradores.py::POST /api/v1/borradores::PERM_RADI",
+    "document::borradores.py::POST /api/v1/plantillas/importar::USUA_PERM_ADMIN",
+    "document::borradores.py::POST /api/v1/plantillas/{plantilla_id}/combinar::PERM_RADI",
+    "document::borradores.py::POST /api/v1/plantillas::USUA_PERM_ADMIN",
+    "document::borradores.py::PUT /api/v1/plantillas/{plantilla_id}/alcance::USUA_PERM_ADMIN",
+    "document::documents.py::PATCH /{document_id}::PERM_RADI",
+    "document::documents.py::POST ::PERM_RADI",
+    "document::metadata.py::POST ::USUA_PERM_TRD",
+    "document::metadata_elements.py::PATCH /{element_id}::USUA_PERM_TRD",
+    "document::metadata_elements.py::POST ::USUA_PERM_TRD",
+    "document::respuesta.py::POST /{document_id}/respuesta::PERM_RESPUESTA_VINCULADA",
+    "signature::signature.py::POST /sign-personal::PERM_FIRMA",
+    "storage::storage.py::POST /upload::PERM_RADI",
+    "workflow::rules.py::DELETE /{rule_id}::USUA_PERM_ADMIN",
+    "workflow::rules.py::PATCH /{rule_id}::USUA_PERM_ADMIN",
+    "workflow::rules.py::POST /evaluate/batch::USUA_PERM_ADMIN",
+    "workflow::rules.py::POST /evaluate::USUA_PERM_ADMIN",
+    "workflow::rules.py::POST ::USUA_PERM_ADMIN",
+    "workflow::visto_bueno.py::POST /{radicado_id}/vistos-buenos::PERM_RADI",
+    "workflow::workflow.py::PATCH /{step_id}/complete::PERM_TRAMITAR",
+    "workflow::workflow.py::POST /assign::PERM_TRAMITAR",
+    "workflow::workflow.py::POST /overdue/scan::USUA_PERM_ADMIN",
+    "workflow::workflow.py::POST /reassign/cascade::USUA_PERM_ADMIN",
+    "workflow::workflow.py::POST /transfer::PERM_TRAMITAR",
+    "workflow::workflow.py::POST /{radicado_id}/devolver::PERM_TRAMITAR",
+    "workflow::workflow.py::POST /{radicado_id}/rollback::PERM_TRAMITAR",
     # --- Declaradas al enseñar al censo a leer los gates de `APIRouter(dependencies=[...])`
     # (AREA-01-01). Estaban abiertas a nivel de lectura sin que el censo lo viera;
     # las de auth-service (RBAC, URD, 2FA/firma de OTRA persona) se corrigieron en
     # la misma tanda. Estas quedan declaradas, no aprobadas: subirlas a 2/3 es el
     # barrido siguiente (cadena de firma, DLQ, alta de terceros; los webhooks ya exigen nivel 3, OMI-03).
-    "document-service::terceros.py::POST ::PERM_RADI",
-    "notification-service::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
-    "notification-service::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
-    "signature-service::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
-    "signature-service::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
-    "signature-service::cadena.py::POST /batch::PERM_FIRMA",
-    "signature-service::cadena.py::POST /requests/{solicitud_id}/challenge::PERM_FIRMA",
-    "signature-service::cadena.py::POST /requests/{solicitud_id}/reject::PERM_FIRMA",
-    "signature-service::cadena.py::POST /requests/{solicitud_id}/sign::PERM_FIRMA",
-    "signature-service::cadena.py::POST /requests/{solicitud_id}/vobo::PERM_FIRMA",
-    "signature-service::cadena.py::POST /requests::PERM_FIRMA",
-    "workflow-service::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
-    "workflow-service::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
+    "document::terceros.py::POST ::PERM_RADI",
+    "notification::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
+    "notification::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
+    "signature::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
+    "signature::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
+    "signature::cadena.py::POST /batch::PERM_FIRMA",
+    "signature::cadena.py::POST /requests/{solicitud_id}/challenge::PERM_FIRMA",
+    "signature::cadena.py::POST /requests/{solicitud_id}/reject::PERM_FIRMA",
+    "signature::cadena.py::POST /requests/{solicitud_id}/sign::PERM_FIRMA",
+    "signature::cadena.py::POST /requests/{solicitud_id}/vobo::PERM_FIRMA",
+    "signature::cadena.py::POST /requests::PERM_FIRMA",
+    "workflow::admin_deadletter.py::POST /{event_id}/discard::PERM_DLQ_ADMIN",
+    "workflow::admin_deadletter.py::POST /{event_id}/replay::PERM_DLQ_ADMIN",
     # Ingesta de preparación del asistente de radicación: prepara el MISMO acto que
     # `documents.py::POST` (PERM_RADI nivel 1) y sube de nivel con él, no antes.
-    "knowledge-service::ingesta.py::DELETE /ingesta/{external_ref}::PERM_RADI",
-    "knowledge-service::ingesta.py::POST /ingesta/extract::PERM_RADI",
-    "knowledge-service::ingesta.py::POST /ingesta::PERM_RADI",
+    "knowledge::ingesta.py::DELETE /ingesta/{external_ref}::PERM_RADI",
+    "knowledge::ingesta.py::POST /ingesta/extract::PERM_RADI",
+    "knowledge::ingesta.py::POST /ingesta::PERM_RADI",
 })
 
 
@@ -235,7 +235,7 @@ def _censo() -> set[str]:
     hallados: set[str] = set()
     for ruta in sorted(glob_src(SERVICIOS, "*/app/routers/*.py")):
         hallados |= _censo_de(
-            ruta.read_text(encoding="utf-8"), f"{ruta.parts[-4]}::{ruta.name}"
+            ruta.read_text(encoding="utf-8"), f"{ruta.parts[-3]}::{ruta.name}"
         )
     return hallados
 
@@ -323,9 +323,9 @@ def test_administrar_rbac_exige_nivel_3() -> None:
     """AREA-01-01: las escrituras de RBAC/URD/clearance de auth-service exigen
     `USUA_PERM_ADMIN` con `min_crud=3`: ya no figuran en el censo de las que se
     pueden ejecutar a nivel de lectura, y la fuente lo declara."""
-    base = SERVICIOS / "auth-service" / "auth" / "routers"
+    base = SERVICIOS / "docuboto" / "auth" / "routers"
     fuera = [
-        c for c in _censo() if c.startswith("auth-service::") and c.endswith("::USUA_PERM_ADMIN")
+        c for c in _censo() if c.startswith("auth::") and c.endswith("::USUA_PERM_ADMIN")
     ]
     assert not fuera, f"escrituras de auth-service a nivel de lectura: {fuera}"
     for archivo, esperadas in {

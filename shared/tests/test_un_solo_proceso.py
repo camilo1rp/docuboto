@@ -132,7 +132,7 @@ def test_el_lifespan_arranca_la_ingesta_ppi_solo_con_proveedor() -> None:
 
 
 def test_knowledge_service_no_arranca_la_ingesta() -> None:
-    texto = (RAIZ / "services/knowledge-service/knowledge/main.py").read_text(encoding="utf-8")
+    texto = (RAIZ / "services/docuboto/knowledge/main.py").read_text(encoding="utf-8")
     assert "intelligence_consumer" not in texto
 
 
@@ -190,8 +190,7 @@ def test_el_dockerfile_vive_fuera_de_services() -> None:
 def test_las_imagenes_llevan_los_xsd() -> None:
     for nombre in ("Dockerfile.app", "Dockerfile.worker"):
         texto = (RAIZ / "infra" / nombre).read_text(encoding="utf-8")
-        assert "archive-service/schemas/" in texto, nombre
-        assert "storage-service/schemas/" in texto, nombre
+        assert "services/docuboto/schemas/" in texto, nombre
         assert "/app/schemas/" in texto, nombre
 
 
