@@ -378,9 +378,17 @@ class CadenaRepository:
             )
 
     async def list_turnos(self, solicitud_id: uuid.UUID) -> list[asyncpg.Record]:
+        """Turnos en orden, con el ``provider`` de la firma que dejó cada uno.
+
+        El proveedor viaja para que la pantalla distinga «firma electrónica» de
+        «constancia de firma simple» (ADR-054 §1) sin una consulta por turno.
+        ``LEFT JOIN``: un turno sin resolver no tiene firma.
+        """
+        cols = ", ".join(f"c.{c.strip()}" for c in _CAD_COLS.split(","))
         rows = await self._conn.fetch(
-            f"SELECT {_CAD_COLS} FROM firma_cadena "
-            "WHERE solicitud_id = $1 ORDER BY orden",
+            f"SELECT {cols}, f.provider FROM firma_cadena c "
+            "LEFT JOIN firma f ON f.id = c.firma_id "
+            "WHERE c.solicitud_id = $1 ORDER BY c.orden",
             solicitud_id,
         )
         return list(rows)

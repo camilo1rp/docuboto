@@ -304,9 +304,10 @@ export const COMPLETITUD_MAP = {
 };
 
 export const POLITICA_XADES_LABELS = {
-  off: "Firma personal opcional",
-  clasificados: "Firma personal obligatoria en expedientes clasificados (nivel 2 o más)",
-  todos: "Firma personal obligatoria en todos los casos",
+  off: "Firma electrónica personal opcional: un acto clasificado puede quedar solo con constancia de firma simple",
+  clasificados:
+    "Firma electrónica personal obligatoria en actos clasificados (nivel 2 o más) — valor de fábrica",
+  todos: "Firma electrónica personal obligatoria en todos los casos",
 };
 
 /** Avisos de una firma que sigue siendo válida (vocabulario cerrado de signature-service). */
@@ -334,10 +335,19 @@ export function longitudFundamentoValida(fundamento) {
 
 export const CLAVE_POLITICA_XADES = "firma_personal_require_xades";
 
+// ADR-054 §1: `clasificados` es el valor con el que nace la entidad. `off` se elige de
+// forma explícita y dice lo que permite: firmar un acto clasificado con la constancia de
+// firma simple (HMAC), que un tercero no puede verificar.
 export const OPCIONES_POLITICA_XADES = [
-  { value: "off", label: "off — la firma personal es opcional" },
-  { value: "clasificados", label: "clasificados — obligatoria en expedientes de nivel 2 o más" },
-  { value: "todos", label: "todos — obligatoria siempre" },
+  {
+    value: "off",
+    label: "off — un acto clasificado puede quedar con constancia de firma simple",
+  },
+  {
+    value: "clasificados",
+    label: "clasificados — firma electrónica obligatoria en actos de nivel 2 o más (de fábrica)",
+  },
+  { value: "todos", label: "todos — firma electrónica obligatoria siempre" },
 ];
 
 const RANGO_POLITICA = { off: 0, clasificados: 1, todos: 2 };

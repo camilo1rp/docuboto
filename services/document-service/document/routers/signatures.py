@@ -8,11 +8,15 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Firma electrónica de radicados/anexos (E06, ADR-016).
+Constancia de firma simple de radicados/anexos (E06, ADR-016, ADR-054).
 
-Firma = identidad (claims del gateway) + hash SHA-256 del contenido + sello de
-tiempo + motivo. La verificación comprueba que el hash firmado coincide con el
-hash del contenido actual (detección de alteración).
+Constancia = identidad (claims del gateway) + hash SHA-256 del contenido + sello
+de tiempo + motivo. Es una firma electrónica SIMPLE (Ley 527/1999 art. 7) y se
+nombra como tal: íntegra y atribuible dentro del sistema, NO verificable por un
+tercero (ADR-054 §1). Por eso este camino no responde «¿es válida esta firma?»:
+`/signatures/match` dice si una huella está entre las constancias del radicado.
+La firma electrónica verificable (XAdES) vive en signature-service, con su
+verificación pública por identificador.
 """
 
 import uuid
@@ -26,8 +30,8 @@ from document.core.database import get_tenant_conn
 from document.repositories.signature_repository import SignatureRepository
 from document.schemas.signature import (
     SignatureCreate,
+    SignatureMatchResponse,
     SignatureResponse,
-    SignatureVerifyResponse,
 )
 from document.services.signature_service import SignatureService, not_found
 
@@ -42,7 +46,7 @@ def _signer_id(request: Request) -> uuid.UUID | None:
     "/{document_id}/signatures",
     response_model=SignatureResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Sign a radicado/anexo electronically (E06)",
+    summary="Record a simple signature on a radicado/anexo (E06, ADR-054)",
     # Nivel 2 (editar), no el de lectura por defecto: firmar es una ESCRITURA
     # probatoria y la hacía quien tiene PERM_FIRMA en modo consulta.
     dependencies=[Depends(require_permission("PERM_FIRMA", min_crud=2))],
@@ -53,7 +57,7 @@ async def sign_document(
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> SignatureResponse:
-    """Firma declarativa de un anexo (E06): firma electrónica SIMPLE.
+    """Constancia de firma simple de un anexo (E06, ADR-054): firma electrónica SIMPLE.
 
     Exige `PERM_FIRMA` a nivel 2 (escritura) y respeta no-read-up: no se puede
     firmar un radicado que no se puede ver. La huella NO la elige el cliente: el
@@ -76,7 +80,7 @@ async def sign_document(
 @router.get(
     "/{document_id}/signatures",
     response_model=list[SignatureResponse],
-    summary="List signatures of a radicado (E06)",
+    summary="List simple signature records of a radicado (E06)",
     dependencies=[Depends(require_permission("PERM_FIRMA"))],
 )
 async def list_signatures(
@@ -101,20 +105,25 @@ async def list_signatures(
 
 
 @router.get(
-    "/{document_id}/signatures/verify",
-    response_model=SignatureVerifyResponse,
-    summary="Verify a content hash against the radicado's signatures (E06)",
+    "/{document_id}/signatures/match",
+    response_model=SignatureMatchResponse,
+    summary="Is a content hash among the radicado's simple signature records? (E06, ADR-054)",
     dependencies=[Depends(require_permission("PERM_FIRMA"))],
 )
-async def verify_signature(
+async def match_signature(
     document_id: uuid.UUID,
     content_hash: str,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-) -> SignatureVerifyResponse:
-    """Verifica un hash contra las firmas del radicado (E06).
+) -> SignatureMatchResponse:
+    """¿Esta huella está entre las constancias de firma simple del radicado? (E06)
 
-    Gateado igual que el listado: sin él, el `valid` true/false era un **oráculo
+    Antes se llamaba `/signatures/verify` y respondía `{valid}`: el camino simple
+    contestaba la pregunta probatoria con la tabla equivocada (ADR-054 §4). Ahora
+    contesta lo que sabe —`matched`, con `kind=simple_signature_record`— y la
+    validez de una firma la dice solo signature-service.
+
+    Gateado igual que el listado: sin él, el `matched` true/false era un **oráculo
     de contenido** — permitía confirmar por fuerza bruta el hash de un documento
     reservado sin llegar a leerlo.
     """
@@ -124,8 +133,8 @@ async def verify_signature(
         raise not_found(document_id)
     normalized = content_hash.lower()
     rows = await repo.list_matching(document_id, normalized)
-    return SignatureVerifyResponse(
+    return SignatureMatchResponse(
         content_hash=normalized,
-        valid=bool(rows),
+        matched=bool(rows),
         signatures=[SignatureResponse(**dict(r)) for r in rows],
     )

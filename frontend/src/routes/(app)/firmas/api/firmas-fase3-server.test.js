@@ -23,7 +23,7 @@ import { POST as verifyPost } from "./verify/+server.js";
 import { POST as requestsPost, GET as requestsGet } from "./requests/+server.js";
 import { POST as signPersonalPost } from "./sign-personal/+server.js";
 import { GET as documentoGet, POST as documentoPost } from "./documento/[documentId]/+server.js";
-import { GET as documentoVerifyGet } from "./documento/[documentId]/verify/+server.js";
+import { GET as documentoVerifyGet } from "./documento/[documentId]/match/+server.js";
 
 const SOLICITUD_ID = "11111111-1111-1111-1111-111111111111";
 const FIRMA_ID = "22222222-2222-2222-2222-222222222222";
@@ -552,9 +552,9 @@ describe("firmas/api/documento/[documentId] GET/POST", () => {
 });
 
 // ---------------------------------------------------------------------------
-// /firmas/api/documento/[documentId]/verify
+// /firmas/api/documento/[documentId]/match
 // ---------------------------------------------------------------------------
-describe("firmas/api/documento/[documentId]/verify GET", () => {
+describe("firmas/api/documento/[documentId]/match GET", () => {
   it("401 unauthenticated, sin llamar al gateway", async () => {
     globalThis.fetch = noFetch();
     const res = await documentoVerifyGet({
@@ -575,11 +575,11 @@ describe("firmas/api/documento/[documentId]/verify GET", () => {
     expect(res.status).toBe(400);
   });
 
-  it("reenvía valid=false con signatures[] (nunca colapsa a booleano)", async () => {
+  it("reenvía matched=false con signatures[] (nunca colapsa a booleano)", async () => {
     const hash = "b".repeat(64);
     globalThis.fetch = vi.fn(
       async () =>
-        new Response(JSON.stringify({ content_hash: hash, valid: false, signatures: [] }), {
+        new Response(JSON.stringify({ content_hash: hash, matched: false, signatures: [] }), {
           status: 200,
         }),
     );
@@ -590,7 +590,7 @@ describe("firmas/api/documento/[documentId]/verify GET", () => {
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.valid).toBe(false);
+    expect(body.matched).toBe(false);
     expect(body.signatures).toEqual([]);
   });
 });

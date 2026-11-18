@@ -73,31 +73,32 @@ async def test_sign_rejects_bad_hash(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_verify_valid(client_with_conn) -> None:
+async def test_match_found(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetch.return_value = [_sig_row()]
 
     resp = await client.get(
-        f"/api/v1/documents/{uuid.uuid4()}/signatures/verify?content_hash={_HASH}",
+        f"/api/v1/documents/{uuid.uuid4()}/signatures/match?content_hash={_HASH}",
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["valid"] is True
+    assert body["matched"] is True
+    assert body["kind"] == "simple_signature_record"
     assert len(body["signatures"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_verify_invalid_when_no_match(client_with_conn) -> None:
+async def test_match_not_found(client_with_conn) -> None:
     client, mock_conn = client_with_conn
     mock_conn.fetch.return_value = []  # contenido alterado → ninguna firma coincide
 
     resp = await client.get(
-        f"/api/v1/documents/{uuid.uuid4()}/signatures/verify?content_hash={'b' * 64}",
+        f"/api/v1/documents/{uuid.uuid4()}/signatures/match?content_hash={'b' * 64}",
         headers=TENANT_HEADERS,
     )
     assert resp.status_code == 200
-    assert resp.json()["valid"] is False
+    assert resp.json()["matched"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ async def test_verify_invalid_when_no_match(client_with_conn) -> None:
     [
         ("post", "/api/v1/documents/{rid}/signatures"),
         ("get", "/api/v1/documents/{rid}/signatures"),
-        ("get", "/api/v1/documents/{rid}/signatures/verify?content_hash=" + _HASH),
+        ("get", "/api/v1/documents/{rid}/signatures/match?content_hash=" + _HASH),
     ],
 )
 @pytest.mark.asyncio
@@ -164,7 +165,7 @@ async def test_verify_de_radicado_sobre_clearance_404(client_with_conn) -> None:
     mock_conn.fetchrow.return_value = {"is_root": False, "max_level": 1}
 
     resp = await client.get(
-        f"/api/v1/documents/{uuid.uuid4()}/signatures/verify?content_hash={_HASH}",
+        f"/api/v1/documents/{uuid.uuid4()}/signatures/match?content_hash={_HASH}",
         headers={**TENANT_HEADERS, "X-User-Id": _USER},
     )
     assert resp.status_code == 404

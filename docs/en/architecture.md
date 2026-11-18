@@ -206,8 +206,8 @@ Summary of what each one exposes:
 The `api-gateway` exposes a single catch-all endpoint:
 `/api/v1/{path:path}` (all HTTP methods). An ordered table of
 `(prefix, target_service)` decides where to forward each request — the first
-prefix that matches wins, so order matters (e.g. `/public/archive/` must be listed
-before the generic `/public/` prefix of `document-service`).
+prefix that matches wins, so order matters (e.g. `/public/archive/` and
+`/public/signature/`, ADR-054, must be listed before the generic `/public/` prefix of `document-service`).
 
 ```mermaid
 sequenceDiagram

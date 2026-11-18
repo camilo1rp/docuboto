@@ -11,7 +11,7 @@ async-timeout==5.0.1
     # via redis
 asyncpg==0.31.0
     # via -r services/tenant-service/requirements.txt
-certifi==2026.7.22
+certifi==2026.10.18
     # via
     #   httpcore
     #   httpx

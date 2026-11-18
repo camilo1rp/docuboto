@@ -332,6 +332,42 @@ async def test_gate_clasificados_nivel2_sin_cert_denied_422(
 
 
 @pytest.mark.asyncio
+async def test_por_defecto_un_acto_clasificado_no_se_firma_con_hmac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR-054 §1 / Contexto §2: sin que nadie fije la política (ni la entidad ni el
+    entorno), un acto de nivel 2 sin certificado personal NO cae a la constancia simple."""
+    _patch_audit(monkeypatch)
+    monkeypatch.setattr(
+        settings,
+        "firma_personal_require_xades",
+        type(settings).model_fields["firma_personal_require_xades"].default,
+    )
+    _patch_signing_key_status(monkeypatch, body={"estado": "no_configurado", "cert_pem": None})
+    sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
+    monkeypatch.setattr(
+        "signature.services.cadena_service.verify_totp",
+        AsyncMock(side_effect=RuntimeError("no debe llamarse")),
+    )
+
+    conn = _make_conn()
+    sol = _sol_row(nivel_seguridad=2)
+    turno = _turno_row(orden=1, firmante_id=USER, estado="pendiente")
+    conn.fetchval.side_effect = [True, 1]
+    _queue_denial(conn, sol, turno, clearance=_CLEARANCE_ROOT)
+    conn.execute.side_effect = _exec_sig
+
+    _override(conn)
+    try:
+        status_code, body = await _post_sign()
+        assert status_code == 422, body
+        assert body["detail"]["error"] == "firma_xades_requerida"
+        sign_digest_mock.assert_not_called()
+    finally:
+        _clear()
+
+
+@pytest.mark.asyncio
 async def test_gate_clasificados_nivel2_con_cert_xades(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -646,9 +682,17 @@ async def test_firmar_lote_gate_denials_per_item(monkeypatch: pytest.MonkeyPatch
 
 
 def test_env_coercion_bool_false_maps_to_off() -> None:
-    for value in (False, "false", "0", "no", ""):
+    for value in (False, "false", "0", "no"):
         s = Settings(firma_personal_require_xades=value)
         assert s.firma_personal_require_xades == "off", value
+
+
+def test_sin_valor_el_respaldo_es_clasificados() -> None:
+    """ADR-054 §1: ni una variable vacía ni la ausencia de valor bajan a ``off``."""
+    for value in (None, "", "  "):
+        s = Settings(firma_personal_require_xades=value)
+        assert s.firma_personal_require_xades == "clasificados", value
+    assert Settings.model_fields["firma_personal_require_xades"].default == "clasificados"
 
 
 def test_env_coercion_bool_true_maps_to_todos() -> None:

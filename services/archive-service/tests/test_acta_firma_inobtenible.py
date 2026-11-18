@@ -471,7 +471,10 @@ async def test_con_totp_y_credencial_el_declarante_tambien_firma_y_se_protegen_l
         ("clasificados", 2, True),
         ("clasificados", 1, False),
         ("off", 3, False),
-        (None, 3, False),  # sin parámetro de la entidad: respalda el entorno ('off')
+        # Sin parámetro de la entidad: respalda el entorno, que desde ADR-054 es
+        # 'clasificados' — un acta de nivel 3 exige la firma personal, una de nivel 1 no.
+        (None, 3, True),
+        (None, 1, False),
     ],
 )
 async def test_la_firma_personal_es_obligatoria_segun_la_politica_de_la_entidad(

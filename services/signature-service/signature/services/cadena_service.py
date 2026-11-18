@@ -44,6 +44,7 @@ from signature.core.constants import (
     CADENA_PAYLOAD_AUTORITATIVO,
     CADENA_SIN_HUELLA_DECLARADA,
     RADICADO_ESTADO_ANULADO,
+    signature_kind,
 )
 from signature.core.events import publish_challenge_emitido
 from signature.core.http_clients import (
@@ -195,6 +196,7 @@ def _build_response(sol: asyncpg.Record, turnos: list[asyncpg.Record]) -> Solici
             firma_id=t["firma_id"],
             comentario=t["comentario"],
             decidido_at=t["decidido_at"],
+            kind=signature_kind(t.get("provider")) if t["firma_id"] else None,
         )
         for t in turnos
     ]

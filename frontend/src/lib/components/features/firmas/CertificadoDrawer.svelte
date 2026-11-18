@@ -59,10 +59,19 @@
   let loadError = "";
 
   const PROVIDER_LABEL = /** @type {Record<string,string>} */ ({
-    nativa: "Sello nativo (HMAC-SHA256)",
+    nativa: "Constancia de firma simple (HMAC-SHA256 del sistema)",
     xades_local: "Sello institucional XAdES",
     xades_personal: "Firma personal XAdES",
   });
+
+  // ADR-054 §1: la firma se nombra por lo que prueba. El backend manda `kind`; si
+  // faltara, solo XAdES cuenta como firma electrónica (nunca se presume).
+  /** @param {any} c */
+  function esFirmaElectronica(c) {
+    if (c?.kind) return c.kind === "electronic_signature";
+    return c?.provider === "xades_local" || c?.provider === "xades_personal";
+  }
+  $: electronica = cert ? esFirmaElectronica(cert) : false;
 
   function resetVerify() {
     verifyOpen = false;
@@ -147,7 +156,12 @@
   }
 </script>
 
-<Drawer {open} title="Certificado de firma" width="480px" on:close={handleClose}>
+<Drawer
+  {open}
+  title={cert && !electronica ? "Constancia de firma simple" : "Certificado de firma"}
+  width="480px"
+  on:close={handleClose}
+>
   {#if loading}
     <div class="cert-drawer__loader">
       <Loader />
@@ -161,17 +175,28 @@
     <!-- Aviso permanente de alcance legal — nunca letra pequeña -->
     <div class="cert-drawer__legal-banner" role="note">
       <i class="fas fa-info-circle" aria-hidden="true"></i>
-      <span>
-        Firma electrónica bajo Ley 527/1999 <strong>art. 7</strong> (reconocimiento general). No es firma
-        digital acreditada (art. 28) ni implica control exclusivo del firmante: la clave se custodia en
-        el servidor institucional.
-      </span>
+      {#if electronica}
+        <span>
+          Firma electrónica (XAdES) bajo Ley 527/1999 <strong>art. 7</strong> (reconocimiento general),
+          verificable por un tercero con el certificado. No es firma digital acreditada (art. 28) ni implica
+          control exclusivo del firmante: la clave se custodia en el servidor institucional.
+        </span>
+      {:else}
+        <span>
+          <strong>Constancia de firma simple</strong>, no firma electrónica verificable por
+          terceros: el sistema registra con su propia clave (HMAC) que este usuario declaró este
+          documento en este instante. Es íntegra y atribuible dentro del sistema (Ley 527/1999 art.
+          7), pero quien quiera hacerla valer fuera de él debe demostrar su fiabilidad.
+        </span>
+      {/if}
     </div>
 
     <div class="cert-drawer__card" aria-label="Certificado de firma">
       <div class="cert-drawer__card-header">
         <i class="fas fa-certificate" aria-hidden="true"></i>
-        <span>Comprobante de firma</span>
+        <span
+          >{electronica ? "Comprobante de firma electrónica" : "Constancia de firma simple"}</span
+        >
       </div>
 
       <dl class="cert-drawer__fields">
@@ -196,6 +221,10 @@
         <div class="cert-drawer__row">
           <dt>Fecha y hora</dt>
           <dd>{formatDateTime(cert.sello_tiempo)}</dd>
+        </div>
+        <div class="cert-drawer__row">
+          <dt>Clase</dt>
+          <dd>{electronica ? "Firma electrónica" : "Constancia de firma simple"}</dd>
         </div>
         <div class="cert-drawer__row">
           <dt>Tipo de sello</dt>
@@ -256,6 +285,16 @@
       </dl>
     </div>
 
+    {#if electronica}
+      <!-- ADR-054 §2: la verificación que puede hacer cualquiera, sin sesión, por código. -->
+      <p class="cert-drawer__hint">
+        Código de verificación: <span class="cert-drawer__mono">{cert.firma_id}</span> —
+        <a href={`/firma/${encodeURIComponent(cert.firma_id)}`} target="_blank" rel="noopener"
+          >comprobar en la verificación pública</a
+        >
+      </p>
+    {/if}
+
     <!-- Verificación técnica — herramienta explícita, no automática -->
     <div class="cert-drawer__verify">
       <Button
@@ -314,9 +353,15 @@
                   class={verifyResult.valida ? "fas fa-check-circle" : "fas fa-times-circle"}
                   aria-hidden="true"
                 ></i>
-                {verifyResult.valida
-                  ? "La firma es válida para este documento."
-                  : "La firma NO es válida para este documento."}
+                {#if electronica}
+                  {verifyResult.valida
+                    ? "La firma es válida para este documento."
+                    : "La firma NO es válida para este documento."}
+                {:else}
+                  {verifyResult.valida
+                    ? "La constancia coincide con este documento (comprobación interna del sistema, no verificable por terceros)."
+                    : "La constancia NO coincide con este documento."}
+                {/if}
                 {#if verifyResult.motivo}
                   <span class="cert-drawer__hint"> — {verifyResult.motivo}</span>
                 {/if}

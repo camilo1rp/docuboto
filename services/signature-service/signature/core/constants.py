@@ -175,3 +175,23 @@ CADENA_NIVEL_AUTORITATIVO: dict[str, tuple[str, tuple[str, ...]]] = {
 NIVELES_CONFORMIDAD_ACREDITADOS = frozenset(
     {"xades_b_acreditado", "xades_lt_acreditado", "xades_lta_acreditado"}
 )
+
+# ADR-054 §1: la firma se nombra por lo que prueba, no por dónde vive. Solo XAdES
+# (sello institucional o certificado personal) es una FIRMA ELECTRÓNICA que un
+# tercero puede verificar con el certificado. El HMAC nativo es una CONSTANCIA DE
+# FIRMA SIMPLE: íntegra y atribuible dentro del sistema (la clave la custodia la
+# plataforma, no el firmante), pero no prueba autoría ante un tercero.
+SIGNATURE_KIND_ELECTRONIC = "electronic_signature"
+SIGNATURE_KIND_SIMPLE = "simple_signature_record"
+PROVIDERS_FIRMA_ELECTRONICA = frozenset({"xades_local", "xades_personal"})
+
+
+def signature_kind(provider: str | None) -> str:
+    """``electronic_signature`` solo para XAdES; cualquier otro proveedor es constancia simple.
+
+    Lista cerrada por admisión: un proveedor nuevo no hereda la categoría
+    probatoria por parecerse a uno que la tiene.
+    """
+    if provider in PROVIDERS_FIRMA_ELECTRONICA:
+        return SIGNATURE_KIND_ELECTRONIC
+    return SIGNATURE_KIND_SIMPLE

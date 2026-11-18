@@ -94,7 +94,7 @@ def _documento(cuerpo_html: str, pagina: dict[str, Any]) -> str:
     )
 
 
-def _sin_red(url: str, *args: Any, **kwargs: Any) -> Any:
+def _sin_red_fetcher() -> Any:
     """Corta TODA resolución de URL del renderizador. Solo admite `data:`.
 
     WeasyPrint, sin `url_fetcher` propio, resuelve lo que encuentre en el
@@ -119,19 +119,28 @@ def _sin_red(url: str, *args: Any, **kwargs: Any) -> Any:
 
     `data:` se conserva porque es la vía por la que se incrustan logos y firmas
     ya embebidos en el propio documento, que no salen a la red.
+
+    Desde WeasyPrint 70 el fetcher es una subclase de `URLFetcher` (la función
+    `default_url_fetcher` ya no existe). Se crea uno por render porque guarda
+    estado de la petición en curso.
     """
-    if url.startswith("data:"):
-        from weasyprint.urls import default_url_fetcher  # noqa: PLC0415
+    from weasyprint.urls import URLFetcher  # noqa: PLC0415
 
-        # Se reenvían los argumentos tal cual: la firma del fetcher la fija
-        # WeasyPrint (hoy `timeout`, `ssl_context`, `http_headers`...) y fijarla
-        # aquí a mano rompería el render en la próxima versión que añada uno.
-        return default_url_fetcher(url, *args, **kwargs)
+    class _SinRed(URLFetcher):
+        def fetch(self, url: str, headers: Any = None) -> Any:
+            if not url.startswith("data:"):
+                raise ValueError(
+                    f"El renderizador no resuelve recursos externos (se pidió: {url[:80]!r}). "
+                    "Incrusta la imagen en el propio documento con una URL 'data:'."
+                )
+            return super().fetch(url, headers)
 
-    raise ValueError(
-        f"El renderizador no resuelve recursos externos (se pidió: {url[:80]!r}). "
-        "Incrusta la imagen en el propio documento con una URL 'data:'."
-    )
+    return _SinRed(allowed_protocols=("data",))
+
+
+def _sin_red(url: str) -> Any:
+    """Resuelve `url` con el fetcher del renderizador; lo usan las pruebas."""
+    return _sin_red_fetcher()(url)
 
 
 class WeasyPrintRenderer:
@@ -183,7 +192,7 @@ class WeasyPrintRenderer:
                 pie=html.escape(str(pagina.get("pie", ""))).replace('"', "'"),
             )
         )
-        documento = HTML(string=_documento(cuerpo_html, pagina), url_fetcher=_sin_red)
+        documento = HTML(string=_documento(cuerpo_html, pagina), url_fetcher=_sin_red_fetcher())
         contenido = documento.write_pdf(stylesheets=[css], pdf_variant=perfil)
         if not contenido:
             return _fallido(perfil, "el renderizador devolvio un documento vacio")

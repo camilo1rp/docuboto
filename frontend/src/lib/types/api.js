@@ -302,6 +302,7 @@
  * @property {string|null} firma_id      — UUID del registro de firma (si firmado)
  * @property {string|null} comentario    — nota o motivo de rechazo
  * @property {string|null} decidido_at   — ISO 8601 UTC (timestamp de firma/rechazo)
+ * @property {SignatureKind|null} [kind] - ADR-054 §1: qué firma dejó el turno; null sin firma
  */
 
 /**
@@ -418,6 +419,7 @@
  *   con la que se cruza el comprobante con el registro de firmas.
  * @property {string}      payload_sha256
  * @property {'nativa'|'xades_local'|'xades_personal'} provider
+ * @property {SignatureKind} [kind] - ADR-054 §1: qué prueba la firma, derivado del proveedor
  * @property {string}      sello_tiempo    — ISO 8601 UTC (fecha/hora del acto)
  * @property {string}      created_at      — ISO 8601 UTC
  * @property {string|null} [xades_level]        - 'XAdES-B'|'XAdES-T'|'XAdES-LT'|'XAdES-LTA'
@@ -446,6 +448,7 @@
  * @property {string}      firma_id
  * @property {boolean}     valida
  * @property {string}      provider
+ * @property {SignatureKind} [kind]
  * @property {string|null} [xades_level]
  * @property {string|null} [nivel_conformidad]
  * @property {boolean}     acreditado
@@ -457,8 +460,38 @@
  */
 
 /**
- * Firma a nivel documento (radicado/anexo) — distinta de la cadena de
- * firma-service: aquí se firma el hash SHA-256 del contenido directamente.
+ * Clase de una firma (ADR-054 §1). `electronic_signature`: XAdES, verificable por un
+ * tercero con el certificado. `simple_signature_record`: constancia de firma simple
+ * (HMAC del sistema o registro declarativo), íntegra dentro del sistema y NO
+ * verificable por terceros. La UI nunca llama «firma» a la segunda sin calificarla.
+ *
+ * @typedef {'electronic_signature'|'simple_signature_record'} SignatureKind
+ */
+
+/**
+ * Verificación PÚBLICA de una firma por su código (ADR-054 §2).
+ * GET /api/v1/public/signature/{tenant}/{firma_id}. Content-free.
+ *
+ * @typedef {object} PublicSignatureVerification
+ * @property {string}        firma_id
+ * @property {SignatureKind} kind
+ * @property {boolean|null}  valida  - null para la constancia simple: no la verifica un tercero
+ * @property {boolean|null}  [firma_criptograficamente_valida]
+ * @property {string|null}   [revocacion_status]
+ * @property {string|null}   [motivo]
+ * @property {string|null}   [nivel]
+ * @property {string|null}   [firmante_nombre]
+ * @property {string}        firmado_en
+ * @property {string|null}   [sello_tiempo]
+ * @property {string|null}   huella_documento
+ * @property {boolean}       acreditado
+ * @property {string}        constancia
+ */
+
+/**
+ * Constancia de firma simple a nivel documento (radicado/anexo, ADR-054 §1) —
+ * distinta de la cadena de signature-service: registra el hash SHA-256 del
+ * contenido declarado por el usuario. NO es una firma electrónica verificable.
  * POST/GET /api/v1/documents/{document_id}/signatures.
  *
  * @typedef {object} DocumentSignature
@@ -470,6 +503,7 @@
  * @property {string}      content_hash
  * @property {string|null} reason
  * @property {string}      signed_at   — ISO 8601 UTC
+ * @property {'simple_signature_record'} [kind]
  */
 
 // ---------------------------------------------------------------------------

@@ -97,6 +97,9 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         # abajo): el ruteo es primer-prefijo-que-casa, así que si quedara
         # después lo capturaría siempre document-service.
         ("/api/v1/public/archive/", app_state.archive_service_url),
+        # Verificación pública de una firma (ADR-054 §2): mismo criterio, antes
+        # del catch-all de document-service.
+        ("/api/v1/public/signature/", app_state.signature_service_url),
         ("/api/v1/public/", app_state.document_service_url),
         # Cuentas de correo (E19): configuración de buzones y de la aplicación
         # OAuth que la entidad registró ante Google o Microsoft.

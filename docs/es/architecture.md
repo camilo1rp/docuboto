@@ -205,8 +205,8 @@ lo que expone cada uno:
 `api-gateway` expone un único endpoint catch-all:
 `/api/v1/{path:path}` (todos los métodos HTTP). Una tabla ordenada de
 `(prefijo, servicio_destino)` decide a dónde reenviar cada request — el primer
-prefijo que hace match gana, por eso el orden importa (p. ej. `/public/archive/`
-debe listarse antes que el `/public/` genérico de `document-service`).
+prefijo que hace match gana, por eso el orden importa (p. ej. `/public/archive/` y
+`/public/signature/`, ADR-054, deben listarse antes que el `/public/` genérico de `document-service`).
 
 ```mermaid
 sequenceDiagram
