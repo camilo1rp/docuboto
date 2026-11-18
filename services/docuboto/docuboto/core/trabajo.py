@@ -27,13 +27,11 @@ from orpycamcp_common.trabajo import (
     TIPO_WEBHOOK,
     Fila,
     SqlRepo,
-    intelligence_se_omite,
     recorrer,
 )
 
 from document.core.database import acquire_tenant, get_pool
 from document.services.barrido import tenants_activos
-from knowledge.core.config import settings as knowledge_settings
 
 logger = logging.getLogger(__name__)
 
@@ -70,18 +68,13 @@ async def _mail(_conn: Any, fila: Fila) -> None:
 
 
 async def _intelligence(_conn: Any, fila: Fila) -> None:
-    if intelligence_se_omite(proveedor_url=knowledge_settings.ppi_provider_url):
-        return
-    fila_entidad = await _conn.fetchrow(
-        "SELECT asistente_habilitado, intelligence_provider "
-        "  FROM public.tenants WHERE slug = $1",
-        fila.tenant_slug,
-    )
-    if fila_entidad is None:
-        return
-    if not fila_entidad["asistente_habilitado"] or fila_entidad["intelligence_provider"] != "ppi":
-        return
-    raise RuntimeError("intelligence gateway parked until a provider is configured")
+    """Nothing to do: PPI ingestion runs on the stream consumer (ADR-051 §2).
+
+    `lifespan` starts `intelligence_consumer` when `PPI_PROVIDER_URL` is set,
+    and that consumer reads the domain streams. No code enqueues this type
+    today; ADR-049 moves ingestion onto this queue and gives it a body.
+    """
+    del _conn, fila
 
 
 async def _verapdf(_conn: Any, fila: Fila) -> None:

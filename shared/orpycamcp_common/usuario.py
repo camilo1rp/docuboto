@@ -219,19 +219,6 @@ async def _responder(
     await send({"type": "http.response.body", "body": cuerpo})
 
 
-def _canal(path: str, origen: str | None, tenant: str, authorization: str) -> str:
-    if path.startswith("/api/v1/mcp/"):
-        return "mcp"
-    try:
-        from orpycamcp_common import identidad
-
-        if identidad.verificar_origen(origen, tenant=tenant, authorization=authorization) == "mcp":
-            return "mcp"
-    except Exception:  # noqa: BLE001 — sin secreto de origen el canal es api
-        pass
-    return "api"
-
-
 def _uuid(valor: object) -> uuid.UUID | None:
     try:
         return uuid.UUID(str(valor))
@@ -345,12 +332,7 @@ class UsuarioActualMiddleware:
             tenant_slug=slug,
             username=str(payload.get("username") or ""),
             roles=tuple(str(r) for r in roles),
-            canal=_canal(
-                path,
-                cabeceras.get("x-origen-canal"),
-                slug,
-                auth,
-            ),
+            canal="api",
             ip=ip,
         )
         state["usuario"] = usuario

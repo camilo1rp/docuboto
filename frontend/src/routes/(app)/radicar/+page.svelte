@@ -48,7 +48,6 @@
   import Modal from "$lib/components/ui/Modal.svelte";
   import RichEditor from "$lib/components/editor/RichEditor.svelte";
   import SchemaField from "$lib/components/ui/SchemaField.svelte";
-  import RagSuggestButton from "$lib/components/features/rag/RagSuggestButton.svelte";
   import TrdSuggestChips from "$lib/components/features/rag/TrdSuggestChips.svelte";
   import {
     resolveSchemaControl,
@@ -66,12 +65,11 @@
     aplicarExtracto,
     extractoSeReintenta,
   } from "$lib/utils/extractFields.js";
-  import { appendGeneratedHtml } from "$lib/utils/ragInsert.js";
   // Las llamadas al gateway (subida de archivos, creación de radicado, plantillas)
   // se realizan a través de los endpoints locales /radicar/api/* que leen la
   // cookie httpOnly en el servidor — el token nunca alcanza el JS del cliente (D-05).
 
-  /** @type {{ user: any, dependencias: any[], trdSeries: any[], tiposDocumentales: any[], generationAvailable?: boolean }} */
+  /** @type {{ user: any, dependencias: any[], trdSeries: any[], tiposDocumentales: any[] }} */
   export let data;
 
   // ---------------------------------------------------------------------------
@@ -1450,17 +1448,6 @@
             <!-- Cuerpo del documento (solo Salida e Interno) — editor rico T-12b -->
             {#if docType === "S" || docType === "I"}
               <div class="radicar-step__field radicar-step__field--full">
-                <!-- F6: ayuda de redacción con RAG — opcional, degrada sin romper
-                     el paso si el servicio de conocimiento no responde. Solo se
-                     muestra si la entidad tiene generación (ADR-046 §3). -->
-                {#if data.generationAvailable === true}
-                  <RagSuggestButton
-                    endpoint="/radicar/api/rag/suggest"
-                    query={subject}
-                    on:insert={(e) =>
-                      (observations = appendGeneratedHtml(observations, e.detail.html))}
-                  />
-                {/if}
                 <RichEditor
                   id="observations"
                   label="Contenido / cuerpo del documento"

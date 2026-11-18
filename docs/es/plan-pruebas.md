@@ -205,9 +205,9 @@ plan que no declara sus puntos ciegos los convierte en aprobados.
   consume la interfaz y 3 —editar el plan en borrador, historial de seguimiento y mapa de
   ruta— tienen proxy sin pantalla todavía). La cifra ya no se escribe a mano:
   `pinar-paridad.test.js` la deriva de `pinar.py`.
-- **503 honestos que parecen averías**: `/rag` sin proveedor PPI responde `503 rag_unavailable`
-  (ADR-046). Es la respuesta correcta — comprobar la configuración antes de tocar nada. El
-  asistente conversacional y `whisper-service` ya no existen.
+- **Lo que ya no existe**: `/rag`, `/availability`, el panel «Preguntar» y los botones «Sugerir
+  con antecedentes» se retiraron con ADR-051; el asistente conversacional y `whisper-service`,
+  con ADR-046. No son fallos que reproducir.
 - **WORM y PDF/A**: con `preservation_enabled=False` la pantalla de preservación no muestra
   artefactos protegidos, y PDF/A informa `no_evaluado` sin veraPDF.
 - **Empaquetado AIP y protección WORM no tienen disparador en la interfaz**: son actos de
@@ -230,7 +230,8 @@ Se declara como límite, no se disimula:
   `/{tenant}/verify/{code}`. Se deja tachado y no borrado porque este párrafo llegó a contradecir
   al de abajo, que ya daba los tres hallazgos por cerrados: una lista de «lo que no se cubre» que
   no se actualiza acaba afirmando lo contrario que el texto que la sigue.
-- Callback postal HMAC, protocolo MCP externo, `indice/rebuild`, `/auth/clearance`.
+- Callback postal HMAC, `indice/rebuild`, `/auth/clearance`. (El protocolo MCP externo ya no
+  existe: ADR-051.)
 
 De esa lista salieron **tres hallazgos de producto**: capacidades que existían en el backend
 sin ninguna forma de llegar a ellas. Las tres están cerradas — ventanilla única y consulta

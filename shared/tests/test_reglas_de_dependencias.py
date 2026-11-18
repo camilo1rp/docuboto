@@ -40,7 +40,6 @@ _MODULOS_PROHIBIDOS = frozenset({"sqlalchemy", "alembic", "jose"})
 SUELOS = {
     "pyjwt": Version("2.10.0"),
     "python-multipart": Version("0.0.18"),
-    "mcp": Version("1.12.0"),
 }
 
 
@@ -64,7 +63,7 @@ def _archivos_de_requisitos() -> list[Path]:
 
 def test_se_leyeron_los_lockfiles() -> None:
     """Anti-vacuidad: un glob roto pasaría todo en verde sobre cero ficheros."""
-    assert len(list(SERVICIOS.glob("*/requirements.lock"))) >= 11
+    assert len(list(SERVICIOS.glob("*/requirements.lock"))) >= 10
     assert len(list(SERVICIOS.glob("*/requirements.txt"))) >= 11
 
 

@@ -11,7 +11,7 @@
 Todo permiso que el sistema EXIGE tiene que ser un permiso que el sistema SIEMBRA.
 
 **Este control ya existía y llevaba desde su primer commit sin comprobar nada.**
-Vivía en `mcp-server/tests/test_catalog_invariants.py`, y esa imagen no monta el
+Vivía en los tests del MCP (retirado, ADR-051), y esa imagen no montaba el
 repositorio: no encontraba las migraciones de auth-service, así que hacía
 `pytest.skip` en cada corrida. Un `skip` es indistinguible de un `pass` en el
 resumen —«11 passed, 1 skipped»— y por eso nadie lo miró. El guardián escrito

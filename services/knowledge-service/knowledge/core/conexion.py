@@ -135,7 +135,6 @@ async def _declarar(conn: Any, slug: str, cliente: Any, niveles: tuple[int, ...]
         "sensitivity_levels": declarados,
         "vocabularies": {"document_types": [], "units": []},
         "callbacks": {
-            "recommend_url": f"{base}/ppi/v1/{slug}/recommendations",
             "content_url": f"{base}/ppi/v1/{slug}/content",
             "keys": [
                 {

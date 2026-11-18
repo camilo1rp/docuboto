@@ -19,7 +19,7 @@ import { codigoError, mensajeError } from "$lib/utils/apiError.js";
  *  2. La persona tiene `PERM_CONOCIMIENTO` (nivel 1 consultar, nivel 2 aceptar una
  *     sugerencia).
  *
- * La búsqueda por conocimiento y «Sugerir con antecedentes» exigen las dos: las rutas
+ * La búsqueda por conocimiento y los antecedentes exigen las dos: las rutas
  * `/knowledge/*` piden bandera Y `PERM_CONOCIMIENTO` >= 1 (403 `forbidden` sin el permiso).
  */
 

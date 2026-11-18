@@ -99,7 +99,7 @@ services:
     #   ────────────────────────────────────────────────────────────────────
     #   = 27 conexiones de las aplicaciones
     #
-    # (api-gateway y mcp-server no abren pool: no tocan la base de datos.)
+    # (api-gateway no abre pool: no toca la base de datos.)
     #
     # Keycloak se acota a `KC_DB_POOL_MAX_SIZE=30` contra el mismo Postgres.
     # Suma: 57, más margen para migraciones, respaldos y `psql` de operación.
@@ -333,7 +333,6 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
       APP_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.128.0/17}
@@ -522,7 +521,6 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
       IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
       AUTH_CACHE_MAC_SECRET: ${AUTH_CACHE_MAC_SECRET:?AUTH_CACHE_MAC_SECRET es obligatorio}
       KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: orpycamcp
@@ -1109,7 +1107,7 @@ services:
       INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
       DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
       INTELLIGENCE_CREDENTIAL_KEK: ${INTELLIGENCE_CREDENTIAL_KEK:?INTELLIGENCE_CREDENTIAL_KEK es obligatoria (openssl rand -base64 32)}
-      # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
+      # Sin PPI: la ingesta corre en `app` (ADR-051 §2).
     networks:
       - orpycamcp-net
     expose:
@@ -1135,53 +1133,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  mcp-server:
-    # Capa MCP (E18): fachada cliente del api-gateway. Sin BD/Redis/MinIO.
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/mcp-server:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-mcp-server-prod
-    restart: unless-stopped
-    environment:
-      GATEWAY_URL: http://app:8000
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      # `:?` aborta el despliegue si falta: sin clave de firma el gate de
-      # escritura del MCP sería decorativo, y un control decorativo es peor que
-      # ninguno porque nadie lo revisa. Debe respaldarse con la misma disciplina
-      # que el resto de secretos (ver .env.example).
-      MCP_PROPOSAL_SECRET: ${MCP_PROPOSAL_SECRET:?MCP_PROPOSAL_SECRET es obligatorio}
-      MCP_PROPOSAL_SECRET_PREVIOUS: ${MCP_PROPOSAL_SECRET_PREVIOUS:-}
-      # Marca de origen del canal 'mcp' (AREA-11-04) e IP real firmada (AREA-11-08).
-      MCP_ORIGIN_SECRET: ${MCP_ORIGIN_SECRET:?MCP_ORIGIN_SECRET es obligatorio}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8009"
-    depends_on:
-      - app
-    # Era el único servicio de aplicación SIN healthcheck: si el proceso moría,
-    # el contenedor seguía "arriba" y el catálogo MCP simplemente no
-    # respondía, sin que el orquestador lo reiniciara.
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8009/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
     logging:
       driver: "json-file"
       options:

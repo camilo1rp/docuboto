@@ -89,9 +89,9 @@ Ver el detalle de propósito, rol y endpoints de cada vista en
   microservicio) a través del patrón BFF descrito arriba.
 - **Multi-tenancy:** el front es agnóstico; el tenant se resuelve por el claim
   `tenant_slug` del JWT.
-- **Conocimiento / IA:** la búsqueda por conocimiento y «Sugerir con antecedentes» van
-  a `/api/v1/knowledge/*` a través del gateway; el botón de sugerir solo aparece si
-  `GET /api/v1/knowledge/availability` dice que hay generación para la entidad. El
+- **Conocimiento / IA:** la búsqueda por conocimiento y los antecedentes por texto
+  completo van a `/api/v1/knowledge/*` a través del gateway. «Preguntar» y «Sugerir con
+  antecedentes» se retiraron ([ADR-051](../docs/es/adr/ADR-051-ppi-reducido-vive-en-la-app.md)). El
   asistente conversacional se retiró ([ADR-046](../docs/es/adr/ADR-046-conocimiento-sin-modelos.md) §6):
   el front no habla con un modelo ni con `mcp-server`.
 - **RBAC espejo:** la navegación y las acciones visibles reflejan los permisos reales

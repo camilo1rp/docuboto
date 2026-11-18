@@ -174,6 +174,10 @@ deja falsable. **Pendiente (decisión de producto)**: habilitar la capa de conoc
 default `false` apagaría la ingesta actual. **Residual**: el canal `mcp` solo aparece en los servicios ya
 reconstruidos con la librería compartida nueva.
 
+> **Nota (2026-11-17).** El canal `mcp`, la marca `X-Origen-Canal` y la IP firmada del mcp-server ya no
+> existen: [ADR-051](adr/ADR-051-ppi-reducido-vive-en-la-app.md) retiró `mcp-server` y `audit_log.canal`
+> admite solo `api`, `ui` y `system`.
+
 ### Cierre de la auditoría del 2 de octubre de 2026 (tanda T11)
 
 La guarda de sesión de los proxies del frontend se probaba en una muestra elegida a mano (21 de 219) y los

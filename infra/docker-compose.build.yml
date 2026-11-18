@@ -96,14 +96,6 @@ services:
       # que NO existe dentro de services/knowledge-service/.
       context: ..
       dockerfile: services/knowledge-service/Dockerfile
-  mcp-server:
-    build:
-      # Contexto en la RAÍZ: el Dockerfile instala shared/orpycamcp_common
-      # (ADR-010), que NO existe dentro de services/mcp-server/. Cambió al
-      # añadirse el gate de escritura, cuya comprobación de secretos al arrancar
-      # vive en la librería compartida.
-      context: ..
-      dockerfile: services/mcp-server/Dockerfile
   frontend:
     build:
       context: ../frontend

@@ -14,9 +14,8 @@
 #
 # `signature-service` no arranca sin `SIGNATURE_SECRET`: su guardián rechaza el
 # `change-me-in-production` del compose. Eso está BIEN y no se toca. La tentación
-# es copiar lo que hace `MCP_PROPOSAL_SECRET`, que trae un default conocido
-# (`orpycamcp_dev_proposal_secret`) y por eso sí arranca — pero ese patrón es el
-# DÉBIL de los dos:
+# es ponerle un default conocido en el compose para que arranque — pero ese
+# patrón es el DÉBIL de los dos:
 #
 #   * Con `change-me-in-production`, un despliegue que olvide definirlo **no
 #     arranca**. Falla cerrado y en voz alta.
@@ -60,7 +59,6 @@ ENV_FILE=".env"
 # por qué.
 SECRETOS=(
   "SIGNATURE_SECRET:hmac"
-  "MCP_PROPOSAL_SECRET:hmac"
   "SIGNING_KEY_ENCRYPTION_KEY:aes256"
   # Cifra en reposo el secreto TOTP de cada usuario. Sin ella el segundo factor
   # no se puede enrolar, y como la credencial de firma EXIGE un TOTP activo,
@@ -150,5 +148,5 @@ if [ "$creados" -gt 0 ]; then
   echo
   echo "Escritos en ${ENV_FILE} (gitignorado: NO se commitea, y no debe)."
   echo "Docker Compose lo lee solo. Levanta o recrea los servicios para que apliquen:"
-  echo "    docker compose up -d --force-recreate signature-service mcp-server auth-service"
+  echo "    docker compose up -d --force-recreate app worker"
 fi

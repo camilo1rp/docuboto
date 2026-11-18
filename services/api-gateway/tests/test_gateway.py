@@ -221,7 +221,6 @@ async def test_ready_agrega_redis_y_los_diez_servicios(test_client):
         # Los tres que faltaban — y el diagnóstico se lee justo cuando algo va mal.
         "signature-service",
         "knowledge-service",
-        "mcp-server",
     ):
         assert body["checks"][servicio] == "ok", servicio
 
@@ -523,7 +522,6 @@ async def test_route_to_upstream_domain_prefixes():
         workflow_service_url="http://workflow:8006",
         notification_service_url="http://notification:8007",
         signature_service_url="http://signature:8008",
-        mcp_service_url="http://mcp:8009",
         knowledge_service_url="http://knowledge:8011",
     )
     cases = {
@@ -564,25 +562,9 @@ async def test_route_to_upstream_domain_prefixes():
         "/api/v1/tvd/agrupaciones": "http://archive:8004",
         "/api/v1/workflows/inbox": "http://workflow:8006",
         "/api/v1/workflow/rules/eval": "http://workflow:8006",
-        # E18 (bloque 9 del plan MCP funcional): el catálogo y el protocolo MCP
-        # SÍ se exponen ahora a clientes externos. Antes no, y eso dejaba a
-        # medias la decisión de «un solo catálogo y un solo gate»: un cliente MCP
-        # de terceros no tenía por dónde entrar salvo hablando con el servicio a
-        # espaldas del gateway, sin validación JWT ni `X-Tenant-Slug`.
-        "/api/v1/mcp/tools": "http://mcp:8009",
-        "/api/v1/mcp/tools/radicar_documento/invoke": "http://mcp:8009",
-        "/api/v1/mcp/proposals/execute": "http://mcp:8009",
-        # El transporte streamable se monta TAMBIÉN bajo este prefijo (además de
-        # `/mcp`) justo para que quepa por esta tabla, en vez de abrirle al proxy
-        # una forma de ruta fuera de `/api/v1/...`.
-        "/api/v1/mcp/stream": "http://mcp:8009",
-        # E21 / ADR-046 / ADR-045: búsqueda, antecedentes, rag, disponibilidad
-        # y la ruta que el panel «Preguntar» nombra antes de transmitir.
+        # E21 / ADR-046 / ADR-045: búsqueda y antecedentes.
         "/api/v1/knowledge/search": "http://knowledge:8011",
         "/api/v1/knowledge/antecedentes": "http://knowledge:8011",
-        "/api/v1/knowledge/rag": "http://knowledge:8011",
-        "/api/v1/knowledge/availability": "http://knowledge:8011",
-        "/api/v1/knowledge/transmission": "http://knowledge:8011",
         "/api/v1/knowledge/ingesta": "http://knowledge:8011",
         "/api/v1/knowledge/ingesta/staging-1.file": "http://knowledge:8011",
         # D-02 (remediación no-read-up en anexos, RF-SEG-08): solo /upload
@@ -672,7 +654,6 @@ async def test_public_verify_route_is_public_and_routed():
         workflow_service_url="http://workflow:8006",
         notification_service_url="http://notification:8007",
         signature_service_url="http://signature:8008",
-        mcp_service_url="http://mcp:8009",
         knowledge_service_url="http://knowledge:8011",
     )
     assert _route_to_upstream("/api/v1/public/demo/verify/abc", state) == "http://document:8003"
@@ -681,24 +662,6 @@ async def test_public_verify_route_is_public_and_routed():
 # ---------------------------------------------------------------------------
 # D-03: canal derivation and X-Canal header security
 # ---------------------------------------------------------------------------
-
-async def test_derive_canal_returns_api_for_standard_path():
-    """D-03: caminos normales reciben canal 'api'."""
-    from app.middleware.auth import derive_canal
-
-    assert derive_canal("/api/v1/documents/") == "api"
-    assert derive_canal("/api/v1/tenants/") == "api"
-    assert derive_canal("/api/v1/auth/validate") == "api"
-    assert derive_canal("/api/v1/workflows/inbox") == "api"
-
-
-async def test_derive_canal_returns_mcp_for_mcp_prefix():
-    """D-03: el espacio de nombres /api/v1/mcp/ recibe canal 'mcp'."""
-    from app.middleware.auth import derive_canal
-
-    assert derive_canal("/api/v1/mcp/query") == "mcp"
-    assert derive_canal("/api/v1/mcp/") == "mcp"
-
 
 async def test_client_x_canal_header_is_not_forwarded(test_client):
     """D-03: X-Canal enviado por el cliente NO debe llegar al upstream."""
@@ -714,12 +677,12 @@ async def test_client_x_canal_header_is_not_forwarded(test_client):
 
     await client.get(
         "/api/v1/documents/",
-        headers={"Authorization": "Bearer valid-token", "X-Canal": "mcp"},
+        headers={"Authorization": "Bearer valid-token", "X-Canal": "ui"},
     )
 
     forwarded = http_client.build_request.call_args.kwargs["headers"]
     # Client-supplied X-Canal must not reach the upstream.
-    assert forwarded.get("X-Canal") != "mcp", (
+    assert forwarded.get("X-Canal") == "api", (
         "Client-supplied X-Canal must be discarded at the gateway"
     )
 
@@ -1112,7 +1075,7 @@ def _estado_ruteo():
 
     otros = {
         f"{n}_service_url": f"http://{n}:1"
-        for n in ("auth", "tenant", "workflow", "notification", "mcp", "knowledge")
+        for n in ("auth", "tenant", "workflow", "notification", "knowledge")
     }
     return SimpleNamespace(
         signature_service_url="http://sig:8006",

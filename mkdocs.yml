@@ -209,7 +209,6 @@ nav:
     - ADR-056 Un solo proxy BFF: adr/ADR-056-un-solo-proxy-bff.md
   - Pantallas del sistema: pantallas.md
   - Plan de pruebas: plan-pruebas.md
-  - API por flujos (MCP): mcp-flujos.md
   - Referencia API: api.md
   - Despliegue: deployment.md
   - Integraciones externas: integraciones-externas.md

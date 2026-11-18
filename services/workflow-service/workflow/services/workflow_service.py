@@ -83,11 +83,11 @@ _SERVICE = "workflow-service"
 _PERMISO_SUELO = "PERM_TRAMITAR"
 
 # Traza de LECTURA (RF-BUS-10/E09; Ley 1712/2014, Decreto 1081/2015) — canales que
-# representan una consulta real de un usuario (gateway/mcp-server, ADR-019/D-03).
+# representan una consulta real de un usuario (gateway, ADR-019/D-03).
 # 'system' (llamadas sin canal explícito, p. ej. jobs) queda excluido para no
 # ensuciar la pista de acceso con ruido interno. Gemelo de
 # `document_service._CANALES_AUDITABLES` / `ArchiveService._CANALES_AUDITABLES`.
-_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
+_CANALES_AUDITABLES = frozenset({"api", "ui"})
 
 # Traza AGREGADA de la bandeja/pending (`list_pending`/`list_inbox`): constantes
 # DEDICADAS, fuera de cualquier object_type de lectura de UN registro concreto

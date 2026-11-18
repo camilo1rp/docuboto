@@ -352,7 +352,6 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
       - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
       - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
-      - MCP_ORIGIN_SECRET=${MCP_ORIGIN_SECRET:-orpycamcp_mcp_origin_dev}
       - AUTH_CACHE_MAC_SECRET=${AUTH_CACHE_MAC_SECRET:-orpycamcp_auth_cache_mac_dev}
       # Documentación navegable, SOLO en desarrollo. En producción el catálogo
       # describe la superficie entera —incluidos los endpoints internos que el
@@ -377,33 +376,6 @@ services:
     depends_on:
       - redis
       - keycloak
-    restart: "no"
-    mem_limit: 2g
-    memswap_limit: 2g
-
-  mcp-server:
-    # Capa MCP (E18, ADR-019): fachada fina cliente del api-gateway. Sin BD/MinIO/Redis.
-    build:
-      context: .
-      dockerfile: services/mcp-server/Dockerfile
-    container_name: orpycamcp-mcp
-    ports:
-      - "127.0.0.1:19009:8009"
-    environment:
-      - GATEWAY_URL=http://app:8000
-      # Clave de firma de las propuestas de escritura. Sin ella el servicio NO
-      # arranca: una firma con clave vacía la reproduce cualquiera, y el gate
-      # quedaría decorativo. En desarrollo se fija aquí, como el resto de
-      # credenciales del stack local; en producción viene del entorno con
-      # `${VAR:?}`, que aborta el despliegue si falta.
-      - MCP_PROPOSAL_SECRET=${MCP_PROPOSAL_SECRET:-orpycamcp_dev_proposal_secret}
-      # Firma de la marca de origen del canal (AREA-11-04) y verificación de la IP real
-      # que firma el gateway (AREA-11-08). Sin él, el mcp-server asienta canal 'api'.
-      - MCP_ORIGIN_SECRET=${MCP_ORIGIN_SECRET:-orpycamcp_mcp_origin_dev}
-    networks:
-      - orpycamcp-net
-    depends_on:
-      - app
     restart: "no"
     mem_limit: 2g
     memswap_limit: 2g
@@ -546,7 +518,7 @@ services:
       - DOCUMENT_INTERNAL_TOKEN=${DOCUMENT_INTERNAL_TOKEN:-orpycamcp_document_internal_dev}
       - STORAGE_SERVICE_URL=http://storage-service:8005
       - STORAGE_INTERNAL_TOKEN=${STORAGE_INTERNAL_TOKEN:-orpycamcp_storage_internal_dev}
-      # PPI_PROVIDER_URL y la red ppi llegan con docker-compose.intelligence.yml.
+      # Sin PPI: la ingesta corre en `app` (ADR-051 §2).
     networks:
       - orpycamcp-net
     depends_on:

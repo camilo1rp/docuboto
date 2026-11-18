@@ -15,7 +15,6 @@ import logging
 import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
-from orpycamcp_common import identidad
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.client_ip import resolve_client_ip
@@ -30,48 +29,10 @@ logger = logging.getLogger(__name__)
 # from client-supplied headers (X-Canal is absent from FORWARDED_REQUEST_HEADERS
 # in proxy.py, so it is already stripped before reaching upstream services).
 #
-# Mapping:
-#   /api/v1/mcp/…  → 'mcp'  (MCP-server namespace, ADR-019)
-#   a call carrying a VALID origin mark (`X-Origen-Canal`, signed by the mcp-server
-#   with the shared identity secret and bound to tenant + token, AREA-11-04) → 'mcp'
-#   everything else → 'api'
-#
-# The mark exists because everything the mcp-server does on behalf of a person
-# (an MCP client confirming a radicado, a transfer) reaches the gateway through
-# `/api/v1/<domain>` and used to be recorded as 'api', indistinguishable from a
-# direct call. A client without the signing secret cannot forge it; with a bad or
-# expired signature the canal falls back to 'api' (the safe side).
-#
-# 'ui' is reserved for SvelteKit frontend requests.  It will be set when the
-# nginx reverse-proxy injects a trusted origin marker that the gateway can
-# verify cryptographically (independent of the client-accessible User-Agent).
-
-_MCP_PREFIX = "/api/v1/mcp/"
-
-
-def derive_canal(
-    path: str,
-    origen: str | None = None,
-    *,
-    tenant: str = "",
-    authorization: str = "",
-) -> str:
-    """Returns the audit canal for *path*, derived entirely server-side.
-
-    *origen* is the raw `X-Origen-Canal` header value; it only counts when its
-    signature verifies for this *tenant* and *authorization*. *tenant* is the one of
-    the validated token, never a client-supplied header. Never call this with any
-    other client-supplied header.
-    """
-    if path.startswith(_MCP_PREFIX):
-        return "mcp"
-    if (
-        identidad.verificar_origen(origen, tenant=tenant, authorization=authorization)
-        == "mcp"
-    ):
-        return "mcp"
-    return "api"
-
+# Every authenticated call through the gateway is 'api'. 'ui' is reserved for
+# SvelteKit frontend requests; it will be set when the nginx reverse-proxy
+# injects a trusted origin marker that the gateway can verify cryptographically
+# (independent of the client-accessible User-Agent).
 
 #: Rutas del CATÁLOGO de la API. No están en `PUBLIC_PATHS` porque su
 #: publicidad no es incondicional: depende de `openapi_publico`, que en
@@ -354,12 +315,7 @@ async def _continuar_con_identidad(request: Request, call_next, payload: dict) -
         "X-Username": payload.get("username", ""),
         "X-Tenant-Slug": payload.get("tenant_slug") or "",
         "X-User-Roles": ",".join(roles),
-        "X-Canal": derive_canal(
-            request.url.path,
-            request.headers.get(identidad.CABECERA_ORIGEN),
-            tenant=payload.get("tenant_slug") or "",
-            authorization=request.headers.get("authorization", ""),
-        ),
+        "X-Canal": "api",
         # IP derivada AQUÍ por saltos de confianza (D-03, mismo criterio que
         # X-Canal): los servicios la sellan en `audit_log`, un registro inmutable
         # con valor probatorio. `x-real-ip` NO está en FORWARDED_REQUEST_HEADERS,
@@ -374,8 +330,6 @@ async def _continuar_con_identidad(request: Request, call_next, payload: dict) -
     # El llamante del proceso unificado sale del JWT, no de estas cabeceras.
     # En el perfil split el destino también valida el Bearer; `X-User-Id` es
     # trazabilidad del propio gateway (cuota, log), no una identidad que el
-    # dominio acepte. La IP real sigue firmada con el secreto de ORIGEN: la
-    # verifica el mcp-server, que no posee el secreto maestro (AREA-11-08).
-    request.state.auth_headers = identidad.firmar_ip_real(request.state.auth_headers)
+    # dominio acepte.
 
     return await call_next(request)

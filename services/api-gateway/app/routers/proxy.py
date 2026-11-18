@@ -184,31 +184,11 @@ def _route_to_upstream(path: str, app_state: Any) -> str | None:
         ("/api/v1/notification/admin/", app_state.notification_service_url),
         # signature-service
         ("/api/v1/signature/", app_state.signature_service_url),
-        # mcp-server — catálogo y protocolo MCP para clientes EXTERNOS (ADR-019;
-        # el asistente integrado se retiró en D0, ADR-046 §6). Sin esta ruta los
-        # externos no tendrían por dónde entrar salvo hablando con el servicio
-        # a espaldas del gateway — es decir, sin su validación JWT ni la
-        # inyección de `X-Tenant-Slug`.
-        #
-        # Cubre `/api/v1/mcp/tools`, `/tools/{name}/invoke`,
-        # `/proposals/execute` y `/api/v1/mcp/stream` (el transporte streamable,
-        # montado también bajo este prefijo justo para no tener que abrirle al
-        # proxy una forma de ruta fuera de `/api/v1/...`).
-        #
-        # Se puede exponer porque el gate de escritura ya no depende del cliente:
-        # invocar una escritura por aquí devuelve una PROPUESTA firmada y no
-        # ejecuta nada; ejecutarla exige el token firmado, atado a ese usuario y
-        # a esa ventana. Con `X-Confirm-Write` —un booleano que cualquiera
-        # fabricaba— enrutar esto habría sido abrir la escritura al exterior.
-        ("/api/v1/mcp/", app_state.mcp_service_url),
         # knowledge-service (E21, ADR-046, ADR-045) — /search y /antecedentes
-        # (texto completo), /rag, /availability y /transmission (la ruta por
-        # la que el panel «Preguntar» avisa antes de enviar).
+        # (texto completo). /rag, /availability y /transmission se retiraron
+        # (ADR-051 §2).
         ("/api/v1/knowledge/search", app_state.knowledge_service_url),
         ("/api/v1/knowledge/antecedentes", app_state.knowledge_service_url),
-        ("/api/v1/knowledge/rag", app_state.knowledge_service_url),
-        ("/api/v1/knowledge/availability", app_state.knowledge_service_url),
-        ("/api/v1/knowledge/transmission", app_state.knowledge_service_url),
         ("/api/v1/knowledge/ingesta", app_state.knowledge_service_url),
     ]
     # Límite de segmento: un prefijo sin barra final casa solo la ruta exacta o

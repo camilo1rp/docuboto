@@ -34,7 +34,7 @@ Dockerfile  requirements.txt  .env.example  pytest.ini  tests/test_health.py
      | xargs sed -i 's/__SERVICE_NAME__/knowledge/g; s/__SERVICE_TITLE__/Knowledge/g; s/__PORT__/8011/g'
    ```
 3. **Registrar en `docker-compose.yml`** un bloque `build: ./services/<nombre>-service` con sus puertos, `DATABASE_URL`/`REDIS_URL`/Keycloak y `depends_on`.
-4. **Registrar las rutas** en `services/api-gateway/app/core/routes.py` (salvo `mcp-server`, que consume el gateway, no se enruta).
+4. **Registrar las rutas** en `services/api-gateway/app/core/routes.py`.
 5. **Cliente Keycloak** en el realm, si el servicio valida JWT.
 6. Añadir las tablas del servicio a la cadena única, en `services/docuboto/migrations/` ([ADR-053](../../es/adr/ADR-053-esquema-legible-y-lanzamientos.md)).
 

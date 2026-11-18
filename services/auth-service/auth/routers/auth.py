@@ -289,7 +289,7 @@ async def me(
             permissions = list(perms.keys())
             permission_levels = perms
 
-    # ADR-037: la bandera por entidad viaja con la identidad (UI y mcp-server no
+    # ADR-037: la bandera por entidad viaja con la identidad (la UI no
     # consultan tenant-service). Falla cerrado: sin tenant o con el registro caído,
     # apagado — `/me` no se rompe por esto.
     asistente = False

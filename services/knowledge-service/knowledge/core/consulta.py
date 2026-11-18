@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Delegación de buscar y preguntar (ADR-045 §5).
+"""Delegación de buscar (ADR-045 §5). Preguntar se retiró con `/rag` (ADR-051 §2).
 
 Con el interruptor apagado no hay llamada. Con el proveedor encendido, cada
 cita se rechequea contra el registro. Si el proveedor no responde, se pasa
@@ -19,18 +19,16 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from orpycamcp_common.rbac import resolve_caller_clearance
 
 from knowledge.core import medidor, paso
 from knowledge.core.rechequeo import (
-    Afirmacion,
     Descarte,
     Hallazgo,
     Registro,
     filtrar_busqueda,
-    filtrar_pregunta,
     refs_a_borrar,
 )
 
@@ -44,16 +42,8 @@ except ImportError:  # pragma: no cover
     audit = None  # type: ignore[assignment]
     _AUDIT = False
 
-#: Buscar y antecedentes: plazo 3 s. Preguntar: 30 s (ADR-045 §5).
+#: Buscar y antecedentes: plazo 3 s (ADR-045 §5).
 PLAZO_BUSCAR = 3.0
-PLAZO_PREGUNTAR = 30.0
-
-NO_DISPONIBLE = "Respuesta no disponible, inténtelo de nuevo"
-RESPONDIDA = (
-    "Cada afirmación tiene cita. Verifique el texto contra el radicado fuente "
-    "antes de usarlo."
-)
-INSUFICIENTE = "No hay evidencia suficiente para responder."
 
 _SERVICIO = "knowledge-service"
 _VIVOS = """
@@ -69,20 +59,6 @@ class Busqueda:
 
     delegada: bool
     hallazgos: tuple[Hallazgo, ...] = ()
-
-
-@dataclass(frozen=True)
-class Pregunta:
-    delegada: bool
-    fallo: bool
-    status: Literal["answered", "insufficient_evidence", "unavailable"]
-    answer: str | None
-    citas: tuple[Hallazgo, ...]
-    advisory: str
-
-
-_PREGUNTA_LOCAL = Pregunta(False, False, "unavailable", None, (), "")
-_PREGUNTA_FALLO = Pregunta(True, True, "unavailable", None, (), NO_DISPONIBLE)
 
 
 @dataclass(frozen=True)
@@ -137,58 +113,6 @@ async def buscar(
     )
     await _cerrar(conn, slug, cliente, actor, descartes)
     return Busqueda(True, tuple(utiles))
-
-
-async def preguntar(
-    conn: Any,
-    slug: str,
-    cliente: Any,
-    *,
-    texto: str,
-    limite: int,
-    actor: uuid.UUID,
-    alcance: uuid.UUID | None = None,
-) -> Pregunta:
-    intento = await _intentar(
-        conn,
-        slug,
-        cliente,
-        modo="ask",
-        texto=texto,
-        limite=limite,
-        actor=actor,
-        alcance=alcance,
-        plazo=PLAZO_PREGUNTAR,
-    )
-    if not intento.delegar:
-        return _PREGUNTA_LOCAL
-    if intento.cuerpo is None:
-        await _anotar_respaldo(conn)
-        return _PREGUNTA_FALLO
-    estado = intento.cuerpo.get("status")
-    if estado not in ("answered", "insufficient_evidence"):
-        await _anotar_respaldo(conn)
-        return _PREGUNTA_FALLO
-    claims = intento.cuerpo.get("claims")
-    if not isinstance(claims, list):
-        claims = [] if estado == "insufficient_evidence" else None
-    if claims is None:
-        await _anotar_respaldo(conn)
-        return _PREGUNTA_FALLO
-    try:
-        vivos = await leer_vivos(conn, _ids_de_afirmaciones(claims))
-    except Exception:
-        logger.warning("no se pudo rechequear la respuesta; responde el índice local")
-        await _anotar_respaldo(conn)
-        return _PREGUNTA_FALLO
-    afirmaciones, descartes = filtrar_pregunta(
-        claims,
-        vivos,
-        habilitados=intento.habilitados,
-        clearance=intento.clearance,
-    )
-    await _cerrar(conn, slug, cliente, actor, descartes)
-    return _respuesta(afirmaciones)
 
 
 async def leer_vivos(conn: Any, ids: list[uuid.UUID]) -> dict[uuid.UUID, Registro]:
@@ -266,14 +190,6 @@ async def _anotar_respaldo(conn: Any) -> None:
     await medidor.anotar(conn, medidor.RESPALDO, medidor.RAZON_RESPALDO)
 
 
-def _respuesta(afirmaciones: list[Afirmacion]) -> Pregunta:
-    if not afirmaciones:
-        return Pregunta(True, False, "insufficient_evidence", None, (), INSUFICIENTE)
-    citas = tuple(cita for afirmacion in afirmaciones for cita in afirmacion.citas)
-    texto = "\n\n".join(afirmacion.texto for afirmacion in afirmaciones)
-    return Pregunta(True, False, "answered", texto, citas, RESPONDIDA)
-
-
 async def _cerrar(
     conn: Any,
     slug: str,
@@ -318,21 +234,6 @@ def _ids(hits: list[Any], clave: str) -> list[uuid.UUID]:
         ident = _uuid(hit.get(clave))
         if ident is not None and ident not in vistos:
             vistos.append(ident)
-    return vistos
-
-
-def _ids_de_afirmaciones(claims: list[Any]) -> list[uuid.UUID]:
-    vistos: list[uuid.UUID] = []
-    for claim in claims:
-        if not isinstance(claim, dict):
-            continue
-        citas = claim.get("citations")
-        if not isinstance(citas, list):
-            continue
-        for cita in citas:
-            ident = _uuid(cita)
-            if ident is not None and ident not in vistos:
-                vistos.append(ident)
     return vistos
 
 

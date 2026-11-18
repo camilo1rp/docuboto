@@ -175,6 +175,10 @@ propagate to the index; a guardian makes that falsifiable. **Pending (product de
 knowledge layer per entity, whose `false` default would stop today's ingestion. **Residual**: channel `mcp`
 only shows up in services already rebuilt with the new shared library.
 
+> **Note (2026-11-17).** The `mcp` channel, the `X-Origen-Canal` mark and the mcp-server's signed IP no
+> longer exist: [ADR-051](adr/ADR-051-ppi-reducido-vive-en-la-app.md) retired `mcp-server`, and
+> `audit_log.canal` only accepts `api`, `ui` and `system`.
+
 ### Closure of the 2 October 2026 audit (batch T11)
 
 The frontend proxies' session guard was tested on a hand-picked sample (21 of 219) and nothing asserted the

@@ -7,7 +7,11 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""One lifespan for the process. The intelligence consumer does not start here."""
+"""One lifespan for the process, and the one place where loops start.
+
+The PPI ingestion consumer starts here only with `PPI_PROVIDER_URL` set
+(ADR-051 §2). Empty, the package is inert: no call leaves and no loop runs.
+"""
 
 from __future__ import annotations
 
@@ -41,6 +45,8 @@ from document.clients.storage_client import registrar_almacen
 from document.core import altcha
 from document.services.barrido import bucle_de_barrido
 from document.services.email_sondeo import bucle_de_sondeo
+from knowledge.core import salida_http
+from knowledge.workers import intelligence_consumer
 from notification.core import webhook_secrets
 from notification.workers import stream_worker
 from signature.core.config import variables_retiradas_presentes
@@ -154,6 +160,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     tareas.append(
         events.spawn_supervised(signature_consumer.run, name="signature", logger=logger)
     )
+    if settings.knowledge.ppi_provider_url.strip():
+        tareas.append(
+            events.spawn_supervised(
+                intelligence_consumer.run, name="intelligence-gateway", logger=logger
+            )
+        )
     tareas.append(asyncio.create_task(bucle_trabajo(COLA_APP)))
     request_log.canal_de_fondo()
 
@@ -163,6 +175,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         tarea.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await tarea
+    await salida_http.cerrar_consulta()
     await auth_service.close()
     await app.state.http_client.aclose()
     await redis_client.aclose()

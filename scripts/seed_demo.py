@@ -391,7 +391,7 @@ class Api:
 
         La primera versión devolvía `{}` ante cualquier respuesta que no fuera
         200, y el paso que consultaba el marco de alcance no imprimió nada
-        cuando mcp-server no estaba levantado: ni el dato ni el motivo. Un
+        cuando el servicio no estaba levantado: ni el dato ni el motivo. Un
         script de demostración que calla un fallo es peor que uno que aborta,
         porque quien lo mira cree haber visto el sistema entero.
         """

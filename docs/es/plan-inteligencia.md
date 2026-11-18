@@ -1,14 +1,29 @@
 # Plan de inteligencia
 
-> **Estado: D0 construida (2026-10-28); D1 a D3, planeadas.** knowledge-service ya no
-> llama a modelos y el asistente conversacional está retirado. La decisión
-> de arquitectura es [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)
-> (Propuesto) y el protocolo es PPI v1, en borrador, en `docs/contratos/ppi/`.
-> Actualizado al 2026-10-27, con la revisión de ADR-045 que deja a cada entidad decidir
-> qué niveles salen. [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md) (Propuesto, 2026-10-28)
-> propone que knowledge-service no llame a modelos: `local` pasa a ser la búsqueda de texto
-> completo de document-service, sin generación. Donde este plan dice «envoltorio de lo
-> actual» o «índice local», léase ese respaldo.
+> **Estado al 2026-11-17: D0 construida; D1 construida en su camino de ingesta y de
+> búsqueda; D2 y D3, retiradas.** knowledge-service no llama a modelos y el asistente
+> conversacional está retirado ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)). La
+> pasarela es [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md), reducida
+> por [ADR-051](adr/ADR-051-ppi-reducido-vive-en-la-app.md) a lo construido en los dos lados.
+> El protocolo es **PPI v1.4.0**, con copia congelada en `contracts/ppi/v1.4.0/` (índice en
+> `contracts/ppi/README.md`); Docuboto envía `PPI-Version: 1.4.0`.
+>
+> Lo que ADR-051 cambia de este plan:
+>
+> - **D1**: el consumidor de ingesta arranca en el `lifespan` único de la app, solo con
+>   `PPI_PROVIDER_URL` fijado. Buscar y antecedentes se delegan al proveedor con la entidad
+>   en `ppi`. **«Preguntar» (`/rag`) y su panel se retiran**, igual que `/availability`,
+>   `/transmission` y los botones «Sugerir con antecedentes».
+> - **D2 y D3 se retiran**: dependían de `POST /v1/runs`, `POST /v1/decisions` y del
+>   callback `recommend`, que PPI 1.4.0 ya no declara porque ninguno de los dos lados los
+>   construyó, y del gate de escritura del MCP, que también se retiró. Si el proveedor
+>   construye algún día el bucle de recomendaciones, será PPI 2.0.0 y un ADR propio. Los
+>   **arreglos de plazo** de D2 no dependen del proveedor y siguen valiendo por separado.
+> - **No hay capa MCP** (ADR-051 §5): donde este plan habla de tools, propuestas o
+>   `mcp-server`, describe lo que había.
+>
+> Donde este plan dice «envoltorio de lo actual» o «índice local», léase la búsqueda de
+> texto completo de document-service.
 
 ## Para qué
 
@@ -23,9 +38,9 @@ ambos lados contra los mismos hitos:
 | Fase | Qué gana el funcionario | Hito del proveedor |
 |---|---|---|
 | **D0 — Retirar la capa local de modelos** | Nada nuevo: buscar y antecedentes siguen, ahora por texto completo; «Sugerir texto» se oculta hasta que haya proveedor | Ninguno |
-| **D1 — Camino de lectura** | Buscar y preguntar sobre el cuerpo y los anexos de los radicados, con citas | Hito D1 |
-| **D2 — Triage de entrada** | Sugerencias de tipificación, plazo, reparto, antecedentes y remitente, que acepta o rechaza en la bandeja | Hito D2 |
-| **D3 — Borradores de respuesta** | Un borrador de respuesta citado, que se convierte en borrador de Docuboto a su nombre | Sin hito propio del proveedor; criterios de Docuboto |
+| **D1 — Camino de lectura** | Buscar y antecedentes sobre el cuerpo y los anexos de los radicados («preguntar» se retiró con ADR-051) | Hito D1 |
+| ~~**D2 — Triage de entrada**~~ (retirada, ADR-051) | Sugerencias de tipificación, plazo, reparto, antecedentes y remitente, que acepta o rechaza en la bandeja | Hito D2 |
+| ~~**D3 — Borradores de respuesta**~~ (retirada, ADR-051) | Un borrador de respuesta citado, que se convierte en borrador de Docuboto a su nombre | Sin hito propio del proveedor; criterios de Docuboto |
 
 **Arranque del piloto (2026-10-28).** D1 y D2 salen a producción solo con PÚBLICA.
 RESERVADA y CLASIFICADA se habilitan después, con el acto del administrador que ya existe,
@@ -42,7 +57,7 @@ proveedor. Ninguna fase espera por esto.
    al enviar.
 2. **Con el interruptor apagado no hay llamadas.** Si la bandera de ADR-037 está apagada
    o la entidad está en `local`, Docuboto no hace ninguna llamada al proveedor.
-3. **Lo aceptado lo ejecuta el funcionario.** Cada aceptación pasa por el gate de
+3. **Lo aceptado lo ejecuta el funcionario** (regla de D2 y D3, retiradas con ADR-051). Cada aceptación pasa por el gate de
    escritura con la identidad de la persona y deja su asiento con la sugerencia en
    `correlacion`. El proveedor no tiene credencial de la API de Docuboto.
 4. **El código no nombra a ningún proveedor.** El nombre del proveedor es un dato que
@@ -88,9 +103,10 @@ no necesita al proveedor. Con ella se corta el egreso por defecto a ollama.com.
 
 ## Fase D1 — Camino de lectura
 
-**Objetivo.** En la bandeja y en `/busqueda`, el funcionario pregunta y busca sobre el
-cuerpo y los anexos de los radicados de niveles habilitados. Cada afirmación lleva cita, o la
-respuesta es «evidencia insuficiente». Si el proveedor no está, responde el índice local.
+**Objetivo.** En `/busqueda`, el funcionario busca y encuentra antecedentes sobre el
+cuerpo y los anexos de los radicados de niveles habilitados. Si el proveedor no está,
+responde el índice local. «Preguntar», con citas o «evidencia insuficiente», se retiró con
+ADR-051.
 
 ### Cambios por servicio
 
@@ -98,13 +114,13 @@ respuesta es «evidencia insuficiente». Si el proveedor no está, responde el �
 |---|---|
 | knowledge-service (la pasarela) | **Puerto de proveedor** con dos implementaciones: `local` (la búsqueda de texto completo que deja D0) y `ppi` (cliente HTTP de PPI v1). |
 | | **Punto de paso único** de todo envío al proveedor, con la función «¿puede salir?» (nivel vivo entre los niveles habilitados de la entidad y envío no suspendido) en `app/core/clearance.py`. Ningún otro módulo usa el cliente PPI. |
-| | **Consumidor `intelligence-gateway`** sobre `orpycamcp.document.events` y `orpycamcp.workflow.events`, con reclamación de la PEL y dead-letter (ADR-021). Empuja altas y cambios, y ordena borrados por reclasificación hacia un nivel no habilitado, anulación, purga y nivel deshabilitado. |
+| | **Consumidor `intelligence-gateway`** (arranca en el `lifespan` de la app solo con `PPI_PROVIDER_URL` fijado, ADR-051 §2) sobre `orpycamcp.document.events` y `orpycamcp.workflow.events`, con reclamación de la PEL y dead-letter (ADR-021). Empuja altas y cambios, y ordena borrados por reclasificación hacia un nivel no habilitado, anulación, purga y nivel deshabilitado. |
 | | **Traducción a PPI**: radicado → `record` con una lista cerrada de campos (número, fecha, tipo E/S/I, tipo documental, dependencia, asunto, remitente, vencimiento oficial, estado), y anexo → `attachment` por localizador. Los metadatos de plantilla salen aplanados en `metadata` (PPI 1.2) solo si la entidad tiene `intelligence_send_metadata` encendido. |
 | | **Libro de envíos** de solo inserción y **reconciliación periódica** contra el nivel vivo y contra el inventario PPI (`GET /v1/ingest/inventory`). |
 | | **Carga inicial y reanudación**: al pasar a `ppi`, o al volver a encender la bandera, empuja lo pendiente de los niveles habilitados por lotes reanudables con cursor. |
 | | **Conexión PPI**: declara niveles, vocabularios, URL de retorno y claves (`PUT /v1/connection`); lee y verifica `capabilities` con la clave fijada en configuración; guarda su huella y suspende el envío si cambia. |
 | | **Ruta interna de retorno `content`**, firmada con HMAC por entidad (ventana de 300 s, nonce de un solo uso en Redis): vuelve a pasar la barrera y sirve los bytes desde document-service. No la enruta el gateway. |
-| | **Delegación de `/search` y `/rag`**, con alcance opcional a un radicado y sus anexos. Re-comprobación viva de cada acierto y cada cita, y respaldo `local` con su etiqueta. Plazos: buscar 3 s (p95 2 s), preguntar 30 s (p95 15 s), borrador 5 min (ADR-045 §5). Las tres tools de conocimiento del asistente (E21) pasan por aquí y heredan todo esto sin cambios en mcp-server. |
+| | **Delegación de `/search` y `/antecedentes`**, con alcance opcional a un radicado y sus anexos. Re-comprobación viva de cada acierto y cada cita, y respaldo `local` con su etiqueta. Plazo: buscar 3 s (p95 2 s) (ADR-045 §5). La delegación de `/rag` se retiró con ADR-051. |
 | | **`on_behalf_of` seudónimo** (HMAC del `auth_users.id` con clave de la entidad) y su clearance real, recortada al nivel habilitado más alto. |
 | | **Métricas** sin etiqueta de tenant (ADR-041): envíos, rechazos de barrera, respaldos activados y suspensiones. |
 | document-service | **Dos rutas internas** (`X-Internal-Token`): el registro de un radicado y los bytes de un anexo (mediados por storage-service, como D-02). Ambas comprueban en el `WHERE` que el nivel esté entre los habilitados y dejan constancia en el historial de acceso del radicado («transmitido al proveedor de inteligencia»). |
@@ -115,9 +131,8 @@ respuesta es «evidencia insuficiente». Si el proveedor no está, responde el �
 | auth-service | `/auth/me` publica `intelligence_provider` junto a `asistente_habilitado`, para que la UI decida qué mostrar. `ALLOWED_AZP` **no cambia**. |
 | `scripts/init_tenant.py` | **Paso nuevo e idempotente** que crea el cliente de servicio de la entidad en el realm (confidencial, solo `client_credentials`), guarda su secreto cifrado con la KEK e imprime el par *(issuer, client_id)* que registra el proveedor. Se puede correr para una entidad existente. |
 | api-gateway | Enruta `/api/v1/config/intelligence*`. **No** enruta ninguna ruta interna de la pasarela. |
-| frontend | **Panel «Preguntar»** en el drawer de detalle de la bandeja (`frontend/src/routes/(app)/bandeja/+page.svelte`): solo con bandera, `PERM_CONOCIMIENTO` y radicado de un nivel habilitado. Muestra las citas con enlace al anexo y la página, dice cuándo responde el índice local y avisa de que la pregunta y el radicado se transmiten, y por qué ruta. |
-| | **Pantalla de administración** «Inteligencia»: proveedor, subencargados y enrutamiento según `capabilities`, declaración, niveles habilitados con la ruta de cada uno, estado (suspendido o activo) y retiro de datos. En `local` muestra cuántos radicados conserva el proveedor (inventario PPI), y la confirmación del cambio a `local` ofrece «retirar también los datos». |
-| infra | **Fragmento de Compose `intelligence`** (`docker-compose.intelligence.yml` e `infra/docker-compose.intelligence.yml`), sumado con `-f` y no con `include`: Compose mezcla un `include` aunque el perfil esté apagado, y entonces `up` exige la red. No arranca ningún servicio del proveedor. Conecta knowledge-service a la red externa `ppi` (`docker network create --internal ppi`, creada una vez por host fuera de los dos proyectos) y le da `PPI_PROVIDER_URL` sin valor por defecto. Sin el fragmento, el arranque es el de hoy. El proveedor es otro proyecto Compose con su propia versión (ADR-045 §8). |
+| frontend | **Pantalla de administración** «Inteligencia»: proveedor, subencargados y enrutamiento según `capabilities`, declaración, niveles habilitados con la ruta de cada uno, estado (suspendido o activo) y retiro de datos. En `local` muestra cuántos radicados conserva el proveedor (inventario PPI), y la confirmación del cambio a `local` ofrece «retirar también los datos». |
+| infra | **Fragmento de Compose `intelligence`** (`docker-compose.intelligence.yml` e `infra/docker-compose.intelligence.yml`), sumado con `-f` y no con `include`: Compose mezcla un `include` aunque el perfil esté apagado, y entonces `up` exige la red. No arranca ningún servicio del proveedor. Conecta `app` a la red externa `ppi` (`docker network create --internal ppi`, creada una vez por host fuera de los dos proyectos) y le da `PPI_PROVIDER_URL` sin valor por defecto. Sin el fragmento, el arranque es el de hoy. El proveedor es otro proyecto Compose con su propia versión (ADR-045 §8). |
 
 ### Permisos nuevos
 
@@ -155,11 +170,11 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
   `init_tenant.py` no aparece en `ALLOWED_AZP` y solo tiene cuenta de servicio.
 - **El fragmento no arranca al proveedor.** Un guardián de compose comprueba que el
   fragmento `intelligence` no define servicios nuevos, que el manifiesto base no lo
-  incluye, que solo knowledge-service se conecta a la red `ppi`, que esa red es
+  incluye, que solo `app` se conecta a la red `ppi`, que esa red es
   `external` y que `PPI_PROVIDER_URL` no tiene valor por defecto.
 - **La especificación PPI cumple su contrato.** Los ejemplos de
-  `docs/contratos/ppi/examples/manifest.json` dan el resultado declarado contra su
-  esquema. La carpeta solo tiene `.md`, `.json` y `.yaml`, bajo la AGPL del
+  `contracts/ppi/v1.4.0/examples/manifest.json` dan el resultado declarado contra su
+  esquema, y `SHA256SUMS` impide que la copia congelada cambie. La carpeta solo tiene `.md`, `.json` y `.yaml`, bajo la AGPL del
   repositorio. (Requiere añadir `jsonschema` a las dependencias de prueba de
   `shared`.)
 - `test_knowledge_checks_flag.py` y `test_toda_ruta_lleva_gate` se extienden a las
@@ -167,11 +182,11 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
 
 ### Criterios de éxito (equivalen al hito D1 del proveedor)
 
-- [ ] En una instalación de staging de Docuboto, los funcionarios buscan y preguntan
+- [ ] En una instalación de staging de Docuboto, los funcionarios buscan
       desde la bandeja y `/busqueda` sobre el cuerpo y los anexos. Cada respuesta va
       citada o es «evidencia insuficiente», y cada cita mostrada pasó la re-comprobación
       viva.
-- [ ] Con el proveedor detenido, Docuboto sigue funcionando: buscar y preguntar caen a
+- [ ] Con el proveedor detenido, Docuboto sigue funcionando: buscar y antecedentes caen a
       `local` con su etiqueta, y radicar, tramitar y firmar no se enteran. Al volver, el
       consumidor recupera lo pendiente sin pérdida.
 - [ ] La reconciliación queda registrada: en el proveedor no existe nada fuera de los
@@ -189,7 +204,12 @@ Ninguno. Consultar sigue siendo `PERM_CONOCIMIENTO` nivel 1 y configurar es
 
 ---
 
-## Fase D2 — Triage de entrada
+## Fase D2 — Triage de entrada (retirada, ADR-051)
+
+> **Retirada el 2026-11-17.** Dependía del callback `recommend`, de `POST /v1/decisions` y
+> del gate de escritura del MCP, que ya no existen. Se conserva como registro de lo que
+> se planeó. Los arreglos de plazo (plazo por defecto, `PERM_DUE_DATE`, sondeo de correo)
+> no dependen del proveedor y pueden hacerse por separado.
 
 **Objetivo.** Lo que entra con un nivel habilitado por ventanilla y por correo recibe sugerencias de
 tipificación, plazo, reparto, antecedentes y remitente. El funcionario las acepta o las
@@ -311,7 +331,10 @@ radicados de ventanilla y de correo nacen sin vencimiento, porque nadie pasa
 
 ---
 
-## Fase D3 — Borradores de respuesta
+## Fase D3 — Borradores de respuesta (retirada, ADR-051)
+
+> **Retirada el 2026-11-17.** Dependía de `POST /v1/runs` (`draft_reply`), que PPI 1.4.0
+> ya no declara, y de la bandeja de sugerencias de D2. Se conserva como registro.
 
 **Objetivo.** Desde el drawer, el funcionario pide un borrador de respuesta. El proveedor
 lo prepara con citas, y al aceptarlo se convierte en un borrador de Docuboto a nombre del
@@ -356,15 +379,15 @@ funcionario, que sigue su circuito normal de revisión, visto bueno y firma.
 
 ## Guardianes transversales
 
-Nacen en D1 y se completan en D2. Son pruebas de `shared/tests` o de cada servicio, según
+Nacen en D1. El cuarto se retiró con D2 (ADR-051). Son pruebas de `shared/tests` o de cada servicio, según
 lo que miren.
 
 | Guardián | Qué comprueba | Cómo |
 |---|---|---|
 | **Ningún proveedor se nombra en el código** | Ni `services/`, ni `frontend/src`, ni `shared/`, ni `scripts/`, ni los compose ni `infra/` nombran a un proveedor de inteligencia. | La lista prohibida se guarda como **huellas SHA-256** de los nombres normalizados, para que el guardián tampoco los nombre; se compara token a token. Exentos: `docs/` (los ADR y este plan pueden contar la historia) y los ajustes de modelos que ADR-006 ya admite. |
-| **Nada de un nivel no habilitado llega a un proveedor** | Ningún camino envía un radicado de un nivel que la entidad no habilitó: registro, anexo, alcance de consulta, tarea `run`, descarga por localizador y outbox de decisiones. | Transporte falso que falla ante cualquier petición con un nivel no habilitado. Incluye la carrera de una reclasificación entre el evento y el envío. Un control AST asegura que solo el punto de paso usa el cliente PPI. |
-| **Con el interruptor apagado no hay llamadas ni egreso** | Con la bandera apagada, o la entidad en `local`, ni el consumidor, ni buscar, ni preguntar, ni la carga inicial, ni la reconciliación, ni el outbox de decisiones, ni `run` llaman al proveedor. | Transporte falso que falla ante cualquier petición. En compose, el proveedor solo está en una red `internal: true`. |
-| **Toda aceptación queda auditada con su sugerencia** | Cada sugerencia `accepted` tiene un asiento de la operación de destino con la persona como actor y `correlacion.suggestion` (identificador, proveedor, modelos), unido por el `jti` al asiento `intelligence.suggestion_accepted` de la pasarela. | Prueba de integración del recorrido completo, más un control que recorre las sugerencias aceptadas de un tenant de prueba y busca su asiento. |
+| **Nada de un nivel no habilitado llega a un proveedor** | Ningún camino envía un radicado de un nivel que la entidad no habilitó: registro, anexo, alcance de consulta y descarga por localizador. | Transporte falso que falla ante cualquier petición con un nivel no habilitado. Incluye la carrera de una reclasificación entre el evento y el envío. Un control AST asegura que solo el punto de paso usa el cliente PPI. |
+| **Con el interruptor apagado no hay llamadas ni egreso** | Con la bandera apagada, o la entidad en `local`, ni el consumidor, ni buscar, ni antecedentes, ni la carga inicial, ni la reconciliación llaman al proveedor. | Transporte falso que falla ante cualquier petición. En compose, el proveedor solo está en una red `internal: true`. |
+| ~~**Toda aceptación queda auditada con su sugerencia**~~ (retirado con D2) | Cada sugerencia `accepted` tiene un asiento de la operación de destino con la persona como actor y `correlacion.suggestion` (identificador, proveedor, modelos), unido por el `jti` al asiento `intelligence.suggestion_accepted` de la pasarela. | Prueba de integración del recorrido completo, más un control que recorre las sugerencias aceptadas de un tenant de prueba y busca su asiento. |
 
 ---
 
@@ -418,13 +441,11 @@ lado del proveedor; los demás aparecieron al preparar este plan.
    2. punto de paso y barrera, con sus guardianes **antes** de cualquier envío real;
    3. consumidor y carga inicial;
    4. delegación con respaldo;
-   5. panel «Preguntar», configuración y fragmento de Compose.
+   5. configuración y fragmento de Compose.
 3. **Los arreglos de plazo de D2** (plazo por defecto, operación de vencimiento, sondeo
    de correo) no dependen del proveedor y pueden adelantarse.
-4. **El resto de D2** necesita D1 y, del lado del proveedor, la entrega de
-   recomendaciones.
-5. **D3** necesita la bandeja de D2 y, del lado del proveedor, la tarea `draft_reply`
-   por `run`.
+4. ~~**El resto de D2**~~ y ~~**D3**~~: retirados con ADR-051 (2026-11-17), porque PPI 1.4.0
+   ya no declara recomendaciones, decisiones ni `run`.
 
 ## Preguntas abiertas
 

@@ -66,10 +66,9 @@ def servicios_propios() -> list[str]:
 
 
 # Paquete Python de cada servicio. Los de dominio usan el nombre de la carpeta
-# (document, workflow, …). api-gateway y mcp-server siguen en `app`.
+# (document, workflow, …). api-gateway sigue en `app`.
 DIR_PAQUETE = {
     "api-gateway": "app",
-    "mcp-server": "app",
     "document-service": "document",
     "workflow-service": "workflow",
     "archive-service": "archive",

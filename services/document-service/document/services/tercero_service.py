@@ -62,7 +62,7 @@ MEDIOS_VERIFICACION = (
 )
 
 # Misma lista que `DocumentService`: consulta real de un usuario, no ruido interno.
-_CANALES_AUDITABLES = frozenset({"api", "ui", "mcp"})
+_CANALES_AUDITABLES = frozenset({"api", "ui"})
 
 # Campos de contacto que se congelan en el envío. Se enumeran una vez: dos
 # listas de campos se separan en cuanto alguien añade uno, y la que se quede

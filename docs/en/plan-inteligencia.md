@@ -1,15 +1,30 @@
 # Intelligence plan
 
-> **Status: planned.** Nothing on this page is built. This is a condensed English version.
-> The Spanish version of this page is canonical (switch with the language selector) and
-> carries the per-service detail, file references and open questions. The architecture
-> decision is [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md)
-> (Proposed), written in Spanish like every ADR, and the protocol is PPI v1 (draft) in
-> `docs/contratos/ppi/`. Updated as of 2026-10-27, with the ADR-045 revision that lets each
-> entity choose which levels leave. [ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)
-> (Proposed, 2026-10-28) proposes that knowledge-service call no models: `local` becomes
-> document-service full-text search, with no generation. Where this plan says "local index",
-> read that fallback.
+> **Status as of 2026-11-17: D0 built; D1 built for its ingestion and search path; D2 and D3
+> retired.** This is a condensed English version. The Spanish version of this page is
+> canonical (switch with the language selector) and carries the per-service detail, file
+> references and open questions. knowledge-service calls no models and the conversational
+> assistant is retired ([ADR-046](adr/ADR-046-conocimiento-sin-modelos.md)). The gateway is
+> [ADR-045](adr/ADR-045-pasarela-de-inteligencia-y-protocolo-ppi.md), cut down by
+> [ADR-051](adr/ADR-051-ppi-reducido-vive-en-la-app.md) to what both sides built. The
+> protocol is **PPI v1.4.0**, frozen in `contracts/ppi/v1.4.0/` (index in
+> `contracts/ppi/README.md`); Docuboto sends `PPI-Version: 1.4.0`.
+>
+> What ADR-051 changes in this plan:
+>
+> - **D1**: the ingestion consumer starts in the app's single lifespan, only when
+>   `PPI_PROVIDER_URL` is set. Search and related records are delegated to the provider
+>   when the entity is on `ppi`. **"Ask" (`/rag`) and its panel are retired**, along with
+>   `/availability`, `/transmission` and the «Sugerir con antecedentes» buttons.
+> - **D2 and D3 are retired**: they depended on `POST /v1/runs`, `POST /v1/decisions` and
+>   the `recommend` callback, which PPI 1.4.0 no longer declares because neither side built
+>   them, and on the MCP write gate, which is also gone. If the provider ever builds the
+>   recommendation loop, that's PPI 2.0.0 and its own ADR. D2's **due-date fixes** don't
+>   depend on a provider and still stand on their own.
+> - **There is no MCP layer** (ADR-051 §5): where this plan mentions tools, proposals or
+>   `mcp-server`, it describes what used to exist.
+>
+> Where this plan says "local index", read document-service full-text search.
 
 ## Purpose
 
@@ -20,9 +35,9 @@ with the entity, and talks to Docuboto only through PPI. Docuboto stays the syst
 | Phase | What the officer gets |
 | --- | --- |
 | **D0 — Remove the local model layer** | Nothing new: search and related records keep working, now through full-text search; "suggest text" hides until a provider exists |
-| **D1 — Read path** | Search and ask over record bodies and attachments, with citations |
-| **D2 — Intake triage** | Suggestions for document type, due date, routing, related records and sender, accepted or rejected in the inbox |
-| **D3 — Reply drafts** | A cited draft reply that becomes a Docuboto draft in the officer's name |
+| **D1 — Read path** | Search and related records over record bodies and attachments ("ask" was retired by ADR-051) |
+| ~~**D2 — Intake triage**~~ (retired, ADR-051) | Suggestions for document type, due date, routing, related records and sender, accepted or rejected in the inbox |
+| ~~**D3 — Reply drafts**~~ (retired, ADR-051) | A cited draft reply that becomes a Docuboto draft in the officer's name |
 
 **Pilot start (2026-10-28).** D1 and D2 go live with PÚBLICA only. RESERVADA and
 CLASIFICADA are enabled later through the existing admin act, once counsel (ADR-045
@@ -37,7 +52,7 @@ question 8) and the provider's security review sign off. No phase waits on this.
    the live level and the enabled levels at send time.
 2. **With the switch off, no calls.** With the ADR-037 flag off, or the entity on `local`,
    Docuboto makes no call to the provider.
-3. **The officer executes what is accepted.** Every acceptance goes through the write gate
+3. **The officer executes what is accepted** (a D2/D3 rule; both retired by ADR-051). Every acceptance goes through the write gate
    as that person, and its audit entry carries the suggestion in `correlacion`. The
    provider has no credential for Docuboto's API.
 4. **Code never names a provider.** The provider's name is data from its signed
@@ -73,12 +88,13 @@ It only removes code, and it stops today's default of sending content to ollama.
 - **knowledge-service becomes the pasarela.**
   - A provider port with `local` and `ppi` implementations.
   - A single egress choke point.
-  - Its own consumer group on the document and workflow streams.
+  - Its own consumer group on the document and workflow streams, started in the app's
+    lifespan only when `PPI_PROVIDER_URL` is set (ADR-051 §2).
   - An append-only send ledger with periodic reconciliation.
   - An HMAC-signed internal `content` callback.
-  - Delegated `/search` and `/rag` with a live re-check of every hit and citation, and a
-    labelled `local` fallback. Timeouts proposed to the provider: search 3 s (p95 2 s), ask
-    30 s (p95 15 s), draft 5 min.
+  - Delegated `/search` and `/antecedentes` with a live re-check of every hit, and a
+    labelled `local` fallback. Timeout proposed to the provider: search 3 s (p95 2 s).
+    Delegating `/rag` was retired by ADR-051.
   - A pseudonymous `on_behalf_of`, with the officer's real clearance capped at the highest
     enabled level.
 - **document-service.** Internal routes for a record and for attachment bytes, which
@@ -94,20 +110,19 @@ It only removes code, and it stops today's default of sending content to ollama.
   deletion of what was sent at that level.
 - **`scripts/init_tenant.py`.** Creates one client-credentials Keycloak client per entity.
   It is not added to `ALLOWED_AZP`.
-- **Frontend.** An "Ask" panel in the inbox detail drawer and an admin screen. On `local`,
+- **Frontend.** An admin screen. On `local`,
   the admin screen shows how many records the provider still holds, and the switch to
   `local` offers "withdraw the data too" as a checkbox.
 - **Infra.** A vendor-neutral `intelligence` Compose fragment
   (`docker-compose.intelligence.yml`, and `infra/docker-compose.intelligence.yml`
   in production), added with `-f` rather than `include`. Compose merges an `include`
   even when its profile is off, and then `up` requires the network. The fragment
-  starts no provider service. It attaches knowledge-service to the external `ppi`
+  starts no provider service. It attaches `app` to the external `ppi`
   network, created once per host with `--internal`, and sets `PPI_PROVIDER_URL`
   with no default. Without the fragment, startup is unchanged. The provider is its
   own Compose project with its own release.
 - **New permissions.** None.
 - **Success criteria** match the provider's D1 gate:
-  - cited answers or `insufficient_evidence`;
   - Docuboto keeps working with the provider stopped;
   - a recorded reconciliation shows nothing outside the enabled levels at the provider;
   - deletion is verified after reclassification to a level that isn't enabled, annulment,
@@ -117,7 +132,12 @@ It only removes code, and it stops today's default of sending content to ollama.
   - no calls happen with the switch off;
   - human sign-off.
 
-## D2 — Intake triage
+## D2 — Intake triage (retired, ADR-051)
+
+> **Retired on 2026-11-17.** It depended on the `recommend` callback, `POST /v1/decisions`
+> and the MCP write gate, none of which exist any more. Kept as a record of the plan. The
+> due-date fixes (default term, `PERM_DUE_DATE`, e-mail poller) don't depend on a provider
+> and can be done on their own.
 
 - **The `suggestions` inbox.**
   - Closed kinds.
@@ -162,7 +182,10 @@ It only removes code, and it stops today's default of sending content to ollama.
   - turning intelligence off stops all calls;
   - human sign-off.
 
-## D3 — Reply drafts
+## D3 — Reply drafts (retired, ADR-051)
+
+> **Retired on 2026-11-17.** It depended on `POST /v1/runs` (`draft_reply`), which PPI
+> 1.4.0 no longer declares, and on D2's suggestion inbox. Kept as a record.
 
 - An officer asks for a draft. The provider's `run` returns a `draft` recommendation.
 - Accepting it creates a Docuboto draft (`crear_borrador` with `radicado_padre_id`, which
@@ -177,7 +200,7 @@ It only removes code, and it stops today's default of sending content to ollama.
 - Nothing at a level the entity hasn't enabled reaches a provider, on any path, including the race where a record
   is reclassified between the event and the send.
 - With the switch off, no calls or egress happen.
-- Every acceptance is audited with its suggestion ID.
+- ~~Every acceptance is audited with its suggestion ID.~~ (retired with D2)
 
 ## Hardening found while reading the code
 

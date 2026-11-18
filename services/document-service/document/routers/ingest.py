@@ -100,8 +100,8 @@ async def _es_admin(conn: asyncpg.Connection, actor: uuid.UUID) -> bool:
     Se resuelve **contra la base**, con el mismo `check_permission` que usan los
     gates del servicio. La primera versión de esto leía una cabecera
     `X-User-Permissions`, y eso estaba roto de un modo que no se ve: **esa
-    cabecera no la produce nadie**. El gateway no la emite —los tests de
-    mcp-server lo dejan escrito, «cabecera que nadie producía», porque allí ya
+    cabecera no la produce nadie**. El gateway no la emite —el MCP retirado
+    lo había dejado escrito, «cabecera que nadie producía», porque allí ya
     apareció el mismo defecto—, así que la función habría devuelto `False`
     siempre y ningún administrador habría visto ni una cuenta institucional. La
     pantalla saldría vacía, sin error, indistinguible de «no hay cuentas
