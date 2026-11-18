@@ -7,9 +7,14 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Lo que hacía el api-gateway en cada respuesta, ahora en el proceso (ADR-047).
+"""Lo que hacía el api-gateway en cada petición, ahora en el proceso (ADR-047).
 
-El límite de tasa vive en `edge` (nginx, `limit_req`). Aquí quedan dos cosas:
+El límite de tasa por IP vive en `edge` (nginx, `limit_req`). Aquí quedan tres
+cosas:
+
+* **Cuota por persona** (`UserRateLimitMiddleware`, AREA-02-01): nginx no sabe
+  quién es nadie, y el cubo por IP junta a toda una oficina detrás de un NAT. Un
+  solo proceso: la ventana vive en memoria, sin Redis.
 
 * **`X-Request-Id`** antes que nada: se acepta el del cliente si es sano (el SSR
   continúa la petición del navegador y la traza no debe partirse en ese salto)
@@ -25,7 +30,10 @@ ZIP de expediente, AIP) sin materializarlas.
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
 import uuid
 
 from starlette.datastructures import MutableHeaders
@@ -79,3 +87,67 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_endurecido)
+
+
+def rate_limit_per_user() -> int:
+    """Peticiones por persona y minuto (`RATE_LIMIT_PER_USER`, 120 por defecto)."""
+    try:
+        return max(1, int(os.environ.get("RATE_LIMIT_PER_USER", "120")))
+    except ValueError:
+        return 120
+
+
+_DEMASIADAS = json.dumps(
+    {
+        "error": "rate_limit_exceeded",
+        "detail": "Demasiadas peticiones; espere un momento antes de reintentar",
+        "status": 429,
+    }
+).encode()
+
+
+class UserRateLimitMiddleware:
+    """Cubo por persona y minuto, con la identidad que ya validó `UsuarioActualMiddleware`.
+
+    Va DENTRO de él (se registra antes): sin persona —ruta pública, token que no
+    pasó— no cuenta aquí, porque juntar a los anónimos en una clave vacía es el
+    defecto que este eje cerraba; ese tráfico lo cubre el cubo por IP de `edge`.
+    La clave lleva el tenant: el id de usuario es único dentro de su entidad.
+    """
+
+    def __init__(self, app: ASGIApp, *, limit: int | None = None) -> None:
+        self.app = app
+        self._limit = limit
+        self._ventana = 0
+        self._cuentas: dict[tuple[str, str], int] = {}
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        usuario = (scope.get("state") or {}).get("usuario")
+        if usuario is None or getattr(usuario, "id", None) is None:
+            await self.app(scope, receive, send)
+            return
+        minuto = int(time.time() // 60)
+        if minuto != self._ventana:
+            self._ventana = minuto
+            self._cuentas.clear()
+        clave = (str(getattr(usuario, "tenant_slug", "")), str(usuario.id))
+        cuenta = self._cuentas.get(clave, 0) + 1
+        self._cuentas[clave] = cuenta
+        if cuenta > (self._limit or rate_limit_per_user()):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 429,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(_DEMASIADAS)).encode()),
+                        (b"retry-after", b"60"),
+                    ],
+                }
+            )
+            await send({"type": "http.response.body", "body": _DEMASIADAS})
+            return
+        await self.app(scope, receive, send)

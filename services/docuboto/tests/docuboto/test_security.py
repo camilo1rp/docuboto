@@ -19,7 +19,11 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from orpycamcp_common.usuario import UsuarioActualMiddleware
 
-from docuboto.core.security import SecurityHeadersMiddleware, sanitize_request_id
+from docuboto.core.security import (
+    SecurityHeadersMiddleware,
+    UserRateLimitMiddleware,
+    sanitize_request_id,
+)
 
 
 def _app() -> FastAPI:
@@ -75,4 +79,45 @@ def test_la_app_monta_el_endurecimiento_por_fuera() -> None:
 
     clases = [m.cls for m in app.user_middleware]
     assert clases[0] is SecurityHeadersMiddleware, clases
-    assert UsuarioActualMiddleware in clases
+    # La cuota por persona va DENTRO de UsuarioActual: necesita la identidad.
+    assert clases.index(UserRateLimitMiddleware) > clases.index(UsuarioActualMiddleware)
+
+
+def _app_con_persona(limite: int, persona: str | None) -> FastAPI:
+    import uuid
+
+    from orpycamcp_common.usuario import Usuario
+
+    app = FastAPI()
+
+    @app.get("/api/v1/eco")
+    async def eco() -> dict:
+        return {}
+
+    app.add_middleware(UserRateLimitMiddleware, limit=limite)
+
+    class _Persona:
+        def __init__(self, inner):  # noqa: ANN001
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):  # noqa: ANN001
+            if persona is not None:
+                scope.setdefault("state", {})["usuario"] = Usuario(
+                    id=uuid.UUID(persona), tenant_slug="t"
+                )
+            await self.inner(scope, receive, send)
+
+    app.add_middleware(_Persona)
+    return app
+
+
+def test_la_cuota_por_persona_corta_con_429() -> None:
+    cliente = TestClient(_app_con_persona(2, "00000000-0000-0000-0000-000000000001"))
+    assert [cliente.get("/api/v1/eco").status_code for _ in range(3)] == [200, 200, 429]
+    r = cliente.get("/api/v1/eco")
+    assert r.json()["error"] == "rate_limit_exceeded" and r.headers["retry-after"] == "60"
+
+
+def test_sin_persona_no_cuenta_en_la_cuota() -> None:
+    cliente = TestClient(_app_con_persona(1, None))
+    assert {cliente.get("/api/v1/eco").status_code for _ in range(3)} == {200}

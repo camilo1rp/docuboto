@@ -93,10 +93,10 @@ def test_el_roadmap_no_dice_que_las_escrituras_de_catalogos_y_metadatos_estan_ab
 
 
 def test_el_roadmap_no_deja_abierto_el_limitador_por_ip_si_el_middleware_existe() -> None:
-    assert "class RateLimitPorUsuarioMiddleware" in _leer(
-        "services/api-gateway/app/middleware/rate_limit.py"
-    )
-    assert "RateLimitPorUsuarioMiddleware" in _leer("services/api-gateway/app/main.py")
+    # ADR-047: la cuota por persona vive en la app; el cubo por IP, en `edge`.
+    assert "class UserRateLimitMiddleware" in _leer("services/docuboto/docuboto/core/security.py")
+    assert "UserRateLimitMiddleware" in _leer("services/docuboto/docuboto/main.py")
+    assert "limit_req_zone" in _leer("infra/nginx/orpyca.conf.template")
     roadmap = _leer("docs/es/roadmap.md")
     assert "Pendiente abierto — el limitador cuenta por IP" not in roadmap
     # Si queda el bloque histórico, su casilla está tachada.
@@ -259,14 +259,13 @@ def test_los_slugs_de_los_ejemplos_casan_con_el_validador_de_tenant_service() ->
     assert vistos >= 2
 
 
-def test_ningun_documento_manda_a_dar_de_alta_un_tenant_por_el_gateway() -> None:
-    proxy = _leer("services/api-gateway/app/routers/proxy.py")
-    assert '("/api/v1/tenants' not in proxy, "el gateway enruta /tenants: el guardián ya no aplica"
+def test_ningun_documento_manda_a_dar_de_alta_un_tenant_por_http() -> None:
+    # La entidad se da de alta con `scripts/init-tenant.sh`; no hay ruta HTTP para ello.
     ofensas = [
         f"{p.relative_to(_RAIZ)}:{n}"
         for p in _DOCS.rglob("*.md")
         for n, linea in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
-        if "curl" in linea and "19080/api/v1/tenants" in linea
+        if "curl" in linea and ("19080/api/v1/tenants" in linea or "19000/api/v1/tenants" in linea)
     ]
     assert not ofensas, ofensas
 
