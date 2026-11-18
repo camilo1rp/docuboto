@@ -128,7 +128,7 @@ function rutasBackend() {
   for (const svc of readdirSync(SERVICIOS, { withFileTypes: true })) {
     if (!svc.isDirectory()) continue;
     // El paquete Python de cada servicio se llama como su carpeta (`archive/`,
-    // `tenant/`…); api-gateway y mcp-server siguen en `app/`. Se busca el
+    // `tenant/`…) y viven en `services/docuboto/`. Se busca el
     // `routers/` de cualquier paquete en vez de fijar el nombre.
     for (const pkg of readdirSync(join(SERVICIOS, svc.name), { withFileTypes: true })) {
       const dir = join(SERVICIOS, svc.name, pkg.name, "routers");

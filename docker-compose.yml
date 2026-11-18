@@ -339,47 +339,6 @@ services:
     mem_limit: 4g
     memswap_limit: 4g
 
-  api-gateway:
-    profiles: ["split"]
-    build:
-      # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
-      context: .
-      dockerfile: services/api-gateway/Dockerfile
-    container_name: orpycamcp-gateway
-    ports:
-      - "19080:8080"
-    environment:
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
-      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
-      - IDENTITY_SIGNING_SECRET=${IDENTITY_SIGNING_SECRET:-orpycamcp_identity_signing_dev}
-      - AUTH_CACHE_MAC_SECRET=${AUTH_CACHE_MAC_SECRET:-orpycamcp_auth_cache_mac_dev}
-      # Documentación navegable, SOLO en desarrollo. En producción el catálogo
-      # describe la superficie entera —incluidos los endpoints internos que el
-      # ruteo retira a propósito— y no se sirve sin credenciales.
-      - OPENAPI_PUBLICO=${OPENAPI_PUBLICO:-true}
-      - AUTH_SERVICE_URL=http://app:8000
-      # Dev: la red por defecto de Compose está en 172.16/12. Sin esto el gateway
-      # ignora X-Forwarded-For (fail-closed) y todo el SSR comparte un cubo.
-      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-172.16.0.0/12}
-      - TENANT_SERVICE_URL=http://app:8000
-      - DOCUMENT_SERVICE_URL=http://app:8000
-      - ARCHIVE_SERVICE_URL=http://app:8000
-      - STORAGE_SERVICE_URL=http://app:8000
-      - WORKFLOW_SERVICE_URL=http://app:8000
-      - NOTIFICATION_SERVICE_URL=http://app:8000
-      - SIGNATURE_SERVICE_URL=http://app:8000
-      - KNOWLEDGE_SERVICE_URL=http://app:8000
-      - KEYCLOAK_URL=http://keycloak:8080
-      - KEYCLOAK_REALM=orpycamcp
-    networks:
-      - orpycamcp-net
-    depends_on:
-      - redis
-      - keycloak
-    restart: "no"
-    mem_limit: 2g
-    memswap_limit: 2g
-
   # ─── Frontend (E22) ───────────────────────────────────────────────────────────
 
   frontend:

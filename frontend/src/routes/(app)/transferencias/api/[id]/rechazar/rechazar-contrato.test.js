@@ -31,7 +31,7 @@ import { POST as rechazar } from "./+server.js";
 
 const ESQUEMA = resolve(
   process.cwd(),
-  "../services/archive-service/archive/schemas/transferencia.py",
+  "../services/docuboto/archive/schemas/transferencia.py",
 );
 
 const ID = "b44330b6-6d7e-489d-a58c-f62a0e2d0f53";

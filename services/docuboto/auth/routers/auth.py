@@ -55,25 +55,18 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _client_ip(request: Request) -> str | None:
-    """IP que se sella en el `audit_log`, derivada SERVER-SIDE por el gateway.
+    """IP que se sella en el `audit_log`, derivada SERVER-SIDE.
 
-    Antes se tomaba el primer valor de `X-Forwarded-For`, una cabecera que
-    escribe el propio cliente y que el gateway reenvía tal cual: la IP de los
-    asientos de login/logout —parte de la cadena de custodia, inmutable— la
-    elegía quien se estaba autenticando. Un campo probatorio falsificable con una
-    cabecera es peor que uno vacío, porque el vacío no engaña a nadie.
-
-    `X-Real-Ip` la calcula el gateway por saltos de confianza y NO está en su
-    lista de cabeceras reenviadas desde el cliente (mismo patrón que `X-Canal`),
-    así que no se puede forjar desde fuera.
-
-    Sin esa cabecera —llamada directa al servicio, sin pasar por el gateway— se
-    usa la dirección del socket. El `X-Forwarded-For` crudo NO se consulta: si el
-    gateway no la derivó, esa cabecera no es más fiable aquí que allí.
+    La resuelve `UsuarioActualMiddleware` caminando `X-Forwarded-For` desde el
+    final por saltos de confianza (`TRUSTED_PROXIES`). Un `X-Forwarded-For` o un
+    `X-Real-Ip` crudos los escribe el cliente: un campo probatorio falsificable
+    es peor que uno vacío. Sin IP derivada se usa la dirección del socket.
     """
-    real_ip = request.headers.get("X-Real-Ip")
+    from orpycamcp_common.usuario import ip_de
+
+    real_ip = ip_de(request)
     if real_ip:
-        return real_ip.strip()
+        return real_ip
     if request.client:
         return request.client.host
     return None

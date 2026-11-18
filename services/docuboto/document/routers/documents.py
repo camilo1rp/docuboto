@@ -120,14 +120,12 @@ def _content_disposition(filename: str) -> str:
     return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{quote(filename)}"
 
 
-def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
-    """Canal de origen de la petición (X-Canal, inyectado server-side por el
-    api-gateway, D-03; excluido del whitelist de client request headers en
-    `api-gateway/document/core/proxy.py::FORWARDED_REQUEST_HEADERS`, así que un
-    cliente no puede forjarlo). Ausente => 'system' (no se audita como
-    consulta de un usuario real). Gemelo de
-    `archive-service/document/routers/expedientes.py::_optional_canal`."""
-    return x_canal or "system"
+def _optional_canal(request: Request) -> str:
+    """Canal de auditoría: lo decide `UsuarioActualMiddleware`, no una cabecera
+    del cliente. Sin persona => 'system' (no se audita como consulta de alguien)."""
+    from orpycamcp_common.usuario import canal_de
+
+    return canal_de(request)
 
 
 def _build_service(
@@ -575,7 +573,7 @@ async def set_publicacion(
             payload.fundamento,
             clearance,
             actor=_actor_str(request),
-            canal=request.headers.get("X-Canal") or "system",
+            canal=_optional_canal(request),
             anexos_publicables=payload.anexos_publicables,
         )
     except DocumentNotFoundError:
@@ -642,7 +640,7 @@ async def set_disposition(
             payload,
             clearance,
             actor=_actor_str(request),
-            canal=request.headers.get("X-Canal") or "system",
+            canal=_optional_canal(request),
         )
     except DocumentNotFoundError:
         raise HTTPException(

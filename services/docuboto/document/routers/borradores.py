@@ -89,7 +89,9 @@ def _funcionario(request: Request) -> dict[str, Any] | None:
     `*CARGO*` siguen declarándose faltantes en vez de rellenarse con el login,
     que no es un nombre y quedaría impreso como tal en el pie del oficio.
     """
-    login = request.headers.get("X-Username", "").strip()
+    from orpycamcp_common.usuario import username_de
+
+    login = (username_de(request) or "").strip()
     return {"login": login} if login else None
 
 

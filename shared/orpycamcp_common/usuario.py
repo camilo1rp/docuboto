@@ -124,6 +124,14 @@ def slug_de(request: Request) -> str:
     return request.headers.get("X-Tenant-Slug", "") or ""
 
 
+def username_de(request: Request) -> str | None:
+    """Login del llamante (descriptivo, nunca identidad), o `None`."""
+    u = usuario_de_peticion(request)
+    if u is None or not u.username:
+        return None
+    return u.username
+
+
 def canal_de(request: Request) -> str:
     """Canal de auditoría. Lo decide el middleware, no el cliente."""
     u = usuario_de_peticion(request)
@@ -191,6 +199,20 @@ def _ruta_invalida(path: str) -> bool:
     if any(seg in _DOT for seg in path.split("/")):
         return True
     return any(c in unquote(path) for c in _PROHIBIDOS)
+
+
+#: Cabeceras de identidad que solo puede escribir este middleware. Sin gateway
+#: delante (ADR-047), lo que mande el cliente se borra antes de que ningún router
+#: lo lea; `x-tenant-slug` se repone con el slug del JWT ya validado.
+_IDENTIDAD_DE_CLIENTE = frozenset(
+    {b"x-user-id", b"x-username", b"x-user-roles", b"x-canal", b"x-tenant-slug"}
+)
+
+
+def _sin_identidad_de_cliente(
+    cabeceras: list[tuple[bytes, bytes]],
+) -> list[tuple[bytes, bytes]]:
+    return [(k, v) for k, v in cabeceras if k.lower() not in _IDENTIDAD_DE_CLIENTE]
 
 
 def _es_interna(path: str) -> bool:
@@ -284,6 +306,9 @@ class UsuarioActualMiddleware:
             await self.app(scope, receive, send)
             return
 
+        if not _es_interna(path):
+            scope["headers"] = _sin_identidad_de_cliente(list(scope.get("headers", [])))
+
         openapi_publico = bool(getattr(getattr(app, "state", None), "openapi_publico", False))
         if _es_publica(path, openapi_publico=openapi_publico):
             await self.app(scope, receive, send)
@@ -336,6 +361,8 @@ class UsuarioActualMiddleware:
             ip=ip,
         )
         state["usuario"] = usuario
+        if slug:
+            scope["headers"] = [*scope.get("headers", []), (b"x-tenant-slug", slug.encode("latin-1"))]
         token_var = _autorizacion.set(auth)
         try:
             await self.app(scope, receive, send)
@@ -362,7 +389,10 @@ class InyectarUsuarioDePrueba:
                 state["usuario"] = Usuario(
                     id=uid,
                     tenant_slug=slug,
-                    canal=cab.get("x-canal") or "api",
+                    username=cab.get("x-username") or "",
+                    # Sin `X-Canal` el test modela una llamada sin persona
+                    # detrás: 'system', como cuando el gateway no lo inyectaba.
+                    canal=cab.get("x-canal") or "system",
                     ip=cab.get("x-real-ip") or "",
                 )
         auth = ""

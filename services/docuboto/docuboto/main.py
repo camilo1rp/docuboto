@@ -27,6 +27,7 @@ from archive.main import DOMAIN_ROUTERS as ARCHIVE_ROUTERS
 from auth.main import DOMAIN_ROUTERS as AUTH_ROUTERS
 from docuboto.core.config import settings
 from docuboto.core.lifespan import lifespan
+from docuboto.core.security import SecurityHeadersMiddleware
 from docuboto.routers.health import router as health_router
 from docuboto.routers.metrics import router as metrics_router
 from document.main import DOMAIN_ROUTERS as DOCUMENT_ROUTERS
@@ -54,8 +55,11 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# Starlette ejecuta en orden inverso al de registro: SecurityHeaders (el
+# identificador de petición) → RequestLog → UsuarioActual → routers.
 app.add_middleware(usuario.UsuarioActualMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="docuboto")
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_exception_handler(Problema, respuesta_problema)
 
 

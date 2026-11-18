@@ -42,11 +42,12 @@ def _caller_id(request: Request) -> uuid.UUID | None:
     return id_opcional(request)
 
 
-def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
-    """Canal de origen (X-Canal, inyectado server-side por el api-gateway,
-    D-03; un cliente no puede forjarlo — ver `documents.py::_optional_canal`).
-    Ausente => 'system' (no se audita como consulta de un usuario real)."""
-    return x_canal or "system"
+def _optional_canal(request: Request) -> str:
+    """Canal de auditoría: lo decide `UsuarioActualMiddleware`, no una cabecera
+    del cliente. Sin persona => 'system' (no se audita como consulta de alguien)."""
+    from orpycamcp_common.usuario import canal_de
+
+    return canal_de(request)
 
 
 def _tenant_slug(request: Request) -> str:

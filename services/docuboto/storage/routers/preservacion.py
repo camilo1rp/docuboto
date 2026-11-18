@@ -18,7 +18,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from orpycamcp_common.usuario import id_opcional
+from orpycamcp_common.usuario import id_opcional, username_de
 from starlette.background import BackgroundTask
 
 from storage.core.clearance import require_permission
@@ -127,7 +127,7 @@ def _actor(request: Request) -> str | None:
     que el registro siga siendo legible sin tener que resolver un UUID a mano.
     """
     uid = (str(u) if (u := id_opcional(request)) else None)
-    nombre = request.headers.get("X-Username")
+    nombre = username_de(request)
     if uid and nombre:
         return f"{uid} ({nombre})"
     return uid or nombre

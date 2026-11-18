@@ -32,11 +32,6 @@ services:
     build:
       context: ..
       dockerfile: infra/Dockerfile.worker
-  api-gateway:
-    build:
-      # Contexto en la RAÍZ: el gateway instala `shared/` como los demás.
-      context: ..
-      dockerfile: services/api-gateway/Dockerfile
   frontend:
     build:
       context: ../frontend

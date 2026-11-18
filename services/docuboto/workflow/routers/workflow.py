@@ -60,14 +60,12 @@ def _optional_user(request: Request) -> uuid.UUID | None:
 
     return id_opcional(request)
 
-def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
-    """Canal de origen de la petición (X-Canal), inyectado server-side por el
-    api-gateway (D-03; excluido del whitelist de client request headers en
-    `api-gateway/workflow/core/proxy.py::FORWARDED_REQUEST_HEADERS`, un cliente no
-    puede forjarlo). Ausente => 'system' (no se audita como consulta de un
-    usuario real). Gemelo de `document-service`/`archive-service` `_optional_canal`.
-    """
-    return x_canal or "system"
+def _optional_canal(request: Request) -> str:
+    """Canal de auditoría: lo decide `UsuarioActualMiddleware`, no una cabecera
+    del cliente. Sin persona => 'system' (no se audita como consulta de alguien)."""
+    from orpycamcp_common.usuario import canal_de
+
+    return canal_de(request)
 
 
 def _require_user(request: Request) -> uuid.UUID:

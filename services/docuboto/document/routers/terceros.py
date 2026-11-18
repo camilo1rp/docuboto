@@ -48,9 +48,12 @@ router = APIRouter(
     dependencies=[Depends(require_permission("PERM_RADI"))],
 )
 
-def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
-    """Canal inyectado por el gateway (D-03); ausente => 'system' (no se audita)."""
-    return x_canal or "system"
+def _optional_canal(request: Request) -> str:
+    """Canal de auditoría: lo decide `UsuarioActualMiddleware`, no una cabecera
+    del cliente. Sin persona => 'system' (no se audita como consulta de alguien)."""
+    from orpycamcp_common.usuario import canal_de
+
+    return canal_de(request)
 
 
 

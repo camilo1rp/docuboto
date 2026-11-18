@@ -68,11 +68,13 @@ async def sign_document(
     """
     signer = _signer_id(request)
     clearance = await resolve_caller_clearance(conn, signer)
-    return await SignatureService(conn, request.headers.get("X-Tenant-Slug", "")).firmar(
+    from orpycamcp_common.usuario import slug_de, username_de
+
+    return await SignatureService(conn, slug_de(request)).firmar(
         document_id,
         payload,
         signer=signer,
-        signer_name=request.headers.get("X-Username"),
+        signer_name=username_de(request),
         max_clearance=clearance,
     )
 

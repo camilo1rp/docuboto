@@ -112,7 +112,7 @@ describe("el panel lee el contrato REAL de signature-service", () => {
   // «turno 1 de 0» con el circuito perfectamente creado en la base de datos.
   // El contrato de un servicio se lee, no se supone.
   const ESQUEMA = readFileSync(
-    "../services/signature-service/signature/schemas/cadena.py",
+    "../services/docuboto/signature/schemas/cadena.py",
     "utf-8",
   );
 

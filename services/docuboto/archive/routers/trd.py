@@ -88,9 +88,12 @@ def _optional_user(request: Request) -> uuid.UUID | None:
 
     return id_opcional(request)
 
-def _optional_canal(x_canal: str | None = Header(default=None)) -> str:
-    """Gemelo de `expedientes.py::_optional_canal` (E15 perfil v4, R3-a)."""
-    return x_canal or "system"
+def _optional_canal(request: Request) -> str:
+    """Canal de auditoría: lo decide `UsuarioActualMiddleware`, no una cabecera
+    del cliente. Sin persona => 'system' (no se audita como consulta de alguien)."""
+    from orpycamcp_common.usuario import canal_de
+
+    return canal_de(request)
 
 
 async def _tiene_circuito(

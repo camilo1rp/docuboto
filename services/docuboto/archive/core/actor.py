@@ -65,12 +65,9 @@ def _parse_user_id(x_user_id: str) -> uuid.UUID:
         )
 
 
-async def require_actor(
-    request: Request,
-    x_username: str | None = Header(default=None),
-) -> Actor:
+async def require_actor(request: Request) -> Actor:
     """Dependencia FastAPI para actos de custodia. El id sale de `request.state`."""
-    from orpycamcp_common.usuario import id_opcional
+    from orpycamcp_common.usuario import id_opcional, username_de
 
     uid = id_opcional(request)
     if uid is None:
@@ -82,17 +79,14 @@ async def require_actor(
                 "status": 400,
             },
         )
-    return Actor(id=uid, username=x_username)
+    return Actor(id=uid, username=username_de(request))
 
 
-async def optional_actor(
-    request: Request,
-    x_username: str | None = Header(default=None),
-) -> Actor | None:
+async def optional_actor(request: Request) -> Actor | None:
     """Gemelo de `require_actor` para rutas de solo-lectura."""
-    from orpycamcp_common.usuario import id_opcional
+    from orpycamcp_common.usuario import id_opcional, username_de
 
     uid = id_opcional(request)
     if uid is None:
         return None
-    return Actor(id=uid, username=x_username)
+    return Actor(id=uid, username=username_de(request))

@@ -37,14 +37,9 @@ const CABECERA = "X-Sellado-Diferido-Count";
 
 describe("el recuento del compensador llega hasta la pantalla", () => {
   it("archive-service lo emite", () => {
-    const fuente = leer("../services/archive-service/archive/routers/indice.py");
+    const fuente = leer("../services/docuboto/archive/routers/indice.py");
     expect(fuente).toContain(CABECERA);
     expect(fuente).toContain("count_sellado_diferido");
-  });
-
-  it("el gateway lo tiene declarado, o se cae en el trayecto sin avisar", () => {
-    const fuente = leer("../services/api-gateway/app/core/proxy.py");
-    expect(fuente).toContain(CABECERA.toLowerCase());
   });
 
   it("el proxy de la pantalla lo reenvía", () => {
