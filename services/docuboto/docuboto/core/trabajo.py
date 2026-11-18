@@ -7,7 +7,12 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Claim-loop handlers for the unified process. App and worker register different sets."""
+"""Claim-loop handlers. The process claims both queues (ADR-047: no worker).
+
+`app` holds the light types (mail, webhooks, intelligence). `worker` keeps its
+name in the schema and holds the heavy ones (veraPDF, render, LTA); each heavy
+handler takes a `heavy_slot()` so they never starve the HTTP requests.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from orpycamcp_common.trabajo import (
     recorrer,
 )
 
+from docuboto.core.tasks import heavy_slot
 from document.core.database import acquire_tenant, get_pool
 from document.services.barrido import tenants_activos
 
@@ -84,7 +90,10 @@ async def _verapdf(_conn: Any, fila: Fila) -> None:
     crudo = fila.payload.get("file_id")
     if not crudo:
         return
-    await run_ingest_validation_background(pool_storage(), fila.tenant_slug, uuid.UUID(str(crudo)))
+    async with heavy_slot():
+        await run_ingest_validation_background(
+            pool_storage(), fila.tenant_slug, uuid.UUID(str(crudo))
+        )
 
 
 async def _render(_conn: Any, fila: Fila) -> None:

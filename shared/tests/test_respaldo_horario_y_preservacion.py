@@ -89,7 +89,7 @@ def test_la_replica_usa_el_mismo_cliente_minio() -> None:
 
 
 def test_produccion_exige_el_almacen_secundario() -> None:
-    for nombre in ("app", "worker", "storage-service"):
+    for nombre in ("app",):
         entorno = servicios(COMPOSE_PROD)[nombre]["environment"]
         valor = str(entorno["MINIO_SECONDARY_ENDPOINT"])
         assert "${MINIO_SECONDARY_ENDPOINT:?" in valor, nombre
@@ -101,7 +101,6 @@ def test_restore_para_el_proceso_unificado() -> None:
     i = t.index(" stop \\")
     bloque = t[i : i + 500]
     assert re.search(r"\bapp\b", bloque)
-    assert re.search(r"\bworker\b", bloque)
     assert "auth.ops.verify_audit_chains" in t
     assert "auth.ops.registrar_restauracion" in t
 

@@ -60,8 +60,11 @@ def servicios(ruta: Path) -> dict[str, dict[str, Any]]:
 
 
 def servicios_propios() -> list[str]:
-    """Directorios `services/*/` con Dockerfile (los servicios de la pila)."""
-    return sorted(p.parent.name for p in (RAIZ / "services").glob("*/Dockerfile"))
+    """Servicios de los manifiestos cuya imagen sale de este repositorio (ADR-047).
+
+    El frontend se nombra aparte en cada guardián, como antes.
+    """
+    return ["app"]
 
 
 #: El proceso único (ADR-047): los paquetes de dominio son directorios hermanos.

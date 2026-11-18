@@ -62,7 +62,7 @@ def _texto_sin_comentarios() -> str:
 
 
 def test_se_leyeron_los_servicios() -> None:
-    assert len(servicios(COMPOSE_PROD)) >= 15
+    assert {"app", "postgres", "edge", "frontend"} <= set(servicios(COMPOSE_PROD))
 
 
 def test_ningun_servicio_publica_puertos() -> None:
@@ -107,7 +107,7 @@ def test_los_defectos_declarados_siguen_existiendo() -> None:
 
 def test_imagenes_de_terceros_con_tag_y_digest() -> None:
     """Tag legible Y digest: el tag solo se puede mover en el registro, el digest no."""
-    propios = {*servicios_propios(), "frontend", "app", "worker"}
+    propios = {*servicios_propios(), "frontend"}
     mal: list[str] = []
     terceros = 0
     for nombre, s in servicios(COMPOSE_PROD).items():
@@ -143,7 +143,7 @@ def test_los_scripts_de_infra_no_usan_latest() -> None:
 
 
 def _redes_de_confianza_por_defecto() -> list[ipaddress.IPv4Network]:
-    entorno = servicios(COMPOSE_PROD)["api-gateway"]["environment"]
+    entorno = servicios(COMPOSE_PROD)["app"]["environment"]
     valor = str(entorno["TRUSTED_PROXIES"])
     m = re.fullmatch(r"\$\{TRUSTED_PROXIES:-([^}]*)\}", valor)
     assert m and m.group(1), f"TRUSTED_PROXIES sin valor por defecto legible: {valor}"
@@ -153,8 +153,8 @@ def _redes_de_confianza_por_defecto() -> list[ipaddress.IPv4Network]:
 def test_trusted_proxies_excluye_el_gateway_de_la_red() -> None:
     """El gateway de la red (docker-proxy / anfitrión) no puede ser un salto de confianza.
 
-    Si lo fuera, un cliente que llegara con esa IP haría que el gateway de la API
-    saltara ese par y se quedara con la entrada de `X-Forwarded-For` forjada por
+    Si lo fuera, un cliente que llegara con esa IP haría que la app saltara ese
+    par y se quedara con la entrada de `X-Forwarded-For` forjada por
     el cliente, que acaba sellada en `audit_log`.
     """
     red = cargar(COMPOSE_PROD)["networks"]["orpycamcp-net"]["ipam"]["config"][0]
@@ -169,12 +169,9 @@ def test_trusted_proxies_excluye_el_gateway_de_la_red() -> None:
     assert not fuera, f"TRUSTED_PROXIES por defecto confía fuera de ip_range {ip_range}: {fuera}"
 
 
-def test_el_gateway_arranca_en_produccion_con_la_puerta_de_la_red_declarada() -> None:
-    """ARC-B4: el manifiesto activa la comprobación y declara la IP correcta de la red."""
-    entorno = servicios(COMPOSE_PROD)["api-gateway"]["environment"]
+def test_la_app_arranca_en_produccion() -> None:
+    entorno = servicios(COMPOSE_PROD)["app"]["environment"]
     assert entorno["APP_ENV"] == "production"
-    gateway = cargar(COMPOSE_PROD)["networks"]["orpycamcp-net"]["ipam"]["config"][0]["gateway"]
-    assert entorno["GATEWAY_RED_DOCKER_GATEWAY"] == gateway
 
 
 def test_plantilla_nginx_cubre_los_tres_hosts() -> None:

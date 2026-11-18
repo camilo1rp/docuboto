@@ -239,6 +239,9 @@ services:
       - MINIO_SECRET_KEY=orpycamcp_dev
       - MINIO_USE_SSL=false
       - RENDER_ENGINE=${RENDER_ENGINE:-weasyprint}
+      # Bucles que antes corrían en el `worker` (ADR-047).
+      - FORMAT_MIGRATION_ENABLED=${FORMAT_MIGRATION_ENABLED:-true}
+      - HEAVY_JOBS_CONCURRENCY=${HEAVY_JOBS_CONCURRENCY:-1}
       - WEBHOOK_SECRET_KEK=${WEBHOOK_SECRET_KEK:-FdATFrQDjvyBfvHjjZSLjrLyIQct0+dgsMz2TOycUnk=}
       - WEBHOOK_SECRET_KEKS=${WEBHOOK_SECRET_KEKS:-{}}
       - WEBHOOK_SECRET_KEK_ACTIVE_VERSION=${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
@@ -285,56 +288,6 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_started
-    restart: "no"
-    mem_limit: 4g
-    memswap_limit: 4g
-
-  worker:
-    image: orpycamcp/worker:dev
-    build:
-      context: .
-      dockerfile: infra/Dockerfile.worker
-    container_name: orpycamcp-worker
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://${DB_APP_USER:-orpycamcp_app}:${DB_APP_PASSWORD:-orpycamcp_app}@postgres:5432/orpycamcp_db
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-orpycamcp_redis_dev}@redis:6379/0
-      - EVENT_SIGNING_SECRET=${EVENT_SIGNING_SECRET:-orpycamcp_event_signing_dev}
-      - APP_ENV=development
-      - DOCUMENT_SERVICE_URL=http://app:8000
-      - STORAGE_SERVICE_URL=http://app:8000
-      - SIGNATURE_SERVICE_URL=http://app:8000
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=orpycamcp
-      - MINIO_SECRET_KEY=orpycamcp_dev
-      - MINIO_USE_SSL=false
-      - RENDER_ENGINE=${RENDER_ENGINE:-weasyprint}
-      - FORMAT_MIGRATION_ENABLED=${FORMAT_MIGRATION_ENABLED:-true}
-      - SIGNATURE_SECRET=${SIGNATURE_SECRET:-change-me-in-production}
-      - SIGNER_PROVIDER=${SIGNER_PROVIDER:-xades_local}
-      - SIGNER_CERT_DIR=/run/secrets/signing
-      - SIGNER_ALLOW_DEV_SEAL=${SIGNER_ALLOW_DEV_SEAL:-true}
-      - SIGNER_TIMESTAMP_ENABLED=${SIGNER_TIMESTAMP_ENABLED:-true}
-      - TSA_URL=${TSA_URL:-}
-      - TSA_CERT_DIR=/run/secrets/tsa
-      - TSA_ALLOW_DEV_SEAL=${TSA_ALLOW_DEV_SEAL:-true}
-      - SIGNER_LT_ENABLED=${SIGNER_LT_ENABLED:-false}
-      - SIGNER_LT_REQUIRE=${SIGNER_LT_REQUIRE:-false}
-      - SIGNER_OCSP_ENABLED=${SIGNER_OCSP_ENABLED:-true}
-      - SIGNER_OCSP_REQUIRE=${SIGNER_OCSP_REQUIRE:-false}
-    volumes:
-      - ./secrets/signing:/run/secrets/signing:ro
-      - ./secrets/tsa:/run/secrets/tsa:ro
-    networks:
-      - orpycamcp-net
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
     restart: "no"
     mem_limit: 4g
     memswap_limit: 4g

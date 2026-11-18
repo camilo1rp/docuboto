@@ -28,10 +28,6 @@ services:
     build:
       context: ..
       dockerfile: infra/Dockerfile.app
-  worker:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.worker
   frontend:
     build:
       context: ../frontend

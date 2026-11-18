@@ -97,9 +97,3 @@ def test_document_no_importa_workflow() -> None:
         "document no importa workflow: el lifespan registra el hook:\n  "
         + "\n  ".join(culpables)
     )
-
-
-def test_la_imagen_split_copia_document_api() -> None:
-    texto = (SERVICIOS / "workflow-service" / "Dockerfile").read_text(encoding="utf-8")
-    assert "document/api.py" in texto
-    assert "document/__init__.py" in texto
