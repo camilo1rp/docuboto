@@ -7,10 +7,13 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Cross-package writes go through `<paquete>.api`. The first call is workflow → document.
+"""Cross-package calls go through `<paquete>.api` (ADR-047 §1, §4).
 
-A module may import another package's `api` and nothing else from that package.
-The composition root (`docuboto`) may import both. Tests are out of scope.
+Without a network boundary, a call between domains is a function call. It still
+has one door: a module may import another package's `api` and nothing else from
+that package, so routers, services and repositories stay private to their
+domain. The composition root (`docuboto`) may import anything. Tests are out
+of scope.
 """
 
 from __future__ import annotations
@@ -22,10 +25,10 @@ from tests._compose import RAIZ, glob_src
 
 SERVICIOS = RAIZ / "services"
 
-#: Importer package → packages it may reach, and only through `<pkg>.api`.
-CRUCES = {
-    "workflow": {"document"},
-}
+#: Domain packages. Any of them may reach another one, only through `<pkg>.api`.
+DOMINIOS = frozenset(
+    {"archive", "auth", "document", "knowledge", "notification", "signature", "storage", "tenant", "workflow"}
+)
 
 _RAIZ = frozenset({"docuboto"})
 
@@ -47,7 +50,7 @@ def _paquete_de(ruta: Path) -> str | None:
     return partes[1]
 
 
-def test_el_cruce_workflow_document_pasa_por_api() -> None:
+def test_los_cruces_entre_dominios_pasan_por_api() -> None:
     culpables: list[str] = []
     for ruta in glob_src(SERVICIOS, "*/app/**/*.py"):
         if "tests" in ruta.parts:
@@ -55,19 +58,15 @@ def test_el_cruce_workflow_document_pasa_por_api() -> None:
         origen = _paquete_de(ruta)
         if origen is None or origen in _RAIZ:
             continue
-        permitidos = CRUCES.get(origen, set())
         arbol = ast.parse(ruta.read_text(encoding="utf-8"), filename=str(ruta))
         for modulo in _imports(arbol):
             raiz = modulo.split(".", 1)[0]
-            if raiz not in permitidos and raiz not in CRUCES:
-                continue
-            if raiz not in permitidos:
+            if raiz not in DOMINIOS or raiz == origen:
                 continue
             if modulo != f"{raiz}.api" and not modulo.startswith(f"{raiz}.api."):
                 culpables.append(f"{ruta.relative_to(RAIZ)} importa {modulo}")
     assert not culpables, (
-        "Un paquete de dominio solo importa el `api` de otro. Amplía CRUCES "
-        "cuando nazca el siguiente api.py:\n  " + "\n  ".join(culpables)
+        "Un paquete de dominio solo importa el `api` de otro:\n  " + "\n  ".join(culpables)
     )
 
 
