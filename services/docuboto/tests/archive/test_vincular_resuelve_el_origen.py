@@ -49,7 +49,7 @@ def _servicio() -> ArchiveService:
 
 def _metadata(**kwargs):
     return patch(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(**kwargs),
     )
 
@@ -88,7 +88,7 @@ async def test_se_pide_con_el_clearance_del_LLAMANTE() -> None:
     tipologia/MIME/productora de un radicado reservado a quien no podia leerlo.
     Mutacion: volver a `max_clearance=CLEARANCE_SIN_RESTRICCION` lo tumba."""
     espia = AsyncMock(return_value=_META_COMPLETA)
-    with patch("archive.clients.document_client.fetch_radicado_metadata_internal", espia), patch(
+    with patch("document.api.fetch_radicado_metadata", espia), patch(
         "archive.services.archive_service.ArchiveService._huellas_por_radicado",
         AsyncMock(return_value={}),
     ):
@@ -104,9 +104,9 @@ async def test_si_document_service_no_responde_el_vinculo_FALLA_CERRADO() -> Non
     503, no un vínculo con datos sin contrastar."""
     from fastapi import HTTPException
 
-    from archive.clients.document_client import DocumentClientError
+    from document.api import DocumentUnavailableError
 
-    with _metadata(side_effect=DocumentClientError("caído")), pytest.raises(
+    with _metadata(side_effect=DocumentUnavailableError("caído")), pytest.raises(
         HTTPException
     ) as exc:
         await _resolver()

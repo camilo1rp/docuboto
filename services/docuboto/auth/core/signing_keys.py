@@ -201,7 +201,7 @@ def sign_digest(private_key: rsa.RSAPrivateKey, digest: bytes) -> bytes:
     """Firma un digest SHA-256 YA CALCULADO por el llamante (``Prehashed``) —
     NUNCA recibe el documento completo, ni siquiera dentro de este proceso:
     signature-service calcula ``C14N-exclusiva(ds:SignedInfo)`` y envía solo
-    su SHA-256 (ver ``app.core.http_clients.sign_digest_remote`` y
+    su SHA-256 (ver ``auth.api.sign_digest`` y
     ``app.providers.local``, técnica validada en el Paso 0 del incremento).
 
     ÚNICO punto que un proveedor HSM futuro (PKCS#11, KMS remoto, ...)

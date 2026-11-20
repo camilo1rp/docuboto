@@ -39,7 +39,6 @@ import asyncpg
 from cryptography.hazmat.primitives import hashes
 from fastapi import HTTPException, status
 
-from signature.clients import storage_client
 from signature.core import tsa as tsa_module
 from signature.core.config import settings
 from signature.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
@@ -59,6 +58,7 @@ from signature.providers.local import (
 from signature.repositories.firma_repository import FirmaRepository
 from signature.repositories.signer_config_repository import SignerConfigRepository
 from signature.schemas.firma import FirmaResponse, SignXmlRequest
+from storage import api as storage_api
 
 try:
     from orpycamcp_common import audit as _audit
@@ -270,13 +270,13 @@ async def sign_payload(
         prefix = _MINIO_FILENAME_PREFIX[payload.objeto_tipo]
         filename = f"{prefix}-{payload.objeto_id}-v{payload.version or 0}-{firma_id}-firmado.xml"
         try:
-            minio_key_firmado = await storage_client.upload_signed_xml(
+            minio_key_firmado = await storage_api.upload_signed_xml(
                 tenant_slug=tenant_slug,
                 filename=filename,
                 content=signed.signed_xml,
                 uploaded_by=firmante_id,
             )
-        except storage_client.StorageUploadError as exc:
+        except storage_api.StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={

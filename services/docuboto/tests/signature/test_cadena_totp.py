@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from auth.api import AuthUnavailableError
 from signature.core.config import settings
 from signature.core.database import get_tenant_conn
-from signature.core.http_clients import TotpVerifyUnavailableError
 from signature.main import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
@@ -56,7 +56,7 @@ def _clear() -> None:
 
 def _patch_verify_totp(monkeypatch: pytest.MonkeyPatch, *, result: dict | None = None, error: Exception | None = None) -> AsyncMock:
     mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=result)
-    monkeypatch.setattr("signature.services.cadena_service.verify_totp", mock)
+    monkeypatch.setattr("auth.api.verify_totp", mock)
     return mock
 
 
@@ -229,7 +229,7 @@ async def test_sign_totp_locked_returns_423(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_sign_totp_auth_unavailable_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
     """FAIL-CLOSED: auth-service unreachable during TOTP verify aborts the sign."""
     _patch_audit(monkeypatch)
-    _patch_verify_totp(monkeypatch, error=TotpVerifyUnavailableError("auth-service unreachable"))
+    _patch_verify_totp(monkeypatch, error=AuthUnavailableError("auth-service unreachable"))
     conn = _make_conn()
     sol = _sol_row()
     turno = _turno_row(firmante_id=USER)

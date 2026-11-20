@@ -123,10 +123,9 @@ class SigningKeyStatusResponse(BaseModel):
 
 
 class InternalSignDigestRequest(BaseModel):
-    """Body de ``POST /internal/signing-key/sign-digest`` (signature-service
-    ÚNICAMENTE, servicio-a-servicio). La identidad del firmante se deriva
-    SIEMPRE del Bearer reenviado (D1, cierra IDOR) — este body NUNCA lleva un
-    ``user_id``.
+    """Lo que `auth.api.sign_digest` valida antes de tocar la clave. La
+    identidad del firmante es el actor que resolvió el middleware (D1, cierra
+    IDOR) — este pedido NUNCA lleva un ``user_id``.
 
     ``digest_b64`` es el SHA-256 de ``C14N-exclusiva(ds:SignedInfo)`` — NUNCA
     el documento completo (ver ``app.providers.local`` en signature-service,

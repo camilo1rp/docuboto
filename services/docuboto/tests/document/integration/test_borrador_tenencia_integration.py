@@ -62,7 +62,7 @@ async def _padre_y_borrador(tenant_ctx, *, con_padre: bool = True):
         DocumentCreate(doc_type="E",doc_class="Petición",dest_dept_code=1, subject="Solicitud", sender_name="x"),
         registered_by=AUTOR,
     )
-    servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
+    servicio = BorradorService(conn, slug, signature_api=_SinCircuito)
     b = await servicio.crear(
         BorradorCreate(
             doc_type="S",

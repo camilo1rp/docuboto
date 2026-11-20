@@ -15,7 +15,7 @@ está en su default (``True``).
 
 Complementa ``test_aip_wiring_service.py``, que ya cubre:
 - ``test_intentar_empaquetar_transferred_is_elegible`` (0 documentos ->
-  ``storage_client.empaquetar_aip_internal`` recibe ``documentos=[]`` ->
+  ``storage_api.package_aip`` recibe ``documentos=[]`` ->
   ``'empaquetado'``, sin verificar el contenido del asiento de auditoría).
 - ``test_intentar_empaquetar_zero_anexos_marks_omitido_and_audits`` /
   ``..._lost_race_no_phantom_audit`` (kill-switch en OFF -> ``'omitido'``,
@@ -35,10 +35,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.clients.storage_client import AipPackagingOutcome
 from archive.core.config import settings
 from archive.models.archive import Expediente, ExpedienteRadicado
 from archive.services.aip_wiring_service import AipWiringService
+from storage.api import AipPackagingOutcome
 
 TENANT = "demo"
 NOW = datetime(2026, 3, 15, tzinfo=UTC)
@@ -150,11 +150,11 @@ async def test_intentar_empaquetar_indice_only_audits_indice_only_true() -> None
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=aip_id)),
         ) as mock_storage,
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()) as mock_audit,
@@ -186,7 +186,7 @@ async def test_intentar_empaquetar_with_anexos_audits_indice_only_false() -> Non
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [{"file_id": str(file_id), "filename": "a.pdf"}]
@@ -194,7 +194,7 @@ async def test_intentar_empaquetar_with_anexos_audits_indice_only_false() -> Non
             ),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=aip_id)),
         ) as mock_storage,
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()) as mock_audit,
@@ -231,11 +231,11 @@ async def test_intentar_empaquetar_indice_only_fixity_mismatch_schedules_backoff
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=False, fixity_mismatch=True)),
         ) as mock_storage,
     ):
@@ -257,11 +257,11 @@ async def test_intentar_empaquetar_indice_only_worm_disabled_schedules_backoff_n
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=False, disabled=True)),
         ),
     ):
@@ -287,11 +287,11 @@ async def test_intentar_empaquetar_indice_only_exhausts_after_max_intentos() -> 
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=False, transient=True)),
         ),
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()) as mock_audit,
@@ -328,11 +328,11 @@ async def test_renovar_worm_aip_after_indice_only_packaging_uses_generic_path() 
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=aip_id)),
         ),
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
@@ -347,10 +347,10 @@ async def test_renovar_worm_aip_after_indice_only_packaging_uses_generic_path() 
     # test_renovar_worm_aip_success_marks_and_audits_when_renovado`).
     service._resolve_ct_retencion_anios = AsyncMock(return_value=25)
     nueva = datetime(2051, 1, 1, tzinfo=UTC)
-    from archive.clients.storage_client import WormRenewalOutcome
+    from storage.api import WormRenewalOutcome
 
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as mock_client:
         renovar_resultado = await service.renovar_worm_aip(exp.id, intentos_previos=0)

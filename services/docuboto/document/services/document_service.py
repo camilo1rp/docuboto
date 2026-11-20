@@ -35,7 +35,6 @@ from fastapi import HTTPException
 from orpycamcp_common import audit
 
 from document.api import abrir_flujo_si_hay
-from document.clients.tenant_client import TenantServiceClient
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, tope_reserva
 from document.core.clearance import resolve_caller_clearance
 from document.core.config import settings
@@ -230,7 +229,7 @@ class DocumentService:
         self,
         conn: asyncpg.Connection,
         tenant_slug: str,
-        tenant_client: TenantServiceClient | None = None,
+        tenant_client: Any = None,
         redis: Any | None = None,
     ) -> None:
         try:

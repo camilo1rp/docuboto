@@ -118,7 +118,7 @@ async def test_cada_ruta_publica_que_radica_alcanza_el_gate(client_with_conn, ru
 
     with (
         patch.object(VentanillaService, "_exigir_antirrobots", centinela),
-        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
+        patch("storage.api.upload_public_annex", AsyncMock()) as subir,
         patch("document.services.document_service.DocumentService.create", AsyncMock()) as crear,
     ):
         resp = await _CON_GATE[ruta](client)

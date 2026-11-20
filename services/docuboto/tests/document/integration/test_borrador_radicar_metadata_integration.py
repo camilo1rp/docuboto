@@ -54,7 +54,7 @@ async def _preparar(tenant_flujo):
         "INSERT INTO metadata_templates (tipo_documental, json_schema) VALUES ('TPLM', $1::jsonb)",
         _SCHEMA,
     )
-    servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
+    servicio = BorradorService(conn, slug, signature_api=_SinCircuito)
     b = await servicio.crear(
         BorradorCreate(doc_type="S", subject="Respuesta"), AUTOR, max_clearance=3
     )

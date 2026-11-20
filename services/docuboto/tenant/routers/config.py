@@ -24,7 +24,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
 
-from tenant.clients import pasarela
+from knowledge import api as knowledge_api
 from tenant.core import audit as audit_core
 from tenant.core import declaracion
 from tenant.core.authz import require_permission
@@ -539,8 +539,8 @@ def _respuesta(
 
 async def _vista(slug: str) -> dict[str, Any]:
     try:
-        return await pasarela.capacidades(slug)
-    except pasarela.PasarelaError as exc:
+        return await knowledge_api.capabilities(tenant_slug=slug)
+    except knowledge_api.IntelligenceError as exc:
         if exc.status == 409:
             raise _falla(
                 409,
@@ -610,8 +610,8 @@ async def _registrar(slug: str, nivel: int, sha: object) -> None:
             "No se pudo leer la declaración del proveedor",
         )
     try:
-        await pasarela.aceptar(slug, nivel, sha)
-    except pasarela.PasarelaError as exc:
+        await knowledge_api.accept(tenant_slug=slug, level=nivel, sha256=sha)
+    except knowledge_api.IntelligenceError as exc:
         if exc.error == "declaracion_distinta":
             raise _falla(
                 409,
@@ -633,8 +633,10 @@ async def _purgar(
     if actor is None:
         return False
     try:
-        cuerpo = await pasarela.purgar(slug, actor=actor, reason=reason, levels=levels)
-    except pasarela.PasarelaError:
+        cuerpo = await knowledge_api.purge(
+            tenant_slug=slug, actor=actor, reason=reason, levels=levels
+        )
+    except knowledge_api.IntelligenceError:
         logger.warning("el borrado en el proveedor no quedó pedido")
         return False
     return bool(cuerpo.get("accepted")) and isinstance(cuerpo.get("purge_ref"), str)
@@ -714,8 +716,8 @@ async def get_intelligence_inventory(request: Request) -> IntelligenceInventory:
     """Cuántos radicados conserva el proveedor. También con la entidad en local."""
     slug = request.headers.get("X-Tenant-Slug", "")
     try:
-        cuerpo = await pasarela.inventario(slug)
-    except pasarela.PasarelaError:
+        cuerpo = await knowledge_api.inventory(tenant_slug=slug)
+    except knowledge_api.IntelligenceError:
         raise _falla(
             503,
             "inventario_no_disponible",
@@ -970,8 +972,10 @@ async def withdraw_intelligence(
     if actor is None:
         raise _falla(403, "forbidden", "Falta la identidad del administrador")
     try:
-        cuerpo = await pasarela.purgar(slug, actor=actor, reason="withdrawn", levels=None)
-    except pasarela.PasarelaError:
+        cuerpo = await knowledge_api.purge(
+            tenant_slug=slug, actor=actor, reason="withdrawn", levels=None
+        )
+    except knowledge_api.IntelligenceError:
         raise _falla(
             502,
             "purga_no_aceptada",

@@ -250,14 +250,14 @@ async def test_una_tipologia_falsa_no_llega_al_indice(
 async def test_si_document_service_no_responde_NO_se_vincula(client_with_conn) -> None:
     """Fail-closed para existencia y número: un 503 explícito, no un vínculo
     con datos sin contrastar."""
-    from archive.clients.document_client import DocumentClientError
+    from document.api import DocumentUnavailableError
 
     client, mock_conn = client_with_conn
     _armar(mock_conn)
 
     with patch(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
-        AsyncMock(side_effect=DocumentClientError("caído")),
+        "document.api.fetch_radicado_metadata",
+        AsyncMock(side_effect=DocumentUnavailableError("caído")),
     ):
         resp = await _vincular(client)
 
@@ -315,7 +315,7 @@ def _document_service_con_nivel(nivel: int, **meta):
         }
 
     return patch(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(side_effect=_fake),
     )
 

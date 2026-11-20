@@ -35,10 +35,6 @@ class NotificationResponse(BaseModel):
     attempts: int = 1
 
 
-class NotificationAccepted(BaseModel):
-    id: str
-    status: str = "accepted"
-
 
 class HistoryResponse(BaseModel):
     items: list[NotificationResponse]

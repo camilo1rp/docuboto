@@ -21,8 +21,6 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
-from archive.clients import document_client
-from archive.clients.document_client import DocumentClientError, DocumentPurgaError
 from archive.core.clearance import CLEARANCE_SIN_RESTRICCION
 from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
@@ -90,9 +88,10 @@ from archive.services.cuadro_clasificacion import (
 )
 from archive.services.eliminacion_acta import construir_acta_xml
 from archive.services.metadata_service import validate_metadata
+from document import api as document_api
 
 if TYPE_CHECKING:
-    from archive.clients.storage_client import ExportZipStream
+    from storage.api import ExportZipStream
 
 logger = logging.getLogger(__name__)
 
@@ -565,7 +564,7 @@ class ArchiveService:
         import csv
         import io
 
-        from archive.clients import document_client, storage_client
+        from storage import api as storage_api
 
         max_clearance = await self._repo.caller_clearance(user_id)
         expediente = await self._repo.get_expediente_by_id(
@@ -593,12 +592,12 @@ class ArchiveService:
         all_ids = [r.radicado_id for r in expediente.radicados]
         if all_ids:
             try:
-                anexos_by_rad = await document_client.fetch_anexos_internal(
+                anexos_by_rad = await document_api.fetch_anexos(
                     tenant_slug=self._tenant_slug,
                     radicado_ids=all_ids,
                     max_clearance=max_clearance,
                 )
-            except document_client.DocumentClientError as exc:
+            except document_api.DocumentUnavailableError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail={
@@ -615,12 +614,12 @@ class ArchiveService:
         meta_by_rad: dict[str, dict] = {}
         if all_ids:
             try:
-                meta_by_rad = await document_client.fetch_radicado_metadata_internal(
+                meta_by_rad = await document_api.fetch_radicado_metadata(
                     tenant_slug=self._tenant_slug,
                     radicado_ids=all_ids,
                     max_clearance=max_clearance,
                 )
-            except document_client.DocumentClientError:
+            except document_api.DocumentUnavailableError:
                 meta_by_rad = {}
 
         items: list[dict] = []
@@ -772,10 +771,10 @@ class ArchiveService:
         )
 
         try:
-            stream = await storage_client.export_zip_internal(
+            stream = await storage_api.open_export_zip(
                 tenant_slug=self._tenant_slug, items=items, extra_files=extra_files
             )
-        except storage_client.StorageExportError as exc:
+        except storage_api.StorageExportError as exc:
             if exc.status_code == 413:
                 err, code = "export_demasiado_grande", status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
             elif exc.status_code == 507:
@@ -845,7 +844,7 @@ class ArchiveService:
 
         `expediente_id` (el UUID de este servicio) se pasa a storage-service
         como `str(expediente.id)` — ver el docstring de
-        `app.clients.storage_client.get_aip` para el contrato de ese string
+        `app.clients.storage_api.get_aip` para el contrato de ese string
         con un futuro empaquetador.
 
         404 NEUTRO (`_expediente_not_found`) en los dos caminos de
@@ -864,13 +863,13 @@ class ArchiveService:
         if expediente is None:
             raise _expediente_not_found(expediente_id)
 
-        from archive.clients import storage_client  # perezoso, mismo patrón que index_service.py
+        from storage import api as storage_api  # perezoso, mismo patrón que index_service.py
 
         try:
-            aip = await storage_client.get_aip(
+            aip = await storage_api.get_aip(
                 tenant_slug=self._tenant_slug, expediente_id=str(expediente.id)
             )
-        except storage_client.StorageAipError as exc:
+        except storage_api.StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -972,7 +971,7 @@ class ArchiveService:
 
         `expediente_id` (el UUID de este servicio) se pasa a storage-service
         como `object_ref=str(expediente.id)` — ver el docstring de
-        `app.clients.storage_client.list_eventos`: el filtro es exacto, los
+        `app.clients.storage_api.list_events`: el filtro es exacto, los
         eventos keyed por `file_id`/`aip` id de ese expediente NO se incluyen
         en este MVP (refinamiento semántico diferido, no inventar un join a
         los file_ids).
@@ -994,7 +993,7 @@ class ArchiveService:
         if expediente is None:
             raise _expediente_not_found(expediente_id)
 
-        from archive.clients import storage_client  # perezoso, mismo patrón que get_aip
+        from storage import api as storage_api  # perezoso, mismo patrón que get_aip
 
         # AREA-07-15: los eventos de preservación NO cuelgan todos del expediente —
         # la validación PDF/A y las migraciones de formato van por `file_id`. Antes solo
@@ -1005,10 +1004,10 @@ class ArchiveService:
         refs = await self._object_refs_preservacion(expediente, max_clearance)
 
         try:
-            eventos = await storage_client.list_eventos(
+            eventos = await storage_api.list_events(
                 tenant_slug=self._tenant_slug, object_refs=refs
             )
-        except storage_client.StorageEventosError as exc:
+        except storage_api.StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -1039,12 +1038,12 @@ class ArchiveService:
             refs.append(str(aip_id))
         vigentes = [r.radicado_id for r in expediente.radicados if r.estado == "vinculado"]
         try:
-            anexos = await document_client.fetch_anexos_internal(
+            anexos = await document_api.fetch_anexos(
                 tenant_slug=self._tenant_slug,
                 radicado_ids=vigentes,
                 max_clearance=max_clearance,
             )
-        except DocumentClientError as exc:
+        except document_api.DocumentUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -2090,15 +2089,15 @@ class ArchiveService:
         """
         if not radicado_ids:
             return {}
-        from archive.clients import storage_client
+        from storage import api as storage_api
 
         try:
-            anexos_por_rad = await document_client.fetch_anexos_internal(
+            anexos_por_rad = await document_api.fetch_anexos(
                 tenant_slug=self._tenant_slug,
                 radicado_ids=radicado_ids,
                 max_clearance=None,
             )
-        except DocumentClientError:
+        except document_api.DocumentUnavailableError:
             logger.warning(
                 "No se pudo inventariar los anexos de %d radicados al vincular; "
                 "quedan sin huella declarada en el índice",
@@ -2115,7 +2114,7 @@ class ArchiveService:
         ]
         if not file_ids:
             return {}
-        huellas = await storage_client.fetch_file_hashes_internal(
+        huellas = await storage_api.get_file_hashes(
             tenant_slug=self._tenant_slug, file_ids=file_ids
         )
         if not huellas:
@@ -2205,12 +2204,12 @@ class ArchiveService:
         """
         ids = list(dict.fromkeys(it.radicado_id for it in items))
         try:
-            meta = await document_client.fetch_radicado_metadata_internal(
+            meta = await document_api.fetch_radicado_metadata(
                 tenant_slug=self._tenant_slug,
                 radicado_ids=ids,
                 max_clearance=clearance,
             )
-        except DocumentClientError:
+        except document_api.DocumentUnavailableError:
             logger.warning(
                 "No se pudo cotejar %d radicados con document-service al vincular",
                 len(ids),
@@ -2363,12 +2362,12 @@ class ArchiveService:
             return resumen
         ids = list(dict.fromkeys(r["radicado_id"] for r in pendientes))
         try:
-            meta = await document_client.fetch_radicado_metadata_internal(
+            meta = await document_api.fetch_radicado_metadata(
                 tenant_slug=self._tenant_slug,
                 radicado_ids=ids,
                 max_clearance=CLEARANCE_SIN_RESTRICCION,
             )
-        except DocumentClientError:
+        except document_api.DocumentUnavailableError:
             logger.warning(
                 "Backfill de origen: document-service no respondió (%d radicados); "
                 "se reintenta en la próxima barrida",
@@ -5676,11 +5675,11 @@ class ArchiveService:
 
         El XML **nunca se altera aquí**: el sello cubre exactamente la cadena
         ya anclada, y el XML firmado es un artefacto derivado en MinIO."""
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
         max_attempts = max(1, settings.acta_sign_max_sync_attempts)
         for intento in range(1, max_attempts + 1):
-            outcome = await signature_client.sign_xml_outcome(
+            outcome = await signature_api.sign_xml_outcome(
                 tenant_slug=self._tenant_slug,
                 actor_id=str(actor),
                 payload_xml=acta_xml,
@@ -5777,7 +5776,7 @@ class ArchiveService:
 
         Devuelve el desenlace para el resumen del job; el disparo síncrono lo
         ignora."""
-        from archive.clients import storage_client
+        from storage import api as storage_api
 
         acta = None
         try:
@@ -5793,7 +5792,7 @@ class ArchiveService:
             # frontera de confianza que el acta de transferencia.
             file_id = acta["minio_key_firmado"].split("/", 1)[0]
 
-            outcome = await storage_client.proteger_artefacto_worm(
+            outcome = await storage_api.protect_artifact(
                 tenant_slug=self._tenant_slug,
                 actor_id=str(actor),
                 file_id=file_id,
@@ -6057,7 +6056,11 @@ class ArchiveService:
                 recuento = await self._eliminar_expediente(
                     expediente_id, item=item, lote=lote, acta=acta, actor=actor
                 )
-            except (DocumentPurgaError, DocumentClientError, SoporteCitadoNoAvaladoError) as exc:
+            except (
+                document_api.PurgeIncompleteError,
+                document_api.DocumentUnavailableError,
+                SoporteCitadoNoAvaladoError,
+            ) as exc:
                 # El expediente queda INTACTO y sin lápida. Se informa con su
                 # código, no solo con su UUID: quien tiene que reintentar
                 # necesita saber cuál es.
@@ -6174,7 +6177,7 @@ class ArchiveService:
             )
         radicados = await self._repo.list_radicados_de_expediente(expediente_id)
         motivo = f"Eliminación TRD, lote {lote['codigo']}, {lote['acto_administrativo']}"
-        recuento = await document_client.purgar_radicados_internal(
+        recuento = await document_api.purge_radicados(
             tenant_slug=self._tenant_slug,
             radicado_ids=radicados,
             expediente_id=expediente_id,

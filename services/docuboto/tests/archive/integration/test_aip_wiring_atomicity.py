@@ -16,7 +16,7 @@ ante un fallo tras `audit.append`), idempotencia bajo dos llamadas reales
 
 Compromiso (igual que `test_indice_worm_atomicity.py`): NO hay tráfico HTTP
 real a document-service/storage-service —
-`document_client.fetch_anexos_internal`/`storage_client.empaquetar_aip_internal`
+`document_api.fetch_anexos`/`storage_api.package_aip`
 se monkeypatchean. Lo que este tier prueba es el tramo 100%-DB (UPDATE/INSERT
 + INSERT audit_log atómicos, WHERE de idempotencia, filtro SQL de
 elegibilidad), no la resolución cross-servicio real de anexos ni la subida
@@ -38,13 +38,13 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from archive.clients.storage_client import AipPackagingOutcome
 from archive.core.config import settings
 from archive.core.database import tenant_schema
 from archive.repositories.aip_repository import AipRepository
 from archive.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate
 from archive.services.aip_wiring_service import AipWiringService
 from archive.services.archive_service import ArchiveService
+from storage.api import AipPackagingOutcome
 from tests.archive.conftest import registrar_radicado
 
 from .conftest import DSN, convalidate_for_test
@@ -150,11 +150,11 @@ def _patched_clients(anexos_by_radicado: dict, outcome: AipPackagingOutcome):
     """Dos `patch()` sin entrar todavía — usar como
     ``with p1, p2: ...`` (`_patched_clients` devuelve el PAR, no los entra)."""
     p_document = patch(
-        "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+        "document.api.fetch_anexos",
         new=AsyncMock(return_value=anexos_by_radicado),
     )
     p_storage = patch(
-        "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+        "archive.services.aip_wiring_service.storage_api.package_aip",
         new=AsyncMock(return_value=outcome),
     )
     return p_document, p_storage

@@ -7,10 +7,9 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""B10 (SEG #10): `renovar-artefacto-internal` rechaza con 422 `artefacto_no_es_de_firma` un anterior
-que no es un artefacto de firma o un nuevo que no es XML (lo prueba contra Postgres
-`tests/integration/test_b10_renovar_artefacto_sql.py`). Mutación: quitar la rama del mapeador de
-errores -> el servicio lanza y la ruta responde 500."""
+"""B10 (SEG #10): un anterior que no es artefacto de firma o un nuevo que no es XML no se registra
+(lo prueba contra Postgres `tests/integration/test_b10_renovar_artefacto_sql.py`). Aquí: el
+rechazo del servicio sube a signature como `StorageError`, nunca como renovación registrada."""
 
 from __future__ import annotations
 
@@ -20,26 +19,25 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
+from storage import api as storage_api
 from storage.services import preservation_worm_service as svc
-from tests.storage.conftest import TENANT_HEADERS, TEST_INTERNAL_TOKEN
+from tests.storage.conftest import TENANT_SLUG
 
 
 @pytest.mark.asyncio
-async def test_artefacto_no_es_de_firma_es_422(
+async def test_artefacto_no_es_de_firma_no_se_registra(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, _conn, _ = client_with_conn
     monkeypatch.setattr(
         svc.PreservationWormService, "renovar_artefacto",
         AsyncMock(side_effect=svc.ArtefactoNoEsDeFirmaError("el anterior es un AIP")),
     )
-    r = await client.post(
-        "/api/v1/preservacion/renovar-artefacto-internal",
-        json={
-            "file_id_anterior": str(uuid.uuid4()), "file_id_nuevo": str(uuid.uuid4()),
-            "sha256_nuevo": "a" * 64, "firma_id": str(uuid.uuid4()), "ordinal": 1,
-        },
-        headers={**TENANT_HEADERS, "X-Internal-Token": TEST_INTERNAL_TOKEN},
-    )
-    assert r.status_code == 422, r.text
-    assert r.json()["detail"]["error"] == "artefacto_no_es_de_firma"
+    with pytest.raises(storage_api.StorageError, match="el anterior es un AIP"):
+        await storage_api.renew_artifact(
+            tenant_slug=TENANT_SLUG,
+            file_id_anterior=uuid.uuid4(),
+            file_id_nuevo=uuid.uuid4(),
+            sha256_nuevo="a" * 64,
+            firma_id=uuid.uuid4(),
+            ordinal=1,
+        )

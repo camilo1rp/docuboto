@@ -83,9 +83,10 @@ from archive.services.constancia_firma_excepcion import (
 from archive.services.fisico_service import FisicoService, _fuid_to_xml
 from archive.services.index_service import IndexService
 from archive.services.retention_math import RetencionDiferida, base_worm, total_trd_years
+from document import api as document_api
 
 if TYPE_CHECKING:
-    from archive.clients.signature_client import SignedPersonal
+    from signature.api import SignedPersonal
 
 logger = logging.getLogger(__name__)
 
@@ -1209,7 +1210,7 @@ class TransferenciaService:
         asiento `*_failed` ya quedaron. Cada intento fallido es un evento propio: el `dedup_key`
         lleva el NÚMERO de intento (`fixity_fallos_intentos`, migración 066), así reenviar el
         mismo intento es idempotente. Sin contador (falló la base), cae al sello de tiempo."""
-        from archive.clients import storage_client
+        from storage import api as storage_api
 
         clave = (
             str(intento)
@@ -1217,7 +1218,7 @@ class TransferenciaService:
             else datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S%f")
         )
         try:
-            await storage_client.registrar_evento_internal(
+            await storage_api.record_event(
                 tenant_slug=self._tenant,
                 object_ref=str(expediente_id),
                 tipo="FIJACION",
@@ -1244,7 +1245,7 @@ class TransferenciaService:
         reconciliación no duplica el evento. `omitido` = no hay detalle guardado (recepción
         anterior a la migración 056) o ya estaba registrado. Un fallo reprograma con backoff
         (mismo patrón que el WORM del acta) y, agotado, deja asiento."""
-        from archive.clients import storage_client
+        from storage import api as storage_api
 
         try:
             fila = await self._repo.get_fixity_premis(transferencia_id)
@@ -1255,7 +1256,7 @@ class TransferenciaService:
                 import json
 
                 detalle = json.loads(detalle)
-            ok = await storage_client.registrar_evento_internal(
+            ok = await storage_api.record_event(
                 tenant_slug=self._tenant,
                 object_ref=str(fila["expediente_id"]),
                 tipo="FIJACION",
@@ -1353,11 +1354,11 @@ class TransferenciaService:
         FIRMADO es un artefacto DERIVADO en MinIO (enveloped, la referencia
         del `<ds:Signature>` resuelve al mismo contenido).
         """
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
         max_attempts = max(1, settings.acta_sign_max_sync_attempts)
         for attempt in range(1, max_attempts + 1):
-            outcome = await signature_client.sign_xml_outcome(
+            outcome = await signature_api.sign_xml_outcome(
                 tenant_slug=self._tenant,
                 actor_id=actor.audit_actor,
                 payload_xml=acta_xml,
@@ -1724,19 +1725,20 @@ class TransferenciaService:
         )
         if not verify:
             return info
-        from archive.clients import signature_client, storage_client
+        import signature.api as signature_api
+        from storage import api as storage_api
 
         signed_xml: str | None = None
         if firma_row["minio_key_firmado"]:
-            signed_xml = await storage_client.download_signed_xml(
+            signed_xml = await storage_api.read_signed_xml(
                 tenant_slug=self._tenant,
-                minio_key_firmado=firma_row["minio_key_firmado"],
+                object_key=firma_row["minio_key_firmado"],
             )
         if signed_xml is None:
             info.valida = False
             info.motivo = "signed_xml_unavailable"
             return info
-        resultado = await signature_client.verify(
+        resultado = await signature_api.verify(
             tenant_slug=self._tenant,
             firma_id=str(firma_row["firma_id"]),
             payload_xml=signed_xml,
@@ -1831,7 +1833,6 @@ class TransferenciaService:
         transferencia_id: uuid.UUID,
         actor: Actor,
         totp_code: str,
-        authorization: str | None,
         rol_solicitado: str | None = None,
     ) -> TransferenciaActaFirmaPersonalResponse:
         """`POST /transferencias/{id}/acta/firmar-personal` — firma PERSONAL
@@ -1844,10 +1845,8 @@ class TransferenciaService:
         bloquea ni lo sustituye; ambos roles se firman en cualquier orden e
         independientemente (Inc.2 generaliza el Inc.1 de solo-receptor).
 
-        `authorization` es el header `Authorization` TAL CUAL llegó a esta
-        petición — reenviado a signature-service (D1: el TOTP se
-        verifica-y-consume contra el bearer del propio receptor, nunca
-        contra un `user_id` que este servicio pudiera declarar).
+        El TOTP se verifica-y-consume en auth para el actor de esta petición
+        (D1: nunca contra un `user_id` que el cliente pudiera declarar).
 
         Autoriza IGUAL que `recibir` (mismo scoping/permiso,
         `USUA_PERM_EXPEDIENTE min_crud=3`, router) MÁS un gate no-read-up
@@ -2027,11 +2026,10 @@ class TransferenciaService:
                 },
             )
 
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
-        outcome = await signature_client.sign_personal(
+        outcome = await signature_api.sign_personal(
             tenant_slug=self._tenant,
-            authorization=authorization,
             actor_id=actor.audit_actor,
             payload_xml=acta["acta_fuid_xml"],
             objeto_tipo="acta_transferencia_personal",
@@ -2039,15 +2037,6 @@ class TransferenciaService:
             totp_code=totp_code,
             firmante_id=actor.audit_actor,
         )
-        if outcome.unavailable:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error": "canal_firma_personal_no_disponible",
-                    "detail": "signature-service no está disponible para la firma personal",
-                    "status": 503,
-                },
-            )
         if outcome.remote_failure is not None:
             # El servicio de firma SÍ respondió, y falló. Decir aquí «no está
             # disponible» mandaba a diagnosticar el servicio equivocado: las dos
@@ -2314,10 +2303,9 @@ class TransferenciaService:
         )
         if not ids:
             return set()
-        from archive.clients import document_client
 
         try:
-            visibles = await document_client.fetch_radicado_metadata_internal(
+            visibles = await document_api.fetch_radicado_metadata(
                 tenant_slug=self._tenant, radicado_ids=ids, max_clearance=caller_clearance
             )
         except Exception:  # noqa: BLE001 — error == «no visible» (sin oráculo).
@@ -2427,7 +2415,7 @@ class TransferenciaService:
         declarante no los puede leer (mismo cuerpo: no es un oráculo sobre radicados
         reservados); 503 si document-service o storage no responden (fail-closed: no se asienta
         una referencia que no se pudo comprobar)."""
-        from archive.clients import document_client, storage_client
+        from storage import api as storage_api
 
         invalida = HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2442,7 +2430,7 @@ class TransferenciaService:
         radicado = payload.referencia_radicado_id
         anexo = payload.referencia_anexo_id
         try:
-            visibles = await document_client.fetch_radicado_metadata_internal(
+            visibles = await document_api.fetch_radicado_metadata(
                 tenant_slug=self._tenant,
                 radicado_ids=[radicado],
                 max_clearance=caller_clearance,
@@ -2450,7 +2438,7 @@ class TransferenciaService:
             meta = visibles.get(str(radicado))
             if meta is None:
                 raise invalida
-            anexos = await document_client.fetch_anexos_internal(
+            anexos = await document_api.fetch_anexos(
                 tenant_slug=self._tenant,
                 radicado_ids=[radicado],
                 max_clearance=caller_clearance,
@@ -2458,7 +2446,7 @@ class TransferenciaService:
             ids = {str(a.get("file_id")) for a in anexos.get(str(radicado), [])}
             if str(anexo) not in ids:
                 raise invalida
-        except document_client.DocumentClientError as exc:
+        except document_api.DocumentUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -2471,7 +2459,7 @@ class TransferenciaService:
                 },
             ) from exc
         numero = meta.get("tracking_number") if isinstance(meta, dict) else None
-        huellas = await storage_client.fetch_file_hashes_internal(
+        huellas = await storage_api.get_file_hashes(
             tenant_slug=self._tenant, file_ids=[str(anexo)]
         )
         sha = huellas.get(str(anexo))
@@ -2538,15 +2526,6 @@ class TransferenciaService:
         """Traduce un desenlace NO exitoso de `sign_personal` a su HTTPException, igual que
         `firmar_personal`. Devuelve `True` solo cuando el declarante NO tiene credencial activa
         y la firma personal es opcional (se sigue sin ella); en todo otro caso lanza."""
-        if outcome.unavailable:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "error": "canal_firma_personal_no_disponible",
-                    "detail": "signature-service no está disponible para la firma personal",
-                    "status": 503,
-                },
-            )
         if outcome.remote_failure is not None:
             codigo_remoto, causa = outcome.remote_failure
             raise HTTPException(
@@ -2587,7 +2566,7 @@ class TransferenciaService:
         puede sellar, 503 y NADA queda escrito (un sobre sin sello no es copia preservable). Devuelve
         las columnas `sobre_*` de la fila del acto y el instante desde el que se subió (cota de la
         purga de huérfanos)."""
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
         try:
             sobre_xml = build_sobre_xml(acto_id=acto_id, acto=acto, texto=texto, huella=huella)
@@ -2605,7 +2584,7 @@ class TransferenciaService:
         # reconozca un sobre sin referencia (`purgar_sobres_huerfanos`).
         sobre_id = f"sobre-{uuid.uuid4()}"
         desde = datetime.now(tz=UTC) - timedelta(seconds=30)
-        sello = await signature_client.sign_xml_outcome(
+        sello = await signature_api.sign_xml_outcome(
             tenant_slug=self._tenant,
             actor_id=actor.audit_actor,
             payload_xml=sobre_xml,
@@ -2645,17 +2624,17 @@ class TransferenciaService:
         WORM, y deja su propio asiento `file.purgado_huerfano`). Si falla, el barrido
         `purgar_sobres_huerfanos` lo recoge por el nombre del fichero."""
         try:
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
             file_id = uuid.UUID(str(sobre["sobre_minio_key"]).split("/", 1)[0])
-            resultados = await storage_client.purgar_huerfanos_internal(
+            resultados = await storage_api.purge_orphans(
                 tenant_slug=self._tenant,
                 file_ids=[file_id],
                 referencia=f"sobre-fundamento:{contexto}",
                 motivo="sobre de revelacion sin fila que lo referencie",
                 subido_desde=desde,
             )
-            if resultados is None or any(r.get("resultado") == "error" for r in resultados):
+            if any(r.resultado == "error" for r in resultados):
                 logger.warning("purga del sobre huérfano %s no confirmada (%s)", file_id, resultados)
         except Exception:  # noqa: BLE001 — la reconciliación lo recoge.
             logger.warning("purga del sobre huérfano falló (best-effort)", exc_info=True)
@@ -2665,7 +2644,7 @@ class TransferenciaService:
         (`acta-transferencia-sobre-…-firmado.xml`), más viejos que la gracia y que NINGUNA
         constancia ni revocación referencia en `sobre_minio_key`. La purga la decide storage
         (referencias del tenant, WORM); aquí solo se recogen los candidatos."""
-        from archive.clients import storage_client
+        from storage import api as storage_api
 
         filas = await self._repo.list_sobres_huerfanos(
             limit=limite, gracia_horas=settings.sobre_huerfano_gracia_horas
@@ -2674,7 +2653,7 @@ class TransferenciaService:
         if not filas:
             return resumen
         try:
-            resultados = await storage_client.purgar_huerfanos_internal(
+            resultados = await storage_api.purge_orphans(
                 tenant_slug=self._tenant,
                 file_ids=[f["id"] for f in filas],
                 referencia="sobre-fundamento:barrido",
@@ -2685,9 +2664,9 @@ class TransferenciaService:
             logger.warning("barrido de sobres huérfanos falló", exc_info=True)
             resultados = None
         for r in resultados or []:
-            if r.get("resultado") == "error":
+            if r.resultado == "error":
                 resumen["fallidos"] += 1
-            elif r.get("resultado") == "purgado":
+            elif r.resultado == "purgado":
                 resumen["purgados"] += 1
         if resultados is None:
             resumen["fallidos"] = len(filas)
@@ -2698,7 +2677,6 @@ class TransferenciaService:
         transferencia_id: uuid.UUID,
         actor: Actor,
         payload: FirmaInobtenibleRequest,
-        authorization: str | None = None,
     ) -> TransferenciaActaFirmaExcepcion:
         """`POST /transferencias/{id}/acta/firma-inobtenible` (AREA-07-10, ADR-030 + addendum
         FIRMA-2) — acto administrativo que declara que UNA parte del acta (elabora/entrega/recibe)
@@ -2789,9 +2767,9 @@ class TransferenciaService:
         ordinal = (ultima["ordinal"] + 1) if ultima is not None else 1
         sustituye_a = ultima["id"] if ultima is not None else None
 
-        # El sello se estampa a nombre del declarante (`POST /sign-xml` exige PERM_FIRMA >= 2): se
-        # comprueba ANTES de llamar, porque signature-service responde 403 y el cliente de sello
-        # lo clasifica como «transitorio» -> el declarante recibiría un 503 que no puede arreglar.
+        # El sello se estampa a nombre del declarante (`signature_api.sign_xml_outcome` exige
+        # PERM_FIRMA >= 2): se comprueba ANTES de llamar, porque firma lo clasifica como
+        # «transitorio» -> el declarante recibiría un 503 que no puede arreglar.
         await self._repo.set_search_path()
         if not await check_permission(self._conn, actor.id, "PERM_FIRMA", 2):
             raise HTTPException(
@@ -2861,9 +2839,9 @@ class TransferenciaService:
         )
 
         # --- firmas (HTTP): SIEMPRE fuera de la transacción y ANTES de escribir nada ---
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
-        sello = await signature_client.sign_xml_outcome(
+        sello = await signature_api.sign_xml_outcome(
             tenant_slug=self._tenant,
             actor_id=actor.audit_actor,
             payload_xml=constancia_xml,
@@ -2888,9 +2866,8 @@ class TransferenciaService:
             )
         personal: SignedPersonal | None = None
         if payload.totp_code:
-            outcome = await signature_client.sign_personal(
+            outcome = await signature_api.sign_personal(
                 tenant_slug=self._tenant,
-                authorization=authorization,
                 actor_id=actor.audit_actor,
                 payload_xml=constancia_xml,
                 objeto_tipo="acta_firma_excepcion",
@@ -3142,7 +3119,6 @@ class TransferenciaService:
         transferencia_id: uuid.UUID,
         actor: Actor,
         payload: RevocarFirmaInobtenibleRequest,
-        authorization: str | None = None,
     ) -> TransferenciaActaFirmaExcepcion:
         """`POST /transferencias/{id}/acta/firma-inobtenible/revocar` (AREA-07-10, FIRMA-2) — deja
         sin efecto la excepción VIGENTE de un rol (se declaró por error, o la parte sí puede
@@ -3235,9 +3211,9 @@ class TransferenciaService:
             revocada_en=revocada_en,
         )
 
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
-        sello = await signature_client.sign_xml_outcome(
+        sello = await signature_api.sign_xml_outcome(
             tenant_slug=self._tenant,
             actor_id=actor.audit_actor,
             payload_xml=revocacion_xml,
@@ -3262,9 +3238,8 @@ class TransferenciaService:
             )
         personal: SignedPersonal | None = None
         if payload.totp_code:
-            outcome = await signature_client.sign_personal(
+            outcome = await signature_api.sign_personal(
                 tenant_slug=self._tenant,
-                authorization=authorization,
                 actor_id=actor.audit_actor,
                 payload_xml=revocacion_xml,
                 objeto_tipo="acta_firma_excepcion_revocacion",
@@ -3499,13 +3474,14 @@ class TransferenciaService:
             revocacion_status: str | None = None
             avisos: list[str] = []
             if pr["minio_key_firmado"]:
-                from archive.clients import signature_client, storage_client
+                import signature.api as signature_api
+                from storage import api as storage_api
 
-                signed_xml = await storage_client.download_signed_xml(
-                    tenant_slug=self._tenant, minio_key_firmado=pr["minio_key_firmado"]
+                signed_xml = await storage_api.read_signed_xml(
+                    tenant_slug=self._tenant, object_key=pr["minio_key_firmado"]
                 )
                 if signed_xml is not None:
-                    resultado = await signature_client.verify(
+                    resultado = await signature_api.verify(
                         tenant_slug=self._tenant,
                         firma_id=str(pr["firma_id"]),
                         payload_xml=signed_xml,
@@ -3713,15 +3689,16 @@ class TransferenciaService:
         (RF-FIR-15)."""
         if not minio_key_firmado:
             return False, [], None
-        from archive.clients import signature_client, storage_client
+        import signature.api as signature_api
+        from storage import api as storage_api
 
-        signed_xml = await storage_client.download_signed_xml(
-            tenant_slug=self._tenant, minio_key_firmado=minio_key_firmado
+        signed_xml = await storage_api.read_signed_xml(
+            tenant_slug=self._tenant, object_key=minio_key_firmado
         )
         if signed_xml is None:
             return False, [], None
         huella = huella_de_firmado(signed_xml)
-        resultado = await signature_client.verify(
+        resultado = await signature_api.verify(
             tenant_slug=self._tenant, firma_id=str(firma_id), payload_xml=signed_xml
         )
         if resultado is None:
@@ -3822,7 +3799,7 @@ class TransferenciaService:
     # docstring para el contrato completo) -- fast-follow declarado en el
     # diseño de Inc.1 ("Acta = generalizar"). Reusa la ruta generalizada de
     # storage-service (`POST /proteger-artefacto[-internal]`, `tipo=
-    # 'acta_transferencia'`) vía `app.clients.storage_client.
+    # 'acta_transferencia'`) vía `app.clients.storage_api.
     # proteger_artefacto_worm[_internal]`.
 
     async def _resolve_worm_retention_acta(
@@ -4015,11 +3992,11 @@ class TransferenciaService:
                 )
             retencion_anios, fecha_inicio = retention
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
             expediente_id_str = str(transferencia["expediente_id"])
             if origen == "close" and actor_id:
-                outcome = await storage_client.proteger_artefacto_worm(
+                outcome = await storage_api.protect_artifact(
                     tenant_slug=self._tenant,
                     actor_id=actor_id,
                     file_id=file_id,
@@ -4029,7 +4006,7 @@ class TransferenciaService:
                     fecha_inicio=fecha_inicio,
                 )
             else:
-                outcome = await storage_client.proteger_artefacto_worm_internal(
+                outcome = await storage_api.protect_artifact_as_system(
                     tenant_slug=self._tenant,
                     file_id=file_id,
                     expediente_id=expediente_id_str,
@@ -4172,12 +4149,12 @@ class TransferenciaService:
                 )
             retencion_anios, fecha_inicio = retention
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
             expediente_id_str = str(fila["expediente_id"])
             tipo = f"acta_firma_{fila['rol']}"
             if origen == "close" and actor_id:
-                outcome = await storage_client.proteger_artefacto_worm(
+                outcome = await storage_api.protect_artifact(
                     tenant_slug=self._tenant,
                     actor_id=actor_id,
                     file_id=file_id,
@@ -4187,7 +4164,7 @@ class TransferenciaService:
                     fecha_inicio=fecha_inicio,
                 )
             else:
-                outcome = await storage_client.proteger_artefacto_worm_internal(
+                outcome = await storage_api.protect_artifact_as_system(
                     tenant_slug=self._tenant,
                     file_id=file_id,
                     expediente_id=expediente_id_str,
@@ -4304,9 +4281,9 @@ class TransferenciaService:
                     transferencia_id, intentos_previos=intentos_previos, motivo="trd_sin_retencion"
                 )
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
-            outcome = await storage_client.renovar_retencion_worm_internal(
+            outcome = await storage_api.renew_retention(
                 tenant_slug=self._tenant,
                 expediente_id=str(expediente_id),
                 tipo="acta_transferencia",
@@ -4423,9 +4400,9 @@ class TransferenciaService:
                     motivo="trd_sin_retencion",
                 )
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
-            outcome = await storage_client.renovar_retencion_worm_internal(
+            outcome = await storage_api.renew_retention(
                 tenant_slug=self._tenant,
                 expediente_id=str(expediente_id),
                 tipo=f"acta_firma_{rol}",
@@ -4633,12 +4610,12 @@ class TransferenciaService:
                 )
             retencion_anios, fecha_inicio = retention
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
             expediente_id_str = str(fila["expediente_id"])
             tipo = self._tipo_worm_excepcion(artefacto, fila["rol"], acto)
             if origen == "close" and actor_id:
-                outcome = await storage_client.proteger_artefacto_worm(
+                outcome = await storage_api.protect_artifact(
                     tenant_slug=self._tenant,
                     actor_id=actor_id,
                     file_id=file_id,
@@ -4648,7 +4625,7 @@ class TransferenciaService:
                     fecha_inicio=fecha_inicio,
                 )
             else:
-                outcome = await storage_client.proteger_artefacto_worm_internal(
+                outcome = await storage_api.protect_artifact_as_system(
                     tenant_slug=self._tenant,
                     file_id=file_id,
                     expediente_id=expediente_id_str,
@@ -4996,10 +4973,10 @@ class TransferenciaService:
                 )
             retencion_anios = anios
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
             tipo = self._tipo_worm_excepcion(artefacto, rol, acto)
-            outcome = await storage_client.renovar_retencion_worm_internal(
+            outcome = await storage_api.renew_retention(
                 tenant_slug=self._tenant,
                 expediente_id=str(expediente_id),
                 tipo=tipo,
@@ -5160,10 +5137,10 @@ class TransferenciaService:
                     "status": 404,
                 },
             )
-        from archive.clients import storage_client
+        from storage import api as storage_api
 
-        xml = await storage_client.download_signed_xml(
-            tenant_slug=self._tenant, minio_key_firmado=e[f"{clave}_minio_key"]
+        xml = await storage_api.read_signed_xml(
+            tenant_slug=self._tenant, object_key=e[f"{clave}_minio_key"]
         )
         if xml is None:
             raise HTTPException(
@@ -5351,8 +5328,8 @@ class TransferenciaService:
         UNA transacción y ANTES de servir el primer byte: sin asiento no hay paquete.
 
         Devuelve `(fichero ZIP rebobinado, tamaño)`; el llamante lo cierra."""
-        from archive.clients import storage_client
         from archive.services import paquete_entrega as pe
+        from storage import api as storage_api
 
         row, exp, _clearance = await self._cargar_visible(transferencia_id, actor.id)  # 404 neutros
         acta = await self._repo.get_acta(transferencia_id) if row["estado"] == "recibida" else None
@@ -5377,10 +5354,10 @@ class TransferenciaService:
         specs = await self._especificar_paquete(transferencia_id, acta, row["expediente_id"])
         aip_row = await self._aip_repo.get_empaquetado(row["expediente_id"])
         try:
-            aip = await storage_client.get_aip(
+            aip = await storage_api.get_aip(
                 tenant_slug=self._tenant, expediente_id=str(row["expediente_id"])
             )
-        except storage_client.StorageAipError as exc:
+        except storage_api.StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -5423,7 +5400,7 @@ class TransferenciaService:
         # Huellas de CAPTURA (las que el almacén calculó al subir cada XML): un componente cuyo
         # contenido actual no las reproduce se rechaza; checksums autoconsistentes solo
         # certificarían la copia que se entrega, no el original.
-        capturas = await storage_client.fetch_file_hashes_internal(
+        capturas = await storage_api.get_file_hashes(
             tenant_slug=self._tenant,
             file_ids=sorted({sp["key"].split("/", 1)[0] for sp in specs}),
         )
@@ -5438,8 +5415,8 @@ class TransferenciaService:
             )
         componentes = [pe.Componente(ruta="acta/acta-fuid.xml", contenido=acta_bytes, acto="acta")]
         for sp in specs:
-            contenido = await storage_client.download_signed_bytes(
-                tenant_slug=self._tenant, minio_key_firmado=sp["key"]
+            contenido = await storage_api.read_signed_bytes(
+                tenant_slug=self._tenant, object_key=sp["key"]
             )
             if contenido is None:
                 raise HTTPException(
@@ -5552,10 +5529,10 @@ class TransferenciaService:
         y el compromiso del sobre coinciden con la fila."""
         if not minio_key:
             return None
-        from archive.clients import storage_client
+        from storage import api as storage_api
 
-        xml = await storage_client.download_signed_xml(
-            tenant_slug=self._tenant, minio_key_firmado=minio_key
+        xml = await storage_api.read_signed_xml(
+            tenant_slug=self._tenant, object_key=minio_key
         )
         campos = leer_sobre(xml)
         if campos is None:

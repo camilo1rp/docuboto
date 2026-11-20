@@ -64,7 +64,6 @@ from archive.routers.expedientes import router as expedientes_router
 from archive.routers.fisico import router as fisico_router
 from archive.routers.health import router as health_router
 from archive.routers.indice import router as indice_router
-from archive.routers.internal_firma import router as internal_firma_router
 from archive.routers.metadata import router as metadata_router
 from archive.routers.metrics import router as metrics_router
 from archive.routers.oai import router as oai_router
@@ -303,7 +302,6 @@ DOMAIN_ROUTERS = (
     public_indice_router,
     expedientes_router,
     indice_router,
-    internal_firma_router,
     fisico_router,
     transferencias_router,
     metadata_router,

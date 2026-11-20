@@ -93,7 +93,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install --quiet ./shared -r services/docuboto/requirements.lock
-      - run: pytest -q --tb=short tests/storage/test_internal_token_gate.py tests/storage/test_aip_internal_gate.py tests/storage/test_eventos_internal_gate.py tests/storage/test_purge_worm_gate.py
+      - run: pytest -q --tb=short tests/docuboto tests/storage/test_purge_worm_gate.py
         working-directory: services/docuboto
 
   npm-audit:

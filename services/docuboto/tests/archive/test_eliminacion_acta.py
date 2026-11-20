@@ -134,9 +134,9 @@ class _Outcome:
 
 def _sellado(signed=None, seal_absent=False):
     """Doble del sellado. `sign_xml_outcome` vive en `app.clients.
-    signature_client` y se importa DENTRO del método, así que se parchea ahí."""
+    signature_api` y se importa DENTRO del método, así que se parchea ahí."""
     return patch(
-        "archive.clients.signature_client.sign_xml_outcome",
+        "signature.api.sign_xml_outcome",
         AsyncMock(return_value=_Outcome(signed=signed, seal_absent=seal_absent)),
     )
 
@@ -572,7 +572,7 @@ class _WormFallo:
 
 def _worm(outcome):
     return patch(
-        "archive.clients.storage_client.proteger_artefacto_worm",
+        "storage.api.protect_artifact",
         AsyncMock(return_value=outcome),
     )
 

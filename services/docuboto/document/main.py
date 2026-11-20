@@ -23,7 +23,6 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import httpx
 import redis.asyncio as redis
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -47,7 +46,6 @@ from document.routers.import_ import router as import_router
 from document.routers.ingest import apps_router as email_apps_router
 from document.routers.ingest import bandeja_router as email_bandeja_router
 from document.routers.ingest import cuentas_router as email_cuentas_router
-from document.routers.internal import router as internal_router
 from document.routers.metadata import router as metadata_router
 from document.routers.metadata_elements import router as metadata_elements_router
 from document.routers.oai import router as oai_router
@@ -93,8 +91,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("document-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
-    # Cliente HTTP compartido hacia tenant-service (cálculo de días hábiles).
-    app.state.http_client = httpx.AsyncClient(base_url=settings.tenant_service_url, timeout=5.0)
     # Redis para publicar eventos de dominio (orpycamcp.document.events, ADR-010).
     app.state.redis = redis.from_url(settings.redis_url)
     # Sondeo programado de buzones (E19). Opt-in y con entidad declarada: sin
@@ -106,11 +102,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             from document.services.email_sondeo import bucle_de_sondeo
 
             app.state.tarea_sondeo = asyncio.create_task(
-                bucle_de_sondeo(
-                    app.state.db_pool,
-                    settings.email_sondeo_tenant_slug,
-                    app.state.http_client,
-                )
+                bucle_de_sondeo(app.state.db_pool, settings.email_sondeo_tenant_slug)
             )
         else:
             logger.warning(
@@ -126,7 +118,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from document.services.barrido import bucle_de_barrido
 
         app.state.tarea_barrido = asyncio.create_task(
-            bucle_de_barrido(app.state.redis, app.state.http_client)
+            bucle_de_barrido(app.state.redis)
         )
 
     yield
@@ -139,7 +131,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.tarea_sondeo.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await app.state.tarea_sondeo
-    await app.state.http_client.aclose()
     await app.state.redis.aclose()
     await close_pool()
 
@@ -190,7 +181,6 @@ DOMAIN_ROUTERS = (
     anulacion_cola_router,
     respuesta_router,
     borradores_router,
-    internal_router,
     trabajo_router,
 )
 for _router in DOMAIN_ROUTERS:

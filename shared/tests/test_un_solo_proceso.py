@@ -137,7 +137,6 @@ def test_el_lifespan_arranca_los_bucles_del_proceso() -> None:
         "signature_consumer",
         "registrar_apertura_de_flujo",
         "abrir_al_radicar",
-        "registrar_almacen",
         "BackgroundTasks",
         "supervised=True",
     ):

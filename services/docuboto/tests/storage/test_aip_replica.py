@@ -26,7 +26,9 @@ import pytest
 
 import storage.core.config as config_module
 import storage.services.aip_replica_service as aip_replica_module
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_SLUG, make_worm_row, minio_get_object
+from storage.schemas.preservacion import AipCreate
+from storage.services.aip_service import AipService
+from tests.storage.conftest import TENANT_SLUG, make_worm_row, minio_get_object
 
 _DOC_CONTENT = b"contenido real del oficio radicado"
 _DOC_SHA256 = hashlib.sha256(_DOC_CONTENT).hexdigest()
@@ -34,14 +36,24 @@ _PRIMARY_BUCKET = f"orpycamcp-{TENANT_SLUG}-preservation"
 _REPLICA_BUCKET = f"orpycamcp-{TENANT_SLUG}-preservation-replica"
 
 
+_ACTOR = str(uuid.uuid4())
+
+
+async def _empaquetar(mock_conn, payload: dict) -> dict:
+    """Empaqueta vía `AipService` con un actor persona (la ruta HTTP ya no existe, ADR-047)."""
+    result = await AipService(mock_conn, TENANT_SLUG).empaquetar_aip(
+        AipCreate(**payload), actor=_ACTOR
+    )
+    return result.model_dump(mode="json")
+
+
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
 
 
-def _grant_permission(mock_conn, *, num_copias) -> None:
-    """(AREA-08-16: la ruta ya no pasa por `require_permission`, solo por el token
-    interno, así que ya no hay `fetchval` de permiso.) 1.º fetchval = num_copias
+def _stub_plan_num_copias(mock_conn, *, num_copias) -> None:
+    """1.º fetchval = num_copias
     del plan vigente (`PreservacionRepository.current_num_copias`, vía
     ``fetchval`` — deliberadamente NO consume la lista de ``fetchrow``, ver
     docstring del método); 2.º = `prev_hash` de `audit.append` (cadena de
@@ -182,25 +194,18 @@ def _make_mock_secondary_minio() -> AsyncMock:
 async def test_replica_disabled_by_default_no_replica_attempted(client_with_conn) -> None:
     """`PRESERVATION_REPLICA_ENABLED=false` (default) -> comportamiento
     IDÉNTICO al AIP sin réplica: sin evento REPLICA, sin copy_object."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn, num_copias=2)  # aunque el plan pida 2 copias...
+    _stub_plan_num_copias(mock_conn, num_copias=2)  # aunque el plan pida 2 copias...
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     )
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     assert body["replicado"] is False
     assert body["replica_target"] is None
     assert body["replica_copias_hechas"] == 1
@@ -221,26 +226,19 @@ async def test_replica_num_copias_uno_no_replica(
 ) -> None:
     """`num_copias<=1` (copia única declarada por el plan) -> CERO réplicas,
     aunque el feature flag esté encendido."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
-    _grant_permission(mock_conn, num_copias=1)
+    _stub_plan_num_copias(mock_conn, num_copias=1)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     )
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     assert body["replicado"] is False
     assert body["replica_copias_hechas"] == 1
     mock_minio.copy_object.assert_not_called()
@@ -253,27 +251,20 @@ async def test_replica_local_success_provisions_bucket_and_copies(
     """`num_copias=2` + réplica habilitada, SIN `MINIO_SECONDARY_ENDPOINT` ->
     réplica LOCAL: provisiona el bucket réplica (`make_bucket(object_lock=True)`)
     y copia el ZIP server-side (`copy_object`) con la MISMA retención."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
-    _grant_permission(mock_conn, num_copias=2)
+    _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
     mock_minio.get_object = _minio_get_con_replica(mock_minio)
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     assert body["replicado"] is True
     assert body["replica_target"] == "local"
     assert body["replica_copias_hechas"] == 2
@@ -321,27 +312,20 @@ async def test_replica_num_copias_mayor_a_dos_registra_deficit_honesto(
     """`num_copias=3` con solo un target de réplica disponible (C1b) -> UNA
     réplica se hace igual, pero el evento registra el déficit
     (`copias_solicitadas=3` vs `copias_hechas=2`) en vez de simular 3 copias."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
-    _grant_permission(mock_conn, num_copias=3)
+    _stub_plan_num_copias(mock_conn, num_copias=3)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
     mock_minio.get_object = _minio_get_con_replica(mock_minio)
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     assert body["replicado"] is True
     assert body["replica_copias_hechas"] == 2  # NO 3 -- déficit honesto
 
@@ -364,13 +348,13 @@ async def test_replica_fallo_es_best_effort_no_fatal(
     sellado + WORM): la fila `aip`, `preservacion_worm_objeto` y los eventos
     FIJACION/WORM/INGESTA quedan comitteados igual; solo el evento REPLICA
     queda con resultado='fallo'."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
-    _grant_permission(mock_conn, num_copias=2)
+    _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="fallo")]
@@ -378,14 +362,7 @@ async def test_replica_fallo_es_best_effort_no_fatal(
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
     mock_minio.copy_object = AsyncMock(side_effect=RuntimeError("MinIO replica endpoint unreachable"))
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text  # el AIP primario NO se ve afectado
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))  # el AIP primario NO se ve afectado
     assert body["replicado"] is False
     assert body["replica_copias_hechas"] == 1
 
@@ -418,16 +395,16 @@ async def test_replica_fallo_es_best_effort_no_fatal(
 async def test_replica_bucket_derivado_del_claim_no_del_body(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """El bucket réplica se deriva SIEMPRE de `X-Tenant-Slug` (el mismo claim
-    que usa el bucket primario) -- ni `AipCreate` declara un campo tenant, ni
+    """El bucket réplica se deriva SIEMPRE del `tenant_slug` del servicio (el
+    mismo que usa el bucket primario) -- ni `AipCreate` declara un campo tenant, ni
     un valor colado en el body tiene efecto (Pydantic v2 ignora extras)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
-    _grant_permission(mock_conn, num_copias=2)
+    _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
@@ -437,13 +414,9 @@ async def test_replica_bucket_derivado_del_claim_no_del_body(
     payload = _base_payload(doc_file_id=doc_file_id)
     payload["tenant_slug"] = "attacker-tenant"  # campo no declarado -- debe ser ignorado
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, payload)
     make_bucket_call = mock_minio.make_bucket.await_args
-    assert make_bucket_call.args[0] == _REPLICA_BUCKET  # deriva de TENANT_SLUG (header)
+    assert make_bucket_call.args[0] == _REPLICA_BUCKET  # deriva de TENANT_SLUG
     assert "attacker-tenant" not in make_bucket_call.args[0]
 
 
@@ -456,7 +429,7 @@ async def test_replica_sin_plan_de_preservacion_no_replica(
     la rama `if num_copias is None: num_copias = 1` de
     `aip_service.empaquetar_aip` (distinta de `num_copias=1` explícito, ya
     cubierto arriba)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
@@ -470,14 +443,7 @@ async def test_replica_sin_plan_de_preservacion_no_replica(
     )
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     assert body["replicado"] is False
     assert body["replica_target"] is None
     assert body["replica_copias_hechas"] == 1
@@ -501,7 +467,7 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
     `copy_object` -- no hay copia server-side entre endpoints distintos), y
     el evento REPLICA queda etiquetado `target=cross-site` (nunca "local"
     cuando hay un endpoint secundario real)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
@@ -523,20 +489,13 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
         aip_replica_module, "_get_secondary_minio", lambda: secondary_minio
     )
 
-    _grant_permission(mock_conn, num_copias=2)
+    _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
     ) + [_replica_evento_row(resultado="ok")]
     mock_minio.get_object = _minio_get_con_replica(mock_minio)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     assert body["replicado"] is True
     assert body["replica_target"] == "cross-site"
     assert body["replica_copias_hechas"] == 2
@@ -583,16 +542,16 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
 
 
 async def _empaquetar_con_replica(client_with_conn, monkeypatch, *, estado_replica: str):
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
     monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
-    _grant_permission(mock_conn, num_copias=2)
+    _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=uuid.uuid4(), retain_until=retain_until
     ) + [_replica_evento_row(resultado=estado_replica)]
     mock_minio.bucket_exists = AsyncMock(side_effect=_only_replica_bucket_missing)
-    return client, mock_conn, mock_minio, doc_file_id
+    return mock_conn, mock_minio, doc_file_id
 
 
 @pytest.mark.asyncio
@@ -602,21 +561,15 @@ async def test_replica_con_bytes_distintos_no_es_ok(
     """La copia releída no tiene el SHA-256 del ZIP -> `ok=False`, motivo
     `fixity_replica`. Antes el evento REPLICA decía `ok` sobre una copia que nadie
     había mirado."""
-    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+    mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
         client_with_conn, monkeypatch, estado_replica="fallo"
     )
     mock_minio.get_object = _minio_get_con_replica(
         mock_minio, bytes_de_la_replica=b"bytes corruptos de la copia"
     )
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["replicado"] is False
+    resp = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
+    assert resp["replicado"] is False
     replica_evt = [
         c for c in mock_conn.fetchrow.call_args_list
         if c.args and "INSERT INTO preservacion_evento" in c.args[0] and c.args[2] == "REPLICA"
@@ -634,7 +587,7 @@ async def test_replica_con_retencion_distinta_no_es_ok(
     """El almacén acepta la copia pero la retención releída es más corta -> no ok."""
     from miniopy_async.retention import Retention
 
-    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+    mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
         client_with_conn, monkeypatch, estado_replica="fallo"
     )
     mock_minio.get_object = _minio_get_con_replica(mock_minio)
@@ -649,14 +602,8 @@ async def test_replica_con_retencion_distinta_no_es_ok(
 
     mock_minio.get_object_retention = AsyncMock(side_effect=_retencion)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["replicado"] is False
+    resp = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
+    assert resp["replicado"] is False
     import json as _json
 
     replica_evt = [
@@ -672,7 +619,7 @@ async def test_secundario_igual_al_primario_se_etiqueta_local(
 ) -> None:
     """`MINIO_SECONDARY_ENDPOINT` == `MINIO_ENDPOINT` (aunque con esquema o mayúsculas)
     NO es cross-site: target `local`, copia server-side en el primario."""
-    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+    mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
         client_with_conn, monkeypatch, estado_replica="ok"
     )
     mock_minio.get_object = _minio_get_con_replica(mock_minio)
@@ -686,14 +633,8 @@ async def test_secundario_igual_al_primario_se_etiqueta_local(
         lambda: pytest.fail("no debe usarse un cliente secundario para el mismo host"),
     )
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["replica_target"] == "local"
+    resp = await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
+    assert resp["replica_target"] == "local"
     mock_minio.copy_object.assert_awaited_once()
 
 
@@ -705,7 +646,7 @@ async def test_motivo_de_fallo_s3_no_filtra_host_ni_request_id(
     `S3Error:<code>`."""
     from miniopy_async import S3Error
 
-    client, mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
+    mock_conn, mock_minio, doc_file_id = await _empaquetar_con_replica(
         client_with_conn, monkeypatch, estado_replica="fallo"
     )
     mock_minio.get_object = _minio_get_con_replica(mock_minio)
@@ -715,13 +656,7 @@ async def test_motivo_de_fallo_s3_no_filtra_host_ni_request_id(
         )
     )
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     import json as _json
 
     replica_evt = [

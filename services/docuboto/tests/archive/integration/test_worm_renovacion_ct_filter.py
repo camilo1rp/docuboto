@@ -23,7 +23,7 @@ También cubre la atomicidad marca<->asiento de
 contra BD real (commit conjunto).
 
 Compromiso (igual que el resto de `tests/integration/`): NO hay tráfico HTTP
-real a storage-service — `storage_client.renovar_retencion_worm_internal` se
+real a storage-service — `storage_api.renew_retention` se
 monkeypatchea a un `WormRenewalOutcome` fijo.
 """
 
@@ -36,7 +36,6 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from archive.clients.storage_client import WormRenewalOutcome
 from archive.core.actor import Actor
 from archive.core.database import tenant_schema
 from archive.core.disposition import CT_DISPOSITION_CODES
@@ -49,6 +48,7 @@ from archive.services.aip_wiring_service import AipWiringService
 from archive.services.archive_service import ArchiveService
 from archive.services.index_service import IndexService
 from archive.services.transferencia_service import TransferenciaService
+from storage.api import WormRenewalOutcome
 
 from .conftest import convalidate_for_test
 
@@ -497,7 +497,7 @@ async def test_renovar_worm_indice_commits_mirror_and_audit_together(
     nueva = datetime.now(tz=UTC) + timedelta(days=9125)  # 25 años
 
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)
         ),
@@ -536,7 +536,7 @@ async def test_renovar_worm_acta_commits_mirror_and_audit_together(
     nueva = datetime.now(tz=UTC) + timedelta(days=9125)
 
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)
         ),
@@ -579,7 +579,7 @@ async def test_renovar_worm_aip_commits_mirror_and_audit_together(
     nueva = datetime.now(tz=UTC) + timedelta(days=9125)  # 25 años
 
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(
             return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)
         ),

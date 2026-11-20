@@ -42,14 +42,14 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from orpycamcp_common.tenant import AtencionPublica, atencion_publica, slug_valido
 from orpycamcp_common.tenant import tenant_schema as _schema_de
 
-from signature.clients import preservacion_client
 from signature.core.constants import (
     PROVIDERS_FIRMA_ELECTRONICA,
     signature_kind,
 )
 from signature.repositories.firma_repository import FirmaRepository
-from signature.routers.signature import verificar_xades
 from signature.schemas.firma import PublicSignatureVerification
+from signature.services.verification import verificar_xades
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +172,8 @@ async def verificar_publica(
             acreditado=False,
         )
     try:
-        xml = await preservacion_client.descargar_xml(tenant_slug=tenant, minio_key=minio_key)
-    except preservacion_client.PreservacionError as exc:
+        xml = await storage_api.read_object(tenant_slug=tenant, object_key=minio_key)
+    except storage_api.StorageError as exc:
         # Storage caído no es «firma inválida»: se dice que no se pudo comprobar.
         logger.warning("Verificación pública: no se pudo descargar el XML de %s", firma_id)
         raise HTTPException(

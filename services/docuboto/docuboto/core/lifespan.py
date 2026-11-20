@@ -23,12 +23,11 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-import httpx
 import redis.asyncio as aioredis
 from fastapi import FastAPI
-from orpycamcp_common import events, request_log
-from orpycamcp_common.client_ip import exigir_proxies_sin_gateway, gateway_de_la_ruta_por_defecto
+from orpycamcp_common import request_log
 from orpycamcp_common import secrets as common_secrets
+from orpycamcp_common.client_ip import exigir_proxies_sin_gateway, gateway_de_la_ruta_por_defecto
 
 from archive.main import (
     _acta_reconciliation_loop,
@@ -44,7 +43,6 @@ from docuboto.core.tasks import BackgroundTasks, heavy_slot
 from docuboto.core.trabajo import COLA_APP, COLA_WORKER
 from docuboto.core.trabajo import bucle as bucle_trabajo
 from document.api import registrar_apertura_de_flujo
-from document.clients.storage_client import registrar_almacen
 from document.core import altcha
 from document.services.barrido import bucle_de_barrido
 from document.services.email_sondeo import bucle_de_sondeo
@@ -55,7 +53,6 @@ from notification.workers import stream_worker
 from signature.core.config import variables_retiradas_presentes
 from signature.jobs import renovacion_lta
 from signature.workers import document_consumer as signature_consumer
-from storage.api import guardar as guardar_en_almacen
 from storage.core.minio_client import init_minio
 from storage.main import (
     _descargar_para_migracion,
@@ -167,7 +164,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     bind_pool(pool)
     app.state.db_pool = pool
     registrar_apertura_de_flujo(abrir_al_radicar)
-    registrar_almacen(guardar_en_almacen)
 
     redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
     bind_redis(redis_client)
@@ -178,9 +174,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.storage.minio_access_key,
         settings.storage.minio_secret_key,
         settings.storage.minio_use_ssl,
-    )
-    app.state.http_client = httpx.AsyncClient(
-        base_url=settings.document.tenant_service_url, timeout=5.0
     )
     auth_service = AuthService()
     set_auth_service(auth_service)
@@ -199,14 +192,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.document.email_sondeo_enabled and settings.document.email_sondeo_tenant_slug:
         tareas.start(
             "email-sondeo",
-            lambda: bucle_de_sondeo(
-                pool, settings.document.email_sondeo_tenant_slug, app.state.http_client
-            ),
+            lambda: bucle_de_sondeo(pool, settings.document.email_sondeo_tenant_slug),
         )
     if settings.document.barrido_enabled:
-        tareas.start(
-            "barrido", lambda: bucle_de_barrido(app.state.redis, app.state.http_client)
-        )
+        tareas.start("barrido", lambda: bucle_de_barrido(app.state.redis))
     tareas.start("workflow", workflow_consumer.run, supervised=True)
     tareas.start("notification", stream_worker.run, supervised=True)
     tareas.start("signature", signature_consumer.run, supervised=True)
@@ -226,11 +215,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await tareas.stop()
     await salida_http.cerrar_consulta()
     await auth_service.close()
-    await app.state.http_client.aclose()
     await redis_client.aclose()
     unbind_redis()
     await pool.close()
     unbind_pool()
     registrar_apertura_de_flujo(None)
-    registrar_almacen(None)
     app.state.db_pool = None

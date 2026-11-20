@@ -7,49 +7,42 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Las rutas internas exigen el token y no salen por el gateway."""
+"""El acto de configuración que tenant pide a la pasarela (`knowledge.api`).
+
+Era un router interno con token; ahora es una llamada a función (ADR-047 §1).
+Lo que queda es validar el pedido antes de tocar la BD o el proveedor.
+"""
 
 from __future__ import annotations
 
 import uuid
 
 import pytest
-from fastapi import HTTPException
 
-from knowledge.core.config import settings
-from knowledge.core.internal_auth import require_internal_token
-from knowledge.routers import inteligencia
-
-
-class _Peticion:
-    def __init__(self, slug: str) -> None:
-        self.headers = {"X-Tenant-Slug": slug}
-
-
-def test_sin_token_configurado_rechaza(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "intelligence_internal_token", "")
-    with pytest.raises(HTTPException) as exc:
-        require_internal_token("algo")
-    assert exc.value.status_code == 401
-    assert exc.value.detail["error"] == "internal_access_not_configured"
-
-
-def test_un_token_distinto_rechaza(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "intelligence_internal_token", "secreto")
-    with pytest.raises(HTTPException) as exc:
-        require_internal_token("otro")
-    assert exc.value.status_code == 401
+from knowledge import api as knowledge_api
 
 
 @pytest.mark.asyncio
-async def test_la_purga_interna_no_repite_niveles(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "ppi_provider_url", "")
+@pytest.mark.parametrize(
+    ("reason", "levels"),
+    [
+        ("host_request", [2, 2]),  # un nivel no se repite
+        ("host_request", None),  # deshabilitar un nivel indica cuál
+        ("withdrawn", [1]),  # el retiro de la entidad no lleva niveles
+        ("host_request", [4]),  # nivel fuera del vocabulario
+        ("otra", None),
+    ],
+)
+async def test_la_purga_valida_el_pedido_antes_de_tocar_nada(reason, levels) -> None:
+    with pytest.raises(knowledge_api.IntelligenceError) as exc:
+        await knowledge_api.purge(
+            tenant_slug="demo", actor=uuid.uuid4(), reason=reason, levels=levels
+        )
+    assert exc.value.status == 422
 
-    class _Pedido:
-        reason = "host_request"
-        actor = uuid.uuid4()
-        levels = [2, 2]
 
-    with pytest.raises(HTTPException) as exc:
-        await inteligencia.purge(_Pedido(), _Peticion("demo"), object())
-    assert exc.value.status_code == 422
+@pytest.mark.asyncio
+async def test_la_aceptacion_exige_una_huella_bien_formada() -> None:
+    with pytest.raises(knowledge_api.IntelligenceError) as exc:
+        await knowledge_api.accept(tenant_slug="demo", level=1, sha256="no-es-una-huella")
+    assert exc.value.status == 422

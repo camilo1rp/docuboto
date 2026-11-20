@@ -27,7 +27,7 @@ Tres niveles:
   2. Composición con `SubprocessVeraPdfValidator` real (sin subprocess: la
      whitelist se comprueba ANTES de invocar veraPDF) -- cierra el circuito
      entre "se conserva tal cual" y "nunca se evalúa/reporta conformidad".
-  3. End-to-end HTTP (`client_with_conn`, mismo patrón que
+  3. End-to-end vía `AipService.empaquetar_aip` (mismo patrón que
      `test_aip_pdfa.py`): el perfil que declara `AipCreate.pdfa_profile`
      llega intacto al evento `VALIDACION_PDFA` (`detalle.profile`).
 """
@@ -42,10 +42,9 @@ import pytest
 
 import storage.core.config as config_module
 from storage.schemas.preservacion import AipCreate
-from storage.services.aip_service import _resolve_pdfa_profile
+from storage.services.aip_service import AipService, _resolve_pdfa_profile
 from storage.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -54,6 +53,17 @@ from tests.storage.conftest import (
 
 _PDF_CONTENT = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ncontenido pdf real de prueba (pdfa_profile)\n%%EOF"
 _PDF_SHA256 = hashlib.sha256(_PDF_CONTENT).hexdigest()
+
+
+_ACTOR = str(uuid.uuid4())
+
+
+async def _empaquetar(mock_conn, payload: dict) -> dict:
+    """Empaqueta vía `AipService` con un actor persona (la ruta HTTP ya no existe, ADR-047)."""
+    result = await AipService(mock_conn, TENANT_SLUG).empaquetar_aip(
+        AipCreate(**payload), actor=_ACTOR
+    )
+    return result.model_dump(mode="json")
 
 
 @pytest.fixture(autouse=True)
@@ -187,13 +197,9 @@ def test_aip_create_rejects_pdfa_profile_over_max_length() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. End-to-end HTTP: el perfil declarado llega intacto al evento
+# 4. End-to-end vía el servicio: el perfil declarado llega intacto al evento
 # VALIDACION_PDFA (`detalle.profile`) -- mismo montaje que `test_aip_pdfa.py`.
 # ---------------------------------------------------------------------------
-
-
-def _grant_permission(mock_conn) -> None:
-    mock_conn.fetchval.return_value = True
 
 
 def _pdf_record(file_id: uuid.UUID) -> dict:
@@ -255,18 +261,17 @@ def _evento_row(tipo: str) -> dict:
 async def _run_pdfa_e2e(
     client_with_conn, monkeypatch: pytest.MonkeyPatch, *, pdfa_profile: str | None
 ):
-    """Ejercita `POST /api/v1/preservacion/aip` con el gate PDF/A activo y
+    """Ejercita `AipService.empaquetar_aip` con el gate PDF/A activo y
     devuelve el `detalle` (dict) del evento VALIDACION_PDFA insertado."""
     import json
 
     monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _pdf_record(doc_file_id),
         None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
@@ -279,12 +284,9 @@ async def _run_pdfa_e2e(
     ]
     mock_minio.get_object = minio_get_object(_PDF_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id, pdfa_profile=pdfa_profile),
-        headers=INTERNAL_HEADERS,
+    await _empaquetar(
+        mock_conn, _base_payload(doc_file_id=doc_file_id, pdfa_profile=pdfa_profile)
     )
-    assert resp.status_code == 201, resp.text
 
     evento_inserts = [
         c

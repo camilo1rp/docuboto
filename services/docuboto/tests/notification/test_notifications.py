@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from httpx import AsyncClient
 
+from notification import api as notification_api
 from tests.notification.conftest import (
     INTERNAL_HEADERS,
     TENANT_HEADERS,
@@ -25,30 +26,34 @@ from tests.notification.conftest import (
 )
 
 
+@pytest.fixture
+def db_conn():
+    """La conexión del tenant donde `send_notification` persiste el envío."""
+    conn = make_db_conn()
+    with patch(
+        "notification.services.notification_service.acquire_tenant",
+        return_value=_FakeAcquire(conn),
+    ):
+        yield conn
+
+
 # --- envío manual + persistencia -------------------------------------------
 @pytest.mark.asyncio
-async def test_send_notification_manual(client: AsyncClient, db_conn) -> None:
+async def test_send_notification_manual(db_conn) -> None:
     with patch("notification.services.notification_service.send_email", new=AsyncMock()):
-        response = await client.post(
-            "/api/v1/notifications/send",
-            json={
-                "recipient_email": "user@example.com",
-                "subject": "Test subject",
-                "body": "Test body",
-                "tenant_slug": "icetex",
-            },
-            headers=INTERNAL_HEADERS,
+        notification_id = await notification_api.send(
+            recipient_email="user@example.com",
+            subject="Test subject",
+            body="Test body",
+            tenant_slug="icetex",
         )
-    assert response.status_code == 202
-    data = response.json()
-    assert "id" in data
-    assert data["status"] == "accepted"
+    assert notification_id
     # Se persistió en la BD del tenant (un INSERT).
     db_conn.execute.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_send_notification_failed_email_is_persisted(client: AsyncClient, db_conn) -> None:
+async def test_send_notification_failed_email_is_persisted(db_conn) -> None:
     """Si el SMTP falla, se persiste el intento **y se responde que falló**.
 
     Este test afirmaba `202` — y con eso fijaba el defecto en su sitio. El
@@ -74,18 +79,13 @@ async def test_send_notification_failed_email_is_persisted(client: AsyncClient, 
         ),
         patch("notification.services.notification_service.asyncio.sleep", new=AsyncMock()),
     ):
-        response = await client.post(
-            "/api/v1/notifications/send",
-            json={
-                "recipient_email": "u@x.co",
-                "subject": "S",
-                "body": "B",
-                "tenant_slug": "icetex",
-            },
-            headers=INTERNAL_HEADERS,
-        )
-    assert response.status_code == 502
-    assert response.json()["detail"]["error"] == "envio_fallido"
+        with pytest.raises(notification_api.NotificationDeliveryError):
+            await notification_api.send(
+                recipient_email="u@x.co",
+                subject="S",
+                body="B",
+                tenant_slug="icetex",
+            )
     # Y se persistió pese al error: el intento fallido es parte del historial.
     db_conn.execute.assert_awaited_once()
 
@@ -93,7 +93,7 @@ async def test_send_notification_failed_email_is_persisted(client: AsyncClient, 
 # --- RF-FIR-13: cierre de fuga de OTP (sensible=True nunca se persiste) ----
 @pytest.mark.asyncio
 async def test_sensible_notification_sends_real_body_but_persists_redacted(
-    client: AsyncClient, db_conn
+    db_conn,
 ) -> None:
     """El SMTP recibe el OTP real; la fila persistida lleva el placeholder.
 
@@ -104,18 +104,13 @@ async def test_sensible_notification_sends_real_body_but_persists_redacted(
     """
     otp_body = "Código: 123456\n\nVálido por 5 minutos."
     with patch("notification.services.notification_service.send_email", new=AsyncMock()) as mock_send:
-        response = await client.post(
-            "/api/v1/notifications/send",
-            json={
-                "recipient_email": "firmante@example.com",
-                "subject": "Código de verificación para su firma electrónica",
-                "body": otp_body,
-                "tenant_slug": "icetex",
-                "sensible": True,
-            },
-            headers=INTERNAL_HEADERS,
+        await notification_api.send(
+            recipient_email="firmante@example.com",
+            subject="Código de verificación para su firma electrónica",
+            body=otp_body,
+            tenant_slug="icetex",
+            sensible=True,
         )
-    assert response.status_code == 202
 
     # El envío SMTP SÍ recibió el OTP real.
     assert mock_send.call_args.kwargs["body"] == otp_body
@@ -133,21 +128,16 @@ async def test_sensible_notification_sends_real_body_but_persists_redacted(
 
 @pytest.mark.asyncio
 async def test_non_sensible_notification_persists_real_body(
-    client: AsyncClient, db_conn
+    db_conn,
 ) -> None:
     """Retrocompatibilidad: `sensible` ausente/False -> body real persistido (como hoy)."""
     with patch("notification.services.notification_service.send_email", new=AsyncMock()):
-        response = await client.post(
-            "/api/v1/notifications/send",
-            json={
-                "recipient_email": "u@x.co",
-                "subject": "S",
-                "body": "Cuerpo normal, no sensible",
-                "tenant_slug": "icetex",
-            },
-            headers=INTERNAL_HEADERS,
+        await notification_api.send(
+            recipient_email="u@x.co",
+            subject="S",
+            body="Cuerpo normal, no sensible",
+            tenant_slug="icetex",
         )
-    assert response.status_code == 202
 
     persisted_args = db_conn.execute.call_args.args
     assert persisted_args[4] == "Cuerpo normal, no sensible"
@@ -243,32 +233,17 @@ async def test_get_history_missing_tenant_is_400(client: AsyncClient) -> None:
     assert response.json()["detail"]["error"] == "missing_tenant"
 
 
-# --- Gate D-02: /send sellado servicio-a-servicio (X-Internal-Token) --------
+# --- No hay ruta que envíe correo (ADR-047 §1) ------------------------------
 @pytest.mark.asyncio
-async def test_send_sin_token_interno_401(client: AsyncClient) -> None:
-    """Sin X-Internal-Token, /send rechaza (401): cierra el vector de phishing.
-
-    Antes de este sello, cualquier JWT válido reenviado por el gateway podía
-    enviar correo arbitrario con la identidad SMTP de la institución.
-    """
+async def test_ninguna_ruta_envia_correo(client: AsyncClient) -> None:
+    """El envío solo se alcanza en proceso (`notification.api.send`): ningún JWT ni
+    token puede mandar correo con la identidad SMTP de la institución."""
     response = await client.post(
         "/api/v1/notifications/send",
         json={"recipient_email": "u@x.co", "subject": "S", "body": "B", "tenant_slug": "icetex"},
+        headers=INTERNAL_HEADERS,
     )
-    assert response.status_code == 401
-    assert response.json()["detail"]["error"] == "missing_internal_token"
-
-
-@pytest.mark.asyncio
-async def test_send_token_interno_invalido_403(client: AsyncClient) -> None:
-    """Un X-Internal-Token que no casa con el secreto → 403 (comparación constante)."""
-    response = await client.post(
-        "/api/v1/notifications/send",
-        json={"recipient_email": "u@x.co", "subject": "S", "body": "B", "tenant_slug": "icetex"},
-        headers={"X-Internal-Token": "token-equivocado"},
-    )
-    assert response.status_code == 403
-    assert response.json()["detail"]["error"] == "invalid_internal_token"
+    assert response.status_code in (404, 405)
 
 
 @pytest.mark.asyncio

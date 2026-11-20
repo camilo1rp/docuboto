@@ -27,6 +27,7 @@ volver a ``_c14n_element`` fijo en la verificación del sello (cae B2).
 
 from __future__ import annotations
 
+import uuid
 from base64 import b64encode
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -174,11 +175,11 @@ async def test_firma_personal_con_certificado_caducado_no_llama_a_remote_sign() 
 async def test_sign_personal_xml_responde_422_y_no_toca_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     _key, cert = _cert_con_vigencia("persona-vencida", timedelta(days=-400), timedelta(days=-1))
     auth = AsyncMock()
-    monkeypatch.setattr(personal_signing, "sign_digest_remote", auth)
+    monkeypatch.setattr("auth.api.sign_digest", auth)
     with pytest.raises(HTTPException) as info:
         await personal_signing.sign_personal_xml(
             xml_bytes=_DOC, objeto_tipo="radicado", objeto_id="r-1",
-            authorization="Bearer x", totp_code="123456", cert_pem=_pem_cert(cert).decode(),
+            tenant_slug="demo", actor=uuid.uuid4(), totp_code="123456", cert_pem=_pem_cert(cert).decode(),
         )
     assert info.value.status_code == 422
     assert info.value.detail["error"] == "certificado_personal_vencido"
@@ -193,11 +194,11 @@ async def test_sign_personal_xml_responde_422_y_no_toca_auth(monkeypatch: pytest
 @pytest.mark.asyncio
 async def test_firma_no_conforme_en_la_ruta_personal_es_503_limpio(monkeypatch: pytest.MonkeyPatch) -> None:
     key, cert = _cert("persona-b7")
-    async def _firma_remota(*_a: object, **_k: object) -> dict:
-        digest = _a[1]
+    async def _firma_remota(**_k: object) -> dict:
+        digest = _k["digest"]
         return {"signature_value_b64": b64encode(key.sign(digest, padding.PKCS1v15(), Prehashed(hashes.SHA256()))).decode()}
 
-    monkeypatch.setattr(personal_signing, "sign_digest_remote", _firma_remota)
+    monkeypatch.setattr("auth.api.sign_digest", _firma_remota)
 
     def _rota(*_a: object, **_k: object) -> None:
         raise XmldsigNoConformeError("autoverificacion_xmldsig_fallida: simulada")
@@ -206,7 +207,7 @@ async def test_firma_no_conforme_en_la_ruta_personal_es_503_limpio(monkeypatch: 
     with pytest.raises(HTTPException) as info:
         await personal_signing.sign_personal_xml(
             xml_bytes=_DOC, objeto_tipo="radicado", objeto_id="r-1",
-            authorization="Bearer x", totp_code="123456", cert_pem=_pem_cert(cert).decode(),
+            tenant_slug="demo", actor=uuid.uuid4(), totp_code="123456", cert_pem=_pem_cert(cert).decode(),
         )
     assert info.value.status_code == 503
     assert info.value.detail["error"] == "firma_no_conforme_xmldsig"

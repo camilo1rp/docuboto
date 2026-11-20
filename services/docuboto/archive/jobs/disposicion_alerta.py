@@ -42,11 +42,11 @@ from __future__ import annotations
 
 import logging
 
-from archive.clients.notification_client import NotificationDeliveryError, enviar_aviso
 from archive.core.config import settings
 from archive.core.database import acquire_tenant, get_pool
 from archive.jobs.indice_reconciliation import list_active_tenants
 from archive.repositories.archive_repository import ArchiveRepository
+from notification import api as notification_api
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ async def run_once() -> dict[str, int]:
                         # asunto suyo, y decírselo sería la fuga.
                         continue
                     try:
-                        await enviar_aviso(
+                        await notification_api.send(
                             recipient_email=d["email"],
                             subject=_ASUNTO,
                             body=_cuerpo(
@@ -114,7 +114,7 @@ async def run_once() -> dict[str, int]:
                             tenant_slug=slug,
                         )
                         resumen["avisos"] += 1
-                    except NotificationDeliveryError as exc:
+                    except notification_api.NotificationDeliveryError as exc:
                         resumen["fallidos"] += 1
                         logger.warning(
                             "Alerta de disposición: no se pudo avisar en tenant=%s: %s",

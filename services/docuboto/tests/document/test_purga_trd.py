@@ -28,8 +28,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from document.clients.storage_client import StoragePurgaError
 from document.services.purga_service import PurgaService
+from storage.api import StoragePurgeError
 from tests.document.conftest import _make_mock_conn
 
 
@@ -87,7 +87,7 @@ async def test_los_bytes_se_borran_ANTES_que_las_filas(mock_conn) -> None:
             "list_anexos_for_radicados_internal",
             AsyncMock(return_value={RAD_A: [_Anexo(files[0]), _Anexo(files[1])]}),
         ),
-        patch("document.clients.storage_client.purgar_disposicion", _purgar),
+        patch("storage.api.purge_for_disposition", _purgar),
     ):
         recuento = await _servicio(mock_conn).purgar_radicados(
             [RAD_A], expediente_id=EXP, motivo="TRD", actor=uuid.uuid4()
@@ -109,10 +109,10 @@ async def test_si_los_bytes_NO_se_van_no_se_borra_ninguna_fila(mock_conn) -> Non
             AsyncMock(return_value={RAD_A: [_Anexo(uuid.uuid4())]}),
         ),
         patch(
-            "document.clients.storage_client.purgar_disposicion",
-            AsyncMock(side_effect=StoragePurgaError("storage inalcanzable")),
+            "storage.api.purge_for_disposition",
+            AsyncMock(side_effect=StoragePurgeError("storage inalcanzable")),
         ),
-        pytest.raises(StoragePurgaError),
+        pytest.raises(StoragePurgeError),
     ):
         await _servicio(mock_conn).purgar_radicados(
             [RAD_A], expediente_id=EXP, motivo="TRD", actor=uuid.uuid4()
@@ -135,7 +135,7 @@ async def test_el_asiento_conserva_el_NUMERO_del_radicado_destruido(mock_conn) -
             "list_anexos_for_radicados_internal",
             AsyncMock(return_value={}),
         ),
-        patch("document.clients.storage_client.purgar_disposicion", AsyncMock(return_value=[])),
+        patch("storage.api.purge_for_disposition", AsyncMock(return_value=[])),
     ):
         await _servicio(mock_conn).purgar_radicados(
             [RAD_A], expediente_id=EXP, motivo="TRD", actor=uuid.uuid4()
@@ -176,7 +176,7 @@ async def test_los_numeros_se_leen_ANTES_de_borrar(mock_conn) -> None:
             "list_anexos_for_radicados_internal",
             AsyncMock(return_value={}),
         ),
-        patch("document.clients.storage_client.purgar_disposicion", AsyncMock(return_value=[])),
+        patch("storage.api.purge_for_disposition", AsyncMock(return_value=[])),
     ):
         await _servicio(mock_conn).purgar_radicados(
             [RAD_A], expediente_id=EXP, motivo="TRD", actor=uuid.uuid4()
@@ -198,7 +198,7 @@ async def test_un_radicado_que_ya_no_estaba_no_se_cuenta_ni_se_audita(mock_conn)
             "list_anexos_for_radicados_internal",
             AsyncMock(return_value={}),
         ),
-        patch("document.clients.storage_client.purgar_disposicion", AsyncMock(return_value=[])),
+        patch("storage.api.purge_for_disposition", AsyncMock(return_value=[])),
     ):
         recuento = await _servicio(mock_conn).purgar_radicados(
             [RAD_A], expediente_id=EXP, motivo="TRD", actor=uuid.uuid4()
@@ -245,7 +245,7 @@ async def test_no_se_destruyen_los_bytes_que_otro_expediente_sigue_usando(client
             "list_anexos_for_radicados_internal",
             AsyncMock(return_value={RAD_A: [_Anexo(compartido), _Anexo(propio)]}),
         ),
-        patch("document.clients.storage_client.purgar_disposicion", _purgar),
+        patch("storage.api.purge_for_disposition", _purgar),
     ):
         with contextlib.suppress(Exception):
             await _servicio(mock_conn).purgar_radicados(

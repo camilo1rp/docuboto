@@ -258,7 +258,7 @@ class TestHuellaAutoritativa:
     async def test_si_no_se_puede_resolver_no_se_abre(self, monkeypatch) -> None:
         # Una cadena con la huella equivocada es PEOR que ninguna: parece que
         # protege.
-        from signature.core.http_clients import HuellaNoVerificableError
+        from signature.core.huella import HuellaNoVerificableError
 
         svc = self._svc(monkeypatch, error=HuellaNoVerificableError("caido"))
         with pytest.raises(Exception) as exc:
@@ -269,7 +269,7 @@ class TestHuellaAutoritativa:
     async def test_un_borrador_inexistente_da_404_neutro(self, monkeypatch) -> None:
         # Mismo 404 que el no-read-up: abrir un circuito no puede servir para
         # descubrir si un objeto existe.
-        from signature.core.http_clients import BorradorDesaparecidoError
+        from signature.core.huella import BorradorDesaparecidoError
 
         svc = self._svc(monkeypatch, error=BorradorDesaparecidoError("no está"))
         with pytest.raises(Exception) as exc:
@@ -431,7 +431,7 @@ class TestElGateSimetrico:
         svc._repo.turno_activo = AsyncMock(return_value=turno)
 
         with pytest.raises(HTTPException) as exc:
-            await svc.firmar(uuid.uuid4(), REVISOR, None, None)
+            await svc.firmar(uuid.uuid4(), REVISOR, None)
 
         assert exc.value.status_code == 409
         assert exc.value.detail["error"] == "turno_es_de_visto_bueno"
@@ -453,7 +453,6 @@ class TestElGateSimetrico:
         """
         from fastapi import HTTPException
 
-        from signature.services import cadena_service as mod
 
         consultas = []
 
@@ -461,14 +460,14 @@ class TestElGateSimetrico:
             consultas.append(a)
             raise AssertionError("no debería llegar aquí con un turno de visto bueno")
 
-        monkeypatch.setattr(mod, "get_signing_key_status_remote", _espia)
+        monkeypatch.setattr("auth.api.signing_key_status", _espia)
 
         turno = _turno("visto_bueno")
         svc = _servicio(turno, monkeypatch)
         svc._repo.turno_activo = AsyncMock(return_value=turno)
 
         with pytest.raises(HTTPException) as exc:
-            await svc.firmar(uuid.uuid4(), REVISOR, None, None)
+            await svc.firmar(uuid.uuid4(), REVISOR, None)
 
         assert exc.value.detail["error"] == "turno_es_de_visto_bueno"
         assert consultas == []
@@ -484,6 +483,6 @@ class TestElGateSimetrico:
         svc._repo.turno_activo = AsyncMock(return_value=turno)
 
         try:
-            await svc.firmar(uuid.uuid4(), REVISOR, None, None)
+            await svc.firmar(uuid.uuid4(), REVISOR, None)
         except HTTPException as exc:  # puede fallar más adelante (2FA, proveedor)
             assert exc.detail.get("error") != "turno_es_de_visto_bueno"

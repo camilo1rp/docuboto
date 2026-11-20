@@ -31,6 +31,7 @@ import json
 import secrets
 import uuid
 
+from notification import api as notification_api
 from signature.core.secret_derivation import (
     KEY_VERSION_ACTUAL,
     KEY_VERSION_HKDF,
@@ -126,3 +127,37 @@ def mask_email(email: str) -> str:
         return "***"
     prefix = local[:1] or "*"
     return f"{prefix}***@{domain}"
+
+
+async def send_otp_email(
+    *,
+    recipient_email: str,
+    tenant_slug: str,
+    objeto_tipo: str,
+    solicitud_id: uuid.UUID,
+    otp: str,
+    ttl_seconds: int,
+) -> None:
+    """Envía el código por correo. Levanta `notification_api.NotificationDeliveryError`.
+
+    El cuerpo lleva SOLO el identificador del acto (tipo + prefijo corto de la
+    solicitud) y el código, NUNCA la huella del documento. `sensible=True`:
+    notification envía el cuerpo real y persiste un marcador redactado, así
+    que el invariante «el OTP en claro nunca se persiste» se sostiene de punta
+    a punta (RF-FIR-13).
+    """
+    solicitud_corta = str(solicitud_id).split("-")[0]
+    minutos = max(ttl_seconds // 60, 1)
+    await notification_api.send(
+        recipient_email=recipient_email,
+        subject="Código de verificación para su firma electrónica",
+        body=(
+            f"Se solicitó un código de verificación para firmar el acto "
+            f"{objeto_tipo}:{solicitud_corta}.\n\n"
+            f"Código: {otp}\n\n"
+            f"Válido por {minutos} minutos. Si usted no solicitó esta firma, "
+            "ignore este mensaje."
+        ),
+        tenant_slug=tenant_slug,
+        sensible=True,
+    )

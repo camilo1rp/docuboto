@@ -7,41 +7,57 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""B10 ítem 2: el cliente de invalidación manda la huella VIGENTE en el cuerpo.
+"""B10 ítem 2: la invalidación pide a firma la huella VIGENTE como predicado.
 
-signature-service responde 422 sin ella (``cuerpo_sha256_vigente`` es obligatorio),
-así que el cliente —best-effort— no puede omitirla.
+Se invalida lo que NO recae sobre ella; sin la huella un aviso tardío tiraría el
+circuito abierto sobre el texto que sí está vigente. Y es best-effort: un fallo
+devuelve -1, nunca impide editar.
 """
 
 from __future__ import annotations
 
-import httpx
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from document.clients import signature_client
+from signature import api as signature_api
 
 HUELLA = "c" * 64
 
 
+@asynccontextmanager
+async def _conn(*_a, **_k):
+    yield MagicMock()
+
+
 @pytest.mark.asyncio
-async def test_invalidar_circuitos_manda_la_huella_vigente_en_el_cuerpo(monkeypatch) -> None:
-    vistos: list[httpx.Request] = []
+async def test_invalidar_circuitos_pasa_la_huella_vigente(monkeypatch) -> None:
+    nucleo = AsyncMock(return_value=2)
+    monkeypatch.setattr(signature_api, "_tenant_conn", _conn)
+    monkeypatch.setattr(signature_api.invalidacion, "invalidar_por_contenido", nucleo)
 
-    def _handler(request: httpx.Request) -> httpx.Response:
-        vistos.append(request)
-        return httpx.Response(200, json={"invalidadas": 2})
-
-    transporte = httpx.MockTransport(_handler)
-    real = httpx.AsyncClient
-    monkeypatch.setattr(
-        signature_client.httpx,
-        "AsyncClient",
-        lambda **kw: real(transport=transporte, **kw),
+    n = await signature_api.invalidar_circuitos(
+        borrador_id="b-1", tenant_slug="demo", cuerpo_sha256_vigente=HUELLA
     )
 
-    n = await signature_client.invalidar_circuitos("b-1", "demo", HUELLA)
-
     assert n == 2
-    assert len(vistos) == 1
-    assert vistos[0].url.path.endswith("/internal/circuitos/borrador/b-1/invalidar")
-    assert vistos[0].read() == b'{"cuerpo_sha256_vigente":"' + HUELLA.encode() + b'"}'
+    kw = nucleo.await_args.kwargs
+    assert kw["objeto_tipo"] == "borrador" and kw["objeto_id"] == "b-1"
+    assert kw["vigente"] == HUELLA and kw["origen"] == "sincrono"
+
+
+@pytest.mark.asyncio
+async def test_invalidar_circuitos_es_best_effort(monkeypatch) -> None:
+    monkeypatch.setattr(signature_api, "_tenant_conn", _conn)
+    monkeypatch.setattr(
+        signature_api.invalidacion,
+        "invalidar_por_contenido",
+        AsyncMock(side_effect=RuntimeError("BD caída")),
+    )
+    assert (
+        await signature_api.invalidar_circuitos(
+            borrador_id="b-1", tenant_slug="demo", cuerpo_sha256_vigente=HUELLA
+        )
+        == -1
+    )

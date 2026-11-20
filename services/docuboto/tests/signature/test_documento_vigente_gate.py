@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from signature.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
+from signature.core.huella import BorradorDesaparecidoError, HuellaNoVerificableError
 from signature.services.cadena_service import CadenaFirmaService
 
 HUELLA_APROBADA = "a" * 64

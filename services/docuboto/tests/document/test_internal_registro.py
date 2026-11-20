@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""`GET /internal/documentos/radicados/{id}` solo sirve un nivel habilitado."""
+"""`document.api.read_radicado_record` solo sirve un nivel habilitado."""
 
 from __future__ import annotations
 
@@ -17,18 +17,10 @@ from typing import Any
 
 import pytest
 
-from document.core import config as cfg_module
-from document.routers import internal
+from document import api as document_api
 from tests.document.conftest import TENANT_SLUG
 
-TOKEN = "test-document-internal-token-xxx"
 RADICADO = uuid.uuid4()
-RUTA = f"/api/v1/internal/documentos/radicados/{RADICADO}"
-
-
-@pytest.fixture(autouse=True)
-def _token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TOKEN)
 
 
 def _fila() -> dict[str, Any]:
@@ -65,35 +57,25 @@ def _consultas(fila: dict[str, Any] | None) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_sin_token_es_404(client_with_conn) -> None:
-    client, _conn = client_with_conn
-    resp = await client.get(RUTA, headers={"X-Tenant-Slug": TENANT_SLUG})
-    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware
-    # de identidad responde 404 antes de cualquier gate.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-
-
-@pytest.mark.asyncio
-async def test_un_nivel_no_habilitado_no_lista_anexos(client_with_conn) -> None:
-    client, conn = client_with_conn
+async def test_un_nivel_no_habilitado_no_lista_anexos(api_conn) -> None:
+    conn = api_conn
     conn.fetchrow.side_effect = _consultas(None)
 
     async def fetch(sql: str, *args: Any) -> Any:
         raise AssertionError(sql)
 
     conn.fetch.side_effect = fetch
-    resp = await client.get(
-        RUTA, headers={"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": TOKEN}
+    assert (
+        await document_api.read_radicado_record(tenant_slug=TENANT_SLUG, radicado_id=RADICADO)
+        is None
     )
-    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_un_nivel_habilitado_devuelve_el_registro_y_deja_traza(
-    client_with_conn, monkeypatch: pytest.MonkeyPatch
+    api_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, conn = client_with_conn
+    conn = api_conn
     conn.fetchrow.side_effect = _consultas(_fila())
     anexo_id = uuid.uuid4()
     asientos: list[dict[str, Any]] = []
@@ -116,12 +98,11 @@ async def test_un_nivel_habilitado_devuelve_el_registro_y_deja_traza(
         asientos.append(kwargs)
 
     conn.fetch.side_effect = fetch
-    monkeypatch.setattr(internal.audit, "append", traza)
-    resp = await client.get(
-        RUTA, headers={"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": TOKEN}
+    monkeypatch.setattr(document_api.audit, "append", traza)
+    cuerpo = await document_api.read_radicado_record(
+        tenant_slug=TENANT_SLUG, radicado_id=RADICADO
     )
-    assert resp.status_code == 200
-    cuerpo = resp.json()
+    assert cuerpo is not None
     assert cuerpo["tracking_number"] == "2026-E-1"
     assert cuerpo["anexos"][0]["sha256"] == "ab" * 32
     assert "nivel_seguridad" not in cuerpo

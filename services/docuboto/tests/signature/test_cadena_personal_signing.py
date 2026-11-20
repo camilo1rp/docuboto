@@ -13,9 +13,8 @@ secuencial (E17/F4, Incremento 1). Mismo estilo de conexión asyncpg mockeada
 que ``tests/test_cadena_totp.py`` — reutiliza sus helpers y los de
 ``tests/test_cadena.py``/``tests/test_cadena_2fa.py``.
 
-``get_signing_key_status_remote``/``sign_digest_remote`` (llamadas HTTP
-directas a auth-service, ``signature/core/http_clients.py``) se monkeypatchean en
-vez de tocar httpx real — mismo patrón que ``verify_totp`` en
+``auth.api.signing_key_status``/``auth.api.sign_digest`` se monkeypatchean en
+vez de tocar la BD de auth — mismo patrón que ``auth.api.verify_totp`` en
 ``test_cadena_totp.py``. La firma remota se ejercita con criptografía REAL
 (un certificado de test emitido por una CA en memoria y una clave RSA real
 que firma el digest recibido) para que el ``firma_blob``/``certificado_pem``
@@ -38,12 +37,19 @@ from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from httpx import ASGITransport, AsyncClient
 
+from auth.api import SignDigestError
 from signature.core.database import get_tenant_conn
-from signature.core.http_clients import SignDigestRemoteError
 from signature.main import app
 from signature.providers.base import SignerRef
 from tests.signature.conftest import TENANT_HEADERS, USER
-from tests.signature.test_cadena import FIRMA_ID, SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row
+from tests.signature.test_cadena import (
+    FIRMA_ID,
+    SOL_ID,
+    _exec_sig,
+    _make_conn,
+    _sol_row,
+    _turno_row,
+)
 from tests.signature.test_cadena_2fa import _patch_audit
 
 
@@ -154,7 +160,7 @@ def _patch_signing_key_status(
     monkeypatch: pytest.MonkeyPatch, *, body: dict | None = None, error: Exception | None = None
 ) -> AsyncMock:
     mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=body)
-    monkeypatch.setattr("signature.services.cadena_service.get_signing_key_status_remote", mock)
+    monkeypatch.setattr("auth.api.signing_key_status", mock)
     return mock
 
 
@@ -179,7 +185,7 @@ def _patch_sign_digest_remote(
     else:
         assert private_key is not None
 
-        async def _fake_sign(authorization, digest, totp_code, **_kw):
+        async def _fake_sign(*, digest, totp_code, **_kw):
             signature = private_key.sign(
                 digest, padding.PKCS1v15(), Prehashed(hashes.SHA256())
             )
@@ -197,7 +203,7 @@ def _patch_sign_digest_remote(
     # `app.services.personal_signing.sign_personal_xml` (extract-method
     # E17/F4 Incremento 1, reutilizado por `CadenaFirmaService._firmar_personal`
     # — ver su docstring) — NO desde `cadena_service` directamente.
-    monkeypatch.setattr("signature.services.personal_signing.sign_digest_remote", mock)
+    monkeypatch.setattr("auth.api.sign_digest", mock)
     return mock
 
 
@@ -556,7 +562,7 @@ async def test_sign_active_cert_wrong_totp_maps_auth_service_error(
     _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(
         monkeypatch,
-        error=SignDigestRemoteError(
+        error=SignDigestError(
             401, {"error": "totp_incorrecto", "detail": "wrong code", "status": 401}
         ),
     )
@@ -593,11 +599,11 @@ async def test_sign_active_cert_status_unavailable_falls_back_to_native(
     """auth-service caído al consultar signing-key/status — fail-OPEN a la
     firma nativa (firma_personal_require_xades NO se aplica en Inc.1), nunca
     bloquea la cadena de firma por un fallo de infraestructura ajeno."""
-    from signature.core.http_clients import SigningKeyStatusUnavailableError
+    from auth.api import AuthUnavailableError
 
     _patch_audit(monkeypatch)
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
 
@@ -688,7 +694,7 @@ async def test_verify_dispatches_xades_personal(
     # preservar el comportamiento previo de este test — la rama de
     # revocación tiene su propia cobertura en test_verify_revocacion_status_*.
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote",
+        "auth.api.signing_key_revocation_status",
         AsyncMock(return_value={"status": "vigente"}),
     )
 

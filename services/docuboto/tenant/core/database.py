@@ -8,6 +8,7 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import asyncpg
 from fastapi import HTTPException, Request, status
@@ -87,6 +88,18 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
             )
+        await conn.execute(f'SET search_path = "{schema}"')
+        try:
+            yield conn
+        finally:
+            await conn.execute("SET search_path = public")
+
+
+@asynccontextmanager
+async def acquire_tenant(slug: str) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Conexión propia con `search_path` al tenant, para `tenant.api` (sin `Request`)."""
+    schema = tenant_schema(slug)
+    async with get_pool().acquire() as conn:
         await conn.execute(f'SET search_path = "{schema}"')
         try:
             yield conn

@@ -9,7 +9,7 @@
 
 """Perfil PDF/A configurable por serie/TRD (E10 debt, follow-up de
 Increment C2b, RF-FIR-15): `AipWiringService._resolve_aip_pdfa_profile` y su
-cableado hacia `storage_client.empaquetar_aip_internal(pdfa_profile=...)`.
+cableado hacia `storage_api.package_aip(pdfa_profile=...)`.
 
 Gemelo de la sección de retención de `test_aip_wiring_service.py`
 (`_resolve_aip_retention`/`test_intentar_empaquetar_trd_sin_retencion_...`),
@@ -31,9 +31,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from archive.clients.storage_client import AipPackagingOutcome
 from archive.models.archive import Expediente, TrdSerie
 from archive.services.aip_wiring_service import AipWiringService
+from storage.api import AipPackagingOutcome
 from tests.archive.test_aip_wiring_service import (
     NOW,
     _expediente,
@@ -146,7 +146,7 @@ async def test_resolve_aip_pdfa_profile_returns_serie_policy() -> None:
 
 # ---------------------------------------------------------------------------
 # Cableado end-to-end dentro de `intentar_empaquetar`: el perfil resuelto
-# llega al `storage_client`, y su ausencia NUNCA dispara backoff.
+# llega al `storage_api`, y su ausencia NUNCA dispara backoff.
 # ---------------------------------------------------------------------------
 
 
@@ -171,7 +171,7 @@ async def test_intentar_empaquetar_passes_resolved_pdfa_profile_to_storage_clien
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [
@@ -181,7 +181,7 @@ async def test_intentar_empaquetar_passes_resolved_pdfa_profile_to_storage_clien
             ),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
@@ -210,7 +210,7 @@ async def test_intentar_empaquetar_passes_none_pdfa_profile_when_serie_has_no_po
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [
@@ -220,7 +220,7 @@ async def test_intentar_empaquetar_passes_none_pdfa_profile_when_serie_has_no_po
             ),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
@@ -251,7 +251,7 @@ async def test_intentar_empaquetar_serie_without_pdfa_policy_never_schedules_bac
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [
@@ -261,7 +261,7 @@ async def test_intentar_empaquetar_serie_without_pdfa_policy_never_schedules_bac
             ),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),

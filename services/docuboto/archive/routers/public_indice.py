@@ -29,11 +29,11 @@ import logging
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
-from archive.clients.document_client import DocumentClientError
 from archive.core.database import get_db_conn
 from archive.routers.public_eliminacion import _tenant_operativo
 from archive.schemas.indice_clasificados import IndiceSeriePublico
 from archive.services.indice_clasificados_service import indice_publico
+from document import api as document_api
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ async def _filas(conn: asyncpg.Connection, tenant: str) -> list[IndiceSeriePubli
         return []
     try:
         return await indice_publico(conn, tenant)
-    except DocumentClientError as exc:
+    except document_api.DocumentUnavailableError as exc:
         logger.warning("índice de clasificados no disponible para %s: %s", tenant, exc)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

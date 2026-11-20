@@ -34,7 +34,6 @@ from storage.core.minio_client import get_minio, init_minio
 from storage.jobs.format_migration import run_once as _format_migration_once
 from storage.routers.health import router as health_router
 from storage.routers.preservacion import router as preservacion_router
-from storage.routers.render import router as render_router
 from storage.routers.storage import router as storage_router
 from storage.services.storage_service import StorageService
 
@@ -177,7 +176,7 @@ app = FastAPI(
 app.add_middleware(usuario.UsuarioActualMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="storage-service")
 
-DOMAIN_ROUTERS = (storage_router, preservacion_router, render_router)
+DOMAIN_ROUTERS = (storage_router, preservacion_router)
 for _router in DOMAIN_ROUTERS:
     app.include_router(_router)
 app.include_router(health_router)

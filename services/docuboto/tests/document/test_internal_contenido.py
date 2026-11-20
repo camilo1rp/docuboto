@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""`GET /internal/documentos/anexos/{id}/contenido` solo sirve un nivel habilitado."""
+"""`document.api.read_anexo_content` solo sirve un nivel habilitado."""
 
 from __future__ import annotations
 
@@ -16,19 +16,11 @@ from typing import Any
 
 import pytest
 
-from document.core import config as cfg_module
-from document.routers import internal
+from document import api as document_api
 from tests.document.conftest import TENANT_SLUG
 
-TOKEN = "test-document-internal-token-xxx"
 ANEXO = uuid.uuid4()
 ARCHIVO = uuid.uuid4()
-RUTA = f"/api/v1/internal/documentos/anexos/{ANEXO}/contenido"
-
-
-@pytest.fixture(autouse=True)
-def _token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TOKEN)
 
 
 class _Stream:
@@ -60,35 +52,29 @@ def _filas(fila: dict[str, Any] | None) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_sin_token_es_404(client_with_conn) -> None:
-    client, _conn = client_with_conn
-    resp = await client.get(RUTA, headers={"X-Tenant-Slug": TENANT_SLUG})
-    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware
-    # de identidad responde 404 antes de cualquier gate.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-
-
-@pytest.mark.asyncio
 async def test_un_anexo_que_no_sale_no_abre_el_almacen(
-    client_with_conn, monkeypatch: pytest.MonkeyPatch
+    api_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, conn = client_with_conn
+    conn = api_conn
     conn.fetchrow.side_effect = _filas(None)
 
     async def abierto(**kwargs: Any) -> Any:
         raise AssertionError(kwargs)
 
-    monkeypatch.setattr(internal.storage_client, "open_content_stream", abierto)
-    resp = await client.get(RUTA, headers={"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": TOKEN})
-    assert resp.status_code == 404
+    monkeypatch.setattr(document_api.storage_api, "open_file_stream", abierto)
+    assert (
+        await document_api.read_anexo_content(
+            tenant_slug=TENANT_SLUG, anexo_id=ANEXO, max_bytes=1024
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
 async def test_un_nivel_habilitado_sirve_los_bytes_y_deja_traza(
-    client_with_conn, monkeypatch: pytest.MonkeyPatch
+    api_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, conn = client_with_conn
+    conn = api_conn
     conn.fetchrow.side_effect = _filas(
         {"file_id": ARCHIVO, "tracking_number": "2026-E-1", "nivel_seguridad": 1}
     )
@@ -103,11 +89,13 @@ async def test_un_nivel_habilitado_sirve_los_bytes_y_deja_traza(
     async def traza(*args: Any, **kwargs: Any) -> None:
         asientos.append(kwargs)
 
-    monkeypatch.setattr(internal.storage_client, "open_content_stream", abierto)
-    monkeypatch.setattr(internal.audit, "append", traza)
-    resp = await client.get(RUTA, headers={"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": TOKEN})
-    assert resp.status_code == 200
-    assert resp.content == b"hola"
+    monkeypatch.setattr(document_api.storage_api, "open_file_stream", abierto)
+    monkeypatch.setattr(document_api.audit, "append", traza)
+    contenido = await document_api.read_anexo_content(
+        tenant_slug=TENANT_SLUG, anexo_id=ANEXO, max_bytes=1024
+    )
+    assert contenido == b"hola"
+    assert stream.cerrado
     assert asientos[0]["action"] == "document.contenido_transmitido"
     assert asientos[0]["payload"]["detalle"] == "transmitido al proveedor de inteligencia"
     assert asientos[0]["object_ref"] == "2026-E-1"

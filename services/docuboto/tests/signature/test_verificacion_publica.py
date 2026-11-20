@@ -24,11 +24,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from signature.clients import preservacion_client
 from signature.core.constants import SIGNATURE_KIND_ELECTRONIC, SIGNATURE_KIND_SIMPLE
 from signature.main import app
 from signature.providers.base import SignerRef
 from signature.routers.public import get_public_tenant_conn
+from storage import api as storage_api
 from tests.signature.conftest import TENANT_HEADERS
 from tests.signature.test_sign_xml_xades import (  # noqa: F401 — fixtures y helpers compartidos
     _generate_cert,
@@ -61,13 +61,13 @@ def publico(signature_env, monkeypatch):  # noqa: F811
 
     app.dependency_overrides[get_public_tenant_conn] = _conn_publica
 
-    async def _descargar(*, tenant_slug: str, minio_key: str) -> bytes:
+    async def _descargar(*, tenant_slug: str, object_key: str) -> bytes:
         for u in uploads:
-            if u["object_key"] == minio_key:
+            if u["object_key"] == object_key:
                 return u["content"]
-        raise preservacion_client.PreservacionError("no existe")
+        raise storage_api.StorageError("no existe")
 
-    monkeypatch.setattr(preservacion_client, "descargar_xml", _descargar)
+    monkeypatch.setattr(storage_api, "read_object", _descargar)
 
     # La huella del documento se busca en la cadena (`firma_cadena` ⨝ `firma_solicitud`).
     # `table.cadena[firma_id]` es la fila de la solicitud; sin entrada, la firma no es de cadena.
@@ -84,7 +84,7 @@ def publico(signature_env, monkeypatch):  # noqa: F811
 
 
 async def _firmar(client, conn) -> dict:
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201, resp.text
     # Tras firmar: `FirmaRepository.get` pregunta si existe la columna del nombre; la
     # tabla falsa no tiene catálogo de usuarios.
@@ -215,9 +215,9 @@ async def test_storage_caido_no_es_firma_invalida(publico, monkeypatch) -> None:
     firma = await _firmar(client, conn)
 
     async def _caido(**_kw) -> bytes:
-        raise preservacion_client.PreservacionError("storage-service inalcanzable")
+        raise storage_api.StorageError("storage-service inalcanzable")
 
-    monkeypatch.setattr(preservacion_client, "descargar_xml", _caido)
+    monkeypatch.setattr(storage_api, "read_object", _caido)
     resp = await _publica(client, firma["firma_id"])
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "verificacion_no_disponible"

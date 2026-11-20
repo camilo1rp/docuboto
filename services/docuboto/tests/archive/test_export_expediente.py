@@ -90,9 +90,9 @@ async def test_export_manifest_shows_excluido_no_bytes(monkeypatch) -> None:
             str(excl.radicado_id): [],
         }
     )
-    monkeypatch.setattr("archive.clients.document_client.fetch_anexos_internal", fetch_mock)
+    monkeypatch.setattr("document.api.fetch_anexos", fetch_mock)
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(
             return_value={
                 str(vinc.radicado_id): {"subject": "Asunto del oficio", "doc_type": "E"},
@@ -108,7 +108,7 @@ async def test_export_manifest_shows_excluido_no_bytes(monkeypatch) -> None:
         captured["extra_files"] = extra_files
         return b"ZIPBYTES"
 
-    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("storage.api.open_export_zip", _fake_export)
     monkeypatch.setattr(
         "archive.services.index_service.IndexService.get_xml",
         AsyncMock(side_effect=HTTPException(status_code=404, detail="no indice")),
@@ -152,9 +152,9 @@ async def test_export_omits_over_clearance_radicado(monkeypatch) -> None:
 
     # document-service solo devuelve el VISIBLE; el clasificado no aparece.
     fetch_mock = AsyncMock(return_value={str(visible.radicado_id): []})
-    monkeypatch.setattr("archive.clients.document_client.fetch_anexos_internal", fetch_mock)
+    monkeypatch.setattr("document.api.fetch_anexos", fetch_mock)
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(return_value={str(visible.radicado_id): {"subject": "x", "doc_type": "E"}}),
     )
     captured = {}
@@ -164,7 +164,7 @@ async def test_export_omits_over_clearance_radicado(monkeypatch) -> None:
         captured["items"] = items
         return b"ZIP"
 
-    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("storage.api.open_export_zip", _fake_export)
     monkeypatch.setattr(
         "archive.services.index_service.IndexService.get_xml",
         AsyncMock(side_effect=HTTPException(status_code=404, detail="no")),
@@ -184,10 +184,10 @@ async def test_export_includes_indice_when_present(monkeypatch) -> None:
     vinc = _radicado(tracking="2026-DEMO-E-000001")
     svc = _service_with(_expediente([vinc]))
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
+        "document.api.fetch_anexos", AsyncMock(return_value={})
     )
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(return_value={}),
     )
     captured = {}
@@ -196,7 +196,7 @@ async def test_export_includes_indice_when_present(monkeypatch) -> None:
         captured["extra_files"] = extra_files
         return b"ZIP"
 
-    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("storage.api.open_export_zip", _fake_export)
     monkeypatch.setattr(
         "archive.services.index_service.IndexService.get_xml",
         AsyncMock(return_value="<indice/>"),
@@ -226,11 +226,11 @@ async def test_leeme_no_afirma_una_firma_que_no_existe(monkeypatch) -> None:
     vinc = _radicado(tracking="2026-DEMO-E-000001", estado="vinculado")
     svc = _service_with(_expediente([vinc], status="open"))
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_anexos_internal",
+        "document.api.fetch_anexos",
         AsyncMock(return_value={str(vinc.radicado_id): []}),
     )
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(return_value={str(vinc.radicado_id): {"subject": "Asunto", "doc_type": "E"}}),
     )
     captured = {}
@@ -239,7 +239,7 @@ async def test_leeme_no_afirma_una_firma_que_no_existe(monkeypatch) -> None:
         captured["extra_files"] = extra_files
         return b"ZIPBYTES"
 
-    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("storage.api.open_export_zip", _fake_export)
     monkeypatch.setattr(
         "archive.services.index_service.IndexService.get_xml",
         AsyncMock(return_value="<indice/>"),
@@ -271,11 +271,11 @@ async def test_leeme_afirma_la_firma_cuando_el_indice_SI_esta_firmado(monkeypatc
     vinc = _radicado(tracking="2026-DEMO-E-000001", estado="vinculado")
     svc = _service_with(_expediente([vinc], status="closed"))
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_anexos_internal",
+        "document.api.fetch_anexos",
         AsyncMock(return_value={str(vinc.radicado_id): []}),
     )
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(return_value={str(vinc.radicado_id): {"subject": "Asunto", "doc_type": "E"}}),
     )
     captured = {}
@@ -284,7 +284,7 @@ async def test_leeme_afirma_la_firma_cuando_el_indice_SI_esta_firmado(monkeypatc
         captured["extra_files"] = extra_files
         return b"ZIPBYTES"
 
-    monkeypatch.setattr("archive.clients.storage_client.export_zip_internal", _fake_export)
+    monkeypatch.setattr("storage.api.open_export_zip", _fake_export)
     monkeypatch.setattr(
         "archive.services.index_service.IndexService.get_xml",
         AsyncMock(return_value="<indice/>"),
@@ -303,94 +303,34 @@ async def test_leeme_afirma_la_firma_cuando_el_indice_SI_esta_firmado(monkeypatc
     assert "Estado del expediente al exportar: cerrado" in leeme
 
 
-# --- B4-5: streaming sin bufferizar ---------------------------------------
-
-
-def _patch_storage(monkeypatch, handler):
-    """Hace que `storage_client` hable con `handler` (httpx.MockTransport)."""
-    import httpx
-
-    real = httpx.AsyncClient
-
-    def _factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(handler)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr("archive.clients.storage_client.httpx.AsyncClient", _factory)
-
-
-@pytest.mark.asyncio
-async def test_client_streams_chunks_without_buffering(monkeypatch) -> None:
-    import httpx
-
-    from archive.clients import storage_client
-
-    trozos = [b"A" * 1000, b"B" * 500]
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-length": "1500"}, content=_AsyncStream(trozos))
-
-    _patch_storage(monkeypatch, _handler)
-    stream = await storage_client.export_zip_internal(tenant_slug="demo", items=[], extra_files=[])
-    assert stream.content_length == 1500
-    recibido = b"".join([c async for c in stream.iter_bytes()])
-    assert recibido == b"".join(trozos)
-
-
-class _AsyncStream:
-    def __init__(self, trozos: list[bytes]) -> None:
-        self._t = trozos
-
-    def __aiter__(self):
-        return self._gen()
-
-    async def _gen(self):
-        for t in self._t:
-            yield t
-
-    async def aclose(self) -> None:
-        return None
-
-
-@pytest.mark.asyncio
-async def test_client_detects_truncated_stream(monkeypatch) -> None:
-    """Content-Length dice 1500 y llegan 1000: error, no un ZIP corto «completo»."""
-    import httpx
-
-    from archive.clients import storage_client
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-length": "1500"}, content=_AsyncStream([b"A" * 1000]))
-
-    _patch_storage(monkeypatch, _handler)
-    stream = await storage_client.export_zip_internal(tenant_slug="demo", items=[], extra_files=[])
-    with pytest.raises(storage_client.StorageExportError):
-        async for _ in stream.iter_bytes():
-            pass
+# --- El error del almacén se traduce antes del primer byte ----------------
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status_storage", "esperado", "error"),
-    [(413, 413, "export_demasiado_grande"), (507, 507, "espacio_insuficiente"), (500, 502, "export_no_disponible")],
+    [(413, 413, "export_demasiado_grande"), (507, 507, "espacio_insuficiente"), (None, 502, "export_no_disponible")],
 )
 async def test_storage_error_maps_before_first_byte(
     monkeypatch, status_storage, esperado, error
 ) -> None:
-    import httpx
+    from storage import api as storage_api
 
     svc = _service_with(_expediente([_radicado(tracking="2026-DEMO-E-000001", estado="vinculado")]))
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_anexos_internal", AsyncMock(return_value={})
+        "document.api.fetch_anexos", AsyncMock(return_value={})
     )
     monkeypatch.setattr(
-        "archive.clients.document_client.fetch_radicado_metadata_internal", AsyncMock(return_value={})
+        "document.api.fetch_radicado_metadata", AsyncMock(return_value={})
     )
     monkeypatch.setattr(
         "archive.services.index_service.IndexService.get_xml",
         AsyncMock(side_effect=HTTPException(status_code=404, detail="no indice")),
     )
-    _patch_storage(monkeypatch, lambda request: httpx.Response(status_storage))
+    monkeypatch.setattr(
+        "storage.api.open_export_zip",
+        AsyncMock(side_effect=storage_api.StorageExportError("no", status_storage)),
+    )
     with pytest.raises(HTTPException) as ei:
         await svc.export_expediente_zip(uuid.uuid4(), user_id=uuid.uuid4(), canal="api")
     assert ei.value.status_code == esperado

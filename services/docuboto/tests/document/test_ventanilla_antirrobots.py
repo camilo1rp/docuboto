@@ -245,7 +245,7 @@ async def test_redis_caido_es_503_y_no_sube_anexos_ni_gasta_numero(client_with_c
     payload = await _payload_valido(client)
 
     with (
-        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
+        patch("storage.api.upload_public_annex", AsyncMock()) as subir,
         _crear() as crear,
     ):
         resp = await client.post(
@@ -356,7 +356,7 @@ async def test_el_gate_va_antes_de_subir_anexos(client_with_conn, redis_doble) -
     client, conn = client_with_conn
     _preparar(conn)
     with (
-        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as subir,
+        patch("storage.api.upload_public_annex", AsyncMock()) as subir,
         _crear(),
     ):
         resp = await client.post(

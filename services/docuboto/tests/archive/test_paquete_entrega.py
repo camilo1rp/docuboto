@@ -154,9 +154,9 @@ def _externos(
     def _bytes(fid: str) -> bytes:
         return contenidos.get(fid, _original(fid))
 
-    async def _dl(*, tenant_slug, minio_key_firmado):
-        eventos.append(("descarga", minio_key_firmado))
-        return _bytes(minio_key_firmado.split("/", 1)[0])
+    async def _dl(*, tenant_slug, object_key):
+        eventos.append(("descarga", object_key))
+        return _bytes(object_key.split("/", 1)[0])
 
     async def _audit(conn, **kw):
         if audit_error is not None:
@@ -173,11 +173,11 @@ def _externos(
 
     dl = AsyncMock(side_effect=_dl)
     return (
-        patch("archive.clients.storage_client.download_signed_bytes", new=dl),
+        patch("storage.api.read_signed_bytes", new=dl),
         _Pila(
             patch("archive.services.transferencia_service.audit.append", new=AsyncMock(side_effect=_audit)),
-            patch("archive.clients.storage_client.fetch_file_hashes_internal", new=AsyncMock(side_effect=_hashes)),
-            patch("archive.clients.storage_client.get_aip", new=AsyncMock(side_effect=_get_aip)),
+            patch("storage.api.get_file_hashes", new=AsyncMock(side_effect=_hashes)),
+            patch("storage.api.get_aip", new=AsyncMock(side_effect=_get_aip)),
         ),
         dl,
     )
@@ -492,7 +492,7 @@ async def test_sin_huellas_de_captura_es_503() -> None:
     svc, tid, eventos, _ = _svc()
     dl, au, _m = _externos(eventos)
     with dl, au, patch(
-        "archive.clients.storage_client.fetch_file_hashes_internal", new=AsyncMock(return_value={})
+        "storage.api.get_file_hashes", new=AsyncMock(return_value={})
     ), pytest.raises(HTTPException) as exc:
         await svc.paquete_entrega(tid, Actor(id=ADMIN))
     assert exc.value.status_code == 503

@@ -17,12 +17,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from document.clients import signature_client as signature_client_mod
+from signature import api as signature_api_mod
+from storage.api import RenderUnavailableError
 from tests.document.conftest import TENANT_HEADERS, make_radicado_record
 
 
 async def _sin_circuito(borrador_id: str, tenant_slug: str) -> dict:
-    """Doble de `signature_client.get_estado_circuito`: no hay circuito abierto."""
+    """Doble de `signature_api.get_estado_circuito`: no hay circuito abierto."""
     return {"pendiente": False, "completo": False, "solicitud_id": None}
 
 
@@ -34,7 +35,7 @@ def _circuito_sin_abrir(monkeypatch) -> None:
     hay signature-service en el carril unitario y los tests de radicación recibían
     503 en vez de lo que miden. Los tests del gate (`test_circuito_ata.py`) y
     `test_aprobar_borrador` sobrescriben este valor por su cuenta."""
-    monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _sin_circuito)
+    monkeypatch.setattr(signature_api_mod, "get_estado_circuito", _sin_circuito)
 
 @pytest.fixture(autouse=True)
 def _datos_minimos_derivados(monkeypatch, request) -> None:
@@ -179,7 +180,7 @@ async def test_aprobar_borrador(client_with_conn, monkeypatch) -> None:
     # RF-PRO-09). Sin este doble la consulta saldría de verdad y daría 503:
     # fail-closed, que es lo correcto, pero no es lo que mide este test.
     monkeypatch.setattr(
-        signature_client_mod,
+        signature_api_mod,
         "get_estado_circuito",
         _sin_circuito,
     )
@@ -688,7 +689,7 @@ def render_falso(monkeypatch):
 
     registro = {"renders": [], "subidas": 0, "fallo": None}
 
-    async def _render(*, tenant_slug, cuerpo_html, pagina, perfil=None):
+    async def _render(*, cuerpo_html, pagina, perfil=None):
         registro["renders"].append({"html": cuerpo_html, "pagina": pagina})
         if registro["fallo"] is not None:
             raise registro["fallo"]
@@ -700,8 +701,8 @@ def render_falso(monkeypatch):
         registro["subidas"] += 1
         return SimpleNamespace(file_id=uuid.uuid4(), sha256="a" * 64, file_size=len(data))
 
-    monkeypatch.setattr(svc, "render_documento", _render)
-    monkeypatch.setattr(svc, "upload_artefacto", _upload)
+    monkeypatch.setattr(svc.storage_api, "render_document", _render)
+    monkeypatch.setattr(svc.storage_api, "upload_system_artifact", _upload)
     return registro
 
 
@@ -714,12 +715,11 @@ async def test_un_fallo_de_render_no_consume_numero(client_with_conn, render_fal
     render va ANTES de pedir el número, y por eso este test mira la secuencia,
     no el código de estado.
     """
-    from document.clients.storage_client import RenderNoDisponibleError
 
     client, mock_conn = client_with_conn
     bid, rid = uuid.uuid4(), uuid.uuid4()
     radicado = make_radicado_record(doc_id=rid, doc_type="S", tracking_number="2024-DEMO-S-000001")
-    render_falso["fallo"] = RenderNoDisponibleError("sin motor")
+    render_falso["fallo"] = RenderUnavailableError("sin motor")
     mock_conn.fetchval.return_value = True
     mock_conn.fetch.return_value = []
     mock_conn.fetchrow.side_effect = _radicar_side_effects(
@@ -918,11 +918,10 @@ async def test_previsualizar_deja_RAD_S_a_la_vista(client_with_conn, render_fals
 
 @pytest.mark.asyncio
 async def test_previsualizar_sin_renderizador_es_503(client_with_conn, render_falso) -> None:
-    from document.clients.storage_client import RenderNoDisponibleError
 
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()
-    render_falso["fallo"] = RenderNoDisponibleError("sin motor")
+    render_falso["fallo"] = RenderUnavailableError("sin motor")
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, _borrador_row(id=bid, cuerpo="<p>x</p>")]
     resp = await client.post(

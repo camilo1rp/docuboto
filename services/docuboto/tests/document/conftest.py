@@ -27,7 +27,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from document.clients.tenant_client import TenantServiceError
 from document.core.config import settings
 from document.core.database import (
     get_db_conn,
@@ -39,6 +38,7 @@ from document.core.database import (
 )
 from document.main import app
 from document.services.ventanilla_service import VentanillaService
+from tenant.api import TenantUnavailableError
 
 # Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
 #
@@ -89,18 +89,18 @@ class FakeTenantClient:
     ) -> date:
         self.calls.append((tenant_slug, from_date, business_days))
         if self.raise_error:
-            raise TenantServiceError("simulated tenant-service failure")
+            raise TenantUnavailableError("simulated tenant-service failure")
         return self.due_date
 
     async def get_params(self, *, tenant_slug: str) -> dict:
         return self.params
 
-    async def get_params_estricto(self, *, tenant_slug: str) -> dict:
+    async def get_params_strict(self, *, tenant_slug: str) -> dict:
         """Lectura estricta (política de tratamiento, B2). Por defecto la entidad
         TIENE política vigente `2026-01`; `params` la pisa y `params_error` la rompe."""
         self.estricto_calls += 1
         if self.params_error:
-            raise TenantServiceError("simulated tenant-service failure")
+            raise TenantUnavailableError("simulated tenant-service failure")
         return {
             "politica_tratamiento_version": "2026-01",
             "politica_tratamiento_url": "https://entidad.example/privacidad",
@@ -111,7 +111,7 @@ class FakeTenantClient:
     async def get_dependencia(self, *, tenant_slug: str, codigo: int) -> dict | None:
         self.dep_calls.append((tenant_slug, codigo))
         if self.dep_raise_error:
-            raise TenantServiceError("simulated tenant-service failure")
+            raise TenantUnavailableError("simulated tenant-service failure")
         return self.dependencias.get(codigo)
 
 
@@ -243,7 +243,7 @@ def _override_conn(mock_conn: AsyncMock, fake_client: FakeTenantClient) -> None:
     app.dependency_overrides[get_public_tenant_conn] = _dep
     app.dependency_overrides[get_public_tenant_conn_escritura] = _dep
     # El endpoint de creación depende de get_tenant_client y get_redis (sin
-    # lifespan no hay http_client ni redis reales); se sustituyen por dobles.
+    # BD de tenant ni redis reales); se sustituyen por dobles.
     app.dependency_overrides[get_tenant_client] = lambda: fake_client
     app.dependency_overrides[get_redis] = _make_fake_redis
 
@@ -352,3 +352,21 @@ def _antirrobots_en_pruebas(request: pytest.FixtureRequest, monkeypatch: pytest.
         return None
 
     monkeypatch.setattr(VentanillaService, "_exigir_antirrobots", _resuelto)
+
+
+@pytest.fixture
+def api_conn(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Conexión doble para `document.api`: sustituye `acquire_tenant` (ADR-047 §1)."""
+    from contextlib import asynccontextmanager
+
+    from document import api as document_api
+
+    conn = _make_mock_conn()
+
+    @asynccontextmanager
+    async def _acquire(slug: str):
+        assert slug == TENANT_SLUG
+        yield conn
+
+    monkeypatch.setattr(document_api, "acquire_tenant", _acquire)
+    return conn

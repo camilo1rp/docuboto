@@ -10,7 +10,7 @@
 
 """El SQL de «índice vigente de un expediente» contra Postgres REAL (AREA-04-09).
 
-El endpoint interno resuelve el expediente por CÓDIGO o por UUID y devuelve el
+`archive.api.index_fingerprint` resuelve el expediente por CÓDIGO o por UUID y devuelve el
 `xml_sha256` de la ÚLTIMA versión del índice (`ORDER BY version DESC`). Un doble de
 conexión no distingue «la última» de «la primera»; lo impone el `ORDER BY`, y el
 aislamiento por tenant lo impone el `search_path`.
@@ -19,13 +19,29 @@ aislamiento por tenant lo impone el `search_path`.
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 
 import asyncpg
 import pytest
-from fastapi import HTTPException
 
+from archive import api as archive_api
 from archive.core import database
-from archive.routers.internal_firma import huella_indice_vigente
+
+
+async def huella_indice_vigente(ref: str, slug: str, conn: asyncpg.Connection) -> dict:
+    """La función real, sobre la conexión del test con el `search_path` del tenant."""
+
+    @asynccontextmanager
+    async def _acquire(tenant_slug: str):
+        await conn.execute(f'SET search_path = "{database.tenant_schema(tenant_slug)}"')
+        yield conn
+
+    original = archive_api.acquire_tenant
+    archive_api.acquire_tenant = _acquire
+    try:
+        return await archive_api.index_fingerprint(tenant_slug=slug, ref=ref)
+    finally:
+        archive_api.acquire_tenant = original
 
 
 async def _expediente(conn: asyncpg.Connection, schema: str, code: str) -> uuid.UUID:
@@ -61,16 +77,14 @@ async def test_devuelve_la_ultima_version_por_codigo_y_por_uuid(tenant_ctx) -> N
 
 
 @pytest.mark.integration
-async def test_sin_indice_409_e_inexistente_404(tenant_ctx) -> None:
+async def test_sin_indice_y_expediente_inexistente(tenant_ctx) -> None:
     slug, conn = tenant_ctx
     schema = database.tenant_schema(slug)
     await _expediente(conn, schema, "EXP-ITEST-2")
-    with pytest.raises(HTTPException) as sin_indice:
+    with pytest.raises(archive_api.IndexNotGeneratedError):
         await huella_indice_vigente("EXP-ITEST-2", slug, conn)
-    assert sin_indice.value.status_code == 409
-    with pytest.raises(HTTPException) as inexistente:
+    with pytest.raises(archive_api.ExpedienteNotFoundError):
         await huella_indice_vigente("EXP-NO-EXISTE", slug, conn)
-    assert inexistente.value.status_code == 404
     await conn.execute("SET search_path = public")
 
 
@@ -89,9 +103,8 @@ async def test_el_expediente_de_otro_tenant_no_se_ve(tenant_ctx) -> None:
         eid = await _expediente(conn, sa, "EXP-ITEST-3")
         await _indice(conn, sa, eid, 1, "d" * 64)
         for ref in ("EXP-ITEST-3", str(eid)):
-            with pytest.raises(HTTPException) as exc:
+            with pytest.raises(archive_api.ExpedienteNotFoundError):
                 await huella_indice_vigente(ref, slug_b, conn)
-            assert exc.value.status_code == 404
     finally:
         await conn.execute("SET search_path = public")
         await conn.execute(f'DROP SCHEMA IF EXISTS "{sb}" CASCADE')

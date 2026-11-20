@@ -1136,15 +1136,15 @@ async def test_verify_v1_indice_firmado_sigue_verificando_ok(client_with_conn) -
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from archive.clients.signature_client import VerifyResult
+    from signature.api import VerifyResult
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml",
+            "storage.api.read_signed_xml",
             new=AsyncMock(return_value=v1_xml),
         ),
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
@@ -1181,15 +1181,15 @@ async def test_verify_with_valid_firma_returns_true(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from archive.clients.signature_client import VerifyResult
+    from signature.api import VerifyResult
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml",
+            "storage.api.read_signed_xml",
             new=AsyncMock(return_value="<indice-firmado/>"),
         ),
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
@@ -1234,10 +1234,10 @@ async def test_verify_with_firma_service_unreachable_reports_invalida(client_wit
     # None simula firma_client.verify cuando el servicio está inalcanzable
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml",
+            "storage.api.read_signed_xml",
             new=AsyncMock(return_value="<indice-firmado/>"),
         ),
-        patch("archive.clients.signature_client.verify", new=AsyncMock(return_value=None)),
+        patch("signature.api.verify", new=AsyncMock(return_value=None)),
     ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
@@ -1272,15 +1272,15 @@ async def test_verify_with_firma_invalid_signature(client_with_conn) -> None:
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from archive.clients.signature_client import VerifyResult
+    from signature.api import VerifyResult
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml",
+            "storage.api.read_signed_xml",
             new=AsyncMock(return_value="<indice-firmado/>"),
         ),
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=False, nivel_conformidad=None, acreditado=False, motivo="firma_adulterada"
@@ -1320,9 +1320,9 @@ async def test_verify_with_firma_but_minio_key_null_reports_unavailable(client_w
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml", new=AsyncMock()
+            "storage.api.read_signed_xml", new=AsyncMock()
         ) as mock_download,
-        patch("archive.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
+        patch("signature.api.verify", new=AsyncMock()) as mock_verify,
     ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
@@ -1343,7 +1343,7 @@ async def test_verify_with_firma_but_minio_key_null_reports_unavailable(client_w
 async def test_verify_with_firma_storage_download_fails_reports_unavailable(client_with_conn) -> None:
     """minio_key_firmado presente pero storage-service no pudo servir el XML
     firmado (best-effort → None): 'signed_xml_unavailable', no se llega a
-    llamar a signature_client.verify."""
+    llamar a signature_api.verify."""
     client, mock_conn = client_with_conn
     mock_conn.fetchval.return_value = True  # D-08: USUA_PERM_EXPEDIENTE granted
     exp_id = uuid.uuid4()
@@ -1359,9 +1359,9 @@ async def test_verify_with_firma_storage_download_fails_reports_unavailable(clie
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=None)
+            "storage.api.read_signed_xml", new=AsyncMock(return_value=None)
         ),
-        patch("archive.clients.signature_client.verify", new=AsyncMock()) as mock_verify,
+        patch("signature.api.verify", new=AsyncMock()) as mock_verify,
     ):
         resp = await client.get(
             f"/api/v1/expedientes/{exp_id}/indice/verify",
@@ -1411,9 +1411,9 @@ async def test_firmar_indice_retry_409_ya_firmado_no_reintenta(client_with_conn)
         "xml": "<indice/>",
     }
 
-    from archive.clients import signature_client
+    from signature import api as signature_api
 
-    with patch.object(signature_client, "sign_xml", new=AsyncMock()) as mock_sign:
+    with patch.object(signature_api, "sign_xml", new=AsyncMock()) as mock_sign:
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_indice_retry(exp_id, tenant_slug="demo", actor_id=str(uuid.uuid4()))
     assert exc_info.value.status_code == 409
@@ -1430,9 +1430,9 @@ async def test_firmar_indice_retry_503_si_firma_sigue_fallando(client_with_conn)
     row = {"id": uuid.uuid4(), "estado": "pendiente_firma", "xml": "<indice/>", "version": 1}
     mock_conn.fetchrow.side_effect = [row, row]  # check + get_current dentro de firmar_indice
 
-    from archive.clients import signature_client
+    from signature import api as signature_api
 
-    with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=None)):
+    with patch.object(signature_api, "sign_xml", new=AsyncMock(return_value=None)):
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_indice_retry(
                 exp_id, tenant_slug="demo", actor_id=str(uuid.uuid4())
@@ -1513,7 +1513,7 @@ async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
     # (`execute.return_value = None`) simularía una carrera perdida (409).
     mock_conn.execute.return_value = "UPDATE 1"
 
-    from archive.clients.signature_client import SignedIndice
+    from signature.api import SignedIndice
 
     signed = SignedIndice(
         firma_id=firma_id,
@@ -1526,7 +1526,7 @@ async def test_firmar_endpoint_exito_devuelve_firma(client_with_conn) -> None:
     )
 
     with patch(
-        "archive.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)
+        "signature.api.sign_xml", new=AsyncMock(return_value=signed)
     ):
         resp = await client.post(
             f"/api/v1/expedientes/{exp_id}/indice/firmar",
@@ -1559,8 +1559,8 @@ async def test_firmar_indice_lost_race_raises_409_no_phantom_audit(client_with_c
     mock_conn.fetchrow.return_value = row
     mock_conn.execute.return_value = "UPDATE 0"  # perdió la carrera
 
-    from archive.clients import signature_client
-    from archive.clients.signature_client import SignedIndice
+    from signature import api as signature_api
+    from signature.api import SignedIndice
 
     signed = SignedIndice(
         firma_id=uuid.uuid4(),
@@ -1572,7 +1572,7 @@ async def test_firmar_indice_lost_race_raises_409_no_phantom_audit(client_with_c
         certificado_fingerprint="ab:cd",
     )
 
-    with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=signed)):
+    with patch.object(signature_api, "sign_xml", new=AsyncMock(return_value=signed)):
         with pytest.raises(Exception) as exc_info:
             await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=str(uuid.uuid4()))
 
@@ -1598,7 +1598,7 @@ async def test_firmar_endpoint_exito_audit_origen_manual(client_with_conn) -> No
     mock_conn.fetchrow.side_effect = [row, row]
     mock_conn.execute.return_value = "UPDATE 1"
 
-    from archive.clients.signature_client import SignedIndice
+    from signature.api import SignedIndice
 
     signed = SignedIndice(
         firma_id=uuid.uuid4(),
@@ -1610,7 +1610,7 @@ async def test_firmar_endpoint_exito_audit_origen_manual(client_with_conn) -> No
         certificado_fingerprint="ab:cd",
     )
 
-    with patch("archive.clients.signature_client.sign_xml", new=AsyncMock(return_value=signed)):
+    with patch("signature.api.sign_xml", new=AsyncMock(return_value=signed)):
         resp = await client.post(
             f"/api/v1/expedientes/{exp_id}/indice/firmar",
             headers=TENANT_HEADERS,
@@ -2146,15 +2146,15 @@ async def test_verify_v2_indice_firmado_sigue_verificando_ok(client_with_conn) -
     mock_conn.fetchrow.side_effect = [None, exp, indice]
     mock_conn.fetch.side_effect = [[link], [_item_row(rad_id, h)]]
 
-    from archive.clients.signature_client import VerifyResult
+    from signature.api import VerifyResult
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml",
+            "storage.api.read_signed_xml",
             new=AsyncMock(return_value=v2_xml),
         ),
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
@@ -2286,12 +2286,12 @@ async def test_verify_propaga_las_advertencias_de_signature(client_with_conn) ->
         [make_radicado_link_record(radicado_id=rad_id, content_hash=h)],
         [_item_row(rad_id, h)],
     ]
-    from archive.clients.signature_client import VerifyResult
+    from signature.api import VerifyResult
 
     with (
-        patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<x/>")),
+        patch("storage.api.read_signed_xml", new=AsyncMock(return_value="<x/>")),
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False,
@@ -2310,34 +2310,6 @@ async def test_verify_propaga_las_advertencias_de_signature(client_with_conn) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("cuerpo", "esperado"),
-    [
-        ({"valida": True, "advertencias": ["a", "b"]}, ["a", "b"]),
-        ({"valida": True}, []),  # un signature-service que aún no lo emite
-        ({"valida": True, "advertencias": None}, []),
-        ({"valida": True, "advertencias": "no-es-lista"}, []),
-        ({"valida": True, "advertencias": ["ok", 3, None]}, ["ok"]),
-    ],
-)
-async def test_el_cliente_lee_advertencias_de_forma_tolerante(monkeypatch, cuerpo, esperado) -> None:
-    import httpx
-
-    from archive.clients import signature_client
-
-    real = httpx.AsyncClient
-
-    class _Cliente(real):  # type: ignore[misc, valid-type]
-        def __init__(self, *a, **kw):
-            kw["transport"] = httpx.MockTransport(lambda req: httpx.Response(200, json=cuerpo))
-            super().__init__(*a, **kw)
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
-    res = await signature_client.verify(tenant_slug="demo", firma_id="f", payload_xml="<x/>")
-    assert res is not None and res.valida is True and res.advertencias == esperado
-
-
-@pytest.mark.asyncio
 async def test_verify_verifica_el_artefacto_vigente_y_no_el_original(client_with_conn) -> None:
     """R2-1 (EN 319 102-1 §5.6.3): tras renovar el ArchiveTimeStamp, la prueba vigente es el XML
     renovado. Mutación: descargar siempre `minio_key_firmado` -> cae."""
@@ -2348,20 +2320,20 @@ async def test_verify_verifica_el_artefacto_vigente_y_no_el_original(client_with
     indice = _indice_row_with_firma(firma_id)
     mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id), indice]
     mock_conn.fetch.side_effect = [[make_radicado_link_record(radicado_id=rad_id, content_hash=h)], [_item_row(rad_id, h)]]
-    from archive.clients.signature_client import VerifyResult
+    from signature.api import VerifyResult
 
     descargar = AsyncMock(return_value="<renovado/>")
     with (
-        patch("archive.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value="vigente-id/renovado.xml")),
-        patch("archive.clients.storage_client.download_signed_xml", new=descargar),
+        patch("signature.api.artefacto_vigente", new=AsyncMock(return_value="vigente-id/renovado.xml")),
+        patch("storage.api.read_signed_xml", new=descargar),
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(return_value=VerifyResult(valida=True, nivel_conformidad=None, acreditado=False, motivo=None, lta_vigente=True)),
         ),
     ):
         resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS)
 
-    assert descargar.await_args.kwargs["minio_key_firmado"] == "vigente-id/renovado.xml"
+    assert descargar.await_args.kwargs["object_key"] == "vigente-id/renovado.xml"
     assert resp.json()["firma"]["lta_vigente"] is True
     assert "artefacto_vigente_no_resuelto" not in resp.json()["firma"]["advertencias"]
 
@@ -2376,18 +2348,18 @@ async def test_verify_sin_resolver_el_vigente_cae_al_original_y_lo_avisa(client_
     indice = _indice_row_with_firma(firma_id)
     mock_conn.fetchrow.side_effect = [None, make_expediente_record(exp_id=exp_id), indice]
     mock_conn.fetch.side_effect = [[make_radicado_link_record(radicado_id=rad_id, content_hash=h)], [_item_row(rad_id, h)]]
-    from archive.clients.signature_client import VerifyResult
+    from signature.api import VerifyResult
 
     descargar = AsyncMock(return_value="<original/>")
     with (
-        patch("archive.clients.signature_client.artefacto_vigente", new=AsyncMock(return_value=None)),
-        patch("archive.clients.storage_client.download_signed_xml", new=descargar),
+        patch("signature.api.artefacto_vigente", new=AsyncMock(return_value=None)),
+        patch("storage.api.read_signed_xml", new=descargar),
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(return_value=VerifyResult(valida=True, nivel_conformidad=None, acreditado=False, motivo=None)),
         ),
     ):
         resp = await client.get(f"/api/v1/expedientes/{exp_id}/indice/verify", headers=TENANT_HEADERS)
 
-    assert descargar.await_args.kwargs["minio_key_firmado"] == indice["minio_key_firmado"]
+    assert descargar.await_args.kwargs["object_key"] == indice["minio_key_firmado"]
     assert "artefacto_vigente_no_resuelto" in resp.json()["firma"]["advertencias"]

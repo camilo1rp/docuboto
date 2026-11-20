@@ -11,11 +11,7 @@
 """
 T8 — huecos de cableado que las suites con dobles por nombre no ven.
 
-1. Contrato SALIENTE hacia auth-service, medido en el cable con
-   ``httpx.MockTransport`` (el ``conftest`` sustituye ``get_totp_status_remote``
-   por nombre en TODA la suite, y los demás tests sustituyen
-   ``get_signer_identity``: ninguno comprueba que las cabeceras salgan).
-2. ``key_version`` de la fila ``firma_challenge`` y de la fila ``firma`` en el
+``key_version`` de la fila ``firma_challenge`` y de la fila ``firma`` en el
    camino de la CADENA: ``verify_otp`` debe usar la versión de la fila y el
    INSERT de ``firma`` debe llevar la versión con que se firmó (un literal en
    cualquiera de los dos pasaba todas las suites anteriores).
@@ -28,18 +24,10 @@ import hmac
 import re
 import uuid
 
-import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from signature.core import http_clients
 from signature.core.config import settings
-from signature.core.http_clients import (
-    SignerEmailError,
-    TotpStatusUnavailableError,
-    get_signer_identity,
-    get_totp_status_remote,
-)
 from signature.core.secret_derivation import KEY_VERSION_ACTUAL, KEY_VERSION_SIN_HMAC
 from signature.main import app
 from tests.signature.conftest import TENANT_HEADERS, USER
@@ -57,133 +45,7 @@ from tests.signature.test_cadena_2fa import (
 )
 
 # ---------------------------------------------------------------------------
-# 1. Contrato saliente en el cable
-# ---------------------------------------------------------------------------
-
-
-def _wire(monkeypatch: pytest.MonkeyPatch, handler) -> list[httpx.Request]:
-    """Redirige TODO ``httpx.AsyncClient`` de http_clients a un MockTransport."""
-    vistas: list[httpx.Request] = []
-
-    def _h(request: httpx.Request) -> httpx.Response:
-        vistas.append(request)
-        return handler(request)
-
-    real = httpx.AsyncClient
-
-    def _factory(*args, **kwargs):
-        kwargs["transport"] = httpx.MockTransport(_h)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(http_clients.httpx, "AsyncClient", _factory)
-    return vistas
-
-
-@pytest.mark.asyncio
-async def test_get_signer_identity_envia_bearer_y_tenant_y_devuelve_user_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    vistas = _wire(
-        monkeypatch,
-        lambda r: httpx.Response(200, json={"email": "a@b.co", "user_id": str(USER)}),
-    )
-    ident = await get_signer_identity("Bearer tok", "demo")
-    assert ident.email == "a@b.co" and ident.user_id == str(USER)
-    (req,) = vistas
-    assert req.method == "GET" and req.url.path == "/api/v1/auth/me"
-    assert req.headers["Authorization"] == "Bearer tok"
-    # Sin X-Tenant-Slug /me devuelve el `sub` de Keycloak y la comparación con el
-    # actor falla SIEMPRE (o, peor, nunca llega a hacerse).
-    assert req.headers["X-Tenant-Slug"] == "demo"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("body", [{"email": "a@b.co"}, {"user_id": str(USER)}, {}])
-async def test_get_signer_identity_sin_email_o_sin_user_id_es_fail_closed(
-    monkeypatch: pytest.MonkeyPatch, body: dict
-) -> None:
-    _wire(monkeypatch, lambda r: httpx.Response(200, json=body))
-    with pytest.raises(SignerEmailError):
-        await get_signer_identity("Bearer tok", "demo")
-
-
-@pytest.mark.asyncio
-async def test_get_totp_status_remote_envia_token_interno_y_bearer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "signing_key_internal_token", "tok-interno-t8")
-    vistas = _wire(
-        monkeypatch, lambda r: httpx.Response(200, json={"activo": True, "user_id": str(USER)})
-    )
-    body = await get_totp_status_remote("Bearer tok")
-    assert body == {"activo": True, "user_id": str(USER)}
-    (req,) = vistas
-    assert req.method == "GET" and req.url.path == "/internal/totp/status"
-    assert req.headers["Authorization"] == "Bearer tok"
-    assert req.headers["X-Internal-Token"] == "tok-interno-t8"
-
-
-@pytest.mark.asyncio
-async def test_verify_totp_envia_token_interno_y_bearer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "signing_key_internal_token", "tok-interno-t8")
-    vistas = _wire(monkeypatch, lambda r: httpx.Response(200, json={"valido": True}))
-    body = await http_clients.verify_totp("Bearer tok", "123456")
-    assert body == {"valido": True}
-    (req,) = vistas
-    assert req.method == "POST" and req.url.path == "/internal/totp/verify"
-    assert req.headers["Authorization"] == "Bearer tok"
-    # Sin el token interno auth-service responde 401 y la firma con TOTP queda
-    # caída (fail-closed): el cable debe llevarlo.
-    assert req.headers["X-Internal-Token"] == "tok-interno-t8"
-
-
-@pytest.mark.asyncio
-async def test_get_totp_status_remote_sin_authorization_no_sale_a_la_red(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    vistas = _wire(monkeypatch, lambda r: httpx.Response(200, json={"activo": False}))
-    with pytest.raises(TotpStatusUnavailableError):
-        await get_totp_status_remote(None)
-    assert vistas == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "respuesta",
-    [
-        httpx.Response(500, text="boom"),
-        httpx.Response(401, json={"detail": "x"}),
-        httpx.Response(403, json={"detail": "x"}),
-        httpx.Response(200, text="no es json"),
-        httpx.Response(200, json=[]),
-        httpx.Response(200, json={"user_id": str(USER)}),  # falta «activo»
-    ],
-)
-async def test_get_totp_status_remote_todo_lo_raro_es_indisponible(
-    monkeypatch: pytest.MonkeyPatch, respuesta: httpx.Response
-) -> None:
-    """Fail-closed: «no sé» no se lee como «no tiene TOTP»."""
-    _wire(monkeypatch, lambda r: respuesta)
-    with pytest.raises(TotpStatusUnavailableError):
-        await get_totp_status_remote("Bearer tok")
-
-
-@pytest.mark.asyncio
-async def test_get_totp_status_remote_red_caida_es_indisponible(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _boom(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("sin ruta", request=request)
-
-    _wire(monkeypatch, _boom)
-    with pytest.raises(TotpStatusUnavailableError):
-        await get_totp_status_remote("Bearer tok")
-
-
-# ---------------------------------------------------------------------------
-# 2. key_version en la cadena
+# key_version en la cadena
 # ---------------------------------------------------------------------------
 
 _FIRMA_INS = {

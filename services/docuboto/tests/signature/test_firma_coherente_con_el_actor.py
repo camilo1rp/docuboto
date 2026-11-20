@@ -30,11 +30,8 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from auth.api import AuthUnavailableError
 from signature.core.config import settings
-from signature.core.http_clients import (
-    SigningKeyStatusUnavailableError,
-    TotpStatusUnavailableError,
-)
 from signature.main import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
@@ -91,47 +88,12 @@ async def _post(path: str, body: dict | None = None) -> tuple[int, dict]:
 
 
 @pytest.mark.asyncio
-async def test_otp_no_sale_si_bearer_y_actor_divergen(monkeypatch: pytest.MonkeyPatch) -> None:
-    """/me dice que el bearer es de OTRA persona: 403, sin desafío y sin correo."""
-    audit_mock = _patch_audit(monkeypatch)
-    _, mock_send = _patch_email(monkeypatch, user_id=AJENO)
-    conn = _make_conn()
-    conn.fetchval.side_effect = [True, 1]  # check_permission | es_firmante
-    conn.fetchrow.side_effect = [
-        _sol_row(),                       # get_solicitud (previa a la transacción)
-        {},                               # resolve_caller_clearance
-        _turno_row(firmante_id=USER),     # turno_activo (sin bloqueo)
-        _sol_row(),                       # get_solicitud_for_update
-        _turno_row(firmante_id=USER),     # turno_activo_for_update
-        None,                             # get_activo
-        # (crear() sería la 5.ª: no debe ejecutarse)
-    ]
-    _override(conn)
-    try:
-        status_code, body = await _post("challenge")
-    finally:
-        _clear()
-    assert status_code == 403, body
-    assert body["detail"]["error"] == "identidad_incoherente"
-    mock_send.assert_not_awaited()
-    assert conn.fetchrow.await_count == 6  # ni INSERT del desafío
-    assert "firma.identidad_incoherente" in _acciones(audit_mock)
-    assert "firma.challenge.emitido" not in _acciones(audit_mock)
-    emitido = next(
-        c for c in audit_mock.await_args_list
-        if c.kwargs["action"] == "firma.identidad_incoherente"
-    )
-    assert emitido.kwargs["actor"] == str(USER)
-    assert emitido.kwargs["payload"]["via"] == "otp_email"
-
-
-@pytest.mark.asyncio
 async def test_otp_si_bearer_y_actor_coinciden_el_correo_sale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Control positivo de la anterior: con la misma persona, el desafío se emite."""
     _patch_audit(monkeypatch)
-    _, mock_send = _patch_email(monkeypatch, user_id=USER)
+    _, mock_send = _patch_email(monkeypatch)
     conn = _make_conn()
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [
@@ -260,29 +222,6 @@ async def test_sign_personal_credencial_de_otro_usuario_no_firma(
     assert "firma.identidad_incoherente" in _acciones(audit_mock)
 
 
-@pytest.mark.asyncio
-async def test_get_signer_identity_manda_el_tenant_y_devuelve_el_user_id() -> None:
-    """Sin ``X-Tenant-Slug``, /me no resuelve ``auth_users.id`` y devuelve el sub de
-    Keycloak: la comparación con el actor fallaría siempre."""
-    from unittest.mock import MagicMock, patch
-
-    from signature.core import http_clients
-
-    resp = MagicMock(status_code=200, text="")
-    resp.json.return_value = {"email": "a@b.co", "user_id": str(USER)}
-    inner = AsyncMock()
-    inner.get = AsyncMock(return_value=resp)
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=inner)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("signature.core.http_clients.httpx.AsyncClient", return_value=cm):
-        ident = await http_clients.get_signer_identity("Bearer x", "demo")
-    assert ident.user_id == str(USER) and ident.email == "a@b.co"
-    headers = inner.get.call_args.kwargs["headers"]
-    assert headers["X-Tenant-Slug"] == "demo"
-    assert headers["Authorization"] == "Bearer x"
-
-
 # ---------------------------------------------------------------------------
 # AREA-04-02 — el correo no baja el factor de quien ya tiene TOTP (nivel >= 2)
 # ---------------------------------------------------------------------------
@@ -294,7 +233,7 @@ def _estado_totp(monkeypatch, *, activo: bool = True, user_id=USER, error=None) 
         if error
         else AsyncMock(return_value={"activo": activo, "user_id": str(user_id)})
     )
-    monkeypatch.setattr("signature.services.cadena_service.get_totp_status_remote", mock)
+    monkeypatch.setattr("auth.api.totp_status", mock)
     return mock
 
 
@@ -366,7 +305,7 @@ async def test_nivel2_estado_totp_no_consultable_no_baja_al_correo(
     """Fail-closed: si no se puede saber, no se acepta el correo (503, no fallback)."""
     _patch_audit(monkeypatch)
     _, mock_send = _patch_email(monkeypatch)
-    _estado_totp(monkeypatch, error=TotpStatusUnavailableError("auth-service caído"))
+    _estado_totp(monkeypatch, error=AuthUnavailableError("auth-service caído"))
     conn = _make_conn()
     conn.fetchval.side_effect = [True, 1]
     conn.fetchrow.side_effect = [
@@ -496,7 +435,7 @@ async def test_canal_signing_key_caido_no_degrada_en_silencio(
     monkeypatch.setattr(settings, "firma_personal_require_xades", "off")
     monkeypatch.setattr(settings, "firma_2fa_required", False)
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     conn = _make_conn()
     _cola_nativa_nivel1(conn)
@@ -557,11 +496,11 @@ async def test_status_personal_se_resuelve_antes_del_lock(
     monkeypatch.setattr(settings, "firma_2fa_required", False)
     orden: list[str] = []
 
-    async def _status(authorization):
+    async def _status(**_kw):
         orden.append("status_http")
         return {"estado": "no_configurado", "user_id": str(USER)}
 
-    monkeypatch.setattr("signature.services.cadena_service.get_signing_key_status_remote", _status)
+    monkeypatch.setattr("auth.api.signing_key_status", _status)
 
     conn = _make_conn()
     _cola_nativa_nivel1(conn)

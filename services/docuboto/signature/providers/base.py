@@ -137,10 +137,9 @@ class SignerRef:
     completo, y la clave privada del usuario NUNCA entra en el proceso de
     signature-service (vive cifrada en auth-service, se descifra allí en
     memoria por el tiempo mínimo indispensable de firmar ese único digest —
-    ver ``app.core.http_clients.sign_digest_remote`` y
-    ``app.core.signing_keys.sign_digest`` en auth-service). ÉSTE es el seam
-    a un HSM futuro: un proveedor HSM reemplazaría el CUERPO de esta
-    callable (una llamada PKCS#11/KMS en vez de un POST a auth-service) sin
+    ver ``auth.api.sign_digest`` y ``auth.core.signing_keys.sign_digest``).
+    ÉSTE es el seam a un HSM futuro: un proveedor HSM reemplazaría el CUERPO
+    de esta callable (una llamada PKCS#11/KMS en vez de `auth.api`) sin
     tocar ``LocalSigner`` ni el contrato ``SignerRef`` en absoluto.
     """
 

@@ -20,13 +20,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from signature.core.config import settings
-from signature.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
+from signature import api as signature_api
+from signature.core.huella import BorradorDesaparecidoError, HuellaNoVerificableError
 from signature.services import invalidacion
 from signature.workers import document_consumer
+from tests.signature.conftest import en_proceso
 
-_TOKEN = "itest-internal-token-b10-contenido"
-_RUTA = "/api/v1/signature/internal/circuitos/borrador"
 H1 = "1" * 64
 
 
@@ -134,32 +133,32 @@ async def test_huella_ilegible_no_se_toma_por_vigente(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sincrono_exige_vigente(client_with_conn, monkeypatch) -> None:
-    """Sin cuerpo (o con una huella mal formada) el endpoint responde 422."""
-    client, _conn = client_with_conn
-    monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
-    h = {"X-Tenant-Slug": "demo", "X-Internal-Token": _TOKEN}
+@pytest.mark.parametrize("vigente", ["", "xyz", "A" * 64])
+async def test_sincrono_exige_vigente(client_with_conn, monkeypatch, vigente) -> None:
+    """Sin huella bien formada no se invalida nada (devuelve -1): una mal formada tiraría
+    también el circuito abierto sobre el texto vigente."""
+    _client, conn = client_with_conn
+    en_proceso(monkeypatch, conn)
+    llamado = AsyncMock(return_value=3)
+    monkeypatch.setattr(invalidacion, "invalidar_por_contenido", llamado)
 
-    sin_cuerpo = await client.post(f"{_RUTA}/b-1/invalidar", headers=h)
-    mala = await client.post(
-        f"{_RUTA}/b-1/invalidar", headers=h, json={"cuerpo_sha256_vigente": "xyz"}
+    n = await signature_api.invalidar_circuitos(
+        borrador_id="b-1", tenant_slug="demo", cuerpo_sha256_vigente=vigente
     )
-    assert sin_cuerpo.status_code == 422
-    assert mala.status_code == 422
+    assert n == -1
+    llamado.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_sincrono_usa_el_mismo_nucleo(client_with_conn, monkeypatch) -> None:
-    client, _conn = client_with_conn
-    monkeypatch.setattr(settings, "signature_internal_token", _TOKEN)
+    _client, conn = client_with_conn
+    en_proceso(monkeypatch, conn)
     llamado = AsyncMock(return_value=3)
     monkeypatch.setattr(invalidacion, "invalidar_por_contenido", llamado)
 
-    resp = await client.post(
-        f"{_RUTA}/b-1/invalidar",
-        headers={"X-Tenant-Slug": "demo", "X-Internal-Token": _TOKEN},
-        json={"cuerpo_sha256_vigente": H1},
+    n = await signature_api.invalidar_circuitos(
+        borrador_id="b-1", tenant_slug="demo", cuerpo_sha256_vigente=H1
     )
-    assert resp.status_code == 200 and resp.json()["invalidadas"] == 3
+    assert n == 3
     kw = llamado.await_args.kwargs
     assert kw["vigente"] == H1 and kw["origen"] == "sincrono" and kw["objeto_id"] == "b-1"

@@ -62,7 +62,7 @@ def _barrer(conn: AsyncMock, *, worm):
     return (
         patch("archive.jobs.indice_reconciliation.get_pool", return_value=_pool(["demo"])),
         patch("archive.jobs.indice_reconciliation.acquire_tenant", _adquirir),
-        patch("archive.clients.storage_client.proteger_artefacto_worm", AsyncMock(return_value=worm)),
+        patch("storage.api.protect_artifact", AsyncMock(return_value=worm)),
     )
 
 

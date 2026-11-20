@@ -55,7 +55,7 @@ class _FakeRepo:
 @contextmanager
 def _entorno(repo, *, slugs=("demo",), enviar=None):
     """Parchea el mundo alrededor del job: tenants, conexión y repositorio.
-    Devuelve el doble de `enviar_aviso` para inspeccionarlo."""
+    Devuelve el doble de `notification.api.send` para inspeccionarlo."""
 
     class _Conn:
         async def __aenter__(self):
@@ -78,7 +78,7 @@ def _entorno(repo, *, slugs=("demo",), enviar=None):
         stack.enter_context(
             patch.object(disposicion_alerta, "ArchiveRepository", lambda conn, slug: repo)
         )
-        stack.enter_context(patch.object(disposicion_alerta, "enviar_aviso", new=envios))
+        stack.enter_context(patch.object(disposicion_alerta.notification_api, "send", new=envios))
         yield envios
 
 
@@ -169,7 +169,7 @@ async def test_un_correo_que_rebota_no_deja_sin_avisar_a_los_demas() -> None:
 
     async def _enviar(*, recipient_email, **kw):
         if recipient_email == "rebota@e.gov.co":
-            raise disposicion_alerta.NotificationDeliveryError("smtp caído")
+            raise disposicion_alerta.notification_api.NotificationDeliveryError("smtp caído")
 
     with _entorno(repo, enviar=_enviar):
         resumen = await disposicion_alerta.run_once()
@@ -206,7 +206,7 @@ async def test_un_tenant_roto_no_aborta_la_barrida() -> None:
         ),
         patch.object(disposicion_alerta, "acquire_tenant", lambda slug: _ConnQueFalla()),
         patch.object(disposicion_alerta, "ArchiveRepository", lambda conn, slug: repo),
-        patch.object(disposicion_alerta, "enviar_aviso", new=envios),
+        patch.object(disposicion_alerta.notification_api, "send", new=envios),
     ):
         resumen = await disposicion_alerta.run_once()
 

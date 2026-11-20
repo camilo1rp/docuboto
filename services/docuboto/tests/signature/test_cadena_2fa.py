@@ -41,9 +41,10 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from auth.api import AuthUnavailableError
+from notification.api import NotificationDeliveryError
 from signature.core.config import settings
 from signature.core.database import get_tenant_conn
-from signature.core.http_clients import OtpEmailDeliveryError, SignerEmailError, SignerIdentity
 from signature.core.otp import hmac_otp
 from signature.main import app
 from signature.services import cadena_service
@@ -143,17 +144,16 @@ def _patch_email(
     monkeypatch: pytest.MonkeyPatch,
     *,
     email: str = "jdoe@example.com",
-    user_id: uuid.UUID = USER,
     get_email_error: Exception | None = None,
     send_email_error: Exception | None = None,
 ) -> tuple[AsyncMock, AsyncMock]:
     mock_get = (
         AsyncMock(side_effect=get_email_error)
         if get_email_error
-        else AsyncMock(return_value=SignerIdentity(email=email, user_id=str(user_id)))
+        else AsyncMock(return_value=email)
     )
     mock_send = AsyncMock(side_effect=send_email_error) if send_email_error else AsyncMock(return_value=None)
-    monkeypatch.setattr("signature.services.cadena_service.get_signer_identity", mock_get)
+    monkeypatch.setattr("auth.api.user_email", mock_get)
     monkeypatch.setattr("signature.services.cadena_service.send_otp_email", mock_send)
     return mock_get, mock_send
 
@@ -432,7 +432,7 @@ async def test_create_challenge_email_unavailable_returns_503(
 ) -> None:
     """FAIL-CLOSED (RF-FIR-13): auth-service /me failure aborts the challenge."""
     _patch_audit(monkeypatch)
-    _patch_email(monkeypatch, get_email_error=SignerEmailError("auth-service unreachable"))
+    _patch_email(monkeypatch, get_email_error=AuthUnavailableError("auth-service unreachable"))
     conn = _make_conn()
     sol = _sol_row()
     turno = _turno_row(firmante_id=USER)
@@ -462,7 +462,7 @@ async def test_create_challenge_notification_unavailable_returns_503(
     _patch_audit(monkeypatch)
     _patch_email(
         monkeypatch,
-        send_email_error=OtpEmailDeliveryError("notification-service unreachable"),
+        send_email_error=NotificationDeliveryError("notification-service unreachable"),
     )
     conn = _make_conn()
     sol = _sol_row()

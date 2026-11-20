@@ -27,8 +27,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
 from orpycamcp_common.tenant import slug_valido
 
-from knowledge.clients import documento
-from knowledge.clients.documento import DocumentoError
+from document import api as document_api
 from knowledge.core import clave_retorno, contenido, database
 from knowledge.core.firma_retorno import comprobar, plazo_nonce
 
@@ -37,6 +36,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["retorno"])
 
 _TOPE_CUERPO = 8192
+#: Tope de lo que se retiene para calcular la huella antes de responder. Por
+#: encima, no hay cuerpo parcial.
+_TOPE_ANEXO = 32 * 1024 * 1024
 
 
 class Problema(Exception):
@@ -132,8 +134,10 @@ async def content(request: Request, slug: str) -> Response:
     if isinstance(pieza, contenido.Rechazo):
         raise _rechazar(pieza.status, pieza.code, pieza.title)
     try:
-        octetos = await documento.leer_anexo(slug, pieza.anexo_id)
-    except DocumentoError:
+        octetos = await document_api.read_anexo_content(
+            tenant_slug=slug, anexo_id=pieza.anexo_id, max_bytes=_TOPE_ANEXO
+        )
+    except document_api.DocumentUnavailableError:
         logger.warning("document-service no entregó el anexo")
         raise _rechazar(503, "unavailable", "El contenido no está disponible") from None
     if octetos is None:

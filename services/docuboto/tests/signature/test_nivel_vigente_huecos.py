@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from signature.core.http_clients import SigningKeyStatusUnavailableError
+from auth.api import AuthUnavailableError
 from signature.schemas.cadena import FirmarRequest
 from signature.services import cadena_service as mod
 from tests.signature.conftest import USER
@@ -44,8 +44,7 @@ pytestmark = [pytest.mark.nivel_vigente_real, pytest.mark.asyncio]
 
 def _sin_certificado(mp: pytest.MonkeyPatch) -> None:
     mp.setattr(
-        mod,
-        "get_signing_key_status_remote",
+        "auth.api.signing_key_status",
         AsyncMock(return_value={"estado": "no_configurado", "cert_pem": None}),
     )
 
@@ -65,7 +64,7 @@ async def test_challenge_el_gate_xades_clasificados_se_activa_por_el_nivel_vivo(
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="clasificados"))
     svc._repo.nivel_vigente_for_update.return_value = (2, 1)
 
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
 
     assert exc.status_code == 422 and _codigo(exc) == "firma_xades_requerida"
     enviar.assert_not_awaited()
@@ -86,7 +85,7 @@ async def test_challenge_con_nivel_vivo_1_el_gate_clasificados_no_se_activa(
     svc._repo.nivel_vigente_for_update.return_value = (1, 1)
 
     try:
-        await svc.emitir_challenge(SOL_ID, USER, "Bearer x")
+        await svc.emitir_challenge(SOL_ID, USER)
     except HTTPException as exc:
         assert _codigo(exc) != "firma_xades_requerida"
     except Exception:  # noqa: BLE001 — el arnés no modela el resto del desafío
@@ -100,14 +99,13 @@ async def test_challenge_canal_caido_bajo_gate_por_nivel_vivo_es_503(
     """El 503 fail-closed del gate también depende del nivel vivo."""
     svc, enviar, _ = _servicio(monkeypatch)
     monkeypatch.setattr(
-        mod,
-        "get_signing_key_status_remote",
-        AsyncMock(side_effect=SigningKeyStatusUnavailableError("x")),
+        "auth.api.signing_key_status",
+        AsyncMock(side_effect=AuthUnavailableError("x")),
     )
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="clasificados"))
     svc._repo.nivel_vigente_for_update.return_value = (2, 1)
 
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
 
     assert exc.status_code == 503 and _codigo(exc) == "canal_firma_personal_no_disponible"
     enviar.assert_not_awaited()
@@ -127,11 +125,11 @@ async def test_sign_el_veto_del_correo_usa_el_nivel_vivo(
     _sin_certificado(monkeypatch)
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="off"))
     totp = AsyncMock(return_value={"activo": True, "user_id": str(USER)})
-    monkeypatch.setattr(mod, "get_totp_status_remote", totp)
+    monkeypatch.setattr("auth.api.totp_status", totp)
     svc._repo.nivel_vigente_for_update.return_value = (2, 1)
     body = FirmarRequest(challenge_id="11111111-1111-1111-1111-111111111111", otp="123456")
 
-    exc = await _error(svc.firmar(SOL_ID, USER, body, "Bearer x"))
+    exc = await _error(svc.firmar(SOL_ID, USER, body))
 
     assert exc.status_code == 409 and _codigo(exc) == "totp_requerido"
     totp.assert_awaited()
@@ -146,12 +144,12 @@ async def test_sign_con_nivel_vivo_1_el_correo_no_esta_vetado(
     _sin_certificado(monkeypatch)
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="off"))
     totp = AsyncMock(return_value={"activo": True, "user_id": str(USER)})
-    monkeypatch.setattr(mod, "get_totp_status_remote", totp)
+    monkeypatch.setattr("auth.api.totp_status", totp)
     svc._repo.nivel_vigente_for_update.return_value = (1, 1)
     body = FirmarRequest(challenge_id="11111111-1111-1111-1111-111111111111", otp="123456")
 
     try:
-        await svc.firmar(SOL_ID, USER, body, "Bearer x")
+        await svc.firmar(SOL_ID, USER, body)
     except Exception:  # noqa: BLE001 — el arnés no modela el desafío
         pass
     totp.assert_not_awaited()
@@ -172,9 +170,9 @@ async def test_nivel_vivo_igual_a_la_copia_no_reescribe_la_copia(
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="todos"))
     svc._repo.nivel_vigente_for_update.return_value = (1, 1)
     llamada = (
-        svc.emitir_challenge(SOL_ID, USER, "Bearer x")
+        svc.emitir_challenge(SOL_ID, USER)
         if camino == "challenge"
-        else svc.firmar(SOL_ID, USER, None, "Bearer x")
+        else svc.firmar(SOL_ID, USER, None)
     )
     exc = await _error(llamada)  # `todos` + sin certificado: se detiene en el gate
     assert _codigo(exc) == "firma_xades_requerida"
@@ -192,7 +190,7 @@ async def test_el_nivel_que_sube_se_corrige_una_vez_aun_si_el_acto_se_deniega(
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="clasificados"))
     svc._repo.nivel_vigente_for_update.return_value = (2, 1)
 
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
 
     assert _codigo(exc) == "firma_xades_requerida"
     svc._repo.actualizar_nivel_seguridad.assert_awaited_once_with("radicado", ["2024-DEMO-E-000001"], 2, solo_subir=True)
@@ -248,9 +246,9 @@ async def test_todos_los_404_neutros_son_indistinguibles_en_sign_y_en_challenge(
         "status": 404,
     }
     svc = CASOS_404[caso](monkeypatch)
-    en_challenge = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    en_challenge = await _error(svc.emitir_challenge(SOL_ID, USER))
     svc = CASOS_404[caso](monkeypatch)
-    en_sign = await _error(svc.firmar(SOL_ID, USER, None, "Bearer x"))
+    en_sign = await _error(svc.firmar(SOL_ID, USER, None))
 
     assert en_challenge.status_code == en_sign.status_code == 404
     assert en_challenge.detail == referencia, caso

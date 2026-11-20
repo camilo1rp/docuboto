@@ -18,7 +18,7 @@ class TenantConPolitica:
     def __init__(self, version: str = "2026-01") -> None:
         self._version = version
 
-    async def get_params_estricto(self, *, tenant_slug: str) -> dict:
+    async def get_params_strict(self, *, tenant_slug: str) -> dict:
         return {
             "politica_tratamiento_version": self._version,
             "politica_tratamiento_url": "https://entidad.example/privacidad",

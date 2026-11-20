@@ -21,12 +21,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.clients.storage_client import WormRenewalOutcome
 from archive.core.config import settings
 from archive.jobs import indice_reconciliation
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.index_service import IndexService
 from archive.services.transferencia_service import TransferenciaService
+from storage.api import WormRenewalOutcome
 
 TENANT = "demo"
 
@@ -58,7 +58,7 @@ async def test_renueva_con_el_tipo_del_rol_marca_y_asienta(rol: str) -> None:
     fid, tid, eid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     nueva = datetime(2052, 1, 1, tzinfo=UTC)
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
     ) as storage:
         res = await _svc(conn).renovar_worm_firma_personal(fid, tid, eid, rol, intentos_previos=0)
@@ -83,7 +83,7 @@ async def test_no_op_confirmado_marca_pero_no_asienta() -> None:
     conn = _conn()
     vigente = datetime(2052, 1, 1, tzinfo=UTC)
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=vigente, renovado=False)),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(
@@ -106,7 +106,7 @@ async def test_no_op_confirmado_marca_pero_no_asienta() -> None:
 async def test_los_fallos_de_storage_programan_backoff(outcome, motivo) -> None:
     conn = _conn()
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(return_value=outcome),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(
@@ -121,7 +121,7 @@ async def test_los_fallos_de_storage_programan_backoff(outcome, motivo) -> None:
 @pytest.mark.asyncio
 async def test_trd_sin_retencion_no_inventa_una() -> None:
     conn = _conn()
-    with patch("archive.clients.storage_client.renovar_retencion_worm_internal", new=AsyncMock()) as st:
+    with patch("storage.api.renew_retention", new=AsyncMock()) as st:
         res = await _svc(conn, anios=None).renovar_worm_firma_personal(
             uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), "recibe", intentos_previos=0
         )
@@ -134,7 +134,7 @@ async def test_trd_sin_retencion_no_inventa_una() -> None:
 async def test_agotado_asienta_la_alarma() -> None:
     conn = _conn()
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(return_value=WormRenewalOutcome(ok=False, transient=True)),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(
@@ -152,7 +152,7 @@ async def test_agotado_asienta_la_alarma() -> None:
 async def test_nunca_propaga_una_excepcion_imprevista() -> None:
     conn = _conn()
     with patch(
-        "archive.clients.storage_client.renovar_retencion_worm_internal",
+        "storage.api.renew_retention",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         res = await _svc(conn).renovar_worm_firma_personal(

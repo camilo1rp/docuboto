@@ -39,7 +39,11 @@ def _imports(arbol: ast.AST) -> list[str]:
         if isinstance(nodo, ast.Import):
             out.extend(a.name for a in nodo.names)
         elif isinstance(nodo, ast.ImportFrom) and nodo.module:
-            out.append(nodo.module)
+            # `from storage import api` es el mismo cruce que `import storage.api`.
+            if "." not in nodo.module and all(a.name == "api" for a in nodo.names):
+                out.append(f"{nodo.module}.api")
+            else:
+                out.append(nodo.module)
     return out
 
 

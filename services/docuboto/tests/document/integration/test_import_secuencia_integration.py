@@ -37,7 +37,7 @@ _ANIO = datetime.now(tz=UTC).year
 
 
 async def _importar(conn: asyncpg.Connection, slug: str, tracking: str) -> dict:
-    with patch("document.services.import_service.storage_client.upload_bytes", new=AsyncMock()):
+    with patch("document.services.import_service.storage_api.upload_file", new=AsyncMock()):
         return await ImportService(conn, slug).import_package(
             zip_bytes=_pkg([{"tracking": tracking}]), max_clearance=3, actor=None
         )

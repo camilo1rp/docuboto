@@ -12,18 +12,13 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from httpx import ASGITransport, AsyncClient
 
 from signature.core.config import settings
-from signature.core.database import get_tenant_conn
-from signature.main import app
 from signature.services import signer
-from tests.signature.conftest import TENANT_HEADERS, USER
+from tests.signature.conftest import TENANT_HEADERS, USER, sellar
 
 # Fixed timestamp used to build test firma rows so verify tests are deterministic.
 SELLO_DT = datetime(2024, 1, 1, tzinfo=UTC)
@@ -174,35 +169,31 @@ def _firma_row(payload: bytes, firmante: uuid.UUID) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# HTTP tests — sign-xml
+# Sello institucional (sin ruta HTTP desde ADR-047 §1)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_sign_xml_happy_path(client_with_conn, monkeypatch) -> None:
-    """POST /sign-xml con token interno y PERM_FIRMA crea la fila ``firma``.
+    """El sello crea la fila ``firma`` a nombre de quien lo pide.
 
-    Desde B9-3 solo admite el sello institucional (``indice``, actas) y exige
-    ``X-Internal-Token``. Con ``signer_provider`` distinto de ``xades_local`` el
-    sello cae al HMAC 'nativa', y es lo que se ejercita aquí de punta a punta por
-    el router (la ruta XAdES real vive en tests/test_sign_xml_xades.py).
+    Solo admite el sello institucional (``indice``, actas). Con ``signer_provider``
+    distinto de ``xades_local`` cae al HMAC 'nativa', y es lo que se ejercita aquí
+    (la ruta XAdES real vive en tests/test_sign_xml_xades.py; el gate de quien lo
+    pide, en test_sign_xml_sello_no_es_publico.py).
     """
     monkeypatch.setattr(settings, "signer_provider", "nativa")
-    monkeypatch.setattr(settings, "signature_internal_token", "tok-interno")
-    client, conn = client_with_conn
+    _client, conn = client_with_conn
     conn.fetchrow.return_value = _firma_row(b"<indice/>", USER)
 
-    resp = await client.post(
-        "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"},
-        headers={**TENANT_HEADERS, "X-Internal-Token": "tok-interno"},
+    resp = await sellar(
+        conn, {"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"}
     )
     assert resp.status_code == 201
     body = resp.json()
     assert body["provider"] == "nativa"
     assert body["objeto_tipo"] == "indice"
     assert len(body["payload_sha256"]) == 64
-    # firmante_id must come from X-User-Id header, not from request body
     assert body["firmante_id"] == str(USER)
 
 
@@ -215,57 +206,6 @@ async def test_sign_xml_body_firmante_id_ignored() -> None:
     req = SignXmlRequest(payload_xml="<x/>", objeto_tipo="indice", firmante_id=str(uuid.uuid4()))  # type: ignore[call-arg]
     # Pydantic v2 with extra="ignore" silently drops unknown fields.
     assert not hasattr(req, "firmante_id")
-
-
-@pytest.mark.asyncio
-async def test_sign_xml_requires_auth() -> None:
-    """POST /sign-xml without X-User-Id header returns 401 (require_permission gate, RF-FIR-11)."""
-    conn = AsyncMock()
-    conn.fetchval.return_value = True
-    conn.transaction = MagicMock(return_value=AsyncMock())
-
-    async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
-        yield conn
-
-    app.dependency_overrides[get_tenant_conn] = _conn_dep
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.post(
-                "/api/v1/signature/sign-xml",
-                json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
-                headers={"X-Tenant-Slug": "demo"},  # X-User-Id intentionally omitted
-            )
-        assert resp.status_code == 401
-    finally:
-        app.dependency_overrides.clear()
-
-
-@pytest.mark.asyncio
-async def test_sign_xml_requires_perm_firma() -> None:
-    """Valid X-User-Id but PERM_FIRMA denied in DB → 403 forbidden (RF-FIR-11 / ADR-013).
-
-    check_permission returns False (fetchval=None → user not found / no perm).
-    require_permission raises 403. The router must propagate it.
-    """
-    conn = AsyncMock()
-    conn.fetchval.return_value = None  # check_permission → denied
-    conn.transaction = MagicMock(return_value=AsyncMock())
-
-    async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
-        yield conn
-
-    app.dependency_overrides[get_tenant_conn] = _conn_dep
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.post(
-                "/api/v1/signature/sign-xml",
-                json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
-                headers=TENANT_HEADERS,  # includes X-User-Id
-            )
-        assert resp.status_code == 403
-        assert resp.json()["detail"]["error"] == "forbidden"
-    finally:
-        app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------

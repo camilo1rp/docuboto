@@ -163,8 +163,7 @@ async def create_challenge(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> ChallengeResponse:
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    authorization = request.headers.get("Authorization")
-    return await _service(conn, tenant_slug).emitir_challenge(solicitud_id, actor, authorization)
+    return await _service(conn, tenant_slug).emitir_challenge(solicitud_id, actor)
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +184,7 @@ async def sign_turn(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> SolicitudResponse:
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    authorization = request.headers.get("Authorization")
-    return await _service(conn, tenant_slug).firmar(solicitud_id, actor, body, authorization)
+    return await _service(conn, tenant_slug).firmar(solicitud_id, actor, body)
 
 
 # ---------------------------------------------------------------------------
@@ -261,5 +259,4 @@ async def batch_sign(
     conn: asyncpg.Connection = Depends(get_tenant_conn),
 ) -> LoteResponse:
     tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    authorization = request.headers.get("Authorization")
-    return await _service(conn, tenant_slug).firmar_lote(body.items, actor, authorization)
+    return await _service(conn, tenant_slug).firmar_lote(body.items, actor)

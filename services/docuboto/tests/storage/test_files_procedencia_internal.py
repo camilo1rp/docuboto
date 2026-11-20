@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Procedencia de un fichero — `POST /storage/internal/files/procedencia` (B2, ADR-031).
+"""Procedencia de un fichero por `storage.api.get_file_provenance` (B2, ADR-031).
 
 document-service la usa al registrar el acuse de un envío: la constancia de
 entrega solo vale si la subió quien la registra y nadie la usa ya como otra cosa.
@@ -19,11 +19,11 @@ import uuid
 
 import pytest
 
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_HEADERS
+from storage import api as storage_api
+from tests.storage.conftest import TENANT_SLUG
 
 _F = uuid.uuid4()
 _AUTOR = uuid.uuid4()
-_URL = "/api/v1/storage/internal/files/procedencia"
 
 
 def _resolver(conn, *, fila, tablas_presentes=True, usada_en=()):
@@ -46,63 +46,50 @@ def _resolver(conn, *, fila, tablas_presentes=True, usada_en=()):
 
 @pytest.mark.asyncio
 async def test_devuelve_autor_huella_y_sin_referencias(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     _resolver(conn, fila={"sha256": "a" * 64, "uploaded_by": _AUTOR})
 
-    r = await client.post(_URL, json={"file_id": str(_F)}, headers=INTERNAL_HEADERS)
+    r = await storage_api.get_file_provenance(tenant_slug=TENANT_SLUG, file_id=_F)
 
-    assert r.status_code == 200, r.text
-    assert r.json() == {"sha256": "a" * 64, "uploaded_by": str(_AUTOR), "referencias": []}
+    assert r == storage_api.FileProvenance(sha256="a" * 64, uploaded_by=_AUTOR, referencias=[])
 
 
 @pytest.mark.asyncio
 async def test_un_anexo_aparece_como_referenciado(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     _resolver(conn, fila={"sha256": "a" * 64, "uploaded_by": _AUTOR}, usada_en=("anexos",))
 
-    r = await client.post(_URL, json={"file_id": str(_F)}, headers=INTERNAL_HEADERS)
+    r = await storage_api.get_file_provenance(tenant_slug=TENANT_SLUG, file_id=_F)
 
-    assert r.json()["referencias"] == ["anexos.file_id"]
+    assert r.referencias == ["anexos.file_id"]
 
 
 @pytest.mark.asyncio
 async def test_tabla_ausente_cuenta_como_referenciado(client_with_conn) -> None:
     """«No sé» no es «nadie»: fail-closed."""
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     _resolver(conn, fila={"sha256": "a" * 64, "uploaded_by": _AUTOR}, tablas_presentes=False)
 
-    r = await client.post(_URL, json={"file_id": str(_F)}, headers=INTERNAL_HEADERS)
+    r = await storage_api.get_file_provenance(tenant_slug=TENANT_SLUG, file_id=_F)
 
-    assert r.json()["referencias"], "una tabla ausente no puede leerse como 'nadie lo usa'"
+    assert r.referencias, "una tabla ausente no puede leerse como 'nadie lo usa'"
 
 
 @pytest.mark.asyncio
 async def test_autor_nulo_se_devuelve_nulo(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     _resolver(conn, fila={"sha256": "a" * 64, "uploaded_by": None})
 
-    r = await client.post(_URL, json={"file_id": str(_F)}, headers=INTERNAL_HEADERS)
+    r = await storage_api.get_file_provenance(tenant_slug=TENANT_SLUG, file_id=_F)
 
-    assert r.json()["uploaded_by"] is None
+    assert r.uploaded_by is None
 
 
 @pytest.mark.asyncio
-async def test_fichero_inexistente_es_404(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
+async def test_fichero_inexistente_es_none(client_with_conn) -> None:
+    _client, conn, _ = client_with_conn
     _resolver(conn, fila=None)
 
-    r = await client.post(_URL, json={"file_id": str(_F)}, headers=INTERNAL_HEADERS)
+    r = await storage_api.get_file_provenance(tenant_slug=TENANT_SLUG, file_id=_F)
 
-    assert r.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_sin_token_interno_no_se_alcanza(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
-
-    r = await client.post(_URL, json={"file_id": str(_F)}, headers=TENANT_HEADERS)
-
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert r.status_code == 404
-    assert r.json()["error"] == "route_not_found"
-    conn.fetchrow.assert_not_called()
+    assert r is None

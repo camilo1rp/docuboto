@@ -27,12 +27,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.clients.signature_client import SignedIndice, SignOutcome, VerifyResult
 from archive.core.actor import Actor
 from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.transferencia_service import TransferenciaService
+from signature.api import SignedIndice, SignOutcome, VerifyResult
 from tests.archive.conftest import TENANT_HEADERS, USER_ID
 
 TENANT = "demo"
@@ -197,7 +197,7 @@ async def test_sellar_acta_ok_first_attempt_marks_firmado_and_audits_manual() ->
     actor = Actor(id=USER_ID)
 
     with patch(
-        "archive.clients.signature_client.sign_xml_outcome",
+        "signature.api.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ) as mock_outcome:
         await svc._sellar_acta_post_commit(tid, acta_xml="<acta/>", indice_version=1, actor=actor)
@@ -230,7 +230,7 @@ async def test_sellar_acta_lost_race_no_phantom_audit() -> None:
     actor = Actor(id=USER_ID)
 
     with patch(
-        "archive.clients.signature_client.sign_xml_outcome",
+        "signature.api.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=_signed())),
     ):
         await svc._sellar_acta_post_commit(
@@ -254,7 +254,7 @@ async def test_sellar_acta_seal_absent_degrades_without_retry(monkeypatch) -> No
     actor = Actor(id=USER_ID)
 
     with patch(
-        "archive.clients.signature_client.sign_xml_outcome",
+        "signature.api.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=None, seal_absent=True)),
     ) as mock_outcome:
         await svc._sellar_acta_post_commit(
@@ -280,7 +280,7 @@ async def test_sellar_acta_transient_then_success_second_attempt(monkeypatch) ->
     outcomes = [SignOutcome(signed=None, transient=True), SignOutcome(signed=_signed())]
 
     with patch(
-        "archive.clients.signature_client.sign_xml_outcome", new=AsyncMock(side_effect=outcomes)
+        "signature.api.sign_xml_outcome", new=AsyncMock(side_effect=outcomes)
     ) as mock_outcome:
         await svc._sellar_acta_post_commit(
             uuid.uuid4(), acta_xml="<acta/>", indice_version=1, actor=actor
@@ -299,7 +299,7 @@ async def test_sellar_acta_transient_exhausted_degrades(monkeypatch) -> None:
     actor = Actor(id=USER_ID)
 
     with patch(
-        "archive.clients.signature_client.sign_xml_outcome",
+        "signature.api.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ) as mock_outcome:
         await svc._sellar_acta_post_commit(
@@ -354,11 +354,11 @@ async def test_acta_firma_block_verify_true_downloads_and_verifies() -> None:
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml",
+            "storage.api.read_signed_xml",
             new=AsyncMock(return_value="<acta><ds:Signature/></acta>"),
         ) as mock_download,
         patch(
-            "archive.clients.signature_client.verify",
+            "signature.api.verify",
             new=AsyncMock(
                 return_value=VerifyResult(
                     valida=True, nivel_conformidad="xades_b_no_acreditado", acreditado=False, motivo=None
@@ -382,7 +382,7 @@ async def test_acta_firma_block_verify_true_signed_xml_unavailable() -> None:
     )
 
     with patch(
-        "archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=None)
+        "storage.api.read_signed_xml", new=AsyncMock(return_value=None)
     ):
         info = await svc._build_firma_info(row, verify=True)
 
@@ -545,7 +545,7 @@ async def test_reconciliar_acta_success_marks_signed_and_audits_reconciliation()
     }
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ) as mock_sign:
         resultado = await _reconciliar_acta(conn, TENANT, row)
@@ -583,7 +583,7 @@ async def test_reconciliar_acta_lost_race_no_phantom_audit() -> None:
     }
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(return_value=SignOutcome(signed=_signed())),
     ):
         resultado = await _reconciliar_acta(conn, TENANT, row)
@@ -611,7 +611,7 @@ async def test_reconciliar_acta_failure_schedules_backoff(monkeypatch) -> None:
     }
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ):
         resultado = await _reconciliar_acta(conn, TENANT, row)
@@ -643,7 +643,7 @@ async def test_reconciliar_acta_reaches_max_intentos_marks_agotado(monkeypatch) 
     }
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(return_value=SignOutcome(signed=None, seal_absent=True)),
     ):
         resultado = await _reconciliar_acta(conn, TENANT, row)
@@ -727,7 +727,7 @@ async def test_run_once_actas_aggregates_and_isolates_per_acta_failure() -> None
         patch("archive.jobs.indice_reconciliation.get_pool", return_value=mock_pool),
         patch("archive.jobs.indice_reconciliation.acquire_tenant", fake_acquire_tenant),
         patch(
-            "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+            "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
             new=AsyncMock(side_effect=_sign_side_effect),
         ),
     ):

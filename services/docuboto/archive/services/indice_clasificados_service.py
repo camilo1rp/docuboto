@@ -13,7 +13,7 @@
 archive-service es el dueño del cuadro de clasificación (CCD/TRD); document-service,
 el de los radicados y de la ley (catálogo de causales). El índice se COMPONE aquí:
 
-1. `GET /internal/documentos/clasificados` (document): radicados nivel >= 2 con causal,
+1. `document.api.fetch_clasificados`: radicados nivel >= 2 con causal,
    plazo y fecha, SIN número, asunto ni fundamento; más el catálogo de causales.
 2. La serie/subserie de cada uno sale de `expediente_radicados -> expedientes -> trd_series`.
 3. `componer_indice` agrupa por (serie, subserie, causal, categoría, cita normativa) y descarta
@@ -33,9 +33,9 @@ from typing import Any
 import asyncpg
 from orpycamcp_common.tenant import tenant_schema
 
-from archive.clients import document_client
 from archive.repositories.clasificados_serie_repository import series_de_radicados
 from archive.schemas.indice_clasificados import IndiceSeriePublico
+from document import api as document_api
 
 SIN_SERIE = "Sin serie documental asignada"
 POR_CLASIFICAR = "por_clasificar"
@@ -145,9 +145,9 @@ def componer_indice(
 async def indice_publico(conn: asyncpg.Connection, tenant_slug: str) -> list[IndiceSeriePublico]:
     """Compone el índice de una entidad (ya verificada como operativa por el router).
 
-    document-service caído => `DocumentClientError` (el router responde 503): una lista
+    document caído => `document_api.DocumentUnavailableError` (el router responde 503): una lista
     parcial de reservas publicada como completa sería peor que no publicarla."""
-    datos = await document_client.fetch_clasificados_internal(tenant_slug=tenant_slug)
+    datos = await document_api.fetch_clasificados(tenant_slug=tenant_slug)
     radicados = datos.get("radicados", [])
     schema = tenant_schema(tenant_slug)  # valida + normaliza (fail-closed)
     await conn.execute(f'SET search_path TO "{schema}"')

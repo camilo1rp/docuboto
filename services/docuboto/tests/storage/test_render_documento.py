@@ -24,9 +24,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from storage import api as storage_api
 from storage.services.render.factory import get_document_renderer
 from storage.services.render.weasyprint_renderer import WeasyPrintRenderer
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_HEADERS
 
 PAGINA = {
     "entidad": "Instituto de Prueba",
@@ -212,70 +212,35 @@ class TestConformidadReal:
         assert resultado.outcome == "conformant", resultado
 
 
-class TestEndpointSellado:
-    """`POST /api/v1/render/documento-internal` — puerta y degradación honesta."""
+class TestRenderPorApi:
+    """`storage.api.render_document` — degradación honesta para document."""
 
     @pytest.mark.asyncio
-    async def test_sin_token_interno_no_se_renderiza(self, client) -> None:
-        # Un endpoint inter-servicio se SELLA con token, no se gatea por
-        # permiso: el único llamante es document-service, que ya autorizó al
-        # funcionario antes de componer el cuerpo.
-        resp = await client.post(
-            "/api/v1/render/documento-internal",
-            json={"cuerpo_html": "<p>x</p>", "pagina": {}},
-            headers=TENANT_HEADERS,
-        )
-        # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-        assert resp.status_code == 404
-        assert resp.json()["error"] == "route_not_found"
+    async def test_sin_renderizador_lo_dice(self, monkeypatch) -> None:
+        # Lo importante es que NO se entregue un documento vacío. Un oficio que la
+        # entidad cree haber producido y no existe es peor que un error visible,
+        # porque el fallo aparece cuando el ciudadano reclama.
+        monkeypatch.setattr(storage_api, "get_document_renderer", lambda _s: None)
+        with pytest.raises(storage_api.RenderUnavailableError):
+            await storage_api.render_document(cuerpo_html="<p>x</p>", pagina={})
 
     @pytest.mark.asyncio
-    async def test_sin_renderizador_responde_503_y_lo_dice(self, client, monkeypatch) -> None:
-        # Lo importante no es el 503: es que NO se entregue un documento vacío.
-        # Un oficio que la entidad cree haber producido y no existe es peor que
-        # un error visible, porque el fallo aparece cuando el ciudadano reclama.
-        from storage.routers import render as router_render
-
-        monkeypatch.setattr(router_render, "get_document_renderer", lambda _s: None)
-        resp = await client.post(
-            "/api/v1/render/documento-internal",
-            json={"cuerpo_html": "<p>x</p>", "pagina": {}},
-            headers=INTERNAL_HEADERS,
-        )
-        assert resp.status_code == 503
-        assert resp.json()["detail"]["error"] == "render_no_disponible"
-
-    @pytest.mark.asyncio
-    async def test_con_renderizador_devuelve_el_pdf(self, client, monkeypatch) -> None:
-        import base64
-
-        from storage.routers import render as router_render
-
+    async def test_con_renderizador_devuelve_el_pdf(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            router_render, "get_document_renderer", lambda _s: WeasyPrintRenderer()
+            storage_api, "get_document_renderer", lambda _s: WeasyPrintRenderer()
         )
-        resp = await client.post(
-            "/api/v1/render/documento-internal",
-            json={"cuerpo_html": "<p>Cuerpo</p>", "pagina": PAGINA, "perfil": "pdf/a-2b"},
-            headers=INTERNAL_HEADERS,
+        rendido = await storage_api.render_document(
+            cuerpo_html="<p>Cuerpo</p>", pagina=PAGINA, perfil="pdf/a-2b"
         )
-        assert resp.status_code == 200, resp.text
-        cuerpo = resp.json()
-        assert cuerpo["formato"] == "PDF/A-2B"
-        assert base64.b64decode(cuerpo["contenido_b64"]).startswith(b"%PDF-")
-        assert cuerpo["bytes"] > 0
+        assert rendido.formato == "PDF/A-2B"
+        assert rendido.contenido.startswith(b"%PDF-")
 
     @pytest.mark.asyncio
-    async def test_un_render_fallido_no_devuelve_bytes(self, client, monkeypatch) -> None:
-        from storage.routers import render as router_render
-
+    async def test_un_render_fallido_no_devuelve_bytes(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            router_render, "get_document_renderer", lambda _s: WeasyPrintRenderer()
+            storage_api, "get_document_renderer", lambda _s: WeasyPrintRenderer()
         )
-        resp = await client.post(
-            "/api/v1/render/documento-internal",
-            json={"cuerpo_html": "<p>x</p>", "pagina": PAGINA, "perfil": "pdf/a-2a"},
-            headers=INTERNAL_HEADERS,
-        )
-        assert resp.status_code == 422
-        assert "contenido_b64" not in resp.json()
+        with pytest.raises(storage_api.RenderFailedError):
+            await storage_api.render_document(
+                cuerpo_html="<p>x</p>", pagina=PAGINA, perfil="pdf/a-2a"
+            )

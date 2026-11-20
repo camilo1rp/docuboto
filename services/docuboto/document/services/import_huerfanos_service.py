@@ -36,9 +36,9 @@ from typing import Any
 
 from orpycamcp_common import audit
 
-from document.clients import storage_client
 from document.core.config import settings
 from document.repositories.import_repository import ImportRepository
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 _SERVICE = "document-service"
@@ -121,7 +121,7 @@ class ImportHuerfanosService:
         conteo: dict[str, int] = defaultdict(int)
         for (imp, desde, actor), ids in grupos.items():
             try:
-                resultados = await storage_client.purgar_huerfanos(
+                resultados = await storage_api.purge_orphans(
                     tenant_slug=self._slug,
                     file_ids=ids,
                     referencia=str(imp),
@@ -129,17 +129,17 @@ class ImportHuerfanosService:
                     subido_desde=desde,
                     actor=actor,
                 )
-            except storage_client.StorageContentError as exc:
+            except storage_api.StorageError as exc:
                 await self._fallar(imp, ids, str(exc), actor)
                 conteo["error"] += len(ids)
                 logger.warning("purga de huérfanos del import %s pendiente: %s", imp, exc)
                 continue
 
             por_id = {r.file_id: r for r in resultados}
-            por_estado: dict[str, list[storage_client.ResultadoPurga]] = defaultdict(list)
-            fallidos: list[storage_client.ResultadoPurga] = []
+            por_estado: dict[str, list[storage_api.PurgaHuerfano]] = defaultdict(list)
+            fallidos: list[storage_api.PurgaHuerfano] = []
             for fid in ids:
-                r = por_id.get(fid) or storage_client.ResultadoPurga(fid, "error", "sin respuesta")
+                r = por_id.get(fid) or storage_api.PurgaHuerfano(fid, "error", "sin respuesta")
                 destino = _ESTADO_TERMINAL.get(r.resultado)
                 if destino is None:
                     fallidos.append(r)

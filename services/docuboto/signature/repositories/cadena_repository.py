@@ -244,6 +244,18 @@ class CadenaRepository:
             objeto_id,
         )
 
+    async def ultimo_circuito_firmado(self, objeto_id: str) -> asyncpg.Record | None:
+        """Último circuito cerrado del objeto, con la huella del texto que firmó.
+
+        Por objeto y no por tipo, por lo mismo que ``get_solicitud_por_objeto_id``.
+        """
+        return await self._conn.fetchrow(
+            "SELECT payload_sha256 FROM firma_solicitud "
+            "WHERE objeto_id = $1 AND estado = 'firmado' "
+            "ORDER BY created_at DESC LIMIT 1",
+            objeto_id,
+        )
+
     async def get_solicitud_por_objeto(
         self,
         objeto_tipo: str,

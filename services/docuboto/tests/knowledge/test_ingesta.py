@@ -1,4 +1,4 @@
-# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de StoredFile (SGDEA).
 # Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
 # Contacto: aurigadl@gmail.com
 #
@@ -20,8 +20,9 @@ import httpx
 import pytest
 
 from knowledge.clients.ppi import PLAZO_EXTRACT_S, ClientePpi
-from knowledge.clients.storage import TOPE, Archivo, Falta
 from knowledge.core import ingesta
+from knowledge.core.ingesta import MAX_FILE_BYTES
+from storage.api import FileUnavailable, StoredFile
 from tests.knowledge.conftest import TENANT_HEADERS
 
 pytestmark = pytest.mark.asyncio
@@ -90,8 +91,8 @@ def _cliente(transporte: _Transporte) -> ClientePpi:
     return ClientePpi(transporte, base_url="http://ppi.internal")
 
 
-def _archivo() -> Archivo:
-    return Archivo(
+def _archivo() -> StoredFile:
+    return StoredFile(
         id=ARCHIVO_ID,
         filename="solicitud.pdf",
         media_type="application/pdf",
@@ -101,7 +102,7 @@ def _archivo() -> Archivo:
     )
 
 
-async def _leer(_ident: uuid.UUID, _slug: str) -> Archivo | Falta:
+async def _leer(_ident: uuid.UUID, _slug: str) -> StoredFile | FileUnavailable:
     return _archivo()
 
 
@@ -153,8 +154,8 @@ async def test_en_local_no_llama() -> None:
 
 
 async def test_un_archivo_que_no_existe_no_llama() -> None:
-    async def vacio(_ident: uuid.UUID, _slug: str) -> Archivo | Falta:
-        return Falta("file_not_found")
+    async def vacio(_ident: uuid.UUID, _slug: str) -> StoredFile | FileUnavailable:
+        return FileUnavailable("file_not_found")
 
     transporte = _Transporte()
     resultado = await ingesta.crear(
@@ -165,15 +166,15 @@ async def test_un_archivo_que_no_existe_no_llama() -> None:
 
 
 async def test_un_archivo_que_excede_el_tope_no_llama() -> None:
-    async def grande(_ident: uuid.UUID, _slug: str) -> Archivo | Falta:
-        return Falta("too_large")
+    async def grande(_ident: uuid.UUID, _slug: str) -> StoredFile | FileUnavailable:
+        return FileUnavailable("too_large")
 
     transporte = _Transporte()
     resultado = await ingesta.crear(
         _Conn(), "demo", _cliente(transporte), ARCHIVO_ID, leer=grande
     )
     assert resultado.sale is False and resultado.motivo == "too_large"
-    assert TOPE == 104_857_600
+    assert MAX_FILE_BYTES == 104_857_600
     assert transporte.llamadas == []
 
 

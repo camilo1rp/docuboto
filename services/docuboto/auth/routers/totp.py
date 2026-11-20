@@ -10,22 +10,12 @@
 """
 TOTP (E06, RFC 6238) — segundo factor para la firma personal.
 
-Dos routers con visibilidad MUY distinta:
+- ``router`` (``/api/v1/auth/me/totp``): identidad resuelta por ``get_caller``
+  (``UsuarioActualMiddleware``), mismo patrón que ``clearance.py``/``context.py``.
+- ``admin_router``: restablecimiento administrativo del factor de otra persona.
 
-- ``router`` (``/api/v1/auth/me/totp``): PÚBLICO vía api-gateway (el prefijo
-  ``/api/v1/auth/`` ya está enrutado en ``proxy.py``). Identidad resuelta por
-  ``get_caller`` (``X-User-Id`` inyectado por el gateway tras ``/validate``) —
-  mismo patrón que ``clearance.py``/``context.py``.
-
-- ``internal_router`` (``/internal/totp``): NUNCA expuesto por el gateway (su
-  único route matcher es ``/api/v1/{path:path}`` — cualquier ruta fuera de
-  ``/api/v1`` es, por construcción, inalcanzable vía gateway, igual que
-  ``/internal/*`` en otros servicios). Solo signature-service lo llama,
-  directo por la red Docker, reenviando el ``Authorization`` del firmante
-  (D1: la identidad se deriva del bearer, NUNCA de un ``user_id`` de body —
-  cierra IDOR). La identidad se resuelve aquí mismo vía ``validate_token`` +
-  ``get_user_by_keycloak_sub``, exactamente como hace
-  ``AuthService.validate()`` para ``/api/v1/auth/validate``.
+La verificación y el estado que consulta signature al firmar no son rutas:
+son ``auth.api.verify_totp``/``totp_status`` (ADR-047 §1).
 """
 
 from __future__ import annotations
@@ -34,19 +24,14 @@ import logging
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWTError
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.database import get_db_conn, get_tenant_conn, tenant_schema
-from auth.core.internal_auth import require_internal_token
+from auth.core.database import get_tenant_conn
 from auth.core.security import validate_token
-from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.totp import (
-    InternalTotpStatusResponse,
-    InternalTotpVerifyRequest,
-    InternalTotpVerifyResponse,
     TotpActivateRequest,
     TotpActivateResponse,
     TotpAdminRevokeRequest,
@@ -64,7 +49,6 @@ from auth.services.totp_service import TotpService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/auth/me/totp", tags=["totp"])
-internal_router = APIRouter(prefix="/internal/totp", tags=["totp-internal"])
 
 # Restablecimiento ADMINISTRATIVO del segundo factor de OTRA persona.
 # Gate a nivel de router (`USUA_PERM_ADMIN`, nivel 1: leer) más el del propio
@@ -87,8 +71,9 @@ async def _resolve_tenant_slug_for_aad(
     credentials: HTTPAuthorizationCredentials | None,
 ) -> str:
     """Resolves the ``tenant_slug`` bound into the AESGCM AAD (``build_aad``)
-    from the caller's OWN bearer JWT claim — the same source
-    ``/internal/totp/verify`` uses — instead of the ``X-Tenant-Slug`` header.
+    from the caller's OWN bearer JWT claim — the session's tenant, which is
+    what signature passes to ``auth.api.verify_totp`` — instead of the
+    ``X-Tenant-Slug`` header.
 
     In normal operation the header and the claim agree (the gateway derives
     the header from this very claim via its own call to ``/validate``), but
@@ -251,130 +236,3 @@ async def regenerate_recovery_codes(
     )
     response.headers["Cache-Control"] = "no-store"
     return result
-
-
-# ---------------------------------------------------------------------------
-# Internal — /internal/totp/* (service-to-service only, NOT gateway-routed)
-# ---------------------------------------------------------------------------
-
-
-@internal_router.post(
-    "/verify",
-    response_model=InternalTotpVerifyResponse,
-    dependencies=[Depends(require_internal_token)],
-    summary="Verify-and-consume a TOTP code for the bearer's own identity (signature-service only)",
-)
-async def internal_verify_totp(
-    payload: InternalTotpVerifyRequest,
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> InternalTotpVerifyResponse:
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "missing_token", "detail": "Falta la cabecera Authorization", "status": 401},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        claims = await validate_token(credentials.credentials)
-    except PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "detail": "El token es inválido o expiró", "status": 401},
-        )
-
-    tenant_slug = claims.get("tenant_slug")
-    if not tenant_slug:
-        # No tenant context (e.g. superadmin) — auth_user_totp is tenant-scoped,
-        # so there is nothing to resolve. Fail-closed, never 500.
-        return InternalTotpVerifyResponse(valido=False, motivo="no_activo")
-
-    schema = tenant_schema(tenant_slug)  # 400 if the claim itself is malformed
-    await conn.execute(f'SET search_path = "{schema}"')
-    try:
-        rbac = RBACRepository(conn)
-        user = await rbac.get_user_by_keycloak_sub(claims["user_id"])
-        if user is None:
-            return InternalTotpVerifyResponse(valido=False, motivo="no_activo")
-        resultado = await TotpService(conn).verify(
-            user["id"], tenant_slug, payload.code, contexto=payload.contexto
-        )
-        if resultado.valido:
-            # Dice DE QUIÉN era el factor verificado: el llamante lo cruza con el
-            # actor al que atribuye el acto (AREA-04-05).
-            resultado = resultado.model_copy(update={"user_id": user["id"]})
-        return resultado
-    except asyncpg.UndefinedTableError:
-        # Tenant not provisioned yet — same fail-closed criterion as AuthService.validate().
-        logger.warning(
-            "internal_verify_totp: tenant '%s' not provisioned; treating as no_activo",
-            tenant_slug,
-        )
-        return InternalTotpVerifyResponse(valido=False, motivo="no_activo")
-    finally:
-        try:
-            await conn.execute("SET search_path = public")
-        except Exception:
-            pass
-
-
-@internal_router.get(
-    "/status",
-    response_model=InternalTotpStatusResponse,
-    dependencies=[Depends(require_internal_token)],
-    summary="Does the bearer's owner have an ACTIVE TOTP? (signature-service only)",
-)
-async def internal_totp_status(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> InternalTotpStatusResponse:
-    """Lo consulta signature-service para NO aceptar el OTP-correo de quien ya
-    tiene un TOTP activo en un acto de nivel >= 2 (AREA-04-02): el factor más
-    débil de los dos enrolados no puede ser el que se exija.
-
-    Doble gate como ``/internal/signing-key/status``: ``X-Internal-Token`` (el
-    llamador es un servicio) y la identidad derivada del ``Authorization``
-    reenviado (D1: nunca de un parámetro). Content-free: solo ``activo`` y el
-    ``user_id`` del dueño del bearer. Fail-closed: sin tenant, sin usuario
-    aprovisionado o tenant sin aprovisionar -> ``activo=False`` sin ``user_id``
-    (el llamante trata la falta de ``user_id`` como identidad no confirmada).
-    """
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "missing_token", "detail": "Falta la cabecera Authorization", "status": 401},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        claims = await validate_token(credentials.credentials)
-    except PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "detail": "El token es inválido o expiró", "status": 401},
-        )
-
-    tenant_slug = claims.get("tenant_slug")
-    if not tenant_slug:
-        return InternalTotpStatusResponse(activo=False)
-
-    schema = tenant_schema(tenant_slug)
-    await conn.execute(f'SET search_path = "{schema}"')
-    try:
-        user = await RBACRepository(conn).get_user_by_keycloak_sub(claims["user_id"])
-        if user is None:
-            return InternalTotpStatusResponse(activo=False)
-        estado = await TotpService(conn).status(user["id"])
-        return InternalTotpStatusResponse(
-            activo=estado.estado == "activo", user_id=user["id"]
-        )
-    except asyncpg.UndefinedTableError:
-        logger.warning(
-            "internal_totp_status: tenant '%s' not provisioned; treating as inactive",
-            tenant_slug,
-        )
-        return InternalTotpStatusResponse(activo=False)
-    finally:
-        try:
-            await conn.execute("SET search_path = public")
-        except Exception:
-            pass

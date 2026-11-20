@@ -19,7 +19,6 @@ from orpycamcp_common.tenant import tenant_schema as _schema_de
 from orpycamcp_common.usuario import slug_de
 
 from signature.core.config import settings
-from signature.core.conservacion import admitir_conservacion
 
 _pool: asyncpg.Pool | None = None
 
@@ -89,17 +88,7 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
         ) from exc
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
-        if (veto := await veredicto_entidad(conn, slug)) is not None and not (
-            # Conservación (ADR-035 §8, C-6): una entidad SUSPENDIDA sigue conservando; solo la ruta
-            # interna de la lista, con el token de servicio.
-            await admitir_conservacion(
-                conn,
-                slug=slug,
-                metodo=request.method,
-                ruta=request.scope["path"],
-                token=request.headers.get("X-Internal-Token"),
-            )
-        ):
+        if (veto := await veredicto_entidad(conn, slug)) is not None:
             raise HTTPException(
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},

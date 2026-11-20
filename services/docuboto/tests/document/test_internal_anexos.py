@@ -7,22 +7,12 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Tests de `POST /api/v1/internal/documentos/anexos` (E10 debt, cableado del
-AIP OAIS al cierre del expediente) — primer endpoint interno de
-document-service (`document/routers/internal.py`).
-
-Gate D-02 (`X-Internal-Token`, fail-closed, `document/core/internal_auth.py`) +
-inventario TOTAL batch de anexos por `radicado_id`, SIN el gate de clearance
-que sí aplica `GET /documents/{id}/anexos` (RF-SEG-08, no-read-up): el
-empaquetado del AIP es un acto de SISTEMA, no una lectura de usuario. La
-inalcanzabilidad EXTERNA de este endpoint (el gateway no enruta
-`/api/v1/internal/*` y, aunque lo hiciera, `X-Internal-Token` no viaja en
-`FORWARDED_REQUEST_HEADERS`) se prueba en `api-gateway/tests/test_gateway.py`,
-no aquí. El aislamiento REAL por tenant (dos schemas físicos de Postgres) se
-prueba en `tests/integration/test_internal_anexos_tenant_isolation.py`; aquí
-solo se confirma que la query del repositorio filtra ÚNICAMENTE por
-`radicado_id` (sin JOIN a `radicados`/clearance) y que el router no exige
-`X-User-Id`.
+"""`document.api.fetch_anexos` (E10 debt, cableado del AIP OAIS al cierre del
+expediente): inventario TOTAL batch de anexos por `radicado_id`, SIN el gate de
+clearance que sí aplica `GET /documents/{id}/anexos` (RF-SEG-08): el empaquetado
+del AIP es un acto de SISTEMA. Era una ruta interna con token; ahora es una
+llamada a función (ADR-047 §1). El aislamiento real por tenant se prueba en
+`tests/document/integration/test_internal_anexos_tenant_isolation.py`.
 """
 
 from __future__ import annotations
@@ -30,118 +20,12 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
 
-from document.core import config as cfg_module
+from document import api as document_api
 from document.repositories.document_repository import DocumentRepository
 from tests.document.conftest import TENANT_SLUG, make_anexo_record
-
-TEST_INTERNAL_TOKEN = "test-document-internal-token-xxx"
-INTERNAL_HEADERS = {"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": TEST_INTERNAL_TOKEN}
-_PATH = "/api/v1/internal/documentos/anexos"
-
-
-@pytest.fixture(autouse=True)
-def _internal_token_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
-
-
-# ---------------------------------------------------------------------------
-# Gate D-02: X-Internal-Token
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_without_token_is_404(client_with_conn) -> None:
-    client, _mock_conn = client_with_conn
-
-    resp = await client.post(
-        _PATH,
-        json={"radicado_ids": [str(uuid.uuid4())]},
-        headers={"X-Tenant-Slug": TENANT_SLUG},  # sin X-Internal-Token
-    )
-
-    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware
-    # de identidad responde 404 antes de cualquier gate.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-
-
-@pytest.mark.asyncio
-async def test_with_wrong_token_is_403(client_with_conn) -> None:
-    client, _mock_conn = client_with_conn
-
-    resp = await client.post(
-        _PATH,
-        json={"radicado_ids": [str(uuid.uuid4())]},
-        headers={"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": "wrong-token"},
-    )
-
-    assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "invalid_internal_token"
-
-
-@pytest.mark.asyncio
-async def test_token_not_configured_is_401(
-    client_with_conn, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Fail-closed: `INTERNAL_SERVICE_TOKEN` vacío rechaza incluso con header
-    correcto — jamás hay un modo "abierto" por omisión."""
-    client, _mock_conn = client_with_conn
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", "")
-
-    resp = await client.post(
-        _PATH, json={"radicado_ids": [str(uuid.uuid4())]}, headers=INTERNAL_HEADERS
-    )
-
-    assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "internal_access_not_configured"
-
-
-def test_require_internal_token_uses_constant_time_comparison(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Remediación de auditoría (Baja): `require_internal_token` compara con
-    `hmac.compare_digest`, no `!=` (side-channel de temporización) — probado
-    DIRECTAMENTE (sin HTTP) para cubrir tokens de LONGITUD DISTINTA, que
-    `compare_digest` maneja sin excepción y que ningún test HTTP existente
-    ejercita a propósito. El fail-closed (401 sin config/sin header) no
-    cambia — solo esta comparación final."""
-    from fastapi import HTTPException
-
-    from document.core.internal_auth import require_internal_token
-
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
-
-    require_internal_token(x_internal_token=TEST_INTERNAL_TOKEN)  # no lanza
-
-    with pytest.raises(HTTPException) as exc_info:
-        require_internal_token(x_internal_token="x" * len(TEST_INTERNAL_TOKEN))
-    assert exc_info.value.status_code == 403
-
-    with pytest.raises(HTTPException) as exc_info:
-        require_internal_token(x_internal_token="short")
-    assert exc_info.value.status_code == 403
-
-    with pytest.raises(HTTPException) as exc_info:
-        require_internal_token(x_internal_token=TEST_INTERNAL_TOKEN + "-extra-suffix")
-    assert exc_info.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_no_clearance_gate_request_without_x_user_id_succeeds(client_with_conn) -> None:
-    """Acto de SISTEMA: a diferencia de las rutas RBAC del servicio (que
-    resuelven `X-User-Id`), este endpoint no lo exige — solo el token
-    interno gatea el acceso."""
-    client, mock_conn = client_with_conn
-    mock_conn.fetch.return_value = []
-
-    resp = await client.post(
-        _PATH, json={"radicado_ids": [str(uuid.uuid4())]}, headers=INTERNAL_HEADERS
-    )
-
-    assert resp.status_code == 200
-
 
 # ---------------------------------------------------------------------------
 # Inventario batch — forma de la respuesta
@@ -149,22 +33,17 @@ async def test_no_clearance_gate_request_without_x_user_id_succeeds(client_with_
 
 
 @pytest.mark.asyncio
-async def test_batch_returns_anexos_grouped_by_radicado_id(client_with_conn) -> None:
-    client, mock_conn = client_with_conn
+async def test_batch_returns_anexos_grouped_by_radicado_id(api_conn) -> None:
     radicado_a = uuid.uuid4()
     radicado_b = uuid.uuid4()  # sin anexos -> no debe aparecer como clave
     anexo_a1 = make_anexo_record(radicado_id=radicado_a)
     anexo_a2 = make_anexo_record(radicado_id=radicado_a)
-    mock_conn.fetch.return_value = [anexo_a1, anexo_a2]
+    api_conn.fetch.return_value = [anexo_a1, anexo_a2]
 
-    resp = await client.post(
-        _PATH,
-        json={"radicado_ids": [str(radicado_a), str(radicado_b)]},
-        headers=INTERNAL_HEADERS,
+    body = await document_api.fetch_anexos(
+        tenant_slug=TENANT_SLUG, radicado_ids=[radicado_a, radicado_b]
     )
 
-    assert resp.status_code == 200
-    body = resp.json()
     assert str(radicado_b) not in body
     assert len(body[str(radicado_a)]) == 2
     returned_file_ids = {item["file_id"] for item in body[str(radicado_a)]}
@@ -174,31 +53,30 @@ async def test_batch_returns_anexos_grouped_by_radicado_id(client_with_conn) -> 
 
 
 @pytest.mark.asyncio
-async def test_radicado_without_anexos_is_empty_dict_not_error(client_with_conn) -> None:
-    """Ningún anexo para NINGÚN `radicado_id` del lote -> `{}` (200), nunca
-    un error — el llamador (`document_client.fetch_anexos_internal`) lo
-    trata como "sin anexos digitales", no como un fallo."""
-    client, mock_conn = client_with_conn
-    mock_conn.fetch.return_value = []
+async def test_radicado_without_anexos_is_empty_dict_not_error(api_conn) -> None:
+    """Ningún anexo para ningún radicado del lote -> `{}`, nunca un error: el
+    llamador lo trata como «sin anexos digitales»."""
+    api_conn.fetch.return_value = []
 
-    resp = await client.post(
-        _PATH, json={"radicado_ids": [str(uuid.uuid4())]}, headers=INTERNAL_HEADERS
-    )
-
-    assert resp.status_code == 200
-    assert resp.json() == {}
+    assert await document_api.fetch_anexos(
+        tenant_slug=TENANT_SLUG, radicado_ids=[uuid.uuid4()]
+    ) == {}
 
 
 @pytest.mark.asyncio
-async def test_empty_radicado_ids_is_rejected_by_schema(client_with_conn) -> None:
-    """`AnexosInternalRequest.radicado_ids` exige `min_length=1` — un batch
-    vacío es un error de uso del llamador, 422 antes de tocar la BD."""
-    client, mock_conn = client_with_conn
+async def test_empty_radicado_ids_short_circuits(api_conn) -> None:
+    assert await document_api.fetch_anexos(tenant_slug=TENANT_SLUG, radicado_ids=[]) == {}
+    api_conn.fetch.assert_not_called()
 
-    resp = await client.post(_PATH, json={"radicado_ids": []}, headers=INTERNAL_HEADERS)
 
-    assert resp.status_code == 422
-    mock_conn.fetch.assert_not_called()
+@pytest.mark.asyncio
+async def test_un_fallo_de_la_bd_no_es_un_inventario_vacio(api_conn) -> None:
+    """RF-FIR-15: un AIP «completo» con anexos faltantes sería peor que no
+    empaquetarlo. El fallo sube como `DocumentUnavailableError`."""
+    api_conn.fetch.side_effect = asyncpg.PostgresError("caída")
+
+    with pytest.raises(document_api.DocumentUnavailableError):
+        await document_api.fetch_anexos(tenant_slug=TENANT_SLUG, radicado_ids=[uuid.uuid4()])
 
 
 # ---------------------------------------------------------------------------

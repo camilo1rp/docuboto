@@ -12,7 +12,7 @@ TotpService — orquesta el ciclo de vida del segundo factor TOTP (E06, RFC 6238
 
 D1 OWNERSHIP: el secreto vive en AUTH-SERVICE (credencial de identidad
 durable, junto a ``auth_users``). signature-service NUNCA lo ve — solo llama
-a ``POST /internal/totp/verify`` (ver ``auth/routers/totp.py``).
+a ``auth.api.verify_totp``.
 
 INVARIANTE RECTOR: el secreto se cifra en reposo (AESGCM) y solo se descifra
 en memoria dentro de este servicio, para el tiempo mínimo indispensable. Se

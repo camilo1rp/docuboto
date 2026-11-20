@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Ensamblado del ZIP de exportación de expediente (E02/export, storage)."""
+"""Ensamblado del ZIP de exportación de expediente (E02/export) por `storage.api.open_export_zip`."""
 
 import base64
 import hashlib
@@ -21,19 +21,26 @@ import pytest
 from pydantic import ValidationError
 
 import storage.core.config as cfg
-from tests.storage.conftest import (
-    INTERNAL_HEADERS,
-    TENANT_HEADERS,
-    make_file_record,
-    minio_get_object_stream,
-)
+from storage import api as storage_api
+from tests.storage.conftest import TENANT_SLUG, make_file_record, minio_get_object_stream
 
 
 def _sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-_URL = "/api/v1/preservacion/export-zip-internal"
+async def _export(body: dict) -> bytes:
+    """El ZIP completo, leído por el mismo iterador que sirve archive."""
+    stream = await storage_api.open_export_zip(tenant_slug=TENANT_SLUG, **body)
+    contenido = b"".join([trozo async for trozo in stream.iter_bytes()])
+    assert stream.content_length == len(contenido)
+    return contenido
+
+
+async def _export_error(body: dict) -> storage_api.StorageExportError:
+    with pytest.raises(storage_api.StorageExportError) as exc:
+        await storage_api.open_export_zip(tenant_slug=TENANT_SLUG, **body)
+    return exc.value
 
 
 def test_export_item_rejects_zip_slip() -> None:
@@ -50,19 +57,8 @@ def test_export_item_rejects_zip_slip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_zip_endpoint_requires_internal_token(client_with_conn) -> None:
-    client, _, _ = client_with_conn
-    resp = await client.post(
-        _URL, json={"items": [], "extra_files": []}, headers=TENANT_HEADERS
-    )
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-
-
-@pytest.mark.asyncio
-async def test_export_zip_endpoint_assembles_members(client_with_conn) -> None:
-    client, conn, minio = client_with_conn
+async def test_export_zip_assembles_members(client_with_conn) -> None:
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [
         make_file_record(file_id=fid, filename="oficio.pdf", sha256=_sha(b"PDFBYTES"))
@@ -78,11 +74,7 @@ async def test_export_zip_endpoint_assembles_members(client_with_conn) -> None:
             }
         ],
     }
-    resp = await client.post(_URL, json=body, headers=INTERNAL_HEADERS)
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "application/zip"
-
-    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    zf = zipfile.ZipFile(io.BytesIO(await _export(body)))
     # El ensamblado añade checksums.txt (SHA-256 por miembro) automáticamente.
     assert set(zf.namelist()) == {
         "documentos/2026-DEMO-E-1/0-oficio.pdf",
@@ -101,18 +93,15 @@ async def test_export_zip_endpoint_assembles_members(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_zip_endpoint_404_when_anexo_missing(client_with_conn, monkeypatch, tmp_path) -> None:
+async def test_export_zip_404_when_anexo_missing(client_with_conn, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cfg.settings, 'export_tmp_dir', str(tmp_path))
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     conn.fetch.return_value = []  # ningún id existe
     body = {
         "items": [{"file_id": str(uuid.uuid4()), "arcname": "documentos/x/0-a.pdf"}],
         "extra_files": [],
     }
-    resp = await client.post(_URL, json=body, headers=INTERNAL_HEADERS)
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["error"] == "anexo_no_encontrado"
-    assert resp.json()["detail"]["status"] == 404
+    assert (await _export_error(body)).status_code == 404
     # Sin temporal: la prevalidación falla antes de crear el fichero y no se
     # tocó el almacén de objetos.
     assert list(tmp_path.iterdir()) == []
@@ -126,14 +115,12 @@ def _ids_body(fid: uuid.UUID) -> dict:
 @pytest.mark.asyncio
 async def test_export_deletes_temp_after_serving(client_with_conn, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, sha256=_sha(b"X" * 5000))]
     minio.get_object = minio_get_object_stream(b"X" * 5000)
-    resp = await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
-    assert resp.status_code == 200
-    assert int(resp.headers["content-length"]) == len(resp.content)
-    assert zipfile.ZipFile(io.BytesIO(resp.content)).testzip() is None
+    contenido = await _export(_ids_body(fid))
+    assert zipfile.ZipFile(io.BytesIO(contenido)).testzip() is None
     assert list(tmp_path.iterdir()) == []  # el temporal se borra tras servir
 
 
@@ -144,7 +131,7 @@ async def test_export_failure_midway_leaves_no_temp_and_no_200(
     """Si el almacén falla a mitad de un anexo, el error llega ANTES de servir
     y el temporal parcial se borra (nunca un 200 truncado)."""
     monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, sha256=_sha(b"parcial"))]
 
@@ -155,8 +142,8 @@ async def test_export_failure_midway_leaves_no_temp_and_no_200(
     obj = MagicMock()
     obj.content.iter_chunked = MagicMock(side_effect=_boom)
     minio.get_object = AsyncMock(return_value=obj)
-    with pytest.raises(RuntimeError):
-        await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
+    exc = await _export_error(_ids_body(fid))
+    assert isinstance(exc.__cause__, RuntimeError)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -166,12 +153,10 @@ async def test_export_413_when_declared_size_exceeds_cap(
 ) -> None:
     monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
     monkeypatch.setattr(cfg.settings, "export_max_bytes", 1000)
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, file_size=5000)]
-    resp = await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
-    assert resp.status_code == 413
-    assert resp.json()["detail"]["error"] == "export_demasiado_grande"
+    assert (await _export_error(_ids_body(fid))).status_code == 413
     assert list(tmp_path.iterdir()) == []
 
 
@@ -182,12 +167,11 @@ async def test_export_413_when_real_bytes_exceed_cap_and_cleans(
     """El tamaño declarado miente (cabe) pero el real no: corta y limpia."""
     monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
     monkeypatch.setattr(cfg.settings, "export_max_bytes", 1000)
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, file_size=10)]
     minio.get_object = minio_get_object_stream(b"Z" * 5000)
-    resp = await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
-    assert resp.status_code == 413
+    assert (await _export_error(_ids_body(fid))).status_code == 413
     assert list(tmp_path.iterdir()) == []
 
 
@@ -198,12 +182,10 @@ async def test_export_507_when_disk_insufficient(client_with_conn, monkeypatch, 
         "storage.services.export_service.shutil.disk_usage",
         lambda _p: shutil._ntuple_diskusage(100, 99, 1),
     )
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid)]
-    resp = await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
-    assert resp.status_code == 507
-    assert resp.json()["detail"]["error"] == "espacio_insuficiente"
+    assert (await _export_error(_ids_body(fid))).status_code == 507
     assert list(tmp_path.iterdir()) == []
 
 
@@ -221,7 +203,7 @@ async def test_export_peak_memory_is_bounded_for_large_attachment(
         "storage.services.export_service.shutil.disk_usage",
         lambda _p: shutil._ntuple_diskusage(10**12, 0, 10**12),
     )
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     total = 600 * 1024 * 1024
     trozo = b"\0" * (1024 * 1024)
@@ -244,11 +226,11 @@ async def test_export_peak_memory_is_bounded_for_large_attachment(
 
     tracemalloc.start()
     try:
-        resp = await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
+        stream = await storage_api.open_export_zip(tenant_slug=TENANT_SLUG, **_ids_body(fid))
         _, pico = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    assert resp.status_code == 200
+    await stream.aclose()
     assert pico < 64 * 1024 * 1024
     assert list(tmp_path.iterdir()) == []
 
@@ -257,18 +239,17 @@ async def test_export_peak_memory_is_bounded_for_large_attachment(
 async def test_export_404_when_object_missing_in_store(
     client_with_conn, monkeypatch, tmp_path
 ) -> None:
-    """Fila presente, binario ausente: 404 limpio y sin temporal (no un 500)."""
+    """Fila presente, binario ausente: 404 limpio y sin temporal."""
     from miniopy_async.error import S3Error
 
     monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid)]
     minio.get_object = AsyncMock(
         side_effect=S3Error("NoSuchKey", "no existe", "r", "rid", "hid", MagicMock())
     )
-    resp = await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
-    assert resp.status_code == 404
+    assert (await _export_error(_ids_body(fid))).status_code == 404
     assert list(tmp_path.iterdir()) == []
 
 
@@ -286,13 +267,11 @@ async def test_export_409_fixity_mismatch_aborts_before_serving_and_audits(
         registrados.append(kw)
 
     monkeypatch.setattr("storage.services.export_service.audit.append", _append)
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, sha256=_sha(b"ORIGINAL"))]
     minio.get_object = minio_get_object_stream(b"CORRUPTO")
-    resp = await client.post(_URL, json=_ids_body(fid), headers=INTERNAL_HEADERS)
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "fixity_fallida"
+    assert (await _export_error(_ids_body(fid))).status_code == 409
     assert list(tmp_path.iterdir()) == []
     assert len(registrados) == 1
     assert registrados[0]["action"] == "file.fixity_fallo"

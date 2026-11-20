@@ -10,6 +10,9 @@
 """Retenciones legales por MOTIVO y retención diferida (C-5/C7, ADR-043). Unitarias (conexión y
 almacén de mentira); la atomicidad y el SQL real viven en `tests/integration/`.
 
+Sin rutas HTTP (ADR-047): se llama a  (holds, retención diferida, AIP) o, cuando
+hace falta un campo que la API no devuelve, al servicio que envolvía la ruta interna.
+
 Cada prueba dice qué MUTACIÓN del código la pondría en rojo (no se ejecutaron: la verificación se
 hace una vez al cierre del lote C).
 """
@@ -17,18 +20,34 @@ hace una vez al cierre del lote C).
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import ValidationError
 
+from storage import api as storage_api
+from storage.api import StorageLegalHoldError
 from storage.core import config as config_module
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_HEADERS, make_file_record, make_worm_row
+from storage.core.constants import SYSTEM_RECONCILER_ID
+from storage.schemas.preservacion import (
+    AipCreate,
+    HoldFijarRequest,
+    HoldLevantarRequest,
+    ProtegerIndiceRequest,
+    ProtegerIndiceResponse,
+    RenovarRetencionRequest,
+)
+from storage.services.aip_service import AipService, AipYaExisteError
+from storage.services.preservation_worm_service import (
+    PreservationWormService,
+    RetencionDiferidaSinHoldError,
+    SinRetencionQueRenovarError,
+)
+from tests.storage.conftest import TENANT_SLUG, make_file_record, make_worm_row
 
-_FIJAR = "/api/v1/preservacion/legal-hold-internal/fijar"
-_LISTAR = "/api/v1/preservacion/legal-hold-internal"
-_FIJAR_RET = "/api/v1/preservacion/fijar-retencion-internal"
 _EXP = "EXP-1"
+_ACTOR = str(uuid.uuid4())
 
 
 @pytest.fixture(autouse=True)
@@ -36,8 +55,15 @@ def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
 
 
-def _levantar(hold_id: uuid.UUID) -> str:
-    return f"/api/v1/preservacion/legal-hold-internal/{hold_id}/levantar"
+async def _fijar(*, actor_id: str | None = _ACTOR, **overrides: str) -> dict:
+    cuerpo = {**_CUERPO_FIJAR, **overrides}
+    return await storage_api.set_legal_hold(tenant_slug=TENANT_SLUG, actor_id=actor_id, **cuerpo)
+
+
+async def _levantar(hold_id: uuid.UUID, motivo: str, *, actor_id: str | None = _ACTOR) -> dict:
+    return await storage_api.lift_legal_hold(
+        tenant_slug=TENANT_SLUG, actor_id=actor_id, hold_id=hold_id, **_cuerpo_levantar(motivo)
+    )
 
 
 def _hold(
@@ -193,19 +219,17 @@ def _cuerpo_levantar(motivo: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_fijar_hold_sobre_expediente_sin_objetos_es_201(client_with_conn) -> None:
+async def test_fijar_hold_sobre_expediente_sin_objetos_lo_crea(client_with_conn) -> None:
     """H2: antes era 404 `sin_objetos_protegidos`. Un expediente sin AIP/índice todavía se puede
     congelar, y deja asiento aunque no haya objeto que alcanzar.
 
-    Mutación: restaurar `if not filas: raise WormObjectNotFoundError` -> 404 y este test cae."""
-    client, conn, minio = client_with_conn
+    Mutación: restaurar `if not filas: raise WormObjectNotFoundError` -> lanza y este test cae."""
+    _client, conn, minio = client_with_conn
     db = _Db(filas=[]).instalar(conn)
     _almacen(db, minio)
 
-    resp = await client.post(_FIJAR, json=_CUERPO_FIJAR, headers=INTERNAL_HEADERS)
+    cuerpo = await _fijar()
 
-    assert resp.status_code == 201, resp.text
-    cuerpo = resp.json()
     assert cuerpo["creado"] is True and cuerpo["objetos_afectados"] == 0
     minio.enable_object_legal_hold.assert_not_awaited()
     assert db.acciones == ["preservacion.legal_hold_fijado"]
@@ -216,16 +240,15 @@ async def test_fijar_hold_sobre_expediente_sin_objetos_es_201(client_with_conn) 
 async def test_fijar_hold_pone_el_hold_en_s3_solo_en_las_filas_que_aun_no_lo_tienen(
     client_with_conn,
 ) -> None:
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     ya = make_worm_row(expediente_id=_EXP, legal_hold=True, tipo="indice")
     nueva = make_worm_row(expediente_id=_EXP, legal_hold=False, tipo="indice")
     db = _Db(filas=[ya, nueva]).instalar(conn)
     _almacen(db, minio)
 
-    resp = await client.post(_FIJAR, json=_CUERPO_FIJAR, headers=INTERNAL_HEADERS)
+    cuerpo = await _fijar()
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["objetos_afectados"] == 1
+    assert cuerpo["objetos_afectados"] == 1
     minio.enable_object_legal_hold.assert_awaited_once_with(
         nueva["bucket"], nueva["object_key"], version_id=nueva["version_id"]
     )
@@ -234,66 +257,67 @@ async def test_fijar_hold_pone_el_hold_en_s3_solo_en_las_filas_que_aun_no_lo_tie
 
 
 @pytest.mark.asyncio
-async def test_fijar_hold_judicial_sin_actor_identificado_es_422(client_with_conn) -> None:
+async def test_fijar_hold_registra_a_la_persona_que_lo_fija(client_with_conn) -> None:
+    """`fijado_por` sale del `actor_id` que pasa archive, no de una cabecera."""
+    _client, conn, minio = client_with_conn
+    db = _Db().instalar(conn)
+    _almacen(db, minio)
+
+    cuerpo = await _fijar(actor_id=_ACTOR)
+
+    assert db.holds[uuid.UUID(cuerpo["hold_id"])]["fijado_por"] == uuid.UUID(_ACTOR)
+
+
+@pytest.mark.asyncio
+async def test_fijar_hold_judicial_sin_actor_identificado_es_actor_requerido(
+    client_with_conn,
+) -> None:
     """Un hold que no es de sistema necesita persona detrás (CHECK `ck_plh_fijado_por`).
-    Mutación: quitar `HoldActorRequeridoError` -> 500 por violación del CHECK."""
-    client, conn, minio = client_with_conn
+    Mutación: quitar `HoldActorRequeridoError` -> fallo genérico (503) por violación del CHECK."""
+    _client, conn, minio = client_with_conn
     _almacen(_Db().instalar(conn), minio)
-    sin_usuario = {k: v for k, v in INTERNAL_HEADERS.items() if k != "X-User-Id"}
 
-    resp = await client.post(_FIJAR, json=_CUERPO_FIJAR, headers=sin_usuario)
+    with pytest.raises(StorageLegalHoldError) as exc:
+        await _fijar(actor_id=None)
 
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["error"] == "actor_requerido"
+    assert exc.value.status == 422 and exc.value.code == "actor_requerido"
 
 
 @pytest.mark.asyncio
 async def test_fijar_valoracion_pendiente_es_idempotente_y_sin_actor(client_with_conn) -> None:
-    """El hold de SISTEMA nace sin persona; repetirlo no crea otro (200 + `creado=false`).
-    Mutación: quitar la consulta `valoracion_activa` -> 201 doble y rebota `ux_plh_valoracion_activa`."""
-    client, conn, minio = client_with_conn
+    """El hold de SISTEMA nace sin persona; repetirlo no crea otro (`creado=false`).
+    Mutación: quitar la consulta `valoracion_activa` -> doble alta y rebota `ux_plh_valoracion_activa`."""
+    _client, conn, minio = client_with_conn
     db = _Db().instalar(conn)
     _almacen(db, minio)
-    sin_usuario = {k: v for k, v in INTERNAL_HEADERS.items() if k != "X-User-Id"}
-    cuerpo = {**_CUERPO_FIJAR, "motivo_tipo": "valoracion_pendiente", "acta_ref": "TVD S-1 v2"}
+    cuerpo = {"motivo_tipo": "valoracion_pendiente", "acta_ref": "TVD S-1 v2"}
 
-    primero = await client.post(_FIJAR, json=cuerpo, headers=sin_usuario)
-    segundo = await client.post(_FIJAR, json=cuerpo, headers=sin_usuario)
+    primero = await _fijar(actor_id=None, **cuerpo)
+    segundo = await _fijar(actor_id=None, **cuerpo)
 
-    assert primero.status_code == 201 and segundo.status_code == 200
-    assert primero.json()["hold_id"] == segundo.json()["hold_id"]
-    assert segundo.json()["creado"] is False
+    assert primero["creado"] is True and segundo["creado"] is False
+    assert primero["hold_id"] == segundo["hold_id"]
     assert len(db._activos(_EXP)) == 1
+    assert db.holds[uuid.UUID(primero["hold_id"])]["fijado_por"] is None
 
 
 @pytest.mark.asyncio
 async def test_fijar_con_un_motivo_fuera_del_catalogo_es_422(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     _Db().instalar(conn)
-    resp = await client.post(
-        _FIJAR, json={**_CUERPO_FIJAR, "motivo_tipo": "capricho"}, headers=INTERNAL_HEADERS
-    )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_hold_sin_token_interno_es_404(client_with_conn) -> None:
-    client, conn, minio = client_with_conn
-    _Db().instalar(conn)
-    resp = await client.post(_FIJAR, json=_CUERPO_FIJAR, headers=TENANT_HEADERS)
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-    minio.enable_object_legal_hold.assert_not_awaited()
+    with pytest.raises(StorageLegalHoldError) as exc:
+        await _fijar(motivo_tipo="capricho")
+    assert exc.value.status == 422
 
 
 @pytest.mark.asyncio
 async def test_hold_con_preservacion_desactivada_es_503(client_with_conn, monkeypatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     _Db().instalar(conn)
-    resp = await client.post(_FIJAR, json=_CUERPO_FIJAR, headers=INTERNAL_HEADERS)
-    assert resp.status_code == 503
+    with pytest.raises(StorageLegalHoldError) as exc:
+        await _fijar()
+    assert exc.value.status == 503 and exc.value.code == "preservation_disabled"
 
 
 # ── levantar ──────────────────────────────────────────────────────────────
@@ -306,21 +330,16 @@ async def test_levantar_valoracion_con_un_hold_judicial_vivo_NO_libera_s3(client
 
     Mutación que debe caer: liberar S3 sin contar los holds restantes (quitar `restantes == 0`)
     -> `disable_object_legal_hold` se espera y este test cae."""
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     judicial = _hold("judicial")
     valoracion = _hold("valoracion_pendiente")
     fila = make_worm_row(expediente_id=_EXP, diferida=True)
     db = _Db(filas=[fila], holds=[judicial, valoracion]).instalar(conn)
     _almacen(db, minio)
 
-    resp = await client.post(
-        _levantar(valoracion["id"]),
-        json=_cuerpo_levantar("valoracion_pendiente"),
-        headers=INTERNAL_HEADERS,
-    )
+    res = await _levantar(valoracion["id"], "valoracion_pendiente")
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {
+    assert res == {
         "hold_id": str(valoracion["id"]),
         "objetos_liberados_s3": 0,
         "holds_restantes": 1,
@@ -338,18 +357,15 @@ async def test_levantar_el_ultimo_hold_libera_s3_con_solicitud_antes_y_la_fila_e
     """Orden al LEVANTAR: asiento de solicitud -> almacén -> registro + fila + asiento final.
     Mutación: mover el almacén antes del asiento de solicitud -> el índice de 'audit' ya no
     precede a 'minio_off'."""
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     judicial = _hold("judicial")
     fila = make_worm_row(expediente_id=_EXP, legal_hold=True, file_id=uuid.uuid4())
     db = _Db(filas=[fila], holds=[judicial]).instalar(conn)
     _almacen(db, minio)
 
-    resp = await client.post(
-        _levantar(judicial["id"]), json=_cuerpo_levantar("judicial"), headers=INTERNAL_HEADERS
-    )
+    res = await _levantar(judicial["id"], "judicial")
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["objetos_liberados_s3"] == 1 and resp.json()["holds_restantes"] == 0
+    assert res["objetos_liberados_s3"] == 1 and res["holds_restantes"] == 0
     minio.disable_object_legal_hold.assert_awaited_once_with(
         fila["bucket"], fila["object_key"], version_id=fila["version_id"]
     )
@@ -365,20 +381,16 @@ async def test_levantar_el_ultimo_hold_libera_s3_con_solicitud_antes_y_la_fila_e
 @pytest.mark.asyncio
 async def test_levantar_confirmando_otro_motivo_es_409_y_no_toca_nada(client_with_conn) -> None:
     """Un acto no puede levantar el hold de otro. Mutación: quitar la comparación de
-    `motivo_tipo` -> 200 y el hold judicial queda levantado por un acto de valoración."""
-    client, conn, minio = client_with_conn
+    `motivo_tipo` -> el hold judicial queda levantado por un acto de valoración."""
+    _client, conn, minio = client_with_conn
     judicial = _hold("judicial")
     db = _Db(filas=[make_worm_row(expediente_id=_EXP, legal_hold=True)], holds=[judicial]).instalar(conn)
     _almacen(db, minio)
 
-    resp = await client.post(
-        _levantar(judicial["id"]),
-        json=_cuerpo_levantar("valoracion_pendiente"),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(StorageLegalHoldError) as exc:
+        await _levantar(judicial["id"], "valoracion_pendiente")
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "motivo_no_coincide"
+    assert exc.value.status == 409 and exc.value.code == "motivo_no_coincide"
     minio.disable_object_legal_hold.assert_not_awaited()
     assert db.holds[judicial["id"]]["levantado_at"] is None
     assert db.acciones == []
@@ -386,36 +398,33 @@ async def test_levantar_confirmando_otro_motivo_es_409_y_no_toca_nada(client_wit
 
 @pytest.mark.asyncio
 async def test_levantar_un_hold_ya_levantado_es_409_y_uno_inexistente_404(client_with_conn) -> None:
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     viejo = _hold("judicial", levantado=True)
     db = _Db(holds=[viejo]).instalar(conn)
     _almacen(db, minio)
 
-    ya = await client.post(
-        _levantar(viejo["id"]), json=_cuerpo_levantar("judicial"), headers=INTERNAL_HEADERS
-    )
-    no = await client.post(
-        _levantar(uuid.uuid4()), json=_cuerpo_levantar("judicial"), headers=INTERNAL_HEADERS
-    )
+    with pytest.raises(StorageLegalHoldError) as ya:
+        await _levantar(viejo["id"], "judicial")
+    with pytest.raises(StorageLegalHoldError) as no:
+        await _levantar(uuid.uuid4(), "judicial")
 
-    assert ya.status_code == 409 and ya.json()["detail"]["error"] == "hold_ya_levantado"
-    assert no.status_code == 404 and no.json()["detail"]["error"] == "hold_not_found"
+    assert ya.value.status == 409 and ya.value.code == "hold_ya_levantado"
+    assert no.value.status == 404 and no.value.code == "hold_not_found"
 
 
 @pytest.mark.asyncio
 async def test_fallo_del_almacen_al_levantar_deja_solicitud_y_fallo_y_el_hold_sigue_activo(
     client_with_conn,
 ) -> None:
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     judicial = _hold("judicial")
     db = _Db(filas=[make_worm_row(expediente_id=_EXP, legal_hold=True)], holds=[judicial]).instalar(conn)
     minio.disable_object_legal_hold = AsyncMock(side_effect=RuntimeError("s3 caido"))
 
-    with pytest.raises(RuntimeError, match="s3 caido"):
-        await client.post(
-            _levantar(judicial["id"]), json=_cuerpo_levantar("judicial"), headers=INTERNAL_HEADERS
-        )
+    with pytest.raises(StorageLegalHoldError, match="s3 caido") as exc:
+        await _levantar(judicial["id"], "judicial")
 
+    assert exc.value.status == 503
     assert db.holds[judicial["id"]]["levantado_at"] is None
     assert "levantar_hold" not in db.eventos and "update_fila" not in db.eventos
     assert db.acciones == [
@@ -427,31 +436,27 @@ async def test_fallo_del_almacen_al_levantar_deja_solicitud_y_fallo_y_el_hold_si
 @pytest.mark.asyncio
 async def test_levantar_un_hold_del_aip_alcanza_tambien_la_replica(client_with_conn) -> None:
     """AREA-08-07: el freeze del AIP cubre primaria (version exacta) Y réplica."""
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     judicial = _hold("judicial")
     fila = make_worm_row(expediente_id=_EXP, legal_hold=True, tipo="aip")
     db = _Db(filas=[fila], holds=[judicial]).instalar(conn)
     _almacen(db, minio)
 
-    resp = await client.post(
-        _levantar(judicial["id"]), json=_cuerpo_levantar("judicial"), headers=INTERNAL_HEADERS
-    )
+    await _levantar(judicial["id"], "judicial")
 
-    assert resp.status_code == 200, resp.text
     assert minio.disable_object_legal_hold.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_listar_devuelve_activos_y_levantados(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
+    _client, conn, _ = client_with_conn
     a, b = _hold("judicial"), _hold("fiscal", levantado=True)
     _Db(holds=[a, b]).instalar(conn)
 
-    resp = await client.get(f"{_LISTAR}?expediente_id={_EXP}", headers=INTERNAL_HEADERS)
+    holds = await storage_api.list_legal_holds(tenant_slug=TENANT_SLUG, expediente_id=_EXP)
 
-    assert resp.status_code == 200, resp.text
-    assert {h["motivo_tipo"] for h in resp.json()} == {"judicial", "fiscal"}
-    assert sum(1 for h in resp.json() if h["levantado_at"] is not None) == 1
+    assert {h["motivo_tipo"] for h in holds} == {"judicial", "fiscal"}
+    assert sum(1 for h in holds if h["levantado_at"] is not None) == 1
 
 
 # ── protección: el objeto nace con el hold y la retención diferida exige hold ──────────
@@ -459,6 +464,14 @@ async def test_listar_devuelve_activos_y_levantados(client_with_conn) -> None:
 
 def _payload_indice(file_id: uuid.UUID, **extra: object) -> dict:
     return {"file_id": str(file_id), "expediente_id": _EXP, **extra}
+
+
+async def _proteger_indice(conn: AsyncMock, payload: dict) -> tuple[ProtegerIndiceResponse, bool]:
+    """Lo que hacía la ruta interna del índice: tipo fijo y actor de sistema."""
+    return await PreservationWormService(conn, TENANT_SLUG).proteger_indice(
+        ProtegerIndiceRequest(**payload).model_copy(update={"tipo": "indice"}),
+        actor=str(SYSTEM_RECONCILER_ID),
+    )
 
 
 def _registro_indice(file_id: uuid.UUID) -> dict:
@@ -495,7 +508,7 @@ async def test_un_objeto_protegido_con_un_hold_vivo_nace_con_legal_hold(client_w
     """H2b: antes `legal_hold` era siempre False al proteger. Ahora = existe un hold activo.
 
     Mutación: fijar `legal_hold=False` en el put/insert -> este test cae (put_object y fila)."""
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     registro, contenido = _registro_indice(fid)
     _fetch_con_holds(conn, ["judicial"])
@@ -508,13 +521,15 @@ async def test_un_objeto_protegido_con_un_hold_vivo_nace_con_legal_hold(client_w
     ]
     minio.get_object = _get_object(contenido)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_payload_indice(fid, retencion_anios=5, fecha_inicio="2026-01-01"),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.protect_index_as_system(
+        tenant_slug=TENANT_SLUG,
+        file_id=str(fid),
+        expediente_id=_EXP,
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
 
-    assert resp.status_code == 201, resp.text
+    assert outcome.ok is True, outcome
     assert minio.put_object.await_args.kwargs["legal_hold"] is True
     insert = next(
         c for c in conn.fetchrow.call_args_list if "INSERT INTO preservacion_worm_objeto" in c.args[0]
@@ -524,26 +539,21 @@ async def test_un_objeto_protegido_con_un_hold_vivo_nace_con_legal_hold(client_w
 
 
 @pytest.mark.asyncio
-async def test_retencion_diferida_sin_hold_de_valoracion_es_409_y_no_sube_nada(
+async def test_retencion_diferida_sin_hold_de_valoracion_falla_y_no_sube_nada(
     client_with_conn,
 ) -> None:
     """Un objeto sin retención y sin hold quedaría borrable. Mutación: quitar la comprobación
-    `valoracion_pendiente in holds` -> put_object se espera y el 409 desaparece."""
-    client, conn, minio = client_with_conn
+    `valoracion_pendiente in holds` -> put_object se espera y el error desaparece."""
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     registro, contenido = _registro_indice(fid)
     _fetch_con_holds(conn, ["judicial"])  # hay un hold, pero NO el de valoración
     conn.fetchrow.side_effect = [None, registro]
     minio.get_object = _get_object(contenido)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_payload_indice(fid, retencion_diferida="valoracion_pendiente"),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(RetencionDiferidaSinHoldError):
+        await _proteger_indice(conn, _payload_indice(fid, retencion_diferida="valoracion_pendiente"))
 
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"]["error"] == "retencion_diferida_sin_hold"
     minio.put_object.assert_not_awaited()
 
 
@@ -553,7 +563,7 @@ async def test_retencion_diferida_con_hold_escribe_solo_hold_sin_retencion(clien
     legal hold, y la fila nace `valoracion_pendiente` con retain_until/mode NULL.
 
     Mutación: pasar una `Retention` calculada (el clamp viejo) -> `retention is None` cae."""
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     registro, contenido = _registro_indice(fid)
     _fetch_con_holds(conn, ["valoracion_pendiente"])
@@ -566,64 +576,63 @@ async def test_retencion_diferida_con_hold_escribe_solo_hold_sin_retencion(clien
     ]
     minio.get_object = _get_object(contenido)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_payload_indice(fid, retencion_diferida="valoracion_pendiente"),
-        headers=INTERNAL_HEADERS,
+    cuerpo, creado = await _proteger_indice(
+        conn, _payload_indice(fid, retencion_diferida="valoracion_pendiente")
     )
 
-    assert resp.status_code == 201, resp.text
-    cuerpo = resp.json()
-    assert cuerpo["retain_until"] is None and cuerpo["retention_mode"] is None
-    assert cuerpo["retencion_origen"] == "valoracion_pendiente" and cuerpo["legal_hold"] is True
+    assert creado is True
+    assert cuerpo.retain_until is None and cuerpo.retention_mode is None
+    assert cuerpo.retencion_origen == "valoracion_pendiente" and cuerpo.legal_hold is True
     put = minio.put_object.await_args
     assert put.kwargs["retention"] is None and put.kwargs["legal_hold"] is True
     minio.get_object_retention.assert_not_awaited()  # no hay fecha que releer
 
 
-@pytest.mark.asyncio
-async def test_retencion_diferida_es_excluyente_y_solo_del_indice(client_with_conn) -> None:
-    client, conn, _ = client_with_conn
-    _fetch_con_holds(conn, ["valoracion_pendiente"])
+def test_retencion_diferida_es_excluyente_y_solo_del_indice() -> None:
     fid = uuid.uuid4()
-    mezclada = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_payload_indice(fid, retencion_diferida="valoracion_pendiente", retencion_anios=5),
-        headers=INTERNAL_HEADERS,
-    )
-    acta = await client.post(
-        "/api/v1/preservacion/proteger-artefacto-internal",
-        json=_payload_indice(
-            fid, tipo="acta_transferencia", retencion_diferida="valoracion_pendiente"
-        ),
-        headers=INTERNAL_HEADERS,
-    )
-    renovar = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json={"expediente_id": _EXP, "tipo": "indice", "retencion_diferida": "valoracion_pendiente"},
-        headers=INTERNAL_HEADERS,
-    )
-    assert mezclada.status_code == acta.status_code == renovar.status_code == 422
+    with pytest.raises(ValidationError):  # mezclada con calendario
+        ProtegerIndiceRequest(
+            **_payload_indice(fid, retencion_diferida="valoracion_pendiente", retencion_anios=5)
+        )
+    with pytest.raises(ValidationError):  # un acta no admite retención diferida
+        ProtegerIndiceRequest(
+            **_payload_indice(fid, tipo="acta_transferencia", retencion_diferida="valoracion_pendiente")
+        )
+    with pytest.raises(ValidationError):  # renovar solo extiende fechas
+        RenovarRetencionRequest(
+            expediente_id=_EXP, tipo="indice", retencion_diferida="valoracion_pendiente"
+        )
 
 
 @pytest.mark.asyncio
-async def test_renovar_una_fila_sin_retain_until_es_409_no_un_500(client_with_conn) -> None:
-    """`nueva <= None` reventaba con TypeError. Mutación: quitar el guard -> 500."""
-    client, conn, minio = client_with_conn
+async def test_renovar_una_fila_sin_retain_until_es_sin_retencion_que_renovar(
+    client_with_conn,
+) -> None:
+    """`nueva <= None` reventaba con TypeError. Mutación: quitar el guard -> TypeError."""
+    _client, conn, minio = client_with_conn
     conn.fetchrow.side_effect = [make_worm_row(expediente_id=_EXP, diferida=True)]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json={"expediente_id": _EXP, "tipo": "indice", "retencion_anios": 5, "fecha_inicio": "2026-01-01"},
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(SinRetencionQueRenovarError):
+        await PreservationWormService(conn, TENANT_SLUG).renovar_retencion(
+            RenovarRetencionRequest(
+                expediente_id=_EXP, tipo="indice", retencion_anios=5, fecha_inicio="2026-01-01"
+            ),
+            actor=str(SYSTEM_RECONCILER_ID),
+        )
 
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"]["error"] == "sin_retencion_que_renovar"
     minio.set_object_retention.assert_not_awaited()
 
 
-# ── fijar-retencion-internal (valoración CT) ───────────────────────────────
+# ── set_deferred_retention (valoración CT) ─────────────────────────────────
+
+
+async def _fijar_retencion(retencion_anios: int = 10, fecha_inicio: date = date(2026, 10, 1)) -> dict:
+    return await storage_api.set_deferred_retention(
+        tenant_slug=TENANT_SLUG,
+        expediente_id=_EXP,
+        retencion_anios=retencion_anios,
+        fecha_inicio=fecha_inicio,
+    )
 
 
 @pytest.mark.asyncio
@@ -633,20 +642,15 @@ async def test_fijar_retencion_solo_toca_filas_pendientes_nunca_calendario(clien
 
     Mutación: quitar `retain_until IS NULL AND retencion_origen='valoracion_pendiente'` del
     repositorio -> el doble (que lo modela) dejaría pasar la fila `calendario` y este test cae."""
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     calendario = make_worm_row(expediente_id=_EXP, tipo="aip")
     pendiente = make_worm_row(expediente_id=_EXP, tipo="indice", diferida=True)
     db = _Db(filas=[calendario, pendiente]).instalar(conn)
     original = calendario["retain_until"]
 
-    resp = await client.post(
-        _FIJAR_RET,
-        json={"expediente_id": _EXP, "retencion_anios": 10, "fecha_inicio": "2026-10-01"},
-        headers=INTERNAL_HEADERS,
-    )
+    res = await _fijar_retencion()
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["filas_fijadas"] == 1 and resp.json()["filas_pendientes_restantes"] == 0
+    assert res["filas_fijadas"] == 1 and res["filas_pendientes_restantes"] == 0
     minio.set_object_retention.assert_awaited_once()
     assert minio.set_object_retention.await_args.args[1] == pendiente["object_key"]
     assert db.filas[0]["retain_until"] == original
@@ -657,40 +661,33 @@ async def test_fijar_retencion_solo_toca_filas_pendientes_nunca_calendario(clien
 
 @pytest.mark.asyncio
 async def test_fijar_retencion_es_idempotente(client_with_conn) -> None:
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     db = _Db(filas=[make_worm_row(expediente_id=_EXP, diferida=True)]).instalar(conn)
-    cuerpo = {"expediente_id": _EXP, "retencion_anios": 10, "fecha_inicio": "2026-10-01"}
 
-    primera = await client.post(_FIJAR_RET, json=cuerpo, headers=INTERNAL_HEADERS)
-    segunda = await client.post(_FIJAR_RET, json=cuerpo, headers=INTERNAL_HEADERS)
+    primera = await _fijar_retencion()
+    segunda = await _fijar_retencion()
 
-    assert primera.json()["filas_fijadas"] == 1 and segunda.json()["filas_fijadas"] == 0
+    assert primera["filas_fijadas"] == 1 and segunda["filas_fijadas"] == 0
     assert minio.set_object_retention.await_count == 1
     assert db.filas[0]["retencion_origen"] == "calendario"
 
 
 @pytest.mark.asyncio
 async def test_fijar_retencion_respeta_el_piso_y_techo_de_storage(client_with_conn) -> None:
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     _Db(filas=[make_worm_row(expediente_id=_EXP, diferida=True)]).instalar(conn)
-    resp = await client.post(
-        _FIJAR_RET,
-        json={"expediente_id": _EXP, "retencion_anios": 100, "fecha_inicio": "2100-01-01"},
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 400  # fuera del techo `preservation_max_retention_years`
+    with pytest.raises(StorageLegalHoldError) as exc:
+        await _fijar_retencion(retencion_anios=100, fecha_inicio=date(2100, 1, 1))
+    # Fuera del techo `preservation_max_retention_years`.
+    assert exc.value.code == "invalid_retention"
     minio.set_object_retention.assert_not_awaited()
 
 
 # ── AIP: mismo contrato que el índice ───────────────────────────────────────
 
 
-def _payload_aip(doc_file_id: uuid.UUID, **extra: object) -> dict:
-    return {
-        "expediente_id": _EXP,
-        "documentos": [{"document_id": "R-1", "nombre": "oficio.pdf", "file_id": str(doc_file_id)}],
-        **extra,
-    }
+def _documentos(doc_file_id: uuid.UUID) -> list[dict]:
+    return [{"document_id": "R-1", "nombre": "oficio.pdf", "file_id": str(doc_file_id)}]
 
 
 @pytest.mark.asyncio
@@ -707,7 +704,7 @@ async def test_aip_con_retencion_diferida_escribe_solo_hold_y_la_fila_nace_pendi
         _evento_row,
     )
 
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     doc_id, aip_id = uuid.uuid4(), uuid.uuid4()
     conn.fetchval.return_value = True
     _fetch_con_holds(conn, ["valoracion_pendiente"])
@@ -722,14 +719,16 @@ async def test_aip_con_retencion_diferida_escribe_solo_hold_y_la_fila_nace_pendi
     ]
     minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip-internal",
-        json=_payload_aip(doc_id, retencion_diferida="valoracion_pendiente"),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.package_aip(
+        tenant_slug=TENANT_SLUG,
+        expediente_id=_EXP,
+        documentos=_documentos(doc_id),
+        indice_file_id=None,
+        retencion_diferida="valoracion_pendiente",
     )
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["retain_until"] is None and resp.json()["legal_hold"] is True
+    assert outcome.ok is True, outcome
+    assert outcome.aip_id == aip_id and outcome.retain_until is None
     put = minio.put_object.await_args
     assert put.kwargs["retention"] is None and put.kwargs["legal_hold"] is True
     insert_worm = next(
@@ -740,25 +739,27 @@ async def test_aip_con_retencion_diferida_escribe_solo_hold_y_la_fila_nace_pendi
 
 
 @pytest.mark.asyncio
-async def test_aip_con_retencion_diferida_sin_hold_es_409_y_no_sube(client_with_conn) -> None:
+async def test_aip_con_retencion_diferida_sin_hold_falla_y_no_sube(client_with_conn) -> None:
     from tests.storage.conftest import minio_get_object
     from tests.storage.test_aip_advisory_lock import _DOC_CONTENT, _doc_record
 
-    client, conn, minio = client_with_conn
+    _client, conn, minio = client_with_conn
     doc_id = uuid.uuid4()
     conn.fetchval.return_value = True
     _fetch_con_holds(conn, [])
     conn.fetchrow.side_effect = [_doc_record(doc_id), None]
     minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip-internal",
-        json=_payload_aip(doc_id, retencion_diferida="valoracion_pendiente"),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(RetencionDiferidaSinHoldError):
+        await AipService(conn, TENANT_SLUG).empaquetar_aip(
+            AipCreate(
+                expediente_id=_EXP,
+                documentos=_documentos(doc_id),
+                retencion_diferida="valoracion_pendiente",
+            ),
+            actor=str(SYSTEM_RECONCILER_ID),
+        )
 
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"]["error"] == "retencion_diferida_sin_hold"
     minio.put_object.assert_not_awaited()
 
 
@@ -766,10 +767,6 @@ def test_levantar_ddhh_exige_el_acto_de_la_autoridad_explicado() -> None:
     """`ddhh_memoria_historica` (Ley 1448/2011 art. 144 [confirmar]) es un motivo válido y su
     levantamiento exige un fundamento de al menos 50 caracteres (defensa en profundidad del
     mismo criterio que archive-service)."""
-    from pydantic import ValidationError
-
-    from storage.schemas.preservacion import HoldFijarRequest, HoldLevantarRequest
-
     HoldFijarRequest(
         expediente_id=_EXP, motivo_tipo="ddhh_memoria_historica",
         fundamento="Orden de preservación de archivos de DDHH", acta_ref="A-1",
@@ -780,12 +777,24 @@ def test_levantar_ddhh_exige_el_acto_de_la_autoridad_explicado() -> None:
     HoldLevantarRequest(motivo_tipo_esperado="judicial", fundamento="x" * 10, acta_ref="A")
 
 
-def test_el_409_aip_ya_existe_lleva_el_aip_vigente() -> None:
-    from storage.routers.preservacion import _map_empaquetar_aip_error as _http_error
-    from storage.services.aip_service import AipYaExisteError
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vigente", [uuid.uuid4(), None])
+async def test_aip_ya_existe_lleva_el_aip_vigente(
+    client_with_conn, monkeypatch: pytest.MonkeyPatch, vigente: uuid.UUID | None
+) -> None:
+    """`ya_existe` devuelve el AIP vigente para que archive reconcilie (o `None` si no lo sabe)."""
+    monkeypatch.setattr(
+        AipService, "empaquetar_aip",
+        AsyncMock(side_effect=AipYaExisteError("ya tiene un AIP", aip_id=vigente)),
+    )
 
-    aip_id = uuid.uuid4()
-    err = _http_error(AipYaExisteError("ya tiene un AIP", aip_id=aip_id))
-    assert err.status_code == 409
-    assert err.detail["error"] == "aip_ya_existe" and err.detail["aip_id"] == str(aip_id)
-    assert _http_error(AipYaExisteError("x")).detail["aip_id"] is None
+    outcome = await storage_api.package_aip(
+        tenant_slug=TENANT_SLUG,
+        expediente_id=_EXP,
+        documentos=_documentos(uuid.uuid4()),
+        indice_file_id=None,
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
+    )
+
+    assert outcome == storage_api.AipPackagingOutcome(ok=False, ya_existe=True, aip_id=vigente)

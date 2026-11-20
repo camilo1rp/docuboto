@@ -28,7 +28,6 @@ import asyncpg
 from fastapi import (
     APIRouter,
     Depends,
-    Header,
     HTTPException,
     Query,
     Request,
@@ -39,8 +38,6 @@ from fastapi.responses import StreamingResponse
 from orpycamcp_common.usuario import id_opcional, slug_de
 from starlette.background import BackgroundTask
 
-from document.clients import storage_client
-from document.clients.tenant_client import TenantServiceClient, TenantServiceError
 from document.core.clearance import check_permission, require_permission, resolve_caller_clearance
 from document.core.database import get_redis, get_tenant_client, get_tenant_conn
 from document.core.dependencias import (
@@ -76,6 +73,8 @@ from document.services.document_service import (
     TipoDocumentalNoPublicableError,
 )
 from document.services.metadata_service import MetadataValidationError
+from storage import api as storage_api
+from tenant import api as tenant_api
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
@@ -131,7 +130,7 @@ def _optional_canal(request: Request) -> str:
 def _build_service(
     conn: asyncpg.Connection,
     slug: str,
-    tenant_client: TenantServiceClient | None = None,
+    tenant_client: Any = None,
     redis: Any | None = None,
 ) -> DocumentService:
     try:
@@ -155,7 +154,7 @@ async def create_document(
     request: Request,
     response: Response,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    tenant_client: TenantServiceClient = Depends(get_tenant_client),
+    tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> DocumentResponse:
     # Código Y nombre juntos deben ser la misma dependencia (ADR-032); el nombre que
@@ -207,7 +206,7 @@ async def create_document(
                 "status": 400,
             },
         )
-    except TenantServiceError as exc:
+    except tenant_api.TenantUnavailableError as exc:
         # El plazo (RF-RAD-04) o la dependencia no se pudieron resolver vía HTTP.
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -469,10 +468,10 @@ async def download_anexo(
         )
 
     try:
-        stream = await storage_client.open_content_stream(
+        stream = await storage_api.open_file_stream(
             tenant_slug=tenant_slug, file_id=anexo.file_id
         )
-    except storage_client.StorageContentError as exc:
+    except storage_api.StorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
@@ -737,7 +736,7 @@ async def cambiar_vencimiento(
     payload: DueDateRequest,
     request: Request,
     conn: asyncpg.Connection = Depends(get_tenant_conn),
-    tenant_client: TenantServiceClient = Depends(get_tenant_client),
+    tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> DueDateResponse:
     """Fija la fecha o la calcula en días hábiles desde la radicación.
@@ -770,7 +769,7 @@ async def cambiar_vencimiento(
             status_code=exc.status_code,
             detail={"error": exc.codigo, "detail": exc.detalle, "status": exc.status_code},
         )
-    except TenantServiceError as exc:
+    except tenant_api.TenantUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={

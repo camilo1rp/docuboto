@@ -8,11 +8,13 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Tests de POST /api/v1/preservacion/proteger-artefacto[-internal] (E10 Inc.2
-wiring) -- generalización de la protección WORM del índice (Increment A) al
-acta de transferencia (`tipo='acta_transferencia'`), y del candado DURO que
-`/proteger-indice[-internal]` conserva (alias fijo a `tipo='indice'` pase lo
-que pase el body).
+Tests de la protección WORM de artefactos (E10 Inc.2 wiring) -- generalización
+de la protección del índice (Increment A) al acta de transferencia
+(`tipo='acta_transferencia'`), y del alias fijo que `storage.api.protect_index*`
+conserva (`tipo='indice'` siempre).
+
+Desde ADR-047 no hay ruta HTTP: se llama a `PreservationWormService.proteger_indice`
+(lo que hacía la ruta) o a `storage.api.protect_*`.
 
 Espejo de `test_preservacion_worm.py` -- aquí solo la cobertura NUEVA de
 Inc.2 wiring: el `tipo` generalizado, la NO-colisión del advisory lock
@@ -26,16 +28,22 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pydantic
 import pytest
 
 import storage.core.config as config_module
+from storage import api as storage_api
 from storage.core.constants import SYSTEM_RECONCILER_ID
+from storage.schemas.preservacion import ProtegerIndiceRequest
+from storage.services.preservation_worm_service import (
+    FixityMismatchError,
+    PreservationWormService,
+)
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
-    TENANT_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -83,14 +91,38 @@ def _base_payload(file_id: uuid.UUID, **overrides) -> dict:
     return payload
 
 
+async def _proteger_artefacto(mock_conn, payload: dict, actor: str | None = "actor"):
+    """Lo que hacía la ruta: valida el body y llama al servicio con su `tipo`.
+    Devuelve `(respuesta, created)`."""
+    return await PreservationWormService(mock_conn, TENANT_SLUG).proteger_indice(
+        ProtegerIndiceRequest(**payload), actor=actor
+    )
+
+
+def _audit_inserts(mock_conn) -> list:
+    return [
+        c
+        for c in mock_conn.execute.call_args_list
+        if c.args and "INSERT INTO public.audit_log" in c.args[0]
+    ]
+
+
+def _worm_inserts(mock_conn) -> list:
+    return [
+        c
+        for c in mock_conn.fetchrow.call_args_list
+        if c.args and "INSERT INTO preservacion_worm_objeto" in c.args[0]
+    ]
+
+
 # ---------------------------------------------------------------------------
-# POST /proteger-artefacto -- tipo='acta_transferencia' (camino nuevo)
+# tipo='acta_transferencia' (camino nuevo)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_proteger_artefacto_happy_path_acta_transferencia(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(
@@ -107,14 +139,10 @@ async def test_proteger_artefacto_happy_path_acta_transferencia(client_with_conn
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger_artefacto(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    assert created is True
+    body = response.model_dump(mode="json")
     assert body["tipo"] == "acta_transferencia"
     assert body["expediente_id"] == "EXP-1"
     # Mismo bucket compartido por tenant que el índice -- el nombre del
@@ -138,7 +166,7 @@ async def test_proteger_artefacto_happy_path_acta_transferencia(client_with_conn
 
 @pytest.mark.asyncio
 async def test_proteger_artefacto_second_call_is_idempotent_no_reupload(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     existing_worm_id = uuid.uuid4()
     existing = make_worm_row(
@@ -151,14 +179,10 @@ async def test_proteger_artefacto_second_call_is_idempotent_no_reupload(client_w
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [existing]  # get_by_expediente_and_tipo: YA existe
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger_artefacto(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["id"] == str(existing_worm_id)
+    assert created is False
+    assert response.id == existing_worm_id
     mock_minio.get_object.assert_not_called()
     mock_minio.put_object.assert_not_awaited()
 
@@ -172,7 +196,7 @@ async def test_proteger_artefacto_second_call_is_idempotent_no_reupload(client_w
 
 @pytest.mark.asyncio
 async def test_proteger_artefacto_fixity_mismatch_blocks_upload(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
 
@@ -180,14 +204,9 @@ async def test_proteger_artefacto_fixity_mismatch_blocks_upload(client_with_conn
     mock_conn.fetchrow.side_effect = [None, record, {"id": uuid.uuid4()}]
     mock_minio.get_object = _minio_get_object(b"acta alterada, no coincide")
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(FixityMismatchError):
+        await _proteger_artefacto(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "fixity_mismatch"
     mock_minio.put_object.assert_not_awaited()
 
 
@@ -197,25 +216,19 @@ async def test_proteger_artefacto_rejects_invalid_tipo(client_with_conn) -> None
     "acta_transferencia"]` -- cualquier otro valor (p. ej. 'aip', que SÍ
     admite la columna de BD pero tiene su propio flujo NO-singleton, ver
     `AipCreate`) es rechazado por Pydantic ANTES de tocar BD/MinIO."""
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(uuid.uuid4(), tipo="aip"),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(pydantic.ValidationError):
+        await _proteger_artefacto(mock_conn, _base_payload(uuid.uuid4(), tipo="aip"))
 
-    assert resp.status_code == 422
     mock_conn.fetchrow.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_proteger_artefacto_default_tipo_is_indice_when_omitted(client_with_conn) -> None:
-    """`POST /proteger-artefacto` sin `tipo` en el body usa el default del
-    schema ('indice') -- mismo default que protegía la compatibilidad
-    histórica ANTES de Inc.2 wiring, ahora también en la ruta generalizada."""
-    client, mock_conn, mock_minio = client_with_conn
+    """Un body sin `tipo` usa el default del schema ('indice') -- mismo default
+    que protegía la compatibilidad histórica ANTES de Inc.2 wiring."""
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-5", tipo="indice", object_key=record["object_key"])
@@ -228,12 +241,10 @@ async def test_proteger_artefacto_default_tipo_is_indice_when_omitted(client_wit
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto", json=payload, headers=INTERNAL_HEADERS
-    )
+    response, created = await _proteger_artefacto(mock_conn, payload)
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["tipo"] == "indice"
+    assert created is True
+    assert response.tipo == "indice"
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +259,10 @@ async def test_proteger_artefacto_indice_and_acta_same_expediente_do_not_collide
     client_with_conn,
 ) -> None:
     """Proteger el índice y luego el acta del MISMO expediente_id -- AMBAS
-    llamadas suben y crean su propia fila WORM (201 en ambas), ninguna se
+    llamadas suben y crean su propia fila WORM (`created` en ambas), ninguna se
     confunde con el candado idempotente de la otra (hallazgo de auditoría
     Media, `_worm_lock_key` incluye `tipo` desde Inc.2 wiring)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id_indice = uuid.uuid4()
     file_id_acta = uuid.uuid4()
     record_indice = _file_record(file_id_indice)
@@ -270,20 +281,16 @@ async def test_proteger_artefacto_indice_and_acta_same_expediente_do_not_collide
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp_indice = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(file_id_indice, expediente_id="EXP-9", tipo="indice"),
-        headers=INTERNAL_HEADERS,
+    resp_indice, created_indice = await _proteger_artefacto(
+        mock_conn, _base_payload(file_id_indice, expediente_id="EXP-9", tipo="indice")
     )
-    resp_acta = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(file_id_acta, expediente_id="EXP-9", tipo="acta_transferencia"),
-        headers=INTERNAL_HEADERS,
+    resp_acta, created_acta = await _proteger_artefacto(
+        mock_conn, _base_payload(file_id_acta, expediente_id="EXP-9", tipo="acta_transferencia")
     )
 
-    assert resp_indice.status_code == 201, resp_indice.text
-    assert resp_acta.status_code == 201, resp_acta.text
-    assert resp_indice.json()["id"] != resp_acta.json()["id"]
+    assert created_indice is True
+    assert created_acta is True
+    assert resp_indice.id != resp_acta.id
 
     insert_calls = [
         c
@@ -314,14 +321,14 @@ def test_worm_lock_key_differs_by_tipo_for_same_tenant_and_expediente() -> None:
 
 
 # ---------------------------------------------------------------------------
-# POST /proteger-artefacto-internal (D-02, SYSTEM_RECONCILER_ID) -- 4ª fase
-# de reconciliación (`run_once_actas_worm`, archive-service).
+# storage.api.protect_artifact_as_system (SYSTEM_RECONCILER_ID) -- 4ª fase
+# de reconciliación (`run_once_actas_worm`, archive).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_proteger_artefacto_internal_happy_path_uses_system_actor(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_protect_artifact_as_system_uses_system_actor(client_with_conn) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(
@@ -333,67 +340,56 @@ async def test_proteger_artefacto_internal_happy_path_uses_system_actor(client_w
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto-internal",
-        json=_base_payload(file_id, expediente_id="EXP-3"),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.protect_artifact_as_system(
+        tenant_slug=TENANT_SLUG,
+        file_id=str(file_id),
+        expediente_id="EXP-3",
+        tipo="acta_transferencia",
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
 
-    assert resp.status_code == 201, resp.text
-    audit_inserts = [
-        c
-        for c in mock_conn.execute.call_args_list
-        if c.args and "INSERT INTO public.audit_log" in c.args[0]
-    ]
+    assert outcome.ok
+    assert outcome.worm_object_id == worm_row["id"]
+    assert _worm_inserts(mock_conn)[0].args[2] == "acta_transferencia"
+    audit_inserts = _audit_inserts(mock_conn)
     assert len(audit_inserts) == 1
     assert audit_inserts[0].args[3] == str(SYSTEM_RECONCILER_ID)
 
 
 @pytest.mark.asyncio
-async def test_proteger_artefacto_internal_rejects_without_token(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto-internal",
-        json=_base_payload(uuid.uuid4()),
-        headers=TENANT_HEADERS,  # sin X-Internal-Token
-    )
-
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-    mock_conn.fetchrow.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_proteger_artefacto_internal_second_call_is_idempotent(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_protect_artifact_as_system_second_call_is_idempotent(client_with_conn) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(expediente_id="EXP-4", tipo="acta_transferencia")
 
     mock_conn.fetchrow.side_effect = [existing]
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto-internal",
-        json=_base_payload(uuid.uuid4(), expediente_id="EXP-4"),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.protect_artifact_as_system(
+        tenant_slug=TENANT_SLUG,
+        file_id=str(uuid.uuid4()),
+        expediente_id="EXP-4",
+        tipo="acta_transferencia",
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
 
-    assert resp.status_code == 200, resp.text
+    assert outcome.ok
+    assert outcome.worm_object_id == existing["id"]
     mock_minio.put_object.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# Alias DURO: /proteger-indice[-internal] SIEMPRE fuerza tipo='indice',
-# pase lo que pase el body (E10 Inc.2 wiring) -- `model_copy(update={"tipo":
-# "indice"})` en el router, verificado end-to-end.
+# Alias DURO: storage.api.protect_index[_as_system] SIEMPRE fuerza
+# tipo='indice' (E10 Inc.2 wiring) -- `model_copy(update={"tipo": "indice"})`
+# en `storage.api._protect`, verificado de punta a punta.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_proteger_indice_alias_forces_tipo_indice_even_if_body_declares_acta(
+async def test_protect_index_forces_tipo_indice_and_records_the_person(
     client_with_conn,
 ) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-7", tipo="indice", object_key=record["object_key"])
@@ -404,29 +400,24 @@ async def test_proteger_indice_alias_forces_tipo_indice_even_if_body_declares_ac
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        # El body pide 'acta_transferencia' -- el router lo pisa igual.
-        json=_base_payload(file_id, expediente_id="EXP-7", tipo="acta_transferencia"),
-        headers=INTERNAL_HEADERS,
+    actor_id = str(uuid.uuid4())
+    outcome = await storage_api.protect_index(
+        tenant_slug=TENANT_SLUG,
+        actor_id=actor_id,
+        file_id=str(file_id),
+        expediente_id="EXP-7",
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["tipo"] == "indice"
-
-    insert_call = [
-        c
-        for c in mock_conn.fetchrow.call_args_list
-        if c.args and "INSERT INTO preservacion_worm_objeto" in c.args[0]
-    ][0]
-    assert insert_call.args[2] == "indice"
+    assert outcome.ok
+    assert _worm_inserts(mock_conn)[0].args[2] == "indice"
+    assert _audit_inserts(mock_conn)[0].args[3] == actor_id
 
 
 @pytest.mark.asyncio
-async def test_proteger_indice_internal_alias_forces_tipo_indice_even_if_body_declares_acta(
-    client_with_conn,
-) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_protect_index_as_system_forces_tipo_indice(client_with_conn) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-8", tipo="indice", object_key=record["object_key"])
@@ -436,14 +427,17 @@ async def test_proteger_indice_internal_alias_forces_tipo_indice_even_if_body_de
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_base_payload(file_id, expediente_id="EXP-8", tipo="acta_transferencia"),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.protect_index_as_system(
+        tenant_slug=TENANT_SLUG,
+        file_id=str(file_id),
+        expediente_id="EXP-8",
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["tipo"] == "indice"
+    assert outcome.ok
+    assert _worm_inserts(mock_conn)[0].args[2] == "indice"
+    assert _audit_inserts(mock_conn)[0].args[3] == str(SYSTEM_RECONCILER_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +479,7 @@ def test_schema_check_constraint_admits_acta_transferencia() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tipo", ["acta_firma_elabora", "acta_firma_entrega", "acta_firma_recibe"])
 async def test_proteger_artefacto_firma_personal_por_rol(client_with_conn, tipo: str) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-1", tipo=tipo, object_key=record["object_key"])
@@ -500,14 +494,10 @@ async def test_proteger_artefacto_firma_personal_por_rol(client_with_conn, tipo:
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(file_id, tipo=tipo),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger_artefacto(mock_conn, _base_payload(file_id, tipo=tipo))
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["tipo"] == tipo
+    assert created is True
+    assert response.tipo == tipo
     insert_call = next(
         c for c in mock_conn.fetchrow.call_args_list
         if c.args and "INSERT INTO preservacion_worm_objeto" in c.args[0]
@@ -541,7 +531,7 @@ _TIPOS_CONSTANCIA = [
 async def test_proteger_artefacto_constancia_firma_inobtenible_por_rol(
     client_with_conn, tipo: str
 ) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-1", tipo=tipo, object_key=record["object_key"])
@@ -556,14 +546,10 @@ async def test_proteger_artefacto_constancia_firma_inobtenible_por_rol(
     ]
     mock_minio.get_object = _minio_get_object(_ACTA_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto",
-        json=_base_payload(file_id, tipo=tipo),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger_artefacto(mock_conn, _base_payload(file_id, tipo=tipo))
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["tipo"] == tipo
+    assert created is True
+    assert response.tipo == tipo
     mock_minio.put_object.assert_awaited_once()
 
 

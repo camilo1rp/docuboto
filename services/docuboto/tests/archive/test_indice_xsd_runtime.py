@@ -13,7 +13,7 @@
 Sellar (XAdES-T) y proteger (WORM) un índice que su propio contrato rechaza es
 irreversible. Si no valida: `pendiente_firma`, motivo `xsd_invalido`, asiento, y
 `signature-service` NUNCA se llama. La reconciliación firma por su cuenta
-(`sign_indice_internal`), así que tiene su propio gate: se prueban los dos caminos.
+(`sign_as_system`), así que tiene su propio gate: se prueban los dos caminos.
 """
 
 from __future__ import annotations
@@ -25,11 +25,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.clients.signature_client import SignOutcome
 from archive.core.config import settings
 from archive.services.index_builder import IndiceData, IndiceItemData, build_xml
 from archive.services.index_service import IndexService
 from archive.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
+from signature.api import SignOutcome
 
 TENANT = "demo"
 
@@ -136,7 +136,7 @@ async def test_cierre_con_xml_invalido_no_pide_el_sello_y_queda_pendiente() -> N
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "archive.clients.signature_client.sign_xml_outcome", new=AsyncMock()
+        "signature.api.sign_xml_outcome", new=AsyncMock()
     ) as sellar:
         resultado = await svc.firmar_indice_close(
             uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4())
@@ -168,7 +168,7 @@ async def test_reintento_manual_con_xml_invalido_tampoco_sella() -> None:
     }
     svc = IndexService(conn, TENANT)
 
-    with patch("archive.clients.signature_client.sign_xml", new=AsyncMock()) as sellar:
+    with patch("signature.api.sign_xml", new=AsyncMock()) as sellar:
         resultado = await svc.firmar_indice(
             uuid.uuid4(), tenant_slug=TENANT, actor_id=str(uuid.uuid4())
         )
@@ -190,7 +190,7 @@ async def test_cierre_con_xml_valido_si_pide_el_sello() -> None:
     svc = IndexService(conn, TENANT)
 
     with patch(
-        "archive.clients.signature_client.sign_xml_outcome",
+        "signature.api.sign_xml_outcome",
         new=AsyncMock(return_value=SignOutcome(signed=None, seal_absent=True)),
     ) as sellar:
         await svc.firmar_indice_close(
@@ -216,7 +216,7 @@ async def test_la_reconciliacion_no_firma_un_xml_invalido(monkeypatch) -> None:
     }
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(),
     ) as sellar:
         resultado = await _reconciliar_indice(conn, TENANT, row)

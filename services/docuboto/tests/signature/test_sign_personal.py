@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 
-from signature.core.http_clients import SignDigestRemoteError, SigningKeyStatusUnavailableError
+from auth.api import AuthUnavailableError, SignDigestError
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena_personal_signing import _issue_user_cert
 
@@ -44,7 +44,7 @@ def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
 def _patch_upload(monkeypatch: pytest.MonkeyPatch, *, key: str = "file-id/acta-firmado.xml") -> AsyncMock:
     mock = AsyncMock(return_value=key)
-    monkeypatch.setattr("signature.services.personal_signing.storage_client.upload_signed_xml", mock)
+    monkeypatch.setattr("signature.services.personal_signing.storage_api.upload_signed_xml", mock)
     return mock
 
 
@@ -52,7 +52,7 @@ def _patch_signing_key_status(
     monkeypatch: pytest.MonkeyPatch, *, body: dict | None = None, error: Exception | None = None
 ) -> AsyncMock:
     mock = AsyncMock(side_effect=error) if error else AsyncMock(return_value=body)
-    monkeypatch.setattr("signature.services.personal_signing.get_signing_key_status_remote", mock)
+    monkeypatch.setattr("auth.api.signing_key_status", mock)
     return mock
 
 
@@ -68,7 +68,7 @@ def _patch_sign_digest_remote(
     else:
         assert private_key is not None
 
-        async def _fake_sign(authorization, digest, totp_code, **_kw):
+        async def _fake_sign(*, digest, totp_code, **_kw):
             signature = private_key.sign(digest, padding.PKCS1v15(), Prehashed(hashes.SHA256()))
             return {
                 "signature_value_b64": b64encode(signature).decode("ascii"),
@@ -80,7 +80,7 @@ def _patch_sign_digest_remote(
             }
 
         mock = AsyncMock(side_effect=_fake_sign)
-    monkeypatch.setattr("signature.services.personal_signing.sign_digest_remote", mock)
+    monkeypatch.setattr("auth.api.sign_digest", mock)
     return mock
 
 
@@ -183,7 +183,7 @@ async def test_sign_personal_invalid_totp_rejected_without_persisting(
     _patch_signing_key_status(monkeypatch, body={"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem})
     _patch_sign_digest_remote(
         monkeypatch,
-        error=SignDigestRemoteError(
+        error=SignDigestError(
             401, {"error": "totp_incorrecto", "detail": "wrong code", "status": 401}
         ),
     )
@@ -267,7 +267,7 @@ async def test_sign_personal_auth_channel_down_returns_503(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
 
     client, conn = client_with_conn

@@ -18,16 +18,12 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 import xml.etree.ElementTree as ET
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 
-import httpx
 import pytest
 
-from archive.clients import signature_client, storage_client
-from archive.core.config import settings
 from archive.services.constancia_firma_excepcion import (
     HuellaFundamento,
     Identidad,
@@ -45,53 +41,14 @@ from archive.services.constancia_firma_excepcion import (
     sha256_hex,
 )
 from archive.services.transferencia_service import _cn_de
-
-_SIG = "tok-firma"
-_STO = "tok-storage"
-_REAL = httpx.AsyncClient  # el de verdad: monkeypatch no anida si se parchea dos veces en un test
-
-
-def _cliente(monkeypatch, respuesta: httpx.Response | Exception):
-    peticiones: list[httpx.Request] = []
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        peticiones.append(request)
-        if isinstance(respuesta, Exception):
-            raise respuesta
-        return respuesta
-
-    class _Cliente(_REAL):  # type: ignore[misc, valid-type]
-        def __init__(self, *a, **kw):
-            kw["transport"] = httpx.MockTransport(_handler)
-            super().__init__(*a, **kw)
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
-    monkeypatch.setattr(settings, "signature_internal_token", _SIG)
-    monkeypatch.setattr(settings, "storage_internal_token", _STO)
-    return peticiones
+from signature import api as signature_api
 
 
 def test_archive_ya_no_depende_de_signature_para_huellar_el_fundamento() -> None:
     """A1: el compromiso se calcula localmente; los endpoints HMAC de signature se retiran y
     su cliente aquí también (sin ellos no hay 503 `hmac_no_disponible` que mantener)."""
-    assert not hasattr(signature_client, "hmac_fundamento")
-    assert not hasattr(signature_client, "verificar_hmac_fundamento")
-
-
-@pytest.mark.asyncio
-async def test_renovar_retencion_lleva_el_file_id_solo_cuando_se_da(monkeypatch) -> None:
-    reqs = _cliente(monkeypatch, httpx.Response(500, json={}))
-    await storage_client.renovar_retencion_worm_internal(
-        tenant_slug="demo", expediente_id="e", tipo="acta_firma_excepcion_recibe",
-        retencion_anios=5, fecha_inicio=date(2026, 1, 1), file_id="abc",
-    )
-    await storage_client.renovar_retencion_worm_internal(
-        tenant_slug="demo", expediente_id="e", tipo="indice",
-        retencion_anios=5, fecha_inicio=date(2026, 1, 1),
-    )
-    con, sin = (json.loads(r.content) for r in reqs)
-    assert con["file_id"] == "abc" and "file_id" not in sin
-    assert reqs[0].headers["X-Internal-Token"] == _STO
+    assert not hasattr(signature_api, "hmac_fundamento")
+    assert not hasattr(signature_api, "verificar_hmac_fundamento")
 
 
 # --- XML canónico ---------------------------------------------------------------------------

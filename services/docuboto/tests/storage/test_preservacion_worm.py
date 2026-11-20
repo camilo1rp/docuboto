@@ -8,7 +8,10 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Tests de POST /api/v1/preservacion/proteger-indice (E10 Increment A, RF-PRE-03).
+Tests de la protección WORM del índice firmado (E10 Increment A, RF-PRE-03).
+
+Desde ADR-047 no hay ruta HTTP: se llama a `PreservationWormService.proteger_indice`
+(lo que hacía la ruta, con `tipo='indice'` forzado) o a `storage.api.protect_index*`.
 
 Ningún test escribe objetos COMPLIANCE reales — MinIO está completamente mockeado
 (`tests/conftest.py::_make_mock_minio`); solo se asertan las LLAMADAS (make_bucket,
@@ -19,17 +22,26 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import pydantic
 import pytest
 from miniopy_async import S3Error  # type: ignore[attr-defined]
 
 import storage.core.config as config_module
+from storage import api as storage_api
 from storage.core.constants import SYSTEM_RECONCILER_ID
+from storage.core.minio_client import ObjectLockNotEnabledError
+from storage.schemas.preservacion import ProtegerIndiceRequest
+from storage.services.preservation_worm_service import (
+    FileNotFoundForPreservationError,
+    FixityMismatchError,
+    PreservationDisabledError,
+    PreservationWormService,
+)
+from storage.services.retention_policy import InvalidRetentionError
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
-    TENANT_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -42,7 +54,7 @@ _INDICE_SHA256 = hashlib.sha256(_INDICE_XML).hexdigest()
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """PRESERVATION_ENABLED=false es el default seguro (kill-switch) — se activa
-    aquí para poder ejercer el endpoint; `test_proteger_indice_disabled_by_feature_flag`
+    aquí para poder ejercer la protección; `test_proteger_indice_disabled_by_feature_flag`
     lo vuelve a apagar explícitamente."""
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
 
@@ -79,9 +91,18 @@ def _base_payload(file_id: uuid.UUID, **overrides) -> dict:
     return payload
 
 
+async def _proteger(mock_conn, payload: dict, actor: str | None = "actor"):
+    """Lo que hacía la ruta: valida el body, fuerza `tipo='indice'` y llama al
+    servicio. Devuelve `(respuesta, created)`."""
+    request = ProtegerIndiceRequest(**payload).model_copy(update={"tipo": "indice"})
+    return await PreservationWormService(mock_conn, TENANT_SLUG).proteger_indice(
+        request, actor=actor
+    )
+
+
 @pytest.mark.asyncio
 async def test_proteger_indice_happy_path(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-1", object_key=record["object_key"])
@@ -96,14 +117,10 @@ async def test_proteger_indice_happy_path(client_with_conn) -> None:
     ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    assert created is True
+    body = response.model_dump(mode="json")
     assert body["expediente_id"] == "EXP-1"
     assert body["bucket"] == f"orpycamcp-{TENANT_SLUG}-preservation"
     assert body["sha256"] == _INDICE_SHA256
@@ -158,7 +175,7 @@ async def test_proteger_indice_happy_path(client_with_conn) -> None:
 async def test_proteger_indice_happy_path_direct_retain_until(client_with_conn) -> None:
     """Rama `retain_until` directo (el llamador ya calculó la fecha absoluta),
     en vez de `retencion_anios` + `fecha_inicio`."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-1", object_key=record["object_key"])
@@ -174,32 +191,25 @@ async def test_proteger_indice_happy_path_direct_retain_until(client_with_conn) 
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
     direct_until = "2032-06-15T00:00:00Z"
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(
-            file_id, retencion_anios=None, fecha_inicio=None, retain_until=direct_until
-        ),
-        headers=INTERNAL_HEADERS,
+    _response, created = await _proteger(
+        mock_conn,
+        _base_payload(file_id, retencion_anios=None, fecha_inicio=None, retain_until=direct_until),
     )
 
-    assert resp.status_code == 201, resp.text
+    assert created is True
     put_call = mock_minio.put_object.await_args
     retention = put_call.kwargs["retention"]
     assert retention.retain_until_date == datetime(2032, 6, 15, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
-async def test_proteger_indice_legal_hold_en_el_body_es_422(client_with_conn) -> None:
+async def test_proteger_indice_legal_hold_en_el_body_es_invalido(client_with_conn) -> None:
     """AREA-08-07: `legal_hold` ya no se declara al proteger (no tenía acto
     inverso y bloqueaba la disposición para siempre). Ni siquiera `false`."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     for valor in (True, False):
-        resp = await client.post(
-            "/api/v1/preservacion/proteger-indice",
-            json=_base_payload(uuid.uuid4(), legal_hold=valor),
-            headers=INTERNAL_HEADERS,
-        )
-        assert resp.status_code == 422, resp.text
+        with pytest.raises(pydantic.ValidationError):
+            await _proteger(mock_conn, _base_payload(uuid.uuid4(), legal_hold=valor))
     mock_minio.put_object.assert_not_awaited()
     mock_conn.fetchrow.assert_not_called()
 
@@ -208,20 +218,18 @@ async def test_proteger_indice_legal_hold_en_el_body_es_422(client_with_conn) ->
 async def test_proteger_indice_rejects_retain_until_beyond_max_years(client_with_conn) -> None:
     """`retain_until` futuro pero por encima del techo PRESERVATION_MAX_RETENTION_YEARS
     (100 años) — probable bug de unidades del llamador, no una TRD real."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     _grant_permission(mock_conn)
     too_far = (datetime.now(tz=UTC) + timedelta(days=365 * 200)).isoformat()
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(
-            uuid.uuid4(), retencion_anios=None, fecha_inicio=None, retain_until=too_far
-        ),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(InvalidRetentionError):
+        await _proteger(
+            mock_conn,
+            _base_payload(
+                uuid.uuid4(), retencion_anios=None, fecha_inicio=None, retain_until=too_far
+            ),
+        )
 
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "invalid_retention"
     mock_conn.fetchrow.assert_not_called()  # falla antes de tocar BD/MinIO
     mock_minio.put_object.assert_not_awaited()
 
@@ -229,7 +237,7 @@ async def test_proteger_indice_rejects_retain_until_beyond_max_years(client_with
 @pytest.mark.asyncio
 async def test_proteger_indice_provisions_bucket_when_absent(client_with_conn) -> None:
     """Bucket ausente → se crea con object_lock=True (PIEZA 2 caso a)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(object_key=record["object_key"])
@@ -241,13 +249,9 @@ async def test_proteger_indice_provisions_bucket_when_absent(client_with_conn) -
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
     mock_minio.bucket_exists = AsyncMock(return_value=False)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 201, resp.text
+    assert created is True
     mock_minio.make_bucket.assert_awaited_once_with(
         f"orpycamcp-{TENANT_SLUG}-preservation", object_lock=True
     )
@@ -257,7 +261,7 @@ async def test_proteger_indice_provisions_bucket_when_absent(client_with_conn) -
 @pytest.mark.asyncio
 async def test_proteger_indice_bucket_exists_without_lock_is_rejected(client_with_conn) -> None:
     """Bucket existente SIN Object Lock → error ruidoso, se aborta (PIEZA 2 caso c)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
 
@@ -278,20 +282,15 @@ async def test_proteger_indice_bucket_exists_without_lock_is_rejected(client_wit
         )
     )
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(ObjectLockNotEnabledError):
+        await _proteger(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 500
-    assert resp.json()["detail"]["error"] == "worm_bucket_misconfigured"
     mock_minio.put_object.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_proteger_indice_fixity_mismatch_blocks_upload(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
 
@@ -300,14 +299,9 @@ async def test_proteger_indice_fixity_mismatch_blocks_upload(client_with_conn) -
     mock_conn.fetchrow.side_effect = [None, record, {"id": uuid.uuid4()}]
     mock_minio.get_object = _minio_get_object(b"contenido alterado, no coincide")
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(FixityMismatchError):
+        await _proteger(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "fixity_mismatch"
     mock_minio.put_object.assert_not_awaited()
     mock_minio.make_bucket.assert_not_awaited()
 
@@ -338,7 +332,7 @@ async def test_proteger_indice_canonicalizes_expediente_id_whitespace(client_wit
     persistirse — es la misma clave que usará el gate de purga en disposición
     final; una diferencia incidental de espacios entre ambas llamadas
     rompería el gate (hallazgo de auditoría Increment A)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP  RARO", object_key=record["object_key"])
@@ -353,14 +347,12 @@ async def test_proteger_indice_canonicalizes_expediente_id_whitespace(client_wit
     ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id, expediente_id="  EXP   RARO  "),
-        headers=INTERNAL_HEADERS,
+    response, created = await _proteger(
+        mock_conn, _base_payload(file_id, expediente_id="  EXP   RARO  ")
     )
 
-    assert resp.status_code == 201, resp.text
-    assert resp.json()["expediente_id"] == "EXP RARO"
+    assert created is True
+    assert response.expediente_id == "EXP RARO"
 
     insert_call = [
         c
@@ -371,82 +363,60 @@ async def test_proteger_indice_canonicalizes_expediente_id_whitespace(client_wit
     assert insert_call.args[1] == "EXP RARO"
 
 
-@pytest.mark.asyncio
-async def test_proteger_indice_rejects_blank_expediente_id(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
-
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(uuid.uuid4(), expediente_id="   "),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 422
+def test_proteger_indice_rejects_blank_expediente_id() -> None:
+    with pytest.raises(pydantic.ValidationError):
+        ProtegerIndiceRequest(**_base_payload(uuid.uuid4(), expediente_id="   "))
 
 
 @pytest.mark.asyncio
 async def test_proteger_indice_file_not_found(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     _grant_permission(mock_conn)
     mock_conn.fetchrow.return_value = None
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(uuid.uuid4()),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["error"] == "file_not_found"
+    with pytest.raises(FileNotFoundForPreservationError):
+        await _proteger(mock_conn, _base_payload(uuid.uuid4()))
 
 
 @pytest.mark.asyncio
 async def test_proteger_indice_rejects_past_retain_until(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     _grant_permission(mock_conn)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(
-            uuid.uuid4(),
-            retencion_anios=None,
-            fecha_inicio=None,
-            retain_until="2020-01-01T00:00:00Z",
-        ),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(InvalidRetentionError):
+        await _proteger(
+            mock_conn,
+            _base_payload(
+                uuid.uuid4(),
+                retencion_anios=None,
+                fecha_inicio=None,
+                retain_until="2020-01-01T00:00:00Z",
+            ),
+        )
 
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "invalid_retention"
     mock_conn.fetchrow.assert_not_called()  # falla antes de tocar BD/MinIO
 
 
 @pytest.mark.asyncio
 async def test_proteger_indice_rejects_retention_below_floor(client_with_conn) -> None:
     """retain_until futuro pero por debajo del piso PRESERVATION_MIN_RETENTION_DAYS (365)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     _grant_permission(mock_conn)
     soon = (datetime.now(tz=UTC) + timedelta(days=5)).isoformat()
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(
-            uuid.uuid4(), retencion_anios=None, fecha_inicio=None, retain_until=soon
-        ),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "invalid_retention"
+    with pytest.raises(InvalidRetentionError):
+        await _proteger(
+            mock_conn,
+            _base_payload(uuid.uuid4(), retencion_anios=None, fecha_inicio=None, retain_until=soon),
+        )
 
 
 @pytest.mark.asyncio
-async def test_proteger_indice_bucket_name_derived_from_claim_not_body(client_with_conn) -> None:
-    """El nombre del bucket WORM sale de X-Tenant-Slug (claim), nunca del body —
+async def test_proteger_indice_bucket_name_derived_from_tenant_arg_not_body(client_with_conn) -> None:
+    """El nombre del bucket WORM sale del tenant que recibe el servicio, nunca del body —
     un `tenant_slug` colado en el body es un campo desconocido para el schema y
     se ignora (Pydantic v2 `extra="ignore"` por defecto)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(object_key=record["object_key"])
@@ -460,13 +430,9 @@ async def test_proteger_indice_bucket_name_derived_from_claim_not_body(client_wi
     payload = _base_payload(file_id)
     payload["tenant_slug"] = "attacker-tenant"  # ignorado: no es un campo del schema
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=payload,
-        headers=INTERNAL_HEADERS,  # X-Tenant-Slug: demo
-    )
+    response, created = await _proteger(mock_conn, payload)
 
-    assert resp.status_code == 201, resp.text
+    assert created is True
     put_call = mock_minio.put_object.await_args
     assert put_call.args[0] == f"orpycamcp-{TENANT_SLUG}-preservation"
     assert "attacker" not in put_call.args[0]
@@ -474,18 +440,13 @@ async def test_proteger_indice_bucket_name_derived_from_claim_not_body(client_wi
 
 @pytest.mark.asyncio
 async def test_proteger_indice_disabled_by_feature_flag(client_with_conn, monkeypatch) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     _grant_permission(mock_conn)
     monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(uuid.uuid4()),
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(PreservationDisabledError):
+        await _proteger(mock_conn, _base_payload(uuid.uuid4()))
 
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["error"] == "preservation_disabled"
     mock_conn.fetchrow.assert_not_called()
 
 
@@ -496,9 +457,9 @@ async def test_proteger_indice_disabled_by_feature_flag(client_with_conn, monkey
 async def test_proteger_indice_second_call_is_idempotent_no_reupload(client_with_conn) -> None:
     """Segunda llamada al MISMO `expediente_id` (reintento tras timeout, o
     carrera intento-síncrono-vs-barrida): NO vuelve a tocar fixity/MinIO, NO
-    inserta una segunda fila WORM — devuelve la fila YA protegida, 200 (no
-    201)."""
-    client, mock_conn, mock_minio = client_with_conn
+    inserta una segunda fila WORM — devuelve la fila YA protegida, `created=False`.
+    """
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     existing_worm_id = uuid.uuid4()
     existing_file_id = uuid.uuid4()
@@ -510,14 +471,10 @@ async def test_proteger_indice_second_call_is_idempotent_no_reupload(client_with
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [existing]  # get_by_expediente_and_tipo: YA existe
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger(mock_conn, _base_payload(file_id))
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    assert created is False
+    body = response.model_dump(mode="json")
     assert body["id"] == str(existing_worm_id)
     assert body["expediente_id"] == "EXP-1"
 
@@ -541,8 +498,8 @@ async def test_proteger_indice_second_call_different_expediente_is_not_idempoten
 ) -> None:
     """La idempotencia es POR `expediente_id` — un segundo `proteger-indice`
     para un expediente DISTINTO (aunque el mismo file_id/tenant) sigue
-    subiendo normalmente (201), no se confunde con el candado del primero."""
-    client, mock_conn, mock_minio = client_with_conn
+    subiendo normalmente (`created=True`), no se confunde con el candado del primero."""
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-2", object_key=record["object_key"])
@@ -557,26 +514,20 @@ async def test_proteger_indice_second_call_different_expediente_is_not_idempoten
     ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id, expediente_id="EXP-2"),
-        headers=INTERNAL_HEADERS,
-    )
+    response, created = await _proteger(mock_conn, _base_payload(file_id, expediente_id="EXP-2"))
 
-    assert resp.status_code == 201, resp.text
+    assert created is True
     mock_minio.put_object.assert_awaited_once()
 
 
-# ── Ruta interna (D-02, SYSTEM_RECONCILER_ID) ─────────────────────────────
+# ── Acto de sistema (storage.api, SYSTEM_RECONCILER_ID) ───────────────────
 
 
 @pytest.mark.asyncio
-async def test_proteger_indice_internal_happy_path_uses_system_actor(client_with_conn) -> None:
-    """`POST /proteger-indice-internal` (X-Internal-Token, sin X-User-Id) usa
-    el mismo servicio/idempotencia — la única diferencia es la puerta de
-    autorización y que el actor de auditoría es SIEMPRE SYSTEM_RECONCILER_ID,
-    nunca derivado de headers del llamador."""
-    client, mock_conn, mock_minio = client_with_conn
+async def test_protect_index_as_system_uses_system_actor(client_with_conn) -> None:
+    """`storage.api.protect_index_as_system` usa el mismo servicio/idempotencia;
+    el actor de auditoría es SIEMPRE SYSTEM_RECONCILER_ID."""
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-3", object_key=record["object_key"])
@@ -590,13 +541,17 @@ async def test_proteger_indice_internal_happy_path_uses_system_actor(client_with
     ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_base_payload(file_id, expediente_id="EXP-3"),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.protect_index_as_system(
+        tenant_slug=TENANT_SLUG,
+        file_id=str(file_id),
+        expediente_id="EXP-3",
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
 
-    assert resp.status_code == 201, resp.text
+    assert outcome.ok
+    assert outcome.worm_object_id == worm_row["id"]
+    mock_minio.put_object.assert_awaited_once()
 
     audit_inserts = [
         c
@@ -608,39 +563,24 @@ async def test_proteger_indice_internal_happy_path_uses_system_actor(client_with
 
 
 @pytest.mark.asyncio
-async def test_proteger_indice_internal_rejects_without_token(client_with_conn) -> None:
-    """Sin `X-Internal-Token` (o uno incorrecto), la ruta interna rechaza —
-    NUNCA cae de vuelta silenciosamente a algún modo "abierto"."""
-    client, mock_conn, mock_minio = client_with_conn
-
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_base_payload(uuid.uuid4()),
-        headers=TENANT_HEADERS,  # sin X-Internal-Token
-    )
-
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-    mock_conn.fetchrow.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_proteger_indice_internal_second_call_is_idempotent(client_with_conn) -> None:
-    """Mismo contrato de idempotencia que la ruta pública — la 3ra fase de
-    reconciliación (`run_once_worm`) puede reintentar sin re-subir."""
-    client, mock_conn, mock_minio = client_with_conn
+async def test_protect_index_as_system_second_call_is_idempotent(client_with_conn) -> None:
+    """Mismo contrato de idempotencia: la 3ra fase de reconciliación
+    (`run_once_worm`) puede reintentar sin re-subir."""
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(expediente_id="EXP-4")
 
     mock_conn.fetchrow.side_effect = [existing]
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_base_payload(uuid.uuid4(), expediente_id="EXP-4"),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.protect_index_as_system(
+        tenant_slug=TENANT_SLUG,
+        file_id=str(uuid.uuid4()),
+        expediente_id="EXP-4",
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
 
-    assert resp.status_code == 200, resp.text
+    assert outcome.ok
+    assert outcome.worm_object_id == existing["id"]
     mock_minio.put_object.assert_not_awaited()
 
 
@@ -666,7 +606,7 @@ def test_worm_lock_key_is_deterministic_and_in_range() -> None:
 async def test_proteger_indice_acquires_and_releases_advisory_lock(client_with_conn) -> None:
     """El happy path toma pg_advisory_lock y lo libera (pg_advisory_unlock) con
     la MISMA clave — serialización por-expediente del check->put->insert."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     record = _file_record(file_id)
     worm_row = make_worm_row(expediente_id="EXP-1", object_key=record["object_key"])
@@ -681,12 +621,8 @@ async def test_proteger_indice_acquires_and_releases_advisory_lock(client_with_c
     ]
     mock_minio.get_object = _minio_get_object(_INDICE_XML)
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 201, resp.text
+    response, created = await _proteger(mock_conn, _base_payload(file_id))
+    assert created is True
 
     lock_calls = [
         c for c in mock_conn.execute.call_args_list
@@ -705,19 +641,15 @@ async def test_proteger_indice_acquires_and_releases_advisory_lock(client_with_c
 async def test_proteger_indice_releases_lock_on_idempotent_shortcircuit(client_with_conn) -> None:
     """Aun cuando el índice YA está protegido (corte-circuito idempotente, sin
     subir), el lock adquirido se libera en el `finally`."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     existing = make_worm_row(expediente_id="EXP-1", object_key="EXP-1/indice.xml")
 
     _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [existing]  # get_by_expediente_and_tipo: YA existe
 
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice",
-        json=_base_payload(file_id),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
+    response, created = await _proteger(mock_conn, _base_payload(file_id))
+    assert created is False
     mock_minio.put_object.assert_not_awaited()  # no re-sube
 
     unlock_calls = [

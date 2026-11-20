@@ -9,7 +9,7 @@
 
 """B10 §8: el AIP embebe el XML VIGENTE del índice (el del ArchiveTimeStamp renovado), no el original.
 
-Mutaciones: quitar la consulta a `signature_client.resolver_artefacto_vigente` del cableado (cae
+Mutaciones: quitar la consulta a `signature_api.resolver_artefacto_vigente` del cableado (cae
 `test_el_aip_embebe_el_xml_renovado`); usar el vigente aunque la consulta no responda (cae
 `test_sin_respuesta_se_conserva_el_original`)."""
 
@@ -20,8 +20,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from archive.clients.signature_client import SIN_RENOVACION, ArtefactoVigente
-from archive.clients.storage_client import AipPackagingOutcome
+from signature.api import SIN_RENOVACION, ArtefactoVigente
+from storage.api import AipPackagingOutcome
 from tests.archive.test_aip_wiring_service_indice_only import (
     _expediente,
     _indice_by_id_row,
@@ -53,15 +53,15 @@ async def _empaquetar(vigente: str | None, original: str, firma_id: uuid.UUID | 
     service._aip.mark_empaquetado = AsyncMock(return_value=1)
     with (
         patch(
-            "archive.clients.signature_client.resolver_artefacto_vigente",
+            "signature.api.resolver_artefacto_vigente",
             new=AsyncMock(return_value=_vig(vigente) if vigente else SIN_RENOVACION),
         ) as consulta,
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as storage,
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),

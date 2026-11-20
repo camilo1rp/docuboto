@@ -8,7 +8,7 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Tests de POST /api/v1/preservacion/aip — AIP real (E10 Increment B, BagIt +
+Tests de `AipService.empaquetar_aip` — AIP real (E10 Increment B, BagIt +
 PREMIS v3, RF-PRE-05/07).
 
 Ningún test escribe objetos COMPLIANCE reales — MinIO está completamente
@@ -26,13 +26,21 @@ import zipfile
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import pydantic
 import pytest
 
 import storage.core.config as config_module
-from storage.services.aip_builder import _PREMIS_NS, AipDocMaterial
+from storage import api as storage_api
+from storage.schemas.preservacion import AipCreate, AipResponse
+from storage.services.aip_builder import _PREMIS_NS, AipDocMaterial, PremisValidationError
+from storage.services.aip_service import AipService
+from storage.services.preservation_worm_service import (
+    FileNotFoundForPreservationError,
+    FixityMismatchError,
+    InvalidRetentionError,
+    PreservationDisabledError,
+)
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
-    TENANT_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -50,12 +58,14 @@ def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
 
 
-def _grant_permission(mock_conn) -> None:
-    mock_conn.fetchval.return_value = True
+_ACTOR = str(uuid.uuid4())
 
 
-def _deny_permission(mock_conn) -> None:
-    mock_conn.fetchval.return_value = False
+async def _empaquetar(mock_conn, payload: dict) -> AipResponse:
+    """Empaqueta vía `AipService` con un actor persona (la ruta HTTP ya no existe, ADR-047)."""
+    return await AipService(mock_conn, TENANT_SLUG).empaquetar_aip(
+        AipCreate(**payload), actor=_ACTOR
+    )
 
 
 def _doc_record(file_id: uuid.UUID) -> dict:
@@ -103,7 +113,7 @@ def _zip_from_put_object_call(mock_minio) -> zipfile.ZipFile:
 def _fake_minio_object(content: bytes) -> MagicMock:
     """El objeto devuelto por `await minio.get_object(...)` (no el mock del
     método en sí) — para usar en `side_effect=[...]` cuando se descargan
-    varios objetos en una misma llamada HTTP (documento + índice)."""
+    varios objetos en un mismo empaquetado (documento + índice)."""
     obj = MagicMock()
     obj.read = AsyncMock(return_value=content)
     obj.close = MagicMock()
@@ -112,13 +122,12 @@ def _fake_minio_object(content: bytes) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_empaquetar_aip_happy_path_bag_and_premis(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     indice_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # FileRepository.get_by_id_any_state (doc)
         _indice_record(indice_file_id),  # get_by_id_any_state (indice)
@@ -181,14 +190,11 @@ async def test_empaquetar_aip_happy_path_bag_and_premis(client_with_conn) -> Non
         side_effect=[_fake_minio_object(_DOC_CONTENT), _fake_minio_object(_INDICE_CONTENT)]
     )
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id, indice_file_id=indice_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = (
+        await _empaquetar(
+            mock_conn, _base_payload(doc_file_id=doc_file_id, indice_file_id=indice_file_id)
+        )
+    ).model_dump(mode="json")
     assert body["bucket"] == f"orpycamcp-{TENANT_SLUG}-preservation"
     assert body["retention_mode"] == "COMPLIANCE"
     assert body["formato"] == "application/zip"
@@ -306,24 +312,17 @@ async def test_empaquetar_aip_happy_path_bag_and_premis(client_with_conn) -> Non
 async def test_empaquetar_aip_fixity_mismatch_blocks_upload(client_with_conn) -> None:
     """Un objeto cuyos bytes REALES no coinciden con `files.sha256` aborta
     TODO el empaquetado — no se sube nada al bucket WORM (PIEZA 2 (b))."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # get_by_id_any_state
         {"id": uuid.uuid4()},  # insert_evento FIJACION fallo
     ]
     mock_minio.get_object = minio_get_object(b"bytes alterados, no coinciden")
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "fixity_mismatch"
+    with pytest.raises(FixityMismatchError):
+        await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     mock_minio.put_object.assert_not_awaited()
     mock_minio.make_bucket.assert_not_awaited()
 
@@ -341,92 +340,51 @@ async def test_empaquetar_aip_fixity_mismatch_blocks_upload(client_with_conn) ->
 
 
 @pytest.mark.asyncio
-async def test_empaquetar_aip_sin_token_interno_es_401(client_with_conn) -> None:
-    """AREA-08-16: `/aip` ya no se autoriza por RBAC de usuario sino por
-    `X-Internal-Token`; un JWT/identidad de humano sin token no pasa."""
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
-
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=uuid.uuid4()),
-        headers=TENANT_HEADERS,
-    )
-
-    assert resp.status_code == 401
-    mock_minio.put_object.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_empaquetar_aip_file_not_found(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=uuid.uuid4()),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["error"] == "file_not_found"
+    with pytest.raises(FileNotFoundForPreservationError):
+        await _empaquetar(mock_conn, _base_payload(doc_file_id=uuid.uuid4()))
 
 
 @pytest.mark.asyncio
 async def test_empaquetar_aip_disabled_by_feature_flag(client_with_conn, monkeypatch) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
     monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=uuid.uuid4()),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["error"] == "preservation_disabled"
+    with pytest.raises(PreservationDisabledError):
+        await _empaquetar(mock_conn, _base_payload(doc_file_id=uuid.uuid4()))
     mock_conn.fetchrow.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_empaquetar_aip_rejects_retention_beyond_max_years(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
     too_far = (datetime.now(tz=UTC) + timedelta(days=365 * 200)).isoformat()
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(
-            doc_file_id=uuid.uuid4(),
-            retencion_anios=None,
-            fecha_inicio=None,
-            retain_until=too_far,
-        ),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "invalid_retention"
+    with pytest.raises(InvalidRetentionError):
+        await _empaquetar(
+            mock_conn,
+            _base_payload(
+                doc_file_id=uuid.uuid4(),
+                retencion_anios=None,
+                fecha_inicio=None,
+                retain_until=too_far,
+            ),
+        )
     mock_conn.fetchrow.assert_not_called()  # falla antes de tocar archivos/MinIO
 
 
 @pytest.mark.asyncio
 async def test_empaquetar_aip_requires_at_least_one_documento(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
 
     payload = _base_payload(doc_file_id=uuid.uuid4())
     payload["documentos"] = []
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=payload,
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 422
+    with pytest.raises(pydantic.ValidationError):
+        AipCreate(**payload)
 
 
 @pytest.mark.asyncio
@@ -445,15 +403,13 @@ async def test_empaquetar_aip_rejects_unsafe_nombre(client_with_conn, nombre: st
     y una línea de `manifest-sha256.txt` — separadores de ruta y caracteres
     de control se rechazan en el borde Pydantic (hallazgo de auditoría
     Increment B: zip-slip / inyección de líneas de manifiesto)."""
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
 
     payload = _base_payload(doc_file_id=uuid.uuid4())
     payload["documentos"][0]["nombre"] = nombre
 
-    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS)
-
-    assert resp.status_code == 422
+    with pytest.raises(pydantic.ValidationError):
+        await _empaquetar(mock_conn, payload)
     mock_conn.fetchrow.assert_not_called()
 
 
@@ -463,17 +419,15 @@ async def test_empaquetar_aip_rejects_duplicate_nombre(client_with_conn) -> None
     `files[f"data/{nombre}"]` dentro del Bag — uno se perdería SILENCIOSAMENTE
     mientras `num_files`/`Payload-Oxum`/PREMIS seguirían contando ambos
     (hallazgo de auditoría Increment B). Se rechaza en el borde Pydantic."""
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
 
     payload = _base_payload(doc_file_id=uuid.uuid4())
     payload["documentos"].append(
         {"document_id": "R-2", "nombre": "oficio.pdf", "file_id": str(uuid.uuid4())}
     )
 
-    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS)
-
-    assert resp.status_code == 422
+    with pytest.raises(pydantic.ValidationError):
+        await _empaquetar(mock_conn, payload)
     mock_conn.fetchrow.assert_not_called()
 
 
@@ -481,12 +435,11 @@ async def test_empaquetar_aip_rejects_duplicate_nombre(client_with_conn) -> None
 async def test_empaquetar_aip_without_indice_excludes_indice_tag_file(client_with_conn) -> None:
     """Sin `indice_file_id`, el Bag NO incluye `indice-firmado.xml` ni un
     segundo OBJECT en el PREMIS — el índice es estrictamente opcional."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # get_by_id_any_state (doc)
         None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
@@ -544,13 +497,7 @@ async def test_empaquetar_aip_without_indice_excludes_indice_tag_file(client_wit
     ]
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),  # sin indice_file_id
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))  # sin indice_file_id
     zf = _zip_from_put_object_call(mock_minio)
     names = set(zf.namelist())
     assert "indice-firmado.xml" not in names
@@ -582,7 +529,7 @@ async def test_empaquetar_aip_multiple_documentos_payload_oxum_and_manifest(
     """Con >1 documento, `Payload-Oxum` refleja bytes y CANTIDAD reales (no un
     valor fijo/simulado), y `manifest-sha256.txt` trae una línea por archivo
     con su ruta `data/` real — cubre el caso de expedientes con varios anexos."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc1_id = uuid.uuid4()
     doc2_id = uuid.uuid4()
     aip_id = uuid.uuid4()
@@ -591,7 +538,6 @@ async def test_empaquetar_aip_multiple_documentos_payload_oxum_and_manifest(
     content2 = b"segundo documento del expediente, mas largo que el primero"
     sha2 = hashlib.sha256(content2).hexdigest()
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc1_id),  # get_by_id_any_state (doc 1)
         make_file_record(
@@ -663,13 +609,7 @@ async def test_empaquetar_aip_multiple_documentos_payload_oxum_and_manifest(
         {"document_id": "R-2", "nombre": "anexo2.pdf", "file_id": str(doc2_id)}
     )
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=payload,
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, payload)
     zf = _zip_from_put_object_call(mock_minio)
 
     total_bytes = len(_DOC_CONTENT) + len(content2)
@@ -696,13 +636,11 @@ async def test_empaquetar_aip_premis_invalid_blocks_upload(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Si el PREMIS generado NO valida contra el XSD (regresión hipotética en
-    el builder), `build_bag` aborta con `PremisValidationError` -> 500
-    `premis_invalid` y NO se sube nada al bucket WORM (red de seguridad de
+    el builder), `build_bag` aborta con `PremisValidationError` y NO se sube nada al bucket WORM (red de seguridad de
     `assertValid`, nunca un PDI inválido llega a MinIO)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [_doc_record(doc_file_id)]
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
@@ -713,14 +651,8 @@ async def test_empaquetar_aip_premis_invalid_blocks_upload(
 
     monkeypatch.setattr(aip_builder_module, "validate_premis_xml", _boom)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 500
-    assert resp.json()["detail"]["error"] == "premis_invalid"
+    with pytest.raises(PremisValidationError):
+        await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     mock_minio.put_object.assert_not_awaited()
     mock_minio.make_bucket.assert_not_awaited()
     mock_conn.fetchrow.assert_called_once()  # ni insert_aip ni worm_repo.insert llegaron a correr
@@ -728,12 +660,9 @@ async def test_empaquetar_aip_premis_invalid_blocks_upload(
 
 @pytest.mark.asyncio
 async def test_get_aip_returns_real_location_fields(client_with_conn) -> None:
-    """E10 Increment C: `GET /aip/{id}` ya NO se gatea por
-    `USUA_PERM_EXPEDIENTE` (storage-service no conoce el `nivel_seguridad`
-    del expediente) — es un endpoint INTERNO (X-Internal-Token, D-02); el
-    no-read-up real vive en archive-service (`GET /expedientes/{id}/aip`,
-    ver `test_aip_internal_gate.py` para el gate en sí)."""
-    client, mock_conn, mock_minio = client_with_conn
+    """`storage.api.get_aip` devuelve los campos de ubicación reales del AIP
+    vigente; el no-read-up lo aplica archive antes de llamar."""
+    _client, mock_conn, mock_minio = client_with_conn
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
     mock_conn.fetchrow.return_value = {
@@ -754,38 +683,31 @@ async def test_get_aip_returns_real_location_fields(client_with_conn) -> None:
         "legal_hold": False,
     }
 
-    resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=INTERNAL_HEADERS)
+    body = await storage_api.get_aip(tenant_slug=TENANT_SLUG, expediente_id="EXP-1")
 
-    assert resp.status_code == 200
-    body = resp.json()
+    assert body is not None
     assert body["bucket"] == f"orpycamcp-{TENANT_SLUG}-preservation"
     assert body["aip_bytes"] == 2048
     assert body["formato"] == "application/zip"
 
 
 @pytest.mark.asyncio
-async def test_get_aip_without_internal_token_is_401(client_with_conn) -> None:
-    """El PREMIS embebido inventaría nombres/SHA-256/tamaños de TODOS los
-    documentos del expediente — sin X-Internal-Token, 401 ANTES de tocar la
-    BD (D-02, E10 Increment C: reemplaza el gate por-permiso, que no conocía
-    el `nivel_seguridad` del expediente, RF-SEG-08)."""
-    client, mock_conn, mock_minio = client_with_conn
+async def test_get_aip_returns_none_when_no_aip(client_with_conn) -> None:
+    """Sin AIP para el expediente, `get_aip` devuelve `None` (antes 404)."""
+    _client, mock_conn, _mock_minio = client_with_conn
+    mock_conn.fetchrow.return_value = None
 
-    resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=TENANT_HEADERS)
-
-    assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "missing_internal_token"
-    mock_conn.fetchrow.assert_not_called()
+    assert await storage_api.get_aip(tenant_slug=TENANT_SLUG, expediente_id="EXP-1") is None
 
 
 @pytest.mark.asyncio
-async def test_get_aip_stub_row_returns_200_with_null_fields(client_with_conn) -> None:
+async def test_get_aip_stub_row_returns_null_location_fields(client_with_conn) -> None:
     """El AIP vigente de un expediente puede seguir siendo un stub del
     Increment A (migración 007 aditiva/nullable): `bucket`/`object_key`/
     `aip_bytes`/`retain_until`/`retention_mode` quedan NULL en esas filas.
     Antes `AipResponse` los declaraba NOT NULL y esto lanzaba un 500
     (hallazgo de auditoría Increment B)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     aip_id = uuid.uuid4()
     mock_conn.fetchrow.return_value = {
         "id": aip_id,
@@ -805,10 +727,9 @@ async def test_get_aip_stub_row_returns_200_with_null_fields(client_with_conn) -
         "legal_hold": False,
     }
 
-    resp = await client.get("/api/v1/preservacion/aip/EXP-1", headers=INTERNAL_HEADERS)
+    body = await storage_api.get_aip(tenant_slug=TENANT_SLUG, expediente_id="EXP-1")
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    assert body is not None
     assert body["bucket"] is None
     assert body["object_key"] is None
     assert body["aip_bytes"] is None
@@ -819,9 +740,9 @@ async def test_get_aip_stub_row_returns_200_with_null_fields(client_with_conn) -
 # --- Defensa en profundidad del builder (app.services.aip_builder) ---------
 #
 # La capa Pydantic (`AipCreate`/`AipDocInput`) ya cierra `nombre` duplicado/
-# inseguro en el borde HTTP (ver los tests `test_empaquetar_aip_rejects_*`
+# inseguro en el borde Pydantic (ver los tests `test_empaquetar_aip_rejects_*`
 # arriba). Los tests siguientes ejercen `build_bag` DIRECTAMENTE — sin pasar
-# por el router — para probar que el builder en sí mismo (invocable desde
+# por el servicio — para probar que el builder en sí mismo (invocable desde
 # cualquier otro caller futuro) nunca infla `num_files`/`Payload-Oxum` por
 # encima de lo que el ZIP contiene de verdad, y que escapa CR/LF/`%` en las
 # rutas del manifiesto (RFC 8493 §2.1.3), aunque la Pydantic de arriba jamás
@@ -882,7 +803,7 @@ def test_build_bag_derives_num_files_and_oxum_from_real_data_entries() -> None:
 def test_build_bag_tagmanifest_covers_payload_manifest() -> None:
     """`tagmanifest-sha256.txt` debe cubrir `manifest-sha256.txt` (RFC 8493
     §2.2.1: el manifiesto de payload ES UN tag file) — invocación directa del
-    builder, sin pasar por el router."""
+    builder, sin pasar por el servicio."""
     from storage.services.aip_builder import build_bag
 
     doc = _material("oficio.pdf", b"contenido")

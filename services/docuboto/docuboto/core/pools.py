@@ -32,6 +32,7 @@ _MODULOS_DB = (
 )
 
 _MODULOS_REDIS = (
+    "document.core.redis_client",
     "workflow.core.redis_client",
     "notification.core.redis_client",
     "signature.core.redis_client",

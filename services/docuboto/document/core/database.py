@@ -9,7 +9,8 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from types import ModuleType
+from typing import Any
 
 import asyncpg
 from fastapi import HTTPException, Path, Request, status
@@ -24,9 +25,7 @@ from orpycamcp_common.usuario import slug_de
 
 from document.core.config import settings
 from document.core.conservacion import admitir_conservacion
-
-if TYPE_CHECKING:
-    from document.clients.tenant_client import TenantServiceClient
+from tenant import api as tenant_api
 
 _pool: asyncpg.Pool | None = None
 
@@ -87,11 +86,13 @@ def tenant_schema(slug: str) -> str:
     return _schema_de(slug)
 
 
-def get_tenant_client(request: Request) -> "TenantServiceClient":
-    """Cliente HTTP hacia tenant-service (httpx compartido en app.state)."""
-    from document.clients.tenant_client import TenantServiceClient
+def get_tenant_client() -> ModuleType:
+    """Calendario, parámetros y organigrama de la entidad: `tenant.api`, en proceso.
 
-    return TenantServiceClient(request.app.state.http_client)
+    Se inyecta el módulo (sus funciones son la interfaz que los servicios
+    llaman) para que las pruebas sustituyan la entidad entera con un doble.
+    """
+    return tenant_api
 
 
 def get_redis(request: Request) -> Any:

@@ -77,7 +77,7 @@ from archive.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
 from archive.services.retention_math import RetencionDiferida, base_worm, total_trd_years
 
 if TYPE_CHECKING:
-    from archive.clients.signature_client import SignedIndice
+    from signature.api import SignedIndice
 
 logger = logging.getLogger(__name__)
 
@@ -647,7 +647,7 @@ class IndexService:
         desenlace idempotente que `firmar_indice_retry` ya reporta cuando el
         índice YA estaba firmado antes de intentar nada.
         """
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
         resolved = await self._current_signable_or_none(
             expediente_id, tenant_slug=tenant_slug, actor_id=actor_id
@@ -655,7 +655,7 @@ class IndexService:
         if resolved is None:
             return None
         current, signer_id = resolved
-        signed = await signature_client.sign_xml(
+        signed = await signature_api.sign_xml(
             tenant_slug=tenant_slug,
             actor_id=signer_id,
             payload_xml=current["xml"],
@@ -719,7 +719,7 @@ class IndexService:
         diseño: este control NO debe alargar peligrosamente el request.
 
         Dictamen (archival-compliance-auditor) — distingue el MOTIVO del
-        fallo, vía `signature_client.sign_xml_outcome` (resultado
+        fallo, vía `signature_api.sign_xml_outcome` (resultado
         ESTRUCTURADO, a diferencia de `sign_xml` que colapsa todo fallo a
         `None`):
         - éxito → índice 'firmado' EN el cierre (art. 4.3.2.4 síncrono).
@@ -740,7 +740,7 @@ class IndexService:
         100% posterior al commit de `close_expediente` — no hay HTTP dentro
         de ninguna transacción.
         """
-        from archive.clients import signature_client
+        import signature.api as signature_api
 
         resolved = await self._current_signable_or_none(
             expediente_id, tenant_slug=tenant_slug, actor_id=actor_id
@@ -751,7 +751,7 @@ class IndexService:
 
         max_attempts = max(1, settings.close_sign_max_sync_attempts)
         for attempt in range(1, max_attempts + 1):
-            outcome = await signature_client.sign_xml_outcome(
+            outcome = await signature_api.sign_xml_outcome(
                 tenant_slug=tenant_slug,
                 actor_id=signer_id,
                 payload_xml=current["xml"],
@@ -1209,7 +1209,7 @@ class IndexService:
         # XML YA FIRMADO desde MinIO (vía storage-service) y se verifica la
         # firma XAdES-B real contra ESE contenido — nunca contra `row["xml"]`
         # en claro (la canonicalización C14N 2.0 de exhibición no coincide con
-        # el digest exc-c14n de XAdES, ver `app.clients.storage_client`). Es
+        # el digest exc-c14n de XAdES, ver `storage.api.read_signed_xml`). Es
         # best-effort en cada tramo: si el XML firmado no se puede obtener, o
         # el signature-service no responde, `valida` queda en False (no se
         # declara conforme lo que no se pudo verificar, RF-FIR-15).
@@ -1221,7 +1221,8 @@ class IndexService:
         advertencias: list[str] = []
         lta_vigente: bool | None = None
         if firma_presente:
-            from archive.clients import signature_client, storage_client
+            import signature.api as signature_api
+            from storage import api as storage_api
 
             signed_xml: str | None = None
             if row["minio_key_firmado"]:
@@ -1230,21 +1231,21 @@ class IndexService:
                 # verifica el artefacto VIGENTE, resuelto igual que el AIP; si no se puede
                 # resolver, se cae al original y se AVISA (no se calla la degradación).
                 clave_xml = row["minio_key_firmado"]
-                vigente = await signature_client.artefacto_vigente(
+                vigente = await signature_api.artefacto_vigente(
                     tenant_slug=self._tenant_slug, firma_id=str(row["firma_id"])
                 )
                 if vigente:
                     clave_xml = vigente
                 else:
                     advertencias.append("artefacto_vigente_no_resuelto")
-                signed_xml = await storage_client.download_signed_xml(
+                signed_xml = await storage_api.read_signed_xml(
                     tenant_slug=self._tenant_slug,
-                    minio_key_firmado=clave_xml,
+                    object_key=clave_xml,
                 )
             if signed_xml is None:
                 motivo = "signed_xml_unavailable"
             else:
-                resultado = await signature_client.verify(
+                resultado = await signature_api.verify(
                     tenant_slug=self._tenant_slug,
                     firma_id=str(row["firma_id"]),
                     payload_xml=signed_xml,
@@ -1467,7 +1468,7 @@ class IndexService:
 
         Frontera de confianza (D-02): `file_id` se deriva SIEMPRE de
         `expediente_indice.minio_key_firmado` (formato `"{file_id}/
-        {filename}"`, ver `storage_client.download_signed_xml`) — nunca de
+        {filename}"`, ver `storage_api.read_signed_xml`) — nunca de
         una entrada externa al servicio.
 
         Devuelve el desenlace para que el llamador (job de reconciliación)
@@ -1518,10 +1519,10 @@ class IndexService:
                 retencion_anios, fecha_inicio = retention
                 diferida = None
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
             if origen == "close" and actor_id:
-                outcome = await storage_client.proteger_indice_worm(
+                outcome = await storage_api.protect_index(
                     tenant_slug=self._tenant_slug,
                     actor_id=actor_id,
                     file_id=file_id,
@@ -1531,7 +1532,7 @@ class IndexService:
                     retencion_diferida=diferida,
                 )
             else:
-                outcome = await storage_client.proteger_indice_worm_internal(
+                outcome = await storage_api.protect_index_as_system(
                     tenant_slug=self._tenant_slug,
                     file_id=file_id,
                     expediente_id=str(expediente_id),
@@ -1671,9 +1672,9 @@ class IndexService:
                     indice_id, intentos_previos=intentos_previos, motivo="trd_sin_retencion"
                 )
 
-            from archive.clients import storage_client
+            from storage import api as storage_api
 
-            outcome = await storage_client.renovar_retencion_worm_internal(
+            outcome = await storage_api.renew_retention(
                 tenant_slug=self._tenant_slug,
                 expediente_id=str(expediente_id),
                 tipo="indice",

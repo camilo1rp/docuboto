@@ -19,9 +19,9 @@ import uuid
 import asyncpg
 import pytest
 
-from document.clients import storage_client
 from document.core.database import tenant_schema
 from document.schemas.signature import SignatureCreate
+from storage import api as storage_api
 
 pytestmark = pytest.mark.integration
 
@@ -50,7 +50,7 @@ def _storage(monkeypatch) -> None:
     async def _f(*, tenant_slug, file_id):
         return _HUELLA
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _f)
+    monkeypatch.setattr(storage_api, "get_file_sha256", _f)
 
 
 @pytest.mark.asyncio
@@ -145,7 +145,7 @@ async def test_el_anexo_de_un_radicado_reservado_es_404_neutro(
         llamadas.append(file_id)
         return _HUELLA
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _espia)
+    monkeypatch.setattr(storage_api, "get_file_sha256", _espia)
     slug, conn, doc, anexo_id = await _anexo(tenant_ctx)
     await conn.execute("UPDATE radicados SET nivel_seguridad = 3, clasificacion_fundamento = 'Ley 1712/2014 art. 19 (prueba)', clasificacion_causal = 'por_clasificar' WHERE id = $1", doc.id)
     with pytest.raises(HTTPException) as exc:

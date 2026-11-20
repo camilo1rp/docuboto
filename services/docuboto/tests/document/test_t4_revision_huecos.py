@@ -29,11 +29,10 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 
-from document.clients import storage_client
 from document.core.operacion_pesada import OperacionPesadaOcupadaError, una_operacion_pesada
+from storage import api as storage_api
 from tests.document.conftest import TENANT_HEADERS
 from tests.document.test_import import _pkg, _run, _svc
 from tests.document.test_postal_callback import (  # noqa: F401
@@ -269,38 +268,6 @@ async def test_un_paquete_con_un_numero_invalido_no_importa_ninguno() -> None:
 # --- contrato saliente de upload_bytes (import) -------------------------------
 
 
-@pytest.mark.asyncio
-async def test_upload_bytes_cumple_el_contrato_de_storage(monkeypatch) -> None:
-    """El import sube cada binario a storage `/upload`; todas las pruebas de import
-    sustituyen `upload_bytes`, así que sin esta nada vigila lo que viaja: ruta,
-    tenant y campo multipart `file`. El llamante viaja en el Bearer, no en
-    `X-User-Id`."""
-    capturadas: list[httpx.Request] = []
-    real = httpx.AsyncClient
-
-    def _factory(*a, **k):
-        def _h(req: httpx.Request) -> httpx.Response:
-            capturadas.append(req)
-            return httpx.Response(201, json={"id": str(uuid.uuid4()), "sha256": "ab" * 32})
-
-        k["transport"] = httpx.MockTransport(_h)
-        return real(*a, **k)
-
-    monkeypatch.setattr(storage_client.httpx, "AsyncClient", _factory)
-    monkeypatch.setattr(storage_client.settings, "storage_service_url", "http://storage")
-    monkeypatch.setenv("IDENTITY_SIGNING_SECRET", "s3cr3to-de-prueba")
-    actor = uuid.uuid4()
-    await storage_client.upload_bytes(
-        tenant_slug="demo", filename="a.pdf", mime_type="application/pdf", data=b"%PDF", uploaded_by=actor
-    )
-    (req,) = capturadas
-    assert req.method == "POST" and req.url.path == "/api/v1/storage/upload"
-    assert req.headers["X-Tenant-Slug"] == "demo"
-    assert "X-User-Id" not in req.headers
-    assert "X-Identity-Signature" not in req.headers
-    assert b'name="file"' in req.content and b"%PDF" in req.content
-
-
 # --- hallazgos de la revisión de T4 --------------------------------------------
 
 
@@ -350,8 +317,8 @@ async def test_la_reversion_total_asienta_los_binarios_huerfanos() -> None:
     pkg = _pkg([{"tracking": "2026-DEMO-E-000001", "anexos": [("a.pdf", b"PDF")]}])
     audit = AsyncMock(return_value="h")
     with patch(
-        "document.services.import_service.storage_client.upload_bytes",
-        new=AsyncMock(return_value=storage_client.ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
+        "document.services.import_service.storage_api.upload_file",
+        new=AsyncMock(return_value=storage_api.UploadedFile(file_id=uuid.uuid4(), sha256="x")),
     ), patch("document.services.import_service.audit.append", new=audit), patch(
         "document.services.import_service.ImportHuerfanosService.purgar", new=AsyncMock()
     ):
@@ -372,8 +339,8 @@ async def test_un_item_omitido_por_carrera_asienta_sus_binarios() -> None:
     pkg = _pkg([{"tracking": "2026-DEMO-E-000001", "anexos": [("a.pdf", b"PDF")]}])
     audit = AsyncMock(return_value="h")
     with patch(
-        "document.services.import_service.storage_client.upload_bytes",
-        new=AsyncMock(return_value=storage_client.ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
+        "document.services.import_service.storage_api.upload_file",
+        new=AsyncMock(return_value=storage_api.UploadedFile(file_id=uuid.uuid4(), sha256="x")),
     ), patch("document.services.import_service.audit.append", new=audit), patch(
         "document.services.import_service.ImportHuerfanosService.purgar", new=AsyncMock()
     ):

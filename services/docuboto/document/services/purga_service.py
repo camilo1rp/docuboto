@@ -38,8 +38,8 @@ from typing import Any
 import asyncpg
 from orpycamcp_common import audit, events
 
-from document.clients import storage_client
 from document.repositories.document_repository import DocumentRepository
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class PurgaService:
         12 convierte la lápida en una declaración falsa sobre un acto que ya no
         se puede comprobar.
 
-        Un `StoragePurgaError` **sube tal cual** y no se degrada: significa que
+        Un `StoragePurgeError` **sube tal cual** y no se degrada: significa que
         los bytes siguen existiendo, y quien orquesta tiene que abortar este
         expediente sin escribir su lápida.
         """
@@ -112,7 +112,7 @@ class PurgaService:
             file_ids = [f for f in file_ids if f not in compartidos]
 
         # 1. Los bytes primero (ver la cabecera del módulo).
-        purgados = await storage_client.purgar_disposicion(
+        purgados = await storage_api.purge_for_disposition(
             tenant_slug=self._tenant_slug,
             file_ids=file_ids,
             expediente_id=expediente_id,

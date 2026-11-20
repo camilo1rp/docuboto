@@ -45,7 +45,9 @@ from storage.services.aip_service import (
 )
 from storage.services.pdfa.types import PdfaResult
 from storage.services.retention_policy import InvalidRetentionError
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_HEADERS, TENANT_SLUG
+from storage import api as storage_api
+from storage.core.constants import SYSTEM_RECONCILER_ID
+from tests.storage.conftest import TENANT_SLUG
 
 EXP = "EXP-1"
 _DOC = b"contenido real del oficio"
@@ -377,80 +379,54 @@ def test_read_bag_anterior_rechaza_un_zip_ilegible() -> None:
         read_bag_anterior(b"no es un zip", expediente_id=EXP)
 
 
-# -- HTTP ---------------------------------------------------------------------------------
+# -- storage.api.repackage_aip -------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_ruta_exige_token_interno(client_with_conn) -> None:
-    client, _conn, _minio = client_with_conn
-    body = {
-        "expediente_id": EXP, "aip_anterior_id": str(uuid.uuid4()),
-        "indice_file_id": str(uuid.uuid4()), "indice_xml_sha256": "a" * 64,
+def _repackage_kwargs() -> dict:
+    return {
+        "tenant_slug": TENANT_SLUG, "expediente_id": EXP, "aip_anterior_id": uuid.uuid4(),
+        "indice_file_id": uuid.uuid4(), "indice_xml_sha256": "a" * 64,
         "firma_id": str(uuid.uuid4()), "ordinal": 1,
     }
-    r = await client.post("/api/v1/preservacion/aip-reempaquetar-internal", json=body, headers=TENANT_HEADERS)
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert r.status_code == 404
-    assert r.json()["error"] == "route_not_found"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("exc_name", "status", "code"),
+    ("exc_name", "flag"),
     [
-        ("AipNoEncontradoError", 404, "aip_not_found"),
-        ("AipYaSustituidoError", 409, "aip_ya_sustituido"),
-        ("AipAnteriorFixityMismatchError", 409, "aip_anterior_fixity_mismatch"),
-        ("IndiceNoEsRenovacionError", 422, "indice_no_es_renovacion_del_embebido"),
+        ("AipNoEncontradoError", "not_found"),
+        ("AipYaSustituidoError", "ya_sustituido"),
+        ("AipAnteriorFixityMismatchError", "fixity_mismatch"),
+        ("IndiceNoEsRenovacionError", "indice_invalido"),
     ],
 )
-async def test_errores_http(client_with_conn, monkeypatch, exc_name, status, code) -> None:
+async def test_errores_se_traducen_al_desenlace(client_with_conn, monkeypatch, exc_name, flag) -> None:
     import storage.services.aip_service as mod
 
-    client, _c, _m = client_with_conn
     monkeypatch.setattr(
         AipService, "reempaquetar_aip", AsyncMock(side_effect=getattr(mod, exc_name)("x"))
     )
-    body = {
-        "expediente_id": EXP, "aip_anterior_id": str(uuid.uuid4()),
-        "indice_file_id": str(uuid.uuid4()), "indice_xml_sha256": "a" * 64,
-        "firma_id": str(uuid.uuid4()), "ordinal": 1,
-    }
-    r = await client.post(
-        "/api/v1/preservacion/aip-reempaquetar-internal", json=body, headers=INTERNAL_HEADERS
-    )
-    assert r.status_code == status and r.json()["detail"]["error"] == code
+    outcome = await storage_api.repackage_aip(**_repackage_kwargs())
+    assert outcome.ok is False and getattr(outcome, flag) is True
 
 
 @pytest.mark.asyncio
-async def test_201_si_crea_y_200_si_ya_existia(client_with_conn, monkeypatch) -> None:
+async def test_crea_o_reintento_idempotente_dan_el_mismo_aip(client_with_conn, monkeypatch) -> None:
     from storage.schemas.preservacion import AipResponse
 
-    client, _c, _m = client_with_conn
+    anterior = uuid.uuid4()
     resp = AipResponse(
         id=uuid.uuid4(), expediente_id=EXP, aip_sha256="c" * 64, indice_sha256="d" * 64,
         num_documentos=1, estado="empaquetado", created_at=NOW, premis_xml="<p/>", bucket="b",
         object_key="k", aip_bytes=1, formato="application/zip", retain_until=NOW,
         retention_mode="COMPLIANCE", legal_hold=False, version=2, motivo="renovacion_lta",
-        sustituye_a=uuid.uuid4(),
+        sustituye_a=anterior,
     )
-    body = {
-        "expediente_id": EXP, "aip_anterior_id": str(uuid.uuid4()),
-        "indice_file_id": str(uuid.uuid4()), "indice_xml_sha256": "a" * 64,
-        "firma_id": str(uuid.uuid4()), "ordinal": 1,
-    }
-    url = "/api/v1/preservacion/aip-reempaquetar-internal"
-    monkeypatch.setattr(AipService, "reempaquetar_aip", AsyncMock(return_value=(resp, True)))
-    assert (await client.post(url, json=body, headers=INTERNAL_HEADERS)).status_code == 201
-    monkeypatch.setattr(AipService, "reempaquetar_aip", AsyncMock(return_value=(resp, False)))
-    r = await client.post(url, json=body, headers=INTERNAL_HEADERS)
-    assert r.status_code == 200 and r.json()["version"] == 2
-
-
-def test_ruta_de_conservacion_admitida_y_solo_esa() -> None:
-    from storage.core.conservacion import es_ruta_de_conservacion
-
-    assert es_ruta_de_conservacion("POST", "/api/v1/preservacion/aip-reempaquetar-internal")
-    assert not es_ruta_de_conservacion("POST", "/api/v1/preservacion/aip-reempaquetar-internal\n")
-    assert not es_ruta_de_conservacion("GET", "/api/v1/preservacion/aip-reempaquetar-internal")
-    assert not es_ruta_de_conservacion("POST", "/api/v1/preservacion/aip-reempaquetar")
+    for creado in (True, False):
+        servicio = AsyncMock(return_value=(resp, creado))
+        monkeypatch.setattr(AipService, "reempaquetar_aip", servicio)
+        outcome = await storage_api.repackage_aip(**_repackage_kwargs())
+        assert outcome.ok and outcome.aip_id == resp.id
+        assert outcome.version == 2 and outcome.sustituye_a == anterior
+        # Acto de sistema: el actor no sale de quien llama.
+        assert servicio.await_args.kwargs["actor"] == str(SYSTEM_RECONCILER_ID)

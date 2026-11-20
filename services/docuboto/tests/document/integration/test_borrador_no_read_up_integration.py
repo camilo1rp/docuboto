@@ -272,7 +272,7 @@ async def test_radicar_hereda_el_nivel_del_padre_y_el_de_clearance_1_no_lo_ve(
         "clasificacion_causal = 'art18_a_intimidad', clasificacion_plazo_meses = NULL WHERE id = $1",
         padre.id,
     )
-    servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
+    servicio = BorradorService(conn, slug, signature_api=_SinCircuito)
     b = await servicio.crear(
         BorradorCreate(
             doc_type="S", subject="Respuesta", cuerpo="Datos del padre reservado",
@@ -319,7 +319,7 @@ async def test_radicar_con_padre_reservado_sin_fundamento_no_cae_a_nivel_1(
     # de herencia sigue siendo la defensa para lo que pudiera quedar sin motivar.
     await conn.execute("ALTER TABLE radicados DROP CONSTRAINT radicados_clasificado_con_fundamento")
     await conn.execute("UPDATE radicados SET clasificacion_fundamento = NULL WHERE id = $1", padre.id)
-    servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
+    servicio = BorradorService(conn, slug, signature_api=_SinCircuito)
     b = await servicio.crear(
         BorradorCreate(doc_type="S", subject="Respuesta", radicado_padre_id=padre.id),
         None,
@@ -345,7 +345,7 @@ async def test_aprobar_y_devolver_dejan_asiento_atomico(
     from document.services.borrador_service import BorradorService
 
     slug, conn, _, _, _, publico = await _escenario(tenant_ctx)
-    servicio = BorradorService(conn, slug, signature_client=_SinCircuito)
+    servicio = BorradorService(conn, slug, signature_api=_SinCircuito)
     actor = uuid.uuid4()
     await servicio.aprobar(publico.id, max_clearance=1, actor=actor)
     await servicio.devolver_a_borrador(publico.id, max_clearance=1, actor=actor)

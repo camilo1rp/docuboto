@@ -31,6 +31,7 @@ import asyncio
 import base64
 import urllib.parse
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -38,9 +39,10 @@ import pytest
 from cryptography.exceptions import InvalidTag
 from httpx import AsyncClient
 
+from auth import api as auth_api
 from auth.core.authz import Caller, get_caller
 from auth.core.config import settings
-from auth.core.database import get_db_conn, get_tenant_conn
+from auth.core.database import get_tenant_conn
 from auth.core.totp import (
     _hotp,
     build_aad,
@@ -105,13 +107,6 @@ def _override_public(conn: AsyncMock, caller: Caller | None = None) -> None:
 
     app.dependency_overrides[get_tenant_conn] = _conn_dep
     app.dependency_overrides[get_caller] = lambda: (caller or _caller())
-
-
-def _override_internal(conn: AsyncMock) -> None:
-    async def _conn_dep():
-        yield conn
-
-    app.dependency_overrides[get_db_conn] = _conn_dep
 
 
 def _clear() -> None:
@@ -663,37 +658,43 @@ async def test_revoke_active_with_correct_step_up(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# POST /internal/totp/verify — service-to-service (signature-service)
+# auth.api.verify_totp — lo que signature pide al firmar (ADR-047 §1)
 # ---------------------------------------------------------------------------
 
 
-def _mock_validate_token(monkeypatch: pytest.MonkeyPatch, claims: dict) -> None:
-    monkeypatch.setattr(
-        "auth.routers.totp.validate_token", AsyncMock(return_value=claims)
-    )
+def _api_conn(monkeypatch: pytest.MonkeyPatch, conn: AsyncMock, tenant: str = "demo") -> None:
+    """`auth.api` sin BD: `acquire_tenant` entrega la conexión doble."""
+
+    @asynccontextmanager
+    async def _acquire(slug: str):
+        assert slug == tenant
+        yield conn
+
+    monkeypatch.setattr(auth_api, "acquire_tenant", _acquire)
+
+
+async def _verify(monkeypatch, conn, code, *, tenant: str = "demo") -> dict:
+    _api_conn(monkeypatch, conn, tenant)
+    return await auth_api.verify_totp(tenant_slug=tenant, user_id=USER_ID, code=code)
+
+
+async def _status(monkeypatch, conn) -> dict:
+    _api_conn(monkeypatch, conn)
+    return await auth_api.totp_status(tenant_slug="demo", user_id=USER_ID)
 
 
 @pytest.mark.asyncio
 async def test_internal_verify_success_advances_timestep(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     secret = generate_secret()
     code, t = _valid_code(secret)
     active_row = _totp_row(secret=secret, estado="activo", last_timestep=0)
     conn.fetchrow.side_effect = [_user_row(), active_row]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": code},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
+        resp = await _verify(monkeypatch, conn, code)
+        body = resp
         assert body["valido"] is True
         assert body["timestep"] == t
         assert body["factor_tipo"] == "totp"
@@ -715,9 +716,6 @@ async def test_internal_verify_replay_rejected(
 ) -> None:
     """A code whose matched timestep is not > last_timestep is a replay,
     never a success — even though the HMAC itself is correct."""
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     secret = generate_secret()
     t = current_timestep()
@@ -726,15 +724,9 @@ async def test_internal_verify_replay_rejected(
     active_row = _totp_row(secret=secret, estado="activo", last_timestep=t)
     failure_row = {"failed_attempts": 1, "locked_until": None}
     conn.fetchrow.side_effect = [_user_row(), active_row, failure_row]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": code},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
+        resp = await _verify(monkeypatch, conn, code)
+        body = resp
         assert body["valido"] is False
         assert body["motivo"] == "replay"
         advance_calls = [
@@ -752,23 +744,14 @@ async def test_internal_verify_wrong_code_returns_codigo_incorrecto(
     """A code that matches no timestep in the skew window (not a replay of a
     previously-valid one) is reported as ``codigo_incorrecto`` — with the
     remaining-attempts counter — and persists the failure, never a 500."""
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     secret = generate_secret()
     active_row = _totp_row(secret=secret, estado="activo", last_timestep=0, failed_attempts=0)
     failure_row = {"failed_attempts": 1, "locked_until": None}
     conn.fetchrow.side_effect = [_user_row(), active_row, failure_row]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
+        resp = await _verify(monkeypatch, conn, "000000")
+        body = resp
         assert body["valido"] is False
         assert body["motivo"] == "codigo_incorrecto"
         assert body["intentos_restantes"] == settings.totp_max_failed_attempts - 1
@@ -791,9 +774,6 @@ async def test_internal_verify_lockout_after_max_failed_attempts(
     """Mirrors ``test_activate_lockout_after_max_failed_attempts`` for the
     service-to-service verify path: reaching the threshold sets
     ``locked_until`` atomically with the failure that trips it."""
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     secret = generate_secret()
     # One failure away from the default threshold (5). The RETURNING row
@@ -804,15 +784,9 @@ async def test_internal_verify_lockout_after_max_failed_attempts(
         "locked_until": datetime.now(UTC) + timedelta(seconds=settings.totp_lockout_seconds),
     }
     conn.fetchrow.side_effect = [_user_row(), active_row, failure_row]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
+        resp = await _verify(monkeypatch, conn, "000000")
+        body = resp
         assert body["valido"] is False
         assert body["motivo"] == "codigo_incorrecto"
         assert body["intentos_restantes"] == 0
@@ -939,9 +913,6 @@ async def test_internal_verify_lost_race_reports_replay(
     """classify_totp_attempt says 'valid' but the conditional UPDATE affects
     0 rows (a concurrent verify already advanced past it) → treated as replay,
     never as success (D1 atomicity guard)."""
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     conn.execute.return_value = "UPDATE 0"  # lost the race
     secret = generate_secret()
@@ -949,15 +920,9 @@ async def test_internal_verify_lost_race_reports_replay(
     active_row = _totp_row(secret=secret, estado="activo", last_timestep=0)
     failure_row = {"failed_attempts": 1, "locked_until": None}
     conn.fetchrow.side_effect = [_user_row(), active_row, failure_row]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": code},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
+        resp = await _verify(monkeypatch, conn, code)
+        body = resp
         assert body["valido"] is False
         assert body["motivo"] == "replay"
     finally:
@@ -968,20 +933,11 @@ async def test_internal_verify_lost_race_reports_replay(
 async def test_internal_verify_no_active_credential_returns_no_activo(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     conn.fetchrow.side_effect = [_user_row(), None]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "123456"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
+        resp = await _verify(monkeypatch, conn, "123456")
+        body = resp
         assert body["valido"] is False
         assert body["motivo"] == "no_activo"
     finally:
@@ -995,47 +951,20 @@ async def test_internal_verify_unknown_user_returns_no_activo(
     """RBACRepository.get_user_by_keycloak_sub finds nothing → fail-closed,
     never a 500 — the caller (signature-service) treats this identically to
     'no TOTP configured'."""
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub-ghost", "tenant_slug": "demo", "username": "ghost"}
-    )
     conn = _make_conn()
     conn.fetchrow.side_effect = [None]  # get_user_by_keycloak_sub → not provisioned
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "123456"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["motivo"] == "no_activo"
+        resp = await _verify(monkeypatch, conn, "123456")
+        assert resp["motivo"] == "no_activo"
     finally:
         _clear()
 
-
-@pytest.mark.asyncio
-async def test_internal_verify_missing_bearer_returns_401(client: AsyncClient) -> None:
-    conn = _make_conn()  # dependency resolution still needs a conn, even though unused
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "123456"},
-            headers={"X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 401
-        assert resp.json()["detail"]["error"] == "missing_token"
-    finally:
-        _clear()
 
 
 @pytest.mark.asyncio
 async def test_internal_verify_lockout_honored_before_comparing_code(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     secret = generate_secret()
     locked_row = _totp_row(
@@ -1044,15 +973,9 @@ async def test_internal_verify_lockout_honored_before_comparing_code(
         locked_until=datetime.now(UTC) + timedelta(minutes=15),
     )
     conn.fetchrow.side_effect = [_user_row(), locked_row]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-        assert resp.status_code == 200
-        body = resp.json()
+        resp = await _verify(monkeypatch, conn, "000000")
+        body = resp
         assert body["valido"] is False
         assert body["motivo"] == "bloqueado"
         assert body["locked_until"] is not None
@@ -1073,13 +996,14 @@ async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
     OWN ``tenant_slug`` JWT claim — the same source ``/internal/totp/verify``
     uses — not the ``X-Tenant-Slug`` header (which the gateway derives from
     that very claim, but which is a second, independent value once it
-    reaches this service). The bearer's claim ("otro-tenant") deliberately
+    reaches this service). signature pasa a `auth.api.verify_totp` el tenant
+    de la sesión, que es ese mismo claim. The bearer's claim ("otro-tenant") deliberately
     differs from the header ("demo") here: under the old header-sourced
     enroll, this mismatch would make ``verify`` fail to decrypt (``InvalidTag``,
     surfaced as a 500) even though it's the SAME bearer used for both calls.
     """
     claims = {"user_id": "kc-sub", "tenant_slug": "otro-tenant", "username": "operador"}
-    _mock_validate_token(monkeypatch, claims)
+    monkeypatch.setattr("auth.routers.totp.validate_token", AsyncMock(return_value=claims))
 
     captured: dict = {}
 
@@ -1132,24 +1056,18 @@ async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
 
     conn2 = _make_conn()
     conn2.fetchrow.side_effect = [_user_row(), stored_row]
-    _override_internal(conn2)
     try:
-        resp2 = await client.post(
-            "/internal/totp/verify",
-            json={"code": code},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
+        resp2 = await _verify(monkeypatch, conn2, code, tenant="otro-tenant")
     finally:
         _clear()
 
-    assert resp2.status_code == 200
-    body2 = resp2.json()
+    body2 = resp2
     assert body2["valido"] is True
     assert body2["factor_tipo"] == "totp"
 
 
 # ---------------------------------------------------------------------------
-# GET /internal/totp/status — AREA-04-02 / AREA-04-05 (signature-service)
+# auth.api.totp_status — AREA-04-02 / AREA-04-05 (signature)
 # ---------------------------------------------------------------------------
 
 
@@ -1166,126 +1084,44 @@ async def test_internal_totp_status_reports_active_and_owner(
     estado: str,
     activo: bool,
 ) -> None:
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     secret = generate_secret()
     conn.fetchrow.side_effect = [_user_row(), _totp_row(secret=secret, estado=estado)]
     conn.fetchval.return_value = 0  # recovery codes restantes
-    _override_internal(conn)
     try:
-        resp = await client.get(
-            "/internal/totp/status",
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
+        resp = await _status(monkeypatch, conn)
     finally:
         _clear()
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {"activo": activo, "user_id": str(USER_ID)}
+        assert resp == {"activo": activo, "user_id": str(USER_ID)}
 
 
 @pytest.mark.asyncio
 async def test_internal_totp_status_no_configurado(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
 ) -> None:
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     conn.fetchrow.side_effect = [_user_row(), None]
-    _override_internal(conn)
     try:
-        resp = await client.get(
-            "/internal/totp/status",
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
+        resp = await _status(monkeypatch, conn)
     finally:
         _clear()
-    assert resp.status_code == 200
-    assert resp.json() == {"activo": False, "user_id": str(USER_ID)}
+    assert resp == {"activo": False, "user_id": str(USER_ID)}
 
 
 @pytest.mark.asyncio
 async def test_internal_totp_status_unprovisioned_user_is_inactive_without_owner(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
 ) -> None:
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     conn.fetchrow.side_effect = [None]
-    _override_internal(conn)
     try:
-        resp = await client.get(
-            "/internal/totp/status",
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
+        resp = await _status(monkeypatch, conn)
     finally:
         _clear()
-    assert resp.status_code == 200
-    assert resp.json() == {"activo": False, "user_id": None}
+    assert resp == {"activo": False, "user_id": None}
 
 
-@pytest.mark.asyncio
-async def test_internal_totp_status_requires_internal_token(
-    client: AsyncClient, _internal_token: None
-) -> None:
-    conn = _make_conn()
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/totp/status", headers={"Authorization": "Bearer faketoken"}
-        )
-        bad = await client.get(
-            "/internal/totp/status",
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": "otro"},
-        )
-    finally:
-        _clear()
-    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-    assert bad.status_code == 403
 
-
-@pytest.mark.asyncio
-async def test_internal_totp_status_missing_bearer_returns_401_even_with_internal_token(
-    client: AsyncClient, _internal_token: None
-) -> None:
-    """El token de servicio NO sustituye a la identidad: sin bearer no hay dueño."""
-    conn = _make_conn()
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/totp/status", headers={"X-Internal-Token": _STATUS_TOKEN}
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "missing_token"
-    conn.fetchrow.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_internal_totp_status_without_tenant_claim_is_inactive_and_never_touches_db(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
-) -> None:
-    """Fail-closed: sin tenant en el JWT no se adivina schema ni se consulta nada."""
-    _mock_validate_token(monkeypatch, {"user_id": "kc-sub", "username": "operador"})
-    conn = _make_conn()
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/totp/status",
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 200
-    assert resp.json() == {"activo": False, "user_id": None}
-    conn.fetchrow.assert_not_awaited()
-    conn.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1294,9 +1130,6 @@ async def test_internal_verify_invalid_code_does_not_attribute_an_owner(
 ) -> None:
     """``user_id`` solo acompaña a un factor VÁLIDO (AREA-04-05): un código
     incorrecto no debe revelar a quién pertenece el bearer."""
-    _mock_validate_token(
-        monkeypatch, {"user_id": "kc-sub", "tenant_slug": "demo", "username": "operador"}
-    )
     conn = _make_conn()
     secret = generate_secret()
     conn.fetchrow.side_effect = [
@@ -1304,76 +1137,14 @@ async def test_internal_verify_invalid_code_does_not_attribute_an_owner(
         _totp_row(secret=secret, estado="activo", last_timestep=0, failed_attempts=0),
         {"failed_attempts": 1, "locked_until": None},
     ]
-    _override_internal(conn)
     try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "000000"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": _STATUS_TOKEN},
-        )
+        resp = await _verify(monkeypatch, conn, "000000")
     finally:
         _clear()
-    assert resp.status_code == 200
-    body = resp.json()
+    body = resp
     assert body["valido"] is False
     assert body.get("user_id") is None
 
 
-# ---------------------------------------------------------------------------
-# POST /internal/totp/verify — gate D-02 (X-Internal-Token), antes de tocar el bearer
-# ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_internal_verify_without_internal_token_returns_404(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    validate = AsyncMock(return_value={"user_id": "kc-sub", "tenant_slug": "demo"})
-    monkeypatch.setattr("auth.routers.totp.validate_token", validate)
-    _override_internal(_make_conn())
-    try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "123456"},
-            headers={"Authorization": "Bearer faketoken"},
-        )
-        # El middleware oculta la ruta interna antes de cualquier gate.
-        assert resp.status_code == 404
-        assert resp.json()["error"] == "route_not_found"
-        validate.assert_not_called()
-    finally:
-        _clear()
-
-
-@pytest.mark.asyncio
-async def test_internal_verify_wrong_internal_token_returns_403(
-    client: AsyncClient,
-) -> None:
-    _override_internal(_make_conn())
-    try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "123456"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": "otro"},
-        )
-        assert resp.status_code == 403
-        assert resp.json()["detail"]["error"] == "invalid_internal_token"
-    finally:
-        _clear()
-
-
-@pytest.mark.asyncio
-async def test_internal_verify_unconfigured_token_returns_503(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(settings, "signing_key_internal_token", "")
-    _override_internal(_make_conn())
-    try:
-        resp = await client.post(
-            "/internal/totp/verify",
-            json={"code": "123456"},
-            headers={"Authorization": "Bearer faketoken", "X-Internal-Token": "x"},
-        )
-        assert resp.status_code == 503
-    finally:
-        _clear()

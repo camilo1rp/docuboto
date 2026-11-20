@@ -27,7 +27,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from tenant.clients.pasarela import PasarelaError
+from knowledge.api import IntelligenceError
 from tenant.core.database import get_tenant_conn
 from tenant.main import app
 
@@ -139,10 +139,10 @@ async def ctx() -> AsyncGenerator[tuple[Any, ...], None]:
 
     app.dependency_overrides[get_tenant_conn] = override
     with (
-        patch("tenant.clients.pasarela.capacidades", new=capacidades),
-        patch("tenant.clients.pasarela.aceptar", new=aceptar),
-        patch("tenant.clients.pasarela.purgar", new=purgar),
-        patch("tenant.clients.pasarela.inventario", new=inventario),
+        patch("knowledge.api.capabilities", new=capacidades),
+        patch("knowledge.api.accept", new=aceptar),
+        patch("knowledge.api.purge", new=purgar),
+        patch("knowledge.api.inventory", new=inventario),
         patch("tenant.core.audit._audit.append", new=AsyncMock(return_value="h")) as append,
     ):
         transport = ASGITransport(app=app, raise_app_exceptions=False)
@@ -227,8 +227,8 @@ async def test_pasar_a_ppi_habilita_solo_publica_y_asienta(ctx) -> None:
     assert cuerpo["provider"] == "ppi" and cuerpo["levels"] == [1]
     assert cuerpo["send_metadata"] is True and cuerpo["changed"] is True
     assert est.updates == [("demo", "ppi", [1], True)]
-    assert capacidades.await_args.args == ("demo",)
-    assert aceptar.await_args.args == ("demo", 1, SHA)
+    assert capacidades.await_args.kwargs == {"tenant_slug": "demo"}
+    assert aceptar.await_args.kwargs == {"tenant_slug": "demo", "level": 1, "sha256": SHA}
     assert _acciones(client) == [
         "tenant.intelligence_changed",
         "tenant.intelligence_metadata_changed",
@@ -283,7 +283,7 @@ async def test_el_mismo_valor_no_es_un_acto(ctx) -> None:
 @pytest.mark.asyncio
 async def test_si_la_pasarela_no_registra_el_cambio_de_columna_sigue(ctx) -> None:
     client, est, _capacidades, aceptar, _purgar = ctx
-    aceptar.side_effect = PasarelaError(503, "pasarela_no_disponible")
+    aceptar.side_effect = IntelligenceError(503, "pasarela_no_disponible")
     resp = await client.put(
         URL, json={"provider": "ppi", "transmission_statement": TEXTO}, headers=_HDRS
     )
@@ -303,7 +303,7 @@ async def test_habilitar_reservada_nombra_la_ruta_de_ese_nivel(ctx) -> None:
     )
     assert resp.status_code == 200
     assert resp.json()["levels"] == [1, 2]
-    assert aceptar.await_args.args == ("demo", 2, SHA)
+    assert aceptar.await_args.kwargs == {"tenant_slug": "demo", "level": 2, "sha256": SHA}
     assert purgar.await_count == 0
     asiento = client.audit_append.await_args.kwargs["payload"]  # type: ignore[attr-defined]
     assert asiento["level"] == 2 and asiento["despues"] is True
@@ -358,7 +358,7 @@ async def test_retirar_asienta_solo_si_el_proveedor_acepta(ctx) -> None:
     assert purgar.await_args.kwargs["reason"] == "withdrawn"
     assert _acciones(client) == ["tenant.intelligence_withdrawn"]
     assert est.updates == []
-    purgar.side_effect = PasarelaError(503, "pasarela_no_disponible")
+    purgar.side_effect = IntelligenceError(503, "pasarela_no_disponible")
     resp = await client.post(f"{URL}/withdraw", headers=_HDRS)
     assert resp.status_code == 502
     assert _acciones(client) == ["tenant.intelligence_withdrawn"]
@@ -394,7 +394,7 @@ async def test_capabilities_nombra_proveedor_y_rutas(ctx) -> None:
 @pytest.mark.asyncio
 async def test_capabilities_caida_no_inventa_nombres(ctx) -> None:
     client, *_ = ctx
-    client.capacidades.side_effect = PasarelaError(  # type: ignore[attr-defined]
+    client.capacidades.side_effect = IntelligenceError(  # type: ignore[attr-defined]
         503, "pasarela_no_disponible"
     )
     resp = await client.get(f"{URL}/capabilities", headers=_HDRS)
@@ -417,7 +417,7 @@ async def test_inventario_en_local_cuenta_radicados(ctx) -> None:
 @pytest.mark.asyncio
 async def test_inventario_ilegible_no_dice_cero(ctx) -> None:
     client, *_ = ctx
-    client.inventario.side_effect = PasarelaError(  # type: ignore[attr-defined]
+    client.inventario.side_effect = IntelligenceError(  # type: ignore[attr-defined]
         503, "pasarela_no_disponible"
     )
     resp = await client.get(f"{URL}/inventory", headers=_HDRS)

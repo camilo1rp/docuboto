@@ -28,11 +28,11 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from document.clients import storage_client
-from document.clients.storage_client import ResultadoPurga, StorageContentError
 from document.core.database import tenant_schema
 from document.services.import_huerfanos_service import ImportHuerfanosService
 from document.services.import_service import ImportService
+from storage import api as storage_api
+from storage.api import PurgaHuerfano, StorageError
 from tests.document.test_import import _pkg
 
 pytestmark = pytest.mark.integration
@@ -50,8 +50,8 @@ class _Storage:
     async def purgar(self, **kw):
         self.pedidos.append(kw)
         if self.cae:
-            raise StorageContentError("storage-service inalcanzable")
-        return [ResultadoPurga(f, self.resultado) for f in kw["file_ids"]]
+            raise StorageError("storage-service inalcanzable")
+        return [PurgaHuerfano(f, self.resultado) for f in kw["file_ids"]]
 
 
 async def _importar_que_falla(conn, slug, storage: _Storage) -> uuid.UUID:
@@ -59,12 +59,12 @@ async def _importar_que_falla(conn, slug, storage: _Storage) -> uuid.UUID:
     subido = uuid.uuid4()
     with (
         patch(
-            "document.services.import_service.storage_client.upload_bytes",
-            new=AsyncMock(return_value=storage_client.ArchivoSubido(file_id=subido, sha256="a" * 64)),
+            "document.services.import_service.storage_api.upload_file",
+            new=AsyncMock(return_value=storage_api.UploadedFile(file_id=subido, sha256="a" * 64)),
         ),
         patch("document.services.import_service.ImportRepository.insert_radicado",
               new=AsyncMock(side_effect=RuntimeError("falla de BD"))),
-        patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=storage.purgar),
+        patch("document.services.import_huerfanos_service.storage_api.purge_orphans", new=storage.purgar),
     ):
         with pytest.raises(RuntimeError):
             await ImportService(conn, slug).import_package(
@@ -127,14 +127,14 @@ async def test_si_storage_cae_queda_pendiente_con_su_asiento_y_el_barrido_la_rec
 
     # El barrido, con storage ya disponible, la resuelve.
     st = _Storage("purgado")
-    with patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=st.purgar):
+    with patch("document.services.import_huerfanos_service.storage_api.purge_orphans", new=st.purgar):
         resultado = await ImportHuerfanosService(conn, slug).purgar()
     assert resultado == {"purgado": 1}
     assert (await _estado(conn, fid))["estado"] == "purgado"
     assert (await _acciones(conn, slug))[-1] == "document.import_binarios_purgados"
     # Y una segunda pasada no vuelve a pedir nada ni duplica el asiento.
     st2 = _Storage("purgado")
-    with patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos", new=st2.purgar):
+    with patch("document.services.import_huerfanos_service.storage_api.purge_orphans", new=st2.purgar):
         assert await ImportHuerfanosService(conn, slug).purgar() == {}
     assert st2.pedidos == []
     assert (await _acciones(conn, slug)).count("document.import_binarios_purgados") == 1
@@ -169,7 +169,7 @@ async def test_agotados_los_reintentos_pasa_a_agotado_para_revision(ctx) -> None
     fid = await _importar_que_falla(conn, slug, _Storage(cae=True))
     for _ in range(3):
         with (
-            patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos",
+            patch("document.services.import_huerfanos_service.storage_api.purge_orphans",
                   new=_Storage(cae=True).purgar),
             patch("document.services.import_huerfanos_service.settings.purga_huerfanos_max_intentos", 3),
         ):
@@ -198,7 +198,7 @@ async def test_si_falla_el_asiento_de_agotado_la_fila_no_pasa_a_agotado(ctx) -> 
     slug, conn = ctx
     fid = await _importar_que_falla(conn, slug, _Storage(cae=True))
     with (
-        patch("document.services.import_huerfanos_service.storage_client.purgar_huerfanos",
+        patch("document.services.import_huerfanos_service.storage_api.purge_orphans",
               new=_Storage(cae=True).purgar),
         patch("document.services.import_huerfanos_service.settings.purga_huerfanos_max_intentos", 2),
         patch("document.services.import_huerfanos_service.audit.append",

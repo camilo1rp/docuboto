@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from document.clients import storage_client
+from storage import api as storage_api
 from tests.document.conftest import TENANT_HEADERS
 
 _USER = str(uuid.uuid4())
@@ -50,7 +50,7 @@ def _storage_devuelve(monkeypatch, huella: str | None) -> None:
     async def _f(*, tenant_slug, file_id):
         return huella
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _f)
+    monkeypatch.setattr(storage_api, "get_file_sha256", _f)
 
 
 @pytest.mark.asyncio
@@ -106,9 +106,9 @@ async def test_sin_anexo_no_hay_de_donde_sacar_la_huella(client_with_conn) -> No
 @pytest.mark.asyncio
 async def test_storage_caido_no_firma(client_with_conn, monkeypatch) -> None:
     async def _cae(*, tenant_slug, file_id):
-        raise storage_client.StorageContentError("caído")
+        raise storage_api.StorageError("caído")
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _cae)
+    monkeypatch.setattr(storage_api, "get_file_sha256", _cae)
     client, mock_conn = client_with_conn
     mock_conn.fetchval.side_effect = [True, uuid.uuid4()]
     mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}]

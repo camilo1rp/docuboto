@@ -43,7 +43,6 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
-from archive.clients import storage_client
 from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.disposition import CT_DISPOSITION_CODES
@@ -60,6 +59,7 @@ from archive.schemas.retencion_legal import (
 )
 from archive.services.backoff import next_backoff_seconds
 from archive.services.retention_math import RetencionDiferida, total_trd_years
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,7 @@ class ValoracionService:
             return None
 
         try:
-            res = await storage_client.fijar_legal_hold(
+            res = await storage_api.set_legal_hold(
                 tenant_slug=self._tenant_slug,
                 actor_id=None,
                 expediente_id=str(exp.id),
@@ -138,7 +138,7 @@ class ValoracionService:
                 ),
                 acta_ref=f"TVD {serie.code} v{serie.version}",
             )
-        except storage_client.StorageLegalHoldError as exc:
+        except storage_api.StorageLegalHoldError as exc:
             raise ValoracionHoldError(f"hold no fijado: {exc} ({exc.code})") from exc
         async with self._conn.transaction():
             row = await self._repo.insert_hold(
@@ -337,7 +337,7 @@ class ValoracionService:
                     return await self._fallo(fila, "trd_sin_retencion")
                 # PRIMERO la retención, DESPUÉS el levantamiento: invertir el orden y fallar el
                 # segundo paso dejaría el contenido sin ninguna protección.
-                fijada = await storage_client.fijar_retencion_internal(
+                fijada = await storage_api.set_deferred_retention(
                     tenant_slug=self._tenant_slug,
                     expediente_id=str(expediente_id),
                     retencion_anios=total,
@@ -349,7 +349,7 @@ class ValoracionService:
                         expediente_id, datetime.fromisoformat(str(retain_until))
                     )
             try:
-                levantado = await storage_client.levantar_legal_hold(
+                levantado = await storage_api.lift_legal_hold(
                     tenant_slug=self._tenant_slug,
                     actor_id=None,
                     hold_id=fila["hold_id"],
@@ -360,12 +360,12 @@ class ValoracionService:
                     ),
                     acta_ref=fila["acta_comite"],
                 )
-            except storage_client.StorageLegalHoldError as exc:
+            except storage_api.StorageLegalHoldError as exc:
                 if exc.status == 409 and exc.code == "hold_ya_levantado":
                     levantado = {"objetos_liberados_s3": 0, "holds_restantes": -1}
                 else:
                     raise
-        except storage_client.StorageLegalHoldError as exc:
+        except storage_api.StorageLegalHoldError as exc:
             return await self._fallo(fila, f"storage:{exc.status}:{exc.code or 'sin_codigo'}")
 
         resultado = "retencion_ct" if conserva else "sin_retencion"

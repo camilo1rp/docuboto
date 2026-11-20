@@ -27,9 +27,9 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
+from auth.api import AuthUnavailableError
 from signature.core import params_entidad
 from signature.core.config import settings
-from signature.core.http_clients import SigningKeyStatusUnavailableError
 from tests.signature.conftest import USER as USER_ID
 from tests.signature.test_cadena import _exec_sig, _make_conn, _sol_row, _turno_row
 from tests.signature.test_cadena_2fa import _patch_audit
@@ -131,7 +131,7 @@ async def test_entidad_clasificados_con_canal_caido_en_nivel_2_falla_cerrado_503
     monkeypatch.setattr(settings, "firma_personal_require_xades", "off")
     _con_entidad(monkeypatch, "clasificados")
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
 
@@ -188,7 +188,7 @@ async def test_entidad_off_conserva_la_degradacion_con_su_asiento_aunque_el_ento
     monkeypatch.setattr(settings, "firma_2fa_required", False)
     _con_entidad(monkeypatch, "off")
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
 
@@ -220,7 +220,7 @@ async def test_sin_parametro_de_la_entidad_manda_el_entorno(
     monkeypatch.setattr(settings, "firma_personal_require_xades", "clasificados")
     _con_entidad(monkeypatch, None)
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     conn = _make_conn()
     turno = _turno_row(orden=1, firmante_id=USER_ID, estado="pendiente")
@@ -273,7 +273,7 @@ async def test_entidad_todos_en_nivel_1_con_canal_caido_es_503(
     monkeypatch.setattr(settings, "firma_personal_require_xades", "off")
     _con_entidad(monkeypatch, "todos")
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     conn = _make_conn()
     turno = _turno_row(orden=1, firmante_id=USER_ID, estado="pendiente")

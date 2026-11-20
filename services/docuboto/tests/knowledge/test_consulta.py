@@ -302,7 +302,7 @@ async def test_search_publica_el_origen_cuando_delega(
         raise AssertionError("no debía ir al índice local")
 
     monkeypatch.setattr(rutas.consulta, "buscar", delega)
-    monkeypatch.setattr(rutas.document_search, "search", prohibido)
+    monkeypatch.setattr(rutas.document_api, "search", prohibido)
 
     resp = await client.post(
         "/api/v1/knowledge/search",

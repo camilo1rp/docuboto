@@ -55,7 +55,7 @@ async def test_verify_reporta_acreditado_desde_lo_persistido(signature_env) -> N
     client, conn, table, uploads, install_seal, _ = signature_env
     install_seal(_sello(*_generate_cert("sello-acreditado"), acreditado=True))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["nivel_conformidad"] == "xades_b_acreditado"
@@ -77,7 +77,7 @@ async def test_verify_sello_no_acreditado_sigue_en_false(signature_env) -> None:
     """Control negativo: sello sin acreditación -> False, aunque valide."""
     client, conn, table, uploads, install_seal, _ = signature_env
     install_seal(_sello(*_generate_cert("sello-dev"), acreditado=False))
-    body = (await _sign_indice(client)).json()
+    body = (await _sign_indice(conn)).json()
     v = await _verify(client, body["firma_id"], uploads[0]["content"].decode())
     assert v.json()["valida"] is True
     assert v.json()["acreditado"] is False
@@ -93,7 +93,7 @@ async def test_firma_alterada_no_es_acreditada_aunque_la_fila_lo_diga(
     False. Una firma que no valida no acredita nada."""
     client, conn, table, uploads, install_seal, _ = signature_env
     install_seal(_sello(*_generate_cert("sello-acreditado-2"), acreditado=True))
-    body = (await _sign_indice(client)).json()
+    body = (await _sign_indice(conn)).json()
     firmado = uploads[0]["content"].decode()
     # Fila anterior a la migración 010 (sin `signed_xml_sha256`): sin ese atajo,
     # el XML alterado lo corta el cotejo de huella ANTES de la criptografía y el
@@ -121,7 +121,7 @@ async def test_verify_pasa_el_certificado_firmante_al_sello_de_tiempo(
 
     client, conn, table, uploads, install_seal, _ = signature_env
     install_seal(_sello(*_generate_cert("sello-t"), acreditado=False))
-    body = (await _sign_indice(client)).json()
+    body = (await _sign_indice(conn)).json()
 
     vistos: list[dict] = []
     real = tsa_module.verify_timestamp_token

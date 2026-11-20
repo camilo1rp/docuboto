@@ -9,8 +9,9 @@
 
 """La pasarela en modo `local` (ADR-046, fase D0): texto completo, sin generación.
 
-document-service se simula con un ``httpx.MockTransport``: así se prueba también el
-cliente (ruta, parámetros, identidad reenviada) y no solo el mapeo de la respuesta.
+`document.api.search` se sustituye por un doble que anota con qué se le llamó: así
+se prueba también qué pide la pasarela (texto, tamaño, tenant, actor) y no solo el
+mapeo de la respuesta.
 """
 
 from __future__ import annotations
@@ -18,10 +19,9 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 
-import httpx
 import pytest
 
-from knowledge.clients import document_search
+from document import api as document_api
 from knowledge.routers.knowledge import ANTECEDENTES_ADVISORY
 from tests.knowledge.conftest import TENANT_HEADERS
 
@@ -45,32 +45,24 @@ def _hit(tracking: str, subject: str, *, rank: float = 0.5) -> dict:
 
 
 @pytest.fixture
-def document_service(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[httpx.Request]]:
-    """Instala un document-service simulado; devuelve las peticiones que recibió."""
-    recibidas: list[httpx.Request] = []
+def document_service(monkeypatch: pytest.MonkeyPatch) -> Callable[..., list[dict]]:
+    """Instala un `document.api.search` simulado; devuelve con qué se le llamó."""
 
-    def instalar(responder: Callable[[httpx.Request], httpx.Response]) -> list[httpx.Request]:
-        def handler(req: httpx.Request) -> httpx.Response:
-            recibidas.append(req)
-            return responder(req)
+    def instalar(responder: Callable[[dict], list[dict]]) -> list[dict]:
+        recibidas: list[dict] = []
 
-        real = httpx.AsyncClient
+        async def search(**kwargs) -> list[dict]:
+            recibidas.append(kwargs)
+            return responder(kwargs)
 
-        def cliente(*args, **kwargs):
-            return real(*args, transport=httpx.MockTransport(handler), **kwargs)
-
-        monkeypatch.setattr(document_search.httpx, "AsyncClient", cliente)
+        monkeypatch.setattr(document_api, "search", search)
         return recibidas
 
     return instalar
 
 
-def _por_q(respuestas: dict[str, list[dict]]) -> Callable[[httpx.Request], httpx.Response]:
-    def responder(req: httpx.Request) -> httpx.Response:
-        hits = respuestas.get(req.url.params["q"], [])
-        return httpx.Response(200, json={"query": None, "total": len(hits), "hits": hits, "page": 1, "size": 20})
-
-    return responder
+def _por_q(respuestas: dict[str, list[dict]]) -> Callable[[dict], list[dict]]:
+    return lambda pedido: respuestas.get(pedido["q"], [])
 
 
 # --- /search ------------------------------------------------------------------
@@ -96,38 +88,24 @@ async def test_search_consulta_document_service_como_el_usuario(client_with_conn
     assert hit["metadata"]["doc_type"] == "E"
 
     [req] = recibidas
-    assert req.method == "GET"
-    assert req.url.path == "/api/v1/search"
-    assert req.url.params["q"] == "contrato obra"
-    assert req.url.params["size"] == "7"
-    # Como el usuario: viaja su Bearer, no una cabecera de identidad que nadie firma.
-    assert req.headers["Authorization"] == "Bearer jwt-del-usuario"
-    assert "X-User-Id" not in req.headers
-    assert req.headers["X-Tenant-Slug"] == "demo"
+    assert req["q"] == "contrato obra"
+    assert req["size"] == 7
+    # Como el usuario: su identidad, la que resolvió el middleware.
+    assert str(req["actor"]) == TENANT_HEADERS["X-User-Id"]
+    assert req["tenant_slug"] == "demo"
 
 
-@pytest.mark.parametrize("respuesta", [httpx.Response(500), httpx.Response(200, json={"x": 1})])
-async def test_search_sin_document_service_es_503_no_una_lista_vacia(
-    client_with_conn, document_service, respuesta
-) -> None:
+async def test_search_sin_document_es_503_no_una_lista_vacia(client_with_conn, document_service) -> None:
     client, _ = client_with_conn
-    document_service(lambda _req: respuesta)
 
+    def caido(_pedido: dict) -> list[dict]:
+        raise document_api.DocumentUnavailableError("caída")
+
+    document_service(caido)
     resp = await client.post("/api/v1/knowledge/search", json={"query": "contrato"}, headers=TENANT_HEADERS)
 
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "search_unavailable"
-
-
-async def test_search_inalcanzable_es_503(client_with_conn, document_service) -> None:
-    client, _ = client_with_conn
-
-    def caido(_req: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("sin red")
-
-    document_service(caido)
-    resp = await client.post("/api/v1/knowledge/search", json={"query": "contrato"}, headers=TENANT_HEADERS)
-    assert resp.status_code == 503
 
 
 # --- /antecedentes ----------------------------------------------------------------
@@ -164,8 +142,8 @@ async def test_antecedentes_por_radicado_busca_por_su_asunto_y_lo_excluye(
     assert resp.status_code == 200, resp.text
     refs = [a["source_ref"] for a in resp.json()["antecedentes"]]
     assert refs == ["2026-E-1", "2026-E-2"]
-    assert [r.url.params["q"] for r in recibidas] == ["2026-E-9", consulta]
-    assert recibidas[1].url.params["size"] == "3"
+    assert [r["q"] for r in recibidas] == ["2026-E-9", consulta]
+    assert recibidas[1]["size"] == 3
 
 
 async def test_antecedentes_de_un_radicado_invisible_es_404_neutro(client_with_conn, document_service) -> None:

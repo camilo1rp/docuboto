@@ -30,13 +30,6 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from archive.clients.document_client import DocumentClientError
-from archive.clients.signature_client import (
-    SignedIndice,
-    SignOutcome,
-    SignPersonalOutcome,
-    VerifyResult,
-)
 from archive.core.actor import Actor
 from archive.schemas.transferencia import FirmaInobtenibleRequest, RevocarFirmaInobtenibleRequest
 from archive.services.constancia_firma_excepcion import (
@@ -46,6 +39,13 @@ from archive.services.constancia_firma_excepcion import (
     sha256_hex,
 )
 from archive.services.transferencia_service import TransferenciaService
+from document.api import DocumentUnavailableError
+from signature.api import (
+    SignedIndice,
+    SignOutcome,
+    SignPersonalOutcome,
+    VerifyResult,
+)
 from tests.archive.conftest import TENANT_HEADERS, USER_ID, make_expediente_record
 from tests.archive.test_transferencia_acta_firma_personal import _personal_row, _signed_personal
 from tests.archive.test_transferencias import _acta_firma_row, _acta_row, _transfer_row
@@ -252,7 +252,7 @@ def _externos(
         {str(RAD): {"subject": "x", "tracking_number": NUMERO_RAD}} if radicado_visible else {}
     )
     meta = (
-        AsyncMock(side_effect=DocumentClientError("caído"))
+        AsyncMock(side_effect=DocumentUnavailableError("caído"))
         if doc_caido
         else AsyncMock(return_value=visibles)
     )
@@ -261,9 +261,9 @@ def _externos(
             "archive.services.transferencia_service.check_permission",
             new=AsyncMock(return_value=firma_ok),
         ),
-        patch("archive.clients.document_client.fetch_radicado_metadata_internal", new=meta),
+        patch("document.api.fetch_radicado_metadata", new=meta),
         patch(
-            "archive.clients.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(
                 return_value=anexos
                 if anexos is not None
@@ -271,14 +271,14 @@ def _externos(
             ),
         ),
         patch(
-            "archive.clients.storage_client.fetch_file_hashes_internal",
+            "storage.api.get_file_hashes",
             new=AsyncMock(return_value={str(ANEXO): huella_anexo} if huella_anexo else {}),
         ),
         patch(
-            "archive.clients.signature_client.sign_xml_outcome", new=AsyncMock(return_value=sello)
+            "signature.api.sign_xml_outcome", new=AsyncMock(return_value=sello)
         ) as sign_xml,
         patch(
-            "archive.clients.signature_client.sign_personal",
+            "signature.api.sign_personal",
             new=AsyncMock(return_value=personal or SignPersonalOutcome(signed=_signed_personal())),
         ) as sign_pers,
         patch(
@@ -446,13 +446,13 @@ async def test_con_totp_y_credencial_el_declarante_tambien_firma_y_se_protegen_l
 
     with _externos(personal=SignPersonalOutcome(signed=pers)) as (sign_xml, sign_pers, worm):
         resp = await TransferenciaService(conn, TENANT).declarar_firma_inobtenible(
-            tid, Actor(id=ADMIN), _payload(totp_code="123456"), "Bearer tk"
+            tid, Actor(id=ADMIN), _payload(totp_code="123456")
         )
 
     assert resp.firma_personal is True
     kw = sign_pers.await_args.kwargs
     assert kw["payload_xml"] == sign_xml.await_args_list[0].kwargs["payload_xml"]  # los mismos bytes
-    assert kw["totp_code"] == "123456" and kw["authorization"] == "Bearer tk"
+    assert kw["totp_code"] == "123456" and "authorization" not in kw
     assert kw["firmante_id"] == str(ADMIN)
     artefactos = [c.args[1] for c in worm.await_args_list]
     assert artefactos == ["sello", "personal", "sobre"]
@@ -620,7 +620,7 @@ async def test_con_certificado_activo_el_declarante_siempre_firma_personalmente(
     _secuencia(conn, tid, exp_id, final=[None, None, fila])
     with _externos(personal=SignPersonalOutcome(signed=pers)) as (sign_xml, sign_pers, _w):
         await TransferenciaService(conn, TENANT).declarar_firma_inobtenible(
-            tid, Actor(id=ADMIN), _payload(totp_code="123456"), "Bearer tk"
+            tid, Actor(id=ADMIN), _payload(totp_code="123456")
         )
     sign_pers.assert_awaited_once()
     xml = sign_xml.await_args_list[0].kwargs["payload_xml"]
@@ -782,14 +782,14 @@ async def test_el_soporte_se_resuelve_con_el_clearance_del_declarante() -> None:
             "archive.repositories.archive_repository.ArchiveRepository.caller_clearance",
             new=AsyncMock(return_value=2),
         ):
-            from archive.clients import document_client
+            from document import api as document_api
 
             await TransferenciaService(conn, TENANT).declarar_firma_inobtenible(
                 tid, Actor(id=ADMIN), _payload(referencia_anexo_id=ANEXO)
             )
-            meta = document_client.fetch_radicado_metadata_internal
+            meta = document_api.fetch_radicado_metadata
             assert meta.await_args.kwargs["max_clearance"] == 2
-            assert document_client.fetch_anexos_internal.await_args.kwargs["max_clearance"] == 2
+            assert document_api.fetch_anexos.await_args.kwargs["max_clearance"] == 2
     assert f"radicado:{RAD}#anexo:{ANEXO}" in _insert_excepcion(conn).args
 
 
@@ -1153,10 +1153,10 @@ async def test_quien_revoca_con_certificado_activo_firma_personalmente() -> None
     _secuencia(conn, tid, exp_id, final=[previa, rev])
     with _externos(personal=SignPersonalOutcome(signed=pers)) as (sign_xml, sign_pers, _w):
         resp = await TransferenciaService(conn, TENANT).revocar_firma_inobtenible(
-            tid, Actor(id=ADMIN), _revocar_payload(totp_code="123456"), "Bearer tk"
+            tid, Actor(id=ADMIN), _revocar_payload(totp_code="123456")
         )
     assert sign_pers.await_args.kwargs["payload_xml"] == sign_xml.await_args_list[0].kwargs["payload_xml"]
-    assert sign_pers.await_args.kwargs["authorization"] == "Bearer tk"
+    assert "authorization" not in sign_pers.await_args.kwargs
     assert resp.revocacion_firma_personal is True and resp.revocante_nombre == "Ana Admin"
     worm_inserts = [
         c.args[2] for c in conn.execute.call_args_list
@@ -1220,10 +1220,10 @@ async def test_una_parte_con_excepcion_no_firma_y_no_quema_el_totp() -> None:
         None,  # sin firma previa
         _excepcion_row(tid, parte_id=USER_ID),  # pero con excepción VIGENTE declarada
     ]
-    with patch("archive.clients.signature_client.sign_personal", new=AsyncMock()) as sign:
+    with patch("signature.api.sign_personal", new=AsyncMock()) as sign:
         with pytest.raises(Exception) as exc:
             await TransferenciaService(conn, TENANT).firmar_personal(
-                tid, Actor(id=USER_ID), "123456", "Bearer x"
+                tid, Actor(id=USER_ID), "123456"
             )
     assert exc.value.status_code == 409 and exc.value.detail["error"] == "firma_excepcion_declarada"
     sign.assert_not_awaited()
@@ -1261,11 +1261,11 @@ async def test_una_excepcion_revocada_en_la_historia_no_impide_firmar() -> None:
         _personal_row(transferencia_id=tid, firmante_id=USER_ID),
     ]
     with patch(
-        "archive.clients.signature_client.sign_personal",
+        "signature.api.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ) as sign:
         await TransferenciaService(conn, TENANT).firmar_personal(
-            tid, Actor(id=USER_ID), "123456", "Bearer x"
+            tid, Actor(id=USER_ID), "123456"
         )
     sign.assert_awaited_once()
 
@@ -1286,12 +1286,12 @@ async def test_carrera_la_firma_pierde_ante_la_excepcion_y_se_dice_409() -> None
         asyncpg.CheckViolationError("excepción declarada"),
     ]
     with patch(
-        "archive.clients.signature_client.sign_personal",
+        "signature.api.sign_personal",
         new=AsyncMock(return_value=SignPersonalOutcome(signed=_signed_personal())),
     ):
         with pytest.raises(Exception) as exc:
             await TransferenciaService(conn, TENANT).firmar_personal(
-                tid, Actor(id=USER_ID), "123456", "Bearer x"
+                tid, Actor(id=USER_ID), "123456"
             )
     assert exc.value.status_code == 409 and exc.value.detail["error"] == "firma_excepcion_declarada"
 
@@ -1358,12 +1358,12 @@ async def _verificar(
 
     with (
         patch(
-            "archive.clients.storage_client.download_signed_xml",
+            "storage.api.read_signed_xml",
             new=descarga or AsyncMock(return_value="<xml/>"),
         ),
-        patch("archive.clients.signature_client.verify", new=_verify),
+        patch("signature.api.verify", new=_verify),
         patch(
-            "archive.clients.document_client.fetch_radicado_metadata_internal",
+            "document.api.fetch_radicado_metadata",
             new=AsyncMock(
                 return_value=visibles
                 if visibles is not None
@@ -1483,8 +1483,8 @@ async def test_una_constancia_legada_sin_firma_se_declara_y_no_se_da_por_valida(
     ]
     ok = VerifyResult(valida=True, nivel_conformidad="x", acreditado=False, motivo=None)
     with (
-        patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<xml/>")),
-        patch("archive.clients.signature_client.verify", new=AsyncMock(return_value=ok)),
+        patch("storage.api.read_signed_xml", new=AsyncMock(return_value="<xml/>")),
+        patch("signature.api.verify", new=AsyncMock(return_value=ok)),
         patch("archive.services.transferencia_service.check_permission", new=AsyncMock(return_value=False)),
     ):
         res = await TransferenciaService(conn, TENANT).acta_verificacion(tid, USER_ID)
@@ -1538,7 +1538,7 @@ async def test_get_acta_nunca_devuelve_el_fundamento_ni_la_sal_ni_asienta_lectur
             new=AsyncMock(return_value=puede_ver),
         ) as cp,
         patch(
-            "archive.clients.document_client.fetch_radicado_metadata_internal",
+            "document.api.fetch_radicado_metadata",
             new=AsyncMock(return_value={str(RAD): {"tracking_number": NUMERO_RAD}}),
         ),
     ):
@@ -1564,7 +1564,7 @@ async def test_un_lector_anonimo_nunca_ve_el_fundamento() -> None:
     ]
     conn.fetch.side_effect = [[], [_excepcion_row(tid)]]
     with patch(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         new=AsyncMock(return_value={}),  # el anónimo no ve el radicado de soporte
     ):
         res = await TransferenciaService(conn, TENANT).acta(tid, None)
@@ -1620,8 +1620,8 @@ async def _verificar_con_meta_caido():
     conn.fetch.side_effect = [[], [_excepcion_row(tid)]]
     with (
         patch(
-            "archive.clients.document_client.fetch_radicado_metadata_internal",
-            new=AsyncMock(side_effect=DocumentClientError("caído")),
+            "document.api.fetch_radicado_metadata",
+            new=AsyncMock(side_effect=DocumentUnavailableError("caído")),
         ),
         patch("archive.services.transferencia_service.check_permission", new=AsyncMock(return_value=False)),
     ):
@@ -1720,4 +1720,4 @@ async def test_el_router_devuelve_201_con_la_constancia_y_reenvia_el_bearer(
     assert resp.json()["rol"] == "recibe" and resp.json()["motivo"] == "fallecimiento"
     assert resp.json()["fundamento_compromiso"] == COMPROMISO and "fundamento_sha256" not in resp.json()
     assert "fundamento_hmac" not in resp.json()
-    assert sign_pers.await_args.kwargs["authorization"] == "Bearer abc"
+    assert "authorization" not in sign_pers.await_args.kwargs

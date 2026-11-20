@@ -25,10 +25,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from archive.clients.storage_client import AipPackagingOutcome, WormProtectionOutcome
 from archive.services.index_service import IndexService
 from archive.services.retention_math import RetencionDiferida
 from archive.services.valoracion_service import ValoracionHoldError
+from storage.api import AipPackagingOutcome, WormProtectionOutcome
 from tests.archive.conftest import USER_ID
 from tests.archive.test_aip_wiring_service import _mock_conn as _aip_conn
 from tests.archive.test_aip_wiring_service_pdfa_profile import (
@@ -56,13 +56,13 @@ async def _proteger_indice(resolver_value=None, *, side_effect=None):
     index._index.bump_worm_reconcile_intento = AsyncMock()
     with (
         patch(
-            "archive.clients.storage_client.proteger_indice_worm",
+            "storage.api.protect_index",
             new=AsyncMock(
                 return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4())
             ),
         ) as publico,
         patch(
-            "archive.clients.storage_client.proteger_indice_worm_internal",
+            "storage.api.protect_index_as_system",
             new=AsyncMock(
                 return_value=WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4())
             ),
@@ -129,7 +129,7 @@ async def _empaquetar(retention):
     service._aip.bump_intento = AsyncMock()
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(
                 return_value={
                     str(radicado.radicado_id): [{"file_id": str(uuid.uuid4()), "filename": "o.pdf"}]
@@ -137,7 +137,7 @@ async def _empaquetar(retention):
             ),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as storage,
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),

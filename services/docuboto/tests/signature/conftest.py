@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -63,6 +64,56 @@ def _make_mock_conn() -> AsyncMock:
     # audit.append uses `async with conn.transaction():` then conn.execute (INSERT).
     conn.transaction = MagicMock(return_value=AsyncMock())
     return conn
+
+
+def en_proceso(monkeypatch: pytest.MonkeyPatch, conn: AsyncMock) -> None:
+    """`signature.api` abre su propia conexión al tenant; en estas suites, la del doble."""
+
+    @asynccontextmanager
+    async def _conn(*_a: object, **_k: object) -> AsyncIterator[AsyncMock]:
+        yield conn
+
+    monkeypatch.setattr("signature.api._tenant_conn", _conn)
+
+
+class SelloRespuesta:
+    """Forma de respuesta del sello institucional: código y cuerpo, como la vieja ruta."""
+
+    def __init__(self, status_code: int, body: dict) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def json(self) -> dict:
+        return self._body
+
+
+async def sellar(
+    conn: AsyncMock, body: dict, *, tenant_slug: str = "demo", actor: uuid.UUID = USER
+) -> SelloRespuesta:
+    """Sello institucional directo al servicio (``signing_service.sign_payload``).
+
+    Ya no tiene ruta HTTP (ADR-047 §1): estas suites ejercen lo que hace el sello,
+    no un transporte. El gate de quién lo pide vive en ``test_sign_xml_sello_no_es_publico.py``.
+    """
+    from fastapi import HTTPException
+    from pydantic import ValidationError
+
+    from signature.schemas.firma import SignXmlRequest
+    from signature.services import signing_service
+
+    try:
+        firma = await signing_service.sign_payload(
+            conn=conn,
+            tenant_slug=tenant_slug,
+            payload=SignXmlRequest(**body),
+            firmante_id=actor,
+            origen="manual",
+        )
+    except ValidationError as exc:
+        return SelloRespuesta(422, {"detail": exc.errors(include_url=False)})
+    except HTTPException as exc:
+        return SelloRespuesta(exc.status_code, {"detail": exc.detail})
+    return SelloRespuesta(201, firma.model_dump(mode="json"))
 
 
 @pytest_asyncio.fixture
@@ -128,7 +179,7 @@ def _productores_de_huella_por_defecto(monkeypatch: pytest.MonkeyPatch) -> dict[
 
 @pytest.fixture(autouse=True)
 def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    """Doble por defecto de ``GET /internal/totp/status`` (auth-service).
+    """Doble por defecto de ``auth.api.totp_status``.
 
     El OTP-correo en un acto de nivel >= 2 consulta si el actor ya tiene TOTP
     activo (AREA-04-02). La respuesta tiene la FORMA REAL del contrato
@@ -137,7 +188,7 @@ def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncM
     tests que ejercen el veto o la incoherencia de identidad lo sustituyen.
     """
     mock = AsyncMock(return_value={"activo": False, "user_id": str(USER)})
-    monkeypatch.setattr("signature.services.cadena_service.get_totp_status_remote", mock)
+    monkeypatch.setattr("auth.api.totp_status", mock)
     return mock
 
 
@@ -145,15 +196,15 @@ def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncM
 def _estado_de_credencial_personal_sin_clave_por_defecto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncMock:
-    """Doble por defecto de ``GET /internal/signing-key/status`` (auth-service).
+    """Doble por defecto de ``auth.api.signing_key_status``.
 
-    ``firmar`` y ``/challenge`` consultan la credencial personal del actor con el
-    ``Authorization`` reenviado. Sin red en estas suites, el actor «no tiene
+    ``firmar`` y ``/challenge`` consultan la credencial personal del actor. Sin BD
+    de auth en estas suites, el actor «no tiene
     certificado» (``sin_clave``): es el caso de la firma nativa por OTP. Los tests
     de la firma personal y del gate XAdES lo sustituyen.
     """
     mock = AsyncMock(return_value={"estado": "sin_clave"})
-    monkeypatch.setattr("signature.services.cadena_service.get_signing_key_status_remote", mock)
+    monkeypatch.setattr("auth.api.signing_key_status", mock)
     return mock
 
 

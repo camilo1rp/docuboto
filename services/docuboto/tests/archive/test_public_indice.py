@@ -26,13 +26,12 @@ import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
-import httpx
 import pytest
 
-from archive.clients import document_client
 from archive.core.config import settings
 from archive.schemas.indice_clasificados import IndiceSeriePublico
 from archive.services.indice_clasificados_service import SIN_SERIE, componer_indice
+from document import api as document_api
 
 RUTA = "/api/v1/public/archive/indice-clasificados/demo"
 
@@ -131,7 +130,7 @@ def _patch_composicion(radicados, series):
     return (
         patch("archive.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=True)),
         patch(
-            "archive.services.indice_clasificados_service.document_client.fetch_clasificados_internal",
+            "document.api.fetch_clasificados",
             new=AsyncMock(return_value={"causales": CAUSALES, "radicados": radicados}),
         ),
         patch(
@@ -175,8 +174,8 @@ async def test_document_service_caido_es_503_no_una_lista_parcial(client_with_co
     with (
         patch("archive.routers.public_indice._tenant_operativo", new=AsyncMock(return_value=True)),
         patch(
-            "archive.services.indice_clasificados_service.document_client.fetch_clasificados_internal",
-            new=AsyncMock(side_effect=document_client.DocumentClientError("caído")),
+            "document.api.fetch_clasificados",
+            new=AsyncMock(side_effect=document_api.DocumentUnavailableError("caído")),
         ),
     ):
         resp = await client.get(RUTA)
@@ -207,29 +206,6 @@ async def test_la_consulta_de_series_solo_cuenta_vinculos_vigentes_y_no_trae_dat
     assert "er.estado = 'vinculado'" in sql
     assert "tracking_number" not in sql and "subject" not in sql
     assert await series_de_radicados(conn, []) == []
-
-
-@pytest.mark.asyncio
-async def test_el_cliente_pide_con_token_interno_y_tenant(monkeypatch) -> None:
-    vistas: list[httpx.Request] = []
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        vistas.append(request)
-        return httpx.Response(200, json={"causales": [], "radicados": []})
-
-    real = httpx.AsyncClient
-
-    class _Cliente(real):  # type: ignore[misc, valid-type]
-        def __init__(self, *a, **kw):
-            kw["transport"] = httpx.MockTransport(_handler)
-            super().__init__(*a, **kw)
-
-    monkeypatch.setattr(httpx, "AsyncClient", _Cliente)
-    monkeypatch.setattr(settings, "document_internal_token", "tok-doc")
-    await document_client.fetch_clasificados_internal(tenant_slug="demo")
-    req = vistas[-1]
-    assert req.url.path == "/api/v1/internal/documentos/clasificados"
-    assert req.headers["X-Internal-Token"] == "tok-doc" and req.headers["X-Tenant-Slug"] == "demo"
 
 
 def test_el_rango_de_generacion_y_la_cita_normativa_salen_por_grupo() -> None:

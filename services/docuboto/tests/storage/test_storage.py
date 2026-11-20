@@ -42,11 +42,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
+from storage import api as storage_api
 from storage.core import config as cfg_module
+from storage.services.storage_service import (
+    AnexoCitadoPorConstanciaError,
+    NotCurrentVersionError,
+    StorageService,
+)
 from tests.storage.conftest import (
     FILE_ID,
-    INTERNAL_HEADERS,
     TENANT_HEADERS,
+    TENANT_SLUG,
     conceder_permisos,
     make_file_record,
     minio_get_object_stream,
@@ -57,6 +63,12 @@ _FILE_CONTENT = b"PDF content here"
 _MISMO_AUTOR = uuid.UUID(TENANT_HEADERS["X-User-Id"])
 _FILENAME = "carta.pdf"
 _MIME_TYPE = "application/pdf"
+
+
+def _svc(mock_conn: AsyncMock) -> StorageService:
+    """Las capacidades sin ruta propia (metadata, presigned, baja, verificación,
+    versiones) se prueban sobre el servicio, que es donde viven."""
+    return StorageService(mock_conn, TENANT_SLUG)
 
 
 # ---------------------------------------------------------------------------
@@ -232,13 +244,10 @@ async def test_anexo_anonimo_nunca_se_deduplica(
     mock_minio.bucket_exists.return_value = True
     mock_conn.fetchrow.side_effect = [make_file_record(file_id=uuid.uuid4())]
 
-    response = await client.post(
-        "/api/v1/storage/internal/anexo-externo",
-        files={"file": (_FILENAME, _FILE_CONTENT, _MIME_TYPE)},
-        headers=INTERNAL_HEADERS,
+    await storage_api.upload_public_annex(
+        tenant_slug=TENANT_SLUG, filename=_FILENAME, mime_type=_MIME_TYPE, data=_FILE_CONTENT
     )
 
-    assert response.status_code == 201, response.text
     sqls = [c.args[0] for c in mock_conn.fetchrow.await_args_list]
     assert not any("FROM files WHERE sha256" in q for q in sqls)
     mock_minio.put_object.assert_awaited_once()
@@ -281,16 +290,12 @@ async def test_get_file_metadata(
     record = make_file_record(file_id=FILE_ID)
     mock_conn.fetchrow.return_value = record
 
-    response = await client.get(
-        f"/api/v1/storage/files/{FILE_ID}",
-        headers=INTERNAL_HEADERS,
-    )
+    meta = await _svc(mock_conn).get_metadata(FILE_ID)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["id"] == str(FILE_ID)
-    assert body["filename"] == record["filename"]
-    assert body["sha256"] == record["sha256"]
+    assert meta is not None
+    assert meta.id == FILE_ID
+    assert meta.filename == record["filename"]
+    assert meta.sha256 == record["sha256"]
 
 
 # ---------------------------------------------------------------------------
@@ -305,13 +310,7 @@ async def test_get_file_not_found(
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    response = await client.get(
-        f"/api/v1/storage/files/{uuid.uuid4()}",
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"]["error"] == "file_not_found"
+    assert await _svc(mock_conn).get_metadata(uuid.uuid4()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -329,15 +328,11 @@ async def test_get_presigned_url(
     mock_conn.fetchrow.return_value = record
     mock_minio.presigned_get_object.return_value = "http://minio/presigned-url"
 
-    response = await client.get(
-        f"/api/v1/storage/files/{FILE_ID}/download",
-        headers=INTERNAL_HEADERS,
-    )
+    url = await _svc(mock_conn).get_presigned_url(FILE_ID, cfg_module.settings.presigned_url_expiry)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["url"] == "http://minio/presigned-url"
-    assert body["expires_in"] == 3600
+    assert url is not None
+    assert url.url == "http://minio/presigned-url"
+    assert url.expires_in == 3600
     mock_minio.presigned_get_object.assert_awaited_once()
 
 
@@ -357,15 +352,11 @@ async def test_get_file_content_streams_bytes(
     mock_conn.fetchrow.return_value = record
     mock_minio.get_object = minio_get_object_stream(_FILE_CONTENT)
 
-    response = await client.get(
-        f"/api/v1/storage/files/{FILE_ID}/content",
-        headers=INTERNAL_HEADERS,
-    )
+    stream = await storage_api.open_file_stream(tenant_slug=TENANT_SLUG, file_id=FILE_ID)
 
-    assert response.status_code == 200
-    assert response.content == _FILE_CONTENT
-    assert response.headers["content-type"] == record["mime_type"]
-    assert _FILENAME in response.headers["content-disposition"]
+    assert stream is not None
+    assert b"".join([t async for t in stream.aiter_bytes()]) == _FILE_CONTENT
+    assert stream.content_type == record["mime_type"]
     mock_minio.get_object.assert_awaited_once_with(record["bucket"], record["object_key"])
 
 
@@ -376,13 +367,7 @@ async def test_get_file_content_not_found(
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    response = await client.get(
-        f"/api/v1/storage/files/{uuid.uuid4()}/content",
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"]["error"] == "file_not_found"
+    assert await storage_api.open_file_stream(tenant_slug=TENANT_SLUG, file_id=uuid.uuid4()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -416,12 +401,7 @@ async def test_delete_file_soft_deletes_not_purges(
     # audit.append also calls fetchval for prev_hash → already returns None by default.
     mock_conn.execute.side_effect = _execute_con_update_1
 
-    response = await client.delete(
-        f"/api/v1/storage/files/{FILE_ID}",
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert response.status_code == 204
+    assert await _svc(mock_conn).delete(FILE_ID, deleted_by=_MISMO_AUTOR) is True
     # Soft-delete MUST NOT call remove_object (MinIO object is preserved until
     # TRD final disposition explicitly purges it — D-04, constitución inv. 12).
     mock_minio.remove_object.assert_not_awaited()
@@ -440,12 +420,7 @@ async def test_delete_file(
     mock_conn.fetchrow.return_value = record
     mock_conn.execute.side_effect = _execute_con_update_1
 
-    response = await client.delete(
-        f"/api/v1/storage/files/{FILE_ID}",
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert response.status_code == 204
+    assert await _svc(mock_conn).delete(FILE_ID, deleted_by=_MISMO_AUTOR) is True
 
 
 # ---------------------------------------------------------------------------
@@ -467,13 +442,7 @@ async def test_get_soft_deleted_file_returns_404(
     # Simulate that the row has deleted_at set → DB WHERE clause filters it out.
     mock_conn.fetchrow.return_value = None
 
-    response = await client.get(
-        f"/api/v1/storage/files/{FILE_ID}",
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"]["error"] == "file_not_found"
+    assert await _svc(mock_conn).get_metadata(FILE_ID) is None
 
 
 # ---------------------------------------------------------------------------
@@ -488,13 +457,7 @@ async def test_delete_file_not_found(
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    response = await client.delete(
-        f"/api/v1/storage/files/{uuid.uuid4()}",
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"]["error"] == "file_not_found"
+    assert await _svc(mock_conn).delete(uuid.uuid4(), deleted_by=_MISMO_AUTOR) is False
 
 
 # ---------------------------------------------------------------------------
@@ -542,17 +505,16 @@ async def test_verify_integrity_ok(
     obj.close = MagicMock()
     mock_minio.get_object = AsyncMock(return_value=obj)
 
-    response = await client.get(f"/api/v1/storage/files/{FILE_ID}/verify", headers=INTERNAL_HEADERS)
+    result = await _svc(mock_conn).verify_integrity(FILE_ID)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["integrity_ok"] is True
-    assert body["expected_sha256"] == real_sha
-    assert body["actual_sha256"] == real_sha
+    assert result is not None
+    assert result.integrity_ok is True
+    assert result.expected_sha256 == real_sha
+    assert result.actual_sha256 == real_sha
 
 
 @pytest.mark.asyncio
-async def test_verify_integrity_mismatch_is_409(
+async def test_verify_integrity_mismatch_lo_detecta(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
@@ -565,10 +527,9 @@ async def test_verify_integrity_mismatch_is_409(
     obj.close = MagicMock()
     mock_minio.get_object = AsyncMock(return_value=obj)
 
-    response = await client.get(f"/api/v1/storage/files/{FILE_ID}/verify", headers=INTERNAL_HEADERS)
+    result = await _svc(mock_conn).verify_integrity(FILE_ID)
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "integrity_check_failed"
+    assert result is not None and result.integrity_ok is False
 
 
 @pytest.mark.asyncio
@@ -578,12 +539,7 @@ async def test_verify_integrity_not_found(
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    response = await client.get(
-        f"/api/v1/storage/files/{uuid.uuid4()}/verify", headers=INTERNAL_HEADERS
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"]["error"] == "file_not_found"
+    assert await _svc(mock_conn).verify_integrity(uuid.uuid4()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -602,14 +558,17 @@ async def test_replace_creates_new_version(
     # get_by_id → current; create_version INSERT RETURNING → v2
     mock_conn.fetchrow.side_effect = [current, v2]
 
-    response = await client.post(
-        f"/api/v1/storage/files/{FILE_ID}/replace",
-        files={"file": ("carta_v2.pdf", b"nuevo contenido distinto", "application/pdf")},
-        headers=INTERNAL_HEADERS,
+    result = await _svc(mock_conn).replace(
+        FILE_ID,
+        filename="carta_v2.pdf",
+        mime_type="application/pdf",
+        content=b"nuevo contenido distinto",
+        uploaded_by=_MISMO_AUTOR,
     )
 
-    assert response.status_code == 201
-    assert response.json()["version"] == 2
+    assert result is not None
+    response, created = result
+    assert created is True and response.version == 2
     mock_minio.put_object.assert_awaited_once()
 
 
@@ -625,46 +584,39 @@ async def test_replace_same_content_no_new_version(
     sha = hashlib.sha256(content).hexdigest()
     mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID, sha256=sha)
 
-    response = await client.post(
-        f"/api/v1/storage/files/{FILE_ID}/replace",
-        files={"file": ("carta.pdf", content, "application/pdf")},
-        headers=INTERNAL_HEADERS,
+    result = await _svc(mock_conn).replace(
+        FILE_ID, filename="carta.pdf", mime_type="application/pdf", content=content,
+        uploaded_by=_MISMO_AUTOR,
     )
 
-    assert response.status_code == 200  # sin versión nueva
+    assert result is not None and result[1] is False  # sin versión nueva
     mock_minio.put_object.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_replace_not_current_is_409(
+async def test_replace_not_current_se_rechaza(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID, is_current=False)
 
-    response = await client.post(
-        f"/api/v1/storage/files/{FILE_ID}/replace",
-        files={"file": ("c.pdf", b"x", "application/pdf")},
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "not_current_version"
+    with pytest.raises(NotCurrentVersionError):
+        await _svc(mock_conn).replace(
+            FILE_ID, filename="c.pdf", mime_type="application/pdf", content=b"x", uploaded_by=None
+        )
 
 
 @pytest.mark.asyncio
-async def test_replace_not_found_is_404(
+async def test_replace_not_found_es_none(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     client, mock_conn, _ = client_with_conn
     mock_conn.fetchrow.return_value = None
 
-    response = await client.post(
-        f"/api/v1/storage/files/{uuid.uuid4()}/replace",
-        files={"file": ("c.pdf", b"x", "application/pdf")},
-        headers=INTERNAL_HEADERS,
+    result = await _svc(mock_conn).replace(
+        uuid.uuid4(), filename="c.pdf", mime_type="application/pdf", content=b"x", uploaded_by=None
     )
-    assert response.status_code == 404
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -678,11 +630,10 @@ async def test_list_versions(
     mock_conn.fetchrow.return_value = v2  # get_by_id
     mock_conn.fetch.return_value = [v1, v2]  # list_versions
 
-    response = await client.get(f"/api/v1/storage/files/{root}/versions", headers=INTERNAL_HEADERS)
+    versiones = await _svc(mock_conn).list_versions(root)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert [v["version"] for v in body] == [1, 2]
+    assert versiones is not None
+    assert [v.version for v in versiones] == [1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -815,13 +766,14 @@ async def test_artefacto_del_sistema_admite_xml(
     record = make_file_record(file_id=FILE_ID)
     mock_conn.fetchrow.side_effect = [None, record]
 
-    response = await client.post(
-        "/api/v1/storage/internal/artefacto",
-        files={"file": ("indice-firmado.xml", b"<indice/>", "application/xml")},
-        headers=INTERNAL_HEADERS,
+    await storage_api.upload_system_artifact(
+        tenant_slug=TENANT_SLUG,
+        filename="indice-firmado.xml",
+        mime_type="application/xml",
+        data=b"<indice/>",
+        uploaded_by=_MISMO_AUTOR,
     )
 
-    assert response.status_code == 201
     mock_minio.put_object.assert_awaited_once()
 
 
@@ -850,44 +802,20 @@ async def test_el_endpoint_de_anexos_sigue_rechazando_xml(
 
 
 @pytest.mark.asyncio
-async def test_artefacto_del_sistema_exige_token_interno(
-    client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
-) -> None:
-    """Sin el token, la ruta no existe para quien llame desde fuera.
-
-    El gateway no la enruta, pero eso es topología, no un control: el sello es
-    lo que impide que la lista de formatos del sistema sea alcanzable con una
-    sesión de usuario.
-    """
-    client, mock_conn, mock_minio = client_with_conn
-    conceder_permisos(mock_conn)
-
-    response = await client.post(
-        "/api/v1/storage/internal/artefacto",
-        files={"file": ("indice-firmado.xml", b"<indice/>", "application/xml")},
-        headers=TENANT_HEADERS,  # sin X-Internal-Token
-    )
-
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert response.status_code == 404
-    assert response.json()["error"] == "route_not_found"
-    mock_minio.put_object.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_artefacto_del_sistema_no_es_puerta_franca(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
-    """Tiene su propia lista, no «todo vale»: un ejecutable sigue siendo 415."""
+    """Tiene su propia lista, no «todo vale»: un ejecutable sigue rechazándose."""
     client, mock_conn, mock_minio = client_with_conn
 
-    response = await client.post(
-        "/api/v1/storage/internal/artefacto",
-        files={"file": ("malware.exe", b"MZ...", "application/x-msdownload")},
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(storage_api.StorageError):
+        await storage_api.upload_system_artifact(
+            tenant_slug=TENANT_SLUG,
+            filename="malware.exe",
+            mime_type="application/x-msdownload",
+            data=b"MZ...",
+        )
 
-    assert response.status_code == 415
     mock_minio.put_object.assert_not_awaited()
 
 
@@ -897,7 +825,7 @@ async def test_artefacto_del_sistema_no_es_puerta_franca(
 
 
 @pytest.mark.asyncio
-async def test_delete_de_anexo_citado_es_409_nombra_la_constancia_y_no_borra(
+async def test_delete_de_anexo_citado_se_rechaza_nombra_la_constancia_y_no_borra(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     """Un anexo que sostiene una constancia de firma inobtenible VIGENTE no se da de baja: 409
@@ -922,12 +850,10 @@ async def test_delete_de_anexo_citado_es_409_nombra_la_constancia_y_no_borra(
     mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID)
     mock_conn.execute.side_effect = _execute_con_update_1
 
-    response = await client.delete(f"/api/v1/storage/files/{FILE_ID}", headers=INTERNAL_HEADERS)
+    with pytest.raises(AnexoCitadoPorConstanciaError) as exc:
+        await _svc(mock_conn).delete(FILE_ID, deleted_by=_MISMO_AUTOR)
 
-    assert response.status_code == 409
-    detalle = response.json()["detail"]
-    assert detalle["error"] == "anexo_citado_por_constancia"
-    assert detalle["constancias"] == [
+    assert [c.como_dict() for c in exc.value.citas] == [
         {
             "excepcion_id": str(excepcion),
             "transferencia_id": str(transferencia),
@@ -942,7 +868,7 @@ async def test_delete_de_anexo_citado_es_409_nombra_la_constancia_y_no_borra(
 
 
 @pytest.mark.asyncio
-async def test_delete_con_la_vista_ausente_es_409_fail_closed(
+async def test_delete_con_la_vista_ausente_se_rechaza_fail_closed(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     """Control del fail-closed: sin `v_anexo_citado_vigente` no se puede afirmar que el anexo no
@@ -951,14 +877,12 @@ async def test_delete_con_la_vista_ausente_es_409_fail_closed(
     mock_conn.fetchrow.return_value = make_file_record(file_id=FILE_ID)
     mock_conn.execute.side_effect = _execute_con_update_1  # fetchval -> None (vista ausente)
 
-    response = await client.delete(f"/api/v1/storage/files/{FILE_ID}", headers=INTERNAL_HEADERS)
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "anexo_citado_por_constancia"
+    with pytest.raises(AnexoCitadoPorConstanciaError):
+        await _svc(mock_conn).delete(FILE_ID, deleted_by=_MISMO_AUTOR)
 
 
 @pytest.mark.asyncio
-async def test_delete_de_un_archivo_ya_dado_de_baja_sigue_siendo_404(
+async def test_delete_de_un_archivo_ya_dado_de_baja_no_lo_repite(
     client_with_conn: tuple[AsyncClient, AsyncMock, MagicMock],
 ) -> None:
     """`lock_any_state` ve también los dados de baja (a diferencia de `get_by_id`): el servicio
@@ -970,5 +894,4 @@ async def test_delete_de_un_archivo_ya_dado_de_baja_sigue_siendo_404(
     mock_conn.fetchrow.return_value = make_file_record(
         file_id=FILE_ID, deleted_at=datetime.now(tz=UTC)
     )
-    response = await client.delete(f"/api/v1/storage/files/{FILE_ID}", headers=INTERNAL_HEADERS)
-    assert response.status_code == 404
+    assert await _svc(mock_conn).delete(FILE_ID, deleted_by=_MISMO_AUTOR) is False

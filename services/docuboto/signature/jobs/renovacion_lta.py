@@ -49,7 +49,6 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 from orpycamcp_common.request_log import canal_de_fondo
 
-from signature.clients import preservacion_client, storage_client
 from signature.core import tsa
 from signature.core.config import settings
 from signature.core.constants import SYSTEM_RECONCILER_ID
@@ -58,6 +57,7 @@ from signature.core.events import publish_lta_renovada
 from signature.core.redis_client import get_redis
 from signature.providers.local import renovar_archive_timestamp, verify_xades
 from signature.repositories.firma_repository import FirmaRepository
+from storage import api as storage_api
 
 try:
     from orpycamcp_common import audit as _audit
@@ -126,7 +126,7 @@ async def _completar_worm(
 ) -> bool:
     """Paso de storage (herencia WORM + PREMIS) y cierre del eslabón. `False` si storage falló."""
     try:
-        await preservacion_client.renovar_artefacto(
+        await storage_api.renew_artifact(
             tenant_slug=slug,
             file_id_anterior=_file_id(minio_key_anterior),
             file_id_nuevo=_file_id(sello["minio_key"]),
@@ -134,7 +134,7 @@ async def _completar_worm(
             firma_id=sello["firma_id"],
             ordinal=sello["ordinal"],
         )
-    except preservacion_client.PreservacionError:
+    except storage_api.StorageError:
         logger.warning(
             "renovación LTA firma=%s ordinal=%s: storage no registró la herencia WORM; "
             "queda pendiente_worm y se reintenta",
@@ -199,8 +199,8 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
 
     sellos = await repo.sellos_de(firma_id)
     try:
-        xml = await preservacion_client.descargar_xml(tenant_slug=slug, minio_key=c["minio_key"])
-    except preservacion_client.PreservacionError:
+        xml = await storage_api.read_object(tenant_slug=slug, object_key=c["minio_key"])
+    except storage_api.StorageError:
         logger.warning("renovación LTA firma=%s: no se pudo descargar el XML", firma_id, exc_info=True)
         return "error"
 
@@ -270,11 +270,11 @@ async def _renovar_firma(conn: asyncpg.Connection, slug: str, c: asyncpg.Record)
     base = nombre_original.removesuffix(".xml")
     filename = f"{base}-lta{renovacion.ordinal}.xml"
     try:
-        minio_key_nuevo = await storage_client.upload_signed_xml(
+        minio_key_nuevo = await storage_api.upload_signed_xml(
             tenant_slug=slug, filename=filename, content=renovacion.signed_xml,
             uploaded_by=SYSTEM_RECONCILER_ID,
         )
-    except storage_client.StorageUploadError:
+    except storage_api.StorageError:
         logger.warning("renovación LTA firma=%s: no se pudo subir el XML renovado", firma_id, exc_info=True)
         return "error"
 

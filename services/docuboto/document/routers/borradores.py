@@ -28,7 +28,6 @@ from fastapi import (
 )
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.clients.storage_client import RenderFallidoError, RenderNoDisponibleError
 from document.core.clearance import (
     check_permission,
     require_any_permission,
@@ -59,6 +58,7 @@ from document.services.document_service import (
 from document.services.importar_ofimatico import ImportacionError
 from document.services.importar_ofimatico import importar as importar_ofimatico
 from document.services.metadata_service import MetadataValidationError
+from storage import api as storage_api
 
 router = APIRouter(tags=["borradores"])
 
@@ -365,7 +365,7 @@ async def previsualizar_borrador(
     servicio = BorradorService(conn, _slug(request), tenant_client)
     try:
         pdf, faltantes = await servicio.previsualizar(borrador_id, max_clearance=clearance)
-    except RenderNoDisponibleError as exc:
+    except storage_api.RenderUnavailableError as exc:
         raise HTTPException(
             status_code=503,
             detail={
@@ -374,7 +374,7 @@ async def previsualizar_borrador(
                 "status": 503,
             },
         ) from exc
-    except RenderFallidoError as exc:
+    except storage_api.RenderFailedError as exc:
         raise HTTPException(
             status_code=422,
             detail={
@@ -462,7 +462,7 @@ async def radicar_borrador(
         return await servicio.radicar(
             borrador_id, doc_service, user_id, max_clearance=clearance, datos=datos
         )
-    except RenderNoDisponibleError as exc:
+    except storage_api.RenderUnavailableError as exc:
         # 503 y NO se radica. Degradar a «radicar sin documento» dejaría a la
         # entidad creyendo que produjo un oficio que no existe, y el fallo
         # aparecería cuando el ciudadano reclame.
@@ -477,7 +477,7 @@ async def radicar_borrador(
                 "status": 503,
             },
         ) from exc
-    except RenderFallidoError as exc:
+    except storage_api.RenderFailedError as exc:
         raise HTTPException(
             status_code=422,
             detail={

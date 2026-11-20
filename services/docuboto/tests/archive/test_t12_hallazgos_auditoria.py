@@ -80,7 +80,7 @@ async def test_fixity_fallida_registra_evento_premis_de_fallo_solo_con_conteos(
         [{"document_id": doc_id, "valor_huella": "b" * 64}],
     ]
     with patch(
-        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "storage.api.record_event", new=AsyncMock(return_value=True)
     ) as post:
         resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
 
@@ -105,7 +105,7 @@ async def test_otro_409_no_registra_evento_de_fixity(client_with_conn) -> None:
         _indice_row(estado="borrador"),
     ]
     with patch(
-        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "storage.api.record_event", new=AsyncMock(return_value=True)
     ) as post:
         resp = await client.post(f"/api/v1/transferencias/{tid}/recibir", headers=TENANT_HEADERS)
     assert resp.status_code == 409

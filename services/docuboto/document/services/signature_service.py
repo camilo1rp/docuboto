@@ -21,9 +21,9 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
-from document.clients import storage_client
 from document.repositories.signature_repository import SignatureRepository
 from document.schemas.signature import SignatureCreate, SignatureResponse
+from storage import api as storage_api
 
 _SERVICE = "document-service"
 
@@ -75,10 +75,10 @@ class SignatureService:
         if file_id is None:
             raise not_found(document_id)
         try:
-            huella = await storage_client.fetch_file_sha256(
+            huella = await storage_api.get_file_sha256(
                 tenant_slug=self._slug, file_id=file_id
             )
-        except storage_client.StorageContentError as exc:
+        except storage_api.StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={

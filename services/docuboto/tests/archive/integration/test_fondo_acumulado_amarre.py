@@ -310,7 +310,7 @@ async def test_worm_resolvers_difieren_el_contenido_del_fondo_vencido_a_la_valor
     index = IndexService(conn, slug)
     hold_id = uuid.uuid4()
     fijar = AsyncMock(return_value={"hold_id": str(hold_id), "creado": True, "objetos_afectados": 0})
-    with patch("archive.clients.storage_client.fijar_legal_hold", new=fijar):
+    with patch("storage.api.set_legal_hold", new=fijar):
         retention = await index._resolve_worm_retention(expediente.id)
         assert isinstance(retention, RetencionDiferida), "el fondo vencido debe diferirse"
         # El AIP con el mismo expediente: el hold ya existe, no se vuelve a fijar.

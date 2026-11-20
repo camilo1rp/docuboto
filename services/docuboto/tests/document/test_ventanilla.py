@@ -34,7 +34,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from starlette.datastructures import UploadFile
 
-from document.clients.storage_client import ArchivoSubido
+from storage.api import StorageError, UploadedFile
 
 BASE = "/api/v1/public/demo/ventanilla"
 
@@ -301,11 +301,11 @@ async def test_el_tipo_del_anexo_sale_del_CONTENIDO_no_de_lo_que_declare_el_clie
 
     with (
         patch(
-            "document.services.ventanilla_service.upload_anexo_externo",
-            # ArchivoSubido, NO un dict con una clave inventada: un mock que
+            "storage.api.upload_public_annex",
+            # UploadedFile, NO un dict con una clave inventada: un mock que
             # devuelve la forma equivocada comprueba que el código coincide con
             # la creencia de quien lo escribió, no con el servicio real.
-            AsyncMock(return_value=ArchivoSubido(file_id=uuid.uuid4())),
+            AsyncMock(return_value=UploadedFile(file_id=uuid.uuid4())),
         ) as mock_up,
         patch(
             "document.services.document_service.DocumentService.create",
@@ -336,7 +336,7 @@ async def test_un_formato_no_admitido_se_rechaza_y_NO_se_radica(client_with_conn
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
     with (
-        patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up,
+        patch("storage.api.upload_public_annex", AsyncMock()) as mock_up,
         patch(
             "document.services.document_service.DocumentService.create", AsyncMock()
         ) as mock_create,
@@ -359,7 +359,7 @@ async def test_mas_anexos_de_la_cuenta_se_rechazan_ANTES_de_leerlos(client_with_
     client, _ = client_with_conn
     ficheros = [(f"s{i}.pdf", PDF, "application/pdf") for i in range(MAX_ANEXOS + 1)]
 
-    with patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up:
+    with patch("storage.api.upload_public_annex", AsyncMock()) as mock_up:
         resp = await client.post(BASE, **_multipart(_cuerpo(), ficheros))
 
     assert resp.status_code == 422
@@ -373,12 +373,11 @@ async def test_si_falla_el_almacen_NO_queda_un_radicado_sin_soportes(client_with
     conn.fetchval.side_effect = _fetchval_por_consulta("Petición", "cod")
     conn.fetchrow.side_effect = _fetchrow_por_consulta()
 
-    from document.clients.storage_client import StorageContentError
 
     with (
         patch(
-            "document.services.ventanilla_service.upload_anexo_externo",
-            AsyncMock(side_effect=StorageContentError("caído")),
+            "storage.api.upload_public_annex",
+            AsyncMock(side_effect=StorageError("caído")),
         ),
         patch(
             "document.services.document_service.DocumentService.create", AsyncMock()
@@ -436,7 +435,7 @@ async def test_un_anexo_gigante_no_llega_entero_a_memoria(client_with_conn) -> N
         return datos
 
     with patch.object(UploadFile, "read", read_contando):
-        with patch("document.services.ventanilla_service.upload_anexo_externo", AsyncMock()) as mock_up:
+        with patch("storage.api.upload_public_annex", AsyncMock()) as mock_up:
             resp = await client.post(
                 BASE, **_multipart(_cuerpo(), [("enorme.pdf", gigante, "application/pdf")])
             )

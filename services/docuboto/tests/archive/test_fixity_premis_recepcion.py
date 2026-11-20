@@ -102,7 +102,7 @@ async def test_registra_el_evento_con_la_forma_que_storage_espera() -> None:
     tid = fila["transferencia_id"]
 
     with patch(
-        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=True)
+        "storage.api.record_event", new=AsyncMock(return_value=True)
     ) as post:
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, tid, origen="close")
 
@@ -127,7 +127,7 @@ async def test_storage_caido_reprograma_con_backoff_sin_lanzar(monkeypatch) -> N
     conn.fetchrow.return_value = fila
 
     with patch(
-        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=False)
+        "storage.api.record_event", new=AsyncMock(return_value=False)
     ):
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, fila["transferencia_id"], origen="close")
 
@@ -146,7 +146,7 @@ async def test_al_agotarse_deja_asiento(monkeypatch) -> None:
     conn.fetchrow.return_value = fila
 
     with patch(
-        "archive.clients.storage_client.registrar_evento_internal", new=AsyncMock(return_value=False)
+        "storage.api.record_event", new=AsyncMock(return_value=False)
     ):
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, fila["transferencia_id"], origen="reconciliation")
 
@@ -165,7 +165,7 @@ async def test_sin_detalle_guardado_no_se_inventa_el_evento() -> None:
     svc = TransferenciaService(conn, TENANT)
     conn.fetchrow.return_value = _fila(fixity_premis_detalle=None)
 
-    with patch("archive.clients.storage_client.registrar_evento_internal", new=AsyncMock()) as post:
+    with patch("storage.api.record_event", new=AsyncMock()) as post:
         resultado = await REGISTRAR_FIXITY_PREMIS_REAL(svc, uuid.uuid4(), origen="reconciliation")
 
     assert resultado == "omitido"

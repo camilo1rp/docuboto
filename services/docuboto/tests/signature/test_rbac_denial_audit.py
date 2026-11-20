@@ -27,6 +27,14 @@ from httpx import AsyncClient
 
 from tests.signature.conftest import TENANT_HEADERS, USER
 
+# Cualquier ruta con `require_permission("PERM_FIRMA")` sirve; esta es la de firma personal.
+_CUERPO = {
+    "payload_xml": "<x/>",
+    "objeto_tipo": "acta_transferencia_personal",
+    "objeto_id": "t-1",
+    "totp_code": "123456",
+}
+
 
 def _audit_insert_calls(mock_conn: AsyncMock) -> list:
     return [
@@ -44,8 +52,8 @@ async def test_denial_of_identified_user_is_audited(
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
     response = await client.post(
-        "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
+        "/api/v1/signature/sign-personal",
+        json=_CUERPO,
         headers=TENANT_HEADERS,
     )
 
@@ -74,8 +82,8 @@ async def test_denial_without_identity_is_not_audited(
     mock_conn.fetchval.return_value = True  # aunque "hubiera" permiso, sin identidad no aplica
 
     response = await client.post(
-        "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
+        "/api/v1/signature/sign-personal",
+        json=_CUERPO,
         headers={"X-Tenant-Slug": TENANT_HEADERS["X-Tenant-Slug"]},
     )
 
@@ -97,8 +105,8 @@ async def test_denial_survives_audit_failure(
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.post(
-            "/api/v1/signature/sign-xml",
-            json={"payload_xml": "<x/>", "objeto_tipo": "indice"},
+            "/api/v1/signature/sign-personal",
+            json=_CUERPO,
             headers=TENANT_HEADERS,
         )
 

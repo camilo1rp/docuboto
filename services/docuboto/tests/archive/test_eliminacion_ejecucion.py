@@ -33,7 +33,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from archive.clients.document_client import DocumentPurgaError
+from document.api import PurgeIncompleteError
 from tests.archive.conftest import TENANT_HEADERS, USER_ID
 
 LOTE = uuid.uuid4()
@@ -115,7 +115,7 @@ def _purga(recuento=None, error=None):
         side_effect=error,
         return_value=recuento or {"radicados_eliminados": 12, "anexos_eliminados": 30},
     )
-    return patch("archive.clients.document_client.purgar_radicados_internal", mock)
+    return patch("document.api.purge_radicados", mock)
 
 
 def _entorno(mock_conn, *, items, acta=None, estado="avalado"):
@@ -308,7 +308,7 @@ async def test_los_documentos_se_destruyen_ANTES_que_el_expediente(client_with_c
     mock_conn.execute.side_effect = _execute
     mock_conn.fetchrow.side_effect = _fetchrow
 
-    with patch("archive.clients.document_client.purgar_radicados_internal", _purgar):
+    with patch("document.api.purge_radicados", _purgar):
         await client.post(RUTA, headers=TENANT_HEADERS)
 
     # Lo que importa es el ORDEN RELATIVO, no la primera línea: los
@@ -332,7 +332,7 @@ async def test_si_la_purga_falla_el_expediente_queda_INTACTO_y_sin_lapida(
     client, mock_conn = client_with_conn
     _entorno(mock_conn, items=[_item(EXP_A)])
 
-    with _purga(error=DocumentPurgaError("storage-service inalcanzable")):
+    with _purga(error=PurgeIncompleteError("storage-service inalcanzable")):
         resp = await client.post(RUTA, headers=TENANT_HEADERS)
 
     assert resp.status_code == 200
@@ -360,10 +360,10 @@ async def test_con_un_expediente_fallido_el_lote_NO_se_marca_ejecutado(
     async def _purgar(**kwargs):
         llamadas["n"] += 1
         if llamadas["n"] == 2:
-            raise DocumentPurgaError("bytes vivos")
+            raise PurgeIncompleteError("bytes vivos")
         return {"radicados_eliminados": 3, "anexos_eliminados": 4}
 
-    with patch("archive.clients.document_client.purgar_radicados_internal", _purgar):
+    with patch("document.api.purge_radicados", _purgar):
         resp = await client.post(RUTA, headers=TENANT_HEADERS)
 
     cuerpo = resp.json()
@@ -444,7 +444,7 @@ async def test_el_rechazo_de_storage_por_anexo_citado_tambien_se_etiqueta(client
     client, mock_conn = client_with_conn
     _entorno(mock_conn, items=[_item(EXP_A)])
 
-    with _purga(error=DocumentPurgaError("storage → 409 anexo_citado_por_constancia")):
+    with _purga(error=PurgeIncompleteError("storage → 409 anexo_citado_por_constancia")):
         cuerpo = (await client.post(RUTA, headers=TENANT_HEADERS)).json()
 
     assert cuerpo["fallidos"][0]["motivo"] == "soporte_citado_no_avalado"
@@ -455,7 +455,7 @@ async def test_otros_fallos_de_purga_no_llevan_el_codigo_de_soporte(client_with_
     """Control negativo del etiquetado."""
     client, mock_conn = client_with_conn
     _entorno(mock_conn, items=[_item(EXP_A)])
-    with _purga(error=DocumentPurgaError("storage-service inalcanzable")):
+    with _purga(error=PurgeIncompleteError("storage-service inalcanzable")):
         cuerpo = (await client.post(RUTA, headers=TENANT_HEADERS)).json()
     assert cuerpo["fallidos"][0]["motivo"] is None
 

@@ -33,7 +33,6 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from archive.clients.storage_client import StorageLegalHoldError
 from archive.core.config import settings
 from archive.schemas.retencion_legal import ValoracionTvdRequest
 from archive.services.retention_math import RetencionDiferida
@@ -42,6 +41,7 @@ from archive.services.valoracion_service import (
     ValoracionHoldError,
     ValoracionService,
 )
+from storage.api import StorageLegalHoldError
 from tests.archive.conftest import TENANT_HEADERS
 
 SERIE_ID = uuid.uuid4()
@@ -49,7 +49,7 @@ EXP_ID = uuid.uuid4()
 HOLD_ID = uuid.uuid4()
 ACTOR = uuid.uuid4()
 _AUDIT = "archive.services.valoracion_service.audit.append"
-_ST = "archive.services.valoracion_service.storage_client"
+_ST = "archive.services.valoracion_service.storage_api"
 
 
 class _Tx:
@@ -205,11 +205,11 @@ def _listo(svc: ValoracionService, fila: dict, orden: list[str]) -> MagicMock:
     svc._repo.marcar_aplicada.side_effect = lambda *a: orden.append("marcar") or {"x": 1}
     st = MagicMock()
     st.StorageLegalHoldError = StorageLegalHoldError
-    st.fijar_retencion_internal = AsyncMock(
+    st.set_deferred_retention = AsyncMock(
         side_effect=lambda **_: orden.append("fijar_retencion")
         or {"filas_fijadas": 2, "retain_until": "2036-10-21T00:00:00+00:00"}
     )
-    st.levantar_legal_hold = AsyncMock(
+    st.lift_legal_hold = AsyncMock(
         side_effect=lambda **_: orden.append("levantar")
         or {"hold_id": str(HOLD_ID), "objetos_liberados_s3": 2, "holds_restantes": 0}
     )
@@ -225,7 +225,7 @@ async def test_ct_fija_la_retencion_ANTES_de_levantar_el_hold() -> None:
         res = await svc.aplicar_expediente(EXP_ID)
     assert res == "aplicada"
     assert orden == ["fijar_retencion", "levantar", "marcar"]
-    assert st.fijar_retencion_internal.await_args.kwargs["retencion_anios"] == 10
+    assert st.set_deferred_retention.await_args.kwargs["retencion_anios"] == 10
     svc._repo.propagar_espejo_retencion.assert_awaited_once()  # el espejo local deja de ser NULL
     assert svc._repo.marcar_aplicada.await_args.args[1] == "retencion_ct"
     assert audit.await_args.kwargs["action"] == "archive.expediente_valoracion_aplicada"
@@ -239,11 +239,11 @@ async def test_ct_si_falla_fijar_la_retencion_no_se_levanta_el_hold() -> None:
     svc, _ = _svc()
     orden: list[str] = []
     st = _listo(svc, _fila("CT"), orden)
-    st.fijar_retencion_internal = AsyncMock(side_effect=StorageLegalHoldError(503, "caído"))
+    st.set_deferred_retention = AsyncMock(side_effect=StorageLegalHoldError(503, "caído"))
     with patch(_ST, new=st), patch(_AUDIT, new=AsyncMock()):
         res = await svc.aplicar_expediente(EXP_ID)
     assert res == "pendiente"
-    st.levantar_legal_hold.assert_not_called()
+    st.lift_legal_hold.assert_not_called()
     svc._repo.marcar_aplicada.assert_not_called()
     svc._repo.bump_intento.assert_awaited_once()
 
@@ -259,7 +259,7 @@ async def test_destruccion_solo_levanta_el_hold_y_no_fija_retencion(
     with patch(_ST, new=st), patch(_AUDIT, new=AsyncMock()):
         res = await svc.aplicar_expediente(EXP_ID)
     assert res == "aplicada" and orden == ["levantar", "marcar"]
-    st.fijar_retencion_internal.assert_not_called()
+    st.set_deferred_retention.assert_not_called()
     assert svc._repo.marcar_aplicada.await_args.args[1] == "sin_retencion"
 
 
@@ -374,7 +374,7 @@ async def test_el_levantamiento_de_valoracion_confirma_el_motivo_de_sistema() ->
     st = _listo(svc, _fila("E"), [])
     with patch(_ST, new=st), patch(_AUDIT, new=AsyncMock()):
         await svc.aplicar_expediente(EXP_ID)
-    kw = st.levantar_legal_hold.await_args.kwargs
+    kw = st.lift_legal_hold.await_args.kwargs
     assert kw["motivo_tipo_esperado"] == MOTIVO_VALORACION == "valoracion_pendiente"
     assert kw["hold_id"] == HOLD_ID and kw["actor_id"] is None
     assert kw["acta_ref"] == "Acta 12 de 2026"
@@ -384,7 +384,7 @@ async def test_el_levantamiento_de_valoracion_confirma_el_motivo_de_sistema() ->
 async def test_hold_judicial_concurrente_no_impide_aplicar_y_se_asienta_el_resto() -> None:
     svc, _ = _svc()
     st = _listo(svc, _fila("E"), [])
-    st.levantar_legal_hold = AsyncMock(
+    st.lift_legal_hold = AsyncMock(
         return_value={"hold_id": str(HOLD_ID), "objetos_liberados_s3": 0, "holds_restantes": 1}
     )
     with patch(_ST, new=st), patch(_AUDIT, new=AsyncMock()) as audit:
@@ -400,12 +400,12 @@ async def test_espera_si_queda_un_artefacto_sin_proteger_y_no_consume_intentos()
     svc._repo.artefactos_pendientes.return_value = True
     st = MagicMock()
     st.StorageLegalHoldError = StorageLegalHoldError
-    st.fijar_retencion_internal = AsyncMock()
-    st.levantar_legal_hold = AsyncMock()
+    st.set_deferred_retention = AsyncMock()
+    st.lift_legal_hold = AsyncMock()
     with patch(_ST, new=st):
         assert await svc.aplicar_expediente(EXP_ID) == "esperando"
-    st.fijar_retencion_internal.assert_not_called()
-    st.levantar_legal_hold.assert_not_called()
+    st.set_deferred_retention.assert_not_called()
+    st.lift_legal_hold.assert_not_called()
     svc._repo.bump_intento.assert_not_called()
 
 
@@ -414,7 +414,7 @@ async def test_hold_ya_levantado_se_trata_como_hecho_idempotencia() -> None:
     svc, _ = _svc()
     orden: list[str] = []
     st = _listo(svc, _fila("E"), orden)
-    st.levantar_legal_hold = AsyncMock(
+    st.lift_legal_hold = AsyncMock(
         side_effect=StorageLegalHoldError(409, "ya", "hold_ya_levantado")
     )
     with patch(_ST, new=st), patch(_AUDIT, new=AsyncMock()):
@@ -437,7 +437,7 @@ async def test_otra_instancia_ya_la_aplico_no_hay_asiento_fantasma() -> None:
 async def test_agota_los_intentos_deja_la_fila_agotada_y_deja_asiento() -> None:
     svc, _ = _svc()
     st = _listo(svc, _fila("E", intentos=settings.indice_reconciliation_max_intentos - 1), [])
-    st.levantar_legal_hold = AsyncMock(side_effect=StorageLegalHoldError(503, "caído"))
+    st.lift_legal_hold = AsyncMock(side_effect=StorageLegalHoldError(503, "caído"))
     with patch(_ST, new=st), patch(_AUDIT, new=AsyncMock()) as audit:
         assert await svc.aplicar_expediente(EXP_ID) == "agotada"
     assert svc._repo.bump_intento.await_args.kwargs["agotada"] is True
@@ -473,13 +473,13 @@ async def test_sin_amarre_fija_el_hold_de_sistema_y_lo_amarra_a_la_version() -> 
     svc._repo.insert_hold.return_value = {"valoracion_id": None}
     st = MagicMock()
     st.StorageLegalHoldError = StorageLegalHoldError
-    st.fijar_legal_hold = AsyncMock(
+    st.set_legal_hold = AsyncMock(
         return_value={"hold_id": str(HOLD_ID), "creado": True, "objetos_afectados": 0}
     )
     with patch(_ST, new=st), patch(_AUDIT, new=AsyncMock()) as audit:
         res = await svc.resolver_diferida(_exp(), _serie())
     assert isinstance(res, RetencionDiferida)
-    kw = st.fijar_legal_hold.await_args.kwargs
+    kw = st.set_legal_hold.await_args.kwargs
     assert kw["motivo_tipo"] == "valoracion_pendiente" and kw["actor_id"] is None
     assert kw["acta_ref"] == "TVD TVD-1 v2"  # lo genera el servidor, no el cliente
     assert svc._repo.insert_hold.await_args.kwargs == {
@@ -496,7 +496,7 @@ async def test_si_storage_no_fija_el_hold_no_hay_amarre_ni_se_devuelve_retencion
     svc._repo.get_hold.return_value = None
     st = MagicMock()
     st.StorageLegalHoldError = StorageLegalHoldError
-    st.fijar_legal_hold = AsyncMock(side_effect=StorageLegalHoldError(503, "caído"))
+    st.set_legal_hold = AsyncMock(side_effect=StorageLegalHoldError(503, "caído"))
     with patch(_ST, new=st):
         with pytest.raises(ValoracionHoldError):
             await svc.resolver_diferida(_exp(), _serie())
@@ -508,10 +508,10 @@ async def test_con_amarre_vigente_no_vuelve_a_llamar_a_storage() -> None:
     svc, _ = _svc()
     svc._repo.get_hold.return_value = {"aplicada_at": None, "resultado": None}
     st = MagicMock()
-    st.fijar_legal_hold = AsyncMock()
+    st.set_legal_hold = AsyncMock()
     with patch(_ST, new=st):
         assert isinstance(await svc.resolver_diferida(_exp(), _serie()), RetencionDiferida)
-    st.fijar_legal_hold.assert_not_called()
+    st.set_legal_hold.assert_not_called()
 
 
 @pytest.mark.asyncio

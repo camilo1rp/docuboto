@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
-from signature.core.http_clients import HuellaNoVerificableError, SignerIdentity
+from signature.core.huella import HuellaNoVerificableError
 from signature.services import cadena_service as mod
 from signature.services.cadena_service import CadenaFirmaService
 from tests.signature.conftest import HUELLA_PRODUCTOR, USER
@@ -84,15 +84,15 @@ def _servicio(
     monkeypatch.setattr(mod, "resolve_caller_clearance", AsyncMock(return_value=3))
     monkeypatch.setattr(mod._audit, "append", AsyncMock(return_value="h"))
     enviar = AsyncMock(return_value=None)
-    identidad = AsyncMock(return_value=SignerIdentity(email="a@b.co", user_id=str(USER)))
+    identidad = AsyncMock(return_value="a@b.co")
     monkeypatch.setattr(mod, "send_otp_email", enviar)
-    monkeypatch.setattr(mod, "get_signer_identity", identidad)
+    monkeypatch.setattr("auth.api.user_email", identidad)
     return svc, enviar, identidad
 
 
 def _credencial_activa(monkeypatch: pytest.MonkeyPatch, user_id: uuid.UUID = USER) -> AsyncMock:
     m = AsyncMock(return_value={"estado": "activo", "cert_pem": "x", "user_id": str(user_id)})
-    monkeypatch.setattr(mod, "get_signing_key_status_remote", m)
+    monkeypatch.setattr("auth.api.signing_key_status", m)
     return m
 
 
@@ -124,7 +124,7 @@ async def test_challenge_con_credencial_personal_activa_responde_totp_requerido_
 ) -> None:
     svc, enviar, identidad = _servicio(monkeypatch)
     _credencial_activa(monkeypatch)
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 409 and _codigo(exc) == "totp_requerido"
     _no_se_crea_nada(svc, enviar, identidad)
 
@@ -135,7 +135,7 @@ async def test_challenge_credencial_personal_de_otra_identidad_incoherente(
 ) -> None:
     svc, enviar, identidad = _servicio(monkeypatch)
     _credencial_activa(monkeypatch, user_id=OTRO)
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 403 and _codigo(exc) == "identidad_incoherente"
     enviar.assert_not_awaited()
     identidad.assert_not_awaited()
@@ -150,7 +150,7 @@ async def test_challenge_sin_certificado_bajo_gate_xades_responde_422_sin_correo
 ) -> None:
     svc, enviar, identidad = _servicio(monkeypatch)
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="todos"))
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 422 and _codigo(exc) == "firma_xades_requerida"
     # Sin el asiento `firma.xades_requerida_denegada`: es del acto de firmar.
     _no_se_crea_nada(svc, enviar, identidad)
@@ -160,14 +160,14 @@ async def test_challenge_sin_certificado_bajo_gate_xades_responde_422_sin_correo
 async def test_challenge_canal_de_credencial_caido_bajo_gate_responde_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from signature.core.http_clients import SigningKeyStatusUnavailableError
+    from auth.api import AuthUnavailableError
 
     svc, enviar, identidad = _servicio(monkeypatch)
     monkeypatch.setattr(mod, "modo_xades_de_la_entidad", AsyncMock(return_value="todos"))
     monkeypatch.setattr(
-        mod, "get_signing_key_status_remote", AsyncMock(side_effect=SigningKeyStatusUnavailableError("x"))
+        "auth.api.signing_key_status", AsyncMock(side_effect=AuthUnavailableError("x"))
     )
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 503 and _codigo(exc) == "canal_firma_personal_no_disponible"
     _no_se_crea_nada(svc, enviar, identidad)
 
@@ -188,7 +188,7 @@ async def test_challenge_documento_modificado_no_emite(monkeypatch: pytest.Monke
     svc, enviar, identidad = _servicio(monkeypatch)
     _huella_cambiada(monkeypatch)
     estado = _credencial_activa(monkeypatch)
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 409 and _codigo(exc) == "documento_modificado"
     estado.assert_not_awaited()  # ni siquiera se consulta la credencial
     _no_se_crea_nada(svc, enviar, identidad)
@@ -199,7 +199,7 @@ async def test_challenge_ajeno_no_consulta_huella(monkeypatch: pytest.MonkeyPatc
     """A quien no es parte no se le confirma que el texto cambió."""
     svc, enviar, identidad = _servicio(monkeypatch, es_firmante=False)
     huella = _huella_cambiada(monkeypatch)
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 403 and _codigo(exc) == "no_es_firmante"
     huella.assert_not_awaited()
     _no_se_crea_nada(svc, enviar, identidad)
@@ -213,7 +213,7 @@ async def test_challenge_verificacion_no_disponible_503_sin_correo(
     monkeypatch.setattr(
         mod, "get_huella_radicado", AsyncMock(side_effect=HuellaNoVerificableError("caído"))
     )
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 503 and _codigo(exc) == "verificacion_documento_no_disponible"
     _no_se_crea_nada(svc, enviar, identidad)
 
@@ -226,7 +226,7 @@ async def test_challenge_verificacion_no_disponible_503_sin_correo(
 @pytest.mark.asyncio
 async def test_challenge_turno_visto_bueno_409(monkeypatch: pytest.MonkeyPatch) -> None:
     svc, enviar, identidad = _servicio(monkeypatch, turno=_turno(rol="visto_bueno"))
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 409 and _codigo(exc) == "turno_es_de_visto_bueno"
     _no_se_crea_nada(svc, enviar, identidad)
 
@@ -234,7 +234,7 @@ async def test_challenge_turno_visto_bueno_409(monkeypatch: pytest.MonkeyPatch) 
 @pytest.mark.asyncio
 async def test_challenge_radicado_anulado_409(monkeypatch: pytest.MonkeyPatch) -> None:
     svc, enviar, identidad = _servicio(monkeypatch, sol=_sol(radicado_status="anulado"))
-    exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    exc = await _error(svc.emitir_challenge(SOL_ID, USER))
     assert exc.status_code == 409 and _codigo(exc) == "radicado_anulado"
     _no_se_crea_nada(svc, enviar, identidad)
 
@@ -286,10 +286,10 @@ async def test_paridad_challenge_sign(esperado: str, monkeypatch: pytest.MonkeyP
     construir = ESCENARIOS[esperado]
 
     svc = construir(monkeypatch)
-    en_challenge = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+    en_challenge = await _error(svc.emitir_challenge(SOL_ID, USER))
 
     svc = construir(monkeypatch)
-    en_sign = await _error(svc.firmar(SOL_ID, USER, None, "Bearer x"))
+    en_sign = await _error(svc.firmar(SOL_ID, USER, None))
 
     assert _codigo(en_challenge) == esperado
     assert _codigo(en_sign) == esperado
@@ -314,9 +314,9 @@ async def test_paridad_nivel_vivo_mayor_que_la_copia(monkeypatch: pytest.MonkeyP
         monkeypatch.setattr(mod, "resolve_caller_clearance", AsyncMock(return_value=1))
         svc._repo.nivel_vigente_for_update.return_value = (2, 1)
         if camino == "challenge":
-            exc = await _error(svc.emitir_challenge(SOL_ID, USER, "Bearer x"))
+            exc = await _error(svc.emitir_challenge(SOL_ID, USER))
         else:
-            exc = await _error(svc.firmar(SOL_ID, USER, None, "Bearer x"))
+            exc = await _error(svc.firmar(SOL_ID, USER, None))
         enviar.assert_not_awaited()
         svc._repo.actualizar_nivel_seguridad.assert_not_awaited()
         resultados.append((exc.status_code, _codigo(exc)))

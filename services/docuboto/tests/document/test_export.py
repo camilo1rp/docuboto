@@ -164,7 +164,7 @@ async def test_anexo_bytes_included_with_sha256() -> None:
             return None
 
     with patch(
-        "document.services.export_service.storage_client.open_content_stream",
+        "document.services.export_service.storage_api.open_file_stream",
         new=AsyncMock(return_value=_FakeStream()),
     ):
         zbytes, *_ = await svc.build_export(
@@ -185,7 +185,7 @@ async def test_purged_anexo_is_traceable_not_fatal() -> None:
     entrada `ausente` TRAZABLE (no se descarta en silencio)."""
     svc = _svc([_row(con_anexo=True)])
     with patch(
-        "document.services.export_service.storage_client.open_content_stream",
+        "document.services.export_service.storage_api.open_file_stream",
         new=AsyncMock(return_value=None),
     ):
         zbytes, _u, num, _e = await svc.build_export(

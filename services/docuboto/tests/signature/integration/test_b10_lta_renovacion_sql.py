@@ -29,7 +29,6 @@ from unittest.mock import AsyncMock
 import pytest
 from lxml import etree
 
-from signature.clients import preservacion_client, storage_client
 from signature.core import tsa
 from signature.core.config import settings
 from signature.core.database import _schema as tenant_schema
@@ -37,6 +36,7 @@ from signature.jobs import renovacion_lta
 from signature.providers.base import SignerRef
 from signature.providers.local import verify_xades
 from signature.repositories.firma_repository import FirmaRepository
+from storage import api as storage_api
 from tests.signature.test_xmldsig_conformidad import (  # noqa: F401  (_tsa_local es autouse)
     _cert,
     _firmar_lta,
@@ -121,9 +121,9 @@ def storage(monkeypatch):
     est.descargar = AsyncMock()
     est.subir = AsyncMock(side_effect=lambda **kw: f"{uuid.uuid4()}/{kw['filename']}")
     est.renovar = AsyncMock(return_value={"protegido": True})
-    monkeypatch.setattr(preservacion_client, "descargar_xml", est.descargar)
-    monkeypatch.setattr(storage_client, "upload_signed_xml", est.subir)
-    monkeypatch.setattr(preservacion_client, "renovar_artefacto", est.renovar)
+    monkeypatch.setattr(storage_api, "read_object", est.descargar)
+    monkeypatch.setattr(storage_api, "upload_signed_xml", est.subir)
+    monkeypatch.setattr(storage_api, "renew_artifact", est.renovar)
     monkeypatch.setattr(settings, "lta_renovacion_margen_dias", 400)  # el sello de pruebas vence en 365 d
     return est
 
@@ -174,7 +174,7 @@ async def test_pendiente_worm_reintenta_solo_storage(tenant_ctx, monkeypatch, st
     _doc, firma_id, _key, xml = await _sembrar(conn, slug, monkeypatch)
     storage.descargar.return_value = xml
     _tsa_larga(monkeypatch)
-    storage.renovar.side_effect = preservacion_client.PreservacionError("storage caído")
+    storage.renovar.side_effect = storage_api.StorageError("storage caído")
 
     r1 = await renovacion_lta.renovar_tenant(conn, slug)
     assert r1["pendiente_worm"] == 1
@@ -248,7 +248,7 @@ async def test_al_quedar_vigente_publica_firma_lta_renovada(tenant_ctx, monkeypa
     monkeypatch.setattr(renovacion_lta, "publish_lta_renovada", publicar)
     monkeypatch.setattr(renovacion_lta, "get_redis", lambda: object())
 
-    storage.renovar.side_effect = preservacion_client.PreservacionError("caído")
+    storage.renovar.side_effect = storage_api.StorageError("caído")
     await renovacion_lta.renovar_tenant(conn, slug)
     publicar.assert_not_awaited()  # pendiente_worm: aún no es vigente
 
@@ -321,7 +321,7 @@ async def test_el_paso_a_vigente_deja_asiento(tenant_ctx, monkeypatch, storage) 
     _doc, firma_id, _key, xml = await _sembrar(conn, slug, monkeypatch)
     storage.descargar.return_value = xml
     _tsa_larga(monkeypatch)
-    storage.renovar.side_effect = preservacion_client.PreservacionError("caído")
+    storage.renovar.side_effect = storage_api.StorageError("caído")
     await renovacion_lta.renovar_tenant(conn, slug)
     assert await _asientos(conn, slug, "firma.lta_sello_vigente") == 0  # aún pendiente_worm
 

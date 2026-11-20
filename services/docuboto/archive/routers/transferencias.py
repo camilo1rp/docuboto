@@ -15,7 +15,7 @@ import uuid
 from typing import Literal
 
 import asyncpg
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
@@ -215,14 +215,12 @@ async def transferencia_acta_firmar(
 async def transferencia_acta_firmar_personal(
     transferencia_id: uuid.UUID,
     payload: FirmarPersonalRequest,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
     actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaActaFirmaPersonalResponse:
-    authorization = request.headers.get("Authorization")
     return await TransferenciaService(conn, tenant_slug).firmar_personal(
-        transferencia_id, actor, payload.totp_code, authorization, payload.rol
+        transferencia_id, actor, payload.totp_code, payload.rol
     )
 
 
@@ -238,15 +236,12 @@ async def transferencia_acta_firmar_personal(
 async def transferencia_acta_firma_inobtenible(
     transferencia_id: uuid.UUID,
     payload: FirmaInobtenibleRequest,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
     actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaActaFirmaExcepcion:
-    # El bearer se reenvía TAL CUAL a signature-service: verifica y consume el TOTP del
-    # declarante contra auth-service con la identidad del bearer (firma personal de la constancia).
     return await TransferenciaService(conn, tenant_slug).declarar_firma_inobtenible(
-        transferencia_id, actor, payload, request.headers.get("Authorization")
+        transferencia_id, actor, payload
     )
 
 
@@ -260,14 +255,12 @@ async def transferencia_acta_firma_inobtenible(
 async def transferencia_acta_firma_inobtenible_revocar(
     transferencia_id: uuid.UUID,
     payload: RevocarFirmaInobtenibleRequest,
-    request: Request,
     tenant_slug: str = Depends(_require_tenant),
     actor: Actor = Depends(require_actor),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TransferenciaActaFirmaExcepcion:
-    # Igual que al declarar: el bearer se reenvía TAL CUAL para la firma personal de quien revoca.
     return await TransferenciaService(conn, tenant_slug).revocar_firma_inobtenible(
-        transferencia_id, actor, payload, request.headers.get("Authorization")
+        transferencia_id, actor, payload
     )
 
 

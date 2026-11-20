@@ -9,8 +9,8 @@
 
 """Firma XAdES del acta de transferencia (H-H, E06/F4) — generalización del
 allow-set institucional de `signing_service._select_provider_name` a
-`objeto_tipo="acta_transferencia"`, en `/sign-xml` (atribución humana) y
-`/internal/sign-indice` (atribución a `SYSTEM_RECONCILER_ID`, reconciliación).
+`objeto_tipo="acta_transferencia"`, con atribución humana y atribuido a
+`SYSTEM_RECONCILER_ID` (reconciliación, `signature.api.sign_as_system`).
 
 Reutiliza `signature_env` (fixture + helpers de `test_sign_xml_xades.py`) —
 mismo sello institucional efímero, mismo `_FakeFirmaTable`. La única
@@ -26,11 +26,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from signature.core.config import settings
+from signature import api as signature_api
 from signature.core.constants import SYSTEM_RECONCILER_ID
-from tests.signature.conftest import TENANT_HEADERS, USER
+from tests.signature.conftest import TENANT_HEADERS, USER, en_proceso, sellar
 from tests.signature.test_sign_xml_xades import _generate_cert, _signer_ref
-from tests.signature.test_sign_xml_xades import signature_env as signature_env  # re-exported fixture
+from tests.signature.test_sign_xml_xades import (
+    signature_env as signature_env,  # re-exported fixture
+)
 
 _ACTA_XML = (
     b'<acta xmlns="urn:orpyca:acta-fuid">'
@@ -38,20 +40,16 @@ _ACTA_XML = (
     b"</acta>"
 )
 
-_INTERNAL_TOKEN = "itest-internal-token-acta-abc123"
-
-
-async def _sign_acta(client, *, headers=None, xml: bytes = _ACTA_XML):
-    return await client.post(
-        "/api/v1/signature/sign-xml",
-        json={
+async def _sign_acta(conn, *, xml: bytes = _ACTA_XML):
+    return await sellar(
+        conn,
+        {
             "payload_xml": xml.decode(),
             "objeto_tipo": "acta_transferencia",
             "objeto_id": "transferencia-1",
             "indice_id": None,
             "version": 1,
         },
-        headers=headers or TENANT_HEADERS,
     )
 
 
@@ -60,12 +58,13 @@ def _internal_acta_body(*, xml: bytes = _ACTA_XML, objeto_id: str = "transferenc
         "payload_xml": xml.decode(),
         "objeto_tipo": "acta_transferencia",
         "objeto_id": objeto_id,
+        "indice_id": None,
         "version": 1,
     }
 
 
 # ---------------------------------------------------------------------------
-# /sign-xml — atribución humana (X-User-Id, PERM_FIRMA)
+# Sello atribuido a quien lo pide
 # ---------------------------------------------------------------------------
 
 
@@ -75,7 +74,7 @@ async def test_sign_xml_acta_transferencia_produces_xades(signature_env) -> None
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_acta(client)
+    resp = await _sign_acta(conn)
     assert resp.status_code == 201
     body = resp.json()
 
@@ -103,7 +102,7 @@ async def test_sign_xml_acta_transferencia_minio_filename_uses_acta_prefix(
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_acta(client)
+    resp = await _sign_acta(conn)
     assert resp.status_code == 201
     body = resp.json()
 
@@ -128,8 +127,8 @@ async def test_sign_xml_acta_transferencia_two_signatures_never_share_minio_key(
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp1 = await _sign_acta(client)
-    resp2 = await _sign_acta(client)
+    resp1 = await _sign_acta(conn)
+    resp2 = await _sign_acta(conn)
     assert resp1.status_code == 201
     assert resp2.status_code == 201
     body1, body2 = resp1.json(), resp2.json()
@@ -156,7 +155,7 @@ async def test_sign_xml_acta_transferencia_never_publishes_indice_firmado_event(
     mock_publish = AsyncMock()
     monkeypatch.setattr("signature.services.signing_service.publish_indice_firmado", mock_publish)
 
-    resp = await _sign_acta(client)
+    resp = await _sign_acta(conn)
     assert resp.status_code == 201
     mock_publish.assert_not_called()
 
@@ -181,27 +180,22 @@ async def test_sign_xml_indice_still_publishes_event_retrocompat(
     # mismo `try/except` que protege el evento).
     monkeypatch.setattr("signature.services.signing_service.get_redis", lambda: object())
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     mock_publish.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_sign_xml_ya_no_admite_tipos_fuera_del_sello(
-    signature_env, monkeypatch
-) -> None:
-    """B9-3: ``/sign-xml`` es solo sello institucional. Un ``objeto_tipo`` fuera del
-    allow-set (radicado, anexo, ...) da 422 incluso con el token interno, y no se
-    firma ni se sube nada (antes caía a HMAC 'nativa')."""
+async def test_sign_xml_ya_no_admite_tipos_fuera_del_sello(signature_env) -> None:
+    """B9-3: el sello es solo institucional. Un ``objeto_tipo`` fuera del allow-set
+    (radicado, anexo, ...) da 422, y no se firma ni se sube nada (antes caía a HMAC
+    'nativa')."""
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
-    monkeypatch.setattr(settings, "signature_internal_token", _INTERNAL_TOKEN)
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await client.post(
-        "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<radicado/>", "objeto_tipo": "radicado", "objeto_id": "R-1"},
-        headers={**TENANT_HEADERS, "X-Internal-Token": _INTERNAL_TOKEN},
+    resp = await sellar(
+        conn, {"payload_xml": "<radicado/>", "objeto_tipo": "radicado", "objeto_id": "R-1"}
     )
     assert resp.status_code == 422
     assert uploads == []
@@ -209,7 +203,7 @@ async def test_sign_xml_ya_no_admite_tipos_fuera_del_sello(
 
 
 # ---------------------------------------------------------------------------
-# /internal/sign-indice — atribución a SYSTEM_RECONCILER_ID
+# signature.api.sign_as_system — atribución a SYSTEM_RECONCILER_ID
 # ---------------------------------------------------------------------------
 
 
@@ -218,67 +212,52 @@ async def test_internal_sign_acta_transferencia_produces_xades_attributed_to_sys
     signature_env, monkeypatch
 ) -> None:
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
-    monkeypatch.setattr(settings, "signature_internal_token", _INTERNAL_TOKEN)
+    en_proceso(monkeypatch, conn)
     cert_pem, key_pem = _generate_cert("orpycamcp-dev-reconciler")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await client.post(
-        "/api/v1/signature/internal/sign-indice",
-        json=_internal_acta_body(),
-        headers={"X-Tenant-Slug": "demo", "X-Internal-Token": _INTERNAL_TOKEN},
-    )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["provider"] == "xades_local"
-    assert body["firmante_id"] == str(SYSTEM_RECONCILER_ID)
+    outcome = await signature_api.sign_as_system(tenant_slug="demo", **_internal_acta_body())
+    assert outcome.signed is not None
+    fila = table.rows[str(outcome.signed.firma_id)]
+    assert fila["provider"] == "xades_local"
+    assert str(fila["firmante_id"]) == str(SYSTEM_RECONCILER_ID)
     assert uploads[0]["filename"].startswith("acta-transferencia-")
 
 
 @pytest.mark.asyncio
-async def test_internal_sign_indice_default_objeto_tipo_still_indice_retrocompat(
+async def test_internal_sign_indice_default_objeto_tipo_still_indice(
     signature_env, monkeypatch
 ) -> None:
-    """Retrocompat del Inc.8: el llamador preexistente
-    (`archive-service/archive/jobs/indice_reconciliation.py`) nunca envía
-    `objeto_tipo` — el default sigue siendo `"indice"`, filename con el
-    prefijo `indice-` de siempre."""
+    """Sin `objeto_tipo`, el sello de sistema es del índice: filename con el prefijo `indice-`."""
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
-    monkeypatch.setattr(settings, "signature_internal_token", _INTERNAL_TOKEN)
+    en_proceso(monkeypatch, conn)
     cert_pem, key_pem = _generate_cert("orpycamcp-dev-reconciler")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await client.post(
-        "/api/v1/signature/internal/sign-indice",
-        json={
-            "payload_xml": _ACTA_XML.decode(),
-            "objeto_id": "exp-1",
-            "indice_id": str(uuid.uuid4()),
-            "version": 1,
-        },
-        headers={"X-Tenant-Slug": "demo", "X-Internal-Token": _INTERNAL_TOKEN},
+    outcome = await signature_api.sign_as_system(
+        tenant_slug="demo",
+        payload_xml=_ACTA_XML.decode(),
+        objeto_id="exp-1",
+        indice_id=str(uuid.uuid4()),
+        version=1,
     )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert uploads[0]["filename"] == f"indice-exp-1-v1-{body['firma_id']}-firmado.xml"
+    assert outcome.signed is not None
+    assert uploads[0]["filename"] == f"indice-exp-1-v1-{outcome.signed.firma_id}-firmado.xml"
 
 
 @pytest.mark.asyncio
 async def test_internal_sign_rejects_objeto_tipo_outside_allow_set(
     client_with_conn, monkeypatch
 ) -> None:
-    """`objeto_tipo` fuera de `XADES_ELIGIBLE_OBJETO_TIPOS` (p. ej. "radicado")
-    es rechazado por el schema (422) — la ruta interna NUNCA puede firmar un
-    tipo de objeto arbitrario, aunque el body lo declare."""
-    monkeypatch.setattr(settings, "signature_internal_token", _INTERNAL_TOKEN)
-    client, _conn = client_with_conn
-    resp = await client.post(
-        "/api/v1/signature/internal/sign-indice",
-        json={
-            "payload_xml": "<x/>",
-            "objeto_tipo": "radicado",
-            "objeto_id": "exp-1",
-            "version": 1,
-        },
-        headers={"X-Tenant-Slug": "demo", "X-Internal-Token": _INTERNAL_TOKEN},
+    """`objeto_tipo` fuera de `XADES_ELIGIBLE_OBJETO_TIPOS` (p. ej. "radicado") no se sella:
+    el sello de sistema NUNCA puede firmar un tipo de objeto arbitrario."""
+    _client, conn = client_with_conn
+    en_proceso(monkeypatch, conn)
+    sign = AsyncMock()
+    monkeypatch.setattr("signature.services.signing_service.sign_payload", sign)
+    outcome = await signature_api.sign_as_system(
+        tenant_slug="demo", payload_xml="<x/>", objeto_tipo="radicado", objeto_id="exp-1",
+        indice_id=None, version=1,
     )
-    assert resp.status_code == 422
+    assert outcome.signed is None and outcome.transient
+    sign.assert_not_awaited()

@@ -15,11 +15,12 @@ radicados, no anexos, y se detiene si el cursor no termina.
 
 from __future__ import annotations
 
-import pytest
-from fastapi import HTTPException
+from contextlib import asynccontextmanager
 
+import pytest
+
+from knowledge import api as knowledge_api
 from knowledge.core.paso import contar_radicados
-from knowledge.routers import inteligencia
 
 
 class _Cliente:
@@ -93,25 +94,28 @@ async def test_una_pagina_mal_formada_no_cuenta() -> None:
     assert resultado.sale is False
 
 
-class _Peticion:
-    def __init__(self) -> None:
-        self.headers = {"X-Tenant-Slug": "demo"}
+def _sin_bd(monkeypatch: pytest.MonkeyPatch, cliente: _Cliente) -> None:
+    @asynccontextmanager
+    async def _acquire(slug: str):
+        yield object()
+
+    monkeypatch.setattr(knowledge_api, "acquire_tenant", _acquire)
+    monkeypatch.setattr(knowledge_api, "_cliente", lambda: cliente)
 
 
 @pytest.mark.asyncio
-async def test_la_ruta_interna_devuelve_la_cuenta(monkeypatch: pytest.MonkeyPatch) -> None:
-    cliente = _Cliente([_pagina([{"type": "record"}], None)])
-    monkeypatch.setattr(inteligencia, "_cliente", lambda: cliente)
-    cuerpo = await inteligencia.inventory(_Peticion(), object())
+async def test_el_inventario_devuelve_la_cuenta(monkeypatch: pytest.MonkeyPatch) -> None:
+    _sin_bd(monkeypatch, _Cliente([_pagina([{"type": "record"}], None)]))
+    cuerpo = await knowledge_api.inventory(tenant_slug="demo")
     assert cuerpo == {"records": 1, "complete": True}
 
 
 @pytest.mark.asyncio
-async def test_la_ruta_interna_no_inventa_un_cero(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_el_inventario_no_inventa_un_cero(monkeypatch: pytest.MonkeyPatch) -> None:
     cliente = _Cliente([])
     cliente.destino = ""
-    monkeypatch.setattr(inteligencia, "_cliente", lambda: cliente)
-    with pytest.raises(HTTPException) as exc:
-        await inteligencia.inventory(_Peticion(), object())
-    assert exc.value.status_code == 503
-    assert exc.value.detail["error"] == "inventario_no_disponible"
+    _sin_bd(monkeypatch, cliente)
+    with pytest.raises(knowledge_api.IntelligenceError) as exc:
+        await knowledge_api.inventory(tenant_slug="demo")
+    assert exc.value.status == 503
+    assert exc.value.error == "inventario_no_disponible"

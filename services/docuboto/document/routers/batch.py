@@ -11,16 +11,14 @@
 
 import asyncio
 import logging
-from typing import Any
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.clients.tenant_client import TenantServiceClient
 from document.core.clearance import check_permission, require_permission, resolve_caller_clearance
-from document.core.database import acquire_tenant
+from document.core.database import acquire_tenant, get_tenant_client
 from document.core.database import get_tenant_conn as get_db
 from document.schemas.batch import (
     BatchDocumentsRequest,
@@ -40,7 +38,7 @@ router = APIRouter(prefix="/api/v1/batch", tags=["batch"])
 _tareas_en_curso: set[asyncio.Task] = set()
 
 
-async def _procesar_lote(tenant_slug: str, job_id: UUID, http: Any = None) -> None:
+async def _procesar_lote(tenant_slug: str, job_id: UUID) -> None:
     """Tarea detached: conexión PROPIA, y el fallo se escribe en el job.
 
     Dos cosas que la primera versión no hacía, y que juntas explicaban lo que se
@@ -61,7 +59,7 @@ async def _procesar_lote(tenant_slug: str, job_id: UUID, http: Any = None) -> No
     """
     try:
         async with acquire_tenant(tenant_slug) as conn:
-            service = BatchService(conn, tenant_slug, TenantServiceClient(http))
+            service = BatchService(conn, tenant_slug, get_tenant_client())
             await service.process_batch_documents(job_id)
     except Exception as exc:  # noqa: BLE001 — nadie más puede recoger esto
         logger.exception("El lote %s falló fuera del ciclo petición/respuesta", job_id)
@@ -129,8 +127,7 @@ async def create_batch_documents(
     service = BatchService(conn, tenant_slug)
     job_id = await service.create_batch_documents(payload, UUID(user_id))
 
-    http = getattr(request.app.state, "http_client", None)
-    tarea = asyncio.create_task(_procesar_lote(tenant_slug, job_id, http))
+    tarea = asyncio.create_task(_procesar_lote(tenant_slug, job_id))
     _tareas_en_curso.add(tarea)
     tarea.add_done_callback(_tareas_en_curso.discard)
 
@@ -238,8 +235,7 @@ async def reprocesar_batch(
             detail={"error": exc.codigo, "detail": exc.detalle, "status": exc.status},
         ) from exc
 
-    http = getattr(request.app.state, "http_client", None)
-    tarea = asyncio.create_task(_procesar_lote(tenant_slug, job_id, http))
+    tarea = asyncio.create_task(_procesar_lote(tenant_slug, job_id))
     _tareas_en_curso.add(tarea)
     tarea.add_done_callback(_tareas_en_curso.discard)
     return BatchReprocesarResponse(job_id=job_id, status="pending", items_a_procesar=pendientes)

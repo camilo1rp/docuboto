@@ -54,6 +54,7 @@ from document.core.config import settings
 from document.core.database import tenant_schema
 from document.services.email_bandeja_service import EmailBandejaService
 from document.services.email_cuenta_service import ErrorDeCuenta
+from tenant import api as tenant_api
 
 logger = logging.getLogger(__name__)
 
@@ -283,19 +284,17 @@ class SondeoDeCorreo:
         return cuenta_id.int & 0x7FFFFFFF
 
 
-async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str, http: Any) -> None:
+async def bucle_de_sondeo(pool: asyncpg.Pool, tenant_slug: str) -> None:
     """Corre indefinidamente. Pensado para `asyncio.create_task` en el lifespan.
 
     Cada excepción inesperada se registra y el bucle **continúa**: un worker que
     muere en silencio deja la ingesta parada sin que nadie se entere, y el
     síntoma sería «no llega correo», indistinguible de un buzón vacío.
     """
-    from document.clients.tenant_client import TenantServiceClient
-
     canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
-    # Sin el cliente, una Entrada con plazo por defecto revienta al calcular
-    # la fecha (el calendario vive en tenant-service).
-    sondeo = SondeoDeCorreo(tenant_slug, TenantServiceClient(http))
+    # Sin `tenant_api`, una Entrada con plazo por defecto revienta al calcular
+    # la fecha (el calendario vive en tenant).
+    sondeo = SondeoDeCorreo(tenant_slug, tenant_api)
     intervalo = max(30, settings.email_sondeo_intervalo_segundos)
     logger.info("sondeo de correo activo para «%s» cada %ss", tenant_slug, intervalo)
     while True:

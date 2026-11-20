@@ -8,14 +8,14 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Tests de ``POST /api/v1/preservacion/aip`` en modo AIP índice-only (E10 AIP
+Tests de ``AipService.empaquetar_aip`` en modo AIP índice-only (E10 AIP
 wiring follow-up, expedientes 100% físicos): ``documentos=[]`` +
 ``indice_file_id`` presente.
 
 Complementa ``test_aip_real.py`` (que cubre el modo normal, con documentos) y
 ``test_aip_builder_indice_only.py`` (que ejercita ``build_bag`` directamente,
 incl. la validación con la librería de referencia ``bagit``) -- aquí se
-ejercita el ROUTER + SERVICE completo, con MinIO/BD mockeados (mismo patrón
+ejercita el SERVICE completo, con MinIO/BD mockeados (mismo patrón
 que ``test_aip_real.py``, ver su docstring: ningún test escribe objetos
 COMPLIANCE reales)."""
 
@@ -27,11 +27,14 @@ import uuid
 import zipfile
 from datetime import UTC, datetime
 
+import pydantic
 import pytest
 
 import storage.core.config as config_module
+from storage.schemas.preservacion import AipCreate
+from storage.services.aip_service import AipService
+from storage.services.preservation_worm_service import FixityMismatchError
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -42,13 +45,20 @@ _INDICE_CONTENT = b"<indice xmlns='urn:orpycamcp:indice:v1'>expediente fisico, s
 _INDICE_SHA256 = hashlib.sha256(_INDICE_CONTENT).hexdigest()
 
 
+_ACTOR = str(uuid.uuid4())
+
+
+async def _empaquetar(mock_conn, payload: dict) -> dict:
+    """Empaqueta vía `AipService` con un actor persona (la ruta HTTP ya no existe, ADR-047)."""
+    result = await AipService(mock_conn, TENANT_SLUG).empaquetar_aip(
+        AipCreate(**payload), actor=_ACTOR
+    )
+    return result.model_dump(mode="json")
+
+
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
-
-
-def _grant_permission(mock_conn) -> None:
-    mock_conn.fetchval.return_value = True
 
 
 def _indice_record(file_id: uuid.UUID) -> dict:
@@ -82,14 +92,13 @@ def _zip_from_put_object_call(mock_minio) -> zipfile.ZipFile:
 
 @pytest.mark.asyncio
 async def test_empaquetar_aip_indice_only_happy_path(client_with_conn) -> None:
-    """``documentos=[]`` + ``indice_file_id`` -> 201, el índice se sube como
+    """``documentos=[]`` + ``indice_file_id`` -> se empaqueta, el índice se sube como
     ÚNICO payload del Bag (``data/indice-firmado.xml``), no como tag file."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     indice_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _indice_record(indice_file_id),  # FileRepository.get_by_id_any_state (índice)
         None,  # get_aip_by_expediente_and_sha256 (sin duplicado previo)
@@ -147,14 +156,7 @@ async def test_empaquetar_aip_indice_only_happy_path(client_with_conn) -> None:
     ]
     mock_minio.get_object = minio_get_object(_INDICE_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_indice_only_payload(indice_file_id=indice_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
+    body = await _empaquetar(mock_conn, _indice_only_payload(indice_file_id=indice_file_id))
     assert body["num_documentos"] == 0
     assert body["indice_sha256"] == _INDICE_SHA256
 
@@ -207,41 +209,32 @@ async def test_empaquetar_aip_indice_only_recalculates_fixity_and_blocks_on_mism
     (nunca confiada) también en modo índice-only -- mismo contrato que el
     documento en modo normal (``test_aip_real.py::
     test_empaquetar_aip_fixity_mismatch_blocks_upload``)."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     indice_file_id = uuid.uuid4()
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _indice_record(indice_file_id),
         {"id": uuid.uuid4()},  # insert_evento FIJACION fallo
     ]
     mock_minio.get_object = minio_get_object(b"bytes alterados, no coinciden con el sha256 registrado")
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_indice_only_payload(indice_file_id=indice_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "fixity_mismatch"
+    with pytest.raises(FixityMismatchError):
+        await _empaquetar(mock_conn, _indice_only_payload(indice_file_id=indice_file_id))
     mock_minio.put_object.assert_not_awaited()
     mock_minio.make_bucket.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_empaquetar_aip_totally_empty_is_422_never_reaches_minio(client_with_conn) -> None:
-    """``documentos=[]`` SIN ``indice_file_id`` -- 422 en la capa Pydantic
+async def test_empaquetar_aip_totally_empty_is_rejected_never_reaches_minio(client_with_conn) -> None:
+    """``documentos=[]`` SIN ``indice_file_id`` -- rechazado en la capa Pydantic
     (``AipCreate._check_at_least_one_payload``), nunca intenta tocar
     BD/MinIO -- nunca se emitiría un Bag empty-payload."""
-    client, mock_conn, mock_minio = client_with_conn
-    _grant_permission(mock_conn)
+    _client, mock_conn, mock_minio = client_with_conn
 
     payload = _indice_only_payload(indice_file_id=uuid.uuid4())
     del payload["indice_file_id"]
 
-    resp = await client.post("/api/v1/preservacion/aip", json=payload, headers=INTERNAL_HEADERS)
-
-    assert resp.status_code == 422
+    with pytest.raises(pydantic.ValidationError):
+        await _empaquetar(mock_conn, payload)
     mock_conn.fetchrow.assert_not_called()
     mock_minio.put_object.assert_not_awaited()

@@ -194,8 +194,8 @@ class _RedisSoloAntireplay:
 
 
 class _Tenant:
-    async def get_params_estricto(self, *, tenant_slug: str) -> dict:
-        return await ENTIDAD.get_params_estricto(tenant_slug=tenant_slug)
+    async def get_params_strict(self, *, tenant_slug: str) -> dict:
+        return await ENTIDAD.get_params_strict(tenant_slug=tenant_slug)
 
     async def get_dependencia(self, *, tenant_slug: str, codigo: int) -> dict:
         return {"codigo": codigo, "nombre": "Ventanilla Única"}

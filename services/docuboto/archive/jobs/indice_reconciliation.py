@@ -11,8 +11,8 @@
 AGN 001/2024 art. 4.3.2.4) — converge los índices que quedaron
 'pendiente_firma' tras `ArchiveService.close_expediente`
 (`IndexService.firmar_indice_close` agotó su control compensatorio síncrono,
-o el sello institucional estaba ausente en ese instante) llamando a la ruta
-INTERNA de signature-service (`POST /internal/sign-indice`, atribuida a
+o el sello institucional estaba ausente en ese instante) pidiendo el sello a
+firma en proceso (`signature_api.sign_as_system`, atribuido a
 `SYSTEM_RECONCILER_ID`) con backoff exponencial por índice.
 
 Espejo de `signature-service/signature/jobs/deadletter_retention.py`: mismo patrón
@@ -39,8 +39,7 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 from orpycamcp_common import audit
 
-from archive.clients import signature_client
-from archive.clients.notification_client import NotificationDeliveryError, enviar_aviso
+import signature.api as signature_api
 from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.database import acquire_tenant, close_pool, create_pool, get_pool
@@ -56,6 +55,7 @@ from archive.services.index_service import IndexService
 from archive.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
 from archive.services.transferencia_service import TransferenciaService
 from archive.services.valoracion_service import ValoracionService
+from notification import api as notification_api
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ async def _reconciliar_indice(
     conformidad)."""
     repo = IndexRepository(conn)
     # AREA-07-01: el XSD se valida ANTES de pedir el sello también aquí, porque este
-    # job firma por su cuenta (`sign_indice_internal`) sin pasar por `IndexService`.
+    # job firma por su cuenta (`sign_as_system`) sin pasar por `IndexService`.
     # Un índice que no valida no se sella: sigue el camino de fallo (backoff y, al
     # agotarse, aviso) con el motivo `xsd_invalido`.
     error_xsd = validar_indice_xml(row["xml"])
@@ -126,7 +126,7 @@ async def _reconciliar_indice(
         )
         outcome = None
     else:
-        outcome = await signature_client.sign_indice_internal(
+        outcome = await signature_api.sign_as_system(
             tenant_slug=slug,
             payload_xml=row["xml"],
             objeto_id=str(row["expediente_id"]),
@@ -170,7 +170,7 @@ async def _reconciliar_indice(
     # C2: mismo motivo textual que `IndexService.firmar_indice_close` usa
     # para la misma condición (sello institucional ausente) — antes este job
     # escribía el código de error de TRANSPORTE de signature-service
-    # (`signing_seal_unavailable`, ver `signature_client._outcome_from_response`)
+    # (`signing_seal_unavailable`, ver `signature_api._fallo_sellado`)
     # en vez del motivo de DOMINIO, dejando `reconcile_ultimo_error` y el
     # asiento `archive.indice_reconcile_agotado` inconsistentes con
     # `archive.indice_firma_pendiente` para la MISMA causa raíz.
@@ -253,14 +253,14 @@ async def _avisar_indice_agotado(
         )
         for d in destinatarios:
             try:
-                await enviar_aviso(
+                await notification_api.send(
                     recipient_email=d["email"],
                     subject=_ASUNTO_INDICE_AGOTADO,
                     body=_cuerpo_indice_agotado(),
                     tenant_slug=slug,
                 )
                 enviados += 1
-            except NotificationDeliveryError as exc:
+            except notification_api.NotificationDeliveryError as exc:
                 logger.warning(
                     "Aviso de índice agotado: no se pudo avisar en tenant=%s: %s", slug, exc
                 )
@@ -391,7 +391,7 @@ async def _reconciliar_acta(conn: asyncpg.Connection, slug: str, row: asyncpg.Re
     'pendiente_firma' hasta reintento manual — NUNCA se inventa
     conformidad)."""
     repo = TransferenciaRepository(conn, slug)
-    outcome = await signature_client.sign_indice_internal(
+    outcome = await signature_api.sign_as_system(
         tenant_slug=slug,
         payload_xml=row["acta_fuid_xml"],
         objeto_id=str(row["transferencia_id"]),

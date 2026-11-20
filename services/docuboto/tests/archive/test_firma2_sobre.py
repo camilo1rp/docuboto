@@ -29,7 +29,6 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from archive.clients.signature_client import SignOutcome
 from archive.core.actor import Actor
 from archive.services.constancia_firma_excepcion import (
     HuellaFundamento,
@@ -40,6 +39,8 @@ from archive.services.constancia_firma_excepcion import (
     sha256_c14n,
 )
 from archive.services.transferencia_service import TransferenciaService
+from signature.api import SignOutcome
+from storage.api import PurgaHuerfano
 from tests.archive.conftest import TENANT_HEADERS
 from tests.archive.test_acta_firma_inobtenible import (
     ADMIN,
@@ -187,14 +188,14 @@ def _sobre_ok(file_id: uuid.UUID) -> SignOutcome:
 async def test_con_totp_invalido_el_sobre_ni_se_sella_ni_se_sube() -> None:
     """Mutación: sellar el sobre ANTES de validar la firma personal -> una copia del texto en el
     almacén por cada intento fallido."""
-    from archive.clients.signature_client import SignPersonalOutcome
+    from signature.api import SignPersonalOutcome
 
     conn = _conn()
     tid, exp_id = uuid.uuid4(), uuid.uuid4()
     _secuencia(conn, tid, exp_id, final=[None, None, _excepcion_row(tid)])
     with _externos(personal=SignPersonalOutcome(signed=None, rejected=(401, {"error": "totp_incorrecto"}))) as (
         sign_xml, sign_pers, _w
-    ), patch("archive.clients.storage_client.purgar_huerfanos_internal", new=AsyncMock()) as purga:
+    ), patch("storage.api.purge_orphans", new=AsyncMock()) as purga:
         with pytest.raises(HTTPException):
             await TransferenciaService(conn, TENANT).declarar_firma_inobtenible(
                 tid, Actor(id=ADMIN), _payload(totp_code="000000")
@@ -210,7 +211,7 @@ async def _declarar_con_fallo(final_extra, file_id: uuid.UUID, purga_side=None):
     tid, exp_id = uuid.uuid4(), uuid.uuid4()
     _secuencia(conn, tid, exp_id, final=[None, None, final_extra])
     with _externos() as (sign_xml, _sp, _w), patch(
-        "archive.clients.storage_client.purgar_huerfanos_internal",
+        "storage.api.purge_orphans",
         new=AsyncMock(side_effect=purga_side, return_value=[{"resultado": "purgado"}]),
     ) as purga:
         sign_xml.side_effect = [_sello_ok(), _sobre_ok(file_id)]
@@ -259,7 +260,7 @@ async def test_en_el_camino_feliz_no_se_purga_nada() -> None:
     tid, exp_id = uuid.uuid4(), uuid.uuid4()
     _secuencia(conn, tid, exp_id, final=[None, None, _con_sobre(tid)])
     with _externos(), patch(
-        "archive.clients.storage_client.purgar_huerfanos_internal", new=AsyncMock()
+        "storage.api.purge_orphans", new=AsyncMock()
     ) as purga:
         await TransferenciaService(conn, TENANT).declarar_firma_inobtenible(
             tid, Actor(id=ADMIN), _payload()
@@ -280,10 +281,10 @@ async def test_el_barrido_purga_solo_lo_que_el_repositorio_dice_sin_referencia()
             new=AsyncMock(return_value=[{"id": f1, "uploaded_at": t0}, {"id": f2, "uploaded_at": t0}]),
         ),
         patch(
-            "archive.clients.storage_client.purgar_huerfanos_internal",
+            "storage.api.purge_orphans",
             new=AsyncMock(return_value=[
-                {"file_id": str(f1), "resultado": "purgado"},
-                {"file_id": str(f2), "resultado": "error"},
+                PurgaHuerfano(f1, "purgado"),
+                PurgaHuerfano(f2, "error"),
             ]),
         ) as purga,
     ):
@@ -368,7 +369,7 @@ async def _leer(*, fila: dict | None, xml: str | None, acto: str = "constancia")
     tid, exp_id = uuid.uuid4(), uuid.uuid4()
     _secuencia(conn, tid, exp_id, final=[fila])
     with patch(
-        "archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=xml)
+        "storage.api.read_signed_xml", new=AsyncMock(return_value=xml)
     ) as descarga:
         try:
             res = await TransferenciaService(conn, TENANT).leer_sobre_fundamento(
@@ -387,7 +388,7 @@ async def test_leer_el_sobre_deja_asiento_de_lectura_via_sobre_sin_texto_ni_sal(
     assert res.xml_firmado == "<sobre-firmado/>" and res.worm_protegido is True
     assert res.sobre_sha256 == "s" * 64 and res.acto == "constancia"
     descarga.assert_awaited_once()
-    assert descarga.await_args.kwargs["minio_key_firmado"] == _KEY_SOBRE
+    assert descarga.await_args.kwargs["object_key"] == _KEY_SOBRE
     # mutación «sobre sin asiento de lectura»
     asientos = _asientos(conn)
     assert len(asientos) == 1
@@ -407,7 +408,7 @@ async def test_leer_el_sobre_de_la_revocacion_usa_su_propia_clave_y_asienta() ->
         revocacion_sobre_xades_level="XAdES-T", revocacion_worm_sobre_protegido=False,
     )
     conn, descarga, res = await _leer(fila=fila, xml="<x/>", acto="revocacion")
-    assert descarga.await_args.kwargs["minio_key_firmado"] == "file-rev/sobre-rev.xml"
+    assert descarga.await_args.kwargs["object_key"] == "file-rev/sobre-rev.xml"
     assert res.acto == "revocacion" and res.worm_protegido is False
     assert len(_asientos(conn)) == 1
 
@@ -438,7 +439,7 @@ async def test_si_el_asiento_de_lectura_falla_el_sobre_no_sale() -> None:
     tid, exp_id = uuid.uuid4(), uuid.uuid4()
     _secuencia(conn, tid, exp_id, final=[_con_sobre(tid)])
     with (
-        patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value="<x/>")),
+        patch("storage.api.read_signed_xml", new=AsyncMock(return_value="<x/>")),
         patch(
             "archive.services.transferencia_service.audit.append",
             new=AsyncMock(side_effect=RuntimeError("audit caído")),
@@ -483,7 +484,7 @@ async def test_el_sobre_se_coteja_contra_la_fila(campos_alterados: dict, esperad
         xml = xml.replace(FUNDAMENTO, campos_alterados["texto"])
     if campos_alterados.get("sal_hex"):
         xml = xml.replace(SAL.hex(), campos_alterados["sal_hex"])
-    with patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=xml)):
+    with patch("storage.api.read_signed_xml", new=AsyncMock(return_value=xml)):
         ok = await TransferenciaService(_conn(), TENANT)._cotejar_sobre(
             _KEY_SOBRE, fila, acto="constancia"
         )
@@ -492,7 +493,7 @@ async def test_el_sobre_se_coteja_contra_la_fila(campos_alterados: dict, esperad
 
 @pytest.mark.asyncio
 async def test_un_sobre_que_no_se_puede_leer_no_cuenta_como_coincidencia() -> None:
-    with patch("archive.clients.storage_client.download_signed_xml", new=AsyncMock(return_value=None)):
+    with patch("storage.api.read_signed_xml", new=AsyncMock(return_value=None)):
         ok = await TransferenciaService(_conn(), TENANT)._cotejar_sobre(
             _KEY_SOBRE, _con_sobre(uuid.uuid4()), acto="constancia"
         )

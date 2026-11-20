@@ -88,7 +88,7 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn, monkeyp
     """Si el sellado no se obtiene al cierre, queda traza: se emite
     'archive.indice_firma_pendiente' (ADR-010).
 
-    Se mockea `signature_client.sign_xml_outcome` (la frontera HTTP), NO
+    Se mockea `signature_api.sign_xml_outcome` (la frontera HTTP), NO
     `firmar_indice_close`: ese asiento y el `mark_pendiente` que lo acompaña
     viven DENTRO de `firmar_indice_close`, comprometidos juntos (H5) —
     mockear el método entero borraría de la prueba justo el efecto que se
@@ -117,16 +117,16 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn, monkeyp
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, indice_vigente]
     mock_conn.fetch.return_value = []
 
-    from archive.clients.signature_client import SignOutcome
     from archive.core.config import settings as archive_settings
     from archive.services.index_service import IndexService
+    from signature.api import SignOutcome
 
     monkeypatch.setattr(archive_settings, "close_sign_max_sync_attempts", 1)
 
     with (
         patch.object(IndexService, "regenerate", new=AsyncMock()),
         patch(
-            "archive.clients.signature_client.sign_xml_outcome",
+            "signature.api.sign_xml_outcome",
             new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
         ),
     ):
@@ -150,8 +150,8 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn, monkeyp
 async def test_firmar_indice_marca_firmado(client_with_conn) -> None:
     """El índice vigente se firma vía signature-service y queda 'firmado'."""
     client, mock_conn = client_with_conn  # noqa: F841 (solo para overrides de app)
-    from archive.clients.signature_client import SignedIndice
     from archive.services.index_service import IndexService
+    from signature.api import SignedIndice
 
     exp_id = uuid.uuid4()
     firma_id = uuid.uuid4()
@@ -174,9 +174,9 @@ async def test_firmar_indice_marca_firmado(client_with_conn) -> None:
         certificado_fingerprint="ab:cd",
     )
 
-    from archive.clients import signature_client
+    from signature import api as signature_api
 
-    with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=signed)):
+    with patch.object(signature_api, "sign_xml", new=AsyncMock(return_value=signed)):
         result = await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=actor_id)
     assert result is not None
     assert result.firma_id == firma_id
@@ -194,9 +194,9 @@ async def test_firmar_indice_sin_actor_id_queda_pendiente(client_with_conn) -> N
     svc = IndexService(mock_conn, "demo")
     mock_conn.fetchrow.return_value = {"id": uuid.uuid4(), "estado": "vigente", "xml": "<indice/>", "version": 1}
 
-    from archive.clients import signature_client
+    from signature import api as signature_api
 
-    with patch.object(signature_client, "sign_xml", new=AsyncMock()) as mock_sign:
+    with patch.object(signature_api, "sign_xml", new=AsyncMock()) as mock_sign:
         result = await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=None)
     assert result is None
     mock_sign.assert_not_called()
@@ -215,9 +215,9 @@ async def test_firmar_indice_signature_service_inalcanzable_no_bloquea(client_wi
     svc = IndexService(mock_conn, "demo")
     mock_conn.fetchrow.return_value = {"id": uuid.uuid4(), "estado": "vigente", "xml": "<indice/>", "version": 1}
 
-    from archive.clients import signature_client
+    from signature import api as signature_api
 
-    with patch.object(signature_client, "sign_xml", new=AsyncMock(return_value=None)) as mock_sign:
+    with patch.object(signature_api, "sign_xml", new=AsyncMock(return_value=None)) as mock_sign:
         result = await svc.firmar_indice(exp_id, tenant_slug="demo", actor_id=actor_id)
     assert result is None
     mock_sign.assert_awaited_once()

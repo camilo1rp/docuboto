@@ -17,9 +17,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from knowledge.clients import storage
 from knowledge.core import paso
 from knowledge.core.traduccion import lote_preparacion
+from storage import api as storage_api
+
+#: Tope del proveedor por archivo: por encima no se envía.
+MAX_FILE_BYTES = 104_857_600
 
 
 @dataclass(frozen=True)
@@ -37,14 +40,19 @@ async def crear(
     cliente: Any,
     file_id: uuid.UUID,
     *,
-    leer: Callable[[uuid.UUID, str], Awaitable[storage.Archivo | storage.Falta]] | None = None,
+    leer: Callable[[uuid.UUID, str], Awaitable[storage_api.StoredFile | storage_api.FileUnavailable]]
+    | None = None,
     ahora: datetime | None = None,
     staging_id: str | None = None,
 ) -> Resultado:
     """Sube el archivo como record padre más adjunto en línea."""
-    obtener = leer or (lambda ident, entidad: storage.leer(ident, slug=entidad))
+    obtener = leer or (
+        lambda ident, entidad: storage_api.read_file(
+            tenant_slug=entidad, file_id=ident, max_bytes=MAX_FILE_BYTES
+        )
+    )
     pieza = await obtener(file_id, slug)
-    if isinstance(pieza, storage.Falta):
+    if isinstance(pieza, storage_api.FileUnavailable):
         return Resultado(False, pieza.motivo)
     ident = staging_id or f"staging-{uuid.uuid4()}"
     lote = lote_preparacion(

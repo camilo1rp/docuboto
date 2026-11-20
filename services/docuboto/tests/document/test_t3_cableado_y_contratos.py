@@ -19,16 +19,14 @@ y la traza de lectura de `/terceros/{id}/radicados`, que nadie probaba.
 
 from __future__ import annotations
 
-import json
 import uuid
 
-import httpx
 import pytest
 
-from document.clients import storage_client
 from document.repositories.borrador_repository import BorradorRepository
 from document.repositories.tercero_repository import TerceroRepository
 from document.schemas.borrador import BorradorResponse
+from storage import api as storage_api
 from tests.document.conftest import TENANT_HEADERS
 from tests.document.test_borradores import _borrador_row
 
@@ -243,64 +241,6 @@ def test_borrador_response_exige_el_nivel() -> None:
 # ── Contrato saliente hacia storage (fetch_file_sha256) ─────────────────────
 
 
-def _http(monkeypatch, handler) -> list[httpx.Request]:
-    capturadas: list[httpx.Request] = []
-    real = httpx.AsyncClient
-
-    def _handler(req: httpx.Request) -> httpx.Response:
-        capturadas.append(req)
-        return handler(req)
-
-    def _factory(*a, **k):
-        k["transport"] = httpx.MockTransport(_handler)
-        return real(*a, **k)
-
-    monkeypatch.setattr(storage_client.httpx, "AsyncClient", _factory)
-    monkeypatch.setattr(storage_client.settings, "storage_internal_token", "tok-interno")
-    monkeypatch.setattr(storage_client.settings, "storage_service_url", "http://storage")
-    return capturadas
-
-
-@pytest.mark.asyncio
-async def test_fetch_file_sha256_cumple_el_contrato_de_storage(monkeypatch) -> None:
-    fid = uuid.uuid4()
-    reqs = _http(
-        monkeypatch, lambda r: httpx.Response(200, json={"hashes": {str(fid): "ab" * 32}})
-    )
-    huella = await storage_client.fetch_file_sha256(tenant_slug="demo", file_id=fid)
-    assert huella == "ab" * 32
-    (req,) = reqs
-    assert req.method == "POST"
-    assert req.url.path == "/api/v1/storage/internal/files/hashes"
-    assert req.headers["X-Internal-Token"] == "tok-interno", "sin el sello storage responde 401"
-    assert req.headers["X-Tenant-Slug"] == "demo"
-    assert json.loads(req.content) == {"file_ids": [str(fid)]}
-
-
-@pytest.mark.asyncio
-async def test_fetch_file_sha256_id_desconocido_es_none(monkeypatch) -> None:
-    _http(monkeypatch, lambda r: httpx.Response(200, json={"hashes": {}}))
-    assert await storage_client.fetch_file_sha256(tenant_slug="d", file_id=uuid.uuid4()) is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", [401, 404, 500, 503])
-async def test_fetch_file_sha256_http_no_200_no_se_degrada(monkeypatch, status) -> None:
-    _http(monkeypatch, lambda r: httpx.Response(status, json={}))
-    with pytest.raises(storage_client.StorageContentError):
-        await storage_client.fetch_file_sha256(tenant_slug="d", file_id=uuid.uuid4())
-
-
-@pytest.mark.asyncio
-async def test_fetch_file_sha256_red_caida_no_se_degrada(monkeypatch) -> None:
-    def _cae(r):
-        raise httpx.ConnectError("sin red")
-
-    _http(monkeypatch, _cae)
-    with pytest.raises(storage_client.StorageContentError):
-        await storage_client.fetch_file_sha256(tenant_slug="d", file_id=uuid.uuid4())
-
-
 # ── Firma declarativa: anexo sin huella → 409, y no se firma ────────────────
 
 
@@ -309,7 +249,7 @@ async def test_anexo_sin_huella_es_409_y_no_inserta(client_with_conn, monkeypatc
     async def _nada(*, tenant_slug, file_id):
         return None
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _nada)
+    monkeypatch.setattr(storage_api, "get_file_sha256", _nada)
     client, mock_conn = client_with_conn
     mock_conn.fetchval.side_effect = [True, uuid.uuid4()]
     mock_conn.fetchrow.side_effect = [{"is_root": False, "max_level": 1}]

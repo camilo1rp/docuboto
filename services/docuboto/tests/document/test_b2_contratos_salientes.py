@@ -11,93 +11,44 @@
 
 from __future__ import annotations
 
-import json
-import uuid
-
-import httpx
 import pytest
 
-from document.clients import storage_client
-from document.clients.tenant_client import TenantServiceClient, TenantServiceError
 
+def _repo_params(monkeypatch, *, error: Exception | None = None, params: dict | None = None):
+    """`tenant.api` sin BD: conexión de mentira y repositorio con el resultado dado."""
+    from contextlib import asynccontextmanager
 
-def _http(monkeypatch, handler) -> list[httpx.Request]:
-    capturadas: list[httpx.Request] = []
-    real = httpx.AsyncClient
+    from tenant import api as tenant_api
 
-    def _handler(req: httpx.Request) -> httpx.Response:
-        capturadas.append(req)
-        return handler(req)
+    @asynccontextmanager
+    async def _conn(slug):
+        yield object()
 
-    def _factory(*a, **k):
-        k["transport"] = httpx.MockTransport(_handler)
-        return real(*a, **k)
+    class _Repo:
+        def __init__(self, conn):
+            pass
 
-    monkeypatch.setattr(storage_client.httpx, "AsyncClient", _factory)
-    monkeypatch.setattr(storage_client.settings, "storage_internal_token", "tok-interno")
-    monkeypatch.setattr(storage_client.settings, "storage_service_url", "http://storage")
-    return capturadas
+        async def get_params(self):
+            if error is not None:
+                raise error
+            return params or {}
 
-
-@pytest.mark.asyncio
-async def test_procedencia_cumple_el_contrato_de_storage(monkeypatch) -> None:
-    fid, autor = uuid.uuid4(), uuid.uuid4()
-    reqs = _http(
-        monkeypatch,
-        lambda r: httpx.Response(
-            200,
-            json={"sha256": "ab" * 32, "uploaded_by": str(autor), "referencias": ["anexos.file_id"]},
-        ),
-    )
-    p = await storage_client.fetch_file_procedencia(tenant_slug="demo", file_id=fid)
-    assert (p.sha256, p.uploaded_by, p.referencias) == ("ab" * 32, autor, ["anexos.file_id"])
-    (req,) = reqs
-    assert req.url.path == "/api/v1/storage/internal/files/procedencia"
-    assert req.headers["X-Internal-Token"] == "tok-interno"
-    assert req.headers["X-Tenant-Slug"] == "demo"
-    assert json.loads(req.content) == {"file_id": str(fid)}
+    monkeypatch.setattr(tenant_api, "acquire_tenant", _conn)
+    monkeypatch.setattr(tenant_api, "ConfigRepository", _Repo)
+    return tenant_api
 
 
 @pytest.mark.asyncio
-async def test_procedencia_404_es_none(monkeypatch) -> None:
-    _http(monkeypatch, lambda r: httpx.Response(404, json={}))
-    assert await storage_client.fetch_file_procedencia(tenant_slug="d", file_id=uuid.uuid4()) is None
+async def test_params_estricto_lanza_donde_get_params_traga(monkeypatch) -> None:
+    import asyncpg
+
+    tenant_api = _repo_params(monkeypatch, error=asyncpg.PostgresError("caída"))
+    with pytest.raises(tenant_api.TenantUnavailableError):
+        await tenant_api.get_params_strict(tenant_slug="demo")
+    assert await tenant_api.get_params(tenant_slug="demo") == {}
 
 
 @pytest.mark.asyncio
-async def test_el_autor_nulo_se_conserva(monkeypatch) -> None:
-    _http(
-        monkeypatch,
-        lambda r: httpx.Response(200, json={"sha256": "ab" * 32, "uploaded_by": None, "referencias": []}),
-    )
-    p = await storage_client.fetch_file_procedencia(tenant_slug="d", file_id=uuid.uuid4())
-    assert p.uploaded_by is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status", [401, 500, 503])
-async def test_procedencia_http_inesperado_no_se_degrada(monkeypatch, status) -> None:
-    _http(monkeypatch, lambda r: httpx.Response(status, json={}))
-    with pytest.raises(storage_client.StorageContentError):
-        await storage_client.fetch_file_procedencia(tenant_slug="d", file_id=uuid.uuid4())
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("respuesta", [httpx.Response(500, json={}), httpx.Response(200, json=[1])])
-async def test_params_estricto_lanza_donde_get_params_traga(respuesta) -> None:
-    http = httpx.AsyncClient(
-        base_url="http://tenant", transport=httpx.MockTransport(lambda r: respuesta)
-    )
-    cliente = TenantServiceClient(http)
-    with pytest.raises(TenantServiceError):
-        await cliente.get_params_estricto(tenant_slug="demo")
-    assert await cliente.get_params(tenant_slug="demo") == {}
-
-
-@pytest.mark.asyncio
-async def test_params_estricto_devuelve_los_parametros() -> None:
-    http = httpx.AsyncClient(
-        base_url="http://tenant",
-        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"a": "b"})),
-    )
-    assert await TenantServiceClient(http).get_params_estricto(tenant_slug="demo") == {"a": "b"}
+async def test_params_estricto_devuelve_los_parametros(monkeypatch) -> None:
+    tenant_api = _repo_params(monkeypatch, params={"a": "b"})
+    assert await tenant_api.get_params_strict(tenant_slug="demo") == {"a": "b"}

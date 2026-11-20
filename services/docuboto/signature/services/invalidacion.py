@@ -26,7 +26,7 @@ from typing import Literal
 import asyncpg
 from orpycamcp_common import audit
 
-from signature.core.http_clients import (
+from signature.core.huella import (
     BorradorDesaparecidoError,
     HuellaNoVerificableError,
     get_huella_borrador,

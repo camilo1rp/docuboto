@@ -36,7 +36,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from signature.core.http_clients import SigningKeyRevocationStatusUnavailableError
+from auth.api import AuthUnavailableError
 from signature.providers.base import PreparedDoc, SignerRef
 from signature.providers.local import LocalSigner, verify_xades
 
@@ -433,7 +433,7 @@ async def test_verify_reports_revocado_after_revocation(
     revoked_at = (datetime.now(UTC) - timedelta(days=1)).isoformat()
     mock_revocation = AsyncMock(return_value={"status": "revocado", "revocado_at": revoked_at})
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote", mock_revocation
+        "auth.api.signing_key_revocation_status", mock_revocation
     )
 
     resp = await client.post(
@@ -451,7 +451,7 @@ async def test_verify_reports_revocado_after_revocation(
     assert body["motivo"] == "certificado_revocado"
     assert body["revocacion_posterior"] is None
     mock_revocation.assert_awaited_once()
-    assert mock_revocation.await_args.args[0] == signed.certificado_fingerprint
+    assert mock_revocation.await_args.kwargs["fingerprint"] == signed.certificado_fingerprint
 
 
 @pytest.mark.asyncio
@@ -472,7 +472,7 @@ async def test_revocacion_posterior_no_invalida_firma_previa(
     )
     revoked_at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote",
+        "auth.api.signing_key_revocation_status",
         AsyncMock(return_value={"status": "revocado", "revocado_at": revoked_at}),
     )
 
@@ -506,7 +506,7 @@ async def _verify_revocada(client_with_conn, monkeypatch, *, revocado: dict, sel
         sello_tiempo=sello_tiempo,
     )
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote",
+        "auth.api.signing_key_revocation_status",
         AsyncMock(return_value={"status": "revocado", **revocado}),
     )
     resp = await client.post(
@@ -603,7 +603,7 @@ async def test_revocada_sin_fecha_legible_invalida_fail_closed(
         firma_id=firma_id, signed=signed, ca_fingerprint=signed.extra.get("ca_fingerprint")
     )
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote",
+        "auth.api.signing_key_revocation_status",
         AsyncMock(return_value={"status": "revocado", "revocado_at": None}),
     )
     resp = await client.post(
@@ -649,7 +649,7 @@ async def test_verify_reports_revocado_for_grandfathered_inc1_signature(
     conn.fetchrow.return_value = _firma_row(firma_id=firma_id, signed=signed, ca_fingerprint=None)
     mock_revocation = AsyncMock(return_value={"status": "revocado"})
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote", mock_revocation
+        "auth.api.signing_key_revocation_status", mock_revocation
     )
 
     resp = await client.post(
@@ -681,10 +681,10 @@ async def test_verify_revocation_channel_down_fails_closed_by_default(
         firma_id=firma_id, signed=signed, ca_fingerprint=signed.extra.get("ca_fingerprint")
     )
     mock_revocation = AsyncMock(
-        side_effect=SigningKeyRevocationStatusUnavailableError("auth-service inalcanzable")
+        side_effect=AuthUnavailableError("auth-service inalcanzable")
     )
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote", mock_revocation
+        "auth.api.signing_key_revocation_status", mock_revocation
     )
     assert settings.verify_personal_revocation_require is True  # default
 
@@ -721,10 +721,10 @@ async def test_verify_revocation_channel_down_fails_open_when_disabled(
         firma_id=firma_id, signed=signed, ca_fingerprint=signed.extra.get("ca_fingerprint")
     )
     mock_revocation = AsyncMock(
-        side_effect=SigningKeyRevocationStatusUnavailableError("auth-service inalcanzable")
+        side_effect=AuthUnavailableError("auth-service inalcanzable")
     )
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote", mock_revocation
+        "auth.api.signing_key_revocation_status", mock_revocation
     )
 
     resp = await client.post(
@@ -758,7 +758,7 @@ async def test_verify_revocation_desconocido_never_reports_vigente(
     )
     mock_revocation = AsyncMock(return_value={"status": "desconocido"})
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote", mock_revocation
+        "auth.api.signing_key_revocation_status", mock_revocation
     )
 
     resp = await client.post(
@@ -805,7 +805,7 @@ async def test_verify_native_hmac_never_calls_revocation_status(
     }
     mock_revocation = AsyncMock(return_value={"status": "vigente"})
     monkeypatch.setattr(
-        "signature.routers.signature.get_signing_key_revocation_status_remote", mock_revocation
+        "auth.api.signing_key_revocation_status", mock_revocation
     )
 
     resp = await client.post(

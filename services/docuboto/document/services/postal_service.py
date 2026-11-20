@@ -28,7 +28,6 @@ from fastapi import HTTPException, status
 from orpycamcp_common import audit
 from pydantic import ValidationError
 
-from document.clients import storage_client
 from document.core.config import settings
 from document.core.postal_webhook_auth import (
     cifrar_secreto,
@@ -49,6 +48,7 @@ from document.schemas.postal import (
 )
 from document.services import outbox
 from document.services.postal_provider import consultar_estado, generar_guia, mapear_estado
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -359,10 +359,10 @@ class PostalService:
         `file_id` y cae en 409, que es lo correcto (es la misma prueba).
         """
         try:
-            proc = await storage_client.fetch_file_procedencia(
+            proc = await storage_api.get_file_provenance(
                 tenant_slug=self._slug or "", file_id=file_id
             )
-        except storage_client.StorageContentError as exc:
+        except storage_api.StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={

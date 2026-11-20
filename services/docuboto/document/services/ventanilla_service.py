@@ -52,8 +52,6 @@ from typing import Any
 import asyncpg
 from fastapi import HTTPException, status
 
-from document.clients.storage_client import StorageContentError, upload_anexo_externo
-from document.clients.tenant_client import TenantServiceError
 from document.core.anexos_publicos import (
     AnexoRechazado,
     tipo_por_contenido,
@@ -72,6 +70,8 @@ from document.schemas.public import (
 )
 from document.services import antirrobots
 from document.services.document_service import DuplicateSubmissionError
+from storage import api as storage_api
+from tenant import api as tenant_api
 
 #: Canal con el que queda marcado lo que entra por aquí. Distingue en los
 #: metadatos —y en los informes— lo presentado desde fuera de lo radicado en
@@ -161,8 +161,8 @@ class VentanillaService:
                 },
             )
         try:
-            params = await self._tenant_client.get_params_estricto(tenant_slug=self._tenant)
-        except TenantServiceError as exc:
+            params = await self._tenant_client.get_params_strict(tenant_slug=self._tenant)
+        except tenant_api.TenantUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -373,10 +373,10 @@ class VentanillaService:
         anexos: list[AnexoInput] = []
         for nombre, datos, mime in verificados:
             try:
-                registro = await upload_anexo_externo(
+                registro = await storage_api.upload_public_annex(
                     tenant_slug=self._tenant, filename=nombre, mime_type=mime, data=datos
                 )
-            except StorageContentError as exc:
+            except storage_api.StorageError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail={

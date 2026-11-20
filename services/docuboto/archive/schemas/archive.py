@@ -1507,7 +1507,7 @@ class AipResponse(BaseModel):
     `X-Internal-Token` y ya no es alcanzable desde el gateway.
 
     Mismos campos que `storage-service.app.schemas.preservacion.AipResponse`
-    (deserializados del JSON que devuelve `app.clients.storage_client.get_aip`) —
+    (deserializados del JSON que devuelve `storage.api.get_aip`) —
     duplicado deliberadamente (no se comparte el paquete de schemas entre
     servicios, ADR-002) en vez de reexportar `dict[str, Any]` sin tipar, para
     que un cambio de forma en storage-service rompa la validación aquí en vez
@@ -1555,7 +1555,7 @@ class EventoPreservacionResponse(BaseModel):
 
     Mismos campos que `storage-service.app.schemas.preservacion.EventoResponse`
     (deserializados del JSON que devuelve
-    `app.clients.storage_client.list_eventos`) — duplicado deliberadamente
+    `storage.api.list_events`) — duplicado deliberadamente
     (no se comparte el paquete de schemas entre servicios, ADR-002), mismo
     criterio que `AipResponse`."""
 

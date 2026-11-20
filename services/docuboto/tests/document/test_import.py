@@ -23,9 +23,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from document.clients.storage_client import ArchivoSubido
 from document.services.export_service import RADICADO_SCHEMA
 from document.services.import_service import ImportService, PackageValidationError
+from storage.api import UploadedFile
 
 
 def _sha(b: bytes) -> str:
@@ -97,11 +97,11 @@ def _svc():
 
 async def _run(svc, zip_bytes, *, clearance=1, actor=None):
     with patch(
-        "document.services.import_service.storage_client.upload_bytes",
-        # `ArchivoSubido`, no un dict: el mock anterior devolvía la clave
+        "document.services.import_service.storage_api.upload_file",
+        # `UploadedFile`, no un dict: el mock anterior devolvía la clave
         # `file_id`, que NUNCA existió en el contrato de storage — y por eso
         # este test estuvo verde sobre un camino roto desde que se escribió.
-        new=AsyncMock(return_value=ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
+        new=AsyncMock(return_value=UploadedFile(file_id=uuid.uuid4(), sha256="x")),
     ), patch("document.services.import_service.audit.append", new=AsyncMock(return_value="h")):
         return await svc.import_package(zip_bytes=zip_bytes, max_clearance=clearance, actor=actor)
 
@@ -304,8 +304,8 @@ async def test_el_asiento_de_importacion_registra_el_status_de_origen_de_cada_ra
     )
     with (
         patch(
-            "document.services.import_service.storage_client.upload_bytes",
-            new=AsyncMock(return_value=ArchivoSubido(file_id=uuid.uuid4(), sha256="x")),
+            "document.services.import_service.storage_api.upload_file",
+            new=AsyncMock(return_value=UploadedFile(file_id=uuid.uuid4(), sha256="x")),
         ),
         patch("document.services.import_service.audit.append", new=AsyncMock(return_value="h")) as audit,
     ):

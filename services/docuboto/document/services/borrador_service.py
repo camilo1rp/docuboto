@@ -26,14 +26,7 @@ import asyncpg
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from document.clients import signature_client as signature_client_mod
-from document.clients.signature_client import CircuitoNoVerificableError
-from document.clients.storage_client import (
-    RenderFallidoError,
-    RenderNoDisponibleError,
-    render_documento,
-    upload_artefacto,
-)
+import signature.api as signature_api_mod
 from document.core.causales_reserva import POR_CLASIFICAR
 from document.core.combinacion import SEGUNDA_PASADA, combinar, desconocidos, marcadores
 from document.core.datos_minimos import exigir_o_422
@@ -53,6 +46,7 @@ from document.schemas.borrador import (
 from document.schemas.document import DocumentCreate, DocumentResponse
 from document.services import outbox
 from document.services.contexto_combinacion import ContextoCombinacion
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +124,7 @@ class BorradorService:
         conn: asyncpg.Connection,
         tenant_slug: str = "",
         tenant_client: Any = None,
-        signature_client: Any = None,
+        signature_api: Any = None,
         redis: Any = None,
     ) -> None:
         self._conn = conn
@@ -141,7 +135,7 @@ class BorradorService:
         # El módulo real por defecto; los tests inyectan un doble. No es
         # opcional en el sentido de «si no está, no se consulta»: sin él la
         # aprobación no puede comprobar el circuito y el gate desaparecería.
-        self._signature_client = signature_client or signature_client_mod
+        self._signature_api = signature_api or signature_api_mod
 
     # -- plantillas ----------------------------------------------------
 
@@ -488,8 +482,10 @@ class BorradorService:
         # contenido cambia de verdad. Disparar por «vino el campo» invalidaría circuitos vivos al
         # guardar un cambio de asunto.
         if antes["cuerpo_sha256"] != row["cuerpo_sha256"]:
-            await self._signature_client.invalidar_circuitos(
-                str(borrador_id), self._slug, row["cuerpo_sha256"]
+            await self._signature_api.invalidar_circuitos(
+                borrador_id=str(borrador_id),
+                tenant_slug=self._slug,
+                cuerpo_sha256_vigente=row["cuerpo_sha256"],
             )
             if pendiente is not None:
                 await outbox.enviar(self._conn, self._redis, pendiente)
@@ -574,10 +570,10 @@ class BorradorService:
         de atrás, y lo haría justo cuando el sistema está degradado.
         """
         try:
-            estado = await self._signature_client.get_estado_circuito(
-                str(borrador_id), self._slug
+            estado = await self._signature_api.get_estado_circuito(
+                borrador_id=str(borrador_id), tenant_slug=self._slug
             )
-        except CircuitoNoVerificableError as exc:
+        except signature_api_mod.CircuitoNoVerificableError as exc:
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -728,8 +724,7 @@ class BorradorService:
                 tenant_client=self._tenant_client,
             )
         resultado = combinar(row["cuerpo"] or "", contexto)
-        rendido = await render_documento(
-            tenant_slug=self._slug,
+        rendido = await storage_api.render_document(
             cuerpo_html=resultado.texto,
             pagina=self._pagina(contexto, row, numero=None),
         )
@@ -1002,7 +997,7 @@ class BorradorService:
                     documento = await self._producir(
                         cuerpo, contexto, row, numero=result.tracking_number
                     )
-                except (RenderNoDisponibleError, RenderFallidoError):
+                except (storage_api.RenderUnavailableError, storage_api.RenderFailedError):
                     logger.exception(
                         "El radicado %s se creo pero su documento no se pudo regenerar "
                         "con el numero; queda sin anexo.",
@@ -1055,12 +1050,11 @@ class BorradorService:
     ) -> _DocumentoProducido:
         """Combina lo que falte, renderiza y sube. No toca la secuencia."""
         resultado = combinar(cuerpo, contexto, diferidos=numero is not None)
-        rendido = await render_documento(
-            tenant_slug=self._slug,
+        rendido = await storage_api.render_document(
             cuerpo_html=resultado.texto,
             pagina=self._pagina(contexto, row, numero=numero),
         )
-        subido = await upload_artefacto(
+        subido = await storage_api.upload_system_artifact(
             tenant_slug=self._slug,
             filename=f"{numero or 'borrador'}.pdf",
             mime_type="application/pdf",

@@ -20,8 +20,8 @@
 - (d) acta AGOTADA permanece 'pendiente_firma' -- nunca inventa conformidad.
 
 Compromiso (igual que el resto de `tests/integration/`): NO hay tráfico HTTP
-real a signature-service -- `signature_client.sign_xml_outcome`/
-`sign_indice_internal` se monkeypatchean. Lo que este tier prueba es el tramo
+real a signature-service -- `signature_api.sign_xml_outcome`/
+`sign_as_system` se monkeypatchean. Lo que este tier prueba es el tramo
 100%-DB (INSERT/UPDATE + audit_log atómicos, WHERE de idempotencia, backoff);
 el sellado XAdES real y que el digest del XML firmado cubre exactamente el
 `acta_fuid_xml` congelado se prueba en signature-service
@@ -40,12 +40,12 @@ import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
 
-from archive.clients.signature_client import SignedIndice, SignOutcome
 from archive.core.actor import Actor
 from archive.core.database import tenant_schema
 from archive.jobs.indice_reconciliation import _reconciliar_acta
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.transferencia_service import TransferenciaService
+from signature.api import SignedIndice, SignOutcome
 
 from .conftest import DSN
 from .test_atomicity import _seed_transferencia_lista_para_recibir
@@ -175,7 +175,7 @@ async def test_reconciliar_acta_failure_after_audit_append_reverts_mark_firmada(
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
     ):
         with pytest.raises(RuntimeError, match="boom-post-audit"):
@@ -219,7 +219,7 @@ async def test_reconciliar_acta_commits_firmada_and_audit_together(
     signed = _fake_signed()
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(return_value=SignOutcome(signed=signed)),
     ):
         resultado = await _reconciliar_acta(conn, slug, row)
@@ -293,7 +293,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
                     new=_REAL_SELLAR_ACTA_POST_COMMIT,
                 ),
                 patch(
-                    "archive.clients.signature_client.sign_xml_outcome",
+                    "signature.api.sign_xml_outcome",
                     new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
                 ),
             ):
@@ -313,7 +313,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
                 "reconcile_intentos": firma_row["reconcile_intentos"],
             }
             with patch(
-                "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+                "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
                 new=AsyncMock(return_value=SignOutcome(signed=_fake_signed())),
             ):
                 return await _reconciliar_acta(own_conn, slug, row)
@@ -377,7 +377,7 @@ async def test_reconciliar_acta_agotada_permanece_pendiente_firma(
     }
 
     with patch(
-        "archive.jobs.indice_reconciliation.signature_client.sign_indice_internal",
+        "archive.jobs.indice_reconciliation.signature_api.sign_as_system",
         new=AsyncMock(return_value=SignOutcome(signed=None, transient=True)),
     ):
         resultado = await _reconciliar_acta(conn, slug, row)

@@ -7,16 +7,16 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""`POST /api/v1/internal/documentos/metadata` devuelve el número de radicado y
+"""`document.api.fetch_radicado_metadata` devuelve el número de radicado y
 la tipología (AREA-07-02 / AREA-06-08).
 
 archive-service coteja con esta respuesta lo que declara quien vincula un
 radicado a un expediente: el índice electrónico que se firma con XAdES no puede
 afirmar un número oficial ni una tipología que escribió el declarante. Sin
 `tracking_number` en la respuesta, archive falla cerrado (503): se despliega
-ESTE servicio primero.
+document primero.
 
-El contrato se prueba por el cable (router → esquema de respuesta), con el
+El contrato se prueba en la función (repositorio → esquema de respuesta), con el
 repositorio doblado devolviendo lo que Postgres devuelve; la consulta real se
 prueba en `tests/integration/test_la_metadata_dice_de_donde_viene.py`.
 """
@@ -28,24 +28,14 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from document.core import config as cfg_module
+from document import api as document_api
 from tests.document.conftest import TENANT_SLUG
-
-_TOKEN = "test-document-internal-token-xxx"
-_HEADERS = {"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": _TOKEN}
-_PATH = "/api/v1/internal/documentos/metadata"
-
-
-@pytest.fixture(autouse=True)
-def _token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", _TOKEN)
 
 
 @pytest.mark.asyncio
 async def test_la_respuesta_trae_el_numero_y_la_tipologia_del_radicado(
-    client_with_conn,
+    api_conn,
 ) -> None:
-    client, _ = client_with_conn
     rid = uuid.uuid4()
     resuelto = {
         rid: {
@@ -60,22 +50,22 @@ async def test_la_respuesta_trae_el_numero_y_la_tipologia_del_radicado(
         }
     }
     with patch(
-        "document.routers.internal.DocumentRepository.list_radicado_metadata_internal",
+        "document.api.DocumentRepository.list_radicado_metadata_internal",
         AsyncMock(return_value=resuelto),
     ):
-        resp = await client.post(_PATH, json={"radicado_ids": [str(rid)]}, headers=_HEADERS)
+        body = await document_api.fetch_radicado_metadata(
+            tenant_slug=TENANT_SLUG, radicado_ids=[rid], max_clearance=3
+        )
 
-    assert resp.status_code == 200
-    item = resp.json()[str(rid)]
+    item = body[str(rid)]
     assert item["tracking_number"] == "2026-X-E-000001"
     assert item["doc_class"] == "COR-PET"
 
 
 @pytest.mark.asyncio
 async def test_un_radicado_sin_tipologia_responde_null_y_no_se_inventa_una(
-    client_with_conn,
+    api_conn,
 ) -> None:
-    client, _ = client_with_conn
     rid = uuid.uuid4()
     resuelto = {
         rid: {
@@ -86,13 +76,14 @@ async def test_un_radicado_sin_tipologia_responde_null_y_no_se_inventa_una(
         }
     }
     with patch(
-        "document.routers.internal.DocumentRepository.list_radicado_metadata_internal",
+        "document.api.DocumentRepository.list_radicado_metadata_internal",
         AsyncMock(return_value=resuelto),
     ):
-        resp = await client.post(_PATH, json={"radicado_ids": [str(rid)]}, headers=_HEADERS)
+        body = await document_api.fetch_radicado_metadata(
+            tenant_slug=TENANT_SLUG, radicado_ids=[rid], max_clearance=3
+        )
 
-    assert resp.status_code == 200
-    assert resp.json()[str(rid)]["doc_class"] is None
+    assert body[str(rid)]["doc_class"] is None
 
 
 @pytest.mark.asyncio

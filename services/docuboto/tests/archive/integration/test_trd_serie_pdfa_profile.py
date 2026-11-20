@@ -24,7 +24,7 @@ mockeado): aquí se prueba lo que un mock NO puede demostrar --
       prueba el filtro CT "en la consulta SQL, no en el código Python");
   (d) el cableado end-to-end de `AipWiringService._resolve_aip_pdfa_profile`
       leyendo una fila `trd_series` REAL (no un `TrdSerie` construido a
-      mano) y entregando el perfil resuelto a `storage_client.
+      mano) y entregando el perfil resuelto a `storage_api.
       empaquetar_aip_internal` (mockeado, mismo compromiso que el resto de
       este directorio: sin tráfico HTTP real a storage-service).
 
@@ -40,11 +40,11 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 
-from archive.clients.storage_client import AipPackagingOutcome
 from archive.core.database import tenant_schema
 from archive.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate, TrdSerieUpdate
 from archive.services.aip_wiring_service import AipWiringService
 from archive.services.archive_service import ArchiveService
+from storage.api import AipPackagingOutcome
 from tests.archive.conftest import datos_radicado
 
 from .conftest import DSN, convalidate_for_test
@@ -170,7 +170,7 @@ async def test_check_constraint_accepts_null_and_all_valid_profiles_raw_sql(
 
 # ---------------------------------------------------------------------------
 # (d) Cableado end-to-end: `_resolve_aip_pdfa_profile` sobre una fila
-# `trd_series` REAL -> `storage_client.empaquetar_aip_internal` (mockeado).
+# `trd_series` REAL -> `storage_api.package_aip` (mockeado).
 # ---------------------------------------------------------------------------
 
 
@@ -239,11 +239,11 @@ async def test_aip_wiring_passes_real_serie_pdfa_profile_to_storage_client(
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value=anexos),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
     ):
@@ -265,11 +265,11 @@ async def test_aip_wiring_passes_none_when_real_serie_has_no_pdfa_profile(
 
     with (
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value=anexos),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as mock_storage,
     ):

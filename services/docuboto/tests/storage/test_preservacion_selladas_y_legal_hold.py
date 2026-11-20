@@ -8,15 +8,15 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 
-"""Rutas de protección WORM selladas por token interno y legal hold como acto
-explícito (AREA-08-16, AREA-08-06, AREA-08-07).
+"""Protección WORM sin legal hold en el body y singleton por (expediente, tipo)
+(AREA-08-16, AREA-08-06, AREA-08-07).
 
-- `/proteger-indice`, `/proteger-artefacto` y `/aip` ya no se autorizan por el
-  RBAC de un humano: sin `X-Internal-Token` -> 401, aunque lleven identidad y
-  tengan el permiso.
-- La segunda protección del mismo (expediente, tipo) con OTRO `file_id` es 409
-  y no sube nada.
-- `legal_hold` no es un campo de ningún body de protección (422).
+Desde ADR-047 la protección solo se alcanza por `storage.api` (sin rutas HTTP):
+lo que aquí se prueba vive en el esquema y en `PreservationWormService`.
+
+- La segunda protección del mismo (expediente, tipo) con OTRO `file_id` es
+  conflicto y no sube nada.
+- `legal_hold` no es un campo de ningún body de protección (ValidationError).
 - El legal hold por motivo (fijar/levantar/listar) se prueba en
   `tests/test_c5_legal_hold_por_motivo.py` (C-5/C7).
 """
@@ -24,30 +24,24 @@ explícito (AREA-08-16, AREA-08-06, AREA-08-07).
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
+import pydantic
 import pytest
 
+from storage import api as storage_api
 from storage.core import config as config_module
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_HEADERS, conceder_permisos, make_worm_row
+from storage.schemas.preservacion import AipCreate, ProtegerIndiceRequest, RenovarRetencionRequest
+from storage.services.preservation_worm_service import (
+    PreservationWormService,
+    WormSingletonConflictError,
+)
+from tests.storage.conftest import TENANT_SLUG, make_worm_row
 
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
-
-
-_RUTAS = [
-    ("/api/v1/preservacion/proteger-indice", {"file_id": str(uuid.uuid4())}),
-    ("/api/v1/preservacion/proteger-artefacto", {"file_id": str(uuid.uuid4())}),
-    (
-        "/api/v1/preservacion/aip",
-        {
-            "documentos": [
-                {"document_id": "R-1", "nombre": "a.pdf", "file_id": str(uuid.uuid4())}
-            ]
-        },
-    ),
-]
 
 
 def _body(extra: dict) -> dict:
@@ -59,60 +53,60 @@ def _body(extra: dict) -> dict:
     }
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("ruta", "extra"), _RUTAS)
-async def test_ruta_externa_sin_token_interno_es_401_aunque_tenga_permiso(
-    client_with_conn, ruta, extra
-) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-    conceder_permisos(mock_conn)  # el usuario TIENE USUA_PERM_EXPEDIENTE:3
-    resp = await client.post(ruta, json=_body(extra), headers=TENANT_HEADERS)
-    assert resp.status_code == 401
-    mock_minio.put_object.assert_not_awaited()
+_ESQUEMAS = [
+    (ProtegerIndiceRequest, {"file_id": str(uuid.uuid4())}),
+    (ProtegerIndiceRequest, {"file_id": str(uuid.uuid4()), "tipo": "acta_transferencia"}),
+    (
+        AipCreate,
+        {
+            "documentos": [
+                {"document_id": "R-1", "nombre": "a.pdf", "file_id": str(uuid.uuid4())}
+            ]
+        },
+    ),
+]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("ruta", "extra"), _RUTAS)
-async def test_ruta_externa_con_token_equivocado_es_403(client_with_conn, ruta, extra) -> None:
-    client, _conn, mock_minio = client_with_conn
-    resp = await client.post(
-        ruta,
-        json=_body(extra),
-        headers={**TENANT_HEADERS, "X-Internal-Token": "otro"},
+@pytest.mark.parametrize(("esquema", "extra"), _ESQUEMAS)
+def test_legal_hold_en_el_body_es_invalido_en_toda_proteccion(esquema, extra) -> None:
+    esquema(**_body(extra))  # control positivo: sin legal_hold es válido
+    with pytest.raises(pydantic.ValidationError):
+        esquema(**_body({**extra, "legal_hold": True}))
+
+
+def test_renovar_retencion_tambien_rechaza_legal_hold() -> None:
+    with pytest.raises(pydantic.ValidationError):
+        RenovarRetencionRequest(**_body({"tipo": "indice", "legal_hold": False}))
+
+
+async def _proteger(mock_conn, extra: dict):
+    return await PreservationWormService(mock_conn, TENANT_SLUG).proteger_indice(
+        ProtegerIndiceRequest(**_body(extra)), actor="actor"
     )
-    assert resp.status_code in (401, 403)
-    mock_minio.put_object.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("ruta", ["proteger-indice", "proteger-artefacto", "aip"])
-async def test_legal_hold_en_el_body_es_422_en_toda_ruta_de_proteccion(
-    client_with_conn, ruta
-) -> None:
-    client, _conn, mock_minio = client_with_conn
-    extra = dict(next(e for r, e in _RUTAS if r.endswith(ruta)))
-    resp = await client.post(
-        f"/api/v1/preservacion/{ruta}",
-        json=_body({**extra, "legal_hold": True}),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 422
-    mock_minio.put_object.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_segunda_proteccion_con_otro_file_id_es_409_sin_subir(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_segunda_proteccion_con_otro_file_id_es_conflicto_sin_subir(client_with_conn) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     existente = make_worm_row(expediente_id="EXP-1", file_id=uuid.uuid4())
     mock_conn.fetchrow.side_effect = [existente]
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_body({"file_id": str(uuid.uuid4())}),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"]["error"] == "worm_singleton_conflict"
+    with pytest.raises(WormSingletonConflictError):
+        await _proteger(mock_conn, {"file_id": str(uuid.uuid4()), "tipo": "indice"})
     mock_minio.get_object.assert_not_called()
+    mock_minio.put_object.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_el_conflicto_de_singleton_no_es_ok_por_la_api(client_with_conn) -> None:
+    """Por `storage.api` el conflicto no se da por protegido."""
+    _client, mock_conn, mock_minio = client_with_conn
+    mock_conn.fetchrow.side_effect = [make_worm_row(expediente_id="EXP-1", file_id=uuid.uuid4())]
+    outcome = await storage_api.protect_index_as_system(
+        tenant_slug=TENANT_SLUG, file_id=str(uuid.uuid4()), expediente_id="EXP-1",
+        retencion_anios=5, fecha_inicio=date(2026, 1, 1),
+    )
+    assert not outcome.ok
+    assert outcome.worm_object_id is None
     mock_minio.put_object.assert_not_awaited()
 
 
@@ -120,60 +114,34 @@ async def test_segunda_proteccion_con_otro_file_id_es_409_sin_subir(client_with_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "ruta", ["proteger-indice-internal", "proteger-artefacto-internal"]
-)
-async def test_reintento_con_el_mismo_file_id_sigue_siendo_200_idempotente(
-    client_with_conn, ruta
+@pytest.mark.parametrize("tipo", ["indice", "acta_transferencia"])
+async def test_reintento_con_el_mismo_file_id_sigue_siendo_idempotente(
+    client_with_conn, tipo
 ) -> None:
-    """Control positivo del 409: la comparacion de file_id NO puede convertir el
-    reintento legitimo (mismo file_id) en conflicto (UUID vs UUID, no str)."""
-    client, mock_conn, mock_minio = client_with_conn
+    """Control positivo del conflicto: la comparacion de file_id NO puede convertir
+    el reintento legitimo (mismo file_id) en conflicto (UUID vs UUID, no str)."""
+    _client, mock_conn, mock_minio = client_with_conn
     fid = uuid.uuid4()
     existente = make_worm_row(expediente_id="EXP-1", file_id=fid)
     mock_conn.fetchrow.side_effect = [existente]
-    resp = await client.post(
-        f"/api/v1/preservacion/{ruta}",
-        json=_body({"file_id": str(fid)}),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
+    response, created = await _proteger(mock_conn, {"file_id": str(fid), "tipo": tipo})
+    assert created is False
+    assert response.id == existente["id"]
     mock_minio.put_object.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_fila_previa_sin_file_id_conserva_el_200(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_fila_previa_sin_file_id_conserva_la_idempotencia(client_with_conn) -> None:
+    _client, mock_conn, _minio = client_with_conn
     mock_conn.fetchrow.side_effect = [make_worm_row(expediente_id="EXP-1", file_id=None)]
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-indice-internal",
-        json=_body({"file_id": str(uuid.uuid4())}),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
+    _response, created = await _proteger(mock_conn, {"file_id": str(uuid.uuid4()), "tipo": "indice"})
+    assert created is False
 
 
 @pytest.mark.asyncio
-async def test_conflicto_de_singleton_tambien_en_proteger_artefacto_internal(
-    client_with_conn,
-) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_conflicto_de_singleton_tambien_en_proteger_artefacto(client_with_conn) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     mock_conn.fetchrow.side_effect = [make_worm_row(expediente_id="EXP-1", file_id=uuid.uuid4())]
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto-internal",
-        json=_body({"file_id": str(uuid.uuid4()), "tipo": "acta_transferencia"}),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 409, resp.text
+    with pytest.raises(WormSingletonConflictError):
+        await _proteger(mock_conn, {"file_id": str(uuid.uuid4()), "tipo": "acta_transferencia"})
     mock_minio.put_object.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_renovar_retencion_internal_tambien_rechaza_legal_hold(client_with_conn) -> None:
-    client, _conn, _minio = client_with_conn
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_body({"tipo": "indice", "legal_hold": False}),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 422

@@ -71,33 +71,39 @@ async def test_la_lista_incluye_suspendidas_y_excluye_baja_y_sin_aprovisionar() 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("crudo", "esperado"), [(False, False), (True, True), (None, None), ("no", None)])
+@pytest.mark.parametrize("lta_vigente", [False, True, None])
 async def test_verify_result_propaga_lta_vigente(
-    monkeypatch: pytest.MonkeyPatch, crudo: object, esperado: bool | None
+    monkeypatch: pytest.MonkeyPatch, lta_vigente: bool | None
 ) -> None:
-    """Mutación: no leer `lta_vigente` en `signature_client.verify` -> cae (False llega como None)."""
-    import httpx
+    """Mutación: no copiar `lta_vigente` en `signature_api.verify` -> cae (False llega como None)."""
+    import uuid
+    from contextlib import asynccontextmanager
 
-    from archive.clients import signature_client
+    from signature import api as signature_api
+    from signature.schemas.firma import VerifyResponse
 
-    cuerpo = {"valida": True, "acreditado": False, "lta_vigente": crudo}
+    fid = uuid.uuid4()
 
-    class _Cliente:
-        def __init__(self, *a, **k) -> None:  # noqa: ANN002, ANN003
-            pass
+    @asynccontextmanager
+    async def _conn(*_a, **_k):
+        yield MagicMock()
 
-        async def __aenter__(self):  # noqa: ANN204
-            return self
-
-        async def __aexit__(self, *a) -> None:  # noqa: ANN002
-            return None
-
-        async def post(self, url, json=None, headers=None):  # noqa: ANN001, ANN202
-            return httpx.Response(200, json=cuerpo, request=httpx.Request("POST", url))
-
-    monkeypatch.setattr(signature_client.httpx, "AsyncClient", _Cliente)
-    r = await signature_client.verify(tenant_slug="demo", firma_id="f", payload_xml="<x/>")
-    assert r is not None and r.lta_vigente is esperado
+    repo = MagicMock()
+    repo.return_value.get = AsyncMock(return_value={"id": fid})
+    veredicto = VerifyResponse(
+        firma_id=fid, valida=True, provider="xades_local", lta_vigente=lta_vigente,
+        advertencias=["tsa_sin_esscertid_anterior_al_corte"],
+    )
+    monkeypatch.setattr(signature_api, "_tenant_conn", _conn)
+    monkeypatch.setattr(signature_api, "FirmaRepository", repo)
+    monkeypatch.setattr(
+        signature_api.verification, "verificar_firma", AsyncMock(return_value=veredicto)
+    )
+    r = await signature_api.verify(tenant_slug="demo", firma_id=str(fid), payload_xml="<x/>")
+    assert r is not None and r.lta_vigente is lta_vigente
+    assert r.advertencias == ["tsa_sin_esscertid_anterior_al_corte"]
+    # Sin usuario detrás no hay clearance que aplicar: quien llama ya resolvió el acceso.
+    repo.return_value.get.assert_awaited_once_with(fid, max_clearance=None)
 
 
 @pytest.mark.asyncio

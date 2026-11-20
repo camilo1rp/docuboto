@@ -37,6 +37,9 @@ import asyncpg
 from fastapi import HTTPException, status
 from lxml import etree
 
+from auth import api as auth_api
+from document import api as document_api
+from notification import api as notification_api
 from signature.core.clearance import resolve_caller_clearance
 from signature.core.config import settings
 from signature.core.constants import (
@@ -47,26 +50,15 @@ from signature.core.constants import (
     signature_kind,
 )
 from signature.core.events import publish_challenge_emitido
-from signature.core.http_clients import (
+from signature.core.huella import (
     HuellaNoVerificableError,
     HuellaSinContenidoError,
     ObjetoDesaparecidoError,
-    OtpEmailDeliveryError,
-    SignerEmailError,
-    SigningKeyStatusUnavailableError,
-    TotpStatusUnavailableError,
-    TotpVerifyUnavailableError,
-    aprobar_borrador_remote,
     get_huella_borrador,
     get_huella_indice_expediente,
     get_huella_radicado,
-    get_signer_identity,
-    get_signing_key_status_remote,
-    get_totp_status_remote,
-    send_otp_email,
-    verify_totp,
 )
-from signature.core.otp import generate_otp, hmac_otp, mask_email, verify_otp
+from signature.core.otp import generate_otp, hmac_otp, mask_email, send_otp_email, verify_otp
 from signature.core.params_entidad import modo_xades_de_la_entidad
 from signature.core.redis_client import get_redis
 from signature.core.secret_derivation import KEY_VERSION_ACTUAL
@@ -686,7 +678,6 @@ class CadenaFirmaService:
         self,
         sol: asyncpg.Record,
         actor: uuid.UUID,
-        authorization: str | None,
     ) -> HTTPException | None:
         """¿Está vetado el OTP-correo para este acto? (AREA-04-02.)
 
@@ -709,8 +700,8 @@ class CadenaFirmaService:
         if sol["nivel_seguridad"] < 2 or not settings.totp_enabled:
             return None
         try:
-            estado = await get_totp_status_remote(authorization)
-        except TotpStatusUnavailableError:
+            estado = await auth_api.totp_status(tenant_slug=self._tenant_slug, user_id=actor)
+        except auth_api.AuthUnavailableError:
             return HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -741,7 +732,6 @@ class CadenaFirmaService:
         self,
         solicitud_id: uuid.UUID,
         actor: uuid.UUID,
-        authorization: str | None,
     ) -> ChallengeResponse:
         """Emite el desafío OTP-correo (ver :meth:`_emitir_challenge`).
 
@@ -753,7 +743,7 @@ class CadenaFirmaService:
         transacción se cierra, y el asiento se escribe aquí en la suya.
         """
         try:
-            return await self._emitir_challenge(solicitud_id, actor, authorization)
+            return await self._emitir_challenge(solicitud_id, actor)
         except _IdentidadIncoherente as exc:
             async with self._conn.transaction():
                 exc_http = await self._denegar_identidad_incoherente(
@@ -769,7 +759,6 @@ class CadenaFirmaService:
         self,
         solicitud_id: uuid.UUID,
         actor: uuid.UUID,
-        authorization: str | None,
     ) -> ChallengeResponse:
         """
         Emits a one-time OTP-by-email 2FA challenge for the caller's active turn
@@ -829,7 +818,7 @@ class CadenaFirmaService:
         # personal (`firmar` pide su TOTP y nada más), así que enviarlo sería un
         # correo que nunca se podrá usar. Ninguna de las dos lecturas consume un
         # factor.
-        personal_res = await self._resolve_personal_signing_status(authorization)
+        personal_res = await self._resolve_personal_signing_status(actor)
         modo_xades = await modo_xades_de_la_entidad(self._conn)
         if personal_res.body is not None:
             if str(personal_res.body.get("user_id") or "") != str(actor):
@@ -933,8 +922,8 @@ class CadenaFirmaService:
                 await challenge_repo.expirar(activo["challenge_id"])
 
             try:
-                identidad = await get_signer_identity(authorization, self._tenant_slug)
-            except SignerEmailError:
+                email = await auth_api.user_email(tenant_slug=self._tenant_slug, user_id=actor)
+            except auth_api.AuthUnavailableError:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail={
@@ -944,20 +933,13 @@ class CadenaFirmaService:
                     },
                 ) from None
 
-            # El OTP sale al correo del dueño del BEARER mientras el acto se
-            # atribuye a `X-User-Id` (el actor). Si no son la misma persona, quien
-            # tiene el bearer recibiría el código y completaría él mismo una firma
-            # atribuida a otro (AREA-04-05). Se compara ANTES de crear el desafío
-            # y de enviar nada.
-            if identidad.user_id != str(actor):
-                raise _IdentidadIncoherente(
-                    objeto_tipo=sol["objeto_tipo"], objeto_id=sol["objeto_id"], via="otp_email"
-                )
-            email = identidad.email
+            # El OTP sale al correo DEL ACTOR (AREA-04-05): auth lo resuelve para
+            # la misma identidad a la que se atribuye el acto, nunca para la del
+            # portador de una credencial reenviada.
 
             # AREA-04-02: quien ya tiene TOTP activo no baja al correo en un acto
             # de nivel >= 2. Fail-closed: no poder consultarlo tampoco lo permite.
-            veto = await self._veto_factor_correo(sol, actor, authorization)
+            veto = await self._veto_factor_correo(sol, actor)
             if veto is not None:
                 raise veto
 
@@ -997,7 +979,7 @@ class CadenaFirmaService:
                     otp=otp,
                     ttl_seconds=settings.otp_ttl_seconds,
                 )
-            except OtpEmailDeliveryError:
+            except notification_api.NotificationDeliveryError:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail={
@@ -1061,14 +1043,23 @@ class CadenaFirmaService:
         estado en otro servicio. Un radicado o un expediente ya existen cuando
         se firman, y su cadena no los promueve a nada.
 
-        No levanta nunca (ver `aprobar_borrador_remote`): el visto bueno ya
-        está dado y auditado en este servicio, y revertirlo porque
-        document-service no contesta castigaría al firmante por una avería que
-        no es suya. Lo que se pierde si falla es un clic, no la garantía.
+        **No levanta nunca**: el visto bueno ya está dado y auditado, y
+        revertirlo porque document falla castigaría al firmante por una avería
+        que no es suya. Lo que se pierde si falla es un clic, no la garantía: el
+        gate de `BorradorService.aprobar` consulta el estado real del circuito.
         """
         if sol["objeto_tipo"] != "borrador":
             return
-        await aprobar_borrador_remote(str(sol["objeto_id"]), self._tenant_slug)
+        try:
+            await document_api.approve_draft(
+                tenant_slug=self._tenant_slug, borrador_id=str(sol["objeto_id"])
+            )
+        except Exception:  # noqa: BLE001 — best-effort, ver el docstring.
+            logger.warning(
+                "no se pudo aprobar el borrador %s al cerrar su circuito",
+                sol["objeto_id"],
+                exc_info=True,
+            )
 
     async def _resolver_huella(self, objeto_id: str, objeto_tipo: str = "borrador") -> str:
         """Huella autoritativa de lo que la cadena vincula, desde su productor.
@@ -1381,7 +1372,6 @@ class CadenaFirmaService:
         solicitud_id: uuid.UUID,
         actor: uuid.UUID,
         payload_opcional: FirmarRequest | None = None,
-        authorization: str | None = None,
     ) -> SolicitudResponse:
         """
         Signs the active turn for the given solicitud.
@@ -1401,24 +1391,18 @@ class CadenaFirmaService:
            that the circuit exists and which version it is on. Authorization
            first, state afterwards — the same order ``emitir_challenge`` uses.
 
-        ``authorization`` is the raw ``Authorization`` header from the
-        inbound request — forwarded verbatim to auth-service when the 2FA
-        gate needs to verify a TOTP code (see _gate_2fa/verify_totp). Only
-        used by the TOTP factor; the OTP-correo factor never needs it.
-
         The firma row + turn update + solicitud state change + audit entry
         all commit in a single transaction (RF-FIR-14 atomicity).
 
         --- Firma PERSONAL PKI por-usuario (E17/F4, Incremento 1) ---
-        Before the 2FA gate, queries auth-service (``GET
-        /internal/signing-key/status``) for the actor's own signing-key
-        status. If ``estado == "activo"``, this act is signed with the
+        Before the 2FA gate, queries ``auth.api.signing_key_status`` for the
+        actor's own signing-key status. If ``estado == "activo"``, this act is signed with the
         actor's PERSONAL certificate (XAdES-B/T, provider
         ``xades_personal``) INSTEAD of the HMAC nativa — ``_gate_2fa``/
         ``_gate_2fa_totp`` (OTP-correo/local TOTP verify) are bypassed
         entirely for this path: ``body.totp_code`` is required and consumed
         ATOMICALLY at auth-service, together with the signature itself (see
-        ``_firmar_personal``/``app.core.http_clients.sign_digest_remote``) —
+        ``_firmar_personal``/``auth.api.sign_digest``) —
         not by this service's own TOTP verification. Its absence is
         409 ``totp_requerido`` — deliberately NOT the ``2fa_requerido`` that
         ``_gate_2fa`` returns: that one asks the client to start an e-mail
@@ -1492,7 +1476,7 @@ class CadenaFirmaService:
         # turno y una conexión del pool tomados, así que un auth-service lento
         # los retenía hasta el timeout. Es de solo lectura: resolverla de más en
         # un acto que luego se rechaza no cuesta ningún factor.
-        personal_res = await self._resolve_personal_signing_status(authorization)
+        personal_res = await self._resolve_personal_signing_status(actor)
         # Política XAdES de la ENTIDAD (parámetro del tenant, entorno de respaldo).
         # Fuera de la transacción por la misma razón: una lectura no debe correr
         # con el row-lock del turno, y un fallo de base aquí se propaga (500), no
@@ -1608,7 +1592,7 @@ class CadenaFirmaService:
                         personal_signed = await self._firmar_personal(
                             sol=sol,
                             payload_bytes=payload_bytes,
-                            authorization=authorization,
+                            actor=actor,
                             totp_code=totp_code,
                             cert_pem=personal_res.body["cert_pem"],
                         )
@@ -1719,7 +1703,7 @@ class CadenaFirmaService:
                 # PUBLICA / for test environments.
                 if settings.firma_2fa_required or sol["nivel_seguridad"] >= 2:
                     otp_fail, consumed_challenge = await self._gate_2fa(
-                        solicitud_id, actor, sol, payload_opcional, authorization
+                        solicitud_id, actor, sol, payload_opcional
                     )
 
             if otp_fail is None:
@@ -1798,7 +1782,7 @@ class CadenaFirmaService:
                             "key_version": sign_result["key_version"],
                         }
                     )
-                    if authorization and not personal_res.disponible and _AUDIT_AVAILABLE:
+                    if not personal_res.disponible and _AUDIT_AVAILABLE:
                         # AREA-04-12: con el gate en `off`, un canal de
                         # signing-key caído degrada a nativa sin que el actor
                         # sepa si tenía certificado. La degradación se permite
@@ -1934,21 +1918,10 @@ class CadenaFirmaService:
     # Firma PERSONAL PKI por-usuario (E17/F4, Incremento 1)
     # ------------------------------------------------------------------
 
-    async def _resolve_personal_signing_status(
-        self, authorization: str | None
-    ) -> _PersonalSigningStatus:
-        """Consulta ``GET /internal/signing-key/status`` (auth-service) para
-        el ACTOR (identidad derivada del ``authorization`` reenviado, D1) y
-        devuelve una resolución de TRES estados (E17/F4, Incremento 3 — antes
-        colapsaba "sin cert" y "canal caído" al mismo ``None``, ver
-        ``_PersonalSigningStatus``).
-
-        Sin ``Authorization`` reenviado, no hay forma de identificar al actor
-        ante auth-service para este canal — se resuelve ``disponible=True,
-        body=None`` (mismo bucket que "sin cert activo"): NO es un fallo de
-        infraestructura ajeno, es una precondición del propio acto (ver
-        ``_xades_gate_activo`` — bajo el gate, el llamante recibe 422
-        ``firma_xades_requerida``, no 503).
+    async def _resolve_personal_signing_status(self, actor: uuid.UUID) -> _PersonalSigningStatus:
+        """Consulta ``auth.api.signing_key_status`` para el ACTOR y devuelve una
+        resolución de TRES estados (E17/F4, Incremento 3 — antes colapsaba "sin
+        cert" y "canal caído" al mismo ``None``, ver ``_PersonalSigningStatus``).
 
         Con el gate ``'off'`` (default), AMBOS casos ``body=None`` siguen
         cayendo a la firma nativa en ``firmar()`` — retrocompat exacta con el
@@ -1956,11 +1929,9 @@ class CadenaFirmaService:
         ``firmar()`` distingue ``disponible`` para elegir 422 vs 503 (ver
         ``signature/core/config.py::firma_personal_require_xades``).
         """
-        if not authorization:
-            return _PersonalSigningStatus(body=None, disponible=True)
         try:
-            body = await get_signing_key_status_remote(authorization)
-        except SigningKeyStatusUnavailableError:
+            body = await auth_api.signing_key_status(tenant_slug=self._tenant_slug, user_id=actor)
+        except auth_api.AuthUnavailableError:
             logger.warning(
                 "No se pudo consultar signing-key/status; fallback a firma nativa "
                 "(o denegación bajo gate — ver _xades_gate_activo)",
@@ -1976,7 +1947,7 @@ class CadenaFirmaService:
         *,
         sol: asyncpg.Record,
         payload_bytes: bytes,
-        authorization: str | None,
+        actor: uuid.UUID,
         totp_code: str,
         cert_pem: str,
     ) -> SignedDoc:
@@ -1984,8 +1955,8 @@ class CadenaFirmaService:
         envuelve ``payload_bytes`` en un XML mínimo (``_build_personal_envelope``)
         y delega en ``LocalSigner`` (proveedor generalizado, ver
         ``app.providers.local``) con un ``SignerRef.remote_sign`` que llama a
-        ``sign_digest_remote`` — el TOTP se verifica-y-consume ATÓMICAMENTE
-        en auth-service, junto con el uso de la clave, NUNCA por
+        ``auth.api.sign_digest`` — el TOTP se verifica-y-consume ATÓMICAMENTE
+        en auth, junto con el uso de la clave, NUNCA por
         ``_gate_2fa`` de este servicio (D1 del contrato de firma personal).
 
         Lanza ``HTTPException`` (NUNCA otra excepción) en cualquier fallo —
@@ -2012,7 +1983,8 @@ class CadenaFirmaService:
             xml_bytes=envelope,
             objeto_tipo=sol["objeto_tipo"],
             objeto_id=sol["objeto_id"],
-            authorization=authorization,
+            tenant_slug=self._tenant_slug,
+            actor=actor,
             totp_code=totp_code,
             cert_pem=cert_pem,
         )
@@ -2023,7 +1995,6 @@ class CadenaFirmaService:
         actor: uuid.UUID,
         sol: asyncpg.Record,
         body: FirmarRequest | None,
-        authorization: str | None = None,
     ) -> tuple[HTTPException | None, dict | None]:
         """
         Verifies and consumes the 2FA credential for a personal-signature turn
@@ -2080,7 +2051,7 @@ class CadenaFirmaService:
         otp = body.otp if body else None
 
         if totp_code is not None and settings.totp_enabled:
-            return await self._gate_2fa_totp(solicitud_id, actor, sol, totp_code, authorization)
+            return await self._gate_2fa_totp(solicitud_id, actor, sol, totp_code)
 
         # A partir de aquí, el factor es el correo. Si el actor ya tiene TOTP
         # activo en un acto de nivel >= 2, no vale (AREA-04-02) — y se responde
@@ -2088,7 +2059,7 @@ class CadenaFirmaService:
         # cliente pida el código de la app y no arranque otro reto por correo.
         # Corre ANTES de tocar el desafío: nada se consume ni cuenta como intento.
         try:
-            veto = await self._veto_factor_correo(sol, actor, authorization)
+            veto = await self._veto_factor_correo(sol, actor)
         except _IdentidadIncoherente as exc:
             return (
                 await self._denegar_identidad_incoherente(
@@ -2269,13 +2240,11 @@ class CadenaFirmaService:
         actor: uuid.UUID,
         sol: asyncpg.Record,
         totp_code: str,
-        authorization: str | None,
     ) -> tuple[HTTPException | None, dict | None]:
         """
-        TOTP branch of ``_gate_2fa`` — verifies ``totp_code`` against
-        auth-service's ``POST /internal/totp/verify``, forwarding the
-        firmante's own bearer (D1: identity comes from the token, never from
-        a body field).
+        TOTP branch of ``_gate_2fa`` — verifies ``totp_code`` with
+        ``auth.api.verify_totp`` for the actor (identity resolved once by
+        ``UsuarioActualMiddleware``, never from a body field).
 
         No local ``firma_challenge`` row exists for this factor — auth-service
         does the anti-replay bookkeeping (``last_timestep``) atomically in its
@@ -2286,8 +2255,13 @@ class CadenaFirmaService:
         ~30s window — fail-safe over-consumption, never a replay).
         """
         try:
-            result = await verify_totp(authorization, totp_code, solicitud_id=solicitud_id)
-        except TotpVerifyUnavailableError:
+            result = await auth_api.verify_totp(
+                tenant_slug=self._tenant_slug,
+                user_id=actor,
+                code=totp_code,
+                contexto=str(solicitud_id),
+            )
+        except auth_api.AuthUnavailableError:
             return HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -2628,7 +2602,6 @@ class CadenaFirmaService:
         self,
         items: list[LoteItem],
         actor: uuid.UUID,
-        authorization: str | None = None,
     ) -> LoteResponse:
         """
         Batch sign: attempts firmar() for each item, each with its OWN 2FA
@@ -2651,7 +2624,7 @@ class CadenaFirmaService:
                 body = FirmarRequest(
                     challenge_id=item.challenge_id, otp=item.otp, totp_code=item.totp_code
                 )
-                await self.firmar(item.solicitud_id, actor, body, authorization)
+                await self.firmar(item.solicitud_id, actor, body)
                 resultados.append(
                     ResultadoLoteItem(solicitud_id=item.solicitud_id, resultado="firmado")
                 )

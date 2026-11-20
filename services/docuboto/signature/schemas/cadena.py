@@ -318,11 +318,10 @@ class LoteResponse(BaseModel):
 
 
 class InvalidarCircuitosRequest(BaseModel):
-    """Cuerpo de ``POST /internal/circuitos/{tipo}/{id}/invalidar`` (B10, ítem 2).
+    """Huella vigente para ``signature.api.invalidar_circuitos`` (B10, ítem 2).
 
-    La huella VIGENTE del texto es obligatoria: es el predicado de la invalidación
-    (``payload_sha256 IS DISTINCT FROM`` ella). Sin cuerpo el endpoint da 422, de
-    modo que nadie pueda volver a invalidar «todo lo del objeto» a ciegas.
+    Es el predicado de la invalidación (``payload_sha256 IS DISTINCT FROM`` ella), y
+    obligatoria y bien formada: nadie puede volver a invalidar «todo lo del objeto» a ciegas.
     """
 
     model_config = ConfigDict(extra="forbid")

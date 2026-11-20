@@ -52,12 +52,12 @@ import asyncpg
 from jsonschema import Draft202012Validator
 from orpycamcp_common import audit
 
-from document.clients import storage_client
 from document.core.causales_reserva import POR_CLASIFICAR, normalizar_para_importar
 from document.repositories.import_repository import ImportRepository
 from document.schemas.document import CLAVES_RESERVADAS
 from document.services.export_service import RADICADO_SCHEMA
 from document.services.import_huerfanos_service import ImportHuerfanosService
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 _SERVICE = "document-service"
@@ -300,7 +300,7 @@ class ImportService:
                 if anexo.get("ausente"):
                     continue
                 blob = await asyncio.to_thread(zf.read, anexo["archivo"])  # ya verificado en fase 1
-                result = await storage_client.upload_bytes(
+                result = await storage_api.upload_file(
                     tenant_slug=self._slug,
                     filename=anexo.get("nombre_original", "anexo"),
                     mime_type=anexo.get("mime_type"),

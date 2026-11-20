@@ -420,14 +420,14 @@ async def test_metadata_invalida_falla_antes_de_renderizar_y_subir(
     client_with_conn, monkeypatch
 ) -> None:
     """El 422 llega ANTES de `_producir` (render + subida): ningún binario huérfano."""
-    from document.clients import signature_client
     from document.services import borrador_service as svc
     from document.services.metadata_service import MetadataValidationError
+    from signature import api as signature_api
     from tests.document.test_borradores import _sin_circuito
 
     # `radicar` consulta antes si hay un circuito abierto; sin signature-service
     # en el carril unitario respondería 503 en vez del 422 que se mide.
-    monkeypatch.setattr(signature_client, "get_estado_circuito", _sin_circuito)
+    monkeypatch.setattr(signature_api, "get_estado_circuito", _sin_circuito)
 
     async def _minimos(self, row, registered_by, datos=None):
         return "Oficio", 1, 1

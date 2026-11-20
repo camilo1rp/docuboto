@@ -55,24 +55,15 @@ class SignXmlRequest(BaseModel):
 
 
 class InternalSignIndiceRequest(BaseModel):
-    """Payload de ``POST /internal/sign-indice`` (reconciliación del sellado
-    del índice, residual Ac. AGN 001/2024 art. 4.3.2.4; generalizada en H-H
-    E06/F4 para el acta de transferencia).
+    """Pedido del sello de SISTEMA (``signature.api.sign_as_system``): reconciliación
+    del sellado del índice o del acta de transferencia (Ac. AGN 001/2024 art. 4.3.2.4).
 
-    Gateada SOLO por ``require_internal_token`` (X-Internal-Token, D-02) —
-    NUNCA ``PERM_FIRMA``/``X-User-Id``. A diferencia de ``SignXmlRequest``,
-    ``objeto_tipo`` está ACOTADO al allow-set institucional
-    (``XADES_ELIGIBLE_OBJETO_TIPOS`` — índice/acta de transferencia, validado
-    abajo) en vez de aceptar cualquier valor: el llamador NUNCA puede elegir
-    un tipo arbitrario, así que estructuralmente esta ruta jamás puede firmar
-    la cadena personal ni ningún objeto fuera de ese conjunto. Default
-    ``"indice"`` — retrocompat total con el llamador preexistente
-    (``archive-service/archive/jobs/indice_reconciliation.py``), que nunca envía
-    este campo.
+    Sin humano detrás, así que ni ``PERM_FIRMA`` ni actor: ``objeto_tipo`` queda
+    ACOTADO al allow-set institucional (``XADES_ELIGIBLE_OBJETO_TIPOS``, validado
+    abajo) y por aquí nunca se firma la cadena personal ni nada fuera de él.
 
-    ``indice_id`` es OPCIONAL (antes obligatorio): el acta de transferencia
-    no tiene un índice electrónico propio que versionar — solo el índice
-    (``objeto_tipo="indice"``) lo puebla.
+    ``indice_id`` es opcional: el acta no tiene un índice electrónico propio que
+    versionar; solo el índice lo puebla.
     """
 
     payload_xml: str = Field(..., min_length=1)

@@ -16,7 +16,7 @@ años declarados, y el filtro SQL de `IndexRepository.list_worm_pending`
 (backoff/agotamiento).
 
 Compromiso (igual que el resto de `tests/integration/`): NO hay tráfico HTTP
-real a storage-service — `storage_client.proteger_indice_worm_internal` se
+real a storage-service — `storage_api.protect_index_as_system` se
 monkeypatchea a un `WormProtectionOutcome` fijo. Lo que este tier prueba es
 el tramo 100%-DB (UPDATE + INSERT audit_log atómicos, WHERE de idempotencia,
 derivación TRD), no la subida real a MinIO (cubierta en storage-service).
@@ -38,12 +38,12 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from archive.clients.storage_client import WormProtectionOutcome
 from archive.core.database import tenant_schema
 from archive.repositories.index_repository import IndexRepository
 from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate
 from archive.services.archive_service import ArchiveService
 from archive.services.index_service import IndexService
+from storage.api import WormProtectionOutcome
 
 from .conftest import DSN, convalidate_for_test
 
@@ -119,7 +119,7 @@ async def test_proteger_worm_indice_commits_mark_and_audit_together(
     outcome = _ok_outcome()
 
     with patch(
-        "archive.clients.storage_client.proteger_indice_worm_internal",
+        "storage.api.protect_index_as_system",
         new=AsyncMock(return_value=outcome),
     ):
         resultado = await IndexService(conn, slug).proteger_worm_indice(
@@ -179,7 +179,7 @@ async def test_proteger_worm_indice_failure_after_audit_append_reverts_mark(
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "archive.clients.storage_client.proteger_indice_worm_internal",
+        "storage.api.protect_index_as_system",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultado = await IndexService(conn, slug).proteger_worm_indice(
@@ -231,7 +231,7 @@ async def test_proteger_worm_indice_second_call_is_idempotent(
     index = IndexService(conn, slug)
 
     with patch(
-        "archive.clients.storage_client.proteger_indice_worm_internal",
+        "storage.api.protect_index_as_system",
         new=AsyncMock(return_value=_ok_outcome()),
     ) as mock_client:
         primero = await index.proteger_worm_indice(
@@ -283,7 +283,7 @@ async def test_concurrent_proteger_worm_indice_does_not_double_mark(
     # UN solo patch que envuelve el gather: un `with patch` dentro de cada corrutina
     # sale en orden no-LIFO y restaura el mock de la otra, dejándolo fugado.
     with patch(
-        "archive.clients.storage_client.proteger_indice_worm_internal",
+        "storage.api.protect_index_as_system",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultados = await asyncio.gather(_attempt(), _attempt())

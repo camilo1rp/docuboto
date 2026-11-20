@@ -24,9 +24,10 @@ import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common.usuario import canal_de, id_opcional, slug_de
 from pydantic import BaseModel, Field, model_validator
 
-from knowledge.clients import document_search
+from document import api as document_api
 from knowledge.core import consulta, paso
 from knowledge.core.clearance import get_actor, require_asistente_habilitado, require_permission
 from knowledge.core.config import settings
@@ -37,6 +38,32 @@ router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 
 #: Etiqueta de origen de todo lo que responde el respaldo sin proveedor.
 LOCAL_INDEX: Literal["local_index"] = "local_index"
+
+
+async def _buscar_texto(request: Request, *, q: str, size: int) -> list[dict[str, Any]]:
+    """Texto completo de document COMO el usuario (ADR-046 §2).
+
+    document aplica su clearance sobre el nivel vivo del radicado, así que aquí
+    no se duplica ninguna barrera. Fail-closed: 503, nunca una lista vacía que
+    parezca «no hay».
+    """
+    try:
+        return await document_api.search(
+            tenant_slug=slug_de(request),
+            actor=id_opcional(request),
+            canal=canal_de(request),
+            q=q,
+            size=size,
+        )
+    except document_api.DocumentUnavailableError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "search_unavailable",
+                "detail": "La búsqueda de texto completo no está disponible",
+                "status": 503,
+            },
+        ) from None
 
 
 class SearchRequest(BaseModel):
@@ -94,7 +121,7 @@ async def search(
     )
     if delegada.delegada:
         return [_hit_delegado(h) for h in delegada.hallazgos]
-    hits = await document_search.search(request, q=payload.query, size=payload.top_k)
+    hits = await _buscar_texto(request, q=payload.query, size=payload.top_k)
     return [_a_search_hit(h) for h in hits]
 
 
@@ -208,7 +235,7 @@ async def antecedentes(
     if payload.radicado_ref is not None:
         if payload.source_type != "radicado":
             raise _antecedentes_source_not_found()
-        candidatos = await document_search.search(request, q=payload.radicado_ref, size=5)
+        candidatos = await _buscar_texto(request, q=payload.radicado_ref, size=5)
         pivote = next(
             (h for h in candidatos if h["tracking_number"] == payload.radicado_ref), None
         )
@@ -248,10 +275,10 @@ async def antecedentes(
 
     if excluir is not None:
         # top_k + 1: el propio pivote suele ser el mejor resultado y se excluye.
-        hits = await document_search.search(request, q=texto, size=payload.top_k + 1)
+        hits = await _buscar_texto(request, q=texto, size=payload.top_k + 1)
         hits = [h for h in hits if str(h["id"]) != excluir][: payload.top_k]
     else:
-        hits = await document_search.search(request, q=texto, size=payload.top_k)
+        hits = await _buscar_texto(request, q=texto, size=payload.top_k)
 
     return AntecedentesResponse(
         antecedentes=[

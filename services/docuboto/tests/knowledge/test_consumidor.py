@@ -123,9 +123,9 @@ def _cliente(transporte: _Transporte) -> Any:
 
 
 def _usar(monkeypatch: pytest.MonkeyPatch, conn: _Conn) -> None:
-    """El registro que devolvería document-service, a partir de la fila de prueba."""
+    """El registro que devolvería document, a partir de la fila de prueba."""
 
-    async def leer(_slug: str, radicado_id: uuid.UUID) -> dict[str, Any] | None:
+    async def leer(*, tenant_slug: str, radicado_id: uuid.UUID) -> dict[str, Any] | None:
         if conn.datos.get("fila_ausente") or conn.datos.get("status") == "anulado":
             return None
         if conn._nivel(radicado_id) not in set(conn.datos.get("niveles", [1])):
@@ -142,7 +142,7 @@ def _usar(monkeypatch: pytest.MonkeyPatch, conn: _Conn) -> None:
         cuerpo["anexos"] = list(conn.datos.get("anexos") or [])
         return cuerpo
 
-    monkeypatch.setattr(consumidor.documento, "leer_registro", leer)
+    monkeypatch.setattr(consumidor.document_api, "read_radicado_record", leer)
 
 
 @pytest.mark.asyncio

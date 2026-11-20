@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="OrpycaMCP — Signature Service",
     description=(
-        "Firma electrónica (E06, ADR-016): sign-xml + verify. Proveedor pluggable "
+        "Firma electrónica (E06, ADR-016): sign-personal + verify. Proveedor pluggable "
         "(nativo hash+identidad por defecto; PKI XAdES/PAdES/TSA como swap)."
     ),
     version="1.0.0",

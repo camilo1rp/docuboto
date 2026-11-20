@@ -36,7 +36,6 @@ from typing import Any
 import asyncpg
 from orpycamcp_common import audit
 
-from document.clients import storage_client
 from document.clients.email_parser import CorreoLeido, leer
 from document.clients.imap_adaptador import ErrorDeCorreo, ImapAdaptador
 from document.core.datos_minimos import faltantes, mensaje_faltantes
@@ -46,6 +45,7 @@ from document.services import acuse_correo
 from document.services.document_service import DocumentService
 from document.services.email_cuenta_service import EmailCuentaService, ErrorDeCuenta
 from document.services.tercero_service import TerceroService
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ class EmailBandejaService:
         """
         subidos: list[dict[str, Any]] = []
         for adjunto in correo.adjuntos:
-            archivo = await storage_client.upload_bytes(
+            archivo = await storage_api.upload_file(
                 tenant_slug=self._tenant,
                 filename=adjunto.nombre,
                 mime_type=adjunto.tipo_mime,
@@ -452,7 +452,7 @@ class EmailBandejaService:
         # El mensaje original va por la puerta de ARTEFACTOS, no por la de
         # anexos: no es un soporte que aporte el ciudadano, es lo que el sistema
         # conserva para poder acreditar origen, destino y hora.
-        original = await storage_client.upload_artefacto(
+        original = await storage_api.upload_system_artifact(
             tenant_slug=self._tenant,
             filename=f"mensaje-original-{mensaje['uid']}.eml",
             mime_type="message/rfc822",

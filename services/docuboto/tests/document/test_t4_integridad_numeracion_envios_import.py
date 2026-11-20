@@ -267,15 +267,15 @@ async def test_la_transicion_manual_deja_asiento_con_el_actor(
     client_with_conn, monkeypatch
 ) -> None:
     """Mutación: quitar `audit.append` de `update_estado` → cae."""
-    from document.clients import storage_client
+    from storage import api as storage_api
 
     async def _storage(*, tenant_slug, file_id):
         # El acuse lo subió quien registra la entrega (B2, ADR-031).
-        return storage_client.ProcedenciaArchivo(
+        return storage_api.FileProvenance(
             sha256="a" * 64, uploaded_by=uuid.UUID(_USER), referencias=[]
         )
 
-    monkeypatch.setattr(storage_client, "fetch_file_procedencia", _storage)
+    monkeypatch.setattr(storage_api, "get_file_provenance", _storage)
     client, mock_conn = client_with_conn
     sid = uuid.uuid4()
     mock_conn.fetchval.return_value = True  # permiso concedido (y sin hash previo)
@@ -328,15 +328,15 @@ async def test_un_callback_que_gana_la_carrera_hace_que_el_manual_reciba_409(
 ) -> None:
     """El UPDATE no devuelve fila (el callback dejó `devuelto` entre la lectura y
     el UPDATE) → 409 y NINGÚN asiento de transición manual."""
-    from document.clients import storage_client
+    from storage import api as storage_api
 
     async def _storage(*, tenant_slug, file_id):
         # El acuse lo subió quien registra la entrega (B2, ADR-031).
-        return storage_client.ProcedenciaArchivo(
+        return storage_api.FileProvenance(
             sha256="a" * 64, uploaded_by=uuid.UUID(_USER), referencias=[]
         )
 
-    monkeypatch.setattr(storage_client, "fetch_file_procedencia", _storage)
+    monkeypatch.setattr(storage_api, "get_file_provenance", _storage)
     client, mock_conn = client_with_conn
     sid = uuid.uuid4()
     mock_conn.fetchrow.side_effect = [

@@ -29,8 +29,10 @@ import pytest
 
 from signature.core.config import settings
 from signature.core.otp import hmac_otp, verify_otp
-from tests.signature.conftest import TENANT_HEADERS
-from tests.signature.test_sign_xml_xades import _FakeFirmaTable  # tabla `firma` falsa con INSERT/SELECT
+from tests.signature.conftest import TENANT_HEADERS, sellar
+from tests.signature.test_sign_xml_xades import (
+    _FakeFirmaTable,  # tabla `firma` falsa con INSERT/SELECT
+)
 
 C1 = uuid.UUID("11111111-aaaa-aaaa-aaaa-111111111111")
 C2 = uuid.UUID("22222222-aaaa-aaaa-aaaa-222222222222")
@@ -110,22 +112,19 @@ def test_la_clave_del_otp_no_es_la_de_la_firma_nativa() -> None:
 async def test_firma_nativa_de_sign_xml_verifica_de_punta_a_punta(
     client_with_conn, monkeypatch
 ) -> None:
-    """``/sign-xml`` nativa -> ``/verify``: la fila lleva el instante que quedó DENTRO
+    """Sello nativo -> ``/verify``: la fila lleva el instante que quedó DENTRO
     del HMAC (antes se persistía otro ``now()`` y ninguna firma nativa de este camino
     llegó nunca a verificar) y la ``key_version`` con que se firmó."""
-    # Solo el sello institucional entra por aquí (B9-3), con token interno; con el
-    # proveedor distinto de `xades_local` el sello cae al HMAC nativo.
+    # Solo el sello institucional entra por aquí (B9-3); con el proveedor distinto
+    # de `xades_local` el sello cae al HMAC nativo.
     monkeypatch.setattr(settings, "signer_provider", "nativa")
-    monkeypatch.setattr(settings, "signature_internal_token", "tok-interno")
     client, conn = client_with_conn
     table = _FakeFirmaTable()
     conn.fetchrow.side_effect = table.fetchrow
-    resp = await client.post(
-        "/api/v1/signature/sign-xml",
-        json={"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"},
-        headers={**TENANT_HEADERS, "X-Internal-Token": "tok-interno"},
+    resp = await sellar(
+        conn, {"payload_xml": "<indice/>", "objeto_tipo": "indice", "objeto_id": "exp-1"}
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 201, resp.json()
     firma_id = resp.json()["firma_id"]
     assert table.rows[firma_id]["key_version"] == 1
 

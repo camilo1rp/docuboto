@@ -21,7 +21,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import uuid
-from base64 import b64decode, b64encode
+from base64 import b64decode
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -34,6 +35,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import NameOID
 from httpx import AsyncClient
 
+from auth import api as auth_api
 from auth.core.authz import Caller, get_caller
 from auth.core.config import settings
 from auth.core.database import get_db_conn, get_tenant_conn
@@ -717,70 +719,66 @@ async def test_activate_requires_internal_token(client: AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /internal/signing-key/status — consultado por CadenaFirmaService.firmar()
+# auth.api.signing_key_status — consultado por CadenaFirmaService.firmar()
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_internal_status_resolves_from_bearer(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        "auth.routers.signing_key.validate_token",
-        AsyncMock(return_value={"user_id": "kc-sub", "tenant_slug": "demo"}),
+def _api(monkeypatch: pytest.MonkeyPatch, conn: AsyncMock, tenant: str = "demo") -> None:
+    """`auth.api` sin BD: `acquire_tenant` entrega la conexión doble (ADR-047 §1)."""
+
+    @asynccontextmanager
+    async def _acquire(slug: str):
+        assert slug == tenant
+        yield conn
+
+    monkeypatch.setattr(auth_api, "acquire_tenant", _acquire)
+
+
+async def _sign(monkeypatch, conn, digest: bytes, code: str, fingerprint: str) -> dict:
+    _api(monkeypatch, conn)
+    return await auth_api.sign_digest(
+        tenant_slug="demo",
+        user_id=USER_ID,
+        digest=digest,
+        totp_code=code,
+        cert_fingerprint=fingerprint,
     )
+
+
+@pytest.mark.asyncio
+async def test_status_de_la_persona_dice_de_quien_es(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _make_conn()
     active_row = _key_row(estado="activo", cert_pem="-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n")
     conn.fetchrow.side_effect = [_user_row(), active_row]
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/signing-key/status",
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake"},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["estado"] == "activo"
-    # AREA-04-05: dice DE QUIÉN es la credencial, para que signature-service la
-    # cruce con el actor al que atribuye el acto.
-    assert resp.json()["user_id"] == str(_user_row()["id"])
-    assert "PRIVATE KEY" not in resp.text
+    _api(monkeypatch, conn)
+    body = await auth_api.signing_key_status(tenant_slug="demo", user_id=USER_ID)
+    assert body["estado"] == "activo"
+    # AREA-04-05: dice DE QUIÉN es la credencial, para que signature la cruce
+    # con el actor al que atribuye el acto.
+    assert body["user_id"] == str(USER_ID)
+    assert "PRIVATE KEY" not in str(body)
 
 
 @pytest.mark.asyncio
-async def test_internal_status_requires_internal_token(client: AsyncClient) -> None:
+async def test_status_de_quien_no_esta_aprovisionado_falla_cerrado(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No poder resolver a la persona no es «sin clave»: signature responde 503."""
     conn = _make_conn()
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/signing-key/status", headers={"Authorization": "Bearer fake"}
-        )
-    finally:
-        _clear()
-    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
+    conn.fetchrow.side_effect = [None]
+    _api(monkeypatch, conn)
+    with pytest.raises(auth_api.AuthUnavailableError):
+        await auth_api.signing_key_status(tenant_slug="demo", user_id=USER_ID)
 
 
 # ---------------------------------------------------------------------------
-# sign-digest — identidad SIEMPRE del Bearer, TOTP verify-and-consume atómico
+# auth.api.sign_digest — identidad del actor, TOTP verify-and-consume atómico
 # ---------------------------------------------------------------------------
-
-
-def _mock_validate_token(monkeypatch: pytest.MonkeyPatch, claims: dict) -> None:
-    monkeypatch.setattr(
-        "auth.routers.signing_key.validate_token", AsyncMock(return_value=claims)
-    )
-
-
-def _claims(user_id: str = "kc-sub", tenant_slug: str = "demo") -> dict:
-    return {"user_id": user_id, "tenant_slug": tenant_slug}
 
 
 @pytest.mark.asyncio
-async def test_sign_digest_success(client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_validate_token(monkeypatch, _claims())
+async def test_sign_digest_success(
+    monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _make_conn()
     private_key = generate_keypair()
     cert = _issue_test_cert(private_key)
@@ -824,63 +822,34 @@ async def test_sign_digest_success(client: AsyncClient, monkeypatch: pytest.Monk
     conn.execute.side_effect = lambda *a, **kw: "UPDATE 1"
 
     digest = hashlib.sha256(b"C14N(SignedInfo) de prueba").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={
-                "digest_b64": b64encode(digest).decode(),
-                "alg": "RSA-SHA256",
-                "prehashed": True,
-                "totp_code": code,
-                "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
-            },
-            headers={
-                "X-Internal-Token": INTERNAL_TOKEN,
-                "Authorization": "Bearer fake.jwt.token",
-            },
-        )
-    finally:
-        _clear()
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    body = await _sign(monkeypatch, conn, digest, code, cert.fingerprint(hashes.SHA256()).hex())
     signature = b64decode(body["signature_value_b64"])
     private_key.public_key().verify(
         signature, digest, padding.PKCS1v15(), Prehashed(hashes.SHA256())
     )
     assert body["certificado_pem"] == cert_pem
-    assert "PRIVATE KEY" not in resp.text
+    assert "PRIVATE KEY" not in str(body)
 
 
 @pytest.mark.asyncio
 async def test_sign_digest_no_active_key_returns_422(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _mock_validate_token(monkeypatch, _claims())
     conn = _make_conn()
     conn.fetchrow.side_effect = [_user_row(), None]  # get_user, get_by_user_for_update
     digest = hashlib.sha256(b"x").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": "0" * 64},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake"},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["error"] == "signing_key_no_activa"
+    with pytest.raises(auth_api.SignDigestError) as exc:
+        await _sign(monkeypatch, conn, digest, "000000", "0" * 64)
+    assert exc.value.status_code == 422
+    assert exc.value.detail["error"] == "signing_key_no_activa"
 
 
 @pytest.mark.asyncio
 async def test_sign_digest_wrong_totp_never_signs(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Un TOTP inválido rechaza SIN firmar — la clave nunca se descifra ni se
     usa (verificado indirectamente: la respuesta nunca lleva signature_value_b64)."""
-    _mock_validate_token(monkeypatch, _claims())
     conn = _make_conn()
     private_key = generate_keypair()
     cert = _issue_test_cert(private_key)
@@ -917,90 +886,13 @@ async def test_sign_digest_wrong_totp_never_signs(
     conn.fetchrow.side_effect = [_user_row(), active_key_row, totp_row, failure_row]
 
     digest = hashlib.sha256(b"x").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex()},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake"},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 401, resp.text
-    assert resp.json()["detail"]["error"] == "totp_incorrecto"
-    assert "signature_value_b64" not in resp.text
+    with pytest.raises(auth_api.SignDigestError) as exc:
+        await _sign(monkeypatch, conn, digest, "000000", cert.fingerprint(hashes.SHA256()).hex())
+    assert exc.value.status_code == 401
+    assert exc.value.detail["error"] == "totp_incorrecto"
 
 
-@pytest.mark.asyncio
-async def test_sign_digest_identity_from_bearer_ignores_body(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``InternalSignDigestRequest`` no tiene campo ``user_id`` — un body que
-    intente colar uno es simplemente ignorado por Pydantic (extra="ignore"
-    por defecto): la identidad SIEMPRE se deriva del bearer (D1, cierra IDOR).
-    Este test confirma que un ``user_id`` ajeno en el body no cambia a quién
-    se resuelve (se sigue resolviendo por ``keycloak_sub`` del bearer)."""
-    _mock_validate_token(monkeypatch, _claims(user_id="kc-sub"))
-    conn = _make_conn()
-    conn.fetchrow.side_effect = [_user_row(user_id=USER_ID), None]
 
-    digest = hashlib.sha256(b"x").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={
-                "digest_b64": b64encode(digest).decode(),
-                "totp_code": "000000",
-                "cert_fingerprint": "0" * 64,
-                "user_id": str(OTHER_USER_ID),  # campo espurio, debe ser ignorado
-            },
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake"},
-        )
-    finally:
-        _clear()
-    # get_by_user_for_update fue llamado con USER_ID (resuelto por el
-    # keycloak_sub del bearer), NO con OTHER_USER_ID del body.
-    for_update_calls = [
-        c for c in conn.fetchrow.await_args_list if "FOR UPDATE" in c.args[0]
-    ]
-    assert len(for_update_calls) == 1
-    assert for_update_calls[0].args[1] == USER_ID
-    assert resp.status_code == 422  # no_activo (no hay fila) — pero por el user_id correcto
-
-
-@pytest.mark.asyncio
-async def test_sign_digest_requires_internal_token(client: AsyncClient) -> None:
-    conn = _make_conn()
-    digest = hashlib.sha256(b"x").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": "0" * 64},
-            headers={"Authorization": "Bearer fake"},
-        )
-    finally:
-        _clear()
-    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-
-
-@pytest.mark.asyncio
-async def test_sign_digest_requires_bearer(client: AsyncClient) -> None:
-    conn = _make_conn()
-    digest = hashlib.sha256(b"x").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": "000000", "cert_fingerprint": "0" * 64},
-            headers={"X-Internal-Token": INTERNAL_TOKEN},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -1422,33 +1314,27 @@ async def test_admin_revoke_no_credential_returns_404(
 
 
 # ---------------------------------------------------------------------------
-# E17/F4, Incremento 2 — GET /internal/signing-key/revocation-status
+# E17/F4, Incremento 2 — auth.api.signing_key_revocation_status
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_revocation_status_vigente(client: AsyncClient) -> None:
+async def test_revocation_status_vigente(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _make_conn()
     conn.fetchrow.side_effect = [_key_row(estado="activo", certificado_fingerprint="deadbeef")]
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/signing-key/revocation-status",
-            params={"certificado_fingerprint": "deadbeef"},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    _api(monkeypatch, conn, "demo")
+    resp = await auth_api.signing_key_revocation_status(
+        tenant_slug="demo", fingerprint="deadbeef"
+    )
+    body = resp
     assert body["status"] == "vigente"
     assert body["revocado_at"] is None
-    assert "cert_pem" not in resp.text
-    assert "private_key" not in resp.text.lower()
+    assert "cert_pem" not in body
+    assert "private_key" not in str(body).lower()
 
 
 @pytest.mark.asyncio
-async def test_revocation_status_revocado(client: AsyncClient) -> None:
+async def test_revocation_status_revocado(monkeypatch: pytest.MonkeyPatch) -> None:
     conn = _make_conn()
     revoked_at = datetime.now(UTC)
     conn.fetchrow.side_effect = [
@@ -1459,17 +1345,11 @@ async def test_revocation_status_revocado(client: AsyncClient) -> None:
             motivo_revocacion="key_compromise",
         )
     ]
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/signing-key/revocation-status",
-            params={"certificado_fingerprint": "deadbeef"},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    _api(monkeypatch, conn, "demo")
+    resp = await auth_api.signing_key_revocation_status(
+        tenant_slug="demo", fingerprint="deadbeef"
+    )
+    body = resp
     assert body["status"] == "revocado"
     assert body["revocado_at"] is not None
     # /verify de signature-service lo usa para invalidar hacia atrás.
@@ -1512,48 +1392,17 @@ async def test_revoke_rechaza_motivo_fuera_del_vocabulario(
 
 
 @pytest.mark.asyncio
-async def test_revocation_status_unknown_fingerprint_returns_desconocido(
-    client: AsyncClient,
-) -> None:
+async def test_revocation_status_unknown_fingerprint_returns_desconocido(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail-closed: huella no encontrada (otro tenant, forjada, o titular
     borrado por CASCADE) -> ``desconocido``, NUNCA ``vigente``."""
     conn = _make_conn()
     conn.fetchrow.side_effect = [None]
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/signing-key/revocation-status",
-            params={"certificado_fingerprint": "no-existe"},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "otro-tenant"},
-        )
-    finally:
-        _clear()
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "desconocido"
-    # Aislamiento por tenant: el search_path se fija al schema DEL HEADER
-    # (el mecanismo real de aislamiento — la huella de un tenant nunca
-    # aparece en la consulta de otro, ver migración 012 + repository).
-    search_path_calls = [
-        c for c in conn.execute.await_args_list if "search_path" in c.args[0].lower()
-    ]
-    assert any("tenant_otro_tenant" in c.args[0] for c in search_path_calls)
+    _api(monkeypatch, conn, "otro-tenant")
+    resp = await auth_api.signing_key_revocation_status(
+        tenant_slug="otro-tenant", fingerprint="no-existe"
+    )
+    assert resp["status"] == "desconocido"
 
-
-@pytest.mark.asyncio
-async def test_revocation_status_requires_internal_token(client: AsyncClient) -> None:
-    conn = _make_conn()
-    _override_internal(conn)
-    try:
-        resp = await client.get(
-            "/internal/signing-key/revocation-status",
-            params={"certificado_fingerprint": "deadbeef"},
-            headers={"X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
-    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
 
 
 # ---------------------------------------------------------------------------
@@ -1563,7 +1412,6 @@ async def test_revocation_status_requires_internal_token(client: AsyncClient) ->
 
 @pytest.mark.asyncio
 async def test_sign_digest_includes_ca_cert_pem_when_anchored(
-    client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     sub_ca: tuple[rsa.RSAPrivateKey, x509.Certificate],
 ) -> None:
@@ -1571,7 +1419,6 @@ async def test_sign_digest_includes_ca_cert_pem_when_anchored(
     devuelva ``ca_cert_pem``/``ca_fingerprint`` de la sub-CA MONTADA — releída
     del filesystem, no de la fila (que solo guarda la huella)."""
     ca_key, ca_cert = sub_ca
-    _mock_validate_token(monkeypatch, _claims())
     conn = _make_conn()
     private_key = generate_keypair()
     cert = _issue_test_cert(private_key, ca_key=ca_key, ca_cert=ca_cert)
@@ -1589,24 +1436,7 @@ async def test_sign_digest_includes_ca_cert_pem_when_anchored(
     conn.execute.side_effect = lambda *a, **kw: "UPDATE 1"
 
     digest = hashlib.sha256(b"C14N(SignedInfo) de prueba").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={
-                "digest_b64": b64encode(digest).decode(),
-                "alg": "RSA-SHA256",
-                "prehashed": True,
-                "totp_code": code,
-                "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
-            },
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake.jwt.token"},
-        )
-    finally:
-        _clear()
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    body = await _sign(monkeypatch, conn, digest, code, cert.fingerprint(hashes.SHA256()).hex())
     assert body["ca_fingerprint"] == user_ca_fingerprint
     assert "BEGIN CERTIFICATE" in body["ca_cert_pem"]
     assert x509.load_pem_x509_certificate(
@@ -1616,13 +1446,12 @@ async def test_sign_digest_includes_ca_cert_pem_when_anchored(
 
 @pytest.mark.asyncio
 async def test_sign_digest_omits_ca_cert_pem_for_grandfathered_key(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Una clave ``activo`` SIN ``user_ca_fingerprint`` (anclada antes de
     Incremento 2, o sin sub-CA configurada al firmar) deja
     ``ca_cert_pem``/``ca_fingerprint`` en ``None`` — retrocompat exacta con
     Incremento 1, nunca falla la firma por esto."""
-    _mock_validate_token(monkeypatch, _claims())
     conn = _make_conn()
     private_key = generate_keypair()
     cert = _issue_test_cert(private_key)
@@ -1636,17 +1465,29 @@ async def test_sign_digest_omits_ca_cert_pem_for_grandfathered_key(
     conn.execute.side_effect = lambda *a, **kw: "UPDATE 1"
 
     digest = hashlib.sha256(b"x").digest()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/sign-digest",
-            json={"digest_b64": b64encode(digest).decode(), "totp_code": code, "cert_fingerprint": cert.fingerprint(hashes.SHA256()).hex()},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "Authorization": "Bearer fake.jwt.token"},
-        )
-    finally:
-        _clear()
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    body = await _sign(monkeypatch, conn, digest, code, cert.fingerprint(hashes.SHA256()).hex())
     assert body["ca_cert_pem"] is None
     assert body["ca_fingerprint"] is None
+
+
+# ---------------------------------------------------------------------------
+# auth.api.user_email — a quién sale el OTP de la firma
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_el_correo_es_el_de_la_persona(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _make_conn()
+    conn.fetchrow.side_effect = [_user_row()]
+    _api(monkeypatch, conn)
+    assert await auth_api.user_email(tenant_slug="demo", user_id=USER_ID) == _user_row()["email"]
+    assert conn.fetchrow.await_args.args[1] == USER_ID
+
+
+@pytest.mark.asyncio
+async def test_sin_correo_registrado_falla_cerrado(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _make_conn()
+    conn.fetchrow.side_effect = [None]
+    _api(monkeypatch, conn)
+    with pytest.raises(auth_api.AuthUnavailableError):
+        await auth_api.user_email(tenant_slug="demo", user_id=USER_ID)

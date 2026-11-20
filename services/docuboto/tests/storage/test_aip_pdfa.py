@@ -38,8 +38,9 @@ from storage.services.pdfa import (
     get_pdfa_validator,
     run_pdfa_validation,
 )
+from storage.schemas.preservacion import AipCreate
+from storage.services.aip_service import AipService
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -66,13 +67,20 @@ _FAKE_PDF_MIME_CONTENT = b"esto dice ser un pdf mint pero no lo es"
 _FAKE_PDF_MIME_SHA256 = hashlib.sha256(_FAKE_PDF_MIME_CONTENT).hexdigest()
 
 
+_ACTOR = str(uuid.uuid4())
+
+
+async def _empaquetar(mock_conn, payload: dict) -> dict:
+    """Empaqueta vía `AipService` con un actor persona (la ruta HTTP ya no existe, ADR-047)."""
+    result = await AipService(mock_conn, TENANT_SLUG).empaquetar_aip(
+        AipCreate(**payload), actor=_ACTOR
+    )
+    return result.model_dump(mode="json")
+
+
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
-
-
-def _grant_permission(mock_conn) -> None:
-    mock_conn.fetchval.return_value = True
 
 
 def _pdf_record(file_id: uuid.UUID) -> dict:
@@ -135,14 +143,13 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
     """Gate maestro `PRESERVATION_PDFA_VALIDATION_ENABLED=false` (default):
     el AIP se empaqueta exactamente igual que antes de este incremento — sin
     evento VALIDACION_PDFA alguno, aunque el documento SEA un PDF real."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     assert config_module.settings.preservation_pdfa_validation_enabled is False
 
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _pdf_record(doc_file_id),
         None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
@@ -154,13 +161,7 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
     ]
     mock_minio.get_object = minio_get_object(_PDF_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
     evento_inserts = [
         c
         for c in mock_conn.fetchrow.call_args_list
@@ -170,7 +171,7 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
 
     # El stub NUNCA corrió — el PREMIS real tampoco debe llevar un evento
     # `validation`. Se verifica sobre el PREMIS realmente CONSTRUIDO, no sobre
-    # `resp.json()["premis_xml"]`, que es el mock `"<premis/>"` de la fila y
+    # `premis_xml` devuelto, que es el mock `"<premis/>"` de la fila y
     # por tanto no probaría nada. Espejo negativo del caso activado (abajo):
     # sin `pdfa_results`, el evento no aparece.
     from storage.services.aip_builder import AipDocMaterial, build_bag
@@ -203,15 +204,14 @@ async def test_pdfa_validation_enabled_stub_emits_no_evaluado_and_aip_still_pack
     """Con el gate activo y el stub (default), un documento PDF genera un
     evento VALIDACION_PDFA `resultado=no_evaluado` + un `validation` PREMIS
     con `eventOutcome="not evaluated"` — y el AIP se empaqueta igual
-    (advisory por defecto, PIEZA 5): el 201 no se bloquea."""
+    (advisory por defecto, PIEZA 5): el empaquetado no se bloquea."""
     monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _pdf_record(doc_file_id),
         None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
@@ -224,13 +224,7 @@ async def test_pdfa_validation_enabled_stub_emits_no_evaluado_and_aip_still_pack
     ]
     mock_minio.get_object = minio_get_object(_PDF_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
 
     # --- rastro preservacion_evento: FIJACION, WORM, INGESTA, VALIDACION_PDFA ---
     evento_inserts = [
@@ -289,13 +283,12 @@ async def test_pdfa_validation_skips_non_pdf_document(client_with_conn, monkeypa
     VALIDACION_PDFA alguno — la detección es por magic bytes, no por
     extensión de archivo ni por declaración del cliente."""
     monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         make_file_record(
             file_id=doc_file_id,
@@ -313,13 +306,7 @@ async def test_pdfa_validation_skips_non_pdf_document(client_with_conn, monkeypa
     ]
     mock_minio.get_object = minio_get_object(_NON_PDF_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id, nombre="nota.txt"),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id, nombre="nota.txt"))
     evento_inserts = [
         c
         for c in mock_conn.fetchrow.call_args_list
@@ -336,13 +323,12 @@ async def test_pdfa_validation_ignores_declared_mime_type_uses_sniff(
     empiezan con `%PDF`: el sniff por magic bytes gana — sin evento
     VALIDACION_PDFA (el mime lo declara el cliente, no es fiable)."""
     monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         make_file_record(
             file_id=doc_file_id,
@@ -360,13 +346,7 @@ async def test_pdfa_validation_ignores_declared_mime_type_uses_sniff(
     ]
     mock_minio.get_object = minio_get_object(_FAKE_PDF_MIME_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id, nombre="disfrazado.pdf"),
-        headers=INTERNAL_HEADERS,
-    )
-
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id, nombre="disfrazado.pdf"))
     evento_inserts = [
         c
         for c in mock_conn.fetchrow.call_args_list
@@ -411,7 +391,7 @@ def test_preservacion_evento_check_constraint_admits_no_evaluado() -> None:
     """`preservacion_evento.resultado` es `character varying(16)` y su CHECK admite
     'no_evaluado' junto a 'ok'/'fallo' — sin esto, el INSERT del evento
     VALIDACION_PDFA con `resultado="no_evaluado"` violaría la constraint en
-    Postgres real (el mock de `mock_conn` no lo verifica: los tests HTTP de
+    Postgres real (el mock de `mock_conn` no lo verifica: los tests de
     arriba solo comprueban que el código INTENTA insertar ese valor, no que
     la BD lo aceptaría). Chequeo estático del SQL — sin abrir una conexión
     real (el run mandatado usa `--no-deps`, sin Postgres disponible)."""
@@ -435,7 +415,7 @@ def test_preservacion_evento_check_constraint_admits_no_evaluado() -> None:
 @pytest.mark.asyncio
 async def test_stub_pdfa_validator_never_claims_conformance() -> None:
     """Test unitario directo del stub (HONESTIDAD, RF-FIR-15): sin pasar por
-    HTTP/MinIO, `StubPdfaValidator.validate()` siempre devuelve
+    el servicio ni MinIO, `StubPdfaValidator.validate()` siempre devuelve
     `not_evaluated`, nunca `conformant` ni `non_conformant`."""
     validator = StubPdfaValidator()
     result = await validator.validate("/tmp/cualquier.pdf", profile="2b")

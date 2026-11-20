@@ -27,7 +27,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from knowledge.clients import documento
+from document import api as document_api
 from knowledge.core import paso, traduccion
 from knowledge.core.paso import Decision
 
@@ -122,8 +122,10 @@ def _leer_cursor(texto: str | None) -> tuple[datetime, uuid.UUID]:
 
 
 async def _cuerpo(slug: str, radicado_id: uuid.UUID) -> dict[str, Any]:
-    """El lote sale de document-service. 404 es «ausente»; otro fallo sube."""
-    registro = await documento.leer_registro(slug, radicado_id)
+    """El lote sale de document. `None` es «ausente»; otro fallo sube."""
+    registro = await document_api.read_radicado_record(
+        tenant_slug=slug, radicado_id=radicado_id
+    )
     if not isinstance(registro, dict):
         raise ValueError("ausente")
     return traduccion.lote(registro, registro.get("anexos") or [])

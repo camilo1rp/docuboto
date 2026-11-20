@@ -13,9 +13,8 @@
 ``CadenaFirmaService._firmar_personal`` (``signature/services/cadena_service.py``,
 Incremento 1) ya validaba end-to-end: construye un ``SignerRef`` con la
 técnica de "firma remota" (par RSA EFÍMERO + ``remote_sign`` que llama a
-``POST /internal/signing-key/sign-digest`` en auth-service, TOTP
-verificado-y-consumido ATÓMICAMENTE del lado de auth-service — D1 del
-contrato de firma personal) y delega en ``LocalSigner`` (``app.providers.local``).
+``auth.api.sign_digest``, TOTP verificado-y-consumido ATÓMICAMENTE del lado
+de auth — D1 del contrato de firma personal) y delega en ``LocalSigner`` (``app.providers.local``).
 
 Dos llamantes, MISMA maquinaria, sin duplicar nada de TSA/LT/OCSP/anclaje de
 sub-CA (todo eso vive en ``LocalSigner.sign``, no aquí):
@@ -45,15 +44,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from fastapi import HTTPException, status
 
-from signature.clients import storage_client
+from auth import api as auth_api
 from signature.core.clearance import resolve_caller_clearance
-from signature.core.http_clients import (
-    SignDigestRemoteError,
-    SignDigestRemoteUnavailableError,
-    SigningKeyStatusUnavailableError,
-    get_signing_key_status_remote,
-    sign_digest_remote,
-)
 from signature.providers.base import SignedDoc, SignerRef
 from signature.providers.local import (
     CertificadoPersonalVencidoError,
@@ -64,6 +56,7 @@ from signature.repositories.cadena_repository import CadenaRepository
 from signature.repositories.firma_repository import FirmaRepository
 from signature.schemas.firma import FirmaResponse, SignPersonalRequest
 from signature.services.signing_service import _MINIO_FILENAME_PREFIX
+from storage import api as storage_api
 
 logger = logging.getLogger("signature.personal_signing")
 
@@ -83,7 +76,8 @@ async def sign_personal_xml(
     xml_bytes: bytes,
     objeto_tipo: str,
     objeto_id: str | None,
-    authorization: str | None,
+    tenant_slug: str,
+    actor: uuid.UUID,
     totp_code: str,
     cert_pem: str,
 ) -> SignedDoc:
@@ -110,10 +104,14 @@ async def sign_personal_xml(
         nonlocal factor_en_uso
         factor_en_uso = True
         try:
-            result = await sign_digest_remote(
-                authorization, digest, totp_code, cert_fingerprint=cert_fingerprint
+            result = await auth_api.sign_digest(
+                tenant_slug=tenant_slug,
+                user_id=actor,
+                digest=digest,
+                totp_code=totp_code,
+                cert_fingerprint=cert_fingerprint,
             )
-        except SignDigestRemoteUnavailableError as exc:
+        except auth_api.AuthUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -122,8 +120,8 @@ async def sign_personal_xml(
                     "status": 503,
                 },
             ) from exc
-        except SignDigestRemoteError as exc:
-            # auth-service ya formatea el detail en la forma
+        except auth_api.SignDigestError as exc:
+            # auth ya formatea el detail en la forma
             # {"error", "detail", "status"} — se reenvía tal cual (mismos
             # códigos: 422 signing_key_no_activa/totp_no_activo, 423
             # totp_bloqueado, 401 totp_incorrecto).
@@ -220,7 +218,6 @@ class PersonalSigningService:
         self,
         payload: SignPersonalRequest,
         actor: uuid.UUID,
-        authorization: str | None,
     ) -> FirmaResponse:
         """
         Guards (en orden):
@@ -236,8 +233,8 @@ class PersonalSigningService:
            declara, DEBE coincidir con el actor derivado del JWT — 403
            ``firmante_no_coincide`` en caso contrario. Nunca sustituye la
            identidad (que siempre viene de ``actor``), solo la corrobora.
-        3. Estado de la credencial personal del actor (``GET
-           /internal/signing-key/status``, auth-service): sin cert 'activo'
+        3. Estado de la credencial personal del actor
+           (``auth.api.signing_key_status``): sin cert 'activo'
            -> 422 ``sin_certificado_activo`` (accionable: completar el
            enrolamiento offline); canal caído -> 503
            ``canal_firma_personal_no_disponible`` (fail-closed, nunca se
@@ -282,8 +279,10 @@ class PersonalSigningService:
 
         # --- 3. Estado de la credencial personal ---
         try:
-            status_body = await get_signing_key_status_remote(authorization)
-        except SigningKeyStatusUnavailableError as exc:
+            status_body = await auth_api.signing_key_status(
+                tenant_slug=self._tenant_slug, user_id=actor
+            )
+        except auth_api.AuthUnavailableError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
@@ -304,9 +303,9 @@ class PersonalSigningService:
                     "status": 422,
                 },
             )
-        # La credencial (y el TOTP que se verificará contra ella) son las del
-        # dueño del BEARER; el acto se atribuye a `X-User-Id`. Si no son la misma
-        # persona se corta aquí, antes de pedir ningún factor ni firmar (AREA-04-05).
+        # La credencial tiene que ser la del actor al que se atribuye el acto
+        # (AREA-04-05). auth la resuelve para ese mismo actor, así que esto es
+        # un invariante: si alguna vez no casa, se corta antes de pedir factor.
         if str(status_body.get("user_id") or "") != str(actor):
             if _AUDIT_AVAILABLE:
                 async with self._conn.transaction():
@@ -341,7 +340,8 @@ class PersonalSigningService:
                 xml_bytes=xml_bytes,
                 objeto_tipo=payload.objeto_tipo,
                 objeto_id=payload.objeto_id,
-                authorization=authorization,
+                tenant_slug=self._tenant_slug,
+                actor=actor,
                 totp_code=payload.totp_code,
                 cert_pem=cert_pem,
             )
@@ -354,13 +354,13 @@ class PersonalSigningService:
         prefix = _MINIO_FILENAME_PREFIX.get(payload.objeto_tipo, payload.objeto_tipo)
         filename = f"{prefix}-{payload.objeto_id}-v{payload.version or 0}-{firma_id}-firmado.xml"
         try:
-            minio_key_firmado = await storage_client.upload_signed_xml(
+            minio_key_firmado = await storage_api.upload_signed_xml(
                 tenant_slug=self._tenant_slug,
                 filename=filename,
                 content=signed.signed_xml,
                 uploaded_by=actor,
             )
-        except storage_client.StorageUploadError as exc:
+        except storage_api.StorageError as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={

@@ -25,8 +25,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.kek import decode_aes256, seal
 
-from knowledge.clients import documento
-from knowledge.clients.documento import DocumentoError
+from document import api as document_api
 from knowledge.core import database
 from knowledge.core.clave_retorno import aad
 from knowledge.core.config import settings
@@ -141,7 +140,8 @@ def _montar(
         assert slug == "demo"
         yield conn
 
-    async def _leer(slug: str, anexo_id: uuid.UUID) -> bytes | None:
+    async def _leer(*, tenant_slug: str, anexo_id: uuid.UUID, max_bytes: int) -> bytes | None:
+        assert tenant_slug == "demo"
         pedidos.append(anexo_id)
         if isinstance(octetos, Exception):
             raise octetos
@@ -149,7 +149,7 @@ def _montar(
 
     monkeypatch.setattr(settings, "intelligence_credential_kek", base64.b64encode(KEK).decode())
     monkeypatch.setattr(database, "acquire_tenant", _adquirir)
-    monkeypatch.setattr(documento, "leer_anexo", _leer)
+    monkeypatch.setattr(document_api, "read_anexo_content", _leer)
     return pedidos
 
 
@@ -271,7 +271,7 @@ async def test_si_document_no_lo_tiene_es_410(monkeypatch: pytest.MonkeyPatch) -
 
 
 async def test_si_document_falla_es_503(monkeypatch: pytest.MonkeyPatch) -> None:
-    _montar(monkeypatch, _Conn(credencial=_credencial()), DocumentoError("red"))
+    _montar(monkeypatch, _Conn(credencial=_credencial()), document_api.DocumentUnavailableError("red"))
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-caido-0001"))
     assert resp.status_code == 503
@@ -284,53 +284,3 @@ async def test_si_la_tabla_no_responde_no_sirve(monkeypatch: pytest.MonkeyPatch)
     cuerpo = _pedido()
     resp = await _post(cuerpo, _firmar(cuerpo, nonce="nonce-sin-tabla1"))
     assert resp.status_code == 503
-
-
-async def test_el_cliente_pide_el_anexo_con_el_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    vistas: list[httpx.Request] = []
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        vistas.append(req)
-        return httpx.Response(200, content=b"xyz")
-
-    real = httpx.AsyncClient
-
-    def cliente(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-        return real(*args, transport=httpx.MockTransport(handler), **kwargs)
-
-    monkeypatch.setattr(documento.httpx, "AsyncClient", cliente)
-    monkeypatch.setattr(settings, "document_internal_token", "secreto-interno")
-    assert await documento.leer_anexo("demo", ANEXO) == b"xyz"
-    assert vistas[0].headers["x-internal-token"] == "secreto-interno"
-    assert vistas[0].url.path.endswith(f"/anexos/{ANEXO}/contenido")
-
-
-async def test_el_cliente_pide_el_registro_con_el_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    vistas: list[httpx.Request] = []
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        vistas.append(req)
-        return httpx.Response(200, json={"id": str(ANEXO), "anexos": []})
-
-    real = httpx.AsyncClient
-
-    def cliente(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-        return real(*args, transport=httpx.MockTransport(handler), **kwargs)
-
-    monkeypatch.setattr(documento.httpx, "AsyncClient", cliente)
-    monkeypatch.setattr(settings, "document_internal_token", "secreto-interno")
-    cuerpo = await documento.leer_registro("demo", ANEXO)
-    assert cuerpo is not None and cuerpo["anexos"] == []
-    assert vistas[0].headers["x-internal-token"] == "secreto-interno"
-    assert vistas[0].url.path.endswith(f"/radicados/{ANEXO}")
-
-
-async def test_sin_token_interno_no_llama(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "document_internal_token", "")
-
-    def cliente(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-        raise AssertionError("no debía llamar")
-
-    monkeypatch.setattr(documento.httpx, "AsyncClient", cliente)
-    with pytest.raises(DocumentoError):
-        await documento.leer_anexo("demo", ANEXO)

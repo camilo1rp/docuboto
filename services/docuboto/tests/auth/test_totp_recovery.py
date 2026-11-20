@@ -416,7 +416,7 @@ def test_el_verify_interno_no_acepta_codigos_de_recuperacion() -> None:
     posesión de un dispositivo, y admitirlo al firmar debilitaría la
     atribución que RF-FIR-13 persigue. Recuperar el acceso y firmar son actos
     distintos y se exigen pruebas distintas. El control es estructural: el
-    cuerpo del endpoint interno no tiene campo donde meterlo, y su `code` está
+    pedido de `auth.api.verify_totp` no tiene campo donde meterlo, y su `code` está
     validado como TOTP (6 dígitos).
     """
     from auth.schemas.totp import InternalTotpVerifyRequest
@@ -424,3 +424,14 @@ def test_el_verify_interno_no_acepta_codigos_de_recuperacion() -> None:
     assert "recovery" not in str(InternalTotpVerifyRequest.model_fields.keys())
     with pytest.raises(ValueError):
         InternalTotpVerifyRequest(code=generate_recovery_code())
+
+
+@pytest.mark.asyncio
+async def test_auth_api_no_verifica_un_codigo_de_recuperacion() -> None:
+    """La misma frontera en la función que llama signature: ni toca la BD."""
+    from auth import api as auth_api
+
+    with pytest.raises(auth_api.AuthUnavailableError):
+        await auth_api.verify_totp(
+            tenant_slug="demo", user_id=uuid.uuid4(), code=generate_recovery_code()
+        )

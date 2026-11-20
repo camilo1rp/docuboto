@@ -509,10 +509,19 @@ def _document_service_responde() -> Iterator[None]:
             if str(r) in _EN_DOCUMENT_SERVICE
         }
 
+    # Sin BD de document en el carril unit: el inventario de anexos «no responde»,
+    # como cuando era una llamada HTTP sin servidor detrás. Quien lo necesita lo dobla.
+    from document.api import DocumentUnavailableError
+
+    async def _sin_document(*, radicado_ids: list[uuid.UUID], **_kw: Any) -> dict:
+        if not radicado_ids:
+            return {}  # lote vacío: ni siquiera se consulta, como la función real
+        raise DocumentUnavailableError("sin document en el carril unit")
+
     with patch(
-        "archive.clients.document_client.fetch_radicado_metadata_internal",
+        "document.api.fetch_radicado_metadata",
         AsyncMock(side_effect=_fake),
-    ):
+    ), patch("document.api.fetch_anexos", AsyncMock(side_effect=_sin_document)):
         yield
 
 
@@ -554,7 +563,7 @@ def _firma_personal_worm_doble() -> Iterator[AsyncMock]:
 @pytest.fixture(autouse=True)
 def _artefacto_vigente_doble() -> Iterator[AsyncMock]:
     doble = AsyncMock(return_value=None)
-    with patch("archive.clients.signature_client.artefacto_vigente", doble):
+    with patch("signature.api.artefacto_vigente", doble):
         yield doble
 
 
@@ -563,12 +572,12 @@ def _artefacto_vigente_doble() -> Iterator[AsyncMock]:
 # ejercen el cambio (`test_c6_*`, `test_aip_wiring_artefacto_vigente`) los sustituyen.
 @pytest.fixture(autouse=True)
 def _aip_c6_dobles() -> Iterator[None]:
-    from archive.clients import signature_client
+    from signature import api as signature_api
 
     with (
         patch(
-            "archive.clients.signature_client.resolver_artefacto_vigente",
-            AsyncMock(return_value=signature_client.SIN_RENOVACION),
+            "signature.api.resolver_artefacto_vigente",
+            AsyncMock(return_value=signature_api.SIN_RENOVACION),
         ),
         patch(
             "archive.services.aip_wiring_service._huella_indice_original",
@@ -589,7 +598,7 @@ def _artefacto_vigente_por_defecto(request: pytest.FixtureRequest):
     from unittest.mock import AsyncMock, patch
 
     with patch(
-        "archive.clients.signature_client.artefacto_vigente",
+        "signature.api.artefacto_vigente",
         new=AsyncMock(return_value="00000000-0000-0000-0000-0000000000aa/vigente.xml"),
     ):
         yield

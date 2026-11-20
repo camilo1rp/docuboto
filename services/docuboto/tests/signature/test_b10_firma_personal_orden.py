@@ -22,6 +22,7 @@ Mutaciones: quitar la llamada a `_ensayar_xmldsig` de `LocalSigner.sign` (cae
 from __future__ import annotations
 
 import hashlib
+import uuid
 from base64 import b64encode
 
 import pytest
@@ -96,15 +97,15 @@ async def test_la_huella_del_certificado_viaja_a_auth(monkeypatch: pytest.Monkey
     key, cert = _cert("persona-huella")
     recibido: dict = {}
 
-    async def _auth(authorization, digest, totp_code, **kw):
+    async def _auth(*, digest, totp_code, **kw):
         recibido.update(kw)
         sig = key.sign(digest, padding.PKCS1v15(), Prehashed(hashes.SHA256()))
         return {"signature_value_b64": b64encode(sig).decode()}
 
-    monkeypatch.setattr(personal_signing, "sign_digest_remote", _auth)
+    monkeypatch.setattr("auth.api.sign_digest", _auth)
     await personal_signing.sign_personal_xml(
         xml_bytes=_DOC, objeto_tipo="radicado", objeto_id="r-1",
-        authorization="Bearer x", totp_code="123456", cert_pem=_pem_cert(cert).decode(),
+        tenant_slug="demo", actor=uuid.uuid4(), totp_code="123456", cert_pem=_pem_cert(cert).decode(),
     )
     der = cert.public_bytes(serialization.Encoding.DER)
     assert recibido["cert_fingerprint"] == hashlib.sha256(der).hexdigest()

@@ -21,18 +21,20 @@ from __future__ import annotations
 import pathlib
 import re
 import uuid
+from datetime import date
 from unittest.mock import AsyncMock
 
 import pytest
 
 import storage.core.config as config_module
+from storage import api as storage_api
 from storage.core.preservacion_tipos import (
     ALL_WORM_TIPOS,
     CONTROL_INSTRUMENT_TIPOS,
     MULTI_ARTEFACTO_TIPOS,
 )
 from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
-from tests.storage.conftest import INTERNAL_HEADERS, make_worm_row
+from tests.storage.conftest import TENANT_SLUG, make_worm_row
 
 _PRESERVACION_SQL = (
     pathlib.Path(__file__).resolve().parents[3]
@@ -96,10 +98,10 @@ async def test_el_repositorio_no_cambia_para_los_tipos_singleton() -> None:
 
 @pytest.mark.asyncio
 async def test_la_segunda_constancia_del_rol_no_se_da_por_protegida(client_with_conn, monkeypatch) -> None:
-    """Endpoint de punta a punta (mocks): con una constancia YA protegida de OTRO file_id, la
-    protección de la nueva busca por SU file_id, no la encuentra y la protege (201)."""
+    """De punta a punta por `storage.api` (mocks): con una constancia YA protegida de OTRO
+    file_id, la protección de la nueva busca por SU file_id y no la encuentra."""
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
-    client, mock_conn, _minio = client_with_conn
+    _client, mock_conn, _minio = client_with_conn
     primera = make_worm_row(
         expediente_id="EXP-9", tipo="acta_firma_excepcion_recibe", file_id=uuid.uuid4()
     )
@@ -114,20 +116,17 @@ async def test_la_segunda_constancia_del_rol_no_se_da_por_protegida(client_with_
         return None
 
     mock_conn.fetchrow.side_effect = _fetchrow
-    resp = await client.post(
-        "/api/v1/preservacion/proteger-artefacto-internal",
-        json={
-            "file_id": str(nueva),
-            "expediente_id": "EXP-9",
-            "tipo": "acta_firma_excepcion_recibe",
-            "retencion_anios": 5,
-            "fecha_inicio": "2026-01-01",
-        },
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.protect_artifact_as_system(
+        tenant_slug=TENANT_SLUG,
+        file_id=str(nueva),
+        expediente_id="EXP-9",
+        tipo="acta_firma_excepcion_recibe",
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
     lookups = [
         c for c in mock_conn.fetchrow.call_args_list if "FROM preservacion_worm_objeto" in c.args[0]
     ]
     assert lookups and lookups[0].args[1:] == ("EXP-9", "acta_firma_excepcion_recibe", nueva)
     # no se devolvió la fila de la primera como «ya protegida»
-    assert not (resp.status_code == 200 and resp.json().get("file_id") == str(primera["file_id"]))
+    assert outcome.worm_object_id != primera["id"]

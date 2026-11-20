@@ -32,7 +32,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-from archive.clients.storage_client import WormProtectionOutcome, WormRenewalOutcome
 from archive.core.actor import Actor
 from archive.schemas.transferencia import RevocarFirmaInobtenibleRequest
 from archive.services.constancia_firma_excepcion import (
@@ -43,6 +42,7 @@ from archive.services.constancia_firma_excepcion import (
     sha256_c14n,
 )
 from archive.services.transferencia_service import TransferenciaService
+from storage.api import WormProtectionOutcome, WormRenewalOutcome
 from tests.archive.conftest import TENANT_HEADERS, USER_ID, make_expediente_record
 from tests.archive.test_acta_firma_inobtenible import (
     ADMIN,
@@ -145,8 +145,8 @@ def _cadena(
 
 
 def _descarga(firmados: dict[str, str]) -> AsyncMock:
-    async def _d(*, tenant_slug: str, minio_key_firmado: str) -> str:
-        return firmados.get(minio_key_firmado, "<xml/>")
+    async def _d(*, tenant_slug: str, object_key: str) -> str:
+        return firmados.get(object_key, "<xml/>")
 
     return AsyncMock(side_effect=_d)
 
@@ -233,7 +233,7 @@ async def test_la_retencion_se_ancla_al_ultimo_acto_de_la_cadena_no_a_la_fecha_p
     ok = WormProtectionOutcome(
         ok=True, worm_object_id=uuid.uuid4(), retain_until=datetime(2053, 1, 1, tzinfo=UTC)
     )
-    with patch("archive.clients.storage_client.proteger_artefacto_worm_internal", new=AsyncMock(return_value=ok)):
+    with patch("storage.api.protect_artifact_as_system", new=AsyncMock(return_value=ok)):
         await svc.proteger_worm_firma_excepcion(fila["id"], "sello", actor_id=None, origen="reconciliation")
     assert svc._resolve_worm_retention_acta.await_args.kwargs["firmado_at"] == ultimo
 
@@ -259,9 +259,9 @@ async def test_al_proteger_un_eslabon_nuevo_se_renuevan_los_anteriores_a_la_mism
     svc = _svc(conn, retencion=(25, date(2027, 3, 1)))
     ok = WormProtectionOutcome(ok=True, worm_object_id=uuid.uuid4(), retain_until=nueva)
     with (
-        patch("archive.clients.storage_client.proteger_artefacto_worm", new=AsyncMock(return_value=ok)),
+        patch("storage.api.protect_artifact", new=AsyncMock(return_value=ok)),
         patch(
-            "archive.clients.storage_client.renovar_retencion_worm_internal",
+            "storage.api.renew_retention",
             new=AsyncMock(return_value=WormRenewalOutcome(ok=True, retain_until=nueva, renovado=True)),
         ) as renovar,
     ):
@@ -352,7 +352,7 @@ async def _leer_acta(puede_ver: bool):
             new=AsyncMock(return_value=puede_ver),
         ),
         patch(
-            "archive.clients.document_client.fetch_radicado_metadata_internal",
+            "document.api.fetch_radicado_metadata",
             new=AsyncMock(return_value={str(RAD): {"tracking_number": NUMERO_RAD}}),
         ),
     ):

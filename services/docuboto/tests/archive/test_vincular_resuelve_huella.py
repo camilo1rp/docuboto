@@ -41,14 +41,14 @@ def _servicio() -> ArchiveService:
 
 def _anexos(**kwargs):
     return patch(
-        "archive.clients.document_client.fetch_anexos_internal",
+        "document.api.fetch_anexos",
         AsyncMock(**kwargs),
     )
 
 
 def _huellas(**kwargs):
     return patch(
-        "archive.clients.storage_client.fetch_file_hashes_internal",
+        "storage.api.get_file_hashes",
         AsyncMock(**kwargs),
     )
 
@@ -69,7 +69,7 @@ async def test_el_inventario_se_pide_SIN_recorte_de_clearance() -> None:
     vinculó: dos archivistas producirían índices distintos del mismo
     expediente, que es justo lo que un índice no puede permitirse."""
     anexos = AsyncMock(return_value={})
-    with patch("archive.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+    with patch("document.api.fetch_anexos", anexos), _huellas(
         return_value={}
     ):
         await _servicio()._huellas_por_radicado([_RAD])
@@ -91,9 +91,9 @@ async def test_si_document_service_no_responde_el_VINCULO_no_se_pierde() -> None
     archivístico que no puede quedar preso de que otros dos servicios estén en
     pie. Sin huella se declara; abortar cambiaría un dato ausente por trabajo
     perdido."""
-    from archive.clients.document_client import DocumentClientError
+    from document.api import DocumentUnavailableError
 
-    with _anexos(side_effect=DocumentClientError("caído")), _huellas(return_value={}):
+    with _anexos(side_effect=DocumentUnavailableError("caído")), _huellas(return_value={}):
         assert await _servicio()._huellas_por_radicado([_RAD]) == {}
 
 
@@ -139,8 +139,8 @@ async def test_el_lote_pregunta_UNA_vez_por_todos() -> None:
     )
     huellas = AsyncMock(return_value={str(_FILE): _HASH, str(otro_file): "b" * 64})
     with (
-        patch("archive.clients.document_client.fetch_anexos_internal", anexos),
-        patch("archive.clients.storage_client.fetch_file_hashes_internal", huellas),
+        patch("document.api.fetch_anexos", anexos),
+        patch("storage.api.get_file_hashes", huellas),
     ):
         resultado = await _servicio()._huellas_por_radicado([_RAD, otro_rad])
 
@@ -176,7 +176,12 @@ async def test_al_vincular_desde_la_pantalla_el_indice_SI_recibe_la_huella(
     """El defecto, en el camino real: la pantalla manda dos campos y el vínculo
     quedaba sin huella aunque el radicado tuviera un anexo con SHA-256."""
     from tests.archive.conftest import make_expediente_record, make_radicado_link_record
-    from tests.archive.test_archive import EXPEDIENTE_ID, RADICADO_ID, TENANT_HEADERS, TRACKING_NUMBER
+    from tests.archive.test_archive import (
+        EXPEDIENTE_ID,
+        RADICADO_ID,
+        TENANT_HEADERS,
+        TRACKING_NUMBER,
+    )
 
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID)
@@ -210,7 +215,12 @@ async def test_la_huella_que_el_llamante_declara_se_COTEJA_y_no_manda(
     almacén: una declarada que no sea esa se rechaza (422) SIN escribir el
     vínculo, y una que coincide se persiste —la resuelta, no la escrita—."""
     from tests.archive.conftest import make_expediente_record, make_radicado_link_record
-    from tests.archive.test_archive import EXPEDIENTE_ID, RADICADO_ID, TENANT_HEADERS, TRACKING_NUMBER
+    from tests.archive.test_archive import (
+        EXPEDIENTE_ID,
+        RADICADO_ID,
+        TENANT_HEADERS,
+        TRACKING_NUMBER,
+    )
 
     client, mock_conn = client_with_conn
     exp = make_expediente_record(exp_id=EXPEDIENTE_ID)
@@ -261,7 +271,12 @@ async def test_una_huella_declarada_que_el_almacen_no_puede_confirmar_se_rechaza
     """Sin huella resuelta (storage caído o radicado sin anexos), una declarada
     es una afirmación sin contraste: se rechaza en vez de sellarla."""
     from tests.archive.conftest import make_expediente_record
-    from tests.archive.test_archive import EXPEDIENTE_ID, RADICADO_ID, TENANT_HEADERS, TRACKING_NUMBER
+    from tests.archive.test_archive import (
+        EXPEDIENTE_ID,
+        RADICADO_ID,
+        TENANT_HEADERS,
+        TRACKING_NUMBER,
+    )
 
     client, mock_conn = client_with_conn
     mock_conn.fetchrow.side_effect = [make_expediente_record(exp_id=EXPEDIENTE_ID), None]
@@ -300,7 +315,11 @@ async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_un_desacuerdo_aborta_tod
     expediente— y tiene las reglas del individual: cada vínculo recibe SU
     huella resuelta, una declarada se coteja, y un solo ítem que no case aborta
     el lote ENTERO antes de escribir nada."""
-    from tests.archive.conftest import make_expediente_record, make_radicado_link_record, registrar_radicado
+    from tests.archive.conftest import (
+        make_expediente_record,
+        make_radicado_link_record,
+        registrar_radicado,
+    )
     from tests.archive.test_archive import EXPEDIENTE_ID, TENANT_HEADERS
 
     client, mock_conn = client_with_conn
@@ -328,7 +347,7 @@ async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_un_desacuerdo_aborta_tod
     )
     ruta = f"/api/v1/expedientes/{EXPEDIENTE_ID}/radicados/batch"
     huellas = {str(_FILE): _HASH, str(file2): hash2}
-    with patch("archive.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+    with patch("document.api.fetch_anexos", anexos), _huellas(
         return_value=huellas
     ):
         resp = await client.post(
@@ -356,7 +375,7 @@ async def test_en_el_LOTE_cada_vinculo_recibe_la_suya_y_un_desacuerdo_aborta_tod
     antes = len(_content_hashes_de_los_inserts(mock_conn))
     mock_conn.fetchrow.side_effect = [exp, None]
     mock_conn.fetchval.side_effect = [True, None, None]
-    with patch("archive.clients.document_client.fetch_anexos_internal", anexos), _huellas(
+    with patch("document.api.fetch_anexos", anexos), _huellas(
         return_value=huellas
     ):
         mala = await client.post(

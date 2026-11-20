@@ -8,13 +8,13 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 
-"""`GET /api/v1/internal/documentos/radicados/{ref}/huella` (AREA-04-09 Media-2).
+"""`document.api.radicado_fingerprint` (AREA-04-09 Media-2).
 
-signature-service fija esta huella —SHA-256 del PDF VIGENTE del radicado, tal como
-la CALCULÓ storage-service al subirlo— al abrir una cadena de firma y la relee
-antes de cada firma. Aquí: el gate D-02 (`X-Internal-Token`), la forma de la
-respuesta y el fail-closed (404 / 409 / 503). El SQL de «PDF vigente» se prueba
-contra Postgres real en `tests/integration/test_internal_huella_radicado_integration.py`.
+signature fija esta huella —SHA-256 del documento principal VIGENTE del
+radicado, tal como la CALCULÓ el almacén al subirlo— al abrir una cadena de
+firma y la relee antes de cada firma. Aquí: la forma del resultado y el
+fail-closed. El SQL se prueba contra Postgres real en
+`tests/document/integration/test_internal_huella_radicado_integration.py`.
 """
 
 from __future__ import annotations
@@ -24,110 +24,74 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from document.clients import storage_client
-from document.core import config as cfg_module
+from document import api as document_api
+from storage import api as storage_api
 from tests.document.conftest import TENANT_SLUG
 
-TOKEN = "test-document-internal-token-xxx"
-HEADERS = {"X-Tenant-Slug": TENANT_SLUG, "X-Internal-Token": TOKEN}
 REF = "2024-DEMO-E-000001"
-_PATH = f"/api/v1/internal/documentos/radicados/{REF}/huella"
 HUELLA = "AB" * 32
 RAD = {"id": uuid.uuid4(), "tracking_number": REF}
 ANEXO = {"id": uuid.uuid4(), "file_id": uuid.uuid4(), "filename": "oficio.pdf"}
 
 
-@pytest.fixture(autouse=True)
-def _token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TOKEN)
-
-
 def _storage(monkeypatch, *, huella=HUELLA, error=None) -> AsyncMock:
     mock = AsyncMock(return_value=huella, side_effect=error)
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", mock)
+    monkeypatch.setattr(storage_api, "get_file_sha256", mock)
     return mock
 
 
-@pytest.mark.asyncio
-async def test_sin_token_o_con_token_malo_no_entra(client_with_conn) -> None:
-    client, conn = client_with_conn
-    # Sin `X-Internal-Token` la ruta interna ni siquiera existe: el middleware
-    # de identidad responde 404 antes de cualquier gate.
-    assert (await client.get(_PATH, headers={"X-Tenant-Slug": TENANT_SLUG})).status_code == 404
-    assert (
-        await client.get(_PATH, headers={**HEADERS, "X-Internal-Token": "otro"})
-    ).status_code == 403
-    conn.fetchrow.assert_not_called()  # ni siquiera se consulta la base
+async def _huella():
+    return await document_api.radicado_fingerprint(tenant_slug=TENANT_SLUG, ref=REF)
 
 
 @pytest.mark.asyncio
-async def test_sin_token_configurado_falla_cerrado(client_with_conn, monkeypatch) -> None:
-    client, _ = client_with_conn
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", "")
-    assert (await client.get(_PATH, headers=HEADERS)).status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_devuelve_la_huella_de_storage_en_minuscula(client_with_conn, monkeypatch) -> None:
-    client, conn = client_with_conn
-    conn.fetchrow.side_effect = [RAD, ANEXO]
+async def test_devuelve_la_huella_de_storage_en_minuscula(api_conn, monkeypatch) -> None:
+    api_conn.fetchrow.side_effect = [RAD, ANEXO]
     storage = _storage(monkeypatch)
-    resp = await client.get(_PATH, headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    body = await _huella()
     assert body["huella_sha256"] == HUELLA.lower()
     assert body["tracking_number"] == REF
     assert body["file_id"] == str(ANEXO["file_id"])
-    # La huella la pone STORAGE (la calculó al subir), no una columna de este servicio.
+    # La huella la pone el ALMACÉN (la calculó al subir), no una columna de document.
     storage.assert_awaited_once()
     assert storage.await_args.kwargs["file_id"] == ANEXO["file_id"]
     assert storage.await_args.kwargs["tenant_slug"] == TENANT_SLUG
     # La referencia viaja como parámetro, jamás interpolada en el SQL.
-    for llamada in conn.fetchrow.await_args_list:
+    for llamada in api_conn.fetchrow.await_args_list:
         assert REF not in llamada.args[0]
 
 
 @pytest.mark.asyncio
-async def test_radicado_inexistente_404(client_with_conn, monkeypatch) -> None:
-    client, conn = client_with_conn
-    conn.fetchrow.side_effect = [None]
+async def test_radicado_inexistente(api_conn, monkeypatch) -> None:
+    api_conn.fetchrow.side_effect = [None]
     _storage(monkeypatch, error=RuntimeError("no debe llamarse"))
-    resp = await client.get(_PATH, headers=HEADERS)
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["error"] == "radicado_not_found"
+    with pytest.raises(document_api.DocumentNotFoundError):
+        await _huella()
 
 
 @pytest.mark.asyncio
-async def test_radicado_sin_pdf_409(client_with_conn, monkeypatch) -> None:
-    client, conn = client_with_conn
-    conn.fetchrow.side_effect = [RAD, None]
+async def test_radicado_sin_documento_principal(api_conn, monkeypatch) -> None:
+    api_conn.fetchrow.side_effect = [RAD, None]
     _storage(monkeypatch, error=RuntimeError("no debe llamarse"))
-    resp = await client.get(_PATH, headers=HEADERS)
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "radicado_sin_documento"
-    assert "principal" in resp.json()["detail"]["detail"]
+    with pytest.raises(document_api.NothingToSealError) as exc:
+        await _huella()
+    assert exc.value.code == "radicado_sin_documento"
 
 
 @pytest.mark.asyncio
-async def test_storage_no_conoce_el_fichero_409(client_with_conn, monkeypatch) -> None:
-    client, conn = client_with_conn
-    conn.fetchrow.side_effect = [RAD, ANEXO]
+async def test_storage_no_conoce_el_fichero(api_conn, monkeypatch) -> None:
+    api_conn.fetchrow.side_effect = [RAD, ANEXO]
     _storage(monkeypatch, huella=None)
-    resp = await client.get(_PATH, headers=HEADERS)
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "anexo_sin_huella"
+    with pytest.raises(document_api.NothingToSealError) as exc:
+        await _huella()
+    assert exc.value.code == "anexo_sin_huella"
 
 
 @pytest.mark.asyncio
-async def test_storage_caido_503_nunca_una_huella_inventada(client_with_conn, monkeypatch) -> None:
-    client, conn = client_with_conn
-    conn.fetchrow.side_effect = [RAD, ANEXO]
-    _storage(
-        monkeypatch,
-        error=storage_client.StorageContentError("storage-service → HTTP 500: b'SECRETO db-7:5432'"),
-    )
-    resp = await client.get(_PATH, headers=HEADERS)
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["error"] == "huella_no_verificable"
-    # El cuerpo/host del colaborador no viaja a quien consulta.
-    assert "SECRETO" not in resp.text and "db-7" not in resp.text
+async def test_storage_caido_nunca_una_huella_inventada(api_conn, monkeypatch) -> None:
+    api_conn.fetchrow.side_effect = [RAD, ANEXO]
+    _storage(monkeypatch, error=storage_api.StorageError("HTTP 500: b'SECRETO db-7:5432'"))
+    with pytest.raises(document_api.DocumentUnavailableError) as exc:
+        await _huella()
+    # El detalle del colaborador no viaja a quien consulta.
+    assert "SECRETO" not in str(exc.value)

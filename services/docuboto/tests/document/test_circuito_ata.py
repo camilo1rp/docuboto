@@ -27,7 +27,7 @@ import uuid
 
 import pytest
 
-from document.clients import signature_client as signature_client_mod
+from signature import api as signature_api_mod
 from tests.document.conftest import TENANT_HEADERS
 from tests.document.test_borradores import _CLEARANCE_ROW, _USER, _borrador_row
 
@@ -38,7 +38,7 @@ def _fija_circuito(monkeypatch, **estado):
     async def _fake(borrador_id: str, tenant_slug: str) -> dict:
         return {"pendiente": False, "completo": False, "solicitud_id": None, **estado}
 
-    monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _fake)
+    monkeypatch.setattr(signature_api_mod, "get_estado_circuito", _fake)
 
 
 @pytest.mark.asyncio
@@ -114,9 +114,9 @@ async def test_si_no_se_puede_preguntar_no_se_aprueba(client_with_conn, monkeypa
     bid = uuid.uuid4()
 
     async def _cae(borrador_id: str, tenant_slug: str) -> dict:
-        raise signature_client_mod.CircuitoNoVerificableError("signature caído")
+        raise signature_api_mod.CircuitoNoVerificableError("signature caído")
 
-    monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _cae)
+    monkeypatch.setattr(signature_api_mod, "get_estado_circuito", _cae)
     mock_conn.fetchrow.side_effect = [_CLEARANCE_ROW, _borrador_row(id=bid, estado="borrador")]
 
     resp = await client.post(f"/api/v1/borradores/{bid}/aprobar", headers=TENANT_HEADERS)
@@ -142,7 +142,7 @@ async def test_la_consulta_viaja_con_el_slug_del_tenant(client_with_conn, monkey
         visto["tenant_slug"] = tenant_slug
         return {"pendiente": False, "completo": False, "solicitud_id": None}
 
-    monkeypatch.setattr(signature_client_mod, "get_estado_circuito", _fake)
+    monkeypatch.setattr(signature_api_mod, "get_estado_circuito", _fake)
     mock_conn.fetchrow.side_effect = [
         _CLEARANCE_ROW,
         _borrador_row(id=bid, estado="borrador"),
@@ -307,7 +307,7 @@ async def test_editar_el_texto_invalida_los_circuitos_anteriores(client_with_con
     huellas al radicar; esto evita que la bandeja siga pidiéndole a alguien
     firmar un documento que ya no existe, para después esfumarse sin motivo.
     """
-    from document.clients import signature_client as sc
+    from signature import api as sc
 
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()
@@ -347,7 +347,7 @@ async def test_guardar_sin_cambiar_el_texto_no_tira_un_circuito_vivo(
     solo el asunto—, y tirar el circuito ahí obligaría a recoger las firmas otra
     vez sin que nadie haya tocado el documento.
     """
-    from document.clients import signature_client as sc
+    from signature import api as sc
 
     client, mock_conn = client_with_conn
     bid = uuid.uuid4()

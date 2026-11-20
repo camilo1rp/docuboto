@@ -42,9 +42,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-import httpx
-
-from document.core.config import settings
+from notification import api as notification_api
 
 logger = logging.getLogger(__name__)
 
@@ -112,37 +110,20 @@ async def enviar(
     asunto: str,
     recibido: str,
 ) -> ResultadoAcuse:
-    """Pide a notification-service que envíe la constancia.
+    """Pide a notification que envíe la constancia.
 
-    Va por el endpoint sellado con `X-Internal-Token`: enviar correo con la
-    identidad SMTP de la institución no puede quedar al alcance de cualquier JWT
-    válido.
+    En proceso (`notification.api.send`, ADR-047 §1): no hay ruta que mande
+    correo con la identidad SMTP de la institución al alcance de un JWT.
     """
-    cuerpo = {
-        "recipient_email": destinatario,
-        "subject": f"Constancia de radicación {tracking_number}",
-        "body": _cuerpo(tracking_number, asunto, recibido),
-        "tenant_slug": tenant_slug,
-    }
-    cabeceras = {
-        "X-Tenant-Slug": tenant_slug,
-        "X-Internal-Token": settings.notification_internal_token,
-    }
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.notification_service_url, timeout=15.0
-        ) as cliente:
-            respuesta = await cliente.post(
-                "/api/v1/notifications/send", json=cuerpo, headers=cabeceras
-            )
-    except httpx.HTTPError as exc:
-        return ResultadoAcuse(False, f"no se pudo contactar al servicio de correo: {exc}")
-
-    if respuesta.status_code not in (200, 202):
-        # El cuerpo del error no se propaga entero: puede reflejar la dirección
-        # del destinatario, y este texto acaba en una columna que se lee desde la
-        # interfaz.
-        return ResultadoAcuse(
-            False, f"el servicio de correo respondió {respuesta.status_code}"
+        await notification_api.send(
+            recipient_email=destinatario,
+            subject=f"Constancia de radicación {tracking_number}",
+            body=_cuerpo(tracking_number, asunto, recibido),
+            tenant_slug=tenant_slug,
         )
+    except notification_api.NotificationDeliveryError:
+        # El detalle no se propaga: puede reflejar la dirección del destinatario,
+        # y este texto acaba en una columna que se lee desde la interfaz.
+        return ResultadoAcuse(False, "el servicio de correo no entregó la constancia")
     return ResultadoAcuse(True)

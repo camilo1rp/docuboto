@@ -37,12 +37,12 @@ def _sig_row(**kw) -> dict:
 
 @pytest.mark.asyncio
 async def test_sign_document(client_with_conn, monkeypatch) -> None:
-    from document.clients import storage_client
+    from storage import api as storage_api
 
     async def _huella(*, tenant_slug, file_id):
         return _HASH
 
-    monkeypatch.setattr(storage_client, "fetch_file_sha256", _huella)
+    monkeypatch.setattr(storage_api, "get_file_sha256", _huella)
     client, mock_conn = client_with_conn
     # fetchval: PERM_FIRMA (nivel 2) concedido → file_id del anexo.
     mock_conn.fetchval.side_effect = [True, uuid.uuid4(), None]  # + hash previo del audit

@@ -10,10 +10,9 @@
 """
 Reuso del veredicto PDF/A de INGESTA (E07, `files.pdfa_status`, migración
 013) al EMPAQUETAR el AIP (`AipService._reused_pdfa_result`, E10 Increment
-C2b follow-up) -- `POST /api/v1/preservacion/aip`.
+C2b follow-up) -- vía `AipService.empaquetar_aip`.
 
-Mismo patrón/fixtures que `tests/test_aip_pdfa.py`: DB/MinIO mockeados,
-`_grant_permission` simula el gate RBAC (min_crud=3). Cubre la matriz
+Mismo patrón/fixtures que `tests/test_aip_pdfa.py`: DB/MinIO mockeados. Cubre la matriz
 completa del contrato de `_reused_pdfa_result`:
   - veredicto TERMINAL + MISMO perfil -> se REUSA: el validador (JVM/
     subprocess en producción) NUNCA se invoca, y el evento PREMIS queda
@@ -36,8 +35,9 @@ import pytest
 
 import storage.core.config as config_module
 import storage.services.aip_service as aip_service_module
+from storage.schemas.preservacion import AipCreate
+from storage.services.aip_service import AipService
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -48,6 +48,17 @@ _PDF_CONTENT = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\ncontenido pdf real (reuso ingesta)
 _PDF_SHA256 = hashlib.sha256(_PDF_CONTENT).hexdigest()
 
 
+_ACTOR = str(uuid.uuid4())
+
+
+async def _empaquetar(mock_conn, payload: dict) -> dict:
+    """Empaqueta vía `AipService` con un actor persona (la ruta HTTP ya no existe, ADR-047)."""
+    result = await AipService(mock_conn, TENANT_SLUG).empaquetar_aip(
+        AipCreate(**payload), actor=_ACTOR
+    )
+    return result.model_dump(mode="json")
+
+
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
@@ -55,10 +66,6 @@ def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     # Perfil global por defecto ("2b") -- las pruebas de "mismo perfil" se
     # apoyan en este valor sin necesidad de fijarlo caso a caso.
     monkeypatch.setattr(config_module.settings, "pdfa_profile", "2b")
-
-
-def _grant_permission(mock_conn) -> None:
-    mock_conn.fetchval.return_value = True
 
 
 def _pdf_record(
@@ -123,10 +130,9 @@ def _evento_row(tipo: str) -> dict:
     }
 
 
-async def _run_empaquetado(client, mock_conn, mock_minio, *, doc_file_id, doc_record):
+async def _run_empaquetado(mock_conn, mock_minio, *, doc_file_id, doc_record):
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         doc_record,
         None,  # get_aip_by_expediente_and_sha256 (idempotencia: sin duplicado previo)
@@ -139,13 +145,7 @@ async def _run_empaquetado(client, mock_conn, mock_minio, *, doc_file_id, doc_re
     ]
     mock_minio.get_object = minio_get_object(_PDF_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id=doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 201, resp.text
-    return resp
+    return await _empaquetar(mock_conn, _base_payload(doc_file_id=doc_file_id))
 
 
 def _pdfa_evento_detalle(mock_conn) -> dict:
@@ -168,7 +168,7 @@ def _pdfa_evento_detalle(mock_conn) -> dict:
 async def test_reuses_terminal_ingest_verdict_same_profile_never_invokes_validator(
     client_with_conn, monkeypatch: pytest.MonkeyPatch, terminal_status: str
 ) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     record = _pdf_record(
         doc_file_id,
@@ -180,7 +180,7 @@ async def test_reuses_terminal_ingest_verdict_same_profile_never_invokes_validat
     spy_validate = AsyncMock()
     monkeypatch.setattr(aip_service_module, "run_pdfa_validation", spy_validate)
 
-    await _run_empaquetado(client, mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
+    await _run_empaquetado(mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
 
     spy_validate.assert_not_called()  # el validador caro (JVM/subprocess) NUNCA corrió
 
@@ -197,12 +197,12 @@ async def test_reuses_terminal_ingest_verdict_same_profile_never_invokes_validat
 
 @pytest.mark.asyncio
 async def test_pdfa_status_null_never_evaluated_in_ingest_revalidates(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     record = _pdf_record(doc_file_id)  # pdfa_status=None (default)
 
     # No se parchea `run_pdfa_validation`: debe correr de VERDAD (stub honesto).
-    await _run_empaquetado(client, mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
+    await _run_empaquetado(mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
 
     detalle = _pdfa_evento_detalle(mock_conn)
     assert detalle["validator_agent"] == "stub/validator_unavailable"  # SE re-evaluó
@@ -214,11 +214,11 @@ async def test_pdfa_status_pendiente_not_terminal_revalidates(client_with_conn) 
     """`pendiente` (worker asíncrono de ingesta encolado pero aún sin
     correr) NO es un estado terminal -- el AIP no puede esperar a ese
     worker, así que re-valida como si no hubiera nada registrado."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     record = _pdf_record(doc_file_id, pdfa_status="pendiente", pdfa_profile="2b")
 
-    await _run_empaquetado(client, mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
+    await _run_empaquetado(mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
 
     detalle = _pdfa_evento_detalle(mock_conn)
     assert detalle["validator_agent"] == "stub/validator_unavailable"
@@ -231,7 +231,7 @@ async def test_pdfa_status_terminal_different_profile_revalidates(client_with_co
     este AIP exige (p. ej. la serie TRD del expediente pide "1b" mientras
     que la ingesta validó contra el "2b" global) -- no es el MISMO
     compromiso de conformidad, así que se re-valida."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     record = _pdf_record(
         doc_file_id,
@@ -240,7 +240,7 @@ async def test_pdfa_status_terminal_different_profile_revalidates(client_with_co
         pdfa_checked_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
-    await _run_empaquetado(client, mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
+    await _run_empaquetado(mock_conn, mock_minio, doc_file_id=doc_file_id, doc_record=record)
 
     detalle = _pdfa_evento_detalle(mock_conn)
     assert detalle["validator_agent"] == "stub/validator_unavailable"  # re-evaluado, no reusado

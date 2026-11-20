@@ -77,35 +77,51 @@ def require_permission(perm_name: str, min_crud: int = 1):
         x_tenant_slug: str | None = Header(default=None),
         conn: asyncpg.Connection = Depends(get_tenant_conn),
     ) -> None:
-        if not await check_permission(conn, actor, perm_name, min_crud):
-            # Traza best-effort del acceso denegado (RF-SEG / MoReq). ``actor``
-            # aquí SIEMPRE está identificado — ``get_actor`` ya devolvió 401 si
-            # faltaba/era inválido X-User-Id — así que no hay caso anónimo que
-            # excluir (a diferencia de document/archive/workflow).
-            if _AUDIT_AVAILABLE:
-                try:
-                    await audit.append_denial(
-                        conn,
-                        tenant_slug=x_tenant_slug,
-                        service=_SERVICE,
-                        actor=str(actor),
-                        perm_name=perm_name,
-                        min_crud=min_crud,
-                    )
-                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
-                    logger.warning("audit.append_denial failed", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "forbidden",
-                    "detail": mensaje_denegacion(
-                        perm_name, min_crud, await nivel_efectivo(conn, actor, perm_name)
-                    ),
-                    "status": 403,
-                },
-            )
+        await enforce_permission(conn, actor, perm_name, min_crud, tenant_slug=x_tenant_slug)
 
     return _dep
+
+
+async def enforce_permission(
+    conn: asyncpg.Connection,
+    actor: uuid.UUID,
+    perm_name: str,
+    min_crud: int = 1,
+    *,
+    tenant_slug: str | None,
+) -> None:
+    """403 si ``actor`` no tiene ``perm_name`` a ``min_crud``; deja el asiento de la denegación.
+
+    El mismo gate para la ruta HTTP (``require_permission``) y para la entrada en
+    proceso (``signature.api``): sin red de por medio, el permiso en la BD es lo que queda.
+    """
+    if not await check_permission(conn, actor, perm_name, min_crud):
+        # Traza best-effort del acceso denegado (RF-SEG / MoReq). ``actor``
+        # aquí SIEMPRE está identificado — ``get_actor`` ya devolvió 401 si
+        # faltaba/era inválido X-User-Id — así que no hay caso anónimo que
+        # excluir (a diferencia de document/archive/workflow).
+        if _AUDIT_AVAILABLE:
+            try:
+                await audit.append_denial(
+                    conn,
+                    tenant_slug=tenant_slug,
+                    service=_SERVICE,
+                    actor=str(actor),
+                    perm_name=perm_name,
+                    min_crud=min_crud,
+                )
+            except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
+                logger.warning("audit.append_denial failed", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "forbidden",
+                "detail": mensaje_denegacion(
+                    perm_name, min_crud, await nivel_efectivo(conn, actor, perm_name)
+                ),
+                "status": 403,
+            },
+        )
 
 
 async def get_actor(request: Request) -> uuid.UUID:

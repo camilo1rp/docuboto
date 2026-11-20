@@ -25,12 +25,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from orpycamcp_common.tenant import AtencionPublica, atencion_publica
 from starlette.background import BackgroundTask
 
-from document.clients import storage_client
 from document.core.database import tenant_schema
 from document.core.public_audit import audit_public_access
 from document.core.public_interop import require_public_interop
 from document.repositories.oai_repository import OaiRepository
 from document.services.cmis_service import CmisNotFound, CmisService
+from storage import api as storage_api
 
 # Guard de interoperabilidad pública ANÓNIMA (E11): con el interruptor apagado —el
 # default— estas rutas responden 404, indistinguible de una ruta inexistente. Ver
@@ -222,10 +222,10 @@ async def _stream_content(tenant: str, anexo) -> Response:
     """Transmite los bytes del anexo público. La conexión de BD YA se liberó; el
     stream es un httpx a storage-service, cerrado por el BackgroundTask."""
     try:
-        stream = await storage_client.open_content_stream(
+        stream = await storage_api.open_file_stream(
             tenant_slug=tenant, file_id=anexo["file_id"]
         )
-    except storage_client.StorageContentError as exc:
+    except storage_api.StorageError as exc:
         return _err(status.HTTP_503_SERVICE_UNAVAILABLE, "storage", str(exc))
     if stream is None:  # purgado en storage → mismo 404 neutro
         return _err(404, "objectNotFound", "Objeto sin contenido o no encontrado")

@@ -438,7 +438,12 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
     from httpx import ASGITransport, AsyncClient
 
     from document.main import app
-    from tests.document.conftest import FakeTenantClient, _make_fake_redis, _make_mock_conn, _override_conn
+    from tests.document.conftest import (
+        FakeTenantClient,
+        _make_fake_redis,
+        _make_mock_conn,
+        _override_conn,
+    )
     from tests.document.test_postal_callback import _body, _FakePool, _ship_row, _url
 
     monkeypatch.setattr(settings, "email_encryption_key", _KEK)
@@ -571,7 +576,7 @@ def _storage_responde(
     existe: bool | None = None,
 ) -> list:
     """Sustituye la consulta de procedencia a storage; devuelve las llamadas recibidas."""
-    from document.clients import storage_client
+    from storage import api as storage_api
 
     llamadas: list = []
     hay = (huella is not None) if existe is None else existe
@@ -579,14 +584,14 @@ def _storage_responde(
     async def _f(*, tenant_slug, file_id):
         llamadas.append((tenant_slug, file_id))
         if cae:
-            raise storage_client.StorageContentError("storage caído")
+            raise storage_api.StorageError("storage caído")
         if not hay:
             return None
-        return storage_client.ProcedenciaArchivo(
+        return storage_api.FileProvenance(
             sha256=huella, uploaded_by=autor, referencias=list(referencias)
         )
 
-    monkeypatch.setattr(storage_client, "fetch_file_procedencia", _f)
+    monkeypatch.setattr(storage_api, "get_file_provenance", _f)
     return llamadas
 
 
@@ -822,7 +827,7 @@ async def test_editar_el_texto_emite_contenido_cambiado_con_el_nuevo_hash() -> N
     redis = AsyncMock()
     redis.xadd.return_value = b"1-0"
     sig = AsyncMock()
-    svc = BorradorService(conn, "demo", signature_client=sig, redis=redis)
+    svc = BorradorService(conn, "demo", signature_api=sig, redis=redis)
     antes = {"estado": "borrador", "radicado_padre_id": None, "cuerpo_sha256": "a" * 64}
     despues = {
         "id": bid,
@@ -860,7 +865,7 @@ async def test_cambiar_solo_el_asunto_no_emite_ni_invalida() -> None:
     )
     redis = AsyncMock()
     sig = AsyncMock()
-    svc = BorradorService(conn, "demo", signature_client=sig, redis=redis)
+    svc = BorradorService(conn, "demo", signature_api=sig, redis=redis)
     mismo = "a" * 64
     svc._require_editable = AsyncMock(
         return_value={"estado": "borrador", "radicado_padre_id": None, "cuerpo_sha256": mismo}

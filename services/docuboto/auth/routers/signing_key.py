@@ -8,41 +8,27 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Firma electrónica PERSONAL PKI por-usuario (E17/F4, Incremento 1). Tres
-routers con visibilidad MUY distinta — mismo patrón que ``auth/routers/totp.py``:
+Firma electrónica PERSONAL PKI por-usuario (E17/F4). Tres routers:
 
-- ``router`` (``/api/v1/auth/me/signing-key``): PÚBLICO vía api-gateway.
-  Identidad resuelta por ``get_caller`` (``X-User-Id`` inyectado por el
-  gateway tras ``/validate``).
+- ``router`` (``/api/v1/auth/me/signing-key``): identidad resuelta por
+  ``get_caller`` (``UsuarioActualMiddleware``).
+- ``admin_router``: revocación administrativa (``USUA_PERM_ADMIN``).
+- ``internal_router`` (``/internal/signing-key/activate``): carga del
+  certificado emitido OFFLINE por el operador (``scripts/gen-user-cert.sh``),
+  sellada con ``X-Internal-Token`` y sin bearer de persona. No es un salto
+  entre dominios: la usa un guion de operación.
 
-- ``internal_router`` (``/internal/signing-key``): NUNCA expuesto por el
-  gateway (fuera de ``/api/v1``, igual que ``/internal/totp``). Tres rutas:
-
-    - ``GET /status``: SOLO signature-service, para decidir si un acto de
-      ``CadenaFirmaService.firmar()`` toma el camino ``xades_personal`` (cert
-      ``activo``) o cae a la firma nativa HMAC — mismo doble gate que
-      ``sign-digest`` (identidad del Bearer + ``X-Internal-Token``). Existe
-      porque el router PÚBLICO (``GET /me/signing-key``) depende de
-      ``X-User-Id`` (lo inyecta el gateway tras ``/validate``), que
-      signature-service NUNCA tiene al llamar DIRECTO a auth-service (Q3) —
-      aquí la identidad se deriva del propio Bearer, igual que ``sign-digest``.
-    - ``POST /sign-digest``: SOLO signature-service, servicio-a-servicio,
-      reenviando el ``Authorization`` del firmante (D1: identidad SIEMPRE
-      del Bearer, NUNCA de un ``user_id`` en el body — cierra IDOR) MÁS
-      ``X-Internal-Token`` (demuestra que el llamador es signature-service).
-      Ambos gates son independientes y ninguno sustituye al otro.
-    - ``POST /activate``: operación administrativa/de sistema (carga el
-      certificado emitido OFFLINE) — SOLO ``X-Internal-Token``, sin Bearer.
+Estado, firma remota y revocación, que signature consulta al firmar y al
+verificar, no son rutas: son ``auth.api`` (ADR-047 §1).
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from base64 import b64decode, b64encode
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWTError
 
@@ -50,15 +36,11 @@ from auth.core.authz import Caller, get_caller, require_permission
 from auth.core.database import get_db_conn, get_tenant_conn, tenant_schema
 from auth.core.internal_auth import require_internal_token
 from auth.core.security import validate_token
-from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.signing_key import (
     AdminSigningKeyRevokeRequest,
     InternalActivateSigningKeyRequest,
-    InternalSignDigestRequest,
-    InternalSignDigestResponse,
     SigningKeyEnrollRequest,
     SigningKeyEnrollResponse,
-    SigningKeyRevocationStatusResponse,
     SigningKeyRevokeRequest,
     SigningKeyRevokeResponse,
     SigningKeyStatusResponse,
@@ -100,57 +82,6 @@ async def _resolve_tenant_slug_for_aad(
     except PyJWTError:
         return header_slug
     return claims.get("tenant_slug") or header_slug
-
-
-async def _resolve_bearer_user(
-    credentials: HTTPAuthorizationCredentials | None,
-    conn: asyncpg.Connection,
-) -> tuple[uuid.UUID, str]:
-    """Resuelve ``(user_id, tenant_slug)`` a partir del ``Authorization``
-    reenviado — MISMA lógica en ``sign-digest`` y ``status`` (D1: identidad
-    SIEMPRE del Bearer, nunca de un campo de body/query). Deja el
-    ``search_path`` fijado al schema del tenant al retornar; el caller es
-    responsable de restaurarlo a ``public`` en un ``finally``.
-    """
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "missing_token", "detail": "Falta la cabecera Authorization", "status": 401},
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        claims = await validate_token(credentials.credentials)
-    except PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"error": "invalid_token", "detail": "El token es inválido o expiró", "status": 401},
-        )
-
-    tenant_slug = claims.get("tenant_slug")
-    if not tenant_slug:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "signing_key_no_activa",
-                "detail": "La sesión no tiene entidad asociada",
-                "status": 422,
-            },
-        )
-
-    schema = tenant_schema(tenant_slug)  # 400 si el claim está mal formado
-    await conn.execute(f'SET search_path = "{schema}"')
-    rbac = RBACRepository(conn)
-    user = await rbac.get_user_by_keycloak_sub(claims["user_id"])
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "signing_key_no_activa",
-                "detail": "El usuario no está aprovisionado en esta entidad",
-                "status": 422,
-            },
-        )
-    return user["id"], tenant_slug
 
 
 # ---------------------------------------------------------------------------
@@ -259,93 +190,6 @@ async def admin_revoke_signing_key(
 
 
 @internal_router.post(
-    "/sign-digest",
-    response_model=InternalSignDigestResponse,
-    dependencies=[Depends(require_internal_token)],
-    summary="Verify-and-consume a TOTP code and sign a pre-computed digest for the bearer's own identity",
-)
-async def internal_sign_digest(
-    payload: InternalSignDigestRequest,
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> InternalSignDigestResponse:
-    """Firma remota (E17/F4, Incremento 1) — SOLO signature-service la llama.
-
-    Doble gate: ``X-Internal-Token`` (``require_internal_token``, el
-    llamador es signature-service) Y la identidad del firmante derivada del
-    ``Authorization`` reenviado (D1 — NUNCA de un ``user_id`` en el body,
-    cierra IDOR), exactamente como ``POST /internal/totp/verify``.
-    """
-    try:
-        user_id, tenant_slug = await _resolve_bearer_user(credentials, conn)
-        try:
-            digest = b64decode(payload.digest_b64, validate=True)
-        except Exception:  # noqa: BLE001 — base64 corrupto, 422 explícito
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"error": "digest_invalido", "detail": "digest_b64 no es base64 válido", "status": 422},
-            ) from None
-
-        (
-            signature_der,
-            cert_pem,
-            fingerprint,
-            serial,
-            not_after,
-            ca_cert_pem,
-            ca_fingerprint,
-        ) = await SigningKeyService(conn).load_and_sign_digest(
-            user_id,
-            tenant_slug,
-            digest,
-            payload.totp_code,
-            cert_fingerprint=payload.cert_fingerprint,
-        )
-
-        return InternalSignDigestResponse(
-            signature_value_b64=b64encode(signature_der).decode("ascii"),
-            certificado_pem=cert_pem,
-            certificado_fingerprint=fingerprint,
-            serial=serial,
-            not_after=not_after,
-            ca_cert_pem=ca_cert_pem,
-            ca_fingerprint=ca_fingerprint,
-        )
-    finally:
-        try:
-            await conn.execute("SET search_path = public")
-        except Exception:
-            pass
-
-
-@internal_router.get(
-    "/status",
-    response_model=SigningKeyStatusResponse,
-    dependencies=[Depends(require_internal_token)],
-    summary="Signing-key status for the bearer's own identity (signature-service only)",
-)
-async def internal_signing_key_status(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> SigningKeyStatusResponse:
-    """Consultado por ``CadenaFirmaService.firmar()`` (signature-service) para
-    decidir entre el camino ``xades_personal`` (cert ``activo``) y el
-    fallback nativo HMAC — ver el docstring de módulo. Doble gate igual que
-    ``sign-digest``; nunca devuelve la clave privada."""
-    try:
-        user_id, _tenant_slug = await _resolve_bearer_user(credentials, conn)
-        estado = await SigningKeyService(conn).get_status(user_id)
-        # El llamante atribuye el acto a `X-User-Id` y esta credencial es la del
-        # BEARER: sin decir de quién es, no puede comprobar que coinciden.
-        return estado.model_copy(update={"user_id": user_id})
-    finally:
-        try:
-            await conn.execute("SET search_path = public")
-        except Exception:
-            pass
-
-
-@internal_router.post(
     "/activate",
     response_model=SigningKeyStatusResponse,
     dependencies=[Depends(require_internal_token)],
@@ -369,39 +213,6 @@ async def internal_activate_signing_key(
         return await SigningKeyService(conn).activar_certificado(
             payload.user_id, payload.cert_pem, tenant_slug
         )
-    finally:
-        try:
-            await conn.execute("SET search_path = public")
-        except Exception:
-            pass
-
-
-@internal_router.get(
-    "/revocation-status",
-    response_model=SigningKeyRevocationStatusResponse,
-    dependencies=[Depends(require_internal_token)],
-    summary="Revocation status of a leaf certificate by fingerprint (signature-service only)",
-)
-async def internal_signing_key_revocation_status(
-    certificado_fingerprint: str,
-    request: Request,
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> SigningKeyRevocationStatusResponse:
-    """A2 (revocación por estado en BD + chequeo en línea, E17/F4 Incremento
-    2) — signature-service consulta esto en CADA ``/verify`` de una firma
-    ``xades_personal``. Gate SOLO ``X-Internal-Token`` (sin Bearer: no hay un
-    firmante interactivo detrás de una consulta de verificación pública) MÁS
-    ``X-Tenant-Slug`` (fija el ``search_path`` — una huella de OTRO tenant
-    nunca aparece en esta búsqueda, fail-closed -> ``desconocido``, NUNCA
-    ``vigente``). Devuelve SOLO ``{status, revocado_at, motivo_revocacion}`` — jamás
-    cert/clave. Fuera de ``/api/v1`` — inalcanzable vía api-gateway, igual
-    que el resto de ``internal_router``.
-    """
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    schema = tenant_schema(tenant_slug)
-    await conn.execute(f'SET search_path = "{schema}"')
-    try:
-        return await SigningKeyService(conn).revocation_status(certificado_fingerprint)
     finally:
         try:
             await conn.execute("SET search_path = public")

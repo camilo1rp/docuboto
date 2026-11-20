@@ -13,7 +13,7 @@ GET /api/v1/documents/{document_id}/anexos/{file_id}/download
 
 Cierra la fuga de no-read-up en `GET storage/files/{id}/download` (presigned
 sin clearance): document-service ahora media TODA descarga, pidiendo bytes a
-storage-service (mockeado aquí vía `app.clients.storage_client`) solo después
+storage-service (mockeado aquí vía `app.clients.storage_api`) solo después
 de validar clearance + pertenencia del anexo al radicado.
 
 Orden de llamadas a la conexión mockeada por request (camino feliz):
@@ -21,7 +21,7 @@ Orden de llamadas a la conexión mockeada por request (camino feliz):
   fetchrow #1 — resolve_caller_clearance (SELECT is_root, max_level)
   fetchrow #2 — get_anexo_for_download (JOIN anexos/radicados, no-read-up +
                 pertenencia en una sola consulta)
-  [storage_client.open_content_stream — mockeado, sin tocar mock_conn]
+  [storage_api.open_file_stream — mockeado, sin tocar mock_conn]
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from document.clients import storage_client
+from storage import api as storage_api
 from tests.document.conftest import TENANT_HEADERS, make_anexo_record
 
 DOC_ID = uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd")
@@ -45,7 +45,7 @@ def _clearance_row(max_level: int = 1, is_root: bool = False) -> dict:
 
 
 class _FakeStream:
-    """Doble de `storage_client.StorageContentStream` para los tests."""
+    """Doble de `storage_api.FileStream` para los tests."""
 
     def __init__(self, content: bytes) -> None:
         self._content = content
@@ -80,12 +80,12 @@ async def test_download_anexo_success(client_with_conn, monkeypatch) -> None:
 
     fake_stream = _FakeStream(_CONTENT)
 
-    async def fake_open_content_stream(*, tenant_slug: str, file_id: uuid.UUID):
+    async def fake_open_file_stream(*, tenant_slug: str, file_id: uuid.UUID):
         assert tenant_slug == "demo"
         assert file_id == FILE_ID
         return fake_stream
 
-    monkeypatch.setattr(storage_client, "open_content_stream", fake_open_content_stream)
+    monkeypatch.setattr(storage_api, "open_file_stream", fake_open_file_stream)
 
     resp = await client.get(
         f"/api/v1/documents/{DOC_ID}/anexos/{FILE_ID}/download",
@@ -121,12 +121,12 @@ async def test_download_anexo_over_clearance_is_neutral_404(
 
     called = False
 
-    async def fake_open_content_stream(**_kwargs):
+    async def fake_open_file_stream(**_kwargs):
         nonlocal called
         called = True
         return _FakeStream(_CONTENT)
 
-    monkeypatch.setattr(storage_client, "open_content_stream", fake_open_content_stream)
+    monkeypatch.setattr(storage_api, "open_file_stream", fake_open_file_stream)
 
     resp = await client.get(
         f"/api/v1/documents/{DOC_ID}/anexos/{FILE_ID}/download",
@@ -157,7 +157,7 @@ async def test_download_anexo_foreign_file_id_is_neutral_404(
     ]
 
     monkeypatch.setattr(
-        storage_client, "open_content_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
+        storage_api, "open_file_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
     )
 
     resp = await client.get(
@@ -185,7 +185,7 @@ async def test_download_anexo_document_not_found_is_neutral_404(
     ]
 
     monkeypatch.setattr(
-        storage_client, "open_content_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
+        storage_api, "open_file_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
     )
 
     resp = await client.get(
@@ -217,7 +217,7 @@ async def test_download_anexo_storage_object_missing_is_neutral_404(
     ]
 
     monkeypatch.setattr(
-        storage_client, "open_content_stream", AsyncMock(return_value=None)
+        storage_api, "open_file_stream", AsyncMock(return_value=None)
     )
 
     resp = await client.get(
@@ -246,10 +246,10 @@ async def test_download_anexo_storage_error_is_503(client_with_conn, monkeypatch
         anexo_row,
     ]
 
-    async def fake_open_content_stream(**_kwargs):
-        raise storage_client.StorageContentError("storage-service inalcanzable: boom")
+    async def fake_open_file_stream(**_kwargs):
+        raise storage_api.StorageError("storage-service inalcanzable: boom")
 
-    monkeypatch.setattr(storage_client, "open_content_stream", fake_open_content_stream)
+    monkeypatch.setattr(storage_api, "open_file_stream", fake_open_file_stream)
 
     resp = await client.get(
         f"/api/v1/documents/{DOC_ID}/anexos/{FILE_ID}/download",
@@ -278,7 +278,7 @@ async def test_download_anexo_deja_asiento_de_descarga(client_with_conn, monkeyp
     anexo_row["nivel_seguridad"] = 2
     mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3), anexo_row]
     monkeypatch.setattr(
-        storage_client, "open_content_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
+        storage_api, "open_file_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
     )
     append = AsyncMock()
     monkeypatch.setattr(_svc.audit, "append", append)
@@ -310,7 +310,7 @@ async def test_download_anexo_sin_canal_no_audita(client_with_conn, monkeypatch)
     anexo_row["nivel_seguridad"] = 1
     mock_conn.fetchrow.side_effect = [_clearance_row(max_level=3), anexo_row]
     monkeypatch.setattr(
-        storage_client, "open_content_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
+        storage_api, "open_file_stream", AsyncMock(return_value=_FakeStream(_CONTENT))
     )
     append = AsyncMock()
     monkeypatch.setattr(_svc.audit, "append", append)

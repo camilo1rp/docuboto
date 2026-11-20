@@ -14,10 +14,12 @@ Lo que se prueba son los dos casos en que **no** hay que enviar —y que no son
 errores sino decisiones—, más lo que la constancia dice y lo que calla.
 """
 
-import httpx
+from unittest.mock import AsyncMock
+
 import pytest
 
 from document.services import acuse_correo
+from notification import api as notification_api
 
 CUENTA = "pqrs@e.gov.co"
 
@@ -81,11 +83,11 @@ def test_la_constancia_dice_lo_justo() -> None:
 async def test_un_fallo_del_servicio_de_correo_no_lanza(monkeypatch) -> None:
     """El radicado ya existe y su número es inmutable: deshacerlo por un fallo de
     correo sería mucho peor que un ciudadano sin acuse."""
-
-    async def _cae(self, url, **kw):  # noqa: ANN001
-        raise httpx.ConnectError("sin ruta")
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", _cae)
+    monkeypatch.setattr(
+        notification_api,
+        "send",
+        AsyncMock(side_effect=notification_api.NotificationDeliveryError("smtp caído")),
+    )
     r = await acuse_correo.enviar(
         tenant_slug="demo", destinatario="a@b.co", tracking_number="2026-DEMO-E-1",
         asunto="x", recibido="20/08/2026 09:15",
@@ -96,12 +98,16 @@ async def test_un_fallo_del_servicio_de_correo_no_lanza(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_el_error_del_servicio_no_refleja_la_direccion(monkeypatch) -> None:
     """El motivo acaba en una columna que se lee desde la interfaz: propagar el
-    cuerpo entero del error podría llevar allí la dirección del destinatario."""
-
-    async def _rechaza(self, url, **kw):  # noqa: ANN001
-        return httpx.Response(400, json={"detail": "destinatario maria@ciudadana.co inválido"})
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", _rechaza)
+    detalle del error podría llevar allí la dirección del destinatario."""
+    monkeypatch.setattr(
+        notification_api,
+        "send",
+        AsyncMock(
+            side_effect=notification_api.NotificationDeliveryError(
+                "destinatario maria@ciudadana.co inválido"
+            )
+        ),
+    )
     r = await acuse_correo.enviar(
         tenant_slug="demo", destinatario="maria@ciudadana.co",
         tracking_number="2026-DEMO-E-1", asunto="x", recibido="20/08/2026 09:15",
@@ -111,24 +117,16 @@ async def test_el_error_del_servicio_no_refleja_la_direccion(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_va_por_el_endpoint_sellado_con_token_interno(monkeypatch) -> None:
-    """Enviar correo con la identidad SMTP de la institución no puede quedar al
-    alcance de cualquier JWT válido."""
-    visto = {}
-
-    async def _captura(self, url, **kw):  # noqa: ANN001
-        visto["url"] = str(url)
-        visto["headers"] = kw.get("headers", {})
-        visto["json"] = kw.get("json", {})
-        return httpx.Response(202, json={"id": "n1"})
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", _captura)
+async def test_va_por_notification_en_proceso_y_no_es_sensible(monkeypatch) -> None:
+    """Sin ruta HTTP que mande correo: la constancia sale por `notification.api`."""
+    send = AsyncMock(return_value="n1")
+    monkeypatch.setattr(notification_api, "send", send)
     r = await acuse_correo.enviar(
         tenant_slug="demo", destinatario="a@b.co", tracking_number="2026-DEMO-E-9",
         asunto="Petición", recibido="20/08/2026 09:15",
     )
     assert r.enviado is True
-    assert "/notifications/send" in visto["url"]
-    assert "X-Internal-Token" in visto["headers"]
-    assert visto["headers"]["X-Tenant-Slug"] == "demo"
-    assert "2026-DEMO-E-9" in visto["json"]["subject"]
+    kw = send.await_args.kwargs
+    assert kw["tenant_slug"] == "demo" and kw["recipient_email"] == "a@b.co"
+    assert "2026-DEMO-E-9" in kw["subject"]
+    assert kw.get("sensible", False) is False

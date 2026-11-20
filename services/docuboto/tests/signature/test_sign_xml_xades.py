@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Cobertura XAdES-B/-T enveloped real de /sign-xml y /verify (E06, ADR-016, Inc.1/4).
+"""Cobertura XAdES-B/-T enveloped real del sello institucional y /verify (E06, ADR-016, Inc.1/4).
 
 Complementa ``tests/test_signature.py`` (que cubre el flujo HMAC 'nativa'
 preexistente) con el camino nuevo del Incremento 1: ``objeto_tipo="indice"``
@@ -23,7 +23,7 @@ RSA-2048 efímero (``cryptography``) y parchea ``app.services.signing_service.lo
 (sello institucional) / ``app.core.tsa.load_tsa_seal`` (TSA) directamente — el
 mismo patrón que documenta la memoria del proyecto para pruebas de este
 proveedor. El upload a storage-service también se mockea
-(``app.clients.storage_client.upload_signed_xml``) para no requerir un
+(``storage.api.upload_signed_xml``) para no requerir un
 storage-service real en la suite unitaria.
 
 ``signature_env`` instala, por defecto, TANTO un sello institucional COMO un
@@ -49,12 +49,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from lxml import etree
 
-from signature.clients import storage_client
 from signature.core import tsa as tsa_module
 from signature.core.config import settings
 from signature.core.keys import SealNotFoundError, TsaSealNotFoundError, cert_fingerprint
 from signature.providers.base import SignerRef
-from tests.signature.conftest import TENANT_HEADERS, USER
+from storage import api as storage_api
+from tests.signature.conftest import TENANT_HEADERS, USER, sellar
 
 # ---------------------------------------------------------------------------
 # Helpers — certificados efímeros (nunca tocan el filesystem ni secrets/)
@@ -483,13 +483,6 @@ async def signature_env(client_with_conn, monkeypatch):
     comportamiento real por defecto de producción.
     """
     client, conn = client_with_conn
-    # AREA-04-07: el sello institucional en /sign-xml exige X-Internal-Token (lo
-    # manda archive-service junto a la identidad firmada). Los tests de este
-    # fixture ejercen ESA ruta legítima, así que el cliente lo lleva por defecto.
-    from signature.core.config import settings as _settings
-
-    monkeypatch.setattr(_settings, "signature_internal_token", "itest-internal-token-abc123")
-    client.headers["X-Internal-Token"] = "itest-internal-token-abc123"
     table = _FakeFirmaTable()
     conn.fetchrow.side_effect = table.fetchrow
 
@@ -508,7 +501,7 @@ async def signature_env(client_with_conn, monkeypatch):
         )
         return object_key
 
-    monkeypatch.setattr(storage_client, "upload_signed_xml", _fake_upload)
+    monkeypatch.setattr(storage_api, "upload_signed_xml", _fake_upload)
 
     def _install_seal(seal):
         if isinstance(seal, SignerRef):
@@ -537,17 +530,17 @@ async def signature_env(client_with_conn, monkeypatch):
     return client, conn, table, uploads, _install_seal, _install_tsa_seal
 
 
-async def _sign_indice(client, *, headers=None, xml: bytes = INDICE_XML):
-    return await client.post(
-        "/api/v1/signature/sign-xml",
-        json={
+async def _sign_indice(conn, *, tenant: str = "demo", xml: bytes = INDICE_XML):
+    return await sellar(
+        conn,
+        {
             "payload_xml": xml.decode(),
             "objeto_tipo": "indice",
             "objeto_id": "exp-1",
             "indice_id": str(uuid.uuid4()),
             "version": 1,
         },
-        headers=headers or TENANT_HEADERS,
+        tenant_slug=tenant,
     )
 
 
@@ -566,7 +559,7 @@ async def test_sign_xml_xades_round_trip(signature_env) -> None:
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
 
@@ -631,7 +624,7 @@ async def test_sign_xml_xades_tamper_detected(signature_env) -> None:
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -658,7 +651,7 @@ async def test_verify_tamper_detected_by_signature_when_hash_binding_absent(sign
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
     table.rows[firma_id]["signed_xml_sha256"] = None
@@ -685,11 +678,11 @@ async def test_verify_rejects_different_valid_document_same_firma_id(signature_e
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp1 = await _sign_indice(client, xml=INDICE_XML)
+    resp1 = await _sign_indice(conn, xml=INDICE_XML)
     firma_id_1 = resp1.json()["firma_id"]
 
     otro_indice = INDICE_XML.replace(b"Contenido original", b"Otro documento, mismo sello")
-    resp2 = await _sign_indice(client, xml=otro_indice)
+    resp2 = await _sign_indice(conn, xml=otro_indice)
     assert resp2.status_code == 201
     signed_xml_2 = uploads[1]["content"]
 
@@ -723,7 +716,7 @@ async def test_verify_rejects_doctype_billion_laughs(signature_env) -> None:
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     table.rows[firma_id]["signed_xml_sha256"] = None
 
@@ -761,7 +754,7 @@ async def test_sign_xml_xades_rejects_doctype_payload(signature_env) -> None:
         b"<indice>&xxe;</indice>"
     )
 
-    resp = await _sign_indice(client, xml=malicious)
+    resp = await _sign_indice(conn, xml=malicious)
     assert resp.status_code == 400
     assert resp.json()["detail"]["error"] == "payload_xml_invalido"
 
@@ -777,7 +770,7 @@ async def test_sign_xml_xades_fingerprint_mismatch(signature_env) -> None:
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -819,7 +812,7 @@ async def test_sign_xml_xades_expired_cert_detected(signature_env) -> None:
     )
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "sello_institucional_vencido"
     assert uploads == [], "no se sube nada a MinIO"
@@ -827,7 +820,8 @@ async def test_sign_xml_xades_expired_cert_detected(signature_env) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5) Atribución: firmante_id == X-User-Id + audit 'firma.creada'; sin header -> 401
+# 5) Atribución: firmante_id == quien pide el sello + audit 'firma.creada'
+# (el gate de PERM_FIRMA vive en test_api_sello.py)
 # ---------------------------------------------------------------------------
 
 
@@ -837,7 +831,7 @@ async def test_sign_xml_xades_attribution_and_audit(signature_env) -> None:
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
     assert body["firmante_id"] == str(USER)
@@ -858,72 +852,6 @@ async def test_sign_xml_xades_attribution_and_audit(signature_env) -> None:
     assert payload["certificado_fingerprint"] == cert_fingerprint(cert_pem)
 
 
-@pytest.mark.asyncio
-async def test_sign_xml_xades_requires_auth() -> None:
-    """Sin X-User-Id, /sign-xml con objeto_tipo=indice también devuelve 401
-    (el gate de autenticación corre antes de seleccionar el proveedor)."""
-    from httpx import ASGITransport, AsyncClient
-
-    from signature.core.database import get_tenant_conn
-    from signature.main import app
-    from tests.signature.conftest import _make_mock_conn
-
-    conn = _make_mock_conn()
-
-    async def _conn_dep():
-        yield conn
-
-    app.dependency_overrides[get_tenant_conn] = _conn_dep
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.post(
-                "/api/v1/signature/sign-xml",
-                json={"payload_xml": "<indice/>", "objeto_tipo": "indice"},
-                headers={"X-Tenant-Slug": "demo"},  # sin X-User-Id
-            )
-        assert resp.status_code == 401
-    finally:
-        app.dependency_overrides.clear()
-
-
-# ---------------------------------------------------------------------------
-# 6) PERM_FIRMA obligatorio también para el camino xades_local
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_sign_xml_xades_requires_perm_firma() -> None:
-    """PERM_FIRMA denegado -> 403, incluso para objeto_tipo=indice.
-
-    No requiere sello/upload mockeados: require_permission corre ANTES de que
-    el router seleccione el proveedor.
-    """
-    from httpx import ASGITransport, AsyncClient
-
-    from signature.core.database import get_tenant_conn
-    from signature.main import app
-    from tests.signature.conftest import _make_mock_conn
-
-    conn = _make_mock_conn()
-    conn.fetchval.return_value = None  # check_permission -> denegado
-
-    async def _conn_dep():
-        yield conn
-
-    app.dependency_overrides[get_tenant_conn] = _conn_dep
-    try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            resp = await ac.post(
-                "/api/v1/signature/sign-xml",
-                json={"payload_xml": "<indice/>", "objeto_tipo": "indice"},
-                headers=TENANT_HEADERS,
-            )
-        assert resp.status_code == 403
-        assert resp.json()["detail"]["error"] == "forbidden"
-    finally:
-        app.dependency_overrides.clear()
-
-
 # ---------------------------------------------------------------------------
 # 11) Aislamiento del sello por tenant
 # ---------------------------------------------------------------------------
@@ -941,8 +869,8 @@ async def test_sign_xml_xades_seal_isolated_per_tenant(signature_env) -> None:
         }
     )
 
-    resp_a = await _sign_indice(client, headers={"X-Tenant-Slug": "tenant-a", "X-User-Id": str(USER)})
-    resp_b = await _sign_indice(client, headers={"X-Tenant-Slug": "tenant-b", "X-User-Id": str(USER)})
+    resp_a = await _sign_indice(conn, tenant="tenant-a")
+    resp_b = await _sign_indice(conn, tenant="tenant-b")
 
     assert resp_a.status_code == 201
     assert resp_b.status_code == 201
@@ -961,7 +889,7 @@ async def test_sign_xml_xades_seal_unavailable_returns_503(signature_env) -> Non
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     install_seal({})  # ningún tenant tiene sello
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "signing_seal_unavailable"
 
@@ -975,11 +903,11 @@ async def test_sign_xml_xades_storage_upload_failure_returns_503(signature_env, 
     install_seal(_signer_ref(cert_pem, key_pem))
 
     async def _failing_upload(*, tenant_slug, filename, content, uploaded_by=None):
-        raise storage_client.StorageUploadError("storage-service inalcanzable: boom")
+        raise storage_api.StorageError("storage-service inalcanzable: boom")
 
-    monkeypatch.setattr(storage_client, "upload_signed_xml", _failing_upload)
+    monkeypatch.setattr(storage_api, "upload_signed_xml", _failing_upload)
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "signed_index_upload_failed"
     assert table.rows == {}
@@ -1008,7 +936,7 @@ async def test_xades_t_signature_timestamp_structure(signature_env) -> None:
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     signed_xml = uploads[0]["content"]
 
@@ -1081,7 +1009,7 @@ async def test_xades_t_altered_signature_value_fails_base_xades(signature_env) -
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1114,7 +1042,7 @@ async def test_xades_t_kill_switch_produces_xades_b(signature_env, monkeypatch) 
     install_seal(_signer_ref(cert_pem, key_pem))
     monkeypatch.setattr(settings, "signer_timestamp_enabled", False)
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
     assert body["xades_level"] == "XAdES-B"
@@ -1143,7 +1071,7 @@ async def test_xades_t_tsa_unavailable_returns_503(signature_env) -> None:
     install_seal(_signer_ref(cert_pem, key_pem))
     install_tsa_seal(None)
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "timestamp_authority_unavailable"
     assert table.rows == {}
@@ -1159,7 +1087,7 @@ async def test_xades_t_remote_tsa_url_configured_fails_explicit(signature_env, m
     install_seal(_signer_ref(cert_pem, key_pem))
     monkeypatch.setattr(settings, "tsa_url", "https://tsa.example.test/timestamp")
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "timestamp_authority_unavailable"
 
@@ -1176,7 +1104,7 @@ async def test_xades_t_tsa_cert_without_critical_eku_rejected(signature_env) -> 
     bad_tsa_cert, bad_tsa_key = _generate_tsa_cert(eku_critical=False)
     install_tsa_seal(_tsa_signer_ref(bad_tsa_cert, bad_tsa_key))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "timestamp_authority_unavailable"
 
@@ -1261,7 +1189,7 @@ async def test_xades_t_verify_rejects_forged_timestamp_from_foreign_tsa(
     # hallazgo, donde tsa_cert_fingerprint nunca se llegó a poblar.
     monkeypatch.setattr(settings, "signer_timestamp_enabled", False)
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
@@ -1333,7 +1261,7 @@ async def test_xades_lt_upgrades_to_lta_with_ca_material(signature_env, monkeypa
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
 
@@ -1403,7 +1331,7 @@ async def test_xades_lt_verify_validates_chain_crl_and_archive_timestamp(
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1440,7 +1368,7 @@ async def test_xades_lt_revoked_seal_fails_closed(signature_env, monkeypatch) ->
     crl_der = _build_crl(ca_key, ca_cert, revoked_serials=(seal_cert.serial_number,))
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1478,7 +1406,7 @@ async def test_xades_lt_ca_binding_rejects_misconfigured_foreign_ca(
         _lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(foreign_ca_cert), crl_der)
     )
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1509,7 +1437,7 @@ async def test_xades_lt_downgrade_no_ca_material_stays_at_t_and_audits(
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))  # sin ca_cert_pem/crl_der
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
     assert body["xades_level"] == "XAdES-T"
@@ -1543,7 +1471,7 @@ async def test_xades_lt_disabled_kill_switch_never_audits_downgrade(
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     assert resp.json()["xades_level"] == "XAdES-T"
 
@@ -1568,7 +1496,7 @@ async def test_xades_lt_require_without_ca_material_returns_503(
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))  # sin ca_cert_pem/crl_der
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "lt_material_required"
     assert table.rows == {}
@@ -1648,7 +1576,7 @@ async def test_xades_lt_retrocompat_t_and_b_signatures_still_verify(
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1677,7 +1605,7 @@ async def test_xades_lt_acreditado_always_false(signature_env, monkeypatch) -> N
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     body = resp.json()
     assert body["xades_level"] == "XAdES-LTA"
     assert body["acreditado"] is False
@@ -1781,7 +1709,7 @@ async def test_xades_lt_verify_reports_lt_level_when_archive_timestamp_absent(
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1834,7 +1762,7 @@ async def test_xades_lt_verify_fails_closed_when_archive_timestamp_tampered(
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1894,7 +1822,7 @@ async def test_xades_lt_seal_issued_by_ca_a_fails_verification_with_ca_b_materia
     crl_b_der = _build_crl(ca_b_key, ca_b_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_b_cert), crl_b_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"]
 
@@ -1949,7 +1877,7 @@ async def test_ocsp_sign_embeds_ocsp_values_and_archive_timestamp_still_covers(
         )
     )
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
     assert body["xades_level"] == "XAdES-LTA"
@@ -2020,7 +1948,7 @@ async def test_ocsp_retrocompat_lt_signature_without_ocsp_still_verifies(
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
     assert body["xades_level"] == "XAdES-LTA"
@@ -2060,7 +1988,7 @@ async def test_ocsp_downgrade_no_responder_material_stays_lta_and_audits(
     # Material LT sin responder OCSP (ocsp_cert_pem/ocsp_key_pem ausentes).
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     body = resp.json()
     assert body["xades_level"] == "XAdES-LTA"
@@ -2098,7 +2026,7 @@ async def test_ocsp_disabled_kill_switch_never_audits_downgrade(
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     assert resp.json()["xades_level"] == "XAdES-LTA"
 
@@ -2126,7 +2054,7 @@ async def test_ocsp_require_without_responder_material_returns_503(
     crl_der = _build_crl(ca_key, ca_cert)
     install_seal(_lt_signer_ref(seal_cert_pem, seal_key_pem, _ca_cert_pem(ca_cert), crl_der))
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "ocsp_material_required"
     assert table.rows == {}
@@ -2150,7 +2078,7 @@ async def test_ocsp_require_without_ca_material_returns_503(signature_env, monke
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))  # sin ca_cert_pem/crl_der
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 503
     assert resp.json()["detail"]["error"] == "ocsp_material_required"
     assert table.rows == {}
@@ -2273,7 +2201,7 @@ async def test_verify_declara_advertencias_de_un_sello_sin_esscertid_anterior_al
     client, conn, table, uploads, install_seal, install_tsa_seal = signature_env
     cert_pem, key_pem = _generate_cert("orpycamcp-dev")
     install_seal(_signer_ref(cert_pem, key_pem))
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(conn)
     assert resp.status_code == 201
     firma_id = resp.json()["firma_id"]
     signed_xml = uploads[0]["content"].decode()

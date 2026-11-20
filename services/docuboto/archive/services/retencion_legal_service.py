@@ -27,7 +27,6 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
-from archive.clients import storage_client
 from archive.repositories.archive_repository import ArchiveRepository
 from archive.schemas.retencion_legal import (
     LegalHoldFijado,
@@ -36,6 +35,7 @@ from archive.schemas.retencion_legal import (
     LegalHoldLevantado,
     LegalHoldLevantarRequest,
 )
+from storage import api as storage_api
 
 _SERVICE = "archive-service"
 
@@ -63,7 +63,7 @@ def _hold_no_encontrado() -> HTTPException:
     )
 
 
-def _desde_storage(exc: storage_client.StorageLegalHoldError) -> HTTPException:
+def _desde_storage(exc: storage_api.StorageLegalHoldError) -> HTTPException:
     """Traduce el fallo de storage. 404/409/422 conservan su código (`motivo_no_coincide`,
     `hold_ya_levantado`, `hold_de_sistema`...); todo lo demás es 503 `storage_unavailable`."""
     if exc.status in (404, 409, 422):
@@ -95,10 +95,10 @@ class RetencionLegalService:
 
     async def _holds(self, expediente_id: uuid.UUID) -> list[dict]:
         try:
-            return await storage_client.listar_legal_holds(
+            return await storage_api.list_legal_holds(
                 tenant_slug=self._tenant_slug, expediente_id=str(expediente_id)
             )
-        except storage_client.StorageLegalHoldError as exc:
+        except storage_api.StorageLegalHoldError as exc:
             raise _desde_storage(exc) from exc
 
     async def listar(self, expediente_id: uuid.UUID, max_clearance: int) -> list[LegalHoldItem]:
@@ -128,7 +128,7 @@ class RetencionLegalService:
                 },
             )
         try:
-            res = await storage_client.fijar_legal_hold(
+            res = await storage_api.set_legal_hold(
                 tenant_slug=self._tenant_slug,
                 actor_id=actor,
                 expediente_id=str(exp.id),
@@ -136,7 +136,7 @@ class RetencionLegalService:
                 fundamento=payload.fundamento,
                 acta_ref=payload.acta_ref,
             )
-        except storage_client.StorageLegalHoldError as exc:
+        except storage_api.StorageLegalHoldError as exc:
             raise _desde_storage(exc) from exc
 
         async with self._conn.transaction():
@@ -202,7 +202,7 @@ class RetencionLegalService:
                 },
             )
         try:
-            res = await storage_client.levantar_legal_hold(
+            res = await storage_api.lift_legal_hold(
                 tenant_slug=self._tenant_slug,
                 actor_id=actor,
                 hold_id=hold_id,
@@ -210,7 +210,7 @@ class RetencionLegalService:
                 fundamento=payload.fundamento,
                 acta_ref=payload.acta_ref,
             )
-        except storage_client.StorageLegalHoldError as exc:
+        except storage_api.StorageLegalHoldError as exc:
             raise _desde_storage(exc) from exc
 
         async with self._conn.transaction():

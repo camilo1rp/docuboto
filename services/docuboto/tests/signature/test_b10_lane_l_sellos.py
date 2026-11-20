@@ -15,14 +15,14 @@
     publica una y no se puede obtener, no se renueva.
   * SEG #4: el vencimiento del eslabón 0 sale del certificado elegido por HUELLA, no de `[0]`; un
     token sin certificados no tumba la firma.
-  * SEG #2: solo `borrador_not_found` es «desaparecido»; un 404 genérico es «no verificable».
+  * SEG #2: solo «el borrador no existe» es «desaparecido»; un fallo es «no verificable».
 
 Mutaciones (aplicar, correr, revertir): quitar el bloque `if not lta_vigente` de `verify_xades`
 (cae H2, las tres pruebas); que `renovar_archive_timestamp` ignore `crl_tsa` (cae
 `test_el_tsvd_lleva_la_crl_de_la_ca_de_la_tsa_anterior`); volver a `certs_ats[0]` en
 `signing_service` (cae `test_el_vencimiento_del_eslabon_0_sale_de_la_huella_no_del_primero`);
-que `get_huella_borrador` trate todo 404 como desaparecido (cae
-`test_un_404_generico_no_es_borrador_desaparecido`)."""
+que `get_huella_borrador` trate todo fallo como desaparecido (cae
+`test_un_fallo_de_document_no_es_borrador_desaparecido`)."""
 
 from __future__ import annotations
 
@@ -37,8 +37,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509.oid import ExtendedKeyUsageOID
 from lxml import etree
 
-from signature.core import http_clients, tsa
-from signature.core.http_clients import BorradorDesaparecidoError, HuellaNoVerificableError
+from document import api as document_api
+from signature.core import huella, tsa
+from signature.core.huella import BorradorDesaparecidoError, HuellaNoVerificableError
 from signature.providers import local
 from signature.providers.base import SignerRef
 from signature.providers.local import renovar_archive_timestamp, verify_xades
@@ -385,7 +386,7 @@ async def test_el_vencimiento_del_eslabon_0_sale_de_la_huella_no_del_primero(
 
     monkeypatch.setattr("signature.services.signing_service.tsa_module.certificados_de_token", _con_la_ca_delante)
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(_conn)
     assert resp.status_code == 201
     assert capturado["tsa_cert_not_after"] < ahora + timedelta(days=400), (
         "el vencimiento debe ser el de la TSA (≈365 d) y no el de la CA que iba delante"
@@ -419,61 +420,35 @@ async def test_un_token_sin_certificados_no_tumba_la_firma(
     # `signing_service` lee SOLO el token de archivo con esta función: llega «vacío».
     monkeypatch.setattr("signature.services.signing_service.tsa_module.certificados_de_token", lambda _d: [])
 
-    resp = await _sign_indice(client)
+    resp = await _sign_indice(_conn)
     assert resp.status_code == 201, resp.text  # antes: IndexError -> 500
     insertado.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# SEG #2 — solo `borrador_not_found` es «desaparecido»
+# SEG #2 — solo «el borrador no existe» es «desaparecido»
 # ---------------------------------------------------------------------------
 
 
-def _responder(monkeypatch: pytest.MonkeyPatch, status: int, cuerpo) -> None:  # noqa: ANN001
-    class _Cliente:
-        def __init__(self, *a, **k) -> None:  # noqa: ANN002, ANN003
-            pass
-
-        async def __aenter__(self):  # noqa: ANN204
-            return self
-
-        async def __aexit__(self, *a) -> None:  # noqa: ANN002
-            return None
-
-        async def get(self, url, headers=None):  # noqa: ANN001, ANN202
-            return httpx.Response(status, json=cuerpo, request=httpx.Request("GET", url))
-
-    monkeypatch.setattr(http_clients.httpx, "AsyncClient", _Cliente)
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "cuerpo",
-    [
-        {"detail": {"error": "borrador_not_found", "status": 404}},  # HTTPException de document
-        {"error": "borrador_not_found", "status": 404},
-    ],
-)
-async def test_el_404_borrador_not_found_es_desaparecido(monkeypatch: pytest.MonkeyPatch, cuerpo: dict) -> None:
-    _responder(monkeypatch, 404, cuerpo)
+async def test_el_borrador_inexistente_es_desaparecido(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        document_api, "draft_fingerprint", AsyncMock(side_effect=document_api.DraftNotFoundError("x"))
+    )
     with pytest.raises(BorradorDesaparecidoError):
-        await http_clients.get_huella_borrador("b-1", "demo")
+        await huella.get_huella_borrador("b-1", "demo")
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "cuerpo",
-    [
-        {"detail": "Not Found"},  # ruta inexistente (despliegue desalineado, proxy, Mount)
-        {"detail": {"error": "radicado_not_found"}},  # otro 404 legítimo de document, no es el borrador
-        ["raro"],
-    ],
-)
-async def test_un_404_generico_no_es_borrador_desaparecido(monkeypatch: pytest.MonkeyPatch, cuerpo) -> None:  # noqa: ANN001
+async def test_un_fallo_de_document_no_es_borrador_desaparecido(monkeypatch: pytest.MonkeyPatch) -> None:
     """`desaparecido` => `vigente=None` => se invalida TODO lo vivo, también lo firmado."""
-    _responder(monkeypatch, 404, cuerpo)
+    monkeypatch.setattr(
+        document_api,
+        "draft_fingerprint",
+        AsyncMock(side_effect=document_api.DocumentUnavailableError("caída")),
+    )
     with pytest.raises(HuellaNoVerificableError) as info:
-        await http_clients.get_huella_borrador("b-1", "demo")
+        await huella.get_huella_borrador("b-1", "demo")
     # (`BorradorDesaparecidoError` hereda de `HuellaNoVerificableError`: no basta el `raises`.)
     assert not isinstance(info.value, BorradorDesaparecidoError)
 

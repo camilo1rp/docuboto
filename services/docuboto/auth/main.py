@@ -44,7 +44,6 @@ from auth.routers.signing_key import admin_router as signing_key_admin_router
 from auth.routers.signing_key import internal_router as signing_key_internal_router
 from auth.routers.signing_key import router as signing_key_router
 from auth.routers.totp import admin_router as totp_admin_router
-from auth.routers.totp import internal_router as totp_internal_router
 from auth.routers.totp import router as totp_router
 from auth.routers.urd import router as urd_router
 from auth.services.auth_service import AuthService
@@ -136,7 +135,6 @@ DOMAIN_ROUTERS = (
     clearance_router,
     totp_router,
     totp_admin_router,
-    totp_internal_router,
     signing_key_router,
     signing_key_admin_router,
     signing_key_internal_router,

@@ -20,21 +20,23 @@ otro guard (`ensure_object_lock_bucket`), no el read-back.
 
 Aquí el almacén doble ACEPTA la orden y al releer dice que no hay retención (el caso
 SeaweedFS). El servicio debe abortar y NO asentar: ni fila WORM, ni UPDATE de
-renovación, ni evento `ok`, ni asiento."""
+renovación, ni evento `ok`, ni asiento. Por `storage.api` el aborto llega como
+`transient` (reintentable), nunca como `ok`."""
 
 from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import storage.core.config as config_module
+from storage import api as storage_api
 from storage.core.minio_client import RetencionNoVerificadaError
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
+    TENANT_SLUG,
     make_file_record,
     make_worm_row,
 )
@@ -59,6 +61,14 @@ def _objeto(content: bytes) -> AsyncMock:
     return AsyncMock(return_value=obj)
 
 
+def _abortado_por_read_back(caplog: pytest.LogCaptureFixture) -> bool:
+    """El `transient` lo causó el read-back, no otro fallo del doble."""
+    return any(
+        r.exc_info and isinstance(r.exc_info[1], RetencionNoVerificadaError)
+        for r in caplog.records
+    )
+
+
 def _sqls(mock_conn) -> list[str]:
     out = [c.args[0] for c in mock_conn.fetchrow.call_args_list if c.args]
     out += [c.args[0] for c in mock_conn.execute.call_args_list if c.args]
@@ -66,8 +76,10 @@ def _sqls(mock_conn) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_proteger_aborta_y_no_asienta_si_el_almacen_no_cumple(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_proteger_aborta_y_no_asienta_si_el_almacen_no_cumple(
+    client_with_conn, caplog
+) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     file_id = uuid.uuid4()
     mock_conn.fetchval.return_value = True
     mock_conn.fetchrow.side_effect = [
@@ -81,15 +93,15 @@ async def test_proteger_aborta_y_no_asienta_si_el_almacen_no_cumple(client_with_
     mock_minio.get_object = _objeto(_XML)
     _almacen_que_no_cumple(mock_minio)
 
-    with pytest.raises(RetencionNoVerificadaError):
-        await client.post(
-            "/api/v1/preservacion/proteger-artefacto",
-            json={
-                "file_id": str(file_id), "expediente_id": "EXP-1", "tipo": "acta_transferencia",
-                "retencion_anios": 5, "fecha_inicio": "2026-01-01",
-            },
-            headers=INTERNAL_HEADERS,
-        )
+    outcome = await storage_api.protect_artifact(
+        tenant_slug=TENANT_SLUG, actor_id=str(uuid.uuid4()), file_id=str(file_id),
+        expediente_id="EXP-1", tipo="acta_transferencia",
+        retencion_anios=5, fecha_inicio=date(2026, 1, 1),
+    )
+
+    assert not outcome.ok
+    assert outcome.transient
+    assert _abortado_por_read_back(caplog)
 
     mock_minio.get_object_retention.assert_awaited()
     sqls = _sqls(mock_conn)
@@ -99,8 +111,10 @@ async def test_proteger_aborta_y_no_asienta_si_el_almacen_no_cumple(client_with_
 
 
 @pytest.mark.asyncio
-async def test_renovar_aborta_y_no_asienta_si_el_almacen_no_cumple(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_renovar_aborta_y_no_asienta_si_el_almacen_no_cumple(
+    client_with_conn, caplog
+) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1", tipo="indice",
         retain_until=datetime(2028, 1, 1, tzinfo=UTC),
@@ -110,13 +124,14 @@ async def test_renovar_aborta_y_no_asienta_si_el_almacen_no_cumple(client_with_c
     mock_conn.fetchrow.side_effect = [existing]
     _almacen_que_no_cumple(mock_minio)
 
-    with pytest.raises(RetencionNoVerificadaError):
-        await client.post(
-            "/api/v1/preservacion/renovar-retencion-internal",
-            json={"expediente_id": "EXP-1", "tipo": "indice",
-                  "retencion_anios": 5, "fecha_inicio": "2026-01-01"},
-            headers=INTERNAL_HEADERS,
-        )
+    outcome = await storage_api.renew_retention(
+        tenant_slug=TENANT_SLUG, expediente_id="EXP-1", tipo="indice",
+        retencion_anios=5, fecha_inicio=date(2026, 1, 1),
+    )
+
+    assert not outcome.ok
+    assert outcome.transient
+    assert _abortado_por_read_back(caplog)
 
     mock_minio.set_object_retention.assert_awaited_once()  # lo ordenó...
     mock_minio.get_object_retention.assert_awaited()       # ...y lo releyó
@@ -126,8 +141,10 @@ async def test_renovar_aborta_y_no_asienta_si_el_almacen_no_cumple(client_with_c
 
 
 @pytest.mark.asyncio
-async def test_empaquetar_aip_aborta_y_no_asienta_si_el_almacen_no_cumple(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_empaquetar_aip_aborta_y_no_asienta_si_el_almacen_no_cumple(
+    client_with_conn, caplog
+) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     doc_id = uuid.uuid4()
     contenido = b"contenido del oficio"
     mock_conn.fetchval.return_value = True
@@ -141,17 +158,15 @@ async def test_empaquetar_aip_aborta_y_no_asienta_si_el_almacen_no_cumple(client
     mock_minio.get_object = _objeto(contenido)
     _almacen_que_no_cumple(mock_minio)
 
-    with pytest.raises(RetencionNoVerificadaError):
-        await client.post(
-            "/api/v1/preservacion/aip",
-            json={
-                "expediente_id": "EXP-1",
-                "documentos": [{"document_id": "R-1", "nombre": "oficio.pdf",
-                                "file_id": str(doc_id)}],
-                "retencion_anios": 5, "fecha_inicio": "2026-01-01",
-            },
-            headers=INTERNAL_HEADERS,
-        )
+    outcome = await storage_api.package_aip(
+        tenant_slug=TENANT_SLUG, expediente_id="EXP-1",
+        documentos=[{"document_id": "R-1", "nombre": "oficio.pdf", "file_id": str(doc_id)}],
+        indice_file_id=None, retencion_anios=5, fecha_inicio=date(2026, 1, 1),
+    )
+
+    assert not outcome.ok
+    assert outcome.transient
+    assert _abortado_por_read_back(caplog)
 
     mock_minio.put_object.assert_awaited()  # el ZIP sí se subió...
     sqls = _sqls(mock_conn)

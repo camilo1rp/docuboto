@@ -16,8 +16,7 @@ irreversible — E10-B, ver migración
 Carril UNIT (mock_conn/mock_minio, ver conftest.py): verifica que el lock se
 adquiere/libera con la MISMA clave que `PreservationWormService.
 proteger_indice` usa para `tipo="indice"` (namespace distinto para
-`tipo="aip"`), que ambas rutas HTTP (`/aip` pública y `/aip-internal`) lo
-ejercen, y que el corte-circuito idempotente por contenido (`aip_sha256`
+`tipo="aip"`), que `storage.api.package_aip` (acto de sistema) lo ejerce, y que el corte-circuito idempotente por contenido (`aip_sha256`
 exacto ya registrado) no sube nada a MinIO ni inserta una fila nueva.
 
 El carril de INTEGRACIÓN (dos conexiones Postgres reales, empaquetados
@@ -29,15 +28,17 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 
 import storage.core.config as config_module
 import storage.services.aip_service as aip_service_module
-from storage.services.preservation_worm_service import _worm_lock_key
+from storage import api as storage_api
+from storage.schemas.preservacion import AipCreate, AipResponse
+from storage.services.aip_service import AipService
+from storage.services.preservation_worm_service import FixityMismatchError, _worm_lock_key
 from tests.storage.conftest import (
-    INTERNAL_HEADERS,
     TENANT_SLUG,
     make_file_record,
     make_worm_row,
@@ -53,8 +54,10 @@ def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
 
 
-def _grant_permission(mock_conn) -> None:
-    mock_conn.fetchval.return_value = True
+async def _empaquetar(mock_conn, payload: dict) -> AipResponse:
+    return await AipService(mock_conn, TENANT_SLUG).empaquetar_aip(
+        AipCreate(**payload), actor="user-1"
+    )
 
 
 def _doc_record(file_id: uuid.UUID) -> dict:
@@ -145,7 +148,7 @@ def test_aip_lock_key_uses_tipo_aip_and_differs_from_indice() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Adquisición/liberación del lock -- ruta pública
+# Adquisición/liberación del lock
 # ---------------------------------------------------------------------------
 
 
@@ -154,12 +157,11 @@ async def test_empaquetar_aip_acquires_and_releases_advisory_lock(client_with_co
     """El happy path toma `pg_advisory_lock` y lo libera (`pg_advisory_unlock`)
     con la MISMA clave -- serialización por-(expediente, 'aip') del
     check->put_object->insert."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # get_by_id_any_state
         None,  # get_aip_by_expediente_and_sha256: sin duplicado previo
@@ -171,12 +173,7 @@ async def test_empaquetar_aip_acquires_and_releases_advisory_lock(client_with_co
     ]
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 201, resp.text
+    await _empaquetar(mock_conn, _base_payload(doc_file_id))
 
     lock_calls = _lock_calls(mock_conn)
     unlock_calls = _unlock_calls(mock_conn)
@@ -189,40 +186,34 @@ async def test_empaquetar_aip_acquires_and_releases_advisory_lock(client_with_co
 @pytest.mark.asyncio
 async def test_empaquetar_aip_releases_lock_on_fixity_mismatch(client_with_conn) -> None:
     """El lock se libera aun cuando `_resolve_and_verify` aborta con
-    `FixityMismatchError` (propagada como 409) -- el `finally` de
+    `FixityMismatchError` -- el `finally` de
     `empaquetar_aip` no depende de que el camino feliz haya terminado."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # get_by_id_any_state
         {"id": uuid.uuid4()},  # insert_evento FIJACION fallo
     ]
     mock_minio.get_object = minio_get_object(b"bytes alterados, no coinciden")
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 409
+    with pytest.raises(FixityMismatchError):
+        await _empaquetar(mock_conn, _base_payload(doc_file_id))
 
     assert len(_lock_calls(mock_conn)) == 1
     assert len(_unlock_calls(mock_conn)) == 1
 
 
 # ---------------------------------------------------------------------------
-# Ambas rutas HTTP comparten el MISMO lock (D-02, ruta interna)
+# El acto de sistema (`storage.api.package_aip`) comparte el MISMO lock
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_empaquetar_aip_internal_route_also_acquires_lock(client_with_conn) -> None:
-    """`POST /aip-internal` (D-02, X-Internal-Token, reconciliación) llama al
-    MISMO `AipService.empaquetar_aip` que la ruta pública -- el advisory lock
-    cubre AMBAS, no solo la síncrona/RBAC."""
-    client, mock_conn, mock_minio = client_with_conn
+async def test_package_aip_also_acquires_lock(client_with_conn) -> None:
+    """`storage.api.package_aip` (reconciliación, SYSTEM_RECONCILER_ID) llama al
+    MISMO `AipService.empaquetar_aip` -- el advisory lock lo cubre también."""
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
@@ -238,12 +229,16 @@ async def test_empaquetar_aip_internal_route_also_acquires_lock(client_with_conn
     ]
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip-internal",
-        json=_base_payload(doc_file_id),
-        headers=INTERNAL_HEADERS,
+    outcome = await storage_api.package_aip(
+        tenant_slug=TENANT_SLUG,
+        expediente_id="EXP-1",
+        documentos=_base_payload(doc_file_id)["documentos"],
+        indice_file_id=None,
+        retencion_anios=5,
+        fecha_inicio=date(2026, 1, 1),
     )
-    assert resp.status_code == 201, resp.text
+    assert outcome.ok, outcome
+    assert outcome.aip_id == aip_id
 
     lock_calls = _lock_calls(mock_conn)
     assert len(lock_calls) == 1
@@ -271,7 +266,7 @@ async def test_empaquetar_aip_idempotent_shortcircuit_on_identical_content(
     casualidad el mismo hash en dos builds (normalmente NO lo hace, ver el
     comentario corregido de la migración 012 -- el hash embebe un timestamp).
     """
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     existing_aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
@@ -281,29 +276,17 @@ async def test_empaquetar_aip_idempotent_shortcircuit_on_identical_content(
 
     existing_row = _aip_insert_row(existing_aip_id, retain_until, aip_sha256=fixed_hash)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),  # get_by_id_any_state
         existing_row,  # get_aip_by_expediente_and_sha256: YA existe
     ]
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    result = await _empaquetar(mock_conn, _base_payload(doc_file_id))
 
-    # El router fija `status_code=201` en el decorador (a diferencia de
-    # `proteger_indice`, que devuelve una tupla `(response, created)` y el
-    # router traduce a 200/201) -- `empaquetar_aip` devuelve solo un
-    # `AipResponse`, así que el corte-circuito idempotente TAMBIÉN responde
-    # 201, con el cuerpo del AIP YA existente. Decisión deliberada para no
-    # ampliar el alcance de esta remediación al contrato HTTP del endpoint.
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["id"] == str(existing_aip_id)
-    assert body["aip_sha256"] == fixed_hash
+    # El corte-circuito devuelve el AIP YA existente, sin distinguirlo de uno nuevo.
+    assert result.id == existing_aip_id
+    assert result.aip_sha256 == fixed_hash
 
     mock_minio.put_object.assert_not_awaited()
     mock_minio.make_bucket.assert_not_awaited()
@@ -326,14 +309,13 @@ async def test_empaquetar_aip_different_content_does_not_shortcircuit(
     empaquetar normalmente (re-empaquetado legítimo, migración 009) -- el
     corte-circuito es estrictamente por contenido EXACTO, no por
     `expediente_id` a secas."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(aip_service_module, "aip_sha256", lambda _zip_bytes: "e" * 64)
 
-    _grant_permission(mock_conn)
     mock_conn.fetchrow.side_effect = [
         _doc_record(doc_file_id),
         None,  # get_aip_by_expediente_and_sha256: ningún row con ESTE sha256
@@ -345,11 +327,6 @@ async def test_empaquetar_aip_different_content_does_not_shortcircuit(
     ]
     mock_minio.get_object = minio_get_object(_DOC_CONTENT)
 
-    resp = await client.post(
-        "/api/v1/preservacion/aip",
-        json=_base_payload(doc_file_id),
-        headers=INTERNAL_HEADERS,
-    )
+    await _empaquetar(mock_conn, _base_payload(doc_file_id))
 
-    assert resp.status_code == 201, resp.text
     mock_minio.put_object.assert_awaited_once()

@@ -38,8 +38,8 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from orpycamcp_common import audit
 
-from document.clients import storage_client
 from document.repositories.export_repository import ExportRepository
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -376,10 +376,10 @@ class ExportService:
 
     async def _fetch_bytes(self, file_id) -> bytes | None:
         try:
-            stream = await storage_client.open_content_stream(
+            stream = await storage_api.open_file_stream(
                 tenant_slug=self._slug, file_id=file_id
             )
-        except storage_client.StorageContentError:
+        except storage_api.StorageError:
             return None
         if stream is None:
             return None

@@ -19,7 +19,7 @@ filtro SQL de `TransferenciaRepository.list_worm_pending_actas`
 su gemela del acta.
 
 Compromiso (igual que el resto de `tests/integration/`): NO hay tráfico HTTP
-real a storage-service -- `storage_client.proteger_artefacto_worm_internal`
+real a storage-service -- `storage_api.protect_artifact_as_system`
 se monkeypatchea a un `WormProtectionOutcome` fijo. Lo que este tier prueba
 es el tramo 100%-DB (UPDATE + INSERT audit_log atómicos, WHERE de
 idempotencia, derivación TRD), no la subida real a MinIO (cubierta en
@@ -44,7 +44,6 @@ import asyncpg
 import pytest
 from orpycamcp_common import audit
 
-from archive.clients.storage_client import WormProtectionOutcome
 from archive.core.actor import Actor
 from archive.core.database import tenant_schema
 from archive.repositories.transferencia_repository import TransferenciaRepository
@@ -52,6 +51,7 @@ from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate
 from archive.schemas.transferencia import TransferenciaCreate
 from archive.services.archive_service import ArchiveService
 from archive.services.transferencia_service import TransferenciaService
+from storage.api import WormProtectionOutcome
 
 from .conftest import DSN, convalidate_for_test
 
@@ -144,7 +144,7 @@ async def test_proteger_worm_acta_commits_mark_and_audit_together(
     outcome = _ok_outcome()
 
     with patch(
-        "archive.clients.storage_client.proteger_artefacto_worm_internal",
+        "storage.api.protect_artifact_as_system",
         new=AsyncMock(return_value=outcome),
     ):
         resultado = await TransferenciaService(conn, slug).proteger_worm_acta(
@@ -204,7 +204,7 @@ async def test_proteger_worm_acta_failure_after_audit_append_reverts_mark(
     monkeypatch.setattr(audit, "append", _append_then_boom)
 
     with patch(
-        "archive.clients.storage_client.proteger_artefacto_worm_internal",
+        "storage.api.protect_artifact_as_system",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultado = await TransferenciaService(conn, slug).proteger_worm_acta(
@@ -256,7 +256,7 @@ async def test_proteger_worm_acta_second_call_is_idempotent(
     service = TransferenciaService(conn, slug)
 
     with patch(
-        "archive.clients.storage_client.proteger_artefacto_worm_internal",
+        "storage.api.protect_artifact_as_system",
         new=AsyncMock(return_value=_ok_outcome()),
     ) as mock_client:
         primero = await service.proteger_worm_acta(
@@ -309,7 +309,7 @@ async def test_concurrent_proteger_worm_acta_does_not_double_mark(
     # corrutina sale en orden no-LIFO y restaura el mock de la otra, dejándolo fugado
     # (rompía `test_clientes_llevan_token_interno` más adelante en la misma sesión).
     with patch(
-        "archive.clients.storage_client.proteger_artefacto_worm_internal",
+        "storage.api.protect_artifact_as_system",
         new=AsyncMock(return_value=_ok_outcome()),
     ):
         resultados = await asyncio.gather(_attempt(), _attempt())

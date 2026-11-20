@@ -8,19 +8,13 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Tests de POST /api/v1/preservacion/renovar-retencion-internal (E10 debt:
-renovación de retención WORM para series de disposición Conservación Total,
-AGN 001/2024 Art. 4.3.2.6).
+Tests de la renovación de retención WORM (E10 debt: series de disposición
+Conservación Total, AGN 001/2024 Art. 4.3.2.6).
 
-Solo la ruta INTERNA (D-02, `X-Internal-Token`) existe: la ruta pública
-equivalente se retiró (remediación de auditoría de seguridad, Media) --
-storage-service no modela la disposición TRD y no puede validar que un
-artefacto sea realmente de una serie CT, así que exponerla públicamente
-permitía a cualquier portador de `USUA_PERM_EXPEDIENTE min_crud=3` fijar el
-lock COMPLIANCE de un artefacto arbitrario hasta el techo de
-`preservation_max_retention_years`, sin importar su disposición real. Único
-llamador: la 5ª fase de reconciliación de archive-service
-(`run_once_worm_renovacion`), que actúa con `SYSTEM_RECONCILER_ID`.
+Sin ruta HTTP (ADR-047): archive la pide con `storage.api.renew_retention`, que
+envuelve `PreservationWormService.renovar_retencion` con actor
+`SYSTEM_RECONCILER_ID`. Los tests que miran campos de la respuesta llaman al
+servicio; los del actor y del mapeo a `WormRenewalOutcome`, a `storage.api`.
 
 Ningún test escribe una extensión COMPLIANCE real — MinIO está completamente
 mockeado (`tests/conftest.py::_make_mock_minio`, `set_object_retention` en
@@ -38,11 +32,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 import storage.core.config as config_module
+from storage import api as storage_api
 from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.core.preservacion_tipos import MULTI_ARTEFACTO_TIPOS
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_HEADERS, TENANT_SLUG, make_worm_row
+from storage.schemas.preservacion import RenovarRetencionRequest, RenovarRetencionResponse
+from storage.services.preservation_worm_service import (
+    InvalidRetentionError,
+    PreservationWormService,
+)
+from tests.storage.conftest import TENANT_SLUG, make_worm_row
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +62,25 @@ def _renovar_payload(*, expediente_id: str = "EXP-1", tipo: str = "indice", **ov
     return payload
 
 
+async def _renew(conn, payload: dict) -> RenovarRetencionResponse:
+    """Lo que hacía la ruta interna: el servicio con actor de sistema."""
+    return await PreservationWormService(conn, TENANT_SLUG).renovar_retencion(
+        RenovarRetencionRequest(**payload), actor=str(SYSTEM_RECONCILER_ID)
+    )
+
+
+async def _renew_via_api(**overrides) -> storage_api.WormRenewalOutcome:
+    payload = _renovar_payload(**overrides)
+    return await storage_api.renew_retention(
+        tenant_slug=TENANT_SLUG,
+        expediente_id=payload["expediente_id"],
+        tipo=payload["tipo"],
+        retencion_anios=payload["retencion_anios"],
+        fecha_inicio=datetime.fromisoformat(payload["fecha_inicio"]).date(),
+        file_id=payload.get("file_id"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Camino de EXTENSIÓN real: nueva > actual.
 # ---------------------------------------------------------------------------
@@ -68,7 +88,7 @@ def _renovar_payload(*, expediente_id: str = "EXP-1", tipo: str = "indice", **ov
 
 @pytest.mark.asyncio
 async def test_renovar_retencion_extends_when_nueva_is_strictly_greater(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1",
         tipo="indice",
@@ -89,17 +109,11 @@ async def test_renovar_retencion_extends_when_nueva_is_strictly_greater(client_w
         {"id": uuid.uuid4()},  # insert_evento RENOVACION ok
     ]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(),
-        headers=INTERNAL_HEADERS,
-    )
+    body = await _renew(mock_conn, _renovar_payload())
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["renovado"] is True
-    assert body["renovaciones"] == existing["renovaciones"] + 1
-    assert body["retain_until"].startswith("2031-01-01")
+    assert body.renovado is True
+    assert body.renovaciones == existing["renovaciones"] + 1
+    assert body.retain_until == datetime(2031, 1, 1, tzinfo=UTC)
 
     # MinIO SÍ fue llamado: COMPLIANCE en sí mismo también rechazaría acortar,
     # pero el servicio ya filtra antes de llegar aquí (ver el test no-op).
@@ -134,7 +148,7 @@ async def test_renovar_retencion_extends_when_nueva_is_strictly_greater(client_w
 
 @pytest.mark.asyncio
 async def test_renovar_retencion_noop_when_nueva_does_not_exceed_actual(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1",
         tipo="indice",
@@ -143,16 +157,10 @@ async def test_renovar_retencion_noop_when_nueva_does_not_exceed_actual(client_w
 
     mock_conn.fetchrow.side_effect = [existing]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(),
-        headers=INTERNAL_HEADERS,
-    )
+    body = await _renew(mock_conn, _renovar_payload())
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["renovado"] is False
-    assert body["retain_until"] == "2032-01-01T00:00:00Z"  # SIN tocar
+    assert body.renovado is False
+    assert body.retain_until == datetime(2032, 1, 1, tzinfo=UTC)  # SIN tocar
 
     mock_minio.set_object_retention.assert_not_awaited()
     # No-op: ni evento ni asiento -- ninguna extensión real ocurrió.
@@ -169,7 +177,7 @@ async def test_renovar_retencion_noop_when_nueva_equals_actual_exactly(client_wi
     """Frontera: `nueva == actual` (ni mayor ni menor) también es no-op --
     la comparación es ESTRICTAMENTE mayor (`nueva <= existing`), no
     `nueva < existing`."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1",
         tipo="indice",
@@ -178,41 +186,31 @@ async def test_renovar_retencion_noop_when_nueva_equals_actual_exactly(client_wi
 
     mock_conn.fetchrow.side_effect = [existing]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(),
-        headers=INTERNAL_HEADERS,
-    )
+    body = await _renew(mock_conn, _renovar_payload())
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["renovado"] is False
+    assert body.renovado is False
     mock_minio.set_object_retention.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# Sin fila WORM protegida -- 404.
+# Sin fila WORM protegida -- `not_found`.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_renovar_retencion_404_when_no_worm_object_exists(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_renovar_retencion_not_found_when_no_worm_object_exists(client_with_conn) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
 
     mock_conn.fetchrow.side_effect = [None]  # get_by_expediente_and_tipo: nada
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(expediente_id="EXP-NUNCA-PROTEGIDO"),
-        headers=INTERNAL_HEADERS,
-    )
+    outcome = await _renew_via_api(expediente_id="EXP-NUNCA-PROTEGIDO")
 
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["error"] == "worm_object_not_found"
+    assert outcome == storage_api.WormRenewalOutcome(ok=False, not_found=True)
     mock_minio.set_object_retention.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# Retención inválida (piso/techo) -- 400, ANTES de tocar BD/MinIO.
+# Retención inválida (piso/techo) -- se rechaza ANTES de tocar BD/MinIO.
 # ---------------------------------------------------------------------------
 
 
@@ -223,26 +221,24 @@ async def test_renovar_retencion_rejects_retention_below_floor(client_with_conn)
     mismo criterio que `proteger_indice`. `resolve_retain_until()`/
     `validate_retain_until()` corren ANTES de adquirir el advisory lock, así
     que ni siquiera se llega a `get_by_expediente_and_tipo`."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json={
-            "expediente_id": "EXP-1",
-            "tipo": "indice",
-            "retain_until": "2020-01-01T00:00:00Z",  # pasado: NUNCA válido
-        },
-        headers=INTERNAL_HEADERS,
-    )
+    with pytest.raises(InvalidRetentionError):
+        await _renew(
+            mock_conn,
+            {
+                "expediente_id": "EXP-1",
+                "tipo": "indice",
+                "retain_until": "2020-01-01T00:00:00Z",  # pasado: NUNCA válido
+            },
+        )
 
-    assert resp.status_code == 400
-    assert resp.json()["detail"]["error"] == "invalid_retention"
     mock_conn.fetchrow.assert_not_called()
     mock_minio.set_object_retention.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
-# Kill-switch: PRESERVATION_ENABLED=false -- 503, ANTES de tocar BD.
+# Kill-switch: PRESERVATION_ENABLED=false -- `disabled`, ANTES de tocar BD.
 # ---------------------------------------------------------------------------
 
 
@@ -250,17 +246,12 @@ async def test_renovar_retencion_rejects_retention_below_floor(client_with_conn)
 async def test_renovar_retencion_disabled_by_feature_flag(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(),
-        headers=INTERNAL_HEADERS,
-    )
+    outcome = await _renew_via_api()
 
-    assert resp.status_code == 503
-    assert resp.json()["detail"]["error"] == "preservation_disabled"
+    assert outcome == storage_api.WormRenewalOutcome(ok=False, disabled=True)
     mock_conn.fetchrow.assert_not_called()
 
 
@@ -275,7 +266,7 @@ async def test_renovar_retencion_disabled_by_feature_flag(
 async def test_renovar_retencion_rereads_real_state_if_update_matched_no_row(
     client_with_conn,
 ) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1", tipo="indice", retain_until=datetime(2028, 1, 1, tzinfo=UTC)
     )
@@ -287,14 +278,9 @@ async def test_renovar_retencion_rereads_real_state_if_update_matched_no_row(
         refreshed,  # re-lectura de get_by_expediente_and_tipo
     ]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(),
-        headers=INTERNAL_HEADERS,
-    )
+    body = await _renew(mock_conn, _renovar_payload())
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["renovado"] is False  # NO se asume la extensión
+    assert body.renovado is False  # NO se asume la extensión
 
     mock_minio.set_object_retention.assert_awaited_once()  # SÍ se llegó a llamar a MinIO
     audit_calls = [
@@ -306,14 +292,14 @@ async def test_renovar_retencion_rereads_real_state_if_update_matched_no_row(
 
 
 # ---------------------------------------------------------------------------
-# Ruta interna (D-02, SYSTEM_RECONCILER_ID) -- disparador real: 5ª fase de
-# reconciliación de archive-service.
+# `storage.api.renew_retention` (SYSTEM_RECONCILER_ID) -- disparador real: 5ª
+# fase de reconciliación de archive.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_renovar_retencion_internal_happy_path(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+async def test_renew_retention_api_happy_path(client_with_conn) -> None:
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-CT-1",
         tipo="acta_transferencia",
@@ -325,14 +311,11 @@ async def test_renovar_retencion_internal_happy_path(client_with_conn) -> None:
 
     mock_conn.fetchrow.side_effect = [existing, renovada, {"id": uuid.uuid4()}]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(expediente_id="EXP-CT-1", tipo="acta_transferencia"),
-        headers=INTERNAL_HEADERS,
-    )
+    outcome = await _renew_via_api(expediente_id="EXP-CT-1", tipo="acta_transferencia")
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["renovado"] is True
+    assert outcome.ok is True
+    assert outcome.renovado is True
+    assert outcome.retain_until == datetime(2031, 1, 1, tzinfo=UTC)
 
     audit_calls = [
         c
@@ -344,7 +327,7 @@ async def test_renovar_retencion_internal_happy_path(client_with_conn) -> None:
 
 
 @pytest.mark.asyncio
-async def test_renovar_retencion_internal_happy_path_tipo_aip(client_with_conn) -> None:
+async def test_renew_retention_api_happy_path_tipo_aip(client_with_conn) -> None:
     """Gemelo EXACTO del test anterior para `tipo='aip'` (E10 debt,
     fast-follow del cableado del AIP al eje de renovación WORM,
     archive-service migración 034) -- `PreservacionWormRepository.
@@ -354,7 +337,7 @@ async def test_renovar_retencion_internal_happy_path_tipo_aip(client_with_conn) 
     (schema Pydantic) acepte el literal `'aip'` -- este test confirma que la
     fila WORM del AIP se identifica y extiende exactamente igual que la del
     índice/acta."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-CT-AIP-1",
         tipo="aip",
@@ -366,16 +349,11 @@ async def test_renovar_retencion_internal_happy_path_tipo_aip(client_with_conn) 
 
     mock_conn.fetchrow.side_effect = [existing, renovada, {"id": uuid.uuid4()}]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(expediente_id="EXP-CT-AIP-1", tipo="aip"),
-        headers=INTERNAL_HEADERS,
-    )
+    outcome = await _renew_via_api(expediente_id="EXP-CT-AIP-1", tipo="aip")
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["renovado"] is True
-    assert body["retain_until"].startswith("2031-01-01")
+    assert outcome.ok is True
+    assert outcome.renovado is True
+    assert outcome.retain_until == datetime(2031, 1, 1, tzinfo=UTC)
 
     # MinIO fue llamado sobre el objeto WORM del AIP identificado (bucket/key
     # de LA FILA encontrada, no un valor inventado del payload).
@@ -407,12 +385,12 @@ async def test_renovar_retencion_internal_happy_path_tipo_aip(client_with_conn) 
         "acta_firma_revocacion_sobre_",
     ],
 )
-async def test_renovar_retencion_internal_tipo_acta_firma_personal(client_with_conn, rol, prefijo) -> None:
+async def test_renew_retention_api_tipo_acta_firma_personal(client_with_conn, rol, prefijo) -> None:
     """E10 debt (AREA-07-10): el XML de cada firma PERSONAL del acta (`acta_firma_<rol>`,
     migración 018, singleton por (expediente, tipo)) se renueva igual que el índice: la fila
     se identifica por `(expediente_id, tipo)`, la extensión es monotónica y el objeto es el de
     LA FILA (no un valor del payload). Sin cambio de servicio ni de repositorio."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     tipo = f"{prefijo}{rol}"
     existing = make_worm_row(
         expediente_id="EXP-CT-FP-1",
@@ -427,14 +405,10 @@ async def test_renovar_retencion_internal_tipo_acta_firma_personal(client_with_c
     multi = tipo in MULTI_ARTEFACTO_TIPOS
     extra = {"file_id": str(file_id)} if multi else {}
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(expediente_id="EXP-CT-FP-1", tipo=tipo, **extra),
-        headers=INTERNAL_HEADERS,
-    )
+    outcome = await _renew_via_api(expediente_id="EXP-CT-FP-1", tipo=tipo, **extra)
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["renovado"] is True
+    assert outcome.ok is True
+    assert outcome.renovado is True
     lookup = next(c for c in mock_conn.fetchrow.call_args_list if "FROM preservacion_worm_objeto" in c.args[0])
     # FIRMA-2: los tipos multi-artefacto se buscan POR file_id; el resto, por (expediente, tipo).
     assert lookup.args[1:] == (("EXP-CT-FP-1", tipo, file_id) if multi else ("EXP-CT-FP-1", tipo))
@@ -451,23 +425,22 @@ async def test_renovar_retencion_internal_tipo_acta_firma_personal(client_with_c
 @pytest.mark.parametrize("tipo", sorted(MULTI_ARTEFACTO_TIPOS))
 async def test_renovar_retencion_multi_artefacto_exige_file_id(client_with_conn, tipo) -> None:
     """FIRMA-2: con N artefactos por (expediente, tipo), renovar sin `file_id` extendería solo
-    el más reciente. 422 y ni siquiera se consulta la base."""
-    client, mock_conn, mock_minio = client_with_conn
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(expediente_id="EXP-CT-FP-3", tipo=tipo),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 422, resp.text
+    el más reciente. El esquema lo rechaza y ni siquiera se consulta la base."""
+    _client, mock_conn, mock_minio = client_with_conn
+    with pytest.raises(ValidationError, match="file_id"):
+        RenovarRetencionRequest(**_renovar_payload(expediente_id="EXP-CT-FP-3", tipo=tipo))
+
+    outcome = await _renew_via_api(expediente_id="EXP-CT-FP-3", tipo=tipo)
+    assert outcome.ok is False
     mock_conn.fetchrow.assert_not_called()
     mock_minio.set_object_retention.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_renovar_retencion_internal_acta_firma_no_acorta_si_nueva_no_supera(client_with_conn) -> None:
+async def test_renew_retention_api_acta_firma_no_acorta_si_nueva_no_supera(client_with_conn) -> None:
     """Monotonía: con la fecha resuelta (2031) por debajo de la vigente (2040) es no-op
     idempotente y NO se llama a MinIO."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-CT-FP-2",
         tipo="acta_firma_recibe",
@@ -475,42 +448,17 @@ async def test_renovar_retencion_internal_acta_firma_no_acorta_si_nueva_no_super
     )
     mock_conn.fetchrow.side_effect = [existing]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(expediente_id="EXP-CT-FP-2", tipo="acta_firma_recibe"),
-        headers=INTERNAL_HEADERS,
-    )
+    outcome = await _renew_via_api(expediente_id="EXP-CT-FP-2", tipo="acta_firma_recibe")
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["renovado"] is False
+    assert outcome.ok is True
+    assert outcome.renovado is False
+    assert outcome.retain_until == datetime(2040, 1, 1, tzinfo=UTC)
     mock_minio.set_object_retention.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_renovar_retencion_internal_rechaza_un_tipo_de_acta_inventado(client_with_conn) -> None:
-    client, _conn, _minio = client_with_conn
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(tipo="acta_firma_notario"),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_renovar_retencion_internal_rejects_without_token(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
-
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(),
-        headers=TENANT_HEADERS,  # sin X-Internal-Token
-    )
-
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-    mock_conn.fetchrow.assert_not_called()
+def test_renovar_retencion_rechaza_un_tipo_de_acta_inventado() -> None:
+    with pytest.raises(ValidationError):
+        RenovarRetencionRequest(**_renovar_payload(tipo="acta_firma_notario"))
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +470,7 @@ async def test_renovar_retencion_internal_rejects_without_token(client_with_conn
 
 @pytest.mark.asyncio
 async def test_renovar_retencion_acquires_and_releases_advisory_lock(client_with_conn) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1", tipo="indice", retain_until=datetime(2028, 1, 1, tzinfo=UTC)
     )
@@ -531,12 +479,7 @@ async def test_renovar_retencion_acquires_and_releases_advisory_lock(client_with
 
     mock_conn.fetchrow.side_effect = [existing, renovada, {"id": uuid.uuid4()}]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
+    await _renew(mock_conn, _renovar_payload())
 
     lock_calls = [
         c for c in mock_conn.execute.call_args_list if c.args and "pg_advisory_lock" in c.args[0]
@@ -561,7 +504,7 @@ async def test_renovar_retencion_lock_key_matches_proteger_indice_lock_key(
     artefacto se serializan entre sí."""
     from storage.services.preservation_worm_service import _worm_lock_key
 
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-9", tipo="indice", retain_until=datetime(2028, 1, 1, tzinfo=UTC)
     )
@@ -570,12 +513,7 @@ async def test_renovar_retencion_lock_key_matches_proteger_indice_lock_key(
 
     mock_conn.fetchrow.side_effect = [existing, renovada, {"id": uuid.uuid4()}]
 
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion-internal",
-        json=_renovar_payload(expediente_id="EXP-9", tipo="indice"),
-        headers=INTERNAL_HEADERS,
-    )
-    assert resp.status_code == 200, resp.text
+    await _renew(mock_conn, _renovar_payload(expediente_id="EXP-9", tipo="indice"))
 
     lock_calls = [
         c for c in mock_conn.execute.call_args_list if c.args and "pg_advisory_lock" in c.args[0]
@@ -585,40 +523,13 @@ async def test_renovar_retencion_lock_key_matches_proteger_indice_lock_key(
 
 
 # ---------------------------------------------------------------------------
-# Regresión: la ruta PÚBLICA (`/renovar-retencion`, sin `-internal`) fue
-# retirada -- delta de remediación bajo prueba en esta iteración.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_public_renovar_retencion_route_no_longer_exists(client_with_conn) -> None:
-    """Regresión: la ruta PÚBLICA `/renovar-retencion` (sin `-internal`) fue
-    retirada (remediación de auditoría de seguridad, Media, ver docstring
-    del módulo) -- si algún día reapareciera por accidente (merge, copy-paste
-    de `/proteger-indice` + `/proteger-indice-internal`), este test debe
-    fallar en vez de dejar pasar en silencio una superficie pública que
-    permite fijar el lock COMPLIANCE de un artefacto arbitrario."""
-    client, mock_conn, mock_minio = client_with_conn
-
-    resp = await client.post(
-        "/api/v1/preservacion/renovar-retencion",
-        json=_renovar_payload(),
-        headers=TENANT_HEADERS,
-    )
-
-    assert resp.status_code == 404
-    mock_conn.fetchrow.assert_not_called()
-    mock_minio.set_object_retention.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
 # Atomicidad (remediación de auditoría de seguridad, Baja): `renovar()` +
 # `insert_evento` PREMIS + `audit.append` deben comprometerse JUNTOS dentro
 # de `async with self._conn.transaction():`. storage-service NO tiene tier de
 # integración (mismo hueco heredado de 009/010/011, ver memoria del
 # proyecto) -- un mock no puede demostrar el ROLLBACK físico, pero SÍ puede
 # demostrar (a) que un fallo a mitad de la tx NO se traga silenciosamente
-# (no hay `try/except` que lo convierta en un 200 con `renovado=True`
+# (no hay `try/except` que lo convierta en `renovado=True`
 # fantasma) y (b) que el advisory lock de sesión se libera IGUAL pese al
 # fallo -- el `finally` de `renovar_retencion` no depende de que la tx haya
 # tenido éxito.
@@ -629,7 +540,7 @@ async def test_public_renovar_retencion_route_no_longer_exists(client_with_conn)
 async def test_renovar_retencion_evt_insert_failure_propagates_and_releases_lock(
     client_with_conn,
 ) -> None:
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1", tipo="indice", retain_until=datetime(2028, 1, 1, tzinfo=UTC)
     )
@@ -643,11 +554,7 @@ async def test_renovar_retencion_evt_insert_failure_propagates_and_releases_lock
     ]
 
     with pytest.raises(RuntimeError, match="boom"):
-        await client.post(
-            "/api/v1/preservacion/renovar-retencion-internal",
-            json=_renovar_payload(),
-            headers=INTERNAL_HEADERS,
-        )
+        await _renew(mock_conn, _renovar_payload())
 
     # Ningún asiento fantasma: `audit.append` nunca se alcanza si
     # `insert_evento` reventó antes dentro del MISMO bloque de tx.
@@ -670,9 +577,9 @@ async def test_renovar_retencion_audit_append_failure_propagates_and_releases_lo
 ) -> None:
     """Gemelo del anterior para el ÚLTIMO paso de la tx (`audit.append`, tras
     `renovar()` + `insert_evento` ya exitosos): un fallo ahí tampoco debe
-    traducirse en un 200 -- el asiento de auditoría es parte del MISMO acto
+    darse por renovado -- el asiento de auditoría es parte del MISMO acto
     atómico, no un best-effort colgado al final del método."""
-    client, mock_conn, mock_minio = client_with_conn
+    _client, mock_conn, mock_minio = client_with_conn
     existing = make_worm_row(
         expediente_id="EXP-1", tipo="indice", retain_until=datetime(2028, 1, 1, tzinfo=UTC)
     )
@@ -687,11 +594,7 @@ async def test_renovar_retencion_audit_append_failure_propagates_and_releases_lo
     monkeypatch.setattr("storage.services.preservation_worm_service.audit.append", _boom)
 
     with pytest.raises(RuntimeError, match="boom"):
-        await client.post(
-            "/api/v1/preservacion/renovar-retencion-internal",
-            json=_renovar_payload(),
-            headers=INTERNAL_HEADERS,
-        )
+        await _renew(mock_conn, _renovar_payload())
 
     unlock_calls = [
         c for c in mock_conn.execute.call_args_list if c.args and "pg_advisory_unlock" in c.args[0]

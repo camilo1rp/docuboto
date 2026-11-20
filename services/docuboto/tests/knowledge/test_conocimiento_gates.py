@@ -35,10 +35,8 @@ IDS = [r[1].rsplit("/", 1)[1] for r in RUTAS]
 
 @pytest.fixture(autouse=True)
 def _busqueda_vacia(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Estas pruebas miran los gates, no la búsqueda: document-service responde vacío."""
-    from knowledge.clients import document_search
-
-    monkeypatch.setattr(document_search, "search", AsyncMock(return_value=[]))
+    """Estas pruebas miran los gates, no la búsqueda: document responde vacío."""
+    monkeypatch.setattr("document.api.search", AsyncMock(return_value=[]))
 
 
 def _fetchval(*, bandera: bool | Exception, crud: int):

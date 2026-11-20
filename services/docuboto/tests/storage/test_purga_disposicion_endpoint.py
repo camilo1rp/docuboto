@@ -7,16 +7,10 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""La puerta al borrado físico — E04, RF-TRD-07 fase 5.
+"""El borrado físico por `storage.api.purge_for_disposition` — E04, RF-TRD-07 fase 5.
 
-`StorageService.purge_for_disposition` existía desde hacía tiempo, con su gate
-WORM y su asiento, y **ningún router lo alcanzaba**: una capacidad construida y
-no ofrecida, aquí sobre el acto más irreversible del sistema.
+Solo lo alcanza document desde dentro del proceso (no hay ruta HTTP). Lo que se prueba:
 
-Lo que se prueba de la puerta:
-
-* **Sellada con `X-Internal-Token`** y no enrutada por el gateway: nadie de
-  fuera puede pedir un borrado físico.
 * **El candado WORM aborta la purga ENTERA del expediente**, no solo la del
   archivo protegido: eliminar el resto dejaría un expediente medio destruido.
 * **`no_encontrados` no es un error**: un archivo ya purgado es el estado que se
@@ -30,9 +24,9 @@ import pytest
 
 from storage.repositories.file_repository import CitaConstancia
 from storage.services.storage_service import AnexoCitadoPorConstanciaError, WormLockActiveError
-from tests.storage.conftest import INTERNAL_HEADERS, TENANT_HEADERS
+from storage import api as storage_api
+from tests.storage.conftest import TENANT_SLUG
 
-RUTA = "/api/v1/storage/internal/purgar-disposicion"
 EXP = str(uuid.uuid4())
 
 
@@ -48,33 +42,19 @@ def _sin_precheck_de_citas(request):
         yield
 
 
-def _cuerpo(file_ids):
-    return {
-        "file_ids": [str(f) for f in file_ids],
-        "expediente_id": EXP,
-        "motivo": "Eliminación TRD, lote LOTE-2026-001",
-        "actor": str(uuid.uuid4()),
-    }
-
-
-@pytest.mark.asyncio
-async def test_sin_token_interno_no_se_purga_nada(client) -> None:
-    """El gate va antes que cualquier otra cosa: nadie de fuera puede pedir un
-    borrado físico."""
-    with patch(
-        "storage.services.storage_service.StorageService.purge_for_disposition", AsyncMock()
-    ) as purgar:
-        resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=TENANT_HEADERS)
-
-    # Sin token, el middleware de identidad responde 404 antes del gate (`orpycamcp_common.usuario`).
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
-    purgar.assert_not_awaited()
+def _purge(file_ids):
+    return storage_api.purge_for_disposition(
+        tenant_slug=TENANT_SLUG,
+        file_ids=list(file_ids),
+        expediente_id=EXP,
+        motivo="Eliminación TRD, lote LOTE-2026-001",
+        actor=uuid.uuid4(),
+    )
 
 
 @pytest.mark.asyncio
 async def test_purga_y_distingue_lo_purgado_de_lo_que_ya_no_estaba(client) -> None:
-    """Se devuelven las dos listas y no un contador: quien orquesta escribe una
+    """Se devuelven los ids purgados y no un contador: quien orquesta escribe una
     lápida con lo que de verdad ocurrió, y «12 de 14» sin decir cuáles no
     permite afirmar nada."""
     a, b = uuid.uuid4(), uuid.uuid4()
@@ -83,12 +63,10 @@ async def test_purga_y_distingue_lo_purgado_de_lo_que_ya_no_estaba(client) -> No
         return file_id == a
 
     with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
-        resp = await client.post(RUTA, json=_cuerpo([a, b]), headers=INTERNAL_HEADERS)
+        purgados = await _purge([a, b])
 
-    assert resp.status_code == 200
-    cuerpo = resp.json()
-    assert cuerpo["purgados"] == [str(a)]
-    assert cuerpo["no_encontrados"] == [str(b)]
+    # Lo no encontrado ya no estaba: no cuenta como purgado.
+    assert purgados == [a]
 
 
 @pytest.mark.asyncio
@@ -103,10 +81,10 @@ async def test_el_candado_WORM_aborta_la_purga_ENTERA(client) -> None:
         raise WormLockActiveError("retain_until=2030-01-01")
 
     with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
-        resp = await client.post(RUTA, json=_cuerpo([a, b]), headers=INTERNAL_HEADERS)
+        with pytest.raises(storage_api.StoragePurgeError) as exc:
+            await _purge([a, b])
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "worm_lock_activo"
+    assert isinstance(exc.value.__cause__, WormLockActiveError)
     # Se detuvo en el primero: no siguió intentando con el resto.
     assert llamadas["n"] == 1
 
@@ -123,7 +101,7 @@ async def test_el_expediente_viaja_porque_es_la_llave_del_gate_WORM(client) -> N
         return True
 
     with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
-        await client.post(RUTA, json=_cuerpo([a]), headers=INTERNAL_HEADERS)
+        await _purge([a])
 
     assert recibido["expediente_id"] == EXP
     assert "LOTE-2026-001" in recibido["motivo"]
@@ -139,11 +117,11 @@ async def test_un_archivo_citado_aborta_la_purga_ANTES_de_borrar_ninguno(client_
     archivo y un rechazo a mitad dejaría el expediente medio destruido con la constancia citando un
     anexo que ya no existe.
 
-    Mutación que debe caer: quitar la llamada a `verificar_sin_citas` del router -> el primero se
-    purga (`llamadas["n"] == 1`) y el 409 llega tarde."""
+    Mutación que debe caer: quitar la llamada a `verificar_sin_citas` de `purge_for_disposition` -> el primero se
+    purga (`llamadas["n"] == 1`) y el rechazo llega tarde."""
     from tests.storage.conftest import vista_de_citas
 
-    client, mock_conn, _ = client_with_conn
+    _client, mock_conn, _ = client_with_conn
     a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     excepcion = uuid.uuid4()
     vista_de_citas(
@@ -165,12 +143,12 @@ async def test_un_archivo_citado_aborta_la_purga_ANTES_de_borrar_ninguno(client_
         return True
 
     with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
-        resp = await client.post(RUTA, json=_cuerpo([a, b, c]), headers=INTERNAL_HEADERS)
+        with pytest.raises(storage_api.StoragePurgeError) as exc:
+            await _purge([a, b, c])
 
-    assert resp.status_code == 409
-    detalle = resp.json()["detail"]
-    assert detalle["error"] == "anexo_citado_por_constancia"
-    assert detalle["constancias"][0]["excepcion_id"] == str(excepcion)
+    causa = exc.value.__cause__
+    assert isinstance(causa, AnexoCitadoPorConstanciaError)
+    assert causa.citas[0].como_dict()["excepcion_id"] == str(excepcion)
     assert llamadas["n"] == 0
 
 
@@ -180,7 +158,7 @@ async def test_sin_citas_el_precheck_deja_pasar_y_se_purga(client_with_conn) -> 
     """Control positivo del anterior: con la vista presente y vacía, la purga procede."""
     from tests.storage.conftest import vista_de_citas
 
-    client, mock_conn, _ = client_with_conn
+    _client, mock_conn, _ = client_with_conn
     vista_de_citas(mock_conn, citas=())
     a = uuid.uuid4()
 
@@ -188,10 +166,7 @@ async def test_sin_citas_el_precheck_deja_pasar_y_se_purga(client_with_conn) -> 
         return True
 
     with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
-        resp = await client.post(RUTA, json=_cuerpo([a]), headers=INTERNAL_HEADERS)
-
-    assert resp.status_code == 200
-    assert resp.json()["purgados"] == [str(a)]
+        assert await _purge([a]) == [a]
 
 
 @pytest.mark.asyncio
@@ -199,16 +174,17 @@ async def test_sin_citas_el_precheck_deja_pasar_y_se_purga(client_with_conn) -> 
 async def test_vista_ausente_bloquea_la_purga_fail_closed(client_with_conn) -> None:
     """Sin la vista contrato (archive no migró) NO se sabe si hay constancias: se conserva todo.
     Mutación: tratar `to_regclass` NULL como «sin citas» -> este test cae."""
-    client, mock_conn, _ = client_with_conn
+    _client, mock_conn, _ = client_with_conn
     mock_conn.fetchval.return_value = None  # to_regclass(...) -> NULL
     with patch(
         "storage.services.storage_service.StorageService.purge_for_disposition", AsyncMock()
     ) as purgar:
-        resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=INTERNAL_HEADERS)
+        with pytest.raises(storage_api.StoragePurgeError) as exc:
+            await _purge([uuid.uuid4()])
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "anexo_citado_por_constancia"
-    assert resp.json()["detail"]["constancias"] == [
+    causa = exc.value.__cause__
+    assert isinstance(causa, AnexoCitadoPorConstanciaError)
+    assert [c.como_dict() for c in causa.citas] == [
         {"vista": "v_anexo_citado_vigente", "ausente": True}
     ]
     purgar.assert_not_awaited()
@@ -217,14 +193,16 @@ async def test_vista_ausente_bloquea_la_purga_fail_closed(client_with_conn) -> N
 @pytest.mark.asyncio
 async def test_la_carrera_residual_cae_en_el_409_del_bloqueo_de_fila(client) -> None:
     """Si el pre-chequeo no vio la cita (se declaró después) y la ve el chequeo bajo `FOR UPDATE`
-    de `purge_for_disposition`, el 409 es el mismo y nombra la constancia."""
+    de `purge_for_disposition`, el rechazo es el mismo y nombra la constancia."""
     cita = CitaConstancia(uuid.uuid4(), uuid.uuid4(), "elabora", 1)
 
     async def _purgar(self, file_id, *args, **kwargs):
         raise AnexoCitadoPorConstanciaError(file_id, [cita])
 
     with patch("storage.services.storage_service.StorageService.purge_for_disposition", _purgar):
-        resp = await client.post(RUTA, json=_cuerpo([uuid.uuid4()]), headers=INTERNAL_HEADERS)
+        with pytest.raises(storage_api.StoragePurgeError) as exc:
+            await _purge([uuid.uuid4()])
 
-    assert resp.status_code == 409
-    assert resp.json()["detail"]["constancias"][0]["excepcion_id"] == str(cita.excepcion_id)
+    causa = exc.value.__cause__
+    assert isinstance(causa, AnexoCitadoPorConstanciaError)
+    assert causa.citas[0].como_dict()["excepcion_id"] == str(cita.excepcion_id)

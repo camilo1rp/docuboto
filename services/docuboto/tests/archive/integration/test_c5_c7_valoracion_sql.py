@@ -184,8 +184,8 @@ async def test_registrar_amarra_solo_los_expedientes_de_esa_version_y_sin_valora
     svc = ValoracionService(conn, slug)
     fijar, levantar = _storage()
     with (
-        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("storage.api.set_deferred_retention", new=fijar),
+        patch("storage.api.lift_legal_hold", new=levantar),
     ):
         res = await svc.registrar_valoracion(a.id, _PAYLOAD, actor=uuid.uuid4())
 
@@ -264,8 +264,8 @@ async def test_no_se_aplica_con_un_artefacto_pendiente(
     svc = ValoracionService(conn, slug)
     fijar, levantar = _storage()
     with (
-        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("storage.api.set_deferred_retention", new=fijar),
+        patch("storage.api.lift_legal_hold", new=levantar),
     ):
         await svc.registrar_valoracion(tvd.id, _PAYLOAD, actor=uuid.uuid4())
         assert await svc.aplicar_expediente(exp) == "esperando"
@@ -296,8 +296,8 @@ async def test_aplicar_ct_propaga_la_fecha_al_espejo_local_del_aip(
     )
     fijar, levantar = _storage()
     with (
-        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("storage.api.set_deferred_retention", new=fijar),
+        patch("storage.api.lift_legal_hold", new=levantar),
     ):
         await ValoracionService(conn, slug).registrar_valoracion(tvd.id, _PAYLOAD, actor=uuid.uuid4())
     assert await conn.fetchval(
@@ -315,8 +315,8 @@ async def test_la_cadena_de_auditoria_queda_integra(
     await _hold(conn, exp, tvd.id)
     fijar, levantar = _storage()
     with (
-        patch("archive.clients.storage_client.fijar_retencion_internal", new=fijar),
-        patch("archive.clients.storage_client.levantar_legal_hold", new=levantar),
+        patch("storage.api.set_deferred_retention", new=fijar),
+        patch("storage.api.lift_legal_hold", new=levantar),
     ):
         await ValoracionService(conn, slug).registrar_valoracion(tvd.id, _PAYLOAD, actor=uuid.uuid4())
     acciones = [r["action"] for r in await conn.fetch(

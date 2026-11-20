@@ -169,7 +169,7 @@ async def test_content_stream_ok(cmis_ctx: tuple[AsyncClient, AsyncMock]) -> Non
             return None
 
     with patch(
-        "document.routers.cmis.storage_client.open_content_stream",
+        "document.routers.cmis.storage_api.open_file_stream",
         new=AsyncMock(return_value=_FakeStream()),
     ):
         resp = await client.get(
@@ -218,7 +218,7 @@ async def test_content_disposition_sanitized(cmis_ctx: tuple[AsyncClient, AsyncM
             return None
 
     with patch(
-        "document.routers.cmis.storage_client.open_content_stream",
+        "document.routers.cmis.storage_api.open_file_stream",
         new=AsyncMock(return_value=_FakeStream()),
     ):
         resp = await client.get(

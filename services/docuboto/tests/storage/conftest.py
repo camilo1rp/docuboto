@@ -17,6 +17,7 @@ so tests run without real infrastructure.
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import ExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,6 +25,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from storage import api as storage_api
 from storage.core import config as cfg_module
 from storage.core.database import get_db_conn
 from storage.main import app
@@ -407,7 +409,18 @@ def _minio_patches(mock_minio: MagicMock):
         patch("storage.routers.health.get_minio", return_value=mock_minio),
         # C-5/C7: el servicio de holds por motivo importa `get_minio` por su cuenta.
         patch("storage.services.legal_hold_service.get_minio", return_value=mock_minio),
+        patch("storage.api.get_minio", return_value=mock_minio),
     )
+
+
+def patch_api_conn(monkeypatch: pytest.MonkeyPatch, mock_conn: AsyncMock) -> None:
+    """`storage.api` toma su conexión del pool del proceso; aquí, la del mock."""
+
+    @asynccontextmanager
+    async def _conn():
+        yield mock_conn
+
+    monkeypatch.setattr(storage_api, "_tenant_conn", _conn)
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -430,8 +443,10 @@ async def client_with_conn(
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4, p5, p6, p7 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4, p5, p6, p7:
+    patch_api_conn(monkeypatch, mock_conn)
+    with ExitStack() as stack:
+        for p in _minio_patches(mock_minio):
+            stack.enter_context(p)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, mock_minio
 
@@ -450,8 +465,10 @@ async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient,
 
     app.dependency_overrides[get_db_conn] = override_get_db_conn
 
-    p1, p2, p3, p4, p5, p6, p7 = _minio_patches(mock_minio)
-    with p1, p2, p3, p4, p5, p6, p7:
+    patch_api_conn(monkeypatch, mock_conn)
+    with ExitStack() as stack:
+        for p in _minio_patches(mock_minio):
+            stack.enter_context(p)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac
 

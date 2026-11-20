@@ -63,7 +63,7 @@ job_shared() {
 app_venv() { venv app ./shared -r services/docuboto/requirements.lock; }
 job_smoke() {
     local B; B=$(app_venv)
-    cd services/docuboto && "$B/pytest" -q --tb=short -p no:cacheprovider tests/storage/test_internal_token_gate.py tests/storage/test_aip_internal_gate.py tests/storage/test_eventos_internal_gate.py tests/storage/test_purge_worm_gate.py
+    cd services/docuboto && "$B/pytest" -q --tb=short -p no:cacheprovider tests/docuboto tests/storage/test_purge_worm_gate.py
 }
 job_npm_audit() { cd frontend && npm ci --ignore-scripts && npm audit --omit=dev --audit-level=high; }
 job_unit() {

@@ -63,7 +63,7 @@ def _servicio(monkeypatch, sol: dict, *, quedan_turnos: bool):
         avisos.append((borrador_id, tenant_slug))
         return True
 
-    monkeypatch.setattr(mod, "aprobar_borrador_remote", _aviso)
+    monkeypatch.setattr("document.api.approve_draft", _aviso)
     return svc, avisos
 
 
@@ -116,7 +116,6 @@ async def test_si_document_no_responde_el_visto_bueno_sigue_dado(monkeypatch) ->
     contesta castigaría al revisor por una avería ajena. No abre ninguna
     ventana: la autoridad es la consulta que hace `aprobar`, no este aviso.
     """
-    from signature.services import cadena_service as mod
 
     sol = _sol()
     svc, _ = _servicio(monkeypatch, sol, quedan_turnos=False)
@@ -124,7 +123,7 @@ async def test_si_document_no_responde_el_visto_bueno_sigue_dado(monkeypatch) ->
     async def _falla(borrador_id: str, tenant_slug: str) -> bool:
         return False
 
-    monkeypatch.setattr(mod, "aprobar_borrador_remote", _falla)
+    monkeypatch.setattr("document.api.approve_draft", _falla)
 
     resultado = await svc.dar_visto_bueno(sol["id"], REVISOR, comentario=None)
 

@@ -25,11 +25,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from archive.clients import signature_client
-from archive.clients.signature_client import ERROR_ARTEFACTO, ArtefactoVigente
-from archive.clients.storage_client import AipPackagingOutcome, AipReempaqueOutcome
 from archive.core.config import settings
 from archive.services.aip_wiring_service import AipWiringService
+from signature import api as signature_api
+from signature.api import ERROR_ARTEFACTO, ArtefactoVigente
+from storage.api import AipPackagingOutcome, AipRepackagingOutcome
 from tests.archive.test_aip_wiring_service_indice_only import (
     _expediente,
     _indice_by_id_row,
@@ -108,8 +108,8 @@ def _svc(conn: _Conn, *, sha_embebida: str | None = SHA_V1, agotado: bool = Fals
     return service
 
 
-def _ok(version: int = 2) -> AipReempaqueOutcome:
-    return AipReempaqueOutcome(
+def _ok(version: int = 2) -> AipRepackagingOutcome:
+    return AipRepackagingOutcome(
         ok=True, aip_id=NUEVO, version=version, sustituye_a=ANTERIOR,
         retain_until=datetime(2040, 1, 1, tzinfo=UTC),
     )
@@ -128,7 +128,7 @@ async def test_vigente_distinto_reempaqueta_y_registra_version_2() -> None:
     v = _vigente()
     with (
         patch(
-            "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.repackage_aip",
             new=AsyncMock(return_value=_ok()),
         ) as storage,
         _audit(conn),
@@ -153,7 +153,7 @@ async def test_version_estado_y_asiento_en_la_misma_tx() -> None:
     svc = _svc(conn)
     with (
         patch(
-            "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.repackage_aip",
             new=AsyncMock(return_value=_ok()),
         ),
         _audit(conn),
@@ -170,7 +170,7 @@ async def test_misma_huella_no_llama_a_storage() -> None:
     conn = _Conn()
     svc = _svc(conn, sha_embebida=SHA_V2)
     with patch(
-        "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
+        "archive.services.aip_wiring_service.storage_api.repackage_aip",
         new=AsyncMock(),
     ) as storage:
         r = await svc.reempaquetar_por_renovacion(EXP, _vigente(SHA_V2))
@@ -182,7 +182,7 @@ async def test_sin_lock_no_reempaqueta() -> None:
     conn = _Conn(lock=False)
     svc = _svc(conn)
     with patch(
-        "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
+        "archive.services.aip_wiring_service.storage_api.repackage_aip",
         new=AsyncMock(),
     ) as storage:
         r = await svc.reempaquetar_por_renovacion(EXP, _vigente())
@@ -195,7 +195,7 @@ async def test_huella_nula_de_aip_previo_se_trata_como_distinta() -> None:
     svc = _svc(conn, sha_embebida=None)
     with (
         patch(
-            "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.repackage_aip",
             new=AsyncMock(return_value=_ok()),
         ) as storage,
         _audit(conn),
@@ -207,18 +207,18 @@ async def test_huella_nula_de_aip_previo_se_trata_como_distinta() -> None:
 @pytest.mark.parametrize(
     ("outcome", "motivo"),
     [
-        (AipReempaqueOutcome(ok=False, fixity_mismatch=True), "aip_anterior_fixity_mismatch"),
-        (AipReempaqueOutcome(ok=False, indice_invalido=True), "indice_no_es_renovacion_del_embebido"),
-        (AipReempaqueOutcome(ok=False, not_found=True), "aip_not_found"),
-        (AipReempaqueOutcome(ok=False, disabled=True), "worm_disabled"),
-        (AipReempaqueOutcome(ok=False, transient=True), "reempaque_no_confirmado"),
+        (AipRepackagingOutcome(ok=False, fixity_mismatch=True), "aip_anterior_fixity_mismatch"),
+        (AipRepackagingOutcome(ok=False, indice_invalido=True), "indice_no_es_renovacion_del_embebido"),
+        (AipRepackagingOutcome(ok=False, not_found=True), "aip_not_found"),
+        (AipRepackagingOutcome(ok=False, disabled=True), "worm_disabled"),
+        (AipRepackagingOutcome(ok=False, transient=True), "reempaque_no_confirmado"),
     ],
 )
 async def test_rechazo_de_storage_hace_backoff_y_no_toca_estado(outcome, motivo) -> None:
     conn = _Conn()
     svc = _svc(conn)
     with patch(
-        "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
+        "archive.services.aip_wiring_service.storage_api.repackage_aip",
         new=AsyncMock(return_value=outcome),
     ):
         r = await svc.reempaquetar_por_renovacion(EXP, _vigente())
@@ -236,8 +236,8 @@ async def test_agotar_deja_asiento_en_la_misma_tx() -> None:
     )
     with (
         patch(
-            "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
-            new=AsyncMock(return_value=AipReempaqueOutcome(ok=False, fixity_mismatch=True)),
+            "archive.services.aip_wiring_service.storage_api.repackage_aip",
+            new=AsyncMock(return_value=AipRepackagingOutcome(ok=False, fixity_mismatch=True)),
         ),
         _audit(conn),
     ):
@@ -251,12 +251,12 @@ async def test_ya_sustituido_resincroniza_con_la_cabeza_y_reintenta_una_vez() ->
     svc = _svc(conn)
     cabeza = uuid.uuid4()
     llamadas = AsyncMock(
-        side_effect=[AipReempaqueOutcome(ok=False, ya_sustituido=True), _ok(version=3)]
+        side_effect=[AipRepackagingOutcome(ok=False, ya_sustituido=True), _ok(version=3)]
     )
     with (
-        patch("archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal", new=llamadas),
+        patch("archive.services.aip_wiring_service.storage_api.repackage_aip", new=llamadas),
         patch(
-            "archive.services.aip_wiring_service.storage_client.get_aip",
+            "archive.services.aip_wiring_service.storage_api.get_aip",
             new=AsyncMock(return_value={"id": str(cabeza)}),
         ),
         _audit(conn),
@@ -273,7 +273,7 @@ async def test_unique_violation_es_idempotente() -> None:
     svc._aip.insert_version = AsyncMock(side_effect=asyncpg.UniqueViolationError("dup"))
     with (
         patch(
-            "archive.services.aip_wiring_service.storage_client.reempaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.repackage_aip",
             new=AsyncMock(return_value=_ok()),
         ),
         _audit(conn),
@@ -313,7 +313,7 @@ async def test_barrido_reempaqueta_solo_las_que_difieren() -> None:
         str(sana["firma_id"]): ArtefactoVigente(str(sana["firma_id"]), uuid.uuid4(), "k/x", SHA_V2, 1),
         str(vieja["firma_id"]): ArtefactoVigente(str(vieja["firma_id"]), uuid.uuid4(), "k/x", SHA_V2, 2),
     }
-    with patch("archive.clients.signature_client.artefactos_vigentes", new=AsyncMock(return_value=lote)):
+    with patch("signature.api.artefactos_vigentes", new=AsyncMock(return_value=lote)):
         res = await svc.barrer_reempaquetado(50)
     assert res["reempaquetados"] == 1 and res["sin_cambio"] == 1
     svc.reempaquetar_por_renovacion.assert_awaited_once()
@@ -325,7 +325,7 @@ async def test_barrido_reempaqueta_solo_las_que_difieren() -> None:
 async def test_firma_sin_renovacion_no_se_toca() -> None:
     f = _fila()
     svc = _barrido_svc([f])
-    with patch("archive.clients.signature_client.artefactos_vigentes", new=AsyncMock(return_value={})):
+    with patch("signature.api.artefactos_vigentes", new=AsyncMock(return_value={})):
         res = await svc.barrer_reempaquetado(50)
     assert res["sin_cambio"] == 1
     svc.reempaquetar_por_renovacion.assert_not_awaited()
@@ -334,7 +334,7 @@ async def test_firma_sin_renovacion_no_se_toca() -> None:
 async def test_lote_con_error_no_reempaqueta_ni_marca_revisado() -> None:
     f = _fila()
     svc = _barrido_svc([f])
-    with patch("archive.clients.signature_client.artefactos_vigentes", new=AsyncMock(return_value=None)):
+    with patch("signature.api.artefactos_vigentes", new=AsyncMock(return_value=None)):
         res = await svc.barrer_reempaquetado(50)
     svc.reempaquetar_por_renovacion.assert_not_awaited()
     svc._aip.marcar_revisados.assert_not_awaited()
@@ -355,11 +355,11 @@ async def test_error_de_signature_no_empaqueta_el_original() -> None:
     service._aip.bump_intento = AsyncMock()
     with (
         patch(
-            "archive.clients.signature_client.resolver_artefacto_vigente",
+            "signature.api.resolver_artefacto_vigente",
             new=AsyncMock(return_value=ERROR_ARTEFACTO),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ) as storage,
     ):
@@ -380,13 +380,13 @@ async def test_empaquetado_inicial_guarda_la_huella_del_vigente() -> None:
     service._aip.mark_empaquetado = AsyncMock(return_value=1)
     v = _vigente()
     with (
-        patch("archive.clients.signature_client.resolver_artefacto_vigente", new=AsyncMock(return_value=v)),
+        patch("signature.api.resolver_artefacto_vigente", new=AsyncMock(return_value=v)),
         patch(
-            "archive.services.aip_wiring_service.document_client.fetch_anexos_internal",
+            "document.api.fetch_anexos",
             new=AsyncMock(return_value={}),
         ),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(return_value=AipPackagingOutcome(ok=True, aip_id=uuid.uuid4())),
         ),
         patch("archive.services.aip_wiring_service.audit.append", new=AsyncMock()),
@@ -404,7 +404,7 @@ async def test_empaquetado_sin_huella_del_original_hace_backoff() -> None:
     with (
         patch("archive.services.aip_wiring_service._huella_indice_original", new=AsyncMock(return_value=None)),
         patch(
-            "archive.services.aip_wiring_service.storage_client.empaquetar_aip_internal",
+            "archive.services.aip_wiring_service.storage_api.package_aip",
             new=AsyncMock(),
         ) as storage,
     ):
@@ -413,5 +413,5 @@ async def test_empaquetado_sin_huella_del_original_hace_backoff() -> None:
 
 
 async def test_cliente_error_y_sin_renovacion_son_tipos_distintos() -> None:
-    assert not isinstance(ERROR_ARTEFACTO, signature_client.SinRenovacion)
-    assert not isinstance(signature_client.SIN_RENOVACION, signature_client.ErrorArtefacto)
+    assert not isinstance(ERROR_ARTEFACTO, signature_api.SinRenovacion)
+    assert not isinstance(signature_api.SIN_RENOVACION, signature_api.ErrorArtefacto)

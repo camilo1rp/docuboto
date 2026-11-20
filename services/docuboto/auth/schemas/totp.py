@@ -164,7 +164,7 @@ class TotpRecoveryRegenerateResponse(BaseModel):
 
 
 class InternalTotpVerifyRequest(BaseModel):
-    """Body for the service-to-service ``POST /internal/totp/verify``.
+    """Lo que `auth.api.verify_totp` valida antes de tocar el factor.
 
     ``contexto`` is an optional free-form caller-supplied correlation id
     (signature-service sends the ``solicitud_id`` being signed) — a

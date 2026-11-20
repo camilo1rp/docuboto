@@ -21,9 +21,8 @@ proteger_worm_indice` (índice)/`TransferenciaService.proteger_worm_acta`
    (`app/jobs/indice_reconciliation.py`, 6ª fase) dispara esto, siempre con
    `SYSTEM_RECONCILER_ID`.
 2. **Resolución de `file_id` CROSS-SERVICIO**: archive-service no conoce los
-   `file_id` de los anexos de un radicado (viven en document-service) — un
-   endpoint interno nuevo (`app/clients/document_client.py`) resuelve el
-   inventario TOTAL en un solo round-trip batch.
+   `file_id` de los anexos de un radicado (viven en document) —
+   `document.api.fetch_anexos` resuelve el inventario TOTAL en una sola consulta.
 
 Precondición dura: expediente `closed`/`transferred` + índice VIGENTE
 `estado='firmado'` + `worm_protegido_at IS NOT NULL` (el AIP embebe el índice
@@ -57,7 +56,7 @@ from typing import Literal
 import asyncpg
 from orpycamcp_common import audit
 
-from archive.clients import document_client, signature_client, storage_client
+import signature.api as signature_api
 from archive.core.clearance import CLEARANCE_SIN_RESTRICCION
 from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
@@ -66,6 +65,8 @@ from archive.repositories.archive_repository import ArchiveRepository
 from archive.repositories.index_repository import IndexRepository
 from archive.services.backoff import next_backoff_seconds
 from archive.services.retention_math import RetencionDiferida, base_worm, total_trd_years
+from document import api as document_api
+from storage import api as storage_api
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +98,8 @@ def _safe_nombre(radicado_id: uuid.UUID, idx: int, filename: str) -> str:
 async def _huella_indice_original(tenant_slug: str, minio_key_firmado: str) -> str | None:
     """SHA-256 (hex) de los bytes del XML firmado ORIGINAL del índice, o ``None`` si no se pudo
     descargar. Es la identidad de la versión 1 del AIP cuando la firma no tiene renovaciones."""
-    data = await storage_client.download_signed_bytes(
-        tenant_slug=tenant_slug, minio_key_firmado=minio_key_firmado
+    data = await storage_api.read_signed_bytes(
+        tenant_slug=tenant_slug, object_key=minio_key_firmado
     )
     return hashlib.sha256(data).hexdigest() if data else None
 
@@ -261,16 +262,16 @@ class AipWiringService:
             # silencio y el AIP nacía con una prueba que caduca (H2). Ahora se reintenta.
             indice_xml_sha256: str | None = None
             if indice_row.get("firma_id"):
-                vigente = await signature_client.resolver_artefacto_vigente(
+                vigente = await signature_api.resolver_artefacto_vigente(
                     tenant_slug=self._tenant_slug, firma_id=str(indice_row["firma_id"])
                 )
-                if isinstance(vigente, signature_client.ErrorArtefacto):
+                if isinstance(vigente, signature_api.ErrorArtefacto):
                     return await self._bump_backoff(
                         expediente_id,
                         intentos_previos=int(row["intentos"]),
                         motivo="artefacto_vigente_no_resuelto",
                     )
-                if isinstance(vigente, signature_client.ArtefactoVigente):
+                if isinstance(vigente, signature_api.ArtefactoVigente):
                     indice_file_id = vigente.file_id
                     indice_xml_sha256 = vigente.xml_sha256
             if indice_xml_sha256 is None:
@@ -294,10 +295,10 @@ class AipWiringService:
             vigente_ids = [r.radicado_id for r in exp.radicados if r.estado == "vinculado"]
 
             try:
-                anexos_by_radicado = await document_client.fetch_anexos_internal(
+                anexos_by_radicado = await document_api.fetch_anexos(
                     tenant_slug=self._tenant_slug, radicado_ids=vigente_ids
                 )
-            except document_client.DocumentClientError as exc:
+            except document_api.DocumentUnavailableError as exc:
                 logger.warning(
                     "Cableado AIP: document-service falló al resolver anexos "
                     "(expediente_id=%s): %s",
@@ -387,7 +388,7 @@ class AipWiringService:
                 diferida = None
             pdfa_profile = await self._resolve_aip_pdfa_profile(exp)
 
-            outcome = await storage_client.empaquetar_aip_internal(
+            outcome = await storage_api.package_aip(
                 tenant_slug=self._tenant_slug,
                 expediente_id=str(expediente_id),
                 documentos=documentos,
@@ -469,18 +470,18 @@ class AipWiringService:
             return "pendiente"
 
     async def _reconciliar_aip_existente(
-        self, expediente_id: uuid.UUID, outcome: storage_client.AipPackagingOutcome
-    ) -> storage_client.AipPackagingOutcome:
+        self, expediente_id: uuid.UUID, outcome: storage_api.AipPackagingOutcome
+    ) -> storage_api.AipPackagingOutcome:
         """Resuelve un 409 `aip_ya_existe` contra `GET /preservacion/aip/{id}` (interno).
 
         `ok=True` solo si storage confirma un AIP vigente y, cuando el 409 informó su id, es ese
         mismo. Cualquier otra cosa (404, id distinto, storage caído) deja `ya_existe=True`: el
         llamador lo trata como reintentable, nunca como una mutación de anexo."""
         try:
-            vigente = await storage_client.get_aip(
+            vigente = await storage_api.get_aip(
                 tenant_slug=self._tenant_slug, expediente_id=str(expediente_id)
             )
-        except storage_client.StorageAipError:
+        except storage_api.StorageError:
             return outcome
         if vigente is None or not vigente.get("id"):
             return outcome
@@ -496,7 +497,7 @@ class AipWiringService:
                 retain_until = datetime.fromisoformat(str(vigente["retain_until"]))
         except (TypeError, ValueError):
             retain_until = None
-        return storage_client.AipPackagingOutcome(ok=True, aip_id=aip_id, retain_until=retain_until)
+        return storage_api.AipPackagingOutcome(ok=True, aip_id=aip_id, retain_until=retain_until)
 
     # -- E10 debt: renovación de retención WORM para series CT -------------
     # (extensión del AIP a la 5ª fase de reconciliación -- espejo EXACTO de
@@ -592,7 +593,7 @@ class AipWiringService:
                     expediente_id, intentos_previos=intentos_previos, motivo="trd_sin_retencion"
                 )
 
-            outcome = await storage_client.renovar_retencion_worm_internal(
+            outcome = await storage_api.renew_retention(
                 tenant_slug=self._tenant_slug,
                 expediente_id=str(expediente_id),
                 tipo="aip",
@@ -693,7 +694,7 @@ class AipWiringService:
         return "agotado" if agotado else "pendiente"
 
     async def reempaquetar_por_renovacion(
-        self, expediente_id: uuid.UUID, vigente: signature_client.ArtefactoVigente
+        self, expediente_id: uuid.UUID, vigente: signature_api.ArtefactoVigente
     ) -> Literal["reempaquetado", "omitido", "pendiente", "agotado"]:
         """Crea la versión N+1 del AIP con el índice renovado. Best-effort, NUNCA lanza.
 
@@ -724,7 +725,7 @@ class AipWiringService:
                     intentos_previos=int(fila["reempaque_intentos"]),
                     motivo="aip_anterior_desconocido",
                 )
-            outcome = await storage_client.reempaquetar_aip_internal(
+            outcome = await storage_api.repackage_aip(
                 tenant_slug=self._tenant_slug,
                 expediente_id=str(expediente_id),
                 aip_anterior_id=anterior,
@@ -739,7 +740,7 @@ class AipWiringService:
                 # storage y se reintenta UNA vez sobre ella.
                 cabeza = await self._cabeza_en_storage(expediente_id)
                 if cabeza is not None and cabeza != anterior:
-                    outcome = await storage_client.reempaquetar_aip_internal(
+                    outcome = await storage_api.repackage_aip(
                         tenant_slug=self._tenant_slug,
                         expediente_id=str(expediente_id),
                         aip_anterior_id=cabeza,
@@ -832,11 +833,11 @@ class AipWiringService:
 
     async def _cabeza_en_storage(self, expediente_id: uuid.UUID) -> uuid.UUID | None:
         try:
-            aip = await storage_client.get_aip(
+            aip = await storage_api.get_aip(
                 tenant_slug=self._tenant_slug, expediente_id=str(expediente_id)
             )
             return uuid.UUID(str(aip["id"])) if aip else None
-        except (storage_client.StorageAipError, KeyError, ValueError):
+        except (storage_api.StorageError, KeyError, ValueError):
             return None
 
     async def barrer_reempaquetado(self, batch: int) -> dict[str, int]:
@@ -856,7 +857,7 @@ class AipWiringService:
                 break
             vistos.update(f["expediente_id"] for f in filas)
             res["revisados"] += len(filas)
-            lote = await signature_client.artefactos_vigentes(
+            lote = await signature_api.artefactos_vigentes(
                 tenant_slug=self._tenant_slug,
                 firma_ids=sorted({str(f["firma_id"]) for f in filas}),
             )

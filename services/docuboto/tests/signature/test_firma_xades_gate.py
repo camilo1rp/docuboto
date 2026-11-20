@@ -36,8 +36,8 @@ from cryptography.hazmat.primitives import serialization
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
+from auth.api import AuthUnavailableError
 from signature.core.config import Settings, settings
-from signature.core.http_clients import SigningKeyStatusUnavailableError
 from signature.main import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row
@@ -172,7 +172,7 @@ async def test_gate_off_auth_status_unavailable_falls_back_native(
     monkeypatch.setattr(settings, "firma_personal_require_xades", "off")
     monkeypatch.setattr(settings, "firma_2fa_required", False)
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
 
@@ -292,7 +292,7 @@ async def test_gate_clasificados_nivel2_sin_cert_denied_422(
     _patch_signing_key_status(monkeypatch, body={"estado": "no_configurado", "cert_pem": None})
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
     verify_totp_mock = AsyncMock(side_effect=RuntimeError("no debe llamarse"))
-    monkeypatch.setattr("signature.services.cadena_service.verify_totp", verify_totp_mock)
+    monkeypatch.setattr("auth.api.verify_totp", verify_totp_mock)
 
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=2)
@@ -346,7 +346,7 @@ async def test_por_defecto_un_acto_clasificado_no_se_firma_con_hmac(
     _patch_signing_key_status(monkeypatch, body={"estado": "no_configurado", "cert_pem": None})
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
     monkeypatch.setattr(
-        "signature.services.cadena_service.verify_totp",
+        "auth.api.verify_totp",
         AsyncMock(side_effect=RuntimeError("no debe llamarse")),
     )
 
@@ -421,11 +421,11 @@ async def test_gate_clasificados_nivel2_auth_status_unavailable_denied_503(
     audit_mock = _patch_audit(monkeypatch)
     monkeypatch.setattr(settings, "firma_personal_require_xades", "clasificados")
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
     verify_totp_mock = AsyncMock(side_effect=RuntimeError("no debe llamarse"))
-    monkeypatch.setattr("signature.services.cadena_service.verify_totp", verify_totp_mock)
+    monkeypatch.setattr("auth.api.verify_totp", verify_totp_mock)
 
     conn = _make_conn()
     sol = _sol_row(nivel_seguridad=3)
@@ -543,7 +543,7 @@ async def test_gate_todos_nivel1_auth_caido_denied_503(monkeypatch: pytest.Monke
     audit_mock = _patch_audit(monkeypatch)
     monkeypatch.setattr(settings, "firma_personal_require_xades", "todos")
     _patch_signing_key_status(
-        monkeypatch, error=SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        monkeypatch, error=AuthUnavailableError("auth-service inalcanzable")
     )
     sign_digest_mock = _patch_sign_digest_remote(monkeypatch, error=RuntimeError("no debe llamarse"))
 
@@ -595,16 +595,16 @@ async def test_firmar_lote_gate_denials_per_item(monkeypatch: pytest.MonkeyPatch
 
     call_count = {"n": 0}
 
-    async def _status_side_effect(authorization):
+    async def _status_side_effect(**_kw):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return {"estado": "activo", "user_id": str(USER), "cert_pem": cert_pem}
         if call_count["n"] == 2:
             return {"estado": "no_configurado", "cert_pem": None}
-        raise SigningKeyStatusUnavailableError("auth-service inalcanzable")
+        raise AuthUnavailableError("auth-service inalcanzable")
 
     monkeypatch.setattr(
-        "signature.services.cadena_service.get_signing_key_status_remote",
+        "auth.api.signing_key_status",
         AsyncMock(side_effect=_status_side_effect),
     )
     _patch_sign_digest_remote(monkeypatch, private_key=user_key, cert_pem=cert_pem)
