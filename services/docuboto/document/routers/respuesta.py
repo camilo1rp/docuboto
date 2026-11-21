@@ -16,10 +16,11 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common.clearance import require_permission
 from orpycamcp_common.database import get_tenant_conn
+from orpycamcp_common.rbac import resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.clearance import require_permission, resolve_caller_clearance
 from document.core.dependencies import get_redis, get_tenant_client
 from document.schemas.document import DocumentResponse
 from document.schemas.respuesta import RespuestaItem, RespuestaRapidaCreate

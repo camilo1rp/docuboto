@@ -15,10 +15,11 @@ from urllib.parse import urlsplit
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from orpycamcp_common.clearance import get_actor
+from orpycamcp_common.clearance import require_actor_permission as require_permission
 from orpycamcp_common.database import get_tenant_conn
 
 from notification.core import webhook_secrets
-from notification.core.clearance import get_actor, require_permission
 from notification.repositories.webhook_entregas_repository import WebhookEntregasRepository
 from notification.repositories.webhook_repository import WebhookRepository
 from notification.schemas.webhook import WebhookCreate, WebhookEntregaResponse, WebhookResponse

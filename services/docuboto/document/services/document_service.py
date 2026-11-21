@@ -33,10 +33,10 @@ from zoneinfo import ZoneInfo
 import asyncpg
 from fastapi import HTTPException
 from orpycamcp_common import audit
+from orpycamcp_common.rbac import resolve_caller_clearance
 
 from document.api import abrir_flujo_si_hay
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, tope_reserva
-from document.core.clearance import resolve_caller_clearance
 from document.core.config import settings
 from document.core.datos_minimos import exigir_o_422
 from document.core.dependencias import normalizar_dependencia

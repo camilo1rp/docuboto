@@ -44,8 +44,8 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 from orpycamcp_common.database import tenant_schema
+from orpycamcp_common.rbac import CLASIFICADA
 
-from archive.core.clearance import CLASIFICADA
 from archive.services.index_service import IndexService
 
 from .test_transferencia_acta import _grant_clearance

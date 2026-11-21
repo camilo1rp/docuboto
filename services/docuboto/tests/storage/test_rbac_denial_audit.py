@@ -58,7 +58,7 @@ async def test_denial_of_identified_user_is_audited(client_with_conn) -> None:
     # _INSERT_SQL params: (sql, tenant, service, actor, canal, action, object_type,
     #                       object_ref, payload_json, prev_hash, hash)
     assert args[1] == TENANT_HEADERS["X-Tenant-Slug"]
-    assert args[2] == "storage-service"
+    assert args[2] == "docuboto"  # ADR-047: un proceso
     assert args[3] == TENANT_HEADERS["X-User-Id"]
     assert args[5] == "acceso.denegado"
     assert args[6] == "rbac"
@@ -89,7 +89,7 @@ async def test_denial_survives_audit_failure(client_with_conn) -> None:
     mock_conn.fetchval.return_value = None  # check_permission → denegado
 
     with patch(
-        "storage.core.clearance.audit.append_denial",
+        "orpycamcp_common.clearance.audit.append_denial",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
         response = await client.post(

@@ -36,11 +36,11 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 from fastapi import HTTPException, status
 from lxml import etree
+from orpycamcp_common.rbac import resolve_caller_clearance
 
 from auth import api as auth_api
 from document import api as document_api
 from notification import api as notification_api
-from signature.core.clearance import resolve_caller_clearance
 from signature.core.config import settings
 from signature.core.constants import (
     CADENA_NIVEL_AUTORITATIVO,

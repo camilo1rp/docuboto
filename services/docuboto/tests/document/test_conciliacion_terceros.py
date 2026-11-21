@@ -43,7 +43,7 @@ def gate(monkeypatch):
         estado["pedidos"].append((perm, min_crud))
         return min_crud <= estado["nivel"]
 
-    monkeypatch.setattr("document.core.clearance.check_permission", _check)
+    monkeypatch.setattr("orpycamcp_common.clearance.check_permission", _check)
 
     async def _clearance(conn, user_id):
         return 2

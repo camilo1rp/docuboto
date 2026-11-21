@@ -20,10 +20,10 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
+from orpycamcp_common.clearance import require_permission
 from orpycamcp_common.database import get_tenant_conn as get_db
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.clearance import require_permission
 from document.repositories.report_repository import ReportRepository
 from document.schemas.report import DependenciaCount, MonthCount, ReportSummary
 from document.services.document_service import DocumentService

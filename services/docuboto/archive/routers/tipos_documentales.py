@@ -19,15 +19,11 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from orpycamcp_common import audit
+from orpycamcp_common.clearance import require_vetted_permission as require_permission
 from orpycamcp_common.database import get_vetted_conn as get_db_conn
+from orpycamcp_common.rbac import check_permission, mensaje_denegacion, nivel_efectivo
 
 from archive.core.actor import Actor, require_actor
-from archive.core.clearance import (
-    check_permission,
-    mensaje_denegacion,
-    nivel_efectivo,
-    require_permission,
-)
 from archive.repositories.archive_repository import ArchiveRepository
 from archive.schemas.archive import (
     TipoDocumentalCreate,

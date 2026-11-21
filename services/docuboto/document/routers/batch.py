@@ -15,11 +15,12 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from orpycamcp_common.clearance import require_permission
 from orpycamcp_common.database import acquire_tenant
 from orpycamcp_common.database import get_tenant_conn as get_db
+from orpycamcp_common.rbac import check_permission, resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.clearance import check_permission, require_permission, resolve_caller_clearance
 from document.core.dependencies import get_tenant_client
 from document.schemas.batch import (
     BatchDocumentsRequest,

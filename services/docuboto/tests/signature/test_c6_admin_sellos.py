@@ -61,7 +61,7 @@ async def test_exige_administracion_a_nivel_3(client_with_conn) -> None:  # noqa
     """El gate es `USUA_PERM_ADMIN` con `min_crud=3`: el nivel 2 NO alcanza. Mutación: bajar el
     `min_crud` en el router -> cae."""
     client, conn = client_with_conn
-    with patch("signature.core.clearance.check_permission", AsyncMock(return_value=True)) as cp:
+    with patch("orpycamcp_common.clearance.check_permission", AsyncMock(return_value=True)) as cp:
         conn.fetch.return_value = []
         conn.fetchval.return_value = 0
         resp = await client.get(BASE, headers=TENANT_HEADERS)

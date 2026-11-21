@@ -19,13 +19,13 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit, events
 from orpycamcp_common.database import tenant_schema
-
-from workflow.core.clearance import (
+from orpycamcp_common.rbac import (
     CLEARANCE_SIN_RESTRICCION,
     check_permission,
     mensaje_denegacion,
     nivel_efectivo,
 )
+
 from workflow.core.dependencias import (
     dependencia_ambigua,
     dependencia_desconocida,

@@ -29,9 +29,9 @@ from typing import TYPE_CHECKING, Literal
 import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
+from orpycamcp_common.rbac import CLEARANCE_SIN_RESTRICCION, check_permission
 
 from archive.core.actor import Actor
-from archive.core.clearance import CLEARANCE_SIN_RESTRICCION, check_permission
 from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.http_errors import motivo_de

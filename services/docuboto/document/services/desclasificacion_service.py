@@ -34,9 +34,9 @@ from typing import Any
 import asyncpg
 from fastapi import HTTPException
 from orpycamcp_common import audit
+from orpycamcp_common.rbac import resolve_caller_clearance
 
 from document.core.causales_reserva import NIVEL_DOBLE_FIRMA, tope_reserva
-from document.core.clearance import resolve_caller_clearance
 from document.repositories.document_repository import DocumentRepository
 from document.repositories.reclasificacion_repository import ReclasificacionRepository
 from document.schemas.desclasificacion import (

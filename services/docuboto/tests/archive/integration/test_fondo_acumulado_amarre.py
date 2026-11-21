@@ -299,7 +299,8 @@ async def test_worm_resolvers_difieren_el_contenido_del_fondo_vencido_a_la_valor
         opened_by=None,
     )
     await archive.close_expediente(expediente.id)
-    from archive.core.clearance import CLEARANCE_SIN_RESTRICCION
+    from orpycamcp_common.rbac import CLEARANCE_SIN_RESTRICCION
+
     from archive.repositories.archive_repository import ArchiveRepository
 
     cerrado = await ArchiveRepository(conn, slug).get_expediente_by_id(

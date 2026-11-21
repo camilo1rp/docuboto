@@ -31,9 +31,11 @@ from typing import Annotated
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from orpycamcp_common.clearance import get_actor
+from orpycamcp_common.clearance import require_actor_permission as require_permission
 from orpycamcp_common.database import get_tenant_conn
+from orpycamcp_common.rbac import resolve_caller_clearance
 
-from signature.core.clearance import get_actor, require_permission, resolve_caller_clearance
 from signature.core.config import settings
 from signature.repositories.firma_repository import SITUACIONES_SELLO, FirmaRepository
 from signature.schemas.firma import SelloArchivoListItem, SellosArchivoResumen

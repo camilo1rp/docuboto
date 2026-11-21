@@ -63,7 +63,9 @@ def _gates_abiertos(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
     """
     if request.node.get_closest_marker("gates_reales"):
         return
+    from orpycamcp_common import clearance as gate
+
     from knowledge.core import clearance
 
-    monkeypatch.setattr(clearance, "check_permission", AsyncMock(return_value=True))
+    monkeypatch.setattr(gate, "check_permission", AsyncMock(return_value=True))
     monkeypatch.setattr(clearance, "asistente_habilitado", AsyncMock(return_value=True))

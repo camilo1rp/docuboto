@@ -63,12 +63,14 @@ def test_ningun_servicio_redefine_el_gate() -> None:
 @_necesita_arbol
 def test_el_censo_ve_a_los_servicios_que_la_importan() -> None:
     """Anti-vacuidad: el guardián de arriba pasaría igual si el glob no hallara nada."""
+    # Un proceso (ADR-047): los gates de los dominios importan la librería desde
+    # cualquier capa, no solo desde `core/`.
     importan = [
         p
-        for p in glob_src(_SERVICIOS, "*/app/core/*.py")
+        for p in glob_src(_SERVICIOS, "*/app/**/*.py")
         if "from orpycamcp_common.rbac import" in p.read_text(encoding="utf-8")
     ]
-    assert len(importan) >= 8, [p.parent.parent.parent.name for p in importan]
+    assert len(importan) >= 8, [str(p) for p in importan]
 
 
 @_necesita_arbol

@@ -35,11 +35,12 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
+from orpycamcp_common.clearance import require_permission
 from orpycamcp_common.database import get_tenant_conn
+from orpycamcp_common.rbac import check_permission, resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional, slug_de
 from starlette.background import BackgroundTask
 
-from document.core.clearance import check_permission, require_permission, resolve_caller_clearance
 from document.core.dependencias import (
     exigir_concordancia,
     marcar_alias_deprecado,

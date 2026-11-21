@@ -41,13 +41,11 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from orpycamcp_common.clearance import get_actor
+from orpycamcp_common.clearance import require_actor_permission as require_permission
 from orpycamcp_common.database import get_tenant_conn
+from orpycamcp_common.rbac import resolve_caller_clearance
 
-from notification.core.clearance import (
-    get_actor,
-    require_permission,
-    resolve_caller_clearance,
-)
 from notification.core.constants import DLQ_GROUP
 from notification.repositories.dead_letter_repository import DeadLetterRepository
 from notification.repositories.processed_events_repository import ProcessedEventsRepository

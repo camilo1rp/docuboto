@@ -37,8 +37,8 @@ from contextlib import nullcontext
 
 import asyncpg
 import pytest
+from orpycamcp_common.rbac import CLEARANCE_SIN_RESTRICCION
 
-from archive.core.clearance import CLEARANCE_SIN_RESTRICCION
 from archive.schemas.archive import ExpedienteCreate, RadicadoLink
 from archive.services.archive_service import ArchiveService
 from archive.services.index_service import IndexService

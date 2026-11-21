@@ -548,7 +548,7 @@ async def http(ctx: Any) -> AsyncGenerator[tuple[AsyncClient, asyncpg.Connection
     app.dependency_overrides[get_db_conn] = _db
     try:
         with (
-            patch("workflow.core.clearance.check_permission", new=AsyncMock(return_value=True)),
+            patch("orpycamcp_common.clearance.check_permission", new=AsyncMock(return_value=True)),
             patch("workflow.services.workflow_service.check_permission", new=AsyncMock(return_value=True)),
             # El clearance real vive en tablas de auth-service que este tier no
             # provisiona; aquí se concede el máximo (no es el SUT).

@@ -24,10 +24,11 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
+from orpycamcp_common.clearance import require_vetted_permission as require_permission
 from orpycamcp_common.database import get_vetted_conn as get_db_conn
+from orpycamcp_common.rbac import resolve_caller_clearance
 
 from archive.core.actor import Actor, require_actor
-from archive.core.clearance import require_permission, resolve_caller_clearance
 from archive.schemas.archive import (
     AipReintentoResponse,
     AipResponse,

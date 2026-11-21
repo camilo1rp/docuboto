@@ -1421,7 +1421,8 @@ async def test_transferencia_recibir_fixity_ortogonal_a_clearance_lectura(
         )
     )
 
-    from archive.core.clearance import PUBLICA
+    from orpycamcp_common.rbac import PUBLICA
+
     from archive.services.index_service import IndexService
 
     # Contraste: con el clearance REAL de un lector sin acceso, la MISMA

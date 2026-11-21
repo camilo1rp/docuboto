@@ -13,9 +13,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from orpycamcp_common.clearance import require_actor_permission as require_permission
 from orpycamcp_common.database import get_tenant_conn
 
-from notification.core.clearance import require_permission
 from notification.schemas.notification import NotificationResponse
 from notification.services import notification_service
 

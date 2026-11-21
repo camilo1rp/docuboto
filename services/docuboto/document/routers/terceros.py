@@ -21,10 +21,11 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response
+from orpycamcp_common.clearance import require_permission
 from orpycamcp_common.database import get_tenant_conn
+from orpycamcp_common.rbac import resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.clearance import require_permission, resolve_caller_clearance
 from document.schemas.tercero import (
     ActoresVincularRequest,
     ActorResponse,

@@ -232,7 +232,7 @@ async def test_http_total_filas_y_asiento(api) -> None:  # noqa: ANN001
     await _sembrar(conn, slug)
     h = {"X-Tenant-Slug": slug, "X-User-Id": str(ADMIN)}
     with (
-        patch("signature.core.clearance.check_permission", AsyncMock(return_value=True)),
+        patch("orpycamcp_common.clearance.check_permission", AsyncMock(return_value=True)),
         patch("signature.routers.admin_sellos.resolve_caller_clearance", AsyncMock(return_value=5)),
     ):
         r = await ac.get("/api/v1/signature/admin/sellos-archivo?situacion=por_vencer&size=2&page=2", headers=h)
@@ -251,7 +251,7 @@ async def test_http_sin_permiso_no_ve_nada(api) -> None:  # noqa: ANN001
     ac, slug, conn = api
     await _sembrar(conn, slug)
     h = {"X-Tenant-Slug": slug, "X-User-Id": str(ADMIN)}
-    with patch("signature.core.clearance.check_permission", AsyncMock(return_value=False)):
+    with patch("orpycamcp_common.clearance.check_permission", AsyncMock(return_value=False)):
         r = await ac.get("/api/v1/signature/admin/sellos-archivo", headers=h)
     assert r.status_code == 403
 

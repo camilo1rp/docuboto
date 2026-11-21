@@ -37,13 +37,11 @@ from fastapi import (
     Response,
     status,
 )
+from orpycamcp_common.clearance import get_actor
+from orpycamcp_common.clearance import require_vetted_permission as require_permission
 from orpycamcp_common.database import get_vetted_conn as get_db_conn
+from orpycamcp_common.rbac import resolve_caller_clearance
 
-from workflow.core.clearance import (
-    get_actor,
-    require_permission,
-    resolve_caller_clearance,
-)
 from workflow.core.constants import DLQ_GROUP as GROUP
 from workflow.repositories.dead_letter_repository import DeadLetterRepository
 from workflow.schemas.dead_letter import (

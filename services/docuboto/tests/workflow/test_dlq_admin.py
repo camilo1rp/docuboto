@@ -23,12 +23,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.clearance import get_actor
 from orpycamcp_common.usuario import Usuario
 
 from tests.workflow.conftest import TENANT_HEADERS, USER_ID
-from workflow.core.clearance import (
-    get_actor,
-)
 from workflow.core.constants import DLQ_GROUP
 from workflow.repositories.dead_letter_repository import (
     DeadLetterRepository,

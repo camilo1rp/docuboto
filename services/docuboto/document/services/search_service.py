@@ -21,8 +21,8 @@ import uuid
 from datetime import date
 
 import asyncpg
+from orpycamcp_common.rbac import resolve_caller_clearance
 
-from document.core.clearance import resolve_caller_clearance
 from document.schemas.search import SearchHit
 from document.services.document_service import audit_search_access
 

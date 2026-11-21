@@ -24,13 +24,15 @@ import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common.clearance import get_actor
+from orpycamcp_common.clearance import require_actor_permission as require_permission
 from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import canal_de, id_opcional, slug_de
 from pydantic import BaseModel, Field, model_validator
 
 from document import api as document_api
 from knowledge.core import consulta, paso
-from knowledge.core.clearance import get_actor, require_asistente_habilitado, require_permission
+from knowledge.core.clearance import require_asistente_habilitado
 from knowledge.core.config import settings
 from knowledge.core.salida_http import transporte_de_consulta
 

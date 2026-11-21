@@ -17,9 +17,9 @@ from typing import Any
 
 import asyncpg
 from orpycamcp_common.database import tenant_schema
+from orpycamcp_common.rbac import resolve_caller_clearance
 
 from document.api import mover_flujo
-from workflow.core.clearance import resolve_caller_clearance
 from workflow.models.flow import FlowStep
 from workflow.services.estado_radicado import (
     ESTADOS_TERMINALES,

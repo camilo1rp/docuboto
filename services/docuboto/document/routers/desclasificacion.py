@@ -25,11 +25,11 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from orpycamcp_common.clearance import require_permission
 from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, PLAZO_MAX_MESES
-from document.core.clearance import require_permission
 from document.core.dependencies import get_redis
 from document.schemas.desclasificacion import (
     CausalesReservaResponse,

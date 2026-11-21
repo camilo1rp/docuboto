@@ -20,13 +20,11 @@ La conexión debe tener el ``search_path`` ya fijado al schema del tenant (lo ha
 """
 
 import logging
-import uuid
 from collections.abc import Iterable
 
 import asyncpg
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request
 from orpycamcp_common.database import get_tenant_conn
-from orpycamcp_common.rbac import check_permission, mensaje_denegacion, nivel_efectivo
 from orpycamcp_common.tenant import (
     ERROR_ASISTENTE_DESHABILITADO,
     ERROR_ASISTENTE_NO_DISPONIBLE,
@@ -72,59 +70,6 @@ async def require_asistente_habilitado(
         )
 
 
-def require_permission(perm_name: str, min_crud: int = 1):
-    """FastAPI dependency factory: raises 401/403 when caller lacks ``perm_name``.
-
-    Reads actor UUID from X-User-Id header (injected by api-gateway after auth-service
-    /validate resolved the internal id).  Raises 401 when the header is absent or not
-    a valid UUID; 403 when permission is denied or user not found (fail-closed).
-
-    ``min_crud`` (default ``1``, backward-compatible) requires a minimum level on the
-    0..5 crud scale (RF-SEG-03); see :func:`check_permission`.
-
-    Usage at endpoint level::
-
-        @router.post("/...", dependencies=[Depends(require_permission("PERM_DLQ_ADMIN"))])
-
-    Or at router level to protect all routes::
-
-        router = APIRouter(dependencies=[Depends(require_permission("PERM_DLQ_ADMIN"))])
-    """
-
-    async def _dep(
-        actor: uuid.UUID = Depends(get_actor),
-        x_tenant_slug: str | None = Header(default=None),
-        conn: asyncpg.Connection = Depends(get_tenant_conn),
-    ) -> None:
-        if not await check_permission(conn, actor, perm_name, min_crud):
-            # Traza best-effort del acceso denegado (RF-SEG / MoReq). ``actor``
-            # aquí SIEMPRE está identificado — ``get_actor`` ya devolvió 401 si
-            # faltaba/era inválido X-User-Id — así que no hay caso anónimo que
-            # excluir (a diferencia de document/archive/workflow).
-            if _AUDIT_AVAILABLE:
-                try:
-                    await audit.append_denial(
-                        conn,
-                        tenant_slug=x_tenant_slug,
-                        service=_SERVICE,
-                        actor=str(actor),
-                        perm_name=perm_name,
-                        min_crud=min_crud,
-                    )
-                except Exception:  # noqa: BLE001 — best-effort: nunca 500 por auditoría.
-                    logger.warning("audit.append_denial failed", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "error": "forbidden",
-                    "detail": mensaje_denegacion(
-                        perm_name, min_crud, await nivel_efectivo(conn, actor, perm_name)
-                    ),
-                    "status": 403,
-                },
-            )
-
-    return _dep
 
 
 def motivo_interruptor(*, bandera: bool, proveedor: str, suspendido: bool) -> str | None:
@@ -195,8 +140,3 @@ def puede_salir(
     )
 
 
-async def get_actor(request: Request) -> uuid.UUID:
-    """UUID interno del llamante. Sale de `request.state.usuario`, no de `X-User-Id`."""
-    from orpycamcp_common.usuario import id_exigido
-
-    return id_exigido(request)

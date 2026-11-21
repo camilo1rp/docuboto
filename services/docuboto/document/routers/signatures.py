@@ -23,10 +23,11 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
+from orpycamcp_common.clearance import require_permission
 from orpycamcp_common.database import get_tenant_conn
+from orpycamcp_common.rbac import resolve_caller_clearance
 from orpycamcp_common.usuario import id_opcional
 
-from document.core.clearance import require_permission, resolve_caller_clearance
 from document.repositories.signature_repository import SignatureRepository
 from document.schemas.signature import (
     SignatureCreate,

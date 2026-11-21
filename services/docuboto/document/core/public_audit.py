@@ -31,8 +31,7 @@ import logging
 from typing import Any
 
 import asyncpg
-
-from document.core.clearance import _AUDIT_AVAILABLE, audit
+from orpycamcp_common import audit
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ async def audit_public_access(
     payload: dict[str, Any] | None = None,
 ) -> None:
     """Asienta un acceso público anónimo. Nunca propaga excepciones."""
-    if not _AUDIT_AVAILABLE or audit is None:
+    if audit is None:
         return
     try:
         await audit.append(

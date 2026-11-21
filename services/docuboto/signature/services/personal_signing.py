@@ -43,9 +43,9 @@ import asyncpg
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from fastapi import HTTPException, status
+from orpycamcp_common.rbac import resolve_caller_clearance
 
 from auth import api as auth_api
-from signature.core.clearance import resolve_caller_clearance
 from signature.providers.base import SignedDoc, SignerRef
 from signature.providers.local import (
     CertificadoPersonalVencidoError,

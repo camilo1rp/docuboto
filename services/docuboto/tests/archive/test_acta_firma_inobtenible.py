@@ -1708,7 +1708,7 @@ async def test_el_router_devuelve_201_con_la_constancia_y_reenvia_el_bearer(
     mock_conn.fetchval.side_effect = None
     mock_conn.fetchval.return_value = None  # política: sin parámetro -> entorno 'off'
     with (
-        patch("archive.core.clearance.check_permission", new=AsyncMock(return_value=True)),
+        patch("orpycamcp_common.clearance.check_permission", new=AsyncMock(return_value=True)),
         _externos(personal=SignPersonalOutcome(signed=_signed_personal())) as (_s, sign_pers, _w),
     ):
         resp = await client.post(
