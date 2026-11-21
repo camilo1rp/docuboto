@@ -54,11 +54,8 @@ from signature.core.config import variables_retiradas_presentes
 from signature.jobs import renovacion_lta
 from signature.workers import document_consumer as signature_consumer
 from storage.core.minio_client import init_minio
-from storage.main import (
-    _descargar_para_migracion,
-    _format_migration_once,
-    _subir_para_migracion,
-)
+from storage.jobs.format_migration import run_once as _format_migration_once
+from storage.main import _descargar_para_migracion, _subir_para_migracion
 from workflow.api import abrir_al_radicar
 from workflow.workers import document_consumer as workflow_consumer
 

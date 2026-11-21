@@ -46,8 +46,8 @@ from notification.api import NotificationDeliveryError
 from signature.core.config import settings
 from signature.core.database import get_tenant_conn
 from signature.core.otp import hmac_otp
-from signature.main import app
 from signature.services import cadena_service
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import FIRMANTE2, SOL_ID, _exec_sig, _make_conn, _turno_row
 

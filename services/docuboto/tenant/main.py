@@ -17,59 +17,14 @@ Responsibilities:
 """
 
 import logging
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from orpycamcp_common import request_log, usuario
-
-from tenant.core.config import settings
-from tenant.core.database import close_pool, create_pool
 from tenant.routers.catalogos import router as catalogos_router
 from tenant.routers.config import router as config_router
 from tenant.routers.dependencias import router as dependencias_router
-from tenant.routers.health import router as health_router
 from tenant.routers.pinar import router as pinar_router
 
-logging.basicConfig(
-    level=settings.log_level.upper(),
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
 logger = logging.getLogger(__name__)
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-
-
-    logger.info("tenant-service starting up")
-    app.state.db_pool = await create_pool(settings.database_url_asyncpg)
-    yield
-    logger.info("tenant-service shutting down")
-    await close_pool()
-
-
-app = FastAPI(
-    redirect_slashes=False,
-    title="OrpycaMCP — Tenant Service",
-    description=(
-        "Manages institutions (tenants) and provisions isolated PostgreSQL schemas "
-        "for multi-tenant document management."
-    ),
-    version="1.0.0",
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
-# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
-# escribe, que es el mismo defecto de partida movido un salto más allá.
-# El llamante sale del JWT (`UsuarioActualMiddleware`). Un `X-User-Id` de
-# cliente no cuenta. Va el primero porque es la decisión que precede a todas.
-app.add_middleware(usuario.UsuarioActualMiddleware)
-app.add_middleware(request_log.RequestLogMiddleware, servicio="tenant-service")
 
 DOMAIN_ROUTERS = (
     config_router,
@@ -77,19 +32,5 @@ DOMAIN_ROUTERS = (
     catalogos_router,
     pinar_router,
 )
-for _router in DOMAIN_ROUTERS:
-    app.include_router(_router)
-app.include_router(health_router)
 
 
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "internal_error",
-            "detail": "Ocurrió un error inesperado",
-            "status": 500,
-        },
-    )

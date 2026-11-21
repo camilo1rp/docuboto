@@ -32,7 +32,7 @@ from httpx import ASGITransport, AsyncClient
 
 from signature.core.config import settings
 from signature.core.database import get_tenant_conn
-from signature.main import app
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 
 # Fixture IDs

@@ -25,7 +25,7 @@ from fastapi import HTTPException
 
 from signature import api as signature_api
 from signature.core.constants import CADENA_OBJETO_TIPOS, SYSTEM_RECONCILER_ID
-from signature.main import app
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER, en_proceso
 from tests.signature.test_sign_xml_xades import INDICE_XML, _generate_cert, _signer_ref
 from tests.signature.test_sign_xml_xades import signature_env as signature_env  # noqa: F401  (fixture)

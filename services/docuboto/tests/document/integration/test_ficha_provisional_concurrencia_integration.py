@@ -49,7 +49,7 @@ from document.core.database import (
     get_tenant_client,
     tenant_schema,
 )
-from document.main import app
+from tests.document.app import app
 from tests.document.integration.conftest import _require_dsn
 from tests.document.integration.politica_stub import ENTIDAD
 from tests.document.integration.test_ficha_provisional_integration import (

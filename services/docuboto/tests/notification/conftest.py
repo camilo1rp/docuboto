@@ -16,7 +16,6 @@ sin infraestructura. El historial se persiste/lee en la BD del tenant (E16).
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -121,16 +120,7 @@ def app_with_mocks(redis_mock: MagicMock, db_conn: AsyncMock):
         yield db_conn
 
     with (
-        patch("notification.main.init_pool", new=AsyncMock()),
-        patch("notification.main.close_pool", new=AsyncMock()),
-        patch("notification.main.init_redis", new=AsyncMock(return_value=redis_mock)),
-        patch("notification.main.close_redis", new=AsyncMock()),
-        patch(
-            "notification.main.stream_worker.run",
-            new=AsyncMock(side_effect=asyncio.CancelledError),
-        ),
         patch("notification.core.redis_client.get_redis", return_value=redis_mock),
-        patch("notification.routers.health.get_redis", return_value=redis_mock),
         patch(
             "notification.services.notification_service.acquire_tenant",
             return_value=_FakeAcquire(db_conn),
@@ -138,7 +128,7 @@ def app_with_mocks(redis_mock: MagicMock, db_conn: AsyncMock):
     ):
         from orpycamcp_common.usuario import instalar_inyector
 
-        from notification.main import app
+        from tests.notification.app import app
 
         if not getattr(app, "_inyector_ok", False):
             instalar_inyector(app)
@@ -212,7 +202,7 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     from orpycamcp_common.usuario import instalar_inyector
 
     from notification.core.database import get_tenant_conn
-    from notification.main import app
+    from tests.notification.app import app
 
     if not getattr(app, "_inyector_ok", False):
         instalar_inyector(app)

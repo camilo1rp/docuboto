@@ -26,8 +26,8 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.usuario import instalar_inyector
 
+from tests.workflow.app import app
 from workflow.core.database import get_db_conn
-from workflow.main import app
 from workflow.repositories.workflow_repository import Tenencia
 
 instalar_inyector(app)

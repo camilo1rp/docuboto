@@ -17,16 +17,16 @@ AREA-13-12  el último barrido y el tamaño de la DLQ son visibles.
 
 from __future__ import annotations
 
-from tests._chain import create_table
-from tests._compose import glob_src, ruta_src
-
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+
 from orpycamcp_common import events
 from orpycamcp_common import health as health_common
+from tests._chain import create_table
+from tests._compose import glob_src, ruta_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
@@ -272,14 +272,17 @@ def test_el_worker_registra_el_error_y_usa_su_nombre_por_replica(servicio: str) 
 
 
 @pytest.mark.parametrize("servicio,nombre", sorted(_NOMBRES.items()))
-def test_el_nombre_supervisado_coincide_en_worker_main_y_health(servicio: str, nombre: str) -> None:
-    """Si difieren, /health/ready nunca encuentra el estado y la DLQ deja de verse sin error."""
+def test_el_nombre_supervisado_coincide_en_worker_lifespan_y_health(servicio: str, nombre: str) -> None:
+    """Si difieren, /health/ready nunca encuentra el estado y la DLQ deja de verse sin error.
+
+    Un proceso (ADR-047): el lifespan de la app los arranca y su `/health` los informa.
+    """
     assert f'status_name="{nombre}"' in _worker(servicio).read_text()
-    main = ruta_src(servicio, "main.py").read_text()
-    assert f'name="{nombre}"' in main and "spawn_supervised" in main
-    health = ruta_src(servicio, "routers", "health.py").read_text()
-    assert f'_CONSUMIDOR = "{nombre}"' in health
-    assert "health_common.consumer_report(" in health and "DEADLETTER_STREAM" in health
+    lifespan = ruta_src("docuboto", "core", "lifespan.py").read_text()
+    assert f'tareas.start("{nombre}", ' in lifespan and "supervised=True" in lifespan
+    health = ruta_src("docuboto", "routers", "health.py").read_text()
+    assert f'"{nombre}": DLQ_' in health
+    assert "health_common.consumer_report(" in health
 
 
 def test_los_cuatro_repositorios_no_vuelven_a_conflictuar_solo_por_event_id() -> None:

@@ -53,8 +53,8 @@ from auth.core.totp import (
     encrypt_secret,
     generate_secret,
 )
-from auth.main import app
 from auth.services.totp_service import TotpService
+from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")

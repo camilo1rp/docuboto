@@ -25,7 +25,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tenant.core.database import get_tenant_conn
-from tenant.main import app
+from tests.tenant.app import app
 
 URL = "/api/v1/config/asistente"
 ENCENDER = {"habilitado": True, "declaracion_transmision": True}

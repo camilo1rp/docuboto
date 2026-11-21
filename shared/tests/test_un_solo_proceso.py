@@ -88,9 +88,19 @@ def test_el_proceso_incluye_los_nueve_domain_routers() -> None:
         "KNOWLEDGE_ROUTERS",
     ):
         assert nombre in texto, f"docuboto.main no incluye {nombre}"
-    assert "include_router(_router)" in texto
+    assert "include_router(router)" in texto and "def create_app(" in texto
     assert "health_router" in texto
     assert "metrics_router" in texto
+
+
+def test_ningun_dominio_monta_su_propia_app() -> None:
+    """ADR-047: un `FastAPI`, una sonda, un `/metrics`. Los dominios exportan routers."""
+    for servicio in _DOMINIO:
+        texto = ruta_src(servicio, "main.py").read_text(encoding="utf-8")
+        assert "FastAPI(" not in texto, servicio
+        assert "lifespan" not in texto, servicio
+        assert not ruta_src(servicio, "routers", "health.py").exists(), servicio
+        assert not ruta_src(servicio, "routers", "metrics.py").exists(), servicio
 
 
 def test_un_solo_health_en_el_proceso() -> None:

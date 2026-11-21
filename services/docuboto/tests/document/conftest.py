@@ -35,9 +35,9 @@ from document.core.database import (
     get_tenant_client,
     get_tenant_conn,
 )
-from document.main import app
 from document.services.ventanilla_service import VentanillaService
 from tenant.api import TenantUnavailableError
+from tests.document.app import app
 
 instalar_inyector(app)
 

@@ -251,7 +251,7 @@ async def test_la_constancia_de_consentimiento_viaja_con_version_instante_e_ip(
     client_with_conn, monkeypatch
 ) -> None:
     """Constancia v2 (B2, ADR-031): la IP sale de saltos de confianza."""
-    from document.main import app
+    from tests.document.app import app
 
     client, conn = client_with_conn
     app.state.trusted_proxies = "127.0.0.0/8"
@@ -437,7 +437,7 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
 ) -> None:
     from httpx import ASGITransport, AsyncClient
 
-    from document.main import app
+    from tests.document.app import app
     from tests.document.conftest import (
         FakeTenantClient,
         _make_fake_redis,

@@ -38,7 +38,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from lxml import etree
 
-from archive.main import app
+from tests.archive.app import app
 from tests.archive.oai_fakes import fetch_oai, productora
 
 

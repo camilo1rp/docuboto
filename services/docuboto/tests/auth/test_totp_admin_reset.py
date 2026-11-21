@@ -35,7 +35,7 @@ from auth.core.authz import Caller, get_caller
 from auth.core.config import settings
 from auth.core.database import get_tenant_conn
 from auth.core.totp import build_aad, encrypt_secret
-from auth.main import app
+from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 ADMIN_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")

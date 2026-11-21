@@ -29,7 +29,7 @@ from httpx import ASGITransport, AsyncClient
 
 from knowledge.api import IntelligenceError
 from tenant.core.database import get_tenant_conn
-from tenant.main import app
+from tests.tenant.app import app
 
 URL = "/api/v1/config/intelligence"
 SHA = "ab" * 32

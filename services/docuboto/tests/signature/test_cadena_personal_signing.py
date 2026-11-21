@@ -39,8 +39,8 @@ from httpx import ASGITransport, AsyncClient
 
 from auth.api import SignDigestError
 from signature.core.database import get_tenant_conn
-from signature.main import app
 from signature.providers.base import SignerRef
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import (
     FIRMA_ID,

@@ -25,7 +25,7 @@ from httpx import ASGITransport, AsyncClient
 from auth.api import AuthUnavailableError
 from signature.core.config import settings
 from signature.core.database import get_tenant_conn
-from signature.main import app
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
 from tests.signature.test_cadena_2fa import FIRMA_ID, NOW, _patch_audit, _sol_row

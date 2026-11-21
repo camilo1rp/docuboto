@@ -97,9 +97,7 @@ def test_ninguna_otra_ruta_de_consulta_de_knowledge_queda_fuera() -> None:
     routers = {p.name for p in KNOWLEDGE.parent.glob("*.py")} - {"__init__.py"}
     assert routers == {
         "knowledge.py",
-        "health.py",
         "retorno.py",
-        "metrics.py",
         "ingesta.py",
     }, (
         f"routers nuevos en knowledge-service: {sorted(routers)}. Si consultan la base de "
@@ -114,7 +112,8 @@ def test_las_metricas_no_son_una_consulta() -> None:
     El acto de configuración (capacidades, aceptación, purga, inventario) ya no
     es una ruta: es `knowledge.api`, que llama tenant en proceso (ADR-047 §1).
     """
-    metricas = (KNOWLEDGE.parent / "metrics.py").read_text()
+    # Un solo `/metrics` en el proceso (ADR-047).
+    metricas = (KNOWLEDGE.parents[2] / "docuboto" / "routers" / "metrics.py").read_text()
     assert "/metrics" in metricas
     assert "require_asistente_habilitado" not in metricas
 

@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from storage import api as storage_api
 from storage.repositories.file_repository import CitaConstancia
 from storage.services.storage_service import AnexoCitadoPorConstanciaError, WormLockActiveError
-from storage import api as storage_api
 from tests.storage.conftest import TENANT_SLUG
 
 EXP = str(uuid.uuid4())

@@ -36,7 +36,7 @@ from signature.core.huella import (
     HuellaSinContenidoError,
     ObjetoDesaparecidoError,
 )
-from signature.main import app
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import _clear, _make_conn, _override, _sol_row
 

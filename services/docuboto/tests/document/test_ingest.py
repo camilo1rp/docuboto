@@ -115,7 +115,7 @@ def _gate_de(ruta: str, metodo: str) -> set[str]:
     las rutas—, así que se baja al `original_router`. El nombre del permiso vive
     en el cierre de la dependencia que fabrica `require_permission`.
     """
-    from document.main import app
+    from tests.document.app import app
 
     exigidos: set[str] = set()
     for incluido in app.routes:

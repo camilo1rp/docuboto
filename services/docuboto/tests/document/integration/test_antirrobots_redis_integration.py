@@ -34,7 +34,7 @@ import redis.asyncio as aioredis
 from document.core import altcha
 from document.core.config import settings
 from document.core.database import get_redis
-from document.main import app
+from tests.document.app import app
 from tests.document.test_ventanilla import (
     BASE,
     _cuerpo,

@@ -21,7 +21,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from document.main import app
+from tests.document.app import app
 
 OAI = "{http://www.openarchives.org/OAI/2.0/}"
 DC = "{http://purl.org/dc/elements/1.1/}"

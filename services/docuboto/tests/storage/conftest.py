@@ -27,7 +27,7 @@ from orpycamcp_common.usuario import instalar_inyector
 
 from storage import api as storage_api
 from storage.core.database import get_db_conn
-from storage.main import app
+from tests.storage.app import app
 
 instalar_inyector(app)
 
@@ -396,7 +396,6 @@ def _minio_patches(mock_minio: MagicMock):
         patch("storage.services.preservation_worm_service.get_minio", return_value=mock_minio),
         patch("storage.services.aip_service.get_minio", return_value=mock_minio),
         patch("storage.services.export_service.get_minio", return_value=mock_minio),
-        patch("storage.routers.health.get_minio", return_value=mock_minio),
         # C-5/C7: el servicio de holds por motivo importa `get_minio` por su cuenta.
         patch("storage.services.legal_hold_service.get_minio", return_value=mock_minio),
         patch("storage.api.get_minio", return_value=mock_minio),

@@ -139,42 +139,5 @@ def _bucles_falsos(monkeypatch: pytest.MonkeyPatch, arrancados: list[str], cance
     monkeypatch.setattr(main, "close_pool", AsyncMock())
 
 
-async def test_el_lifespan_crea_las_tres_tareas_y_las_cancela_al_apagar(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    arrancados: list[str] = []
-    cancelados: list[str] = []
-    _bucles_falsos(monkeypatch, arrancados, cancelados)
-    for flag in ("indice_reconciliation_enabled", "acta_reconciliation_enabled", "disposicion_alerta_enabled"):
-        monkeypatch.setattr(main.settings, flag, True)
-
-    async with main.lifespan(main.app):
-        await asyncio.sleep(0)  # deja arrancar las tareas
-        await asyncio.sleep(0)
-        assert sorted(arrancados) == ["acta", "disposicion", "indice"]
-        assert cancelados == []
-    assert sorted(cancelados) == ["acta", "disposicion", "indice"]
-    main.close_pool.assert_awaited_once()
 
 
-@pytest.mark.parametrize(
-    "apagado,esperados",
-    [
-        ("indice_reconciliation_enabled", {"acta", "disposicion"}),
-        ("acta_reconciliation_enabled", {"indice", "disposicion"}),
-        ("disposicion_alerta_enabled", {"indice", "acta"}),
-    ],
-)
-async def test_el_kill_switch_apaga_solo_su_bucle(
-    monkeypatch: pytest.MonkeyPatch, apagado: str, esperados: set[str]
-) -> None:
-    arrancados: list[str] = []
-    cancelados: list[str] = []
-    _bucles_falsos(monkeypatch, arrancados, cancelados)
-    for flag in ("indice_reconciliation_enabled", "acta_reconciliation_enabled", "disposicion_alerta_enabled"):
-        monkeypatch.setattr(main.settings, flag, flag != apagado)
-
-    async with main.lifespan(main.app):
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-    assert set(arrancados) == esperados

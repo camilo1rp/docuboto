@@ -19,7 +19,7 @@ from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.usuario import instalar_inyector
 
 from knowledge.core.database import get_tenant_conn
-from knowledge.main import app
+from tests.knowledge.app import app
 
 instalar_inyector(app)
 

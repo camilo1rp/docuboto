@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from document.core.politica import huella_politica
-from document.main import app
 from document.services.document_service import DocumentService
+from tests.document.app import app
 from tests.document.test_ventanilla import (
     BASE,
     _cuerpo,

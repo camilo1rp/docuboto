@@ -19,9 +19,9 @@ from httpx import AsyncClient
 
 from auth.core.authz import Caller, get_caller
 from auth.core.database import get_tenant_conn
-from auth.main import app
 from auth.services import rbac_service as rbac_service_module
 from auth.services.rbac_service import has_permission
+from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 

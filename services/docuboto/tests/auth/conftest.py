@@ -29,9 +29,9 @@ from orpycamcp_common.usuario import instalar_inyector
 
 from auth.core.config import settings
 from auth.core.database import get_db_conn
-from auth.main import app
 from auth.routers.auth import set_auth_service
 from auth.services.auth_service import AuthService
+from tests.auth.app import app
 
 instalar_inyector(app)
 

@@ -151,7 +151,7 @@ async def test_la_respuesta_deriva_gestion_y_gestion_mas_central(client_with_con
 
 
 def test_el_derivado_esta_documentado_como_solo_lectura_en_el_openapi() -> None:
-    from archive.main import app
+    from tests.archive.app import app
 
     props = app.openapi()["components"]["schemas"]["TrdSerieResponse"]["properties"]
     assert props["retention_years"]["readOnly"] is True

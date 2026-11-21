@@ -27,7 +27,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tenant.core.database import get_tenant_conn
-from tenant.main import app
+from tests.tenant.app import app
 
 # El actor imputable llega en X-User-Id; los actos de ciclo de vida lo exigen.
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}

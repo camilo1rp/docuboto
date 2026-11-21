@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from document.main import app
+from tests.document.app import app
 
 
 def _rad(tn: str = "2026-DEMO-E-000001", subject: str = "Acta pública") -> dict:

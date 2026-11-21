@@ -34,7 +34,7 @@ from httpx import AsyncClient
 
 from auth.core.authz import Caller, get_caller
 from auth.core.database import get_tenant_conn
-from auth.main import app
+from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 USER = uuid.uuid4()

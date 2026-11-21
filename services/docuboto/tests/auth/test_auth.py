@@ -23,7 +23,7 @@ import pytest
 from httpx import AsyncClient
 
 from auth.core.database import get_optional_tenant_conn
-from auth.main import app
+from tests.auth.app import app
 from tests.auth.conftest import FAKE_TOKEN_RESPONSE
 
 
@@ -479,44 +479,8 @@ async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_health_es_vivacidad_y_no_llama_a_keycloak(client: AsyncClient) -> None:
-    """`/health` gobierna los reinicios del contenedor: no consulta a nadie.
-
-    Antes tomaba una conexión del pool Y preguntaba a Keycloak en cada sondeo
-    (cada 15 s). Reiniciar auth-service porque Keycloak está caído no arregla
-    Keycloak: tira el trabajo en vuelo y encadena reinicios sobre un incidente
-    que ya estaba en curso.
-    """
-    with patch(
-        "auth.services.auth_service.AuthService.keycloak_healthy",
-        new_callable=AsyncMock,
-        return_value=True,
-    ) as kc:
-        response = await client.get("/health")
-
-    assert kc.await_count == 0
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "auth-service", "version": "dev"}
 
 
-@pytest.mark.asyncio
-async def test_ready_con_keycloak_caido_devuelve_503(client: AsyncClient) -> None:
-    """Keycloak SÍ es bloqueante en la disponibilidad: sin él no se autentica.
-
-    El 503 saca el servicio del reparto del balanceador **sin reiniciarlo**, que
-    es exactamente la distinción que este bloque introduce.
-    """
-    with patch(
-        "auth.services.auth_service.AuthService.keycloak_healthy",
-        new_callable=AsyncMock,
-        return_value=False,
-    ):
-        response = await client.get("/health/ready")
-
-    assert response.status_code == 503
-    assert response.json()["checks"]["keycloak"] == "error"
-    assert response.json()["status"] == "not_ready"
 
 
 # ---------------------------------------------------------------------------

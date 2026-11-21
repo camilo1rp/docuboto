@@ -26,8 +26,8 @@ from httpx import ASGITransport, AsyncClient
 
 from signature.core.database import get_tenant_conn
 from signature.jobs import renovacion_lta
-from signature.main import app
 from signature.repositories.firma_repository import FirmaRepository
+from tests.signature.app import app
 from tests.signature.integration.test_b10_lta_renovacion_sql import (  # noqa: F401  (fixtures y helpers)
     _sembrar,
     _tsa_larga,

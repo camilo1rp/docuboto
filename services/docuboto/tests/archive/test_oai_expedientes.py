@@ -24,7 +24,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from archive.main import app
+from tests.archive.app import app
 from tests.archive.oai_fakes import fetch_oai
 
 OAI = "{http://www.openarchives.org/OAI/2.0/}"

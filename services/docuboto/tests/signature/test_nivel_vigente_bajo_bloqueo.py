@@ -74,7 +74,7 @@ async def _post(client, path: str):
 async def _llamar(path: str):
     from httpx import ASGITransport, AsyncClient
 
-    from signature.main import app
+    from tests.signature.app import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         return await _post(ac, path)

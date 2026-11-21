@@ -46,7 +46,7 @@ from auth.core.totp import (
     encrypt_secret,
     generate_secret,
 )
-from auth.main import app
+from tests.auth.app import app
 
 USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 TOTP_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")

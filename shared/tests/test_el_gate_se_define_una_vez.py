@@ -15,9 +15,6 @@ fail-closed en una sola copia es un hueco de autorización que ningún test del 
 sano ve. La definición vive en `orpycamcp_common.rbac`; los servicios la importan.
 """
 
-from tests._compose import glob_src
-
-
 import ast
 import uuid
 from pathlib import Path
@@ -25,7 +22,9 @@ from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
+
 from orpycamcp_common import rbac
+from tests._compose import glob_src
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _SERVICIOS = _RAIZ / "services"

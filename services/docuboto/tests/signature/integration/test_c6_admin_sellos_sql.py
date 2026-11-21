@@ -34,8 +34,8 @@ from httpx import ASGITransport, AsyncClient
 
 from signature.core.database import _schema as tenant_schema
 from signature.core.database import get_tenant_conn
-from signature.main import app
 from signature.repositories.firma_repository import FirmaRepository
+from tests.signature.app import app
 from tests.signature.integration.conftest import insert_radicado
 
 pytestmark = pytest.mark.asyncio

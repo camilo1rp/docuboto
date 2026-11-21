@@ -40,7 +40,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from document.main import app
+from tests.document.app import app
 from tests.document.conftest import TENANT_HEADERS
 
 NOW = datetime.now(tz=UTC)

@@ -65,7 +65,7 @@ _EXENTAS = {
 
 
 def _posts_publicas() -> set[str]:
-    from document.main import app
+    from tests.document.app import app
 
     rutas: set[str] = set()
     for incluido in app.routes:

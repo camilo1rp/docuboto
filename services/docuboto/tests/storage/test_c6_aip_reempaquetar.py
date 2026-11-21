@@ -28,6 +28,8 @@ import pytest
 from lxml import etree
 
 import storage.core.config as config_module
+from storage import api as storage_api
+from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.schemas.preservacion import AipReempaquetarRequest
 from storage.services.aip_builder import (
     _PREMIS_NS,
@@ -45,8 +47,6 @@ from storage.services.aip_service import (
 )
 from storage.services.pdfa.types import PdfaResult
 from storage.services.retention_policy import InvalidRetentionError
-from storage import api as storage_api
-from storage.core.constants import SYSTEM_RECONCILER_ID
 from tests.storage.conftest import TENANT_SLUG
 
 EXP = "EXP-1"

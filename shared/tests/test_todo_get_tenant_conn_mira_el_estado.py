@@ -18,13 +18,12 @@ y un schema inexistente acababa en `UndefinedTableError` (500). Un guardián por
 lista esperada se declara: un `get_tenant_conn` nuevo obliga a decidirlo, no pasa de largo.
 """
 
-from tests._compose import glob_src
-
-
 import ast
 from pathlib import Path
 
 import pytest
+
+from tests._compose import glob_src
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _SERVICIOS = _RAIZ / "services"

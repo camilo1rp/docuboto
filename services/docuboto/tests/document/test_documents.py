@@ -47,7 +47,7 @@ import pytest
 from httpx import AsyncClient
 
 from document.core.database import get_tenant_conn
-from document.main import app
+from tests.document.app import app
 from tests.document.conftest import (
     TENANT_HEADERS,
     make_anexo_record,
@@ -996,19 +996,6 @@ async def test_list_documents_returns_nivel_seguridad(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_health_check(client: AsyncClient) -> None:
-    """`/health` es VIVACIDAD: gobierna los reinicios del contenedor.
-
-    Antes tomaba una conexión del pool en cada sondeo (cada 15 s) para preguntar
-    `SELECT 1`, metiendo una dependencia externa en la sonda que decide si el
-    contenedor se reinicia. Reiniciar por un Postgres caído no arregla Postgres.
-    El diagnóstico de dependencias vive ahora en `/health/ready`.
-    """
-    response = await client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "document-service", "version": "dev"}
 
 
 # ── 11.10: la disposición decide destruir, y se trataba como una lectura ──────

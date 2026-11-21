@@ -33,7 +33,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from tenant.core.database import get_tenant_conn
-from tenant.main import app
+from tests.tenant.app import app
 from tests.tenant.integration.provision import drop_schema, provision_schema, seed_row
 
 pytestmark = pytest.mark.skipif(

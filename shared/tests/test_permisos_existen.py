@@ -40,12 +40,12 @@ Las tres fuentes se derivan del código. No hay ninguna lista escrita a mano.
 
 from __future__ import annotations
 
-from tests._chain import chain_files, seed_rows
-from tests._compose import glob_src
-
 import ast
 import re
 from pathlib import Path
+
+from tests._chain import chain_files, seed_rows
+from tests._compose import glob_src
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _SERVICIOS = _RAIZ / "services"

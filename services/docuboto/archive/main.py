@@ -17,18 +17,12 @@ Responsibilities:
 """
 
 import asyncio
-import contextlib
 import logging
 import time
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from orpycamcp_common import request_log, usuario
+from orpycamcp_common import request_log
 
 from archive.core.config import settings
-from archive.core.database import close_pool, create_pool
 from archive.jobs.disposicion_alerta import run_once as _disposicion_alerta_once
 from archive.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from archive.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
@@ -62,10 +56,8 @@ from archive.routers.batch import router as batch_router
 from archive.routers.eliminacion import router as eliminacion_router
 from archive.routers.expedientes import router as expedientes_router
 from archive.routers.fisico import router as fisico_router
-from archive.routers.health import router as health_router
 from archive.routers.indice import router as indice_router
 from archive.routers.metadata import router as metadata_router
-from archive.routers.metrics import router as metrics_router
 from archive.routers.oai import router as oai_router
 from archive.routers.public_eliminacion import router as public_eliminacion_router
 from archive.routers.public_indice import router as public_indice_router
@@ -74,10 +66,6 @@ from archive.routers.transferencias import router as transferencias_router
 from archive.routers.trd import router as trd_router
 from archive.routers.tvd import router as tvd_router
 
-logging.basicConfig(
-    level=settings.log_level.upper(),
-    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -243,58 +231,6 @@ async def _disposicion_alerta_loop() -> None:
         await asyncio.sleep(settings.disposicion_alerta_interval_seconds)
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("archive-service starting up")
-    app.state.db_pool = await create_pool(settings.database_url_asyncpg)
-    reconcile_task: asyncio.Task[None] | None = None
-    if settings.indice_reconciliation_enabled:
-        reconcile_task = asyncio.create_task(_indice_reconciliation_loop())
-    acta_reconcile_task: asyncio.Task[None] | None = None
-    if settings.acta_reconciliation_enabled:
-        acta_reconcile_task = asyncio.create_task(_acta_reconciliation_loop())
-    disposicion_task: asyncio.Task[None] | None = None
-    if settings.disposicion_alerta_enabled:
-        disposicion_task = asyncio.create_task(_disposicion_alerta_loop())
-    yield
-    logger.info("archive-service shutting down")
-    if reconcile_task is not None:
-        reconcile_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await reconcile_task
-    if acta_reconcile_task is not None:
-        acta_reconcile_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await acta_reconcile_task
-    if disposicion_task is not None:
-        disposicion_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await disposicion_task
-    await close_pool()
-
-
-app = FastAPI(
-    redirect_slashes=False,
-    title="OrpycaMCP — Archive Service",
-    description=(
-        "Manages expedientes (logical document groupings) and the Tabla de Retención "
-        "Documental (TRD). Provides complete lifecycle tracking from creation to "
-        "final disposition in accordance with Ley 594/2000."
-    ),
-    version="1.0.0",
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-)
-
-# Registro estructurado por petición (11.2). Va aquí, con el `X-Request-Id` que
-# el gateway propaga desde el borde: sin esto el identificador llega y nadie lo
-# escribe, que es el mismo defecto de partida movido un salto más allá.
-# El llamante sale del JWT (`UsuarioActualMiddleware`). Un `X-User-Id` de
-# cliente no cuenta. Va el primero porque es la decisión que precede a todas.
-app.add_middleware(usuario.UsuarioActualMiddleware)
-app.add_middleware(request_log.RequestLogMiddleware, servicio="archive-service")
-
 DOMAIN_ROUTERS = (
     batch_router,
     eliminacion_router,
@@ -310,20 +246,5 @@ DOMAIN_ROUTERS = (
     trd_router,
     tvd_router,
 )
-for _router in DOMAIN_ROUTERS:
-    app.include_router(_router)
-app.include_router(health_router)
-app.include_router(metrics_router)  # C18: GET /metrics, NUNCA vía gateway (404 con cabeceras de proxy)
 
 
-@app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "internal_error",
-            "detail": "Ocurrió un error inesperado",
-            "status": 500,
-        },
-    )

@@ -23,8 +23,8 @@ import pytest
 from httpx import AsyncClient
 
 from auth.core.database import get_optional_tenant_conn
-from auth.main import app
 from auth.schemas.auth import UserInfoResponse
+from tests.auth.app import app
 
 pytestmark = pytest.mark.asyncio
 

@@ -35,9 +35,9 @@ import pytest
 from document.core import altcha
 from document.core.config import settings
 from document.core.database import get_redis
-from document.main import app
 from document.schemas.public import VentanillaRespuesta
 from document.services.ventanilla_service import VentanillaService
+from tests.document.app import app
 from tests.document.test_ventanilla import (
     BASE,
     PDF,

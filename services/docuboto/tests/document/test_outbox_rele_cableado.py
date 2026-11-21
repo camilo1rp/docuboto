@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 
-from document import main as app_main
+from docuboto.core import lifespan as app_lifespan
 from document.services import barrido
 
 
@@ -120,5 +120,5 @@ async def test_el_bucle_entrega_el_redis_a_la_pasada(monkeypatch) -> None:
 def test_el_lifespan_entrega_el_redis_al_bucle_de_barrido() -> None:
     """El lifespan arranca el bucle en un `create_task` que ningún test de unidad ejecuta
     (necesita Postgres y Redis): se comprueba el SITIO de la llamada."""
-    fuente = inspect.getsource(app_main.lifespan)
+    fuente = inspect.getsource(app_lifespan.lifespan)
     assert "bucle_de_barrido(app.state.redis)" in fuente

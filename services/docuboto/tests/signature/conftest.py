@@ -21,7 +21,7 @@ from orpycamcp_common.usuario import instalar_inyector
 
 from signature.core.config import settings
 from signature.core.database import get_tenant_conn
-from signature.main import app
+from tests.signature.app import app
 
 instalar_inyector(app)
 

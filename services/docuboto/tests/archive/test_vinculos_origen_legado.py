@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from document.api import DocumentUnavailableError
 from archive.services.archive_service import ArchiveService
+from document.api import DocumentUnavailableError
 
 TENANT = "demo"
 

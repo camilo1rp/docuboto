@@ -26,7 +26,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from document.core.config import settings
-from document.main import app
+from tests.document.app import app
 
 pytestmark = pytest.mark.asyncio
 

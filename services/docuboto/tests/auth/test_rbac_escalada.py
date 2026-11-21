@@ -22,8 +22,8 @@ import pytest
 from httpx import AsyncClient
 
 from auth.core.authz import Caller, get_caller
-from auth.main import app
 from auth.repositories.clearance_repository import MAX_LEVEL
+from tests.auth.app import app
 from tests.auth.test_rbac import TENANT_HEADERS, _override_conn, _patch_audit
 
 _LECTOR = Caller(

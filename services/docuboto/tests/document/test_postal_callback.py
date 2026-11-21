@@ -27,7 +27,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from document.core.postal_webhook_auth import verify_signature
-from document.main import app
+from tests.document.app import app
 from tests.document.conftest import (
     TENANT_HEADERS,
     FakeTenantClient,  # type: ignore[attr-defined]

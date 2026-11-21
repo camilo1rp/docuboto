@@ -25,10 +25,10 @@ from datetime import UTC, datetime
 import pytest
 
 from signature.core.constants import SIGNATURE_KIND_ELECTRONIC, SIGNATURE_KIND_SIMPLE
-from signature.main import app
 from signature.providers.base import SignerRef
 from signature.routers.public import get_public_tenant_conn
 from storage import api as storage_api
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS
 from tests.signature.test_sign_xml_xades import (  # noqa: F401 — fixtures y helpers compartidos
     _generate_cert,

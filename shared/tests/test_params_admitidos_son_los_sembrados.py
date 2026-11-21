@@ -19,14 +19,14 @@ admitida reabre el buzón. Se compara en las dos direcciones, leyendo el fuente.
 
 from __future__ import annotations
 
-from tests._chain import CHAIN, seed_rows
-from tests._compose import glob_src
-
 import ast
 import re
 from pathlib import Path
 
 import pytest
+
+from tests._chain import CHAIN, seed_rows
+from tests._compose import glob_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 MIGRACIONES = CHAIN / "tenant"

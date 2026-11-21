@@ -40,8 +40,8 @@ from httpx import AsyncClient
 
 import storage.core.config as config_module
 import storage.routers.storage as storage_router_module
-from storage.main import app as fastapi_app
 from storage.services.pdfa import PdfaResult
+from tests.storage.app import app as fastapi_app
 from tests.storage.conftest import (
     TENANT_HEADERS,
     TENANT_SLUG,

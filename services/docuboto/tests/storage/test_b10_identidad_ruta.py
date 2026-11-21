@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from storage.main import app
+from tests.storage.app import app
 
 USER = "11111111-1111-1111-1111-111111111111"
 

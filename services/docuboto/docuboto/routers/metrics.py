@@ -7,22 +7,32 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""One `/metrics` for the process. Combines the domain signals."""
+"""The one `/metrics` of the process (ADR-047): DLQ, audit chain, WORM, intelligence.
+
+Not routed by `edge` (it answers 404 there) and it rejects any request with proxy
+headers. See `orpycamcp_common.metricas`.
+"""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
 from orpycamcp_common import deadletter, metricas
 
-from archive.routers.metrics import _SENALES as _WORM
-from auth.routers.metrics import _SENALES as _AUDIT
+from archive.repositories.metricas_repository import contar_agotados
+from auth.core.medidor import _FAMILIAS as _FAMILIAS_AUDIT
+from auth.core.medidor import medir_audit_chain
 from document.core.database import get_pool
-from knowledge.routers.metrics import _SENALES as _INTELIGENCIA
+from knowledge.core.medidor import FAMILIAS as _FAMILIAS_INTELIGENCIA
+from knowledge.core.medidor import medir as medir_inteligencia
 from notification.core.constants import DLQ_GROUP as _DLQ_NOTIFICATION
 from signature.core.constants import DLQ_GROUP as _DLQ_SIGNATURE
 from workflow.core.constants import DLQ_GROUP as _DLQ_WORKFLOW
 
 router = APIRouter(tags=["metrics"])
+
+
+async def _medir_worm(conn) -> list[metricas.Muestra]:
+    return await contar_agotados(conn, await metricas.esquemas_a_medir(conn))
 
 _GRUPOS_DLQ = (_DLQ_WORKFLOW, _DLQ_NOTIFICATION, _DLQ_SIGNATURE)
 
@@ -53,9 +63,9 @@ _SENALES = (
             }
         ),
     ),
-    *_AUDIT,
-    *_WORM,
-    *_INTELIGENCIA,
+    metricas.Senal("audit_chain", medir_audit_chain, familias=_FAMILIAS_AUDIT),
+    metricas.Senal("worm", _medir_worm, familias=frozenset({"orpycamcp_worm_exhausted_artifacts"})),
+    metricas.Senal("intelligence", medir_inteligencia, familias=_FAMILIAS_INTELIGENCIA),
 )
 
 

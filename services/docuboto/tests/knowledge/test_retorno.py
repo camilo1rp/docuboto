@@ -30,7 +30,7 @@ from knowledge.core import database
 from knowledge.core.clave_retorno import aad
 from knowledge.core.config import settings
 from knowledge.core.firma_retorno import comprobar
-from knowledge.main import app
+from tests.knowledge.app import app
 
 KEK = b"\x44" * 32
 SECRETO = b"\x11" * 32

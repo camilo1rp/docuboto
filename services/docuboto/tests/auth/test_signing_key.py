@@ -50,7 +50,7 @@ from auth.core.signing_keys import (
     private_key_to_pem,
     sign_digest,
 )
-from auth.main import app
+from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 USER_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")

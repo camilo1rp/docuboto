@@ -7,26 +7,15 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""`GET /metrics` de auth-service: la señal `audit_chain` (C18, ADR-041).
+"""Señal `audit_chain` (C18, ADR-041): la última verificación completa de la cadena.
 
-NUNCA ejecuta `verify_chain` en el scrape (recorre el registro entero): lee la
-última corrida COMPLETA que dejó `app.ops.verify_audit_chains` (backup, restore o
-cron) en `public.audit_chain_runs`. Una corrida parcial (`--slug`,
-`--excluir-prefijo`) no cuenta; sin corrida completa la señal sale «no verificada»
-(`orpycamcp_signal_measured{signal="audit_chain"} 0`), no con ceros. La
-antigüedad la juzga la alarma, no el exportador. No lo enruta el gateway y rechaza
-con 404 toda petición con cabeceras de proxy.
+La expone el único `/metrics` del proceso (`docuboto.routers.metrics`).
 """
 
 from __future__ import annotations
 
 import asyncpg
-from fastapi import APIRouter, Request, Response
 from orpycamcp_common import metricas
-
-from auth.core.database import get_pool
-
-router = APIRouter(tags=["metrics"])
 
 _ULTIMA_COMPLETA = (
     "SELECT finished_at, roturas_nuevas, roturas_declaradas, codigo_salida "
@@ -58,11 +47,3 @@ async def medir_audit_chain(conn: asyncpg.Connection) -> list[metricas.Muestra]:
             fila["finished_at"].timestamp(),
         ),
     ]
-
-
-_SENALES = (metricas.Senal("audit_chain", medir_audit_chain, familias=_FAMILIAS),)
-
-
-@router.get("/metrics", include_in_schema=False)
-async def metrics(request: Request) -> Response:
-    return await metricas.responder(request, get_pool(), _SENALES)

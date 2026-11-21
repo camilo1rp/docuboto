@@ -15,14 +15,13 @@ ning√∫n servicio aceptaba (`-abc`). Una copia futura sin ancla, o con `_`, habr√
 permitido colisiones de schema o salirse del entrecomillado.
 """
 
-from tests._compose import glob_src
-
-
 import re
 from pathlib import Path
 
 import pytest
+
 from orpycamcp_common.tenant import SLUG_MAX, slug_valido, tenant_schema
+from tests._compose import glob_src
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _SERVICIOS = _RAIZ / "services"

@@ -989,25 +989,6 @@ async def test_list_trd_series(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_health_check(
-    client_with_conn: tuple[AsyncClient, AsyncMock],
-) -> None:
-    client, mock_conn = client_with_conn
-    mock_conn.fetchval.return_value = 1
-
-    response = await client.get("/health")
-
-    """`/health` es VIVACIDAD: gobierna los reinicios del contenedor.
-
-    Antes tomaba una conexión del pool en cada sondeo (cada 15 s) para preguntar
-    `SELECT 1`, metiendo una dependencia externa en la sonda que decide si el
-    contenedor se reinicia. Reiniciar por un Postgres caído no arregla Postgres.
-    El diagnóstico de dependencias vive ahora en `/health/ready`.
-    """
-
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "archive-service", "version": "dev"}
 
 
 @pytest.mark.asyncio

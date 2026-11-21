@@ -25,7 +25,7 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from signature.main import app
+from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS
 from tests.signature.test_cadena import SOL_ID, _clear, _make_conn, _override, _sol_row
 

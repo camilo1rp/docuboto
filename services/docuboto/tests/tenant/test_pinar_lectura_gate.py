@@ -32,8 +32,8 @@ from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 
 from tenant.core.database import get_tenant_conn
-from tenant.main import app
 from tenant.routers import pinar
+from tests.tenant.app import app
 
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}
 

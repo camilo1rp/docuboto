@@ -18,16 +18,15 @@ el asiento elige `CANAL_PETICION` (hereda el `X-Canal` del gateway) o un canal c
 fondo fijan `'system'` en su tarea (`request_log.canal_de_fondo`).
 """
 
-from tests._compose import glob_src
-
-
 import ast
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from orpycamcp_common import audit, request_log
+from tests._compose import glob_src
 
 _RAIZ = Path(__file__).resolve().parents[2]
 _SERVICIOS = _RAIZ / "services"

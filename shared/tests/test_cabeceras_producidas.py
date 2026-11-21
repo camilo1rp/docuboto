@@ -31,10 +31,10 @@ nombres prohibidos: un catálogo solo recuerda los casos que alguien ya sufrió.
 
 from __future__ import annotations
 
-from tests._compose import glob_src
-
 import re
 from pathlib import Path
+
+from tests._compose import glob_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
@@ -89,7 +89,7 @@ def _cabeceras_producidas() -> set[str]:
     return producidas
 
 
-def test_el_censo_ve_el_codigo(): 
+def test_el_censo_ve_el_codigo():
     """Anti-vacuidad: un glob roto daría verde sin haber mirado nada."""
     assert len(_ficheros()) > 200
     leidas = _cabeceras_leidas()

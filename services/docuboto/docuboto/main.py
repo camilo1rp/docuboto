@@ -11,14 +11,16 @@
 
 `include_router` mounts each module's routes. A mounted sub-app would swallow
 the other module's 404 and skip this lifespan. Health and metrics live here
-once; the domain packages keep theirs for the split layout and for tests.
+once. `create_app` is the one definition of middleware and handlers: the tests
+build a domain-scoped app with it instead of keeping one per domain.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from orpycamcp_common import deadletter, request_log, usuario
@@ -45,27 +47,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    redirect_slashes=False,
-    title="Docuboto",
-    description="SGDEA: un proceso, los módulos de dominio por include_router.",
-    version="2.0.0",
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+#: Every domain's routers, in mounting order.
+ALL_ROUTERS: tuple[APIRouter, ...] = (
+    *AUTH_ROUTERS,
+    *TENANT_ROUTERS,
+    *DOCUMENT_ROUTERS,
+    *ARCHIVE_ROUTERS,
+    *STORAGE_ROUTERS,
+    *WORKFLOW_ROUTERS,
+    *NOTIFICATION_ROUTERS,
+    *SIGNATURE_ROUTERS,
+    *KNOWLEDGE_ROUTERS,
 )
 
-# Starlette ejecuta en orden inverso al de registro: SecurityHeaders (el
-# identificador de petición) → RequestLog → UsuarioActual → cuota por persona
-# → routers.
-app.add_middleware(UserRateLimitMiddleware)
-app.add_middleware(usuario.UsuarioActualMiddleware)
-app.add_middleware(request_log.RequestLogMiddleware, servicio="docuboto")
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_exception_handler(Problema, respuesta_problema)
 
-
-@app.exception_handler(RequestValidationError)
 async def _validacion_sin_eco(_request: Request, exc: RequestValidationError) -> JSONResponse:
     detalle = [
         {"type": e.get("type"), "loc": list(e.get("loc", ())), "msg": e.get("msg")}
@@ -74,26 +69,6 @@ async def _validacion_sin_eco(_request: Request, exc: RequestValidationError) ->
     return JSONResponse(status_code=422, content={"detail": detalle})
 
 
-for _routers in (
-    AUTH_ROUTERS,
-    TENANT_ROUTERS,
-    DOCUMENT_ROUTERS,
-    ARCHIVE_ROUTERS,
-    STORAGE_ROUTERS,
-    WORKFLOW_ROUTERS,
-    NOTIFICATION_ROUTERS,
-    SIGNATURE_ROUTERS,
-    KNOWLEDGE_ROUTERS,
-):
-    for _router in _routers:
-        app.include_router(_router)
-
-deadletter.instalar_manejador_radicados_ausente(app)
-app.include_router(health_router)
-app.include_router(metrics_router)
-
-
-@app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
     return JSONResponse(
@@ -104,3 +79,43 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
             "status": 500,
         },
     )
+
+
+def create_app(
+    routers: Iterable[APIRouter] = ALL_ROUTERS,
+    *,
+    with_lifespan: bool = True,
+    with_ops: bool = True,
+    rate_limit: bool = True,
+) -> FastAPI:
+    """The process app. Tests pass one domain's routers and turn the rest off."""
+    nueva = FastAPI(
+        redirect_slashes=False,
+        title="Docuboto",
+        description="SGDEA: un proceso, los módulos de dominio por include_router.",
+        version="2.0.0",
+        lifespan=lifespan if with_lifespan else None,
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+    # Starlette ejecuta en orden inverso al de registro: SecurityHeaders (el
+    # identificador de petición) → RequestLog → UsuarioActual → cuota por persona
+    # → routers.
+    if rate_limit:
+        nueva.add_middleware(UserRateLimitMiddleware)
+    nueva.add_middleware(usuario.UsuarioActualMiddleware)
+    nueva.add_middleware(request_log.RequestLogMiddleware, servicio="docuboto")
+    nueva.add_middleware(SecurityHeadersMiddleware)
+    nueva.add_exception_handler(Problema, respuesta_problema)
+    nueva.add_exception_handler(RequestValidationError, _validacion_sin_eco)
+    for router in routers:
+        nueva.include_router(router)
+    deadletter.instalar_manejador_radicados_ausente(nueva)
+    if with_ops:
+        nueva.include_router(health_router)
+        nueva.include_router(metrics_router)
+    nueva.add_exception_handler(Exception, unhandled_exception_handler)
+    return nueva
+
+
+app = create_app()
