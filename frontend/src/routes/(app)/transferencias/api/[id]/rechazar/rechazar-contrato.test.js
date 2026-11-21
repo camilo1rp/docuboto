@@ -29,10 +29,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { POST as rechazar } from "./+server.js";
 
-const ESQUEMA = resolve(
-  process.cwd(),
-  "../services/docuboto/archive/schemas/transferencia.py",
-);
+const ESQUEMA = resolve(process.cwd(), "../services/docuboto/archive/schemas/transferencia.py");
 
 const ID = "b44330b6-6d7e-489d-a58c-f62a0e2d0f53";
 const LOCALS = {
