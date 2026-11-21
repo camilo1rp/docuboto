@@ -29,7 +29,7 @@ from orpycamcp_common.database import get_conn as get_db_conn
 from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import instalar_inyector
 
-from document.core.config import settings
+from docuboto.config import document as settings
 from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
 from document.services.ventanilla_service import VentanillaService
 from tenant.api import TenantUnavailableError

@@ -19,8 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.jobs.indice_reconciliation import _reconciliar_indice
+from docuboto.config import archive as settings
 from notification.api import NotificationDeliveryError
 from signature.api import SignOutcome
 

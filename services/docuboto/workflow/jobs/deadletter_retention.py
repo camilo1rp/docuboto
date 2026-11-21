@@ -42,7 +42,7 @@ import logging
 import asyncpg
 from orpycamcp_common.database import acquire_tenant, close_pool, create_pool, get_pool
 
-from workflow.core.config import settings
+from docuboto.config import workflow as settings
 from workflow.core.constants import DLQ_GROUP
 from workflow.repositories.dead_letter_repository import DeadLetterRepository
 

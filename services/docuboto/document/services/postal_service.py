@@ -28,7 +28,7 @@ from fastapi import HTTPException, status
 from orpycamcp_common import audit
 from pydantic import ValidationError
 
-from document.core.config import settings
+from docuboto.config import document as settings
 from document.core.postal_webhook_auth import (
     cifrar_secreto,
     descifrar_secreto,

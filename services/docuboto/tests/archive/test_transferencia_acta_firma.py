@@ -28,10 +28,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from archive.core.actor import Actor
-from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.transferencia_service import TransferenciaService
+from docuboto.config import archive as settings
 from signature.api import SignedIndice, SignOutcome, VerifyResult
 from tests.archive.conftest import TENANT_HEADERS, USER_ID
 

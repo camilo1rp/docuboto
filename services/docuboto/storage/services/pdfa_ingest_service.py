@@ -57,7 +57,7 @@ import uuid
 
 import asyncpg
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.core.minio_client import get_minio
 from storage.repositories.file_repository import FileRepository, InvalidTenantSlugError
 from storage.repositories.preservacion_repository import PreservacionRepository

@@ -24,7 +24,6 @@ import asyncpg
 import pytest
 from orpycamcp_common.database import tenant_schema
 
-from auth.core.config import settings
 from auth.core.signing_keys import (
     build_aad,
     encrypt_private_key,
@@ -32,6 +31,7 @@ from auth.core.signing_keys import (
     private_key_to_pem,
 )
 from auth.jobs import signing_key_maintenance as job
+from docuboto.config import auth as settings
 from tests.auth.integration.conftest import DSN, RUN_INTEGRATION
 
 pytestmark = [

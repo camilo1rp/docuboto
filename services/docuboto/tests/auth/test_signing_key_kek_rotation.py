@@ -17,7 +17,7 @@ import base64
 
 import pytest
 
-from auth.core.config import Settings
+from docuboto.config import AuthSettings as Settings
 
 _V1 = base64.b64encode(b"\x11" * 32).decode()
 _V2 = base64.b64encode(b"\x22" * 32).decode()

@@ -25,10 +25,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.services.index_builder import IndiceData, IndiceItemData, build_xml
 from archive.services.index_service import IndexService
 from archive.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
+from docuboto.config import archive as settings
 from signature.api import SignOutcome
 
 TENANT = "demo"

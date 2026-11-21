@@ -42,7 +42,7 @@ import time
 
 import pytest
 
-from storage.core.config import settings as app_settings
+from docuboto.config import storage as app_settings
 from storage.services.pdfa import SubprocessVeraPdfValidator, get_pdfa_validator
 
 _VERAPDF_BINARY = os.environ.get("VERAPDF_BINARY", "")

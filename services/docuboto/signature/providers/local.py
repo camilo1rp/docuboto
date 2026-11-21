@@ -148,9 +148,9 @@ from lxml import etree
 from signxml import CanonicalizationMethod, DigestAlgorithm, SignatureMethod
 from signxml.xades import XAdESSignatureConfiguration, XAdESSigner, XAdESVerifier
 
+from docuboto.config import signature as settings
 from signature.core import algoritmos as catalogo
 from signature.core import ocsp, tsa
-from signature.core.config import settings
 from signature.core.keys import cert_fingerprint
 from signature.providers.base import PreparedDoc, SignatureFormat, SignedDoc, SignerRef
 

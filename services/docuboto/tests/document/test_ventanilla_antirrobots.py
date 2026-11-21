@@ -32,8 +32,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from docuboto.config import document as settings
 from document.core import altcha
-from document.core.config import settings
 from document.core.dependencies import get_redis
 from document.schemas.public import VentanillaRespuesta
 from document.services.ventanilla_service import VentanillaService

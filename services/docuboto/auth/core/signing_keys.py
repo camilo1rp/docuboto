@@ -175,7 +175,7 @@ def load_user_ca_certificate() -> x509.Certificate:
     simplicidad de "siempre la versión en disco" pesa más que el ahorro de
     una relectura ocasional.
     """
-    from auth.core.config import settings  # local import: evita el ciclo config<->signing_keys
+    from docuboto.config import auth as settings
 
     path = settings.signing_key_ca_users_cert_path
     if not path:

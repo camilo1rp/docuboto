@@ -241,6 +241,6 @@ async def test_content_disposition_sanitized(cmis_ctx: tuple[AsyncClient, AsyncM
 
 @pytest.fixture(autouse=True)
 def _habilitar_interop(monkeypatch: pytest.MonkeyPatch) -> None:
-    from document.core import config as cfg_module
+    from docuboto import config as cfg_module
 
-    monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
+    monkeypatch.setattr(cfg_module.document, "public_interop_enabled", True)

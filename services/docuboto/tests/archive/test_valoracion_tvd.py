@@ -33,7 +33,6 @@ import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
 
-from archive.core.config import settings
 from archive.schemas.retencion_legal import ValoracionTvdRequest
 from archive.services.retention_math import RetencionDiferida
 from archive.services.valoracion_service import (
@@ -41,6 +40,7 @@ from archive.services.valoracion_service import (
     ValoracionHoldError,
     ValoracionService,
 )
+from docuboto.config import archive as settings
 from storage.api import StorageLegalHoldError
 from tests.archive.conftest import TENANT_HEADERS
 

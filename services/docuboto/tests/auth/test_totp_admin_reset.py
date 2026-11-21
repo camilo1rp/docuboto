@@ -33,8 +33,8 @@ from httpx import AsyncClient
 from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller
-from auth.core.config import settings
 from auth.core.totp import build_aad, encrypt_secret
+from docuboto.config import auth as settings
 from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}

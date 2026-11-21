@@ -27,7 +27,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.core.secret_derivation import KEY_VERSION_ACTUAL, KEY_VERSION_SIN_HMAC
 from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER

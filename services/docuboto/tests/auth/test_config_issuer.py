@@ -10,7 +10,7 @@
 
 import pytest
 
-from auth.core.config import Settings
+from docuboto.config import AuthSettings as Settings
 
 
 def test_expected_issuer_fallback_to_keycloak_url() -> None:

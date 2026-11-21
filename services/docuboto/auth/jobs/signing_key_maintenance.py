@@ -43,9 +43,9 @@ import asyncpg
 from orpycamcp_common import request_log
 from orpycamcp_common.database import tenant_schema
 
-from auth.core.config import settings
 from auth.ops import purge_revoked_signing_keys as _purge_op
 from auth.ops import rewrap_signing_keys as _rewrap_op
+from docuboto.config import auth as settings
 
 try:
     from orpycamcp_common import audit as _audit

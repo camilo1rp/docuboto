@@ -33,11 +33,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.services.aip_wiring_service import AipWiringService
 from archive.services.index_service import IndexService
 from archive.services.retention_math import RetencionDiferida, base_worm
 from archive.services.transferencia_service import TransferenciaService
+from docuboto.config import archive as settings
 
 HOY = datetime.now(tz=UTC).date()
 MARGEN = settings.worm_piso_margen_dias

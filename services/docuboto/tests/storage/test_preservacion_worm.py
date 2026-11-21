@@ -29,7 +29,7 @@ import pydantic
 import pytest
 from miniopy_async import S3Error  # type: ignore[attr-defined]
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.core.minio_client import ObjectLockNotEnabledError
@@ -56,7 +56,7 @@ def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """PRESERVATION_ENABLED=false es el default seguro (kill-switch) — se activa
     aquí para poder ejercer la protección; `test_proteger_indice_disabled_by_feature_flag`
     lo vuelve a apagar explícitamente."""
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _grant_permission(mock_conn) -> None:
@@ -442,7 +442,7 @@ async def test_proteger_indice_bucket_name_derived_from_tenant_arg_not_body(clie
 async def test_proteger_indice_disabled_by_feature_flag(client_with_conn, monkeypatch) -> None:
     _client, mock_conn, mock_minio = client_with_conn
     _grant_permission(mock_conn)
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", False)
 
     with pytest.raises(PreservationDisabledError):
         await _proteger(mock_conn, _base_payload(uuid.uuid4()))

@@ -183,7 +183,7 @@ async def test_run_once_worm_renovacion_passes_ct_codes_and_ventana_to_all_three
     ):
         await indice_reconciliation.run_once_worm_renovacion()
 
-    from archive.core.config import settings
+    from docuboto.config import archive as settings
 
     mock_list_indice.assert_awaited_once_with(
         ventana_dias=settings.worm_renovacion_ventana_dias,

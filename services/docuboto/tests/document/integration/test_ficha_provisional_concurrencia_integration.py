@@ -42,8 +42,8 @@ from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.database import tenant_schema
 
+from docuboto.config import document as settings
 from document.core import altcha
-from document.core.config import settings
 from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
 from tests.document.app import app
 from tests.document.integration.conftest import _require_dsn

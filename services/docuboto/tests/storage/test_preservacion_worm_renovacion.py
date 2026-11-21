@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.core.preservacion_tipos import MULTI_ARTEFACTO_TIPOS
@@ -48,7 +48,7 @@ from tests.storage.conftest import TENANT_SLUG, make_worm_row
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _renovar_payload(*, expediente_id: str = "EXP-1", tipo: str = "indice", **overrides) -> dict:
@@ -247,7 +247,7 @@ async def test_renovar_retencion_disabled_by_feature_flag(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _client, mock_conn, mock_minio = client_with_conn
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", False)
 
     outcome = await _renew_via_api()
 

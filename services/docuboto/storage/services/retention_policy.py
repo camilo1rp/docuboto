@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 
 
 class InvalidRetentionError(Exception):

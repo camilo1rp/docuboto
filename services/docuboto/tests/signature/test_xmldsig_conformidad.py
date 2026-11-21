@@ -386,7 +386,7 @@ _NS_LTA = {**_NS, "xades": _X, "x141": _X141}
 
 
 async def _firmar_lta(monkeypatch: pytest.MonkeyPatch):
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
     from tests.signature.test_sign_xml_xades import (
         _build_crl,
         _ca_cert_pem,

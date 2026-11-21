@@ -27,7 +27,7 @@ from orpycamcp_common.database import get_pool
 
 from auth.core.audit_partitions import estado_particion_siguiente
 from auth.routers.auth import get_auth_service
-from notification.core.config import settings as notification_settings
+from docuboto.config import notification as notification_settings
 from notification.workers.stream_worker import DEADLETTER_STREAM as DLQ_NOTIFICATION
 from signature.workers.document_consumer import DEADLETTER_STREAM as DLQ_SIGNATURE
 from storage.core.minio_client import get_minio

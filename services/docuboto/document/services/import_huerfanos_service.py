@@ -36,7 +36,7 @@ from typing import Any
 
 from orpycamcp_common import audit
 
-from document.core.config import settings
+from docuboto.config import document as settings
 from document.repositories.import_repository import ImportRepository
 from storage import api as storage_api
 

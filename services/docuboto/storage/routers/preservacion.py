@@ -20,7 +20,7 @@ from orpycamcp_common.clearance import require_vetted_permission as require_perm
 from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from orpycamcp_common.usuario import id_opcional, username_de
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.core.minio_client import get_minio
 from storage.repositories.preservacion_repository import PreservacionRepository
 from storage.schemas.preservacion import (

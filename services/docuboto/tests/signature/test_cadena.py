@@ -31,7 +31,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.database import get_tenant_conn
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 

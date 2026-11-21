@@ -41,7 +41,7 @@ import asyncpg
 from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
 from orpycamcp_common import audit
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.core.constants import canal_del_acto
 from storage.core.minio_client import get_minio, verificar_legal_hold_aplicado
 from storage.repositories.legal_hold_repository import LegalHoldRepository

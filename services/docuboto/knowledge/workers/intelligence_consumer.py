@@ -30,9 +30,9 @@ from orpycamcp_common import events
 from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.tenant import slug_valido
 
+from docuboto.config import knowledge as settings
 from knowledge.core import paso
 from knowledge.core.conexion import asegurar
-from knowledge.core.config import settings
 from knowledge.core.consumidor import CONOCIDOS, atender, cargar_pagina
 from knowledge.core.reconciliacion import reconciliar
 from knowledge.core.redis_client import get_redis

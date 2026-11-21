@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from orpycamcp_common.clearance import require_vetted_permission as require_permission
 from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.schemas.storage import FileResponse
 from storage.services.pdfa_ingest_service import (
     PdfaNonConformantError,

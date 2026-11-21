@@ -21,11 +21,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.jobs import indice_reconciliation
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.index_service import IndexService
 from archive.services.transferencia_service import TransferenciaService
+from docuboto.config import archive as settings
 from storage.api import WormRenewalOutcome
 
 TENANT = "demo"

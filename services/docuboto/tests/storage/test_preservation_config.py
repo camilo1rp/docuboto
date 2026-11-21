@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from storage.core.config import Settings
+from docuboto.config import StorageSettings as Settings
 
 
 def test_startup_guard_silent_when_compliance() -> None:

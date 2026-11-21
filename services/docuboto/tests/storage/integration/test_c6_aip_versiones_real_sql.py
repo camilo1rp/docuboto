@@ -29,9 +29,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-import storage.core.config as config_module
 import storage.services.aip_service as aip_service_module
 import storage.services.preservation_worm_service as worm_service_module
+from docuboto import config as config_module
 from storage.repositories.preservacion_repository import PreservacionRepository
 from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
 from storage.schemas.preservacion import AipCreate, AipReempaquetarRequest, RenovarRetencionRequest
@@ -101,8 +101,8 @@ async def _seed_file(conn, slug, *, content: bytes, nombre: str, mime: str, buck
 async def mundo(tenant_ctx, monkeypatch):
     """v1 empaquetado de verdad + índice renovado protegido; devuelve lo necesario para la v2."""
     slug, conn = tenant_ctx
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", False)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", False)
     alm = _Almacen()
     exp = f"EXP-{uuid.uuid4().hex[:8]}"
     doc_id = await _seed_file(conn, slug, content=_DOC, nombre="oficio.pdf", mime="application/pdf")

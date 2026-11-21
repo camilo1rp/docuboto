@@ -27,8 +27,8 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from docuboto.config import document as settings
 from document.core import altcha
-from document.core.config import settings
 
 logger = logging.getLogger(__name__)
 

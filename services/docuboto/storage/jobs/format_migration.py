@@ -69,7 +69,7 @@ import logging
 import asyncpg
 from orpycamcp_common.database import get_pool, tenant_schema
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.repositories.preservacion_repository import PreservacionRepository
 from storage.services.format_migration_service import (
     FormatMigrationService,

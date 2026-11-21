@@ -51,13 +51,13 @@ import sys
 
 import asyncpg
 
-from auth.core.config import settings
 from auth.core.signing_keys import (
     build_aad,
     decrypt_private_key,
     encrypt_private_key,
 )
 from auth.repositories.signing_key_repository import SigningKeyRepository
+from docuboto.config import auth as settings
 
 try:  # auditoría compartida (misma disponibilidad opcional que el servicio)
     from orpycamcp_common import audit as _audit

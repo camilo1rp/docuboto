@@ -26,8 +26,8 @@ from typing import Any
 
 from orpycamcp_common.kek import decode_aes256, seal
 
+from docuboto.config import knowledge as settings
 from knowledge.core import clave_retorno, paso
-from knowledge.core.config import settings
 from knowledge.core.firma_capabilities import verificar
 from knowledge.core.salida_http import PPI_VERSION
 

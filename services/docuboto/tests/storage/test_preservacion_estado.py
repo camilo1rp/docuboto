@@ -17,7 +17,7 @@ expediente: solo refleja `settings.preservation_enabled`.
 
 import pytest
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from tests.storage.conftest import TENANT_HEADERS
 
 

@@ -45,7 +45,7 @@ import uuid
 import asyncpg
 from orpycamcp_common import audit
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.repositories.file_repository import FileRepository
 from storage.repositories.preservacion_repository import PreservacionRepository
 from storage.services.migracion.factory import get_format_migrator

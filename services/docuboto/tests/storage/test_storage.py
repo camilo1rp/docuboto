@@ -42,8 +42,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
+from docuboto import config as cfg_module
 from storage import api as storage_api
-from storage.core import config as cfg_module
 from storage.services.storage_service import (
     AnexoCitadoPorConstanciaError,
     NotCurrentVersionError,
@@ -328,7 +328,7 @@ async def test_get_presigned_url(
     mock_conn.fetchrow.return_value = record
     mock_minio.presigned_get_object.return_value = "http://minio/presigned-url"
 
-    url = await _svc(mock_conn).get_presigned_url(FILE_ID, cfg_module.settings.presigned_url_expiry)
+    url = await _svc(mock_conn).get_presigned_url(FILE_ID, cfg_module.storage.presigned_url_expiry)
 
     assert url is not None
     assert url.url == "http://minio/presigned-url"
@@ -660,7 +660,7 @@ async def test_upload_por_encima_del_tope_es_413(
 ) -> None:
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # el tope es lo que se prueba, no el gate
-    monkeypatch.setattr(cfg_module.settings, "max_upload_bytes", 1024)
+    monkeypatch.setattr(cfg_module.storage, "max_upload_bytes", 1024)
 
     response = await client.post(
         "/api/v1/storage/upload",
@@ -682,7 +682,7 @@ async def test_upload_dentro_del_tope_sigue_funcionando(
     """Control positivo: sin esto, un 413 constante pasaría el test de arriba."""
     client, mock_conn, _ = client_with_conn
     conceder_permisos(mock_conn)  # el tope es lo que se prueba, no el gate
-    monkeypatch.setattr(cfg_module.settings, "max_upload_bytes", 1024)
+    monkeypatch.setattr(cfg_module.storage, "max_upload_bytes", 1024)
     # find_by_sha256 → None (sin duplicado), luego create devuelve el registro.
     mock_conn.fetchrow.side_effect = [None, make_file_record(file_id=FILE_ID)]
 

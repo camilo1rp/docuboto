@@ -20,9 +20,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
+from docuboto.config import knowledge as settings
 from knowledge.clients.ppi import ClientePpi
 from knowledge.core.conexion import asegurar
-from knowledge.core.config import settings
 from knowledge.core.firma_capabilities import verificar
 from knowledge.core.jcs import canonico
 from knowledge.core.salida_http import PPI_VERSION

@@ -52,7 +52,8 @@ from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
 from miniopy_async.commonconfig import CopySource
 from miniopy_async.retention import Retention
 
-from storage.core.config import _same_endpoint, settings
+from docuboto.config import _same_endpoint
+from docuboto.config import storage as settings
 from storage.core.minio_client import ensure_object_lock_bucket, verificar_retencion_aplicada
 
 logger = logging.getLogger(__name__)

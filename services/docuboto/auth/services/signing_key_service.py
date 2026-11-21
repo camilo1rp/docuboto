@@ -37,7 +37,6 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from fastapi import HTTPException, status
 
-from auth.core.config import settings
 from auth.core.signing_keys import (
     UserCaNotConfiguredError,
     build_aad,
@@ -60,6 +59,7 @@ from auth.schemas.signing_key import (
     SigningKeyStatusResponse,
 )
 from auth.services.totp_service import TotpService
+from docuboto.config import auth as settings
 
 logger = logging.getLogger(__name__)
 

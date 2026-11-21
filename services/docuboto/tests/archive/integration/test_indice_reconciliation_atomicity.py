@@ -348,7 +348,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit(
 async def test_reconciliar_indice_agotado_permanece_pendiente_firma(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from archive.core.config import settings
+    from docuboto.config import archive as settings
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 1)
     slug, conn = tenant_ctx
@@ -411,7 +411,7 @@ async def test_reconciliar_indice_agotado_failure_after_audit_append_reverts_bum
     `reconcile_agotado=TRUE`) debe revertir JUNTO con el asiento -- antes eran
     dos commits autocommit separados y esta fault-injection habría dejado
     `reconcile_agotado=TRUE` con CERO asientos que lo explicaran."""
-    from archive.core.config import settings
+    from docuboto.config import archive as settings
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 1)
     slug, conn = tenant_ctx

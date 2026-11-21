@@ -77,7 +77,7 @@ from datetime import UTC, datetime
 
 import asyncpg
 
-from auth.core.config import settings
+from docuboto.config import auth as settings
 
 try:
     from orpycamcp_common import audit as _audit

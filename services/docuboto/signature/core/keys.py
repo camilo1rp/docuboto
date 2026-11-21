@@ -40,7 +40,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from orpycamcp_common.tenant import slug_valido
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.providers.base import SignerRef
 
 # Mismo patrón que signature/core/database.py — un slug válido nunca contiene

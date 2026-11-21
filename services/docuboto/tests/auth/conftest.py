@@ -28,9 +28,9 @@ from orpycamcp_common import usuario
 from orpycamcp_common.database import get_conn as get_db_conn
 from orpycamcp_common.usuario import instalar_inyector
 
-from auth.core.config import settings
 from auth.routers.auth import set_auth_service
 from auth.services.auth_service import AuthService
+from docuboto.config import auth as settings
 from tests.auth.app import app
 
 instalar_inyector(app)

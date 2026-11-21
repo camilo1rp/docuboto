@@ -31,8 +31,8 @@ import pytest
 import pytest_asyncio
 import redis.asyncio as aioredis
 
+from docuboto.config import document as settings
 from document.core import altcha
-from document.core.config import settings
 from document.core.dependencies import get_redis
 from tests.document.app import app
 from tests.document.test_ventanilla import (

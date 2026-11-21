@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.services import signer
 from tests.signature.conftest import TENANT_HEADERS, USER, sellar
 

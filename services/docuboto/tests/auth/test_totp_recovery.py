@@ -29,7 +29,6 @@ from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller
-from auth.core.config import settings
 from auth.core.recovery_codes import (
     generate_recovery_code,
     generate_recovery_codes,
@@ -46,6 +45,7 @@ from auth.core.totp import (
     encrypt_secret,
     generate_secret,
 )
+from docuboto.config import auth as settings
 from tests.auth.app import app
 
 USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")

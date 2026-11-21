@@ -21,7 +21,7 @@ import asyncpg
 import redis.asyncio as aioredis
 from orpycamcp_common import database
 
-from docuboto.core.config import settings
+from docuboto import config as settings
 
 _MODULOS_REDIS = (
     "document.core.redis_client",
@@ -34,10 +34,10 @@ _MODULOS_REDIS = (
 
 async def crear_pool() -> asyncpg.Pool:
     return await database.create_pool(
-        settings.database_url_asyncpg,
-        min_size=settings.db_pool_min_size,
-        max_size=settings.db_pool_max_size,
-        command_timeout=settings.db_command_timeout,
+        settings.common.database_url_asyncpg,
+        min_size=settings.common.db_pool_min_size,
+        max_size=settings.common.db_pool_max_size,
+        command_timeout=settings.common.db_command_timeout,
     )
 
 

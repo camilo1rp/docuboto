@@ -41,7 +41,6 @@ from orpycamcp_common import audit
 from orpycamcp_common.database import acquire_tenant, close_pool, create_pool, get_pool
 
 import signature.api as signature_api
-from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.disposition import CT_DISPOSITION_CODES
 from archive.repositories.aip_repository import AipRepository
@@ -55,6 +54,7 @@ from archive.services.index_service import IndexService
 from archive.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
 from archive.services.transferencia_service import TransferenciaService
 from archive.services.valoracion_service import ValoracionService
+from docuboto.config import archive as settings
 from notification import api as notification_api
 
 logger = logging.getLogger(__name__)

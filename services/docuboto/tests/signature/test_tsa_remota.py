@@ -36,8 +36,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
+from docuboto.config import signature as settings
 from signature.core import tsa as tsa_module
-from signature.core.config import settings
 from signature.core.tsa import TsaUnavailableError, sello_acreditado
 
 URL = "https://tsa.operador.test/timestamp"

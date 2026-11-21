@@ -26,7 +26,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 from notification.ops import cifrar_webhook_secrets as cifrar
 from notification.ops import rewrap_webhook_secrets as rewrap
 from notification.repositories.webhook_repository import WebhookRepository

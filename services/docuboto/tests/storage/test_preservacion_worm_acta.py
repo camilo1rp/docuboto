@@ -35,7 +35,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pydantic
 import pytest
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.schemas.preservacion import ProtegerIndiceRequest
@@ -55,7 +55,7 @@ _ACTA_SHA256 = hashlib.sha256(_ACTA_XML).hexdigest()
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _grant_permission(mock_conn) -> None:

@@ -44,8 +44,8 @@ import sys
 
 import asyncpg
 
-from auth.core.config import settings
 from auth.repositories.signing_key_repository import SigningKeyRepository
+from docuboto.config import auth as settings
 
 try:
     from orpycamcp_common import audit as _audit

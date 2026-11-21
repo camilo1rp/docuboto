@@ -295,7 +295,7 @@ def test_ningun_comentario_de_tsa_dice_stub_con_el_cliente_remoto_implementado()
     assert "httpx.post(" in _leer("services/docuboto/signature/core/tsa.py")
     for rel in (
         "services/docuboto/signature/core/tsa.py",
-        "services/docuboto/signature/core/config.py",
+        "services/docuboto/docuboto/config.py",
         "services/docuboto/signature/schemas/firma.py",
     ):
         for n, linea in enumerate(_leer(rel).splitlines(), 1):

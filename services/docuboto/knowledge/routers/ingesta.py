@@ -20,9 +20,9 @@ from orpycamcp_common.clearance import require_actor_permission as require_permi
 from orpycamcp_common.database import get_tenant_conn
 from pydantic import BaseModel, Field, model_validator
 
+from docuboto.config import knowledge as settings
 from knowledge.core import ingesta, paso
 from knowledge.core.clearance import require_asistente_habilitado
-from knowledge.core.config import settings
 from knowledge.core.salida_http import transporte_de_consulta
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["ingesta"])

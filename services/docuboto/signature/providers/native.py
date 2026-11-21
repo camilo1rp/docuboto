@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.providers.base import PreparedDoc, SignedDoc, SignerRef
 from signature.services import signer as _hmac_signer
 

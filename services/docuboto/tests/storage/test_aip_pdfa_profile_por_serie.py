@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage.schemas.preservacion import AipCreate
 from storage.services.aip_service import AipService, _resolve_pdfa_profile
 from storage.services.pdfa.subprocess_verapdf import SubprocessVeraPdfValidator
@@ -68,7 +68,7 @@ async def _empaquetar(mock_conn, payload: dict) -> dict:
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +83,12 @@ def test_resolve_pdfa_profile_none_falls_back_to_configured_default(
     propia, o llamador legacy) -> el default GLOBAL configurado, no un
     literal "2b" hardcodeado -- se monkeypatchea a un valor distinto para
     demostrar que de verdad lee `settings`, no una constante."""
-    monkeypatch.setattr(config_module.settings, "pdfa_profile", "1b")
+    monkeypatch.setattr(config_module.storage, "pdfa_profile", "1b")
     assert _resolve_pdfa_profile(None) == "1b"
 
 
 def test_resolve_pdfa_profile_none_defaults_to_2b_out_of_the_box() -> None:
-    assert config_module.settings.pdfa_profile == "2b"
+    assert config_module.storage.pdfa_profile == "2b"
     assert _resolve_pdfa_profile(None) == "2b"
 
 
@@ -104,7 +104,7 @@ def test_resolve_pdfa_profile_invalid_is_never_substituted_by_default(
     """EL invariante: un perfil fuera de whitelist se PRESERVA tal cual --
     jamás cae al default (aunque el default esté configurado a un valor
     plausible que un bug de "normalización" pudiera devolver por error)."""
-    monkeypatch.setattr(config_module.settings, "pdfa_profile", "2b")
+    monkeypatch.setattr(config_module.storage, "pdfa_profile", "2b")
     resultado = _resolve_pdfa_profile(bad_profile)
     assert resultado == bad_profile
     assert resultado != "2b"  # NUNCA sustituido por el default
@@ -152,7 +152,7 @@ async def test_missing_profile_resolves_to_default_and_would_be_evaluated_agains
     `not_evaluated` por construcción."""
     from storage.services.pdfa.subprocess_verapdf import _VALID_FLAVOURS
 
-    monkeypatch.setattr(config_module.settings, "pdfa_profile", "2b")
+    monkeypatch.setattr(config_module.storage, "pdfa_profile", "2b")
     resolved = _resolve_pdfa_profile(None)
     assert resolved in _VALID_FLAVOURS
 
@@ -265,7 +265,7 @@ async def _run_pdfa_e2e(
     devuelve el `detalle` (dict) del evento VALIDACION_PDFA insertado."""
     import json
 
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
     _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()
@@ -316,7 +316,7 @@ async def test_e2e_missing_profile_falls_back_to_global_default(
 ) -> None:
     """Retrocompat: sin `pdfa_profile` en el payload (serie sin política
     propia), el evento queda validado contra el default global ("2b")."""
-    monkeypatch.setattr(config_module.settings, "pdfa_profile", "2b")
+    monkeypatch.setattr(config_module.storage, "pdfa_profile", "2b")
     resultado, detalle = await _run_pdfa_e2e(client_with_conn, monkeypatch, pdfa_profile=None)
     assert detalle["profile"] == "2b"
     assert resultado == "no_evaluado"

@@ -30,7 +30,6 @@ from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import NameOID
 from fastapi import HTTPException
 
-from auth.core.config import settings
 from auth.core.signing_keys import (
     build_aad,
     encrypt_private_key,
@@ -40,6 +39,7 @@ from auth.core.signing_keys import (
 from auth.core.totp import _hotp, current_timestep, encrypt_secret
 from auth.core.totp import build_aad as build_totp_aad
 from auth.services.signing_key_service import SigningKeyService
+from docuboto.config import auth as settings
 from tests.auth.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [

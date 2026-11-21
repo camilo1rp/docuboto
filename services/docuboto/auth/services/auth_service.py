@@ -35,10 +35,10 @@ from orpycamcp_common.tenant import (
     veredicto_entidad,
 )
 
-from auth.core.config import settings
 from auth.core.security import validate_token
 from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.auth import TokenResponse, UserInfoResponse, ValidateResponse
+from docuboto.config import auth as settings
 
 # Tenant slug regex (same rules enforced by tenant-service).
 

@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 import asyncpg
 
 from auth import api as auth_api
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.core.constants import (
     NIVELES_CONFORMIDAD_ACREDITADOS,
     PROVIDERS_FIRMA_ELECTRONICA,

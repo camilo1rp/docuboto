@@ -27,7 +27,7 @@ from orpycamcp_common import deadletter, request_log, usuario
 
 from archive.main import DOMAIN_ROUTERS as ARCHIVE_ROUTERS
 from auth.main import DOMAIN_ROUTERS as AUTH_ROUTERS
-from docuboto.core.config import settings
+from docuboto import config as settings
 from docuboto.core.lifespan import lifespan
 from docuboto.core.security import SecurityHeadersMiddleware, UserRateLimitMiddleware
 from docuboto.routers.health import router as health_router
@@ -42,7 +42,7 @@ from tenant.main import DOMAIN_ROUTERS as TENANT_ROUTERS
 from workflow.main import DOMAIN_ROUTERS as WORKFLOW_ROUTERS
 
 logging.basicConfig(
-    level=settings.log_level.upper(),
+    level=settings.common.log_level.upper(),
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)

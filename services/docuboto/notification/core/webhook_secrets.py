@@ -25,7 +25,7 @@ import uuid
 
 from orpycamcp_common import kek
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 
 _V1_LABEL = "webhook_secret_kek"
 _EXTRA_LABEL = "webhook_secret_keks"

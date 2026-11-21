@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.core.preservacion_tipos import (
     ALL_WORM_TIPOS,
@@ -100,7 +100,7 @@ async def test_el_repositorio_no_cambia_para_los_tipos_singleton() -> None:
 async def test_la_segunda_constancia_del_rol_no_se_da_por_protegida(client_with_conn, monkeypatch) -> None:
     """De punta a punta por `storage.api` (mocks): con una constancia YA protegida de OTRO
     file_id, la protección de la nueva busca por SU file_id y no la encuentra."""
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
     _client, mock_conn, _minio = client_with_conn
     primera = make_worm_row(
         expediente_id="EXP-9", tipo="acta_firma_excepcion_recibe", file_id=uuid.uuid4()

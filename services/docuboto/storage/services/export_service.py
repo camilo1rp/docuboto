@@ -41,7 +41,7 @@ import asyncpg
 from miniopy_async.error import S3Error
 from orpycamcp_common import audit
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.core.constants import canal_del_acto
 from storage.core.minio_client import get_minio
 from storage.models.file_record import FileRecord

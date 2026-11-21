@@ -32,7 +32,6 @@ from typing import Literal
 import asyncpg
 from fastapi import HTTPException, status
 
-from auth.core.config import settings
 from auth.core.recovery_codes import (
     RECOVERY_CODE_COUNT,
     generate_recovery_codes,
@@ -59,6 +58,7 @@ from auth.schemas.totp import (
     TotpRecoveryRegenerateResponse,
     TotpStatusResponse,
 )
+from docuboto.config import auth as settings
 
 logger = logging.getLogger(__name__)
 

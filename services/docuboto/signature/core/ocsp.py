@@ -99,8 +99,8 @@ from cryptography.x509.ocsp import (
 )
 from cryptography.x509.oid import ExtendedKeyUsageOID, SignatureAlgorithmOID
 
+from docuboto.config import signature as settings
 from signature.core.algoritmos import identificador_de_clave
-from signature.core.config import settings
 
 
 class OcspMaterialRequiredError(RuntimeError):

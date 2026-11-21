@@ -124,7 +124,7 @@ async def test_firmar_con_huella_de_la_cadena_ignora_el_payload_xml_del_body(
     ``payload_xml`` del body no cambia los bytes (no hay 422: ya no decide nada)."""
     import hashlib
 
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
     from signature.services import signer
 
     audit = _patch_audit(monkeypatch)

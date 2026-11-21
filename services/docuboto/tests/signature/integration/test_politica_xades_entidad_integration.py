@@ -22,8 +22,8 @@ import asyncpg
 import pytest
 from orpycamcp_common.database import tenant_schema
 
+from docuboto.config import signature as settings
 from signature.core import params_entidad
-from signature.core.config import settings
 
 pytestmark = pytest.mark.asyncio
 

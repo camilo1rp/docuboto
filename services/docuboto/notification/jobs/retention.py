@@ -29,7 +29,7 @@ import asyncpg
 from orpycamcp_common.database import acquire_tenant, close_pool, get_pool
 from orpycamcp_common.database import create_pool as init_pool
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 from notification.repositories.processed_events_repository import ProcessedEventsRepository
 
 logger = logging.getLogger(__name__)

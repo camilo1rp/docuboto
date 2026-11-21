@@ -29,8 +29,8 @@ from datetime import date
 import pydantic
 import pytest
 
+from docuboto import config as config_module
 from storage import api as storage_api
-from storage.core import config as config_module
 from storage.schemas.preservacion import AipCreate, ProtegerIndiceRequest, RenovarRetencionRequest
 from storage.services.preservation_worm_service import (
     PreservationWormService,
@@ -41,7 +41,7 @@ from tests.storage.conftest import TENANT_SLUG, make_worm_row
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _body(extra: dict) -> dict:

@@ -32,7 +32,7 @@ es decir, la rama apagada quedaría sin cobertura, que es justo la que importa.
 
 from fastapi import HTTPException, status
 
-from archive.core.config import settings
+from docuboto.config import archive as settings
 
 
 def require_public_interop() -> None:

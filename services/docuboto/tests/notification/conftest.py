@@ -25,7 +25,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 
 # X-User-Id carries the internal auth_users.id UUID (not keycloak_sub).
 # auth-service /validate resolves keycloak_sub → auth_users.id before the gateway

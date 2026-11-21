@@ -28,9 +28,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.schemas.indice_clasificados import IndiceSeriePublico
 from archive.services.indice_clasificados_service import SIN_SERIE, componer_indice
+from docuboto.config import archive as settings
 from document import api as document_api
 
 RUTA = "/api/v1/public/archive/indice-clasificados/demo"

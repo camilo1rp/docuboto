@@ -31,7 +31,7 @@ import logging
 
 import asyncpg
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 
 logger = logging.getLogger("signature.params")
 

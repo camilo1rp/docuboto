@@ -35,9 +35,9 @@ from fastapi import HTTPException
 from orpycamcp_common import audit
 from orpycamcp_common.rbac import resolve_caller_clearance
 
+from docuboto.config import document as settings
 from document.api import abrir_flujo_si_hay
 from document.core.causales_reserva import CAUSALES, NIVEL_DOBLE_FIRMA, tope_reserva
-from document.core.config import settings
 from document.core.datos_minimos import exigir_o_422
 from document.core.dependencias import normalizar_dependencia
 from document.core.tipos import exigir_tipo_documental, plazo_por_defecto

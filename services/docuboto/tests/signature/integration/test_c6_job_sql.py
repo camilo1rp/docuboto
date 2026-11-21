@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.jobs import renovacion_lta
 from signature.repositories.firma_repository import FirmaRepository
 from tests.signature.integration.test_b10_lta_renovacion_sql import (  # noqa: F401  (fixtures y helpers)

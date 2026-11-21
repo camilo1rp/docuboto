@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 from notification.core.webhook_security import validate_webhook_target
 from notification.services.webhook_service import sign
 from tests.notification.conftest import USER

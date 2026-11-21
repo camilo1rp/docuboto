@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
-import storage.core.config as cfg
+from docuboto import config as cfg
 from storage import api as storage_api
 from tests.storage.conftest import TENANT_SLUG, make_file_record, minio_get_object_stream
 
@@ -94,7 +94,7 @@ async def test_export_zip_assembles_members(client_with_conn) -> None:
 
 @pytest.mark.asyncio
 async def test_export_zip_404_when_anexo_missing(client_with_conn, monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(cfg.settings, 'export_tmp_dir', str(tmp_path))
+    monkeypatch.setattr(cfg.storage, 'export_tmp_dir', str(tmp_path))
     _client, conn, minio = client_with_conn
     conn.fetch.return_value = []  # ningún id existe
     body = {
@@ -114,7 +114,7 @@ def _ids_body(fid: uuid.UUID) -> dict:
 
 @pytest.mark.asyncio
 async def test_export_deletes_temp_after_serving(client_with_conn, monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
     _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, sha256=_sha(b"X" * 5000))]
@@ -130,7 +130,7 @@ async def test_export_failure_midway_leaves_no_temp_and_no_200(
 ) -> None:
     """Si el almacén falla a mitad de un anexo, el error llega ANTES de servir
     y el temporal parcial se borra (nunca un 200 truncado)."""
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
     _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, sha256=_sha(b"parcial"))]
@@ -151,8 +151,8 @@ async def test_export_failure_midway_leaves_no_temp_and_no_200(
 async def test_export_413_when_declared_size_exceeds_cap(
     client_with_conn, monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
-    monkeypatch.setattr(cfg.settings, "export_max_bytes", 1000)
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_max_bytes", 1000)
     _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, file_size=5000)]
@@ -165,8 +165,8 @@ async def test_export_413_when_real_bytes_exceed_cap_and_cleans(
     client_with_conn, monkeypatch, tmp_path
 ) -> None:
     """El tamaño declarado miente (cabe) pero el real no: corta y limpia."""
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
-    monkeypatch.setattr(cfg.settings, "export_max_bytes", 1000)
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_max_bytes", 1000)
     _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid, file_size=10)]
@@ -177,7 +177,7 @@ async def test_export_413_when_real_bytes_exceed_cap_and_cleans(
 
 @pytest.mark.asyncio
 async def test_export_507_when_disk_insufficient(client_with_conn, monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
     monkeypatch.setattr(
         "storage.services.export_service.shutil.disk_usage",
         lambda _p: shutil._ntuple_diskusage(100, 99, 1),
@@ -197,8 +197,8 @@ async def test_export_peak_memory_is_bounded_for_large_attachment(
     por trozos a disco). Falla si se vuelve a bufferizar (`await obj.read()`)."""
     import tracemalloc
 
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
-    monkeypatch.setattr(cfg.settings, "export_min_free_bytes", 0)
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_min_free_bytes", 0)
     monkeypatch.setattr(
         "storage.services.export_service.shutil.disk_usage",
         lambda _p: shutil._ntuple_diskusage(10**12, 0, 10**12),
@@ -242,7 +242,7 @@ async def test_export_404_when_object_missing_in_store(
     """Fila presente, binario ausente: 404 limpio y sin temporal."""
     from miniopy_async.error import S3Error
 
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
     _client, conn, minio = client_with_conn
     fid = uuid.uuid4()
     conn.fetch.return_value = [make_file_record(file_id=fid)]
@@ -260,7 +260,7 @@ async def test_export_409_fixity_mismatch_aborts_before_serving_and_audits(
     """B4 media: el binario difiere del SHA-256 registrado -> error, sin ZIP,
     sin temporal y con asiento de incidente (nunca `checksums.txt` sobre bytes
     corruptos)."""
-    monkeypatch.setattr(cfg.settings, "export_tmp_dir", str(tmp_path))
+    monkeypatch.setattr(cfg.storage, "export_tmp_dir", str(tmp_path))
     registrados = []
 
     async def _append(_conn, **kw):

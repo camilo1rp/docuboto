@@ -43,8 +43,8 @@ from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.database import get_tenant_conn
 
 from auth.api import AuthUnavailableError
+from docuboto.config import signature as settings
 from notification.api import NotificationDeliveryError
-from signature.core.config import settings
 from signature.core.otp import hmac_otp
 from signature.services import cadena_service
 from tests.signature.app import app
@@ -59,7 +59,7 @@ def _politica_xades_off(monkeypatch: pytest.MonkeyPatch) -> None:
     ``clasificados`` y un acto de nivel >= 2 sin certificado se rechaza antes de llegar a
     esos gates; se fija ``off`` EXPLÍCITO para seguir probándolos. El valor por defecto
     lo fijan ``test_firma_xades_gate`` y ``shared/tests/test_param_firma_xades_se_siembra``."""
-    from signature.core.config import settings as _settings
+    from docuboto.config import signature as _settings
 
     monkeypatch.setattr(_settings, "firma_personal_require_xades", "off")
 

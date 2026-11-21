@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage.schemas.preservacion import AipCreate
 from storage.services.aip_builder import validate_premis_xml
 from storage.services.aip_service import AipService
@@ -80,7 +80,7 @@ async def _empaquetar(mock_conn, payload: dict) -> dict:
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _pdf_record(file_id: uuid.UUID) -> dict:
@@ -144,7 +144,7 @@ async def test_pdfa_validation_disabled_by_default_no_event_no_call(client_with_
     el AIP se empaqueta exactamente igual que antes de este incremento — sin
     evento VALIDACION_PDFA alguno, aunque el documento SEA un PDF real."""
     _client, mock_conn, mock_minio = client_with_conn
-    assert config_module.settings.preservation_pdfa_validation_enabled is False
+    assert config_module.storage.preservation_pdfa_validation_enabled is False
 
     doc_file_id = uuid.uuid4()
     aip_id = uuid.uuid4()
@@ -205,7 +205,7 @@ async def test_pdfa_validation_enabled_stub_emits_no_evaluado_and_aip_still_pack
     evento VALIDACION_PDFA `resultado=no_evaluado` + un `validation` PREMIS
     con `eventOutcome="not evaluated"` — y el AIP se empaqueta igual
     (advisory por defecto, PIEZA 5): el empaquetado no se bloquea."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
     _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()
@@ -282,7 +282,7 @@ async def test_pdfa_validation_skips_non_pdf_document(client_with_conn, monkeypa
     """Un documento cuyo contenido NO empieza con `%PDF` no genera evento
     VALIDACION_PDFA alguno — la detección es por magic bytes, no por
     extensión de archivo ni por declaración del cliente."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
     _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()
@@ -322,7 +322,7 @@ async def test_pdfa_validation_ignores_declared_mime_type_uses_sniff(
     """`files.mime_type == "application/pdf"` pero los bytes reales NO
     empiezan con `%PDF`: el sniff por magic bytes gana — sin evento
     VALIDACION_PDFA (el mime lo declara el cliente, no es fiable)."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
     _client, mock_conn, mock_minio = client_with_conn
 
     doc_file_id = uuid.uuid4()

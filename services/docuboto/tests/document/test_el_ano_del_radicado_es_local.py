@@ -19,7 +19,7 @@ que es inmutable por Ley 594.
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from document.core.config import settings
+from docuboto.config import document as settings
 from document.services.document_service import _zona_de_radicacion
 
 #: 31 de diciembre de 2026, 19:30 en Bogotá. En UTC ya es 1 de enero de 2027.

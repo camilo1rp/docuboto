@@ -21,7 +21,7 @@ from typing import Any
 
 from orpycamcp_common.kek import decode_aes256, unseal
 
-from knowledge.core.config import settings
+from docuboto.config import knowledge as settings
 
 logger = logging.getLogger(__name__)
 

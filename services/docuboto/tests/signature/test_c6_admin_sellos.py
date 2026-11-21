@@ -136,7 +136,7 @@ async def test_parametros_fuera_de_rango_son_422_sin_consultar(client_with_conn,
 
 @pytest.mark.asyncio
 async def test_el_margen_por_omision_es_el_de_la_renovacion(client_with_conn, _clearance, _asiento) -> None:  # noqa: ANN001
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
 
     client, conn = client_with_conn
     conn.fetch.side_effect = [[], []]

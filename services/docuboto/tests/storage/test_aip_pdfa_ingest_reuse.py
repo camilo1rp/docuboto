@@ -33,8 +33,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import storage.core.config as config_module
 import storage.services.aip_service as aip_service_module
+from docuboto import config as config_module
 from storage.schemas.preservacion import AipCreate
 from storage.services.aip_service import AipService
 from tests.storage.conftest import (
@@ -61,11 +61,11 @@ async def _empaquetar(mock_conn, payload: dict) -> dict:
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
     # Perfil global por defecto ("2b") -- las pruebas de "mismo perfil" se
     # apoyan en este valor sin necesidad de fijarlo caso a caso.
-    monkeypatch.setattr(config_module.settings, "pdfa_profile", "2b")
+    monkeypatch.setattr(config_module.storage, "pdfa_profile", "2b")
 
 
 def _pdf_record(

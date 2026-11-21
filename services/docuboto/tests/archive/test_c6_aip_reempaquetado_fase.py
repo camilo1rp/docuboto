@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-from archive.core.config import settings
 from archive.services.aip_wiring_service import AipWiringService
+from docuboto.config import archive as settings
 from signature import api as signature_api
 from signature.api import ERROR_ARTEFACTO, ArtefactoVigente
 from storage.api import AipPackagingOutcome, AipRepackagingOutcome

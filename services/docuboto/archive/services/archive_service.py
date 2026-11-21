@@ -22,7 +22,6 @@ from fastapi import HTTPException, status
 from orpycamcp_common import audit
 from orpycamcp_common.rbac import CLEARANCE_SIN_RESTRICCION
 
-from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.disposition import CT_DISPOSITION_CODES
 from archive.core.http_errors import motivo_de
@@ -88,6 +87,7 @@ from archive.services.cuadro_clasificacion import (
 )
 from archive.services.eliminacion_acta import construir_acta_xml
 from archive.services.metadata_service import validate_metadata
+from docuboto.config import archive as settings
 from document import api as document_api
 
 if TYPE_CHECKING:

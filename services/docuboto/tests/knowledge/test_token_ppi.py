@@ -18,8 +18,8 @@ import httpx
 import pytest
 from orpycamcp_common.kek import seal
 
+from docuboto.config import knowledge as settings
 from knowledge.core import token_ppi
-from knowledge.core.config import settings
 
 KEK = b"\x66" * 32
 SECRETO = b"secreto-de-servicio-demo"

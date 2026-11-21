@@ -25,8 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.services.index_service import IndexService
+from docuboto.config import archive as settings
 from storage.api import WormProtectionOutcome
 from tests.archive.conftest import USER_ID, make_expediente_record, make_trd_serie_record
 

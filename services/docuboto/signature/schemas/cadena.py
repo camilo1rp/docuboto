@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.core.constants import (
     CADENA_OBJETO_TIPOS,
     CADENA_PAYLOAD_AUTORITATIVO,

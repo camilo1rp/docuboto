@@ -670,7 +670,7 @@ async def test_agotados_los_intentos_el_acta_se_marca_agotada_y_deja_asiento(
 ) -> None:
     """Sin proximo_at y con asiento de sistema: la visibilidad de un acta que
     ya no se reintenta sola."""
-    from archive.core.config import settings
+    from docuboto.config import archive as settings
 
     client, mock_conn = client_with_conn
     _entorno_firmada(mock_conn)

@@ -49,8 +49,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from lxml import etree
 
+from docuboto.config import signature as settings
 from signature.core import tsa as tsa_module
-from signature.core.config import settings
 from signature.core.keys import SealNotFoundError, TsaSealNotFoundError, cert_fingerprint
 from signature.providers.base import SignerRef
 from storage import api as storage_api

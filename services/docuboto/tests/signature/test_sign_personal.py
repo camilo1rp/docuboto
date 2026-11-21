@@ -85,7 +85,7 @@ def _patch_sign_digest_remote(
 
 
 def _disable_tsa(monkeypatch: pytest.MonkeyPatch) -> None:
-    from signature.core.config import settings as signature_settings
+    from docuboto.config import signature as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
 

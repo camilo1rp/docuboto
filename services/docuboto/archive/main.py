@@ -22,7 +22,6 @@ import time
 
 from orpycamcp_common import request_log
 
-from archive.core.config import settings
 from archive.jobs.disposicion_alerta import run_once as _disposicion_alerta_once
 from archive.jobs.indice_reconciliation import run_once as _reconcile_indices_once
 from archive.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
@@ -65,6 +64,7 @@ from archive.routers.tipos_documentales import router as tipos_documentales_rout
 from archive.routers.transferencias import router as transferencias_router
 from archive.routers.trd import router as trd_router
 from archive.routers.tvd import router as tvd_router
+from docuboto.config import archive as settings
 
 logger = logging.getLogger(__name__)
 

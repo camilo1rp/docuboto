@@ -39,11 +39,11 @@ import pytest
 from orpycamcp_common import audit
 from orpycamcp_common.database import tenant_schema
 
-from archive.core.config import settings
 from archive.repositories.aip_repository import AipRepository
 from archive.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate
 from archive.services.aip_wiring_service import AipWiringService
 from archive.services.archive_service import ArchiveService
+from docuboto.config import archive as settings
 from storage.api import AipPackagingOutcome
 from tests.archive.conftest import registrar_radicado
 

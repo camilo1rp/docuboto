@@ -14,7 +14,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 from notification.core.webhook_security import validate_webhook_target
 
 

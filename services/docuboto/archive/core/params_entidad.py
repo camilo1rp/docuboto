@@ -29,7 +29,7 @@ import logging
 
 import asyncpg
 
-from archive.core.config import settings
+from docuboto.config import archive as settings
 
 logger = logging.getLogger(__name__)
 

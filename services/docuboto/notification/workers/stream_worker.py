@@ -42,7 +42,7 @@ import redis.exceptions as redis_exc
 from orpycamcp_common import events
 from orpycamcp_common.database import acquire_tenant, get_pool
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 from notification.core.constants import DLQ_GROUP
 from notification.core.redis_client import get_redis
 from notification.jobs import deadletter_retention, retention

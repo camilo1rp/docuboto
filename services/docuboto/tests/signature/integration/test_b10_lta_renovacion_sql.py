@@ -30,8 +30,8 @@ import pytest
 from lxml import etree
 from orpycamcp_common.database import tenant_schema
 
+from docuboto.config import signature as settings
 from signature.core import tsa
-from signature.core.config import settings
 from signature.jobs import renovacion_lta
 from signature.providers.base import SignerRef
 from signature.providers.local import verify_xades

@@ -117,8 +117,8 @@ async def test_close_sin_firma_audita_indice_pendiente(client_with_conn, monkeyp
     mock_conn.fetchrow.side_effect = [exp_open, exp_closed, indice_vigente]
     mock_conn.fetch.return_value = []
 
-    from archive.core.config import settings as archive_settings
     from archive.services.index_service import IndexService
+    from docuboto.config import archive as archive_settings
     from signature.api import SignOutcome
 
     monkeypatch.setattr(archive_settings, "close_sign_max_sync_attempts", 1)

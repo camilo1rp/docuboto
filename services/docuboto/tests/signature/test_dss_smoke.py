@@ -162,7 +162,7 @@ async def test_firma_personal_valida_en_dss(monkeypatch: pytest.MonkeyPatch) -> 
 async def test_sello_xades_lta_valida_en_dss(monkeypatch: pytest.MonkeyPatch) -> None:
     """Incluye el ARCHIVE_TIMESTAMP: su imprint (EN 319 132-1 §5.5.2) debe ser
     íntegro para DSS, no solo para nuestro verificador."""
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
     from tests.signature.test_sign_xml_xades import (
         _build_crl,
         _ca_cert_pem,
@@ -195,7 +195,7 @@ async def test_sello_xades_lta_valida_en_dss(monkeypatch: pytest.MonkeyPatch) ->
 async def test_dss_lta_renovada(monkeypatch: pytest.MonkeyPatch) -> None:
     """B10 §8: la firma LTA con el `ArchiveTimeStamp` RENOVADO (TimeStampValidationData + un
     segundo ATS que cubre al primero) la valida un tercero: todos los sellos íntegros."""
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
     from signature.providers.local import renovar_archive_timestamp
     from tests.signature.test_sign_xml_xades import (
         _build_crl,
@@ -228,7 +228,7 @@ async def test_dss_lta_renovada(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _lta_renovada_con_ocsp_de_tsa(monkeypatch: pytest.MonkeyPatch, tmp_path):  # noqa: ANN001, ANN202
     """Firma LTA cuyo ATS 0 selló una TSA emitida por una CA con AIA OCSP y SIN punto de distribución de
     CRL; se renueva con la revocación de esa TSA por OCSP (C-6). Devuelve (xml renovado, certificado de la CA de la TSA)."""
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
     from signature.providers.local import renovar_archive_timestamp
     from tests.signature import c6_pki as pki
     from tests.signature.test_sign_xml_xades import (

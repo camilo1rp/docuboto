@@ -363,7 +363,7 @@ async def test_manual_retry_vs_job_race_does_not_write_phantom_audit_acta(
 async def test_reconciliar_acta_agotada_permanece_pendiente_firma(
     tenant_ctx: tuple[str, asyncpg.Connection], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from archive.core.config import settings
+    from docuboto.config import archive as settings
 
     monkeypatch.setattr(settings, "indice_reconciliation_max_intentos", 1)
     slug, conn = tenant_ctx

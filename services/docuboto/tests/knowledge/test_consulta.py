@@ -20,9 +20,9 @@ import httpx
 import pytest
 from orpycamcp_common.kek import seal
 
+from docuboto.config import knowledge as settings
 from knowledge.clients.ppi import ClientePpi
 from knowledge.core import consulta
-from knowledge.core.config import settings
 from knowledge.core.rechequeo import Registro, filtrar_busqueda, refs_a_borrar
 from knowledge.core.seudonimo import aad, referenciar
 from knowledge.routers import knowledge as rutas

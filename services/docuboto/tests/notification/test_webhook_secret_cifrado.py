@@ -24,8 +24,8 @@ import httpx
 import pytest
 from cryptography.exceptions import InvalidTag
 
+from docuboto.config import notification as settings
 from notification.core import webhook_secrets
-from notification.core.config import settings
 from notification.services import webhook_service
 from tests.notification.conftest import TEST_WEBHOOK_KEK_V2, USER
 

@@ -17,7 +17,7 @@ ESSCertID; el servicio ya no la lee. Debe decirlo al arrancar.
 
 from __future__ import annotations
 
-from signature.core.config import variables_retiradas_presentes
+from docuboto.config import variables_retiradas_presentes
 
 
 def test_detecta_la_variable_retirada_y_nombra_a_la_sustituta() -> None:

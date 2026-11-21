@@ -37,7 +37,8 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from auth.api import AuthUnavailableError
-from signature.core.config import Settings, settings
+from docuboto.config import SignatureSettings as Settings
+from docuboto.config import signature as settings
 from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _sol_row, _turno_row

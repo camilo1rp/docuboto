@@ -42,7 +42,7 @@ import logging
 import asyncpg
 from orpycamcp_common.database import acquire_tenant, close_pool, create_pool, get_pool
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.core.constants import DLQ_GROUP
 from signature.repositories.dead_letter_repository import DeadLetterRepository
 

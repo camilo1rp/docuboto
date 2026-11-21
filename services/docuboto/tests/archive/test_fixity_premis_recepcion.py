@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.services.transferencia_service import TransferenciaService
+from docuboto.config import archive as settings
 from tests.archive.conftest import REGISTRAR_FIXITY_PREMIS_REAL, TENANT_HEADERS, USER_ID
 from tests.archive.test_transferencia_indice_y_tenencia import _flujo_recibir, _mock_sellar
 

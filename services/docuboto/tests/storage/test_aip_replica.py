@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import storage.core.config as config_module
 import storage.services.aip_replica_service as aip_replica_module
+from docuboto import config as config_module
 from storage.schemas.preservacion import AipCreate
 from storage.services.aip_service import AipService
 from tests.storage.conftest import TENANT_SLUG, make_worm_row, minio_get_object
@@ -49,7 +49,7 @@ async def _empaquetar(mock_conn, payload: dict) -> dict:
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _stub_plan_num_copias(mock_conn, *, num_copias) -> None:
@@ -231,7 +231,7 @@ async def test_replica_num_copias_uno_no_replica(
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     _stub_plan_num_copias(mock_conn, num_copias=1)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
@@ -256,7 +256,7 @@ async def test_replica_local_success_provisions_bucket_and_copies(
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
@@ -317,7 +317,7 @@ async def test_replica_num_copias_mayor_a_dos_registra_deficit_honesto(
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     _stub_plan_num_copias(mock_conn, num_copias=3)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
@@ -353,7 +353,7 @@ async def test_replica_fallo_es_best_effort_no_fatal(
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
@@ -403,7 +403,7 @@ async def test_replica_bucket_derivado_del_claim_no_del_body(
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=aip_id, retain_until=retain_until
@@ -434,7 +434,7 @@ async def test_replica_sin_plan_de_preservacion_no_replica(
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     # 1º fetchval = gate RBAC (concedido); 2º = current_num_copias -> SIN plan
     # (None, no un entero); 3º = prev_hash de audit.append.
     mock_conn.fetchval.side_effect = [True, None, None]
@@ -472,12 +472,12 @@ async def test_replica_cross_site_success_usa_put_object_en_endpoint_secundario(
     aip_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
 
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     monkeypatch.setattr(
-        config_module.settings, "minio_secondary_endpoint", "secondary.minio.local:9000"
+        config_module.storage, "minio_secondary_endpoint", "secondary.minio.local:9000"
     )
-    monkeypatch.setattr(config_module.settings, "minio_secondary_access_key", "sec-key")
-    monkeypatch.setattr(config_module.settings, "minio_secondary_secret_key", "sec-secret")
+    monkeypatch.setattr(config_module.storage, "minio_secondary_access_key", "sec-key")
+    monkeypatch.setattr(config_module.storage, "minio_secondary_secret_key", "sec-secret")
 
     secondary_minio = _make_mock_secondary_minio()
     secondary_minio.get_object = _minio_get_con_replica(mock_minio)
@@ -545,7 +545,7 @@ async def _empaquetar_con_replica(client_with_conn, monkeypatch, *, estado_repli
     _client, mock_conn, mock_minio = client_with_conn
     doc_file_id = uuid.uuid4()
     retain_until = datetime(2031, 1, 1, tzinfo=UTC)
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", True)
     _stub_plan_num_copias(mock_conn, num_copias=2)
     mock_conn.fetchrow.side_effect = _aip_fetchrow_sequence(
         doc_file_id=doc_file_id, aip_id=uuid.uuid4(), retain_until=retain_until
@@ -623,9 +623,9 @@ async def test_secundario_igual_al_primario_se_etiqueta_local(
         client_with_conn, monkeypatch, estado_replica="ok"
     )
     mock_minio.get_object = _minio_get_con_replica(mock_minio)
-    monkeypatch.setattr(config_module.settings, "minio_endpoint", "minio:9000")
+    monkeypatch.setattr(config_module.storage, "minio_endpoint", "minio:9000")
     monkeypatch.setattr(
-        config_module.settings, "minio_secondary_endpoint", "http://MINIO:9000/"
+        config_module.storage, "minio_secondary_endpoint", "http://MINIO:9000/"
     )
     monkeypatch.setattr(
         aip_replica_module,

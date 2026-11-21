@@ -45,9 +45,9 @@ import asyncpg
 import pytest
 from miniopy_async import Minio, S3Error  # type: ignore[attr-defined]
 
-import storage.core.config as config_module
 import storage.services.preservation_worm_service as worm_module
 import storage.services.storage_service as storage_module
+from docuboto import config as config_module
 from storage.core.minio_client import ObjectLockNotEnabledError
 from storage.schemas.preservacion import ProtegerIndiceRequest, RenovarRetencionRequest
 from storage.services.preservation_worm_service import (
@@ -90,10 +90,10 @@ async def almacen():
 
 @pytest.fixture(autouse=True)
 def _config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
     # Retención de minutos: COMPLIANCE es irreversible y esto corre contra un almacén real.
-    monkeypatch.setattr(config_module.settings, "preservation_min_retention_days", 0)
-    monkeypatch.setattr(config_module.settings, "preservation_retention_mode", "COMPLIANCE")
+    monkeypatch.setattr(config_module.storage, "preservation_min_retention_days", 0)
+    monkeypatch.setattr(config_module.storage, "preservation_retention_mode", "COMPLIANCE")
 
 
 async def _subir_indice(conn: asyncpg.Connection, slug: str):

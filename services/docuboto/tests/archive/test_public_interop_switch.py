@@ -28,7 +28,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from archive.core.config import settings
+from docuboto.config import archive as settings
 from tests.archive.app import app
 
 pytestmark = pytest.mark.asyncio
@@ -93,9 +93,9 @@ async def test_encendido_ya_no_da_404_de_ruta_inexistente(
     ausencia. Aquí la petición llega al handler y muere más adelante por falta de
     `db_pool` — señal inequívoca de que el guard no la cortó.
     """
-    from archive.core import config as cfg_module
+    from docuboto import config as cfg_module
 
-    monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
+    monkeypatch.setattr(cfg_module.archive, "public_interop_enabled", True)
 
     with pytest.raises(AttributeError, match="db_pool"):
         await client.get(ruta)

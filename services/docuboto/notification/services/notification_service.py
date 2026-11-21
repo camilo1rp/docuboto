@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 import asyncpg
 from orpycamcp_common.database import acquire_tenant
 
-from notification.core.config import settings
+from docuboto.config import notification as settings
 from notification.core.email_client import send_email
 from notification.models.notification import Notification
 from notification.repositories.notification_repository import NotificationRepository

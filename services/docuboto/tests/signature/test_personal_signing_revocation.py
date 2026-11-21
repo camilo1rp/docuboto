@@ -549,7 +549,7 @@ async def test_sin_tsa_verificada_el_instante_no_es_cierto_y_no_valida(
     """El `sello_tiempo` de la fila lo pone el servidor: NO es fecha cierta.
     Sin TSA verificada, una revocación 'posterior' según ese sello deja la firma
     sin validar y con `revocacion_posterior=None` (AREA-04-13, hallazgo Medio)."""
-    from signature.core.config import settings as signature_settings
+    from docuboto.config import signature as signature_settings
 
     monkeypatch.setattr(signature_settings, "signer_timestamp_enabled", False)
     body = await _verify_revocada(
@@ -669,7 +669,7 @@ async def test_verify_reports_revocado_for_grandfathered_inc1_signature(
 async def test_verify_revocation_channel_down_fails_closed_by_default(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
 
     ca_key, ca_cert = _generate_sub_ca()
     user_key, user_cert = _issue_user_cert(ca_key, ca_cert)
@@ -707,7 +707,7 @@ async def test_verify_revocation_channel_down_fails_closed_by_default(
 async def test_verify_revocation_channel_down_fails_open_when_disabled(
     client_with_conn, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
 
     monkeypatch.setattr(settings, "verify_personal_revocation_require", False)
 
@@ -780,7 +780,7 @@ async def test_verify_native_hmac_never_calls_revocation_status(
 ) -> None:
     """Retrocompat HMAC (Sección D): ``provider='nativa'`` nunca toca la
     dimensión de revocación — ni siquiera se consulta el canal."""
-    from signature.core.config import settings as signature_settings
+    from docuboto.config import signature as signature_settings
     from signature.services import signer as native_signer
 
     sello_dt = datetime(2024, 1, 1, tzinfo=UTC)

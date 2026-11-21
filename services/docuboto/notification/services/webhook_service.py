@@ -31,8 +31,8 @@ import httpx
 from cryptography.exceptions import InvalidTag
 from orpycamcp_common.database import acquire_tenant
 
+from docuboto.config import notification as settings
 from notification.core import webhook_secrets
-from notification.core.config import settings
 from notification.core.webhook_security import validate_webhook_target
 from notification.repositories.webhook_entregas_repository import WebhookEntregasRepository
 from notification.repositories.webhook_repository import WebhookRepository

@@ -37,7 +37,8 @@ from archive.main import (
 from auth.jobs.signing_key_maintenance import maintenance_loop
 from auth.routers.auth import set_auth_service
 from auth.services.auth_service import AuthService
-from docuboto.core.config import settings
+from docuboto import config as settings
+from docuboto.config import variables_retiradas_presentes
 from docuboto.core.pools import bind_pool, bind_redis, crear_pool, unbind_pool, unbind_redis
 from docuboto.core.tasks import BackgroundTasks, heavy_slot
 from docuboto.core.trabajo import COLA_APP, COLA_WORKER
@@ -50,7 +51,6 @@ from knowledge.core import salida_http
 from knowledge.workers import intelligence_consumer
 from notification.core import webhook_secrets
 from notification.workers import stream_worker
-from signature.core.config import variables_retiradas_presentes
 from signature.jobs import renovacion_lta
 from signature.workers import document_consumer as signature_consumer
 from storage.core.minio_client import init_minio
@@ -155,7 +155,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_pool = pool
     registrar_apertura_de_flujo(abrir_al_radicar)
 
-    redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
+    redis_client = aioredis.from_url(settings.common.redis_url, decode_responses=True)
     bind_redis(redis_client)
     app.state.redis = redis_client
 

@@ -42,7 +42,6 @@ from fastapi import HTTPException, status
 from orpycamcp_common import audit
 from orpycamcp_common.rbac import CLEARANCE_SIN_RESTRICCION
 
-from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.disposition import CT_DISPOSITION_CODES
 from archive.models.archive import Expediente
@@ -75,6 +74,7 @@ from archive.services.index_builder import (
 )
 from archive.services.index_xsd import MOTIVO_XSD_INVALIDO, validar_indice_xml
 from archive.services.retention_math import RetencionDiferida, base_worm, total_trd_years
+from docuboto.config import archive as settings
 
 if TYPE_CHECKING:
     from signature.api import SignedIndice

@@ -358,7 +358,7 @@ async def test_el_vencimiento_del_eslabon_0_sale_de_la_huella_no_del_primero(
     )
 
     client, _conn, _table, _uploads, install_seal, _install_tsa = signature_env
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     ca_key, ca_cert = _generate_ca()
@@ -408,7 +408,7 @@ async def test_un_token_sin_certificados_no_tumba_la_firma(
     )
 
     client, _conn, _table, _uploads, install_seal, _install_tsa = signature_env
-    from signature.core.config import settings
+    from docuboto.config import signature as settings
 
     monkeypatch.setattr(settings, "signer_lt_enabled", True)
     ca_key, ca_cert = _generate_ca()

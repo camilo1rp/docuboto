@@ -20,9 +20,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import ValidationError
 
-from archive.core.config import settings
 from archive.schemas.archive import ExpedienteCreate
 from archive.services.retention_math import base_worm
+from docuboto.config import archive as settings
 from tests.archive.conftest import TENANT_HEADERS, make_expediente_record, make_radicado_link_record
 from tests.archive.test_transferencias import _indice_row, _transfer_row
 

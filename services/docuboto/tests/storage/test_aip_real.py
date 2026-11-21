@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pydantic
 import pytest
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.schemas.preservacion import AipCreate, AipResponse
 from storage.services.aip_builder import _PREMIS_NS, AipDocMaterial, PremisValidationError
@@ -55,7 +55,7 @@ _INDICE_SHA256 = hashlib.sha256(_INDICE_CONTENT).hexdigest()
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 _ACTOR = str(uuid.uuid4())
@@ -351,7 +351,7 @@ async def test_empaquetar_aip_file_not_found(client_with_conn) -> None:
 @pytest.mark.asyncio
 async def test_empaquetar_aip_disabled_by_feature_flag(client_with_conn, monkeypatch) -> None:
     _client, mock_conn, mock_minio = client_with_conn
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", False)
 
     with pytest.raises(PreservationDisabledError):
         await _empaquetar(mock_conn, _base_payload(doc_file_id=uuid.uuid4()))

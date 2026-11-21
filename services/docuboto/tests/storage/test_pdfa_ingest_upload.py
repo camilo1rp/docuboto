@@ -38,8 +38,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import AsyncClient
 
-import storage.core.config as config_module
 import storage.routers.storage as storage_router_module
+from docuboto import config as config_module
 from storage.services.pdfa import PdfaResult
 from tests.storage.app import app as fastapi_app
 from tests.storage.conftest import (
@@ -103,8 +103,8 @@ async def test_gate_off_by_default_upload_behaves_exactly_as_before(
     subir un PDF real no toca ninguna columna pdfa_*, no agenda el
     BackgroundTask -- IDÉNTICO al comportamiento previo a este follow-up,
     aunque `PRESERVATION_PDFA_INGEST_MODE` siga en su default "advisory"."""
-    assert config_module.settings.preservation_pdfa_validation_enabled is False
-    assert config_module.settings.preservation_pdfa_ingest_mode == "advisory"
+    assert config_module.storage.preservation_pdfa_validation_enabled is False
+    assert config_module.storage.preservation_pdfa_ingest_mode == "advisory"
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 
@@ -144,7 +144,7 @@ async def test_advisory_pdf_marks_pending_and_schedules_background_task(
     responde 201 SIN bloquear, marca `pdfa_status='pendiente'` SÍNCRONO y
     agenda `run_ingest_validation_background(app.state.db_pool, tenant_slug,
     file_id)` -- exactamente esos tres argumentos, en ese orden."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 
@@ -168,7 +168,7 @@ async def test_advisory_pdf_marks_pending_and_schedules_background_task(
     pending_calls = _pdfa_pending_execute_calls(mock_conn)
     assert len(pending_calls) == 1
     assert pending_calls[0].args[1] == file_id
-    assert pending_calls[0].args[2] == config_module.settings.pdfa_profile
+    assert pending_calls[0].args[2] == config_module.storage.pdfa_profile
 
     # `BackgroundTasks` corre DENTRO del mismo ciclo ASGI que
     # `AsyncClient(transport=ASGITransport(...))` ya esperó -- para cuando
@@ -183,7 +183,7 @@ async def test_advisory_non_pdf_never_schedules_background_task(
 ) -> None:
     """Gate ON + advisory, pero el contenido NO es PDF (magic bytes): no se
     marca `pendiente` ni se agenda nada -- el follow-up solo aplica a PDFs."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 
@@ -228,8 +228,8 @@ async def test_strict_non_conformant_rejects_before_touching_minio_or_db(
     `files` (el único `fetchrow` ejecutado es la dedup por sha256, que
     devuelve None). El rechazo SÍ se audita, keyed por sha256 (no hay
     `file_id`: el archivo nunca se creó)."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_ingest_mode", "strict")
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_ingest_mode", "strict")
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 
@@ -290,8 +290,8 @@ async def test_strict_pdf_con_prefijo_se_valida_y_se_rechaza(
 ) -> None:
     """Modo strict: un PDF con bytes basura delante, `non_conformant`, da 422 y no
     persiste (antes saltaba el validador por el sniff en offset 0)."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_ingest_mode", "strict")
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_ingest_mode", "strict")
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)
     monkeypatch.setattr(
@@ -325,8 +325,8 @@ async def test_strict_conformant_or_not_evaluated_proceeds_and_persists_verdict(
     el veredicto queda escrito SÍNCRONAMENTE (`files.pdfa_status` +
     `preservacion_evento`) -- sin BackgroundTask, porque ya se resolvió
     antes de responder."""
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_validation_enabled", True)
-    monkeypatch.setattr(config_module.settings, "preservation_pdfa_ingest_mode", "strict")
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_validation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_pdfa_ingest_mode", "strict")
     client, mock_conn, mock_minio = client_with_conn
     conceder_permisos(mock_conn)  # `/upload` exige PERM_RADI
 

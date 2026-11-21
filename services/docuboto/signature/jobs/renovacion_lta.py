@@ -50,8 +50,8 @@ import asyncpg
 from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.request_log import canal_de_fondo
 
+from docuboto.config import signature as settings
 from signature.core import tsa
-from signature.core.config import settings
 from signature.core.constants import SYSTEM_RECONCILER_ID
 from signature.core.events import publish_lta_renovada
 from signature.core.redis_client import get_redis

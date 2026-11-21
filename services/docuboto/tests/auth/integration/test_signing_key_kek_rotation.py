@@ -26,7 +26,6 @@ import pytest
 from cryptography.exceptions import InvalidTag
 from orpycamcp_common.database import tenant_schema
 
-from auth.core.config import settings
 from auth.core.signing_keys import (
     build_aad,
     decrypt_private_key,
@@ -35,6 +34,7 @@ from auth.core.signing_keys import (
     private_key_to_pem,
 )
 from auth.ops.rewrap_signing_keys import _rewrap_all, _rewrap_tenant
+from docuboto.config import auth as settings
 from tests.auth.integration.conftest import RUN_INTEGRATION
 
 pytestmark = [

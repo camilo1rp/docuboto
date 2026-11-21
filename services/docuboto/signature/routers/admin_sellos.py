@@ -36,7 +36,7 @@ from orpycamcp_common.clearance import require_actor_permission as require_permi
 from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import resolve_caller_clearance
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.repositories.firma_repository import SITUACIONES_SELLO, FirmaRepository
 from signature.schemas.firma import SelloArchivoListItem, SellosArchivoResumen
 

@@ -24,7 +24,7 @@ import httpx
 import jwt
 from jwt import InvalidTokenError, PyJWKSet
 
-from auth.core.config import settings
+from docuboto.config import auth as settings
 
 logger = logging.getLogger(__name__)
 

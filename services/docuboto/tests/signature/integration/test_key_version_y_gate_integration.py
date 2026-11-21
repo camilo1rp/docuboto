@@ -29,7 +29,7 @@ import asyncpg
 import pytest
 from orpycamcp_common.database import tenant_schema
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.repositories.firma_repository import FirmaRepository
 from signature.services import signer
 from tests.signature.integration.conftest import insert_expediente, insert_radicado

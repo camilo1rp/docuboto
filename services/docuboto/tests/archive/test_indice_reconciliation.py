@@ -25,10 +25,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.repositories.index_repository import IndexRepository
 from archive.services.index_service import IndexService
+from docuboto.config import archive as settings
 from signature.api import SignedIndice, SignOutcome
 from tests.archive.conftest import TENANT_HEADERS
 

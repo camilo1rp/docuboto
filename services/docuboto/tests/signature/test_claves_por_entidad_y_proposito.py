@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.core.otp import hmac_otp, verify_otp
 from tests.signature.conftest import TENANT_HEADERS, sellar
 from tests.signature.test_sign_xml_xades import (

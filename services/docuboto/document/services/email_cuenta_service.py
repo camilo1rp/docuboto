@@ -24,9 +24,9 @@ from typing import Any
 import asyncpg
 from cryptography.exceptions import InvalidTag
 
+from docuboto.config import document as settings
 from document.clients.imap_adaptador import Conexion, ErrorDeCorreo, ImapAdaptador
 from document.core import email_credenciales, oauth_correo
-from document.core.config import settings
 from document.repositories.email_cuenta_repository import EmailCuentaRepository
 from document.schemas.email_cuenta import AppOAuthCrear, CuentaCrear
 

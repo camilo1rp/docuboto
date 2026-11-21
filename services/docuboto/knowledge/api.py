@@ -26,8 +26,8 @@ from typing import Any
 import asyncpg
 from orpycamcp_common.database import acquire_tenant
 
+from docuboto.config import knowledge as settings
 from knowledge.core import aceptacion, paso, salida_http
-from knowledge.core.config import settings
 
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _NIVELES = (1, 2, 3)

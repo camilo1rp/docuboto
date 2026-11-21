@@ -27,8 +27,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from archive.core.actor import Actor
-from archive.core.config import settings
 from archive.services.transferencia_service import TransferenciaService
+from docuboto.config import archive as settings
 from signature.api import SignPersonalOutcome
 from storage.api import WormProtectionOutcome
 from tests.archive.conftest import (

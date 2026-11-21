@@ -24,10 +24,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from archive.core.config import settings
 from archive.jobs import indice_reconciliation
 from archive.services.index_service import _TIPO_FIRMA_EXCEPCION, _TIPO_FIRMA_REVOCACION
 from archive.services.transferencia_service import TransferenciaService
+from docuboto.config import archive as settings
 from storage.api import WormProtectionOutcome, WormRenewalOutcome
 
 TENANT = "demo"

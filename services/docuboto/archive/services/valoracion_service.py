@@ -43,7 +43,6 @@ import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
 
-from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.disposition import CT_DISPOSITION_CODES
 from archive.repositories.archive_repository import ArchiveRepository
@@ -59,6 +58,7 @@ from archive.schemas.retencion_legal import (
 )
 from archive.services.backoff import next_backoff_seconds
 from archive.services.retention_math import RetencionDiferida, total_trd_years
+from docuboto.config import archive as settings
 from storage import api as storage_api
 
 logger = logging.getLogger(__name__)

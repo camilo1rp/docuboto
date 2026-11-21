@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from document.core.config import settings
+from docuboto.config import document as settings
 from document.core.postal_webhook_auth import cifrar_secreto, verify_any, verify_signature
 from document.schemas.postal import ShipmentStatusUpdate
 from document.schemas.public import VentanillaRadicacion

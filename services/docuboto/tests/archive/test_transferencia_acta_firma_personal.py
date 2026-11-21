@@ -25,9 +25,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from archive.core.actor import Actor
-from archive.core.config import settings
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.transferencia_service import TransferenciaService
+from docuboto.config import archive as settings
 from signature.api import SignedPersonal, SignPersonalOutcome, VerifyResult
 from tests.archive.conftest import USER_ID, make_expediente_record
 from tests.archive.test_transferencias import _acta_firma_row, _acta_row, _transfer_row

@@ -30,10 +30,10 @@ from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import canal_de, id_opcional, slug_de
 from pydantic import BaseModel, Field, model_validator
 
+from docuboto.config import knowledge as settings
 from document import api as document_api
 from knowledge.core import consulta, paso
 from knowledge.core.clearance import require_asistente_habilitado
-from knowledge.core.config import settings
 from knowledge.core.salida_http import transporte_de_consulta
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])

@@ -20,8 +20,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, TypeGuard
 
+from docuboto.config import knowledge as settings
 from knowledge.core import paso
-from knowledge.core.config import settings
 from knowledge.core.firma_capabilities import verificar
 
 _SHA = re.compile(r"^[0-9a-f]{64}$")

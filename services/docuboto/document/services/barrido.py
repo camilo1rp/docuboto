@@ -37,7 +37,7 @@ from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.request_log import canal_de_fondo
 from pydantic import ValidationError
 
-from document.core.config import settings
+from docuboto.config import document as settings
 from document.repositories.postal_repository import PostalRepository
 from document.schemas.postal import PostalCallbackPayload
 from document.services import outbox

@@ -26,9 +26,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import ValidationError
 
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.api import StorageLegalHoldError
-from storage.core import config as config_module
 from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.schemas.preservacion import (
     AipCreate,
@@ -52,7 +52,7 @@ _ACTOR = str(uuid.uuid4())
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 async def _fijar(*, actor_id: str | None = _ACTOR, **overrides: str) -> dict:
@@ -312,7 +312,7 @@ async def test_fijar_con_un_motivo_fuera_del_catalogo_es_422(client_with_conn) -
 
 @pytest.mark.asyncio
 async def test_hold_con_preservacion_desactivada_es_503(client_with_conn, monkeypatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", False)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", False)
     _client, conn, _ = client_with_conn
     _Db().instalar(conn)
     with pytest.raises(StorageLegalHoldError) as exc:

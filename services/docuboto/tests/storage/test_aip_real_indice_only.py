@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 import pydantic
 import pytest
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage.schemas.preservacion import AipCreate
 from storage.services.aip_service import AipService
 from storage.services.preservation_worm_service import FixityMismatchError
@@ -58,7 +58,7 @@ async def _empaquetar(mock_conn, payload: dict) -> dict:
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _indice_record(file_id: uuid.UUID) -> dict:

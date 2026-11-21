@@ -28,8 +28,8 @@ import asyncpg
 import pytest
 
 from auth.api import AuthUnavailableError
+from docuboto.config import signature as settings
 from signature.core import params_entidad
-from signature.core.config import settings
 from tests.signature.conftest import USER as USER_ID
 from tests.signature.test_cadena import _exec_sig, _make_conn, _sol_row, _turno_row
 from tests.signature.test_cadena_2fa import _patch_audit

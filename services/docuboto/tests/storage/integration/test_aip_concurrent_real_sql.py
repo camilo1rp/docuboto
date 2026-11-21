@@ -42,8 +42,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
-import storage.core.config as config_module
 import storage.services.aip_service as aip_service_module
+from docuboto import config as config_module
 from storage.schemas.preservacion import AipCreate
 from storage.services.aip_service import AipService
 from storage.services.preservation_worm_service import _worm_lock_key
@@ -170,7 +170,7 @@ async def test_two_concurrent_empaquetados_same_content_produce_single_aip(
     # guion bajo), igual que `PreservacionRepository`/
     # `PreservacionWormRepository` ya hacían -- ya no hace falta sanitizar
     # el slug antes de construir `AipService`.
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
     expediente_id = "EXP-CONCURRENCIA-1"
 
     doc_file_id = uuid.uuid4()
@@ -235,7 +235,7 @@ async def test_empaquetar_aip_holds_advisory_lock_on_server_during_put_object(
     `pg_try_advisory_lock` (no bloqueante) para la MISMA clave debe fallar en
     adquirirlo."""
     slug, conn = tenant_ctx  # `slug` CRUDO, con guion -- ver el comentario en el test anterior
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
     expediente_id = "EXP-CONCURRENCIA-2"
 
     doc_file_id = uuid.uuid4()

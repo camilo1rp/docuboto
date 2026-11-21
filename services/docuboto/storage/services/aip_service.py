@@ -58,7 +58,7 @@ import asyncpg
 from miniopy_async.retention import Retention
 from orpycamcp_common import audit
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.core.constants import canal_del_acto
 from storage.core.minio_client import (
     ensure_object_lock_bucket,

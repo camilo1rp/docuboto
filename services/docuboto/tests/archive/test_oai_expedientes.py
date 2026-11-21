@@ -490,6 +490,6 @@ async def test_ead_physdesc_reflects_radicado_count(
 
 @pytest.fixture(autouse=True)
 def _habilitar_interop(monkeypatch: pytest.MonkeyPatch) -> None:
-    from archive.core import config as cfg_module
+    from docuboto import config as cfg_module
 
-    monkeypatch.setattr(cfg_module.settings, "public_interop_enabled", True)
+    monkeypatch.setattr(cfg_module.archive, "public_interop_enabled", True)

@@ -32,8 +32,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
+from docuboto.config import signature as settings
 from signature.core import tsa as tsa_module
-from signature.core.config import settings
 from signature.providers.base import SignerRef
 from tests.signature.test_sign_xml_xades import _generate_cert, _generate_tsa_cert
 
@@ -201,7 +201,7 @@ def test_el_instante_del_corte_ya_exige_esscertid(
 def test_corte_de_entorno_sin_zona_se_interpreta_como_utc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from signature.core.config import Settings
+    from docuboto.config import SignatureSettings as Settings
 
     monkeypatch.setenv("TSA_ESSCERTID_CORTE", "2027-01-01T00:00:00")
     assert Settings().tsa_esscertid_corte == datetime(2027, 1, 1, tzinfo=UTC)

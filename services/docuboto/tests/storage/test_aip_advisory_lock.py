@@ -32,8 +32,8 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-import storage.core.config as config_module
 import storage.services.aip_service as aip_service_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.schemas.preservacion import AipCreate, AipResponse
 from storage.services.aip_service import AipService
@@ -51,7 +51,7 @@ _DOC_SHA256 = hashlib.sha256(_DOC_CONTENT).hexdigest()
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 async def _empaquetar(mock_conn, payload: dict) -> AipResponse:

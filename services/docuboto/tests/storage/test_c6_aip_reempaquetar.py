@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from lxml import etree
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.core.constants import SYSTEM_RECONCILER_ID
 from storage.schemas.preservacion import AipReempaquetarRequest
@@ -196,8 +196,8 @@ class _Mundo:
 
 @pytest.fixture(autouse=True)
 def _habilitado(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
-    monkeypatch.setattr(config_module.settings, "preservation_replica_enabled", False)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_replica_enabled", False)
     with patch("storage.services.aip_service.get_minio") as gm, patch(
         "storage.services.aip_service.audit.append", new=AsyncMock()
     ):

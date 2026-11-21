@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import storage.core.config as config_module
+from docuboto import config as config_module
 from storage import api as storage_api
 from storage.core.minio_client import RetencionNoVerificadaError
 from tests.storage.conftest import (
@@ -47,7 +47,7 @@ _SHA = hashlib.sha256(_XML).hexdigest()
 
 @pytest.fixture(autouse=True)
 def _preservation_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config_module.settings, "preservation_enabled", True)
+    monkeypatch.setattr(config_module.storage, "preservation_enabled", True)
 
 
 def _almacen_que_no_cumple(mock_minio) -> None:

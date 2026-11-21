@@ -36,7 +36,7 @@ from datetime import datetime, timedelta
 import asyncpg
 from orpycamcp_common import audit
 
-from storage.core.config import settings
+from docuboto.config import storage as settings
 from storage.core.minio_client import Minio, get_minio
 from storage.core.preservacion_tipos import CONTROL_INSTRUMENT_TIPOS
 from storage.models.file_record import FileRecord

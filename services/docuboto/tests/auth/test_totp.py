@@ -42,7 +42,6 @@ from orpycamcp_common.database import get_tenant_conn
 
 from auth import api as auth_api
 from auth.core.authz import Caller, get_caller
-from auth.core.config import settings
 from auth.core.totp import (
     _hotp,
     build_aad,
@@ -54,6 +53,7 @@ from auth.core.totp import (
     generate_secret,
 )
 from auth.services.totp_service import TotpService
+from docuboto.config import auth as settings
 from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}

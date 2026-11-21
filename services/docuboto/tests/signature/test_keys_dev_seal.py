@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.core.keys import SealNotFoundError, load_seal
 
 

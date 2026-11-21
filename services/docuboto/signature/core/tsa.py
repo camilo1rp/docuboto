@@ -62,9 +62,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
+from docuboto.config import signature as settings
 from signature.core import algoritmos as catalogo
 from signature.core import ocsp
-from signature.core.config import settings
 from signature.core.keys import TsaSealNotFoundError, load_tsa_seal
 
 # OID de política de sellado — NO registrado ante ninguna autoridad (IANA/AGN/

@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from signature.core.config import settings
+from docuboto.config import signature as settings
 from signature.repositories.cadena_repository import CadenaRepository
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row
@@ -42,7 +42,7 @@ def _politica_xades_off(monkeypatch: pytest.MonkeyPatch) -> None:
     ``clasificados`` y un acto de nivel >= 2 sin certificado se rechaza antes de llegar a
     esos gates; se fija ``off`` EXPLÍCITO para seguir probándolos. El valor por defecto
     lo fijan ``test_firma_xades_gate`` y ``shared/tests/test_param_firma_xades_se_siembra``."""
-    from signature.core.config import settings as _settings
+    from docuboto.config import signature as _settings
 
     monkeypatch.setattr(_settings, "firma_personal_require_xades", "off")
 

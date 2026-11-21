@@ -32,7 +32,6 @@ from orpycamcp_common import audit
 from orpycamcp_common.rbac import CLEARANCE_SIN_RESTRICCION, check_permission
 
 from archive.core.actor import Actor
-from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
 from archive.core.http_errors import motivo_de
 from archive.core.params_entidad import gate_xades_activo, modo_xades_de_la_entidad
@@ -83,6 +82,7 @@ from archive.services.constancia_firma_excepcion import (
 from archive.services.fisico_service import FisicoService, _fuid_to_xml
 from archive.services.index_service import IndexService
 from archive.services.retention_math import RetencionDiferida, base_worm, total_trd_years
+from docuboto.config import archive as settings
 from document import api as document_api
 
 if TYPE_CHECKING:

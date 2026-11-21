@@ -39,8 +39,8 @@ import asyncpg
 from cryptography.hazmat.primitives import hashes
 from fastapi import HTTPException, status
 
+from docuboto.config import signature as settings
 from signature.core import tsa as tsa_module
-from signature.core.config import settings
 from signature.core.constants import XADES_ELIGIBLE_OBJETO_TIPOS
 from signature.core.events import publish_indice_firmado
 from signature.core.keys import SealNotFoundError, load_seal
