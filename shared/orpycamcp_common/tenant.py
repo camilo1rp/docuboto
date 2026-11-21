@@ -58,7 +58,11 @@ def tenant_schema(slug: str) -> str:
 
 
 class EstadoEntidad(StrEnum):
-    """Veredicto único sobre si una entidad puede ser atendida (ADR-035)."""
+    """Veredicto sobre si una entidad puede ser atendida (ADR-035, ADR-047 §3).
+
+    Sin estados de ciclo de vida: una instalación es una entidad. Lo único que
+    se comprueba es que exista su fila y su schema.
+    """
 
     OPERATIVA = "operativa"
     INACTIVA = "inactiva"
@@ -80,65 +84,35 @@ ERRORES_ENTIDAD: dict[EstadoEntidad, tuple[int, str, str]] = {
 }
 
 
-async def _fila_entidad(conn: asyncpg.Connection, slug: str) -> asyncpg.Record | None:
-    return await conn.fetchrow(
-        "SELECT t.status, t.provisioning_status, "
-        "       to_regnamespace(format('%I', $2::text)) IS NOT NULL AS hay_schema "
-        "FROM public.tenants t WHERE t.slug = $1",
+async def _hay_schema(conn: asyncpg.Connection, slug: str) -> bool | None:
+    """`None` si no hay fila; si la hay, si existe su schema."""
+    return await conn.fetchval(
+        "SELECT to_regnamespace(format('%I', $2::text)) IS NOT NULL "
+        "FROM public.tenants WHERE slug = $1",
         slug,
         tenant_schema(slug),
     )
 
 
 async def estado_entidad(conn: asyncpg.Connection, slug: str) -> EstadoEntidad:
-    """Estado de la entidad `slug` en una sola consulta a `public.tenants`.
+    """Estado de la entidad `slug` en una consulta a `public.tenants`.
 
     No captura excepciones: quien llama decide qué hace ante un registro que no
-    responde (HTTP: 503 fail-closed; job: saltar la vuelta). Una entidad inexistente
-    o con slug mal formado cuenta como INACTIVA, el mismo veredicto que una
-    suspendida, así que no es un oráculo de existencia. `to_regnamespace` evita que
-    una fila `active` sin schema acabe en `UndefinedTableError` (500).
+    responde (HTTP: 503 fail-closed; job: saltar la vuelta). Inexistente o slug
+    mal formado = INACTIVA, así que no es un oráculo de existencia.
+    `to_regnamespace` evita que una fila sin schema acabe en `UndefinedTableError`.
     """
     if not slug_valido(slug):
         return EstadoEntidad.INACTIVA
-    row = await _fila_entidad(conn, slug)
-    if row is None or row["status"] != "active":
+    hay = await _hay_schema(conn, slug)
+    if hay is None:
         return EstadoEntidad.INACTIVA
-    if row["provisioning_status"] != "active" or not row["hay_schema"]:
-        return EstadoEntidad.NO_PROVISIONADA
-    return EstadoEntidad.OPERATIVA
+    return EstadoEntidad.OPERATIVA if hay else EstadoEntidad.NO_PROVISIONADA
 
 
-class AtencionPublica(StrEnum):
-    """Qué se sirve SIN autenticar a una entidad (ADR-035, decisión de 2026-10-16)."""
-
-    COMPLETA = "completa"
-    #: Entidad suspendida y aprovisionada: solo lecturas públicas (verificación,
-    #: consulta, publicidad de la eliminación, OAI, CMIS). Las escrituras, no.
-    SOLO_LECTURA = "solo_lectura"
-    #: Inexistente, dada de baja o sin aprovisionar: el 404 neutro de siempre.
-    NINGUNA = "ninguna"
-
-
-async def atencion_publica(conn: asyncpg.Connection, slug: str) -> AtencionPublica:
-    """Atención pública de `slug`. Como `estado_entidad`, no captura excepciones.
-
-    Una entidad suspendida con su schema y su aprovisionamiento intactos sigue
-    siendo legible desde fuera: el plazo de oposición del inventario de eliminación
-    (Ac. AGN 004/2019), la verificación de un radicado (Ley 527 art. 12) y el acceso
-    a la información pública (Ley 1712 arts. 9-11) no se detienen por una
-    suspensión administrativa. Que la entidad exista no es un secreto.
-    """
-    if not slug_valido(slug):
-        return AtencionPublica.NINGUNA
-    row = await _fila_entidad(conn, slug)
-    if row is None or row["provisioning_status"] != "active" or not row["hay_schema"]:
-        return AtencionPublica.NINGUNA
-    if row["status"] == "active":
-        return AtencionPublica.COMPLETA
-    if row["status"] == "suspended":
-        return AtencionPublica.SOLO_LECTURA
-    return AtencionPublica.NINGUNA
+async def entidad_publica(conn: asyncpg.Connection, slug: str) -> bool:
+    """¿Se atiende a `slug` sin autenticar? Existe y tiene schema; si no, el 404 neutro."""
+    return await estado_entidad(conn, slug) is EstadoEntidad.OPERATIVA
 
 
 #: Error cuando el registro de entidades no responde (fail-closed).
@@ -154,8 +128,7 @@ async def veredicto_entidad(
 ) -> tuple[int, str, str] | None:
     """`None` si la entidad es operativa; si no, `(HTTP, error, detalle)` a responder.
 
-    Envuelve `estado_entidad` con el fail-closed común de los `get_tenant_conn`: si
-    el registro no responde se niega (503), no se sigue sirviendo ante la duda.
+    Si el registro no responde se niega (503): no se sirve ante la duda.
     """
     try:
         estado = await estado_entidad(conn, slug)

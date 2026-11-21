@@ -425,8 +425,8 @@ async def test_list_active_tenants_queries_public_tenants() -> None:
     assert slugs == ["tenant-a", "tenant-b"]
     sql = conn.fetch.call_args[0][0]
     assert "public.tenants" in sql
-    assert "status = 'active'" in sql
-    assert "provisioning_status = 'active'" in sql
+    # ADR-047 §3: sin estados de ciclo de vida, todas las entidades registradas.
+    assert "status" not in sql
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
-from orpycamcp_common.tenant import AtencionPublica, atencion_publica
+from orpycamcp_common.tenant import entidad_publica
 
 from archive.core.database import get_db_conn
 from archive.schemas.archive import LoteEliminacionPublico
@@ -47,10 +47,10 @@ router = APIRouter(prefix="/api/v1/public/archive/eliminacion", tags=["public"])
 async def _tenant_operativo(conn: asyncpg.Connection, slug: str) -> bool:
     """¿Es esa entidad servible aquí? Se pregunta al registro (ADR-035), no al schema.
 
-    Operativa y suspendida se sirven (solo lectura); inexistente y sin aprovisionar son el mismo «no».
+    Existe y tiene schema; si no, el mismo «no» (ADR-047 §3: sin estados).
     """
     try:
-        return await atencion_publica(conn, slug) is not AtencionPublica.NINGUNA
+        return await entidad_publica(conn, slug)
     except Exception:  # noqa: BLE001 — no poder saberlo se responde como «no»
         return False
 

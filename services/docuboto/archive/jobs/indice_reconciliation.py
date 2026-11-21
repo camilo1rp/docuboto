@@ -63,33 +63,23 @@ _SERVICE = "archive-service"
 
 
 async def list_active_tenants(pool: asyncpg.Pool) -> list[str]:
-    """Slugs de los tenants con `status='active'` y `provisioning_status='active'`.
-
-    Mismas columnas que `signature-service/signature/jobs/deadletter_retention.py`
-    (verificadas contra las migraciones de tenant-service:
-    `001_create_tenants.sql` → slug, status; `002_provisioning_status.sql` →
-    provisioning_status).
-    """
+    """Slugs de las entidades registradas (ADR-047 §3: sin estados de ciclo de vida)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT slug FROM public.tenants "
-            "WHERE status = 'active' AND provisioning_status = 'active'"
         )
     return [row["slug"] for row in rows]
 
 
 async def list_tenants_conservacion(pool: asyncpg.Pool) -> list[str]:
-    """Entidades `active` y `suspended` (aprovisionadas) para las fases de CONSERVACIÓN
-    (WORM, renovación de retención, fixity). El empaquetado del AIP NO está entre ellas.
+    """Entidades para las fases de CONSERVACIÓN (WORM, renovación, fixity).
 
-    La suspensión detiene la operación de una entidad, no su obligación de conservar (Ley 594
-    art. 46; Ac. AGN 003/2015; ADR-035, enmienda de B10): los plazos WORM, el AIP y la fixity siguen
-    corriendo. `inactive` (dada de baja) y las sin aprovisionar quedan fuera. Los trabajos que
-    OPERAN (sellar índices y actas, origen legado) siguen con `list_active_tenants`."""
+    Sin estados (ADR-047 §3) es la misma lista que `list_active_tenants`; se
+    conserva el nombre porque nombra a quién sirve.
+    """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT slug FROM public.tenants "
-            "WHERE status IN ('active', 'suspended') AND provisioning_status = 'active'"
         )
     return [row["slug"] for row in rows]
 

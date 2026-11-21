@@ -37,7 +37,6 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from lxml import etree
-from orpycamcp_common.tenant import AtencionPublica
 
 from archive.main import app
 from tests.archive.oai_fakes import fetch_oai, productora
@@ -47,7 +46,7 @@ from tests.archive.oai_fakes import fetch_oai, productora
 def _entidad_operativa():
     """ADR-035: aquí se prueba el EAD, no el estado de la entidad (`test_estado_entidad.py`)."""
     with patch(
-        "archive.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)
+        "archive.routers.oai.entidad_publica", new=AsyncMock(return_value=True)
     ):
         yield
 

@@ -246,10 +246,10 @@ def test_el_control_de_recetas_caza_la_linea_que_se_retiro() -> None:
 
 
 def test_los_slugs_de_los_ejemplos_casan_con_el_validador_de_tenant_service() -> None:
-    # El validador es único (AREA-02-05): el alta de tenant-service lo importa.
+    # El validador es único (AREA-02-05): el alta (`scripts/init_tenant.py`) usa su forma.
     from orpycamcp_common.tenant import SLUG_RE as slug_re
 
-    assert "slug_valido" in _leer("services/docuboto/tenant/schemas/tenant.py")
+    assert "slug_valido" in _leer("shared/orpycamcp_common/tenant.py")
     vistos = 0
     for p in _DOCS.rglob("*multi-tenancy.md"):
         txt = p.read_text(encoding="utf-8")

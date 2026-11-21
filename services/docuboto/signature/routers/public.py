@@ -39,7 +39,7 @@ from collections.abc import AsyncGenerator
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
-from orpycamcp_common.tenant import AtencionPublica, atencion_publica, slug_valido
+from orpycamcp_common.tenant import entidad_publica, slug_valido
 from orpycamcp_common.tenant import tenant_schema as _schema_de
 
 from signature.core.constants import (
@@ -81,7 +81,7 @@ async def get_public_tenant_conn(
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
         try:
-            atencion = await atencion_publica(conn, tenant)
+            existe = await entidad_publica(conn, tenant)
         except Exception as exc:  # noqa: BLE001 — no poder saberlo se niega
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -91,7 +91,7 @@ async def get_public_tenant_conn(
                     "status": 503,
                 },
             ) from exc
-        if atencion is AtencionPublica.NINGUNA:
+        if not existe:
             raise _no_encontrada()
         await conn.execute(f'SET search_path = "{_schema_de(tenant)}"')
         try:

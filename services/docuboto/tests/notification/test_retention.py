@@ -116,11 +116,10 @@ async def test_list_active_tenants_returns_only_active() -> None:
     slugs = await list_active_tenants(pool)
 
     assert slugs == ["tenant_a", "tenant_b"]
-    # Verify the SQL filters on both columns.
+    # ADR-047 §3: no lifecycle states to filter on.
     inner_conn = pool.acquire.return_value.__aenter__.return_value
     sql: str = inner_conn.fetch.call_args.args[0]
-    assert "status = 'active'" in sql
-    assert "provisioning_status = 'active'" in sql
+    assert "status" not in sql
     assert "public.tenants" in sql
 
 

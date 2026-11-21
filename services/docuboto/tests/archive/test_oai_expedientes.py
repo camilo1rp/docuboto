@@ -23,7 +23,6 @@ from xml.etree import ElementTree as ET
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from orpycamcp_common.tenant import AtencionPublica
 
 from archive.main import app
 from tests.archive.oai_fakes import fetch_oai
@@ -39,7 +38,7 @@ SERIE_ID = uuid.uuid4()
 def _entidad_operativa():
     """ADR-035: estos tests ejercen el protocolo, no el estado (eso lo cubre
     `test_estado_entidad.py`), así que la entidad se da por operativa."""
-    with patch("archive.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.COMPLETA)):
+    with patch("archive.routers.oai.entidad_publica", new=AsyncMock(return_value=True)):
         yield
 
 
@@ -273,7 +272,7 @@ async def test_nonexistent_tenant_is_400_not_500(oai_ctx: tuple[AsyncClient, Asy
     (400 badArgument), NO revienta en 500 (oráculo de existencia)."""
     client, conn = oai_ctx
     with patch(
-        "archive.routers.oai.atencion_publica", new=AsyncMock(return_value=AtencionPublica.NINGUNA)
+        "archive.routers.oai.entidad_publica", new=AsyncMock(return_value=False)
     ):
         resp = await client.get(_url(verb="Identify"))
     assert resp.status_code == 400

@@ -10,8 +10,8 @@
 """Un llamante por petición, tomado del JWT. Las cabeceras `X-User-Id` no cuentan.
 
 El gateway firmaba quién eras y lo inyectaba. En un solo proceso esa firma es un
-salto de más: el middleware valida el Bearer, deja un `Usuario` en
-`request.state` y veta el estado de la entidad. Un `X-User-Id` de cliente se
+salto de más: el middleware valida el Bearer y deja un `Usuario` en
+`request.state`. Sin veto de entidad suspendida en el borde (ADR-047 §3). Un `X-User-Id` de cliente se
 ignora. Permiso y clearance siguen saliendo de la BD.
 """
 
@@ -28,7 +28,6 @@ from urllib.parse import unquote
 from starlette.requests import Request
 
 from orpycamcp_common.client_ip import resolve_client_ip
-from orpycamcp_common.tenant import veredicto_entidad
 
 logger = logging.getLogger(__name__)
 
@@ -311,11 +310,6 @@ class UsuarioActualMiddleware:
             return
 
         slug = str(payload.get("tenant_slug") or "")
-        if slug:
-            veto = await _veto(scope, slug)
-            if veto is not None:
-                await _responder(send, veto[0], veto[1], veto[2])
-                return
 
         ip = str(state.get("ip") or "unknown")
 
@@ -396,20 +390,3 @@ async def _validar(scope: dict[str, Any], token: str) -> dict[str, Any] | None:
         }
 
     return None
-
-
-async def _veto(scope: dict[str, Any], slug: str) -> tuple[int, str, str] | None:
-    app = scope.get("app")
-    pool = getattr(getattr(app, "state", None), "db_pool", None)
-    if pool is None:
-        return None
-    try:
-        async with pool.acquire() as conn:
-            return await veredicto_entidad(conn, slug)
-    except Exception:
-        logger.exception("veredicto_entidad falló")
-        return (
-            503,
-            "tenant_estado_no_disponible",
-            "No se pudo comprobar el estado de la entidad.",
-        )

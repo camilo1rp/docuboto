@@ -31,7 +31,6 @@ from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from orpycamcp_common.tenant import AtencionPublica
 
 from tests.archive.conftest import TENANT_HEADERS
 
@@ -41,8 +40,8 @@ def _entidad_operativa():
     """ADR-035: estos tests ejercen la publicidad, no el estado de la entidad (eso lo
     cubre `test_estado_entidad.py`), así que la entidad se da por operativa."""
     with patch(
-        "archive.routers.public_eliminacion.atencion_publica",
-        new=AsyncMock(return_value=AtencionPublica.COMPLETA),
+        "archive.routers.public_eliminacion.entidad_publica",
+        new=AsyncMock(return_value=True),
     ):
         yield
 
@@ -297,8 +296,8 @@ async def test_un_slug_inexistente_y_un_lote_inexistente_dan_la_MISMA_respuesta(
     # `search_path` apuntando a un schema que no existe.
     mock_conn.fetchrow.side_effect = asyncpg.UndefinedTableError("el schema no existe")
     with patch(
-        "archive.routers.public_eliminacion.atencion_publica",
-        new=AsyncMock(return_value=AtencionPublica.NINGUNA),  # no está en `public.tenants`
+        "archive.routers.public_eliminacion.entidad_publica",
+        new=AsyncMock(return_value=False),  # no está en `public.tenants`
     ):
         sin_entidad = await client.get(
             f"/api/v1/public/archive/eliminacion/no-existe/lotes/{LOTE}"
@@ -306,8 +305,8 @@ async def test_un_slug_inexistente_y_un_lote_inexistente_dan_la_MISMA_respuesta(
     mock_conn.fetchrow.side_effect = None
     mock_conn.fetchrow.return_value = None
     with patch(
-        "archive.routers.public_eliminacion.atencion_publica",
-        new=AsyncMock(return_value=AtencionPublica.COMPLETA),  # la entidad existe; el lote no
+        "archive.routers.public_eliminacion.entidad_publica",
+        new=AsyncMock(return_value=True),  # la entidad existe; el lote no
     ):
         sin_lote = await client.get(f"{PUBLICO}/{uuid.uuid4()}")
 

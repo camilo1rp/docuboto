@@ -35,14 +35,13 @@ logger = logging.getLogger(__name__)
 
 
 async def list_active_tenants(pool: asyncpg.Pool) -> list[str]:
-    """Return the slugs of all tenants with status='active' and provisioning_status='active'.
+    """Return the slugs of all tenants registered (ADR-047 §3: no lifecycle states).
 
     Columns from `services/docuboto/migrations/global/040_tenants.sql`.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT slug FROM public.tenants "
-            "WHERE status = 'active' AND provisioning_status = 'active'"
         )
     return [row["slug"] for row in rows]
 

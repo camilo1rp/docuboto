@@ -15,8 +15,7 @@ from typing import Any
 import asyncpg
 from fastapi import HTTPException, Path, Request, status
 from orpycamcp_common.tenant import (
-    AtencionPublica,
-    atencion_publica,
+    entidad_publica,
     slug_valido,
     veredicto_entidad,
 )
@@ -160,42 +159,21 @@ def _no_encontrado() -> HTTPException:
     )
 
 
-def _canal_no_disponible() -> HTTPException:
-    """503 de las ESCRITURAS públicas de una entidad suspendida (ADR-035).
-
-    No es un 404: la entidad existe y quien radica merece saber que el canal está
-    cerrado, no creer que se equivocó de dirección.
-    """
-    return HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        headers={"Retry-After": "3600"},
-        detail={
-            "error": "canal_no_disponible",
-            "detail": (
-                "Esta entidad tiene suspendida la recepción de comunicaciones. "
-                "Las consultas y verificaciones siguen disponibles."
-            ),
-            "status": 503,
-        },
-    )
-
-
 @asynccontextmanager
-async def public_tenant_conn_atencion(
-    pool: asyncpg.Pool, slug: str, *, escritura: bool = False
-) -> AsyncGenerator[tuple[asyncpg.Connection, AtencionPublica], None]:
-    """Conexión pública que entrega TAMBIÉN la atención.
+async def public_tenant_conn(
+    pool: asyncpg.Pool, slug: str
+) -> AsyncGenerator[asyncpg.Connection, None]:
+    """Conexión con `search_path` al tenant para una ruta PÚBLICA (sin JWT), ADR-035.
 
-    Con `escritura=False` (el callback postal, que tiene que autenticar la firma con el
-    secreto del schema antes de decidir 503 o 404) la entidad suspendida se sirve. Con
-    `escritura=True` una suspendida se corta ANTES de fijar su schema. Inexistente, dada
-    de baja y sin aprovisionar son siempre el 404 neutro.
+    El slug viaja en el path. Sin estados de ciclo de vida (ADR-047 §3): la
+    entidad que existe y tiene schema se sirve; si no, el 404 neutro. Si el
+    registro no responde: 503 (fail-closed), que no distingue entidades.
     """
     if not slug_valido(slug):
         raise _no_encontrado()
     async with pool.acquire() as conn:
         try:
-            atencion = await atencion_publica(conn, slug)
+            existe = await entidad_publica(conn, slug)
         except Exception as exc:  # noqa: BLE001 — no poder saberlo se niega
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -205,43 +183,18 @@ async def public_tenant_conn_atencion(
                     "status": 503,
                 },
             ) from exc
-        if atencion is AtencionPublica.NINGUNA:
+        if not existe:
             raise _no_encontrado()
-        if escritura and atencion is not AtencionPublica.COMPLETA:
-            raise _canal_no_disponible()
         await conn.execute(f'SET search_path = "{_schema_de(slug)}"')
         try:
-            yield conn, atencion
+            yield conn
         finally:
             await conn.execute("SET search_path = public")
-
-
-@asynccontextmanager
-async def public_tenant_conn(
-    pool: asyncpg.Pool, slug: str, *, escritura: bool = False
-) -> AsyncGenerator[asyncpg.Connection, None]:
-    """Conexión con `search_path` al tenant para una ruta PÚBLICA (sin JWT), ADR-035.
-
-    El slug viaja en el path. Una entidad OPERATIVA se sirve entera; una SUSPENDIDA
-    solo en LECTURA (`escritura=True` => 503 `canal_no_disponible`); inexistente, dada
-    de baja y sin aprovisionar responden el mismo 404 neutro. Si el registro no
-    responde: 503 (fail-closed), que no distingue entidades.
-    """
-    async with public_tenant_conn_atencion(pool, slug, escritura=escritura) as (conn, _):
-        yield conn
 
 
 async def get_public_tenant_conn(
     request: Request, tenant: str = Path(...)
 ) -> AsyncGenerator[asyncpg.Connection, None]:
-    """Dependencia de las LECTURAS públicas `/public/{tenant}/...` (ver `public_tenant_conn`)."""
+    """Dependencia de las rutas públicas `/public/{tenant}/...` (ver `public_tenant_conn`)."""
     async with public_tenant_conn(request.app.state.db_pool, tenant) as conn:
-        yield conn
-
-
-async def get_public_tenant_conn_escritura(
-    request: Request, tenant: str = Path(...)
-) -> AsyncGenerator[asyncpg.Connection, None]:
-    """Dependencia de las ESCRITURAS públicas (PQRS, ventanilla): cerradas en suspensión."""
-    async with public_tenant_conn(request.app.state.db_pool, tenant, escritura=True) as conn:
         yield conn

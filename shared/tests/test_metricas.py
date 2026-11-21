@@ -367,4 +367,4 @@ async def test_senal_dlq_con_la_tabla_ausente_es_no_verificada() -> None:
 async def test_solo_los_tenants_con_aprovisionamiento_activo_se_miden() -> None:
     con = _Conn(fetch=[{"slug": "demo"}])
     assert await metricas.esquemas_a_medir(con) == ["tenant_demo"]  # type: ignore[arg-type]
-    assert "provisioning_status = 'active'" in con.sqls[0]
+    assert "status" not in con.sqls[0]  # ADR-047 §3: sin estados

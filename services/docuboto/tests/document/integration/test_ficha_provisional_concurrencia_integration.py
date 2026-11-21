@@ -44,7 +44,7 @@ from httpx import ASGITransport, AsyncClient
 from document.core import altcha
 from document.core.config import settings
 from document.core.database import (
-    get_public_tenant_conn_escritura,
+    get_public_tenant_conn,
     get_redis,
     get_tenant_client,
     tenant_schema,
@@ -218,7 +218,7 @@ async def puerta(tenant_ctx) -> AsyncGenerator[tuple[AsyncClient, _Grabadora, st
     async def _conn() -> AsyncGenerator[Any, None]:
         yield grabadora
 
-    app.dependency_overrides[get_public_tenant_conn_escritura] = _conn
+    app.dependency_overrides[get_public_tenant_conn] = _conn
     app.dependency_overrides[get_tenant_client] = lambda: _Tenant()
     app.dependency_overrides[get_redis] = lambda: _RedisSoloAntireplay(real)
     try:

@@ -29,7 +29,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../services/docuboto"
 
 # Dominios con tests/integration que no corren aquí, y por qué. Declarados, no
 # aprobados (shared/tests/test_ci_corre_la_app.py los vigila).
-FUERA_DE_INTEGRACION=(notification tenant)
+FUERA_DE_INTEGRACION=(notification)
 
 dominios() {
     if [ $# -gt 0 ]; then printf '%s\n' "$@"; return; fi

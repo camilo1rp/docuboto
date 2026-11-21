@@ -16,14 +16,13 @@ from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
-from orpycamcp_common.tenant import AtencionPublica
 from orpycamcp_common.usuario import id_opcional
 
 from document.core.clearance import require_permission, resolve_caller_clearance
 from document.core.database import (
     get_redis,
     get_tenant_conn,
-    public_tenant_conn_atencion,
+    public_tenant_conn,
     tenant_schema,
 )
 from document.schemas.postal import (
@@ -205,16 +204,10 @@ async def postal_callback(
     raw = await request.body()
     signature = request.headers.get("X-OrpycaMCP-Signature")
     pool: asyncpg.Pool = request.app.state.db_pool
-    # ADR-035 §7 (B10): inexistente o sin aprovisionar => 404 neutro. Una entidad
-    # SUSPENDIDA no recibe el efecto todavía, pero la firma se verifica ANTES: firma
-    # válida => el cuerpo se encola y se responde 202 `deferred` (se aplica al
-    # reactivarse, con la fecha de recepción); firma inválida => el mismo 404 neutro
-    # (un anónimo no averigua el estado). Con la cola llena, 503 + `Retry-After`.
-    async with public_tenant_conn_atencion(pool, tenant_slug) as (conn, atencion):
+    # Inexistente o sin schema => 404 neutro (ADR-047 §3: sin entidad suspendida).
+    async with public_tenant_conn(pool, tenant_slug) as conn:
         svc = PostalService(conn, redis=redis, tenant_slug=tenant_slug)
-        resultado = await svc.apply_operator_callback(
-            raw, signature, tenant_slug, suspendida=atencion is not AtencionPublica.COMPLETA
-        )
+        resultado = await svc.apply_operator_callback(raw, signature, tenant_slug)
     if resultado.status == "deferred":
         response.status_code = status.HTTP_202_ACCEPTED
     return resultado

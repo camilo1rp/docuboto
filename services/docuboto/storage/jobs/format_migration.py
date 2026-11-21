@@ -89,7 +89,6 @@ async def list_active_tenants(pool: asyncpg.Pool) -> list[str]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT slug FROM public.tenants "
-            "WHERE status = 'active' AND provisioning_status = 'active'"
         )
     return [row["slug"] for row in rows]
 

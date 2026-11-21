@@ -464,11 +464,10 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
             _ship_row(estado="en_transito"),
         ]
         cuerpo = _body(event_id=f"evt-{uuid.uuid4()}")
-        from orpycamcp_common.tenant import AtencionPublica
 
         with patch(
-            "document.core.database.atencion_publica",
-            new=AsyncMock(return_value=AtencionPublica.COMPLETA),  # ADR-035: aquí no se prueba el estado
+            "document.core.database.entidad_publica",
+            new=AsyncMock(return_value=True),  # ADR-035: aquí no se prueba el estado
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 r = await c.post(

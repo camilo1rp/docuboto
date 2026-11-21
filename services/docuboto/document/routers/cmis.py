@@ -22,7 +22,7 @@ from urllib.parse import quote
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
-from orpycamcp_common.tenant import AtencionPublica, atencion_publica
+from orpycamcp_common.tenant import entidad_publica
 from starlette.background import BackgroundTask
 
 from document.core.database import tenant_schema
@@ -61,9 +61,8 @@ async def _acquire(request: Request, tenant: str):
     pool: asyncpg.Pool = request.app.state.db_pool
     conn = await pool.acquire()
     try:
-        # ADR-035: operativa o suspendida se sirven (solo lectura); inexistente y
-        # sin aprovisionar son el mismo `None` (objectNotFound).
-        if await atencion_publica(conn, tenant) is AtencionPublica.NINGUNA:
+        # ADR-047 §3: sin estados; inexistente o sin schema es `None` (objectNotFound).
+        if not await entidad_publica(conn, tenant):
             await _release(pool, conn)
             return None
         await conn.execute(f'SET search_path = "{schema}"')

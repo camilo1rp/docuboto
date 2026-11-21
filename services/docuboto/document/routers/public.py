@@ -37,7 +37,6 @@ from orpycamcp_common.usuario import ip_de
 
 from document.core.database import (
     get_public_tenant_conn,
-    get_public_tenant_conn_escritura,
     get_redis,
     get_tenant_client,
 )
@@ -102,7 +101,7 @@ async def radicar_pqrs(
     payload: PqrsCreate,
     request: Request,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> PqrsResponse:
@@ -216,7 +215,7 @@ async def verify_radicado(
 )
 async def tipos_de_ventanilla(
     tenant: str,
-    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn),
 ) -> list[TipoVentanilla]:
     """Sin esto, quien radica tendría que adivinar el código de un tipo documental.
 
@@ -287,7 +286,7 @@ async def reto_de_ventanilla(tenant: str, response: Response) -> RetoAntirrobots
 )
 async def estado_de_ventanilla(
     tenant: str,
-    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> VentanillaEstado:
@@ -319,7 +318,7 @@ async def radicar_en_ventanilla(
     ),
     anexos: list[UploadFile] = File(default=[]),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-    conn: asyncpg.Connection = Depends(get_public_tenant_conn_escritura),
+    conn: asyncpg.Connection = Depends(get_public_tenant_conn),
     tenant_client: Any = Depends(get_tenant_client),
     redis: Any = Depends(get_redis),
 ) -> VentanillaRespuesta:

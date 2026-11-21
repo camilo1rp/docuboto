@@ -35,7 +35,6 @@ from orpycamcp_common.tenant import veredicto_entidad
 from pydantic import ValidationError
 
 from signature.core.clearance import enforce_permission
-from signature.core.conservacion import admitir_conservacion
 from signature.core.constants import SYSTEM_RECONCILER_ID
 from signature.core.database import acquire_tenant
 from signature.repositories.cadena_repository import CadenaRepository
@@ -57,20 +56,11 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def _tenant_conn(
-    tenant_slug: str, *, conservacion: str | None = None
-) -> AsyncIterator[asyncpg.Connection]:
-    """Conexión al schema del tenant con el mismo veto de entidad que ``get_tenant_conn``.
-
-    ``conservacion`` nombra la operación que una entidad suspendida sigue
-    atendiendo (ADR-035 §8); sin él, la suspendida queda vetada.
-    """
+async def _tenant_conn(tenant_slug: str) -> AsyncIterator[asyncpg.Connection]:
+    """Conexión al schema del tenant con el mismo veto de entidad que ``get_tenant_conn``."""
     async with acquire_tenant(tenant_slug) as conn:
         veto = await veredicto_entidad(conn, tenant_slug)
-        if veto is not None and not (
-            conservacion
-            and await admitir_conservacion(conn, slug=tenant_slug, operacion=conservacion)
-        ):
+        if veto is not None:
             raise HTTPException(
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},
@@ -337,7 +327,7 @@ async def artefactos_vigentes(
     """
     try:
         ids = [uuid.UUID(str(f)) for f in firma_ids]
-        async with _tenant_conn(tenant_slug, conservacion="artefactos_vigentes") as conn:
+        async with _tenant_conn(tenant_slug) as conn:
             try:
                 filas = await FirmaRepository(conn).artefactos_vigentes(ids)
             except asyncpg.UndefinedTableError:

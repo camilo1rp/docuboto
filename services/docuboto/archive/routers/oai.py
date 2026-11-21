@@ -22,7 +22,7 @@ de reservados es indistinguible (Ley 1712/2014 arts. 18-19; RF-SEG-08).
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response
-from orpycamcp_common.tenant import AtencionPublica, atencion_publica
+from orpycamcp_common.tenant import entidad_publica
 
 from archive.core.database import tenant_schema
 from archive.core.public_audit import audit_public_access
@@ -91,8 +91,8 @@ async def oai_pmh(tenant: str, request: Request) -> Response:
     pool: asyncpg.Pool = request.app.state.db_pool
     async with pool.acquire() as conn:
         # ADR-035: inexistente y sin aprovisionar responden el MISMO 400 badArgument
-        # que un slug malformado (la suspendida SÍ se sirve: es solo lectura), y el estado se lee ANTES de fijar el search_path.
-        if await atencion_publica(conn, tenant) is AtencionPublica.NINGUNA:
+        # que un slug malformado y el estado se lee ANTES de fijar el search_path.
+        if not await entidad_publica(conn, tenant):
             svc0 = OaiService(None, base_url=base_url, tenant=tenant)  # type: ignore[arg-type]
             body = svc0.error_xml({}, "badArgument", "Tenant inválido")
             return Response(body, media_type="application/xml", status_code=400)
