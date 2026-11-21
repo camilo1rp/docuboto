@@ -107,7 +107,7 @@ def create_app(
     nueva.add_middleware(request_log.RequestLogMiddleware, servicio="docuboto")
     nueva.add_middleware(SecurityHeadersMiddleware)
     nueva.add_exception_handler(Problema, respuesta_problema)
-    nueva.add_exception_handler(RequestValidationError, _validacion_sin_eco)
+    nueva.add_exception_handler(RequestValidationError, _validacion_sin_eco)  # type: ignore[arg-type]
     for router in routers:
         nueva.include_router(router)
     deadletter.instalar_manejador_radicados_ausente(nueva)

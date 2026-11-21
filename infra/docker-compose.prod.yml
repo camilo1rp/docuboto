@@ -26,7 +26,7 @@ networks:
     # El `gateway` (172.20.0.1) queda FUERA de `ip_range`: los contenedores reciben
     # IP solo de 172.20.128.0/17, y `TRUSTED_PROXIES` confía únicamente en ese rango.
     # Así, si un cliente llega al `edge` con la IP del gateway de la red (IPv6 servido
-    # por docker-proxy, o un proceso del anfitrión), el gateway de la API NO la salta
+    # por docker-proxy, o un proceso del anfitrión), la app NO la salta
     # como «salto de confianza» y se queda con ella, en vez de con una entrada de
     # `X-Forwarded-For` forjada por el cliente (ADR-033; ADR-031 por el sello en
     # `audit_log`).
@@ -91,18 +91,12 @@ services:
     restart: unless-stopped
     # ── Presupuesto de conexiones ──────────────────────────────────────────
     #
-    # Postgres trae `max_connections=100` por defecto. Este despliegue (un tenant,
-    # una réplica por servicio) abre `DB_POOL_MAX_SIZE=3` por servicio:
-    #
-    #   auth 3 · tenant 3 · document 3 · storage 3 · workflow 3
-    #   archive 3 · notification 3 · signature 3 · knowledge 3
-    #   ────────────────────────────────────────────────────────────────────
-    #   = 27 conexiones de las aplicaciones
-    #
-    # (api-gateway no abre pool: no toca la base de datos.)
+    # Postgres trae `max_connections=100` por defecto. Este despliegue (una
+    # entidad, un proceso, ADR-047) abre un pool de `DB_POOL_MAX_SIZE=10`
+    # conexiones para la app.
     #
     # Keycloak se acota a `KC_DB_POOL_MAX_SIZE=30` contra el mismo Postgres.
-    # Suma: 57, más margen para migraciones, respaldos y `psql` de operación.
+    # Suma: 40, más margen para migraciones, respaldos y `psql` de operación.
     #
     # Se deja `max_connections=300`. Bajar el cupo del servidor es otro cambio:
     # el monolito de Docuboto 2.0 pasa a un solo pool, y esa es la cuenta que
@@ -198,7 +192,7 @@ services:
     # instrumentos de recuperación.
     #
     # Por qué RustFS: lo decidió una batería de conformidad WORM contra el
-    # almacén REAL (`services/storage-service/tests/integration/
+    # almacén REAL (`services/docuboto/tests/storage/integration/
     # test_worm_object_lock_real_s3.py`). Medido: RustFS 1.0.0 **7/7**, MinIO
     # **7/7** (línea base), Garage **0/7** (control negativo). Las siete pruebas
     # incluyen borrar la versión retenida con credencial RAÍZ, que es lo que
@@ -260,7 +254,7 @@ services:
       KC_DB_PASSWORD: ${DB_PASSWORD}
       KC_DB_SCHEMA: keycloak
       # Keycloak abre por defecto hasta 100 conexiones contra el MISMO Postgres
-      # que usan los nueve servicios. Acotarlo es la otra mitad del presupuesto
+      # que usa la app. Acotarlo es la otra mitad del presupuesto
       # de conexiones documentado en el bloque `postgres` de este fichero: sin
       # este tope, un pico de carga documental y el inicio de sesión compiten por
       # el mismo cupo y lo que falla es el login.
@@ -323,8 +317,8 @@ services:
 
   app:
     # Proceso unificado Docuboto 2.0. Imagen publicada por `release.yml` en cada
-    # tag X.Y.Z y fijada por digest en `release-<versión>.yml`. Los nueve servicios de dominio y el
-    # api-gateway quedan en el perfil `split`.
+    # tag X.Y.Z y fijada por digest en `release-<versión>.yml`. Un proceso (ADR-047): los
+    # nueve paquetes de dominio, sus bucles de fondo y los consumidores de eventos.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/app:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     restart: unless-stopped
     environment:
@@ -427,7 +421,7 @@ services:
   frontend:
     # SvelteKit SSR (adapter-node) detrás del reverse proxy/TLS. Split de URLs:
     #   - PUBLIC_* → orígenes públicos HTTPS que ve el NAVEGADOR (login PKCE, logout)
-    #   - INTERNAL_* → cómo alcanza el SSR al gateway dentro de la red Docker
+    #   - INTERNAL_* → cómo alcanza el SSR a la app dentro de la red Docker
     # ORIGIN + PROTOCOL_HEADER/HOST_HEADER son IMPRESCINDIBLES tras un proxy: sin
     # ellos adapter-node deriva mal `url.origin` y arma un redirect_uri inválido.
     # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
@@ -440,8 +434,7 @@ services:
       PORT: "3000"
       # adapter-node limita el cuerpo a 512 KB por defecto y las subidas de anexos
       # pasan por el SSR: sin esto, todo PDF escaneado real muere en 413. Coincide
-      # con el tope del gateway (MAX_REQUEST_BODY_BYTES) — subirlo aquí sin el
-      # flujo por trozos del gateway cambiaría el 413 por un OOM.
+      # con `client_max_body_size` de `edge` (512 MiB).
       BODY_SIZE_LIMIT: "536870912"
       # Sin esto el SSR ve la IP del proxy, no la del navegador, y todo el tráfico
       # comparte un único cubo de limitación de tasa (ver Dockerfile del frontend).
@@ -450,10 +443,10 @@ services:
       ORIGIN: https://${FRONTEND_HOSTNAME:?Frontend hostname required}
       PROTOCOL_HEADER: x-forwarded-proto
       HOST_HEADER: x-forwarded-host
-      # Públicas (navegador): gateway y Keycloak por su dominio público HTTPS.
+      # Públicas (navegador): la app y Keycloak por su dominio público HTTPS.
       PUBLIC_API_URL: https://${API_PUBLIC_HOSTNAME:?Public API hostname required}
       PUBLIC_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
-      # Internas (SSR): el gateway por la red Docker; Keycloak por su hostname
+      # Internas (SSR): la app por la red Docker; Keycloak por su hostname
       # público (hostname-strict=true + TLS solo aceptan el dominio del cert).
       INTERNAL_API_URL: http://app:8000
       INTERNAL_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
@@ -487,7 +480,7 @@ services:
 
   # ─── Entrada de producción (ADR-033) ───────────────────────────────────────────
   # ÚNICO servicio que publica puertos. nginx corre en contenedor y no en el
-  # anfitrión porque con nginx en el anfitrión el gateway vería como par a la IP
+  # anfitrión porque con nginx en el anfitrión la app vería como par a la IP
   # del docker-proxy, y porque `edge` lleva los tres hostnames públicos como
   # alias en `orpycamcp-net`.
   # Los alias hacen que, dentro de la red, `https://${KEYCLOAK_HOSTNAME}` resuelva

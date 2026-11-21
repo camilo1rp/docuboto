@@ -69,7 +69,7 @@ async def _tenant_conn(tenant_slug: str) -> AsyncIterator[asyncpg.Connection]:
 
 
 def _codigo_error(exc: HTTPException) -> str | None:
-    detail = exc.detail
+    detail: object = exc.detail
     return detail.get("error") if isinstance(detail, dict) else None
 
 

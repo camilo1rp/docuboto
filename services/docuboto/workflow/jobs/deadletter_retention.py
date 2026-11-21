@@ -130,7 +130,12 @@ async def _main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    await create_pool(settings.database_url_asyncpg)
+    await create_pool(
+        settings.database_url_asyncpg,
+        min_size=settings.db_pool_min_size,
+        max_size=settings.db_pool_max_size,
+        command_timeout=settings.db_command_timeout,
+    )
     try:
         await run_once()
     finally:

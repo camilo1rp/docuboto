@@ -24,19 +24,15 @@ volumes:
   keycloak-data:
   redis-data:
 
-# Migraciones al arrancar en DESARROLLO (C19, ADR-041, ADR-053): todo servicio
+# Migraciones al arrancar en DESARROLLO (C19, ADR-041, ADR-053): la app
 # espera a `migrate-docuboto`, el único migrador (imagen `app`,
 # `command: python migrations/runner.py`, conexión del propietario).
-# Si el runner falla, el servicio no arranca (`service_completed_successfully`).
+# Si el runner falla, la app no arranca (`service_completed_successfully`).
 # El runner e `init_tenant.py` comparten un cerrojo global.
 #
-# Los servicios CONSERVAN `MIGRATIONS_DATABASE_URL` en dev: `scripts/init-tenant.sh`
-# hace `docker compose exec` y los conftest de integración la leen.
-#
-# Recrear UN servicio con `--no-deps` salta el migrador (a propósito): para una
-# imagen nueva, `docker compose build app <svc> && docker compose run --rm --no-deps
-# migrate-docuboto && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose
-# up -d --no-build --no-deps <svc>`. Ver .claude/docs/arranque.md.
+# Recrear la app con `--no-deps` salta el migrador (a propósito): para una
+# imagen nueva, `docker compose build app && docker compose run --rm --no-deps
+# migrate-docuboto && docker compose up -d --no-build --no-deps app`.
 x-migracion-dev: &migracion-dev
   restart: "no"
   command: ["python", "migrations/runner.py"]
@@ -87,8 +83,7 @@ services:
     container_name: orpycamcp-redis
     ports:
       # Solo el bucle local, y CON contraseña: en desarrollo Redis guarda los
-      # streams de eventos de todas las entidades y la caché de identidad del
-      # gateway. Abierto y sin credencial, cualquiera en la misma red podía
+      # streams de eventos de la entidad. Abierto y sin credencial, cualquiera en la misma red podía
       # leerlo o escribirle — que es la puerta de dos hallazgos de esta auditoría.
       - "127.0.0.1:16379:6379"
     command: >
@@ -115,7 +110,7 @@ services:
     # que te cambien la versión, no de que te la quiten.
     #
     # Por qué RustFS y no otro: lo decide una batería de conformidad WORM contra
-    # el almacén REAL (`services/storage-service/tests/integration/
+    # el almacén REAL (`services/docuboto/tests/storage/integration/
     # test_worm_object_lock_real_s3.py`), no un folleto. Resultado medido:
     # RustFS 1.0.0 **7/7**, MinIO **7/7** (línea base), Garage **0/7** (control
     # negativo: sin Object Lock, y por diseño no puede tenerlo). Las siete
@@ -195,10 +190,10 @@ services:
       postgres:
         condition: service_healthy
 
-  # ─── Application Services ──────────────────────────────────────────────────────
-  # Default `up` is one HTTP process (`app`). The nine domain services stay on
-  # profile `split` for `docker compose run document-service pytest` and for
-  # debugging a module in isolation.
+  # ─── Aplicación (ADR-047) ─────────────────────────────────────────────────────
+  # Un proceso: los nueve paquetes de dominio, sus bucles de fondo y los
+  # consumidores de eventos. Keycloak, Redis y el almacén siguen hasta
+  # ADR-048/049/050.
 
   app:
     image: orpycamcp/app:dev
@@ -313,7 +308,7 @@ services:
       # La política de tratamiento de datos la publica la ENTIDAD (parámetros del tenant) y
       # la sirve la ventanilla (ADR-031): ya no se configura aquí.
       # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
-      # back-channel logout y los proxys +server.js al gateway). Nunca llegan al cliente.
+      # back-channel logout y los proxys +server.js a la app). Nunca llegan al cliente.
       - INTERNAL_API_URL=http://app:8000
       - INTERNAL_KEYCLOAK_URL=http://keycloak:8080
     networks:
