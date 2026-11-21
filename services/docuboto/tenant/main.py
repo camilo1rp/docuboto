@@ -23,7 +23,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from orpycamcp_common import request_log, usuario
-from orpycamcp_common import secrets as common_secrets
 
 from tenant.core.config import settings
 from tenant.core.database import close_pool, create_pool
@@ -32,7 +31,6 @@ from tenant.routers.config import router as config_router
 from tenant.routers.dependencias import router as dependencias_router
 from tenant.routers.health import router as health_router
 from tenant.routers.pinar import router as pinar_router
-from tenant.routers.tenants import router as tenants_router
 
 logging.basicConfig(
     level=settings.log_level.upper(),
@@ -43,23 +41,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # El token servicio-a-servicio no puede traer el marcador publicado — pero
-    # **puede faltar**, y eso es lo correcto.
-    #
-    # El guardián de secretos existía y cubría tres servicios de once, así que
-    # los tokens internos —que son los que abren los endpoints sellados— podían
-    # quedarse con el valor de ejemplo del repositorio sin que nada lo dijera.
-    # Una lista de admisión que crece aparte del sistema que vigila acaba
-    # cubriendo lo que alguien recordó, no lo que hace falta.
-    #
-    # Aquí se exige lo segundo y NO lo primero: el gate D-02 de
-    # `/api/v1/tenants` es fail-closed **por ausencia** (ver
-    # `core/internal_auth.py`), porque hoy no existe ningún consumidor legítimo
-    # por HTTP. Obligar a definirlo para arrancar convertiría una puerta cerrada
-    # por no tener llave en una puerta abierta con una llave de relleno.
-    common_secrets.reject_published_values(
-        {"TENANT_INTERNAL_TOKEN": settings.internal_service_token}, servicio="tenant-service"
-    )
+
 
     logger.info("tenant-service starting up")
     app.state.db_pool = await create_pool(settings.database_url_asyncpg)
@@ -90,7 +72,6 @@ app.add_middleware(usuario.UsuarioActualMiddleware)
 app.add_middleware(request_log.RequestLogMiddleware, servicio="tenant-service")
 
 DOMAIN_ROUTERS = (
-    tenants_router,
     config_router,
     dependencias_router,
     catalogos_router,

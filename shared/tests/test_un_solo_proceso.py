@@ -220,21 +220,6 @@ def test_compose_dev_levanta_un_proceso_por_defecto() -> None:
     assert build.get("dockerfile") == "infra/Dockerfile.app"
 
 
-def test_los_tokens_internos_tienen_alias_por_modulo() -> None:
-    pares = (
-        ("document-service", "DOCUMENT_INTERNAL_TOKEN"),
-        ("storage-service", "STORAGE_INTERNAL_TOKEN"),
-        ("archive-service", "ARCHIVE_INTERNAL_TOKEN"),
-        ("notification-service", "NOTIFICATION_INTERNAL_TOKEN"),
-        ("tenant-service", "TENANT_INTERNAL_TOKEN"),
-    )
-    for servicio, env in pares:
-        texto = ruta_src(servicio, "core/config.py").read_text(encoding="utf-8")
-        assert env in texto, servicio
-        assert "INTERNAL_SERVICE_TOKEN" in texto, servicio
-        assert "AliasChoices" in texto, servicio
-
-
 def test_el_frontend_habla_con_la_app() -> None:
     entorno = servicios(COMPOSE_DEV)["frontend"].get("environment") or []
     pares = {}

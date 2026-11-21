@@ -63,7 +63,7 @@ segundos factores conocidos.
 ## Uso
 
     # el stack tiene que estar levantado y el tenant sembrado
-    python scripts/perfiles_prueba.py --gateway http://localhost:19080
+    python scripts/perfiles_prueba.py --gateway http://localhost:19000
 
 Es idempotente: un TOTP ya activo o una credencial ya emitida se respetan y se
 informan, no se rehacen. Volver a ejecutarlo tras un recorrido no rompe nada.
@@ -91,10 +91,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 TENANT = "demo"
 CLAVE = "orpycamcp_dev"
 
-GATEWAY = "http://localhost:19080"
-#: `internal/signing-key/activate` NO lo enruta el gateway (lleva
-#: `X-Internal-Token`, no un bearer de persona): se llama al auth-service directo.
-AUTH_DIRECTO = "http://localhost:19001"
+GATEWAY = "http://localhost:19000"
 
 
 class Fallo(RuntimeError):
@@ -288,25 +285,6 @@ async def pedir_csr(s: Sesion, csr_dir: Path) -> Path:
     return destino
 
 
-async def activar_certificado(usuario: str, user_id: str, cert_pem: str, *, token_interno: str) -> None:
-    """Carga el certificado emitido offline sobre la credencial pendiente.
-
-    Va al auth-service **directo**, no por el gateway: lleva `X-Internal-Token`
-    y no el bearer de una persona, y el gateway no enruta esa ruta a propósito.
-    """
-    async with httpx.AsyncClient(timeout=30.0) as directo:
-        r = await directo.post(
-            f"{AUTH_DIRECTO}/internal/signing-key/activate",
-            headers={"X-Internal-Token": token_interno, "X-Tenant-Slug": TENANT},
-            json={"user_id": user_id, "cert_pem": cert_pem},
-        )
-    if r.status_code not in (200, 201):
-        raise Fallo(
-            f"No se pudo activar el certificado de «{usuario}» ({r.status_code}): "
-            f"{r.text[:300]}"
-        )
-
-
 async def revocar_credencial(s: Sesion, secreto_totp: str) -> None:
     """Revoca la credencial propia (exige step-up TOTP).
 
@@ -336,30 +314,6 @@ PERFILES: tuple[tuple[str, bool, str], ...] = (
     ("archivista", True, "revocada"),
     ("consulta", False, "ninguna"),
 )
-
-
-#: El de `POST /internal/signing-key/activate`. El nombre es el que usa
-#: `docker-compose.yml`, y el valor por defecto es el que ÉL declara para
-#: desarrollo: si se escribiera otro aquí, el guion fallaría con un 401 en la
-#: última fase y parecería un problema del certificado.
-VAR_TOKEN = "SIGNING_KEY_INTERNAL_TOKEN"
-TOKEN_DEV = "orpycamcp_signing_key_internal_dev"
-
-
-def _token_interno() -> str:
-    """El `X-Internal-Token` del despliegue: entorno, `.env`, o el default de dev."""
-    valor = os.getenv(VAR_TOKEN) or ""
-    if valor:
-        return valor
-    env = RAIZ / ".env"
-    if env.exists():
-        for linea in env.read_text().splitlines():
-            if linea.startswith(f"{VAR_TOKEN}="):
-                return linea.split("=", 1)[1].strip().strip("'\"")
-    # El mismo default que `docker-compose.yml` aplica cuando la variable no
-    # está: sin esto el guion exigiría configurar a mano algo que la pila ya
-    # resuelve sola en desarrollo.
-    return TOKEN_DEV
 
 
 async def fase_enrolar(csr_dir: Path) -> list[dict[str, str]]:
@@ -413,31 +367,19 @@ async def fase_enrolar(csr_dir: Path) -> list[dict[str, str]]:
 
 
 async def fase_activar(csr_dir: Path, secretos: dict[str, str]) -> None:
-    """Fase 2 (contenedor): carga los certificados que firmó el host y revoca.
+    """Fase 2: deja revocadas las credenciales que lo piden.
 
-    La revocación va aquí y no en la fase 1 porque exige step-up TOTP **sobre
-    una credencial ya activa**: revocar lo que aún no existe no es un estado, es
-    un error. `archivista` termina con la credencial revocada, que es su aporte
-    al entorno — un tercer estado distinto de «sin certificado».
+    Los certificados que firmó el host ya los cargó `scripts/reset-entorno.sh`
+    con `python -m auth.ops.activar_certificado` dentro de la app (ADR-047: no
+    hay ruta HTTP de activación). La revocación exige step-up TOTP **sobre una
+    credencial ya activa**: por eso va aquí y no en la fase 1. `archivista`
+    termina con la credencial revocada, que es su aporte al entorno — un tercer
+    estado distinto de «sin certificado».
     """
-    token_interno = _token_interno()
     async with httpx.AsyncClient(timeout=60.0) as cliente:
         for usuario, _quiere_totp, credencial in PERFILES:
-            crt = csr_dir / f"{usuario}.crt"
-            if not crt.exists():
+            if not (csr_dir / f"{usuario}.crt").exists():
                 continue
-            uid_f = csr_dir / f"{usuario}.user_id"
-            if not uid_f.exists():
-                raise Fallo(
-                    f"Está el certificado de «{usuario}» pero no su `user_id`. "
-                    "La fase de enrolamiento no terminó: vuelve a ejecutarla."
-                )
-            paso(f"Activando la credencial de «{usuario}»")
-            await activar_certificado(
-                usuario, uid_f.read_text().strip(), crt.read_text(), token_interno=token_interno
-            )
-            ok("certificado activado")
-
             if credencial == "revocada":
                 secreto = secretos.get(usuario, "")
                 if not secreto:
@@ -477,7 +419,7 @@ def tarjeta(resumen: list[dict[str, str]]) -> None:
 
 
 def main() -> int:
-    global GATEWAY, AUTH_DIRECTO
+    global GATEWAY
     p = argparse.ArgumentParser(
         description=(
             "Reparte TOTP y credencial de firma entre los perfiles del entorno de pruebas. "
@@ -486,14 +428,13 @@ def main() -> int:
         )
     )
     p.add_argument("--gateway", default=GATEWAY)
-    p.add_argument("--auth", default=AUTH_DIRECTO, help="auth-service directo (ruta interna)")
     p.add_argument(
         "--csr-dir",
         default=str(RAIZ / "secrets" / "perfiles-csr"),
         help="Dónde se dejan los CSR y se recogen los .crt que firma el host",
     )
     p.add_argument("--enrolar", action="store_true", help="Fase 1: TOTP + CSR")
-    p.add_argument("--activar", action="store_true", help="Fase 2: cargar certificados y revocar")
+    p.add_argument("--activar", action="store_true", help="Fase 2: revocar lo que debe quedar revocado")
     p.add_argument(
         "--secretos",
         default="",
@@ -501,7 +442,6 @@ def main() -> int:
     )
     args = p.parse_args()
     GATEWAY = args.gateway.rstrip("/")
-    AUTH_DIRECTO = args.auth.rstrip("/")
     csr_dir = Path(args.csr_dir)
 
     if not args.enrolar and not args.activar:

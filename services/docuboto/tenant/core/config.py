@@ -7,7 +7,6 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -42,22 +41,7 @@ class Settings(BaseSettings):
     service_port: int = 8002
     log_level: str = "info"
 
-    # Token de servicio interno (D-02) que sella el registro de instituciones
-    # (`routers/tenants.py`, sobre `public.tenants`). Fail-closed: vacío —el
-    # default— rechaza TODAS las llamadas a esas rutas. Es el estado correcto
-    # por omisión: hoy no hay ningún consumidor legítimo por HTTP, el alta la
-    # hace `scripts/init_tenant.py` escribiendo directo a la BD. Ver
-    # `tenant/core/internal_auth.py` para el razonamiento completo.
-    internal_service_token: str = Field(
-        default="",
-        validation_alias=AliasChoices("TENANT_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
-    )
 
-    # Acto de configuración de la pasarela (ADR-045 §4). Vacío: pasar a `ppi`,
-    # habilitar un nivel o retirar datos responde que la pasarela no está
-    # configurada. No es una URL del proveedor.
-    knowledge_service_url: str = "http://knowledge-service:8011"
-    intelligence_internal_token: str = ""
 
 
 settings = Settings()

@@ -133,12 +133,6 @@ class Settings(BaseSettings):
     # contra revocaciones masivas erróneas, NO reversibilidad criptográfica
     # (imposible por diseño: re-enroll genera par nuevo).
     signing_key_purge_after_days: int = Field(default=30, ge=1)
-    # Token compartido D-02 para POST /internal/signing-key/sign-digest —
-    # SOLO signature-service lo llama, servicio-a-servicio, NUNCA vía gateway
-    # (misma familia de gate que app.core.internal_auth en otros servicios).
-    # Vacío (default) hace que la ruta responda 503 fail-closed en vez de
-    # aceptar cualquier token. NUNCA commitear el valor real.
-    signing_key_internal_token: str = ""
     # Job periódico de mantenimiento de claves de firma (purga de revocadas
     # vencidas + re-wrap a la KEK activa). Kill-switch e intervalo; el job es
     # fail-safe: sin auditoría disponible no muta, sin llavero válido no re-envuelve.

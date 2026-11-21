@@ -26,7 +26,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from orpycamcp_common import request_log, usuario
-from orpycamcp_common import secrets as common_secrets
 
 from auth.core.config import settings
 from auth.core.database import close_pool, create_pool
@@ -41,7 +40,6 @@ from auth.routers.metrics import router as metrics_router
 from auth.routers.rbac import pick_router as rbac_pick_router
 from auth.routers.rbac import router as rbac_router
 from auth.routers.signing_key import admin_router as signing_key_admin_router
-from auth.routers.signing_key import internal_router as signing_key_internal_router
 from auth.routers.signing_key import router as signing_key_router
 from auth.routers.totp import admin_router as totp_admin_router
 from auth.routers.totp import router as totp_router
@@ -64,9 +62,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # quedarse con el valor de ejemplo del repositorio sin que nada lo dijera.
     # Una lista de admisión que crece aparte del sistema que vigila acaba
     # cubriendo lo que alguien recordó, no lo que hace falta.
-    common_secrets.require_secrets(
-        {"SIGNING_KEY_INTERNAL_TOKEN": settings.signing_key_internal_token}, servicio="auth-service"
-    )
 
     logger.info("auth-service starting up")
     # Fail-fast visible del contrato de issuer: deja en el log el `iss` esperado
@@ -90,7 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if not settings.signing_key_ca_users_cert_path:
         logger.warning(
             "signing_key_ca_users_cert_path sin configurar — "
-            "/internal/signing-key/activate fallará (503) hasta que se monte "
+            "auth.ops.activar_certificado fallará hasta que se monte "
             "el certificado PÚBLICO de la sub-CA de usuarios (ca-users.crt)"
         )
     maintenance_task: asyncio.Task[None] | None = None
@@ -137,7 +132,6 @@ DOMAIN_ROUTERS = (
     totp_admin_router,
     signing_key_router,
     signing_key_admin_router,
-    signing_key_internal_router,
     audit_router,
 )
 for _router in DOMAIN_ROUTERS:

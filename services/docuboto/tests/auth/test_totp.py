@@ -62,14 +62,6 @@ TOTP_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 TEST_KEY = base64.b64encode(b"0" * 32).decode()
 
 
-_STATUS_TOKEN = "test-internal-token"
-
-
-@pytest.fixture(autouse=True)
-def _internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "signing_key_internal_token", _STATUS_TOKEN)
-
-
 class _FakeTx:
     async def __aenter__(self) -> None:
         return None
@@ -1080,7 +1072,6 @@ async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
 async def test_internal_totp_status_reports_active_and_owner(
     client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
-    _internal_token: None,
     estado: str,
     activo: bool,
 ) -> None:
@@ -1097,7 +1088,7 @@ async def test_internal_totp_status_reports_active_and_owner(
 
 @pytest.mark.asyncio
 async def test_internal_totp_status_no_configurado(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     conn = _make_conn()
     conn.fetchrow.side_effect = [_user_row(), None]
@@ -1110,7 +1101,7 @@ async def test_internal_totp_status_no_configurado(
 
 @pytest.mark.asyncio
 async def test_internal_totp_status_unprovisioned_user_is_inactive_without_owner(
-    client: AsyncClient, monkeypatch: pytest.MonkeyPatch, _internal_token: None
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     conn = _make_conn()
     conn.fetchrow.side_effect = [None]

@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,28 +35,6 @@ class Settings(BaseSettings):
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
     redis_url: str = "redis://redis:6379/0"
-    storage_service_url: str = "http://storage-service:8005"
-    # Token compartido D-02 (remediación no-read-up en anexos, RF-SEG-08):
-    # enviado en X-Internal-Token al pedir bytes de un anexo a storage-service
-    # (`app/clients/storage_client.py`). Mismo secreto que
-    # `storage-service.INTERNAL_SERVICE_TOKEN`. Vacío (default) hace que
-    # storage-service rechace la llamada con 401 (fail-closed) — NUNCA
-    # commitear el valor real.
-    storage_internal_token: str = ""
-    # D-02 (E10 debt, cableado del AIP al cierre): secreto que ESTE servicio
-    # exige en X-Internal-Token en `POST /api/v1/internal/documentos/anexos`
-    # (`document/routers/internal.py`) — el ÚNICO llamador legítimo es
-    # archive-service (`app/clients/document_client.py`), que resuelve el
-    # inventario TOTAL de anexos de un lote de radicados para empaquetar el
-    # AIP OAIS (acto de sistema, sin gate de clearance). Vacío (default) hace
-    # que este servicio rechace la llamada con 401 (fail-closed) — NUNCA
-    # commitear el valor real. Mismo patrón que
-    # `storage-service.INTERNAL_SERVICE_TOKEN`.
-    internal_service_token: str = Field(
-        default="",
-        validation_alias=AliasChoices("DOCUMENT_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
-    )
-    tenant_service_url: str = "http://tenant-service:8002"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
 
@@ -130,31 +108,6 @@ class Settings(BaseSettings):
     # declararlo el worker no arranca, porque un sondeo que adivinara la entidad
     # radicaría en el archivo equivocado.
     email_sondeo_tenant_slug: str = ""
-
-    # Constancia de radicación al remitente (E19 Increment 3). Se envía por
-    # notification-service, cuyo `/send` está SELLADO con token interno: enviar
-    # correo con la identidad SMTP de la institución no puede quedar al alcance
-    # de cualquier JWT válido. Mismo secreto que
-    # `signature-service.notification_internal_token` — si divergen, el acuse
-    # falla con un 401 que parece un problema de red.
-    notification_service_url: str = "http://notification-service:8007"
-    notification_internal_token: str = ""
-
-    # --- El circuito de aprobación tiene que atar (E23, RF-PRO-09) ---
-    #
-    # `BorradorService.aprobar` consulta
-    # `GET /api/v1/signature/internal/circuitos/borrador/{id}` antes de marcar
-    # un borrador como aprobado: si hay un circuito de visto bueno abierto, no
-    # se puede saltar. Sin esta consulta el circuito era decorativo — se abría,
-    # nadie firmaba, y cualquiera con `PERM_RADI` aprobaba y radicaba igual.
-    #
-    # Mismo secreto que `signature-service.SIGNATURE_INTERNAL_TOKEN`. Vacío
-    # (default) hace que signature-service responda 503 y que aprobar falle
-    # fail-closed: un despliegue mal configurado NO puede aprobar saltándose
-    # circuitos, que es exactamente el fallo que este gate existe para impedir.
-    # NUNCA commitear el valor real.
-    signature_service_url: str = "http://signature-service:8008"
-    signature_internal_token: str = ""
 
     # Interoperabilidad pública ANÓNIMA (E11): OAI-PMH y CMIS bajo /api/v1/public/,
     # que el gateway declara público sin autenticación.

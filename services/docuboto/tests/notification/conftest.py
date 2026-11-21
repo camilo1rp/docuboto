@@ -50,20 +50,6 @@ _TEST_INTERNAL_TOKEN = "test-internal-token"
 INTERNAL_HEADERS = {"X-Internal-Token": _TEST_INTERNAL_TOKEN}
 
 
-@pytest.fixture(autouse=True)
-def _configure_internal_token() -> AsyncGenerator[None, None]:
-    """Deja `INTERNAL_SERVICE_TOKEN` configurado en TODAS las pruebas.
-
-    Sin esto el gate de `/send` está fail-closed (401 `internal_access_not_configured`)
-    y no se podría distinguir "token ausente" de "servicio sin configurar". Con el
-    secreto fijado, un envío legítimo debe portar `INTERNAL_HEADERS`.
-    """
-    previo = settings.internal_service_token
-    settings.internal_service_token = _TEST_INTERNAL_TOKEN
-    yield
-    settings.internal_service_token = previo
-
-
 #: KEK de pruebas del secreto de los webhooks (base64 de 32 bytes). La v2 sirve a
 #: las pruebas de rotación.
 TEST_WEBHOOK_KEK_V1 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="

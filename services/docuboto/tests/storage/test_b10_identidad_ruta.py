@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""Las rutas internas no existen sin token. Un `X-User-Id` de cliente no autentica."""
+"""Un `X-User-Id` de cliente no autentica (ADR-047: ya no hay rutas internas)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from httpx import ASGITransport, AsyncClient
 
 from storage.main import app
 
-HOLD = "/api/v1/preservacion/legal-hold-internal/fijar"
 USER = "11111111-1111-1111-1111-111111111111"
 
 
@@ -24,13 +23,6 @@ async def _post(ruta: str, cabeceras: dict[str, str]):
     transporte = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transporte, base_url="http://test") as client:
         return await client.post(ruta, json={}, headers=cabeceras)
-
-
-@pytest.mark.asyncio
-async def test_ruta_interna_sin_token_da_404() -> None:
-    r = await _post(HOLD, {"X-Tenant-Slug": "demo", "X-User-Id": USER})
-    assert r.status_code == 404
-    assert r.json().get("error") == "route_not_found"
 
 
 @pytest.mark.asyncio

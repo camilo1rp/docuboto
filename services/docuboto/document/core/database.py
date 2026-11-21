@@ -24,7 +24,6 @@ from orpycamcp_common.tenant import tenant_schema as _schema_de
 from orpycamcp_common.usuario import slug_de
 
 from document.core.config import settings
-from document.core.conservacion import admitir_conservacion
 from tenant import api as tenant_api
 
 _pool: asyncpg.Pool | None = None
@@ -114,16 +113,7 @@ async def get_tenant_conn(request: Request) -> AsyncGenerator[asyncpg.Connection
         # una entidad tiene que retirarle el acceso, y un schema inexistente es un
         # 503 limpio, no un `UndefinedTableError` (500). Fail-CLOSED: si el registro
         # no responde, no se atiende.
-        if (veto := await veredicto_entidad(conn, slug)) is not None and not (
-            # Lectura obligatoria (ADR-035/039): el índice del art. 20 se sirve suspendida.
-            await admitir_conservacion(
-                conn,
-                slug=slug,
-                metodo=request.method,
-                ruta=request.scope["path"],
-                token=request.headers.get("X-Internal-Token"),
-            )
-        ):
+        if (veto := await veredicto_entidad(conn, slug)) is not None:
             raise HTTPException(
                 status_code=veto[0],
                 detail={"error": veto[1], "detail": veto[2], "status": veto[0]},

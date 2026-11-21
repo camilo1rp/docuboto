@@ -44,7 +44,7 @@ sembrar el demo en una instalación que vaya a ser la definitiva.
 ## Uso
 
     # el stack tiene que estar levantado
-    python scripts/seed_demo.py --gateway http://localhost:19080
+    python scripts/seed_demo.py --gateway http://localhost:19000
     python scripts/seed_demo.py --purge
 
 Nunca se ejecuta solo. Un tenant de demostración que apareciera en una entidad
@@ -1489,7 +1489,7 @@ async def purgar() -> int:
 
 def cli() -> int:
     p = argparse.ArgumentParser(description="Siembra un recorrido completo en el tenant demo")
-    p.add_argument("--gateway", default="http://localhost:19080")
+    p.add_argument("--gateway", default="http://localhost:19000")
     p.add_argument("--purge", action="store_true", help="Borra lo que este script creó")
     args = p.parse_args()
     if args.purge:

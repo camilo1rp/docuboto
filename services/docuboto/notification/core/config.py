@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,17 +37,6 @@ class Settings(BaseSettings):
     smtp_retry_backoff_seconds: float = 1.0
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
-
-    # Token de servicio interno (D-02): protege `POST /api/v1/notifications/send`,
-    # que es un endpoint SERVICIO-A-SERVICIO (signature-service lo llama para
-    # despachar los OTP de 2FA; los demás eventos entran por el stream, no por
-    # HTTP). Fail-closed: vacío ⇒ el endpoint rechaza toda llamada (401). Mismo
-    # secreto que `signature-service.notification_internal_token`. Ver
-    # `notification/core/internal_auth.py`.
-    internal_service_token: str = Field(
-        default="",
-        validation_alias=AliasChoices("NOTIFICATION_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
-    )
 
     # Retention job (ADR-021 Fase 4 — MVP-1)
     # How many days to keep rows in notification_processed_events before purging.

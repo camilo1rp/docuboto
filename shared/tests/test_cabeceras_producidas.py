@@ -79,7 +79,9 @@ def _cabeceras_producidas() -> set[str]:
     exacto que existe para cazar. Lo destapó la verificación por mutación —y es
     la segunda vez que un censo de este repositorio se cuenta a sí mismo—.
     """
-    producidas: set[str] = set()
+    # `X-Tenant-Slug` lo repone `UsuarioActualMiddleware` con el slug del JWT
+    # (ADR-047): vive en la librería compartida, fuera de `services/`.
+    producidas: set[str] = {"X-Tenant-Slug"}
     for f in _ficheros():
         texto = _LEIDA.sub("", f.read_text(encoding="utf-8"))
         for m in _PRODUCIDA.finditer(texto):
@@ -93,7 +95,8 @@ def test_el_censo_ve_el_codigo():
     leidas = _cabeceras_leidas()
     # Las que sabemos que existen y se usan de verdad.
     assert "X-Tenant-Slug" in leidas
-    assert "X-Internal-Token" in leidas
+    # ADR-047: ya no hay tokens internos que leer.
+    assert "X-Internal-Token" not in leidas
 
 
 def test_ninguna_cabecera_leida_carece_de_productor() -> None:

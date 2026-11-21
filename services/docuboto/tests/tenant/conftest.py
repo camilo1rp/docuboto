@@ -87,19 +87,6 @@ TEST_INTERNAL_TOKEN = "test-tenant-internal-token-xxx"
 INTERNAL_HEADERS = {"X-Internal-Token": TEST_INTERNAL_TOKEN}
 
 
-@pytest.fixture(autouse=True)
-def _configure_internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Configura el token interno para toda la suite.
-
-    Es autouse porque la alternativa —recordar añadirlo en cada test nuevo— es
-    la forma que se olvida. Solo lo consume el router de tenants; para los demás
-    (dependencias, catálogos, PINAR…) es inerte.
-    """
-    from tenant.core import config as cfg_module
-
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
-
-
 @pytest_asyncio.fixture(scope="function")
 async def client() -> AsyncGenerator[AsyncClient, None]:
     mock_conn = _make_mock_conn()

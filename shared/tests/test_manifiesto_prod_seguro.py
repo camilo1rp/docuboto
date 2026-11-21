@@ -51,7 +51,6 @@ DEFECTO_DECLARADO = {
     "WEBHOOK_SECRET_KEK_ACTIVE_VERSION",
     # Vacío mientras la entidad sigue en local. El fragmento intelligence no
     # entra en este manifiesto; el acto de pasar a ppi responde 503.
-    "INTELLIGENCE_INTERNAL_TOKEN",
 }
 
 

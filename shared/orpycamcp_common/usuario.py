@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import uuid
-from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote
@@ -32,8 +31,6 @@ from orpycamcp_common.client_ip import resolve_client_ip
 from orpycamcp_common.tenant import veredicto_entidad
 
 logger = logging.getLogger(__name__)
-
-_autorizacion: ContextVar[str | None] = ContextVar("autorizacion_actual", default=None)
 
 _PUBLICAS = frozenset(
     {
@@ -117,7 +114,11 @@ def id_exigido(request: Request) -> uuid.UUID:
 
 
 def slug_de(request: Request) -> str:
-    """Slug del JWT si hay persona; si no, `X-Tenant-Slug` de una llamada interna."""
+    """Slug del JWT si hay persona; si no, el `X-Tenant-Slug` que dejó el inyector de tests.
+
+    En producción el middleware borra el `X-Tenant-Slug` del cliente, así que sin
+    persona esto es la cadena vacía.
+    """
     u = usuario_de_peticion(request)
     if u is not None and u.tenant_slug:
         return u.tenant_slug
@@ -149,22 +150,6 @@ def ip_de(request: Request) -> str | None:
     if u is not None and u.ip and u.ip != "unknown":
         return u.ip
     return None
-
-
-def autorizacion_actual() -> str | None:
-    """Bearer de esta petición, para un salto HTTP interno al mismo proceso."""
-    return _autorizacion.get()
-
-
-def cabeceras_internas(*, tenant_slug: str, token: str | None = None) -> dict[str, str]:
-    """Slug del tenant, el Bearer del llamante si hay, y el token interno."""
-    headers = {"X-Tenant-Slug": tenant_slug}
-    auth = autorizacion_actual()
-    if auth:
-        headers["Authorization"] = auth
-    if token:
-        headers["X-Internal-Token"] = token
-    return headers
 
 
 async def usuario_actual(request: Request) -> Usuario:
@@ -215,10 +200,6 @@ def _sin_identidad_de_cliente(
     return [(k, v) for k, v in cabeceras if k.lower() not in _IDENTIDAD_DE_CLIENTE]
 
 
-def _es_interna(path: str) -> bool:
-    return any(p == "internal" or p.endswith("-internal") for p in path.split("/"))
-
-
 async def _responder(
     send: Any,
     status: int,
@@ -251,8 +232,8 @@ def _uuid(valor: object) -> uuid.UUID | None:
 class UsuarioActualMiddleware:
     """Valida el Bearer, deja `Usuario` en el state, ignora `X-User-Id`.
 
-    Sin Bearer no corta: las rutas internas van con `X-Internal-Token` y las
-    públicas no traen persona. Quien exige identidad lo hace en la dependencia.
+    Sin Bearer no corta: las públicas no traen persona, y quien exige identidad
+    lo hace en la dependencia.
     """
 
     def __init__(self, app):  # noqa: ANN001 — firma ASGI
@@ -292,22 +273,11 @@ class UsuarioActualMiddleware:
         except Exception:  # noqa: BLE001
             state["ip"] = "unknown"
 
-        token_interno = cabeceras.get("x-internal-token", "")
-        if _es_interna(path) and not token_interno:
-            await _responder(
-                send,
-                404,
-                "route_not_found",
-                "Ninguna ruta del sistema corresponde a la solicitud",
-            )
-            return
-
         if state.get("usuario") is not None:
             await self.app(scope, receive, send)
             return
 
-        if not _es_interna(path):
-            scope["headers"] = _sin_identidad_de_cliente(list(scope.get("headers", [])))
+        scope["headers"] = _sin_identidad_de_cliente(list(scope.get("headers", [])))
 
         openapi_publico = bool(getattr(getattr(app, "state", None), "openapi_publico", False))
         if _es_publica(path, openapi_publico=openapi_publico):
@@ -363,11 +333,7 @@ class UsuarioActualMiddleware:
         state["usuario"] = usuario
         if slug:
             scope["headers"] = [*scope.get("headers", []), (b"x-tenant-slug", slug.encode("latin-1"))]
-        token_var = _autorizacion.set(auth)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            _autorizacion.reset(token_var)
+        await self.app(scope, receive, send)
 
 
 class InyectarUsuarioDePrueba:
@@ -395,16 +361,7 @@ class InyectarUsuarioDePrueba:
                     canal=cab.get("x-canal") or "system",
                     ip=cab.get("x-real-ip") or "",
                 )
-        auth = ""
-        for k, v in scope.get("headers", []):
-            if k.decode("latin-1").lower() == "authorization":
-                auth = v.decode("latin-1")
-                break
-        token_var = _autorizacion.set(auth or None)
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            _autorizacion.reset(token_var)
+        await self.app(scope, receive, send)
 
 
 def instalar_inyector(app: Any) -> None:
@@ -438,24 +395,7 @@ async def _validar(scope: dict[str, Any], token: str) -> dict[str, Any] | None:
             "tenant_estado": getattr(result, "tenant_estado", None),
         }
 
-    url = os.environ.get("AUTH_SERVICE_URL")
-    if not url:
-        return None
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(base_url=url, timeout=5.0) as client:
-            resp = await client.get(
-                "/api/v1/auth/validate",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-    except Exception:
-        logger.exception("validate HTTP falló")
-        return None
-    if resp.status_code != 200:
-        return None
-    data = resp.json()
-    return data if isinstance(data, dict) else None
+    return None
 
 
 async def _veto(scope: dict[str, Any], slug: str) -> tuple[int, str, str] | None:

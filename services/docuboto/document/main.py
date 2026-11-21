@@ -76,7 +76,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # cubriendo lo que alguien recordó, no lo que hace falta.
     common_secrets.require_secrets(
         {
-            "DOCUMENT_INTERNAL_TOKEN": settings.internal_service_token,
             # C16: sin clave no se pueden autenticar los retos ALTCHA y la ventanilla
             # pública quedaría cerrada (503) o, peor, mal firmada.
             "ALTCHA_HMAC_KEY": settings.altcha_hmac_key,

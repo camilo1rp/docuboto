@@ -119,19 +119,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _exigir_proxies_de_produccion()
     common_secrets.require_secrets(
         {
-            "DOCUMENT_INTERNAL_TOKEN": settings.document.internal_service_token,
             "ALTCHA_HMAC_KEY": settings.document.altcha_hmac_key,
-            "SIGNING_KEY_INTERNAL_TOKEN": settings.auth.signing_key_internal_token,
             "MINIO_ACCESS_KEY": settings.storage.minio_access_key,
             "MINIO_SECRET_KEY": settings.storage.minio_secret_key,
-            "NOTIFICATION_INTERNAL_TOKEN": settings.notification.internal_service_token,
             "WEBHOOK_SECRET_KEK": settings.notification.webhook_secret_kek,
             "SIGNATURE_SECRET": settings.signature.signature_secret,
         },
-        servicio="docuboto",
-    )
-    common_secrets.reject_published_values(
-        {"TENANT_INTERNAL_TOKEN": settings.tenant.internal_service_token},
         servicio="docuboto",
     )
     if len(settings.document.altcha_hmac_key.encode()) < altcha.HMAC_MIN_BYTES:

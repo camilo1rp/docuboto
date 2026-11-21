@@ -9,7 +9,6 @@
 
 from typing import Literal
 
-from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,40 +33,6 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     keycloak_url: str = "http://keycloak:8080"
     keycloak_realm: str = "orpycamcp"
-    # Firma del índice al cierre (E15-F3): llamada a signature-service (E06).
-    signature_service_url: str = "http://signature-service:8008"
-    # Descarga del índice YA FIRMADO (MinIO, vía storage-service) para la
-    # verificación XAdES-B real (E06 Inc.1) — signature_client.verify recibe
-    # el XML firmado, no el XML en claro (ver app/clients/storage_client.py).
-    storage_service_url: str = "http://storage-service:8005"
-    # Token compartido D-02 (remediación no-read-up en anexos/AIP, RF-SEG-08):
-    # storage-service exige X-Internal-Token en `GET /files/{id}/download`
-    # (descarga del índice YA FIRMADO) y, desde E10 Increment C, también en
-    # `GET /preservacion/aip/{expediente_id}` (lectura mediada del AIP de
-    # preservación) — ver app/clients/storage_client.py. Mismo secreto que
-    # `storage-service.INTERNAL_SERVICE_TOKEN`. Vacío (default) hace que
-    # storage-service rechace la llamada con 401 (fail-closed) — NUNCA
-    # commitear el valor real.
-    storage_internal_token: str = ""
-    # E10 debt (cableado del AIP OAIS al cierre del expediente): resolución
-    # cross-servicio de los `file_id` de los anexos de un lote de radicados
-    # — document-service es el único que conoce esa tabla. Ver
-    # app/clients/document_client.py.
-    document_service_url: str = "http://document-service:8003"
-    # D-02: mismo secreto que document-service.INTERNAL_SERVICE_TOKEN —
-    # enviado en X-Internal-Token al pedir el inventario TOTAL de anexos
-    # (`POST /internal/documentos/anexos`). Vacío (default) hace que
-    # document-service rechace la llamada con 401 (fail-closed) — NUNCA
-    # commitear el valor real.
-    document_internal_token: str = ""
-    # D-02 ENTRANTE: secreto con el que archive-service valida `X-Internal-Token`
-    # en `/api/v1/internal/*` (signature-service resuelve la huella del índice
-    # vigente, AREA-04-09). Mismo valor que `signature-service.ARCHIVE_INTERNAL_TOKEN`.
-    # Vacío (default) = esos endpoints responden 401 (fail-closed).
-    internal_service_token: str = Field(
-        default="",
-        validation_alias=AliasChoices("ARCHIVE_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
-    )
     service_port: int = 8004
     log_level: str = "info"
 
@@ -92,8 +57,6 @@ class Settings(BaseSettings):
     # No es un plazo legal: es el margen para que la ventanilla trabaje sin que
     # el sistema le respire encima.
     disposicion_alerta_dias_sin_decidir: int = 30
-    notification_service_url: str = "http://notification-service:8007"
-    notification_internal_token: str = ""
 
     indice_reconciliation_enabled: bool = True
     # Cadencia (segundos) entre barridas del loop.
@@ -128,12 +91,6 @@ class Settings(BaseSettings):
     # no debe alargarse peligrosamente por este control compensatorio.
     close_sign_max_sync_attempts: int = 2
     close_sign_sync_delay_seconds: float = 1.0
-    # D-02: mismo secreto compartido que signature-service.SIGNATURE_INTERNAL_TOKEN
-    # — enviado por app/clients/signature_client.py::sign_indice_internal (SIN
-    # X-User-Id) hacia signature-service `POST /internal/sign-indice`. Vacío
-    # (default) hace que signature-service rechace la llamada con 503
-    # (fail-closed, mal-configurado) — NUNCA commitear el valor real.
-    signature_internal_token: str = ""
 
     # Interoperabilidad pública ANÓNIMA (E11 INT-06): OAI-PMH multinivel de
     # expedientes bajo /api/v1/public/archive/, sin autenticación.

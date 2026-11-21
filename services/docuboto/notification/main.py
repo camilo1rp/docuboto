@@ -41,7 +41,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # cubriendo lo que alguien recordó, no lo que hace falta.
     common_secrets.require_secrets(
         {
-            "NOTIFICATION_INTERNAL_TOKEN": settings.internal_service_token,
             # KEK que cifra en reposo el secreto HMAC de los webhooks. Sin ella no
             # se pueden firmar entregas ni guardar un secreto nuevo.
             "WEBHOOK_SECRET_KEK": settings.webhook_secret_kek,

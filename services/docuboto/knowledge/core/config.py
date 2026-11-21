@@ -33,16 +33,6 @@ class Settings(BaseSettings):
     def database_url_asyncpg(self) -> str:
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
-    # Búsqueda de texto completo que respalda `/search` y `/antecedentes` en modo
-    # `local` (ADR-046 §2): se consulta como el usuario, con su identidad firmada.
-    document_service_url: str = "http://document-service:8003"
-    # El mismo secreto que document-service exige en sus rutas internas.
-    # Vacío: el retorno no pide bytes.
-    document_internal_token: str = ""
-    # Bytes de un archivo ya subido, para la ingesta de preparación.
-    # Vacío: no se leen. El mismo secreto que storage-service exige.
-    storage_service_url: str = "http://storage-service:8005"
-    storage_internal_token: str = ""
     service_port: int = 8011
     log_level: str = "info"
     # El consumidor lee los dos streams de dominio. La URL vacía no es un
@@ -60,9 +50,6 @@ class Settings(BaseSettings):
     ppi_capabilities_kid: str = ""
     # Origen público de las dos URL de retorno. Vacío: no se declara la conexión.
     ppi_callback_base_url: str = ""
-    # Vacío: las rutas internas que usa el acto de configuración rechazan
-    # toda llamada. No es el token de document-service.
-    intelligence_internal_token: str = ""
 
 
 settings = Settings()

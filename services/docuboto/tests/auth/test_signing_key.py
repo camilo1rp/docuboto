@@ -57,9 +57,6 @@ USER_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
 OTHER_USER_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 KEY_ID = uuid.UUID("55555555-5555-5555-5555-555555555555")
 TEST_KEK = base64.b64encode(b"1" * 32).decode()
-INTERNAL_TOKEN = "test-internal-token"
-
-
 class _FakeTx:
     async def __aenter__(self) -> None:
         return None
@@ -71,11 +68,6 @@ class _FakeTx:
 @pytest.fixture(autouse=True)
 def _kek(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "signing_key_encryption_key", TEST_KEK)
-
-
-@pytest.fixture(autouse=True)
-def _internal_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "signing_key_internal_token", INTERNAL_TOKEN)
 
 
 @pytest.fixture(autouse=True)
@@ -442,6 +434,31 @@ async def test_status_never_includes_private_key(client: AsyncClient) -> None:
     assert body["serial"] == "ab12"
 
 
+
+class _Respuesta:
+    """Lo que devolvía la ruta retirada, para conservar las aserciones."""
+
+    def __init__(self, status_code: int, cuerpo: dict) -> None:
+        self.status_code = status_code
+        self._cuerpo = cuerpo
+        self.text = str(cuerpo)
+
+    def json(self) -> dict:
+        return self._cuerpo
+
+
+async def _activar(conn: object, cert_pem: str) -> _Respuesta:
+    """La carga offline es `auth.ops.activar_certificado` → el servicio (ADR-047)."""
+    from fastapi import HTTPException
+
+    from auth.services.signing_key_service import SigningKeyService
+
+    try:
+        estado = await SigningKeyService(conn).activar_certificado(USER_ID, cert_pem, "demo")
+    except HTTPException as exc:
+        return _Respuesta(exc.status_code, {"detail": exc.detail})
+    return _Respuesta(200, estado.model_dump(mode="json"))
+
 # ---------------------------------------------------------------------------
 # Flujo end-to-end: enroll -> activate (CA de test en memoria) -> sign-digest
 # ---------------------------------------------------------------------------
@@ -457,15 +474,7 @@ async def test_activate_rejects_certificate_not_matching_csr(client: AsyncClient
     cert_pem = foreign_cert.public_bytes(serialization.Encoding.PEM).decode()
 
     conn.fetchrow.side_effect = [pending]
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/activate",
-            json={"user_id": str(USER_ID), "cert_pem": cert_pem},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
+    resp = await _activar(conn, cert_pem)
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["error"] == "certificado_no_corresponde_al_csr"
 
@@ -489,15 +498,7 @@ async def test_activate_success_matching_csr(
         activated_at=datetime.now(UTC),
     )
     conn.fetchrow.side_effect = [pending, activated]
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/activate",
-            json={"user_id": str(USER_ID), "cert_pem": cert_pem},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
+    resp = await _activar(conn, cert_pem)
     assert resp.status_code == 200, resp.text
     assert resp.json()["estado"] == "activo"
 
@@ -528,15 +529,7 @@ async def test_activate_rejects_leaf_not_issued_by_mounted_sub_ca(
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
 
     conn.fetchrow.side_effect = [pending]
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/activate",
-            json={"user_id": str(USER_ID), "cert_pem": cert_pem},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
+    resp = await _activar(conn, cert_pem)
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["error"] == "certificado_no_emitido_por_sub_ca"
 
@@ -565,15 +558,7 @@ async def test_activate_fails_closed_without_sub_ca_configured(
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
 
     conn.fetchrow.side_effect = [pending]
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/activate",
-            json={"user_id": str(USER_ID), "cert_pem": cert_pem},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
+    resp = await _activar(conn, cert_pem)
     assert resp.status_code == 503, resp.text
     assert resp.json()["detail"]["error"] == "sub_ca_usuarios_no_configurada"
 
@@ -601,15 +586,7 @@ async def test_activate_leaves_audit_trail(
         estado="activo", cert_pem=cert_pem, serial=serial, activated_at=datetime.now(UTC)
     )
     conn.fetchrow.side_effect = [pending, activated]
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/activate",
-            json={"user_id": str(USER_ID), "cert_pem": cert_pem},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
+    resp = await _activar(conn, cert_pem)
 
     assert resp.status_code == 200, resp.text
     assert _patch_audit.await_count == 1
@@ -651,19 +628,8 @@ async def test_activate_aborts_when_audit_fails(
     activated = dict(pending)
     activated.update(estado="activo", cert_pem=cert_pem, serial=format(cert.serial_number, "x"))
     conn.fetchrow.side_effect = [pending, activated]
-    _override_internal(conn)
-    try:
-        # Misma técnica que test_enroll_fails_closed_without_kek: ASGITransport
-        # re-lanza excepciones no manejadas del app en vez de devolver un 500
-        # inspeccionable en resp.status_code.
-        with pytest.raises(RuntimeError, match="audit_log unavailable"):
-            await client.post(
-                "/internal/signing-key/activate",
-                json={"user_id": str(USER_ID), "cert_pem": cert_pem},
-                headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-            )
-    finally:
-        _clear()
+    with pytest.raises(RuntimeError, match="audit_log unavailable"):
+        await _activar(conn, cert_pem)
 
 
 @pytest.mark.asyncio
@@ -686,36 +652,12 @@ async def test_activate_fails_closed_without_audit_lib(
     cert = _issue_test_cert(private_key, ca_key=ca_key, ca_cert=ca_cert)
     cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
     conn.fetchrow.side_effect = [pending]
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/activate",
-            json={"user_id": str(USER_ID), "cert_pem": cert_pem},
-            headers={"X-Internal-Token": INTERNAL_TOKEN, "X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
+    resp = await _activar(conn, cert_pem)
     assert resp.status_code == 500, resp.text
     assert resp.json()["detail"]["error"] == "auditoria_no_disponible"
     # Solo get_by_user — nunca llega a activate() (ni a verificar la cadena).
     assert conn.fetchrow.await_count == 1
 
-
-@pytest.mark.asyncio
-async def test_activate_requires_internal_token(client: AsyncClient) -> None:
-    conn = _make_conn()
-    _override_internal(conn)
-    try:
-        resp = await client.post(
-            "/internal/signing-key/activate",
-            json={"user_id": str(USER_ID), "cert_pem": "x"},
-            headers={"X-Tenant-Slug": "demo"},
-        )
-    finally:
-        _clear()
-    # Sin `X-Internal-Token` la ruta interna no existe para el llamante.
-    assert resp.status_code == 404
-    assert resp.json()["error"] == "route_not_found"
 
 
 # ---------------------------------------------------------------------------

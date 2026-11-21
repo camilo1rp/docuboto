@@ -8,15 +8,13 @@
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 """
-Firma electrónica PERSONAL PKI por-usuario (E17/F4). Tres routers:
+Firma electrónica PERSONAL PKI por-usuario (E17/F4). Dos routers:
 
 - ``router`` (``/api/v1/auth/me/signing-key``): identidad resuelta por
   ``get_caller`` (``UsuarioActualMiddleware``).
 - ``admin_router``: revocación administrativa (``USUA_PERM_ADMIN``).
-- ``internal_router`` (``/internal/signing-key/activate``): carga del
-  certificado emitido OFFLINE por el operador (``scripts/gen-user-cert.sh``),
-  sellada con ``X-Internal-Token`` y sin bearer de persona. No es un salto
-  entre dominios: la usa un guion de operación.
+- La carga del certificado emitido OFFLINE no es una ruta: la hace el operador
+  con ``python -m auth.ops.activar_certificado`` (ADR-047, sin tokens internos).
 
 Estado, firma remota y revocación, que signature consulta al firmar y al
 verificar, no son rutas: son ``auth.api`` (ADR-047 §1).
@@ -33,12 +31,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWTError
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.database import get_db_conn, get_tenant_conn, tenant_schema
-from auth.core.internal_auth import require_internal_token
+from auth.core.database import get_tenant_conn
 from auth.core.security import validate_token
 from auth.schemas.signing_key import (
     AdminSigningKeyRevokeRequest,
-    InternalActivateSigningKeyRequest,
     SigningKeyEnrollRequest,
     SigningKeyEnrollResponse,
     SigningKeyRevokeRequest,
@@ -60,7 +56,6 @@ admin_router = APIRouter(
     tags=["signing-key-admin"],
     dependencies=[Depends(require_permission("USUA_PERM_ADMIN"))],
 )
-internal_router = APIRouter(prefix="/internal/signing-key", tags=["signing-key-internal"])
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -182,39 +177,3 @@ async def admin_revoke_signing_key(
         user_id, tenant_slug, caller.user_id, motivo=payload.motivo
     )
     return SigningKeyRevokeResponse(estado="revocado")
-
-
-# ---------------------------------------------------------------------------
-# Internal — /internal/signing-key/* (service-to-service only, NOT gateway-routed)
-# ---------------------------------------------------------------------------
-
-
-@internal_router.post(
-    "/activate",
-    response_model=SigningKeyStatusResponse,
-    dependencies=[Depends(require_internal_token)],
-    summary="Load an offline-issued certificate onto a pending signing-key credential",
-)
-async def internal_activate_signing_key(
-    payload: InternalActivateSigningKeyRequest,
-    request: Request,
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> SigningKeyStatusResponse:
-    """Carga del certificado emitido OFFLINE (``scripts/gen-user-cert.sh``).
-
-    Operación administrativa/de sistema — SOLO gate ``X-Internal-Token``
-    (sin Bearer de usuario: el operador que firmó el CSR offline ya validó
-    la identidad fuera de banda antes de invocar esta ruta).
-    """
-    tenant_slug = request.headers.get("X-Tenant-Slug", "")
-    schema = tenant_schema(tenant_slug)
-    await conn.execute(f'SET search_path = "{schema}"')
-    try:
-        return await SigningKeyService(conn).activar_certificado(
-            payload.user_id, payload.cert_pem, tenant_slug
-        )
-    finally:
-        try:
-            await conn.execute("SET search_path = public")
-        except Exception:
-            pass

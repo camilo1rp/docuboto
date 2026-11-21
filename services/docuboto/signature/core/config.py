@@ -50,26 +50,6 @@ class Settings(BaseSettings):
     service_port: int = 8008
     log_level: str = "info"
 
-    # document-service: se consulta la huella VIGENTE de un borrador antes de
-    # resolver un turno de firma (E23, RF-PRO-11). Misma puerta interna que
-    # auth-service: `X-Internal-Token`, sin reenviar la identidad del firmante.
-    document_service_url: str = "http://document-service:8003"
-    # Secreto de la puerta interna de DOCUMENT-SERVICE, que NO es el de
-    # auth-service. Tenerlos separados no es purismo: cada servicio valida el
-    # suyo, y reutilizar el de auth aquí hacía que la consulta de la huella
-    # respondiera 401 SIEMPRE — el guardián de documento vigente degradaba a
-    # 503 y el circuito de aprobación quedaba inoperativo entero, fail-closed
-    # pero inservible. No lo cazó ningún test porque todos sustituyen la
-    # llamada; apareció al abrir el navegador.
-    # Mismo valor que document-service.INTERNAL_SERVICE_TOKEN (D-02).
-    document_internal_token: str = ""
-    # AREA-04-09 Media-2: huella del índice electrónico VIGENTE de un expediente
-    # (`GET /api/v1/internal/expedientes/{ref}/indice/huella`). Mismo secreto que
-    # `archive-service.INTERNAL_SERVICE_TOKEN`; vacío = archive responde 401 y
-    # abrir/firmar una cadena sobre un expediente falla cerrado (503).
-    archive_service_url: str = "http://archive-service:8004"
-    archive_internal_token: str = ""
-
     # Redis URL for stream consumption (document.radicado.reclassified events)
     # y publicación (firma.indice.firmado — signature/core/events.py, Inc.1).
     redis_url: str = "redis://redis:6379/0"
@@ -102,19 +82,6 @@ class Settings(BaseSettings):
     # explícitamente (`SIGNER_ALLOW_DEV_SEAL=true`) porque solo provisiona
     # `secrets/signing/_dev/`; producción debe dejarlo en `False`.
     signer_allow_dev_seal: bool = False
-
-    # URL del storage-service (E06 Inc.1 → E07): destino del XML firmado del
-    # índice electrónico (app/clients/storage_client.py).
-    storage_service_url: str = "http://storage-service:8005"
-    # Token compartido D-02 (remediación no-read-up en anexos, RF-SEG-08):
-    # mismo secreto que `storage-service.INTERNAL_SERVICE_TOKEN`, enviado en
-    # X-Internal-Token por `app/clients/storage_client.py` en cualquier
-    # llamada a storage-service que quede protegida por ese gate. Hoy
-    # `upload_signed_xml` solo usa `POST /upload` (sin gatear), pero se envía
-    # de forma preventiva/uniforme con archive-service — si storage-service
-    # amplía el gate a `/upload` en el futuro, este cliente ya está listo.
-    # Vacío (default) = sin efecto mientras `/upload` no lo exija.
-    storage_internal_token: str = ""
 
     # --- Renovación del ArchiveTimeStamp de las firmas XAdES-LTA (B10 §8, app/jobs/renovacion_lta.py)
     # Un sello de archivo vale mientras viva el certificado de su TSA: se renueva ANTES de que
@@ -162,16 +129,6 @@ class Settings(BaseSettings):
     # Ventana mínima entre reemisiones de OTP para el mismo (solicitud,
     # firmante, documento) — evita el reenvío-como-bombardeo de correos.
     otp_reenvio_cooldown_seconds: int = Field(default=30, ge=0)
-    # Llamadas DIRECTAS servicio-a-servicio (Q3, mismo patrón que Inc.1
-    # storage_client.py) — NO a través del api-gateway.
-    notification_service_url: str = "http://notification-service:8007"
-    # Token compartido D-02: mismo secreto que
-    # `notification-service.INTERNAL_SERVICE_TOKEN`, enviado en X-Internal-Token
-    # al despachar el OTP por `POST /api/v1/notifications/send` (que ahora está
-    # sellado como endpoint servicio-a-servicio). Vacío (default) ⇒ notification
-    # responde 401 y el OTP-correo no se entrega — en dev/prod debe configurarse.
-    notification_internal_token: str = ""
-    auth_service_url: str = "http://auth-service:8001"
 
     # --- 2FA por TOTP (RFC 6238), elevando el OTP-correo del Inc.2 ---
     # Kill-switch: True (default) permite que POST /sign y POST /batch acepten
@@ -183,10 +140,6 @@ class Settings(BaseSettings):
     # en un bypass del gate en sí (firma_2fa_required / nivel_seguridad >= 2
     # siguen mandando, ver firmar()).
     totp_enabled: bool = True
-    # Timeout agresivo para POST /internal/totp/verify (auth-service) —
-    # fail-closed: cualquier excepción (timeout incluido) se traduce en 503
-    # canal_2fa_no_disponible + rollback, mismo patrón que get_signer_identity.
-    totp_verify_timeout_seconds: float = 3.0
 
     # --- XAdES-T: sello de tiempo RFC 3161 del índice (E06 Inc.4, RT-16) ---
     # Kill-switch: True (default) exige un SignatureTimeStamp válido para toda
@@ -319,34 +272,6 @@ class Settings(BaseSettings):
     # (material de desarrollo, sin responder acreditado real detrás).
     signer_ocsp_validity_days: int = Field(default=7, ge=1)
 
-    # --- Reconciliación del sellado del índice (residual Ac. AGN 001/2024
-    # art. 4.3.2.4) --- Token compartido servicio-a-servicio (D-02, mismo
-    # patrón que `storage_internal_token`) que protege
-    # `POST /internal/sign-indice` (`signature/core/internal_auth.py`,
-    # `signature/routers/signature.py`): archive-service lo usa desde su job de
-    # reconciliación (`app/jobs/indice_reconciliation.py`) para pedir el
-    # sellado del índice ATRIBUIDO A SISTEMA (`SYSTEM_RECONCILER_ID`,
-    # `signature/core/constants.py`), sin `X-User-Id`. Mismo secreto que
-    # `archive-service.SIGNATURE_INTERNAL_TOKEN`. Vacío (default) hace que la
-    # ruta responda 503 fail-closed (mal-configurada) en vez de aceptar
-    # cualquier token — NUNCA commitear el valor real.
-    signature_internal_token: str = ""
-
-    # --- Firma electrónica PERSONAL PKI por-usuario (E17/F4, Incremento 1) ---
-    # Custodia SERVIDOR (postura B, auth-service — signature/core/signing_keys.py),
-    # marco honesto "no acreditado" (mismo nivel legal art. 7 Ley 527/1999
-    # que la firma electrónica simple). CadenaFirmaService.firmar() consulta
-    # GET /internal/signing-key/status (auth-service) para decidir entre el
-    # camino xades_personal (cert activo) y el fallback nativo HMAC — ver
-    # app.core.http_clients.sign_digest_remote / get_signing_key_status_remote.
-    # Mismo secreto que auth-service.SIGNING_KEY_INTERNAL_TOKEN (D-02).
-    signing_key_internal_token: str = ""
-    # Timeout agresivo para las llamadas a /internal/signing-key/* — mismo
-    # criterio fail-closed que TOTP_VERIFY_TIMEOUT_SECONDS: cualquier fallo
-    # de red/timeout se traduce en 503 canal_2fa_no_disponible, y el actor
-    # NUNCA cae en silencio al camino nativo por un simple timeout (eso solo
-    # ocurre cuando GET /status responde limpiamente "no_activo"/"revocado").
-    signing_key_sign_timeout_seconds: float = 5.0
     # --- Gate XAdES de la firma personal (E17/F4, Incremento 3; ADR-054 §1) ---
     # ES UN PARÁMETRO DE LA ENTIDAD: la política la lee
     # `signature.core.params_entidad.modo_xades_de_la_entidad` de `sgd_param_admin`

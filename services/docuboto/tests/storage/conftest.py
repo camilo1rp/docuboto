@@ -434,7 +434,6 @@ async def client_with_conn(
     gateados (metadata/download/content) como si fueran el mediador interno;
     los tests del gate en sí lo desconfiguran/lo pisan explícitamente.
     """
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
     mock_conn = _make_mock_conn()
     mock_minio = _make_mock_minio()
 
@@ -456,7 +455,6 @@ async def client_with_conn(
 @pytest_asyncio.fixture(scope="function")
 async def client(monkeypatch: pytest.MonkeyPatch) -> AsyncGenerator[AsyncClient, None]:
     """Simple client fixture — use when you don't need to configure mock internals."""
-    monkeypatch.setattr(cfg_module.settings, "internal_service_token", TEST_INTERNAL_TOKEN)
     mock_conn = _make_mock_conn()
     mock_minio = _make_mock_minio()
 

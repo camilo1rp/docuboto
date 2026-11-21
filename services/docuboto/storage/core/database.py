@@ -16,7 +16,6 @@ from orpycamcp_common.tenant import tenant_schema as _schema_de
 from orpycamcp_common.usuario import slug_de
 
 from storage.core.config import settings
-from storage.core.conservacion import admitir_conservacion
 
 _pool: asyncpg.Pool | None = None
 
@@ -90,14 +89,6 @@ async def get_db_conn(request: Request) -> AsyncGenerator[asyncpg.Connection, No
         if (
             slug_valido(slug)
             and (veto := await veredicto_entidad(conn, slug)) is not None
-            # Conservación (ADR-035, enmienda B10): una entidad SUSPENDIDA sigue conservando.
-            and not await admitir_conservacion(
-                conn,
-                slug=slug,
-                metodo=request.method,
-                ruta=request.scope["path"],
-                token=request.headers.get("X-Internal-Token"),
-            )
         ):
             raise HTTPException(
                 status_code=veto[0],

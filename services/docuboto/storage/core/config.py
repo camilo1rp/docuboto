@@ -7,7 +7,7 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -318,20 +318,6 @@ class Settings(BaseSettings):
                     "PRESERVATION_REPLICA_ENABLED=false: la copia WORM no sale del servidor."
                 )
         return warnings
-
-    # Token de servicio interno (D-02, mismo patrón que knowledge-service):
-    # exigido en X-Internal-Token por los endpoints que sirven BYTES/URL de un
-    # archivo (`GET /files/{id}/download` presigned, `GET /files/{id}/content`,
-    # `GET /files/{id}` metadata) — una presigned URL o los bytes crudos
-    # entregados sin mediación saltarían el gate de clearance de
-    # document-service (RF-SEG-08). `/upload` NO se gatea: el frontend sube
-    # directo. Fail-closed: vacío (default) rechaza TODAS las llamadas a esos
-    # endpoints con 401 — mismo criterio que `internal_service_token` de
-    # knowledge-service. NUNCA loguear el valor real.
-    internal_service_token: str = Field(
-        default="",
-        validation_alias=AliasChoices("STORAGE_INTERNAL_TOKEN", "INTERNAL_SERVICE_TOKEN"),
-    )
 
     # Tope de tamaño de un anexo subido (`POST /upload`, `POST /files/{id}/replace`).
     #
