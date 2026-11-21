@@ -564,7 +564,7 @@
       // responde antes que el proxy; ambos significan lo mismo para quien espera.
       ingestError =
         codigo === "extract_timeout" || codigo === "proveedor"
-          ? "La extracción tardó demasiado. Vuelve a extraer o llena el formulario."
+          ? "La lectura del documento tardó demasiado. Vuelva a intentarlo o llene el formulario."
           : mensajeError(err, "No se pudieron extraer los datos");
       ponerAnexoIngerido();
       currentStep = STEP_TIPO;
@@ -913,14 +913,14 @@
         if (entryMode === "form") return true;
         if (entryMode === "file" && ingestState === "indexed") return true;
         if (!entryMode) {
-          errors.entry = "Elige subir un documento o llenar el formulario.";
+          errors.entry = "Elija subir un documento o llenar el formulario.";
           return false;
         }
-        errors.entry = "Espera a que el documento esté indexado, o llena el formulario.";
+        errors.entry = "Espere a que termine la lectura del documento, o llene el formulario.";
         return false;
       case STEP_TIPO:
         if (!docType) {
-          errors.docType = "Selecciona el tipo de radicado";
+          errors.docType = "Seleccione el tipo de radicado";
           return false;
         }
         break;
@@ -937,7 +937,7 @@
       case STEP_ANEXOS: {
         const pending = anexos.filter((a) => !a.uploaded && !a.error);
         if (pending.length > 0) {
-          errors.anexos = `Hay ${pending.length} archivo(s) sin subir. Usa "Subir archivos" antes de continuar.`;
+          errors.anexos = `Hay ${pending.length} archivo(s) sin subir. Use «Subir archivos» antes de continuar.`;
           return false;
         }
         const failed = anexos.filter((a) => a.error);
@@ -1024,7 +1024,7 @@
     <!-- Acceso denegado en cliente (el backend re-valida) -->
     <div class="radicar-page__denied">
       <i class="fas fa-lock" aria-hidden="true"></i>
-      <p>No tienes permisos para radicar documentos.</p>
+      <p>Usted no tiene permiso para radicar documentos.</p>
     </div>
   {:else if createdDocument}
     <!-- -------------------------------------------------------------------- -->
@@ -1092,10 +1092,10 @@
       {#if currentStep === STEP_DOCUMENTO}
         <section class="radicar-step" aria-labelledby="step0-title">
           <h2 id="step0-title" class="radicar-step__title">
-            ¿Empiezas con un documento o el formulario?
+            ¿Empieza con un documento o el formulario?
           </h2>
           <p class="radicar-step__subtitle">
-            Sube el archivo para que se lean los datos, o llena el formulario a mano.
+            Suba el archivo para que se lean sus datos, o llene el formulario a mano.
           </p>
 
           <div class="entry-grid">
@@ -1117,7 +1117,7 @@
             >
               <i class="fas fa-keyboard entry-card__icon" aria-hidden="true"></i>
               <span class="entry-card__label">Llenar el formulario</span>
-              <span class="entry-card__desc">Sigue los pasos actuales sin ingesta</span>
+              <span class="entry-card__desc">Siga los pasos sin leer un documento</span>
             </button>
           </div>
 
@@ -1132,7 +1132,7 @@
               on:drop={onEntryDrop}
             >
               <i class="fas fa-cloud-upload-alt drop-zone__icon" aria-hidden="true"></i>
-              <p class="drop-zone__text">Arrastra el archivo aquí o</p>
+              <p class="drop-zone__text">Arrastre el archivo aquí o</p>
               <label class="drop-zone__label">
                 <span class="button is-small">Seleccionar archivo</span>
                 <input
@@ -1225,7 +1225,7 @@
             </div>
           {/if}
           <h2 id="step1-tipo-title" class="radicar-step__title">
-            ¿Qué tipo de documento vas a radicar?
+            ¿Qué tipo de documento va a radicar?
             {#if chip("direction")}
               <span class="chip chip--ai">{ETIQUETA_IA}</span>
             {/if}
@@ -1331,7 +1331,7 @@
                 type="select"
                 bind:value={nivelSeguridad}
                 options={nivelSeguridadOptions}
-                hint="1=Pública por defecto (RF-SEG-08)"
+                hint="Si no lo cambia, el radicado queda como público."
                 chip={chip("nivel_seguridad")}
                 onEdit={() => unmark("nivel_seguridad")}
               />
@@ -1438,7 +1438,7 @@
                   type="number"
                   bind:value={responseDays}
                   placeholder="ej. 15"
-                  hint="Deja vacío si no aplica plazo (RF-RAD-04)"
+                  hint="Déjelo vacío si este radicado no tiene plazo."
                   chip={chip("response_days")}
                   onEdit={() => unmark("response_days")}
                 />
@@ -1527,8 +1527,8 @@
         <section class="radicar-step" aria-labelledby="step2-title">
           <h2 id="step2-title" class="radicar-step__title">Anexos</h2>
           <p class="radicar-step__subtitle">
-            Arrastra y suelta archivos o haz clic para seleccionarlos. El checksum SHA-256 lo
-            calcula el servidor.
+            Arrastre los archivos aquí o haga clic para seleccionarlos. El sistema guarda la huella
+            de cada archivo para comprobar que no cambie.
           </p>
 
           <!-- Zona de drop -->
@@ -1542,7 +1542,7 @@
             on:drop={handleFileDrop}
           >
             <i class="fas fa-cloud-upload-alt drop-zone__icon" aria-hidden="true"></i>
-            <p class="drop-zone__text">Arrastra archivos aquí o</p>
+            <p class="drop-zone__text">Arrastre archivos aquí o</p>
             <label class="drop-zone__label">
               <span class="button is-small">Seleccionar archivos</span>
               <input
@@ -1628,9 +1628,7 @@
               </span>
             </div>
           {:else}
-            <p class="radicar-step__empty">
-              No hay archivos adjuntos. Puedes continuar sin anexos.
-            </p>
+            <p class="radicar-step__empty">No hay archivos adjuntos. Puede continuar sin anexos.</p>
           {/if}
         </section>
 
@@ -1647,7 +1645,7 @@
           {#if data.trdSeries.length === 0}
             <div class="radicar-step__empty">
               <i class="fas fa-info-circle" aria-hidden="true"></i>
-              No hay series TRD configuradas para este tenant. Puedes continuar sin clasificar.
+              La entidad aún no tiene series TRD configuradas. Puede continuar sin clasificar.
             </div>
           {:else}
             <div class="radicar-step__field">
@@ -1704,7 +1702,7 @@
         <section class="radicar-step" aria-labelledby="step4-title">
           <h2 id="step4-title" class="radicar-step__title">Flujo y destino</h2>
           <p class="radicar-step__subtitle">
-            Confirma la dependencia destinataria. El flujo de distribución se asigna tras radicar
+            Confirme la dependencia destinataria. El flujo de distribución se asigna tras radicar
             desde la bandeja.
           </p>
 
@@ -1715,7 +1713,7 @@
               type="select"
               bind:value={destDeptCodeFlujo}
               options={dependenciaOptions}
-              hint="Puedes cambiarla si difiere de la indicada en el paso de metadatos"
+              hint="Puede cambiarla si es distinta de la indicada en el paso de metadatos."
               error={errors.destDeptCode ?? ""}
             />
           </div>
@@ -1836,7 +1834,7 @@
      abridor al cerrar). -->
 <Modal open={showConfirmModal} title="Confirmar radicación" on:close={closeConfirmModal}>
   <p>
-    Estás a punto de radicar un documento de
+    Está a punto de radicar un documento de
     <strong>{docType === "E" ? "Entrada" : docType === "S" ? "Salida" : "Interno"}</strong>
     con asunto:
   </p>

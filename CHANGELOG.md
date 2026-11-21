@@ -8,6 +8,16 @@ Formato: [Keep a Changelog](https://keepachangelog.com/es/1.0.0/) + [Conventiona
 
 ### Changed
 
+- `feat(frontend)`: **CR-001 PR-01 — guardianes de texto y limpieza de jerga y tuteo en las seis páginas de trabajo (UI-01, UI-03).**
+  *Por qué*: Radicar mostraba códigos de requisito («RF-SEG-08», «RF-RAD-04»), «checksum SHA-256» y «tenant», y la aplicación mezclaba tú y usted (ADR-057 §7).
+  *Qué cambia*:
+  - **Glosario versionado** en `frontend/src/lib/textos/glosario.js`: términos con su uso y variantes que se evitan, patrones prohibidos y marcadores de tuteo.
+  - **Extractor de texto visible** (`lib/textos/marcado.js`): deja fuera `<script>`, `<style>`, comentarios, expresiones `{…}` y atributos que no se ven.
+  - **Dos guardianes nuevos**: `sin-codigos-en-pantalla.test.js` y `usted-siempre.test.js`. Cada uno nace con su lista de excepciones (20 y 30 archivos) y falla si un archivo fuera de ella incumple o si uno de la lista ya cumple: la lista solo encoge.
+  - **Limpieza**: Radicar, Bandeja, Borradores, Firmas, Envíos y Panel quedan fuera de las dos listas; también la página 403. Los mensajes de error de Radicar y Firmas que se arman en el script pasan a usted.
+  *Pruebas*: los dos guardianes, con casos del extractor; se actualizan `dashboard-page.test.js` («Está al día», «Métricas de la entidad»), `firmas/rol-gate-ui.test.js` y `firmas/circuito.test.js`.
+  *Impacto*: solo textos. Las excepciones de `admin/*` salen en PR-41.
+
 - `refactor(mcp,knowledge,docuboto,gateway,shared,infra,ci,frontend,contracts)!`: **ADR-051 — se retira el MCP, la ingesta PPI corre en la topología que se envía y el contrato se publica como PPI v1.4.0 congelado.**
   *Por qué*: el interés es conectar con proboto-agent y ni el MCP ni el bucle de recomendaciones servían a esa conexión. Con el perfil por defecto, una entidad en `ppi` no tenía consumidor (el `lifespan` lo excluía a propósito y el manejador de la cola lanzaba `RuntimeError`): solo el perfil `split` con `knowledge-service` vivo empujaba algo. El contrato publicaba un bucle (`runs`, `decisions`, `recommend`) que nadie construyó, y proboto se anclaba a un commit, no a una versión.
   *Qué cambia*:

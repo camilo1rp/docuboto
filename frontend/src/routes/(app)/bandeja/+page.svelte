@@ -2487,7 +2487,7 @@
 <!-- Modal: Decisión de Visto Bueno -->
 <Modal open={modalVoBo} title="Visto bueno" size="sm" on:close={() => (modalVoBo = false)}>
   <p class="modal-desc">
-    Registra tu decisión sobre el radicado
+    Registre su decisión sobre el radicado
     <strong>{selectedDoc?.tracking_number ?? ""}</strong>.
   </p>
   <div class="modal-form">

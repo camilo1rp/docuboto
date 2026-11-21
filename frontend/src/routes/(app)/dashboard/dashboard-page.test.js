@@ -117,7 +117,7 @@ describe("/dashboard — módulo 01 Radicados pendientes", () => {
     initSession(sessionWith());
     render(DashboardPage, { data: baseData() });
 
-    expect(screen.getByText("Vas al día")).toBeInTheDocument();
+    expect(screen.getByText("Está al día")).toBeInTheDocument();
   });
 
   it("con pendientes, muestra el número de radicado y el total como badge", () => {
@@ -259,7 +259,7 @@ describe("/dashboard — sección secundaria de métricas (progressive disclosur
     initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
     render(DashboardPage, { data: baseData() });
 
-    const toggle = screen.getByRole("button", { name: /Métricas del tenant/ });
+    const toggle = screen.getByRole("button", { name: /Métricas de la entidad/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Total radicados")).not.toBeInTheDocument();
   });
@@ -268,7 +268,7 @@ describe("/dashboard — sección secundaria de métricas (progressive disclosur
     initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
     render(DashboardPage, { data: baseData() });
 
-    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas de la entidad/ }));
 
     expect(screen.getByText("Total radicados")).toBeInTheDocument();
     expect(screen.getByText("Radicados por estado")).toBeInTheDocument();
@@ -280,7 +280,7 @@ describe("/dashboard — sección secundaria de métricas (progressive disclosur
       data: baseData({ summary: null, summaryError: "Error 500" }),
     });
 
-    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas de la entidad/ }));
 
     expect(screen.getByText("Error 500")).toBeInTheDocument();
   });
@@ -292,7 +292,9 @@ describe("/dashboard — sección secundaria de métricas (progressive disclosur
     initSession(sessionWith()); // sin permisos
     render(DashboardPage, { data: baseData() });
 
-    expect(screen.queryByRole("button", { name: /Métricas del tenant/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Métricas de la entidad/ }),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -314,7 +316,7 @@ describe("/dashboard — el panel de métricas que su botón dice controlar exis
     initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
     render(DashboardPage, { data: baseData() });
 
-    const boton = screen.getByRole("button", { name: /Métricas del tenant/ });
+    const boton = screen.getByRole("button", { name: /Métricas de la entidad/ });
     expect(boton).toHaveAttribute("aria-controls", "metrics-panel");
     expect(boton).toHaveAttribute("aria-expanded", "false");
 
@@ -342,7 +344,7 @@ describe("/dashboard — los indicadores clave no mienten sobre su semántica", 
     render(DashboardPage, { data: baseData({ summary: SUMMARY }) });
     // El panel arranca plegado —y desde ahora sigue en el árbol, oculto—, así
     // que los KPIs solo se pintan al desplegarlo.
-    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas de la entidad/ }));
 
     expect(screen.queryByRole("list", { name: /Indicadores clave/ })).toBeNull();
     expect(screen.getByRole("group", { name: /Indicadores clave/ })).toBeInTheDocument();
@@ -353,7 +355,7 @@ describe("/dashboard — dónde está el trámite (ADR-029)", () => {
   it("la tarjeta lee by_ubicacion (ubicación actual), no la dependencia de radicación", async () => {
     initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
     render(DashboardPage, { data: baseData() });
-    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas de la entidad/ }));
 
     expect(screen.getByText("Dónde está el trámite")).toBeInTheDocument();
     expect(screen.getByText("Control Interno")).toBeInTheDocument();
@@ -364,7 +366,7 @@ describe("/dashboard — dónde está el trámite (ADR-029)", () => {
     initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
     const { by_ubicacion: _omitido, ...sinUbicacion } = SUMMARY;
     render(DashboardPage, { data: baseData({ summary: sinUbicacion }) });
-    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas de la entidad/ }));
 
     expect(screen.getByTestId("ubicacion-no-disponible")).toBeInTheDocument();
     expect(screen.queryByText("Sin radicados en trámite.")).not.toBeInTheDocument();
@@ -373,7 +375,7 @@ describe("/dashboard — dónde está el trámite (ADR-029)", () => {
   it("con by_ubicacion vacío SÍ afirma que no hay radicados en trámite", async () => {
     initSession(sessionWith({ permissions: ["SGD_PERM_ESTADISTICA"] }));
     render(DashboardPage, { data: baseData({ summary: { ...SUMMARY, by_ubicacion: {} } }) });
-    await fireEvent.click(screen.getByRole("button", { name: /Métricas del tenant/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /Métricas de la entidad/ }));
 
     expect(screen.getByText("Sin radicados en trámite.")).toBeInTheDocument();
     expect(screen.queryByTestId("ubicacion-no-disponible")).not.toBeInTheDocument();

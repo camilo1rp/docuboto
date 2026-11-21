@@ -32,8 +32,8 @@
     <h1 class="forbidden__title">Acceso denegado</h1>
 
     <p class="forbidden__message">
-      Tu cuenta no tiene los permisos necesarios para esta sección. Si crees que deberías tener
-      acceso, contacta al administrador de tu entidad para que revise tu rol.
+      Su cuenta no tiene permiso para esta sección. Si cree que debería tenerlo, pida al
+      administrador de su entidad que revise su rol.
     </p>
 
     <div class="forbidden__actions">
