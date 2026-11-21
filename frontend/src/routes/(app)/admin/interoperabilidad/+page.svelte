@@ -147,7 +147,7 @@
 
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
-        expError = mensajeError(errBody, `No se pudo exportar (HTTP ${res.status}).`);
+        expError = mensajeError(errBody, "No se pudo exportar.");
         return;
       }
 
@@ -265,7 +265,7 @@
         // falló) — nunca un mensaje genérico de "importación fallida".
         importFailureDetail = mensajeError(data, "El paquete no pasó la validación.");
       } else if (!res.ok) {
-        importConnectionError = mensajeError(data, `No se pudo importar (HTTP ${res.status}).`);
+        importConnectionError = mensajeError(data, "No se pudo importar.");
       } else {
         importResult = data;
         notifySuccess(`Importación completada: ${data.importados} radicado(s) ingresado(s).`);
@@ -300,7 +300,7 @@
           pollError:
             res.status === 404
               ? mensajeReproceso(404, data)
-              : mensajeError(data, `No se pudo consultar el estado (HTTP ${res.status}).`),
+              : mensajeError(data, "No se pudo consultar el estado."),
           status: undefined,
         };
       }
@@ -552,7 +552,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(mensajeError(data, `No se pudo crear el lote (HTTP ${res.status}).`));
+        notifyError(mensajeError(data, "No se pudo crear el lote."));
         return;
       }
       notifySuccess(`Lote creado: ${documents.length} documento(s) en proceso.`);
@@ -616,7 +616,7 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        notifyError(mensajeError(data, `No se pudo crear el lote (HTTP ${res.status}).`));
+        notifyError(mensajeError(data, "No se pudo crear el lote."));
         return;
       }
       notifySuccess(`Lote creado: ${expedientes.length} expediente(s) en proceso.`);

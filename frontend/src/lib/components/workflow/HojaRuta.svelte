@@ -125,7 +125,7 @@
     const res = await fetch(path);
     const data = await res.json().catch(() => ({}));
     if (!res.ok && codigoError(data) !== "no_active_step") {
-      throw new Error(mensajeError(data, `Error ${res.status}`));
+      throw new Error(mensajeError(data, "No se pudo cargar la hoja de ruta."));
     }
     return data;
   }

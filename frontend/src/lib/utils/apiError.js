@@ -53,6 +53,8 @@
  * Afecta a TODA validación de esquema del sistema, no a esa pantalla.
  */
 
+import { formatearFechaHora } from "./fecha.js";
+
 /**
  * Prefijo que Pydantic antepone a los `ValueError` que lanza un validador
  * ESCRITO POR NOSOTROS. Es lo que separa las dos clases de error de validación,
@@ -437,7 +439,8 @@ const MENSAJES_TRD_CON_DETALLE = new Set([
  * @returns {string}
  */
 export function mensajeError(data, porDefecto) {
-  if (typeof data === "string" && data.trim()) return data;
+  if (typeof data === "string" && data.trim())
+    return textoLegible(data) ?? mensajeSinCatalogo(data);
   if (data && typeof data === "object") {
     const cod = codigoError(data) ?? "";
     if (MENSAJES_CUSTODIA_CON_DETALLE.has(cod) || MENSAJES_TRD_CON_DETALLE.has(cod)) {
@@ -455,14 +458,64 @@ export function mensajeError(data, porDefecto) {
       MENSAJES_CUSTODIA[codigoError(data) ?? ""] ??
       MENSAJES_TRD[codigoError(data) ?? ""];
     if (delActo) return delActo;
-    if (typeof data.detail === "string" && data.detail.trim()) return data.detail;
-    const validacion = mensajeDeValidacion(data.detail);
-    if (validacion) return validacion;
-    if (data.detail && typeof data.detail === "object" && typeof data.detail.detail === "string") {
-      return data.detail.detail;
+    if (typeof data.detail === "string" && data.detail.trim()) {
+      return textoLegible(data.detail) ?? mensajeSinCatalogo(data);
     }
-    const codigo = codigoError(data);
-    if (codigo) return codigo;
+    const validacion = mensajeDeValidacion(data.detail);
+    if (validacion) return textoLegible(validacion) ?? mensajeSinCatalogo(data);
+    if (data.detail && typeof data.detail === "object" && typeof data.detail.detail === "string") {
+      return textoLegible(data.detail.detail) ?? mensajeSinCatalogo(data);
+    }
+    // Un código que el catálogo no conoce no se muestra (CR-001 UI-02): la
+    // persona no sabe qué hacer con `tramite_bloqueado_por_x`.
+    if (codigoError(data)) return mensajeSinCatalogo(data);
   }
   return porDefecto;
+}
+
+/**
+ * Lo que parece un código o un estado HTTP no es un mensaje para la persona:
+ * `snake_case` o un 4xx/5xx suelto (CR-001 UI-02).
+ */
+export const PARECE_CODIGO = /\b[a-z]+_[a-z_]+\b|\b[45]\d\d\b/;
+
+/**
+ * El texto del servidor, si se puede mostrar. El backend redacta en español
+ * buena parte de sus `detail` y a veces nombra el campo que falló
+ * («fundamento_juridico es obligatorio…»): ese nombre se deja en palabras
+ * («fundamento juridico») para no perder qué corregir. Un código suelto o un
+ * texto con un estado HTTP no se muestra.
+ * @param {string} texto
+ * @returns {string|null}
+ */
+function textoLegible(texto) {
+  const limpio = texto.trim();
+  if (!limpio || /^[a-z0-9]+(?:[_.:-][a-z0-9]+)+$/.test(limpio) || /\b[45]\d\d\b/.test(limpio))
+    return null;
+  return limpio.replace(/\b[a-z]+(?:_[a-z]+)+\b/g, (identificador) =>
+    identificador.replace(/_/g, " "),
+  );
+}
+
+/**
+ * Referencia para que la persona la dé al administrador: el `request_id` de la
+ * respuesta si viene, o la hora.
+ * @param {any} data
+ * @returns {string}
+ */
+function referencia(data) {
+  const id =
+    (data && typeof data === "object" && (data.request_id ?? data.detail?.request_id)) || null;
+  if (typeof id === "string" && id.trim()) return id.trim();
+  return formatearFechaHora(new Date());
+}
+
+/**
+ * Mensaje para un error que el catálogo no conoce. Dice qué pasó y qué hacer,
+ * sin el texto ni el código del servidor.
+ * @param {any} data
+ * @returns {string}
+ */
+export function mensajeSinCatalogo(data) {
+  return `No se pudo completar la acción. Si continúa, informe al administrador la referencia ${referencia(data)}.`;
 }

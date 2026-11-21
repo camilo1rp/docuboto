@@ -83,14 +83,14 @@
         total = null;
         listaError = {
           status: lres.status,
-          detail: mensajeError(cuerpo, `Error ${lres.status}`),
+          detail: mensajeError(cuerpo, "No se pudieron cargar los sellos de archivo."),
         };
       }
       if (rres.ok) {
         resumen = await rres.json().catch(() => resumen);
         resumenError = null;
       } else {
-        resumenError = { status: rres.status, detail: `Error ${rres.status}` };
+        resumenError = { status: rres.status, detail: "No se pudo cargar el resumen de sellos." };
       }
     } catch {
       if (mia !== peticion) return;

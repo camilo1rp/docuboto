@@ -116,7 +116,7 @@
       const res = await fetch("/reportes/api/indice-reservado");
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        indiceError = mensajeError(body, `Error ${res.status} al cargar el índice.`);
+        indiceError = mensajeError(body, "No se pudo cargar el índice.");
         return;
       }
       const body = await res.json();

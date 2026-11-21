@@ -468,7 +468,7 @@
       // Refrescar bandeja para reflejar el estado real
       await loadPendientes();
     } else {
-      notifyError(mensajeError(result, `Error ${status} al procesar la firma.`));
+      notifyError(mensajeError(result, "No se pudo procesar la firma."));
     }
   }
 

@@ -737,7 +737,7 @@
         // El 503 del convertidor ausente se muestra tal cual: es un problema
         // de instalación, no de este documento, y colapsarlo mandaría a
         // depurar el PDF equivocado.
-        notifyError(mensajeError(body, `Error ${res.status}`));
+        notifyError(mensajeError(body, "No se pudo migrar el formato del anexo."));
         return;
       }
       if (body.estado === "migrado") {

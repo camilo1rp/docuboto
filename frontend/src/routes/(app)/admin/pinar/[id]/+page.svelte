@@ -105,7 +105,7 @@
       const body = await res.json().catch(() => ({}));
       actionLoading = false;
       if (!res.ok) {
-        instrumentoError = mensajeEscrituraAdmin(body, `Error ${res.status}`);
+        instrumentoError = mensajeEscrituraAdmin(body, "No se pudo guardar el instrumento.");
         return;
       }
       instrumentoModal = false;
@@ -123,7 +123,7 @@
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        notifyError(mensajeEscrituraAdmin(body, `Error ${res.status}`));
+        notifyError(mensajeEscrituraAdmin(body, "No se pudo quitar el instrumento."));
         return;
       }
       await recargar();

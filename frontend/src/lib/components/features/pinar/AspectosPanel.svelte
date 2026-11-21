@@ -115,7 +115,7 @@
       if (!res.ok) {
         // El 409 del ciclo de vida se muestra tal cual: dice que el plan ya
         // está aprobado y que hay que reformular con una versión nueva.
-        errorModal = mensajeError(body, `Error ${res.status}`);
+        errorModal = mensajeError(body, "No se pudo guardar el aspecto crítico.");
         return false;
       }
       cerrar();

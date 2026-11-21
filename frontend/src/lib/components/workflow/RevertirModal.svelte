@@ -10,14 +10,14 @@
 -->
 
 <!--
-  RevertirModal.svelte — Revierte la última asignación de un radicado
-  (T-Fase1, RF-FLU-08). POST /bandeja/api/[id]/rollback.
+  RevertirModal.svelte — Devuelve un radicado al paso anterior (T-Fase1,
+  RF-FLU-08). POST /bandeja/api/[id]/rollback.
 
-  Acción destructiva: exige motivo (obligatorio, 5-500 caracteres) + una
-  segunda confirmación explícita (casilla) antes de habilitar el botón. El
-  botón que EJECUTA la reversión usa la variante `danger`; "Cancelar" usa
-  `ghost` — el color de alerta es siempre para la acción irreversible, nunca
-  para la conservadora.
+  Es un acto que se corrige con otro registro, no uno definitivo (ADR-057 §6,
+  CR-001 UI-05): si la devolución fue un error, el radicado se traslada de
+  nuevo. Por eso pide motivo (5 a 500 caracteres) y nada más: sin casilla de
+  «Entiendo…» y sin decir que no se puede deshacer, que no era cierto. El
+  botón usa la variante `primary`; el rojo queda para lo definitivo.
 
   NOTA DE CONTRATO (verificado contra `workflow-service/app/schemas/workflow.py`
   y `bandeja/api/[id]/rollback/+server.js`): `POST /workflows/{id}/rollback`
@@ -57,7 +57,6 @@
 
   let motivo = "";
   let motivoError = "";
-  let confirmed = false;
   let loading = false;
 
   $: if (open) resetForm();
@@ -72,7 +71,6 @@
   function resetForm() {
     motivo = "";
     motivoError = "";
-    confirmed = false;
   }
 
   function close() {
@@ -88,7 +86,7 @@
 
     motivoError = "";
     if (motivo.trim().length < MOTIVO_MIN_LENGTH) {
-      motivoError = `Describa el motivo de la reversión (mínimo ${MOTIVO_MIN_LENGTH} caracteres).`;
+      motivoError = `Escriba el motivo de la devolución (mínimo ${MOTIVO_MIN_LENGTH} caracteres).`;
       // Llevar el foco al campo que falló en vez de dejarlo en el botón.
       tick().then(() => {
         document.getElementById("revertir-motivo")?.focus();
@@ -106,15 +104,15 @@
       const result = await res.json();
       if (!res.ok) throw result;
 
-      notifySuccess(`Se revirtió la última asignación de ${step.tracking_number}.`);
+      notifySuccess(`El radicado ${step.tracking_number} volvió al paso anterior.`);
       dispatch("success", result);
     } catch (err) {
       if (err?.status === 409) {
-        notifyError(mensajeError(err, "No se puede revertir este radicado en su estado actual."));
+        notifyError(mensajeError(err, "Este radicado no se puede devolver en su estado actual."));
       } else if (err?.status === 422) {
-        notifyError(mensajeError(err, "El motivo de la reversión no es válido."));
+        notifyError(mensajeError(err, "El motivo de la devolución no es válido."));
       } else {
-        notifyError(mensajeError(err, "No se pudo revertir la asignación."));
+        notifyError(mensajeError(err, "No se pudo devolver el radicado al paso anterior."));
       }
     } finally {
       loading = false;
@@ -122,45 +120,36 @@
   }
 </script>
 
-<Modal {open} title="Revertir asignación" size="sm" on:close={close}>
+<Modal {open} title="Devolver al paso anterior" size="sm" on:close={close}>
   {#if step}
-    <p class="modal-desc modal-desc--danger">
-      <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
-      <span>
-        Vas a revertir la última asignación del radicado
-        <strong>{step.tracking_number}</strong> (actualmente en {nombreActual(
-          step.to_dept_code,
-          step.to_dept,
-          $nombresDependencia,
-        )}). Esta acción
-        <strong>no se puede deshacer</strong>.
-      </span>
+    <p class="modal-desc">
+      El radicado <strong>{step.tracking_number}</strong> sale de {nombreActual(
+        step.to_dept_code,
+        step.to_dept,
+        $nombresDependencia,
+      )} y vuelve a quien lo tenía antes. Si fue un error, puede trasladarlo de nuevo.
     </p>
     <div class="modal-form">
       <FormField
         id="revertir-motivo"
-        label="Motivo de la reversión"
+        label="Motivo de la devolución"
         type="textarea"
         bind:value={motivo}
         required={true}
         rows={3}
-        placeholder="Ej. Se asignó a la dependencia incorrecta por error de digitación."
+        placeholder="Ej. Se asignó a la dependencia equivocada."
         error={motivoError}
         hint={!motivoError
-          ? `${motivo.length}/${MOTIVO_MAX_LENGTH} caracteres — queda registrado en la traza del radicado.`
+          ? `${motivo.length}/${MOTIVO_MAX_LENGTH} caracteres. Queda registrado en la traza del radicado.`
           : ""}
         on:input={onMotivoInput}
       />
-      <label class="confirm-check">
-        <input type="checkbox" bind:checked={confirmed} />
-        <span>Entiendo que esta acción no se puede deshacer.</span>
-      </label>
     </div>
   {/if}
   <svelte:fragment slot="footer">
-    <Button variant="danger" size="sm" {loading} disabled={!step || !confirmed} on:click={submit}>
+    <Button variant="primary" size="sm" {loading} disabled={!step} on:click={submit}>
       <i class="fas fa-rotate-left" aria-hidden="true"></i>
-      Revertir
+      Devolver
     </Button>
     <Button variant="ghost" size="sm" disabled={loading} on:click={close}>Cancelar</Button>
   </svelte:fragment>
@@ -168,53 +157,13 @@
 
 <style lang="scss">
   .modal-desc {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--op-space-2);
     margin: 0 0 var(--op-space-4);
     font-size: var(--op-font-sm);
     color: var(--op-text-secondary);
-
-    &--danger i {
-      color: var(--op-error);
-      margin-top: 2px;
-      flex-shrink: 0;
-    }
   }
   .modal-form {
     display: flex;
     flex-direction: column;
     gap: var(--op-space-4);
-  }
-  .confirm-check {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--op-space-2);
-    font-size: var(--op-font-sm);
-    color: var(--op-text);
-    cursor: pointer;
-    // El label completo (no solo la casilla) es el objetivo de click/tap
-    // real: relleno vertical para acercarse al mínimo táctil de 44px sin
-    // agrandar la casilla en escritorio (mismo patrón que admin/flujos/reglas).
-    padding: var(--op-space-1) 0;
-
-    @media (pointer: coarse) {
-      min-height: 44px;
-    }
-
-    input[type="checkbox"] {
-      margin-top: 2px;
-      width: 18px;
-      height: 18px;
-      flex-shrink: 0;
-      accent-color: var(--op-error);
-
-      // La casilla en sí crece al mínimo táctil en dispositivos táctiles;
-      // en mouse/trackpad mantiene la densidad visual actual.
-      @media (pointer: coarse) {
-        width: 24px;
-        height: 24px;
-      }
-    }
   }
 </style>
