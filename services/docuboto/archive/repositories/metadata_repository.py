@@ -21,8 +21,7 @@ import json
 import uuid
 
 import asyncpg
-
-from archive.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 _COLS = "id, trd_serie_id, version, json_schema, activo, created_at"
 

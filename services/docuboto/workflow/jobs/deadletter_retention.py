@@ -40,10 +40,10 @@ import asyncio
 import logging
 
 import asyncpg
+from orpycamcp_common.database import acquire_tenant, close_pool, create_pool, get_pool
 
 from workflow.core.config import settings
 from workflow.core.constants import DLQ_GROUP
-from workflow.core.database import acquire_tenant, close_pool, create_pool, get_pool
 from workflow.repositories.dead_letter_repository import DeadLetterRepository
 
 logger = logging.getLogger(__name__)

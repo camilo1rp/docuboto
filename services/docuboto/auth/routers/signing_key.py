@@ -29,9 +29,9 @@ import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWTError
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.database import get_tenant_conn
 from auth.core.security import validate_token
 from auth.schemas.signing_key import (
     AdminSigningKeyRevokeRequest,

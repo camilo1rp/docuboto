@@ -45,8 +45,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
-from document.core.database import get_tenant_conn
 from tests.document.app import app
 from tests.document.conftest import (
     TENANT_HEADERS,

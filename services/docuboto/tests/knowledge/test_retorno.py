@@ -23,10 +23,10 @@ from typing import Any
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common import database
 from orpycamcp_common.kek import decode_aes256, seal
 
 from document import api as document_api
-from knowledge.core import database
 from knowledge.core.clave_retorno import aad
 from knowledge.core.config import settings
 from knowledge.core.firma_retorno import comprobar

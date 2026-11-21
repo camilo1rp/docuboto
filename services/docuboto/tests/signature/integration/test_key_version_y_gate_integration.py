@@ -27,9 +27,9 @@ from datetime import UTC, datetime
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
 from signature.core.config import settings
-from signature.core.database import _schema as tenant_schema
 from signature.repositories.firma_repository import FirmaRepository
 from signature.services import signer
 from tests.signature.integration.conftest import insert_expediente, insert_radicado

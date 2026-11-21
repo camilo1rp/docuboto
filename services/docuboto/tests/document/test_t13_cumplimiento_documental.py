@@ -453,7 +453,7 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
     async def _correr(caduca: datetime) -> int:
         conn = _make_mock_conn()
         _override_conn(conn, FakeTenantClient())
-        from document.core.database import get_redis
+        from document.core.dependencies import get_redis
 
         app.dependency_overrides[get_redis] = lambda: _make_fake_redis()
         app.state.db_pool = _FakePool(conn)
@@ -466,7 +466,7 @@ async def test_el_callback_firmado_con_la_ranura_anterior_vigente_es_200_y_caduc
         cuerpo = _body(event_id=f"evt-{uuid.uuid4()}")
 
         with patch(
-            "document.core.database.entidad_publica",
+            "document.core.dependencies.entidad_publica",
             new=AsyncMock(return_value=True),  # ADR-035: aquí no se prueba el estado
         ):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:

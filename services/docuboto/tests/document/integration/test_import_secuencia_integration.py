@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.schemas.document import DocumentCreate
 from document.services.document_service import DocumentService
 from document.services.import_service import ImportService, PackageValidationError

@@ -35,9 +35,9 @@ import uuid
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.repositories.archive_repository import ArchiveRepository
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.transferencia_service import TransferenciaService

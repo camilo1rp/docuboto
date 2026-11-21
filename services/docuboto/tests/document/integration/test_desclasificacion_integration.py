@@ -36,8 +36,8 @@ import uuid
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.repositories.document_repository import DocumentRepository
 from document.repositories.reclasificacion_repository import ReclasificacionRepository
 from document.schemas.desclasificacion import DesclasificacionRequest

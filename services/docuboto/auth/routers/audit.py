@@ -24,10 +24,10 @@ documentos que el resto del sistema le niega.
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response
 from orpycamcp_common import audit as audit_lib
+from orpycamcp_common.database import get_tenant_conn, tenant_schema
 from orpycamcp_common.usuario import slug_de
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.database import get_tenant_conn, tenant_schema
 from auth.repositories.audit_query_repository import MAX_LEVEL, AuditQueryRepository
 from auth.repositories.clearance_repository import ClearanceRepository
 from auth.schemas.audit import AuditEntry, AuditVerifyResponse, RoturaCadenaOut

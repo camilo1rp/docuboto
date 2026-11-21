@@ -31,8 +31,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.repositories.archive_repository import ArchiveRepository
 
 pytestmark = pytest.mark.integration

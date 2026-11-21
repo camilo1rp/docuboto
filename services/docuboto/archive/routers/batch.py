@@ -17,10 +17,10 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from orpycamcp_common.database import acquire_tenant
+from orpycamcp_common.database import get_vetted_conn as get_db
 
 from archive.core.clearance import require_permission
-from archive.core.database import acquire_tenant
-from archive.core.database import get_db_conn as get_db
 from archive.schemas.batch import (
     BatchExpedientesRequest,
     BatchJobResponse,

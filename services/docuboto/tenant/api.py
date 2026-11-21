@@ -25,9 +25,9 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException
+from orpycamcp_common.database import acquire_tenant
 
 from tenant.core.calendar import add_business_days
-from tenant.core.database import acquire_tenant
 from tenant.repositories.config_repository import ConfigRepository
 from tenant.repositories.dependencias_repository import DependenciaRepository
 from tenant.schemas.dependencias import DependenciaResponse

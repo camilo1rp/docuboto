@@ -38,11 +38,11 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 from orpycamcp_common import audit
+from orpycamcp_common.database import acquire_tenant, close_pool, create_pool, get_pool
 
 import signature.api as signature_api
 from archive.core.config import settings
 from archive.core.constants import SYSTEM_RECONCILER_ID
-from archive.core.database import acquire_tenant, close_pool, create_pool, get_pool
 from archive.core.disposition import CT_DISPOSITION_CODES
 from archive.repositories.aip_repository import AipRepository
 from archive.repositories.archive_repository import ArchiveRepository

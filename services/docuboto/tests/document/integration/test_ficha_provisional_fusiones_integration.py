@@ -23,8 +23,8 @@ import uuid
 import asyncpg
 import pytest
 import pytest_asyncio
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.repositories.tercero_repository import TerceroRepository
 from document.services.tercero_service import TerceroService
 from tests.document.integration.conftest import _require_dsn

@@ -23,10 +23,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from orpycamcp_common.usuario import instalar_inyector
 
 from storage import api as storage_api
-from storage.core.database import get_db_conn
 from tests.storage.app import app
 
 instalar_inyector(app)

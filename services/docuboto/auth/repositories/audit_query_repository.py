@@ -22,8 +22,8 @@ import json
 from typing import Any
 
 import asyncpg
+from orpycamcp_common.database import tenant_schema
 
-from auth.core.database import tenant_schema
 from auth.repositories.clearance_repository import MAX_LEVEL
 from auth.schemas.audit import AuditEntry
 

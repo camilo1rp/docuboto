@@ -25,8 +25,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import acquire_tenant
 
-from document.core.database import acquire_tenant
 from document.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
 from document.services.batch_service import BatchService, LoteError
 from tests.document.integration.test_lote_documentos_integration import (

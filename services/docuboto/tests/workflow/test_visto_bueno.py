@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from httpx import AsyncClient
+from orpycamcp_common.database import tenant_schema
 
 from tests.workflow.conftest import TENANT_HEADERS
-from workflow.core.database import tenant_schema
 
 NOW = datetime.now(tz=UTC)
 

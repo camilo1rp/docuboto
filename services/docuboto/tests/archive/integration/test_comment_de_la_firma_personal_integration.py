@@ -21,8 +21,7 @@ inspecciona la base. Mutación: quitar la 028 deja el texto de la 027 y esta pru
 from __future__ import annotations
 
 import pytest
-
-from archive.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 pytestmark = pytest.mark.integration
 

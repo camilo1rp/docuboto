@@ -22,9 +22,9 @@ de reservados es indistinguible (Ley 1712/2014 arts. 18-19; RF-SEG-08).
 
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response
+from orpycamcp_common.database import tenant_schema
 from orpycamcp_common.tenant import entidad_publica
 
-from archive.core.database import tenant_schema
 from archive.core.public_audit import audit_public_access
 from archive.core.public_interop import require_public_interop
 from archive.repositories.oai_repository import OaiRepository

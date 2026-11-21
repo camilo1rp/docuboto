@@ -31,9 +31,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller
-from auth.core.database import get_tenant_conn
 from tests.auth.app import app
 
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}

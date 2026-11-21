@@ -37,10 +37,10 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional
 
 from tenant.core.authz import require_permission
-from tenant.core.database import get_tenant_conn
 from tenant.schemas.pinar import (
     AspectoCreate,
     AspectoResponse,

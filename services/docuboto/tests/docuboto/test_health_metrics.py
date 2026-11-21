@@ -28,7 +28,7 @@ class _Pool:
     def __init__(self, conn: object) -> None:
         self._conn = conn
 
-    def acquire(self) -> "_Pool":
+    def acquire(self) -> _Pool:
         return self
 
     async def __aenter__(self) -> object:

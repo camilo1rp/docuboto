@@ -47,12 +47,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import asyncpg
+from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.request_log import canal_de_fondo
 
 from signature.core import tsa
 from signature.core.config import settings
 from signature.core.constants import SYSTEM_RECONCILER_ID
-from signature.core.database import acquire_tenant, get_pool
 from signature.core.events import publish_lta_renovada
 from signature.core.redis_client import get_redis
 from signature.providers.local import renovar_archive_timestamp, verify_xades

@@ -18,6 +18,7 @@ from typing import Any
 import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit, events
+from orpycamcp_common.database import tenant_schema
 
 from workflow.core.clearance import (
     CLEARANCE_SIN_RESTRICCION,
@@ -25,7 +26,6 @@ from workflow.core.clearance import (
     mensaje_denegacion,
     nivel_efectivo,
 )
-from workflow.core.database import tenant_schema
 from workflow.core.dependencias import (
     dependencia_ambigua,
     dependencia_desconocida,

@@ -21,8 +21,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.repositories.anulacion_repository import AnulacionRepository
 
 pytestmark = pytest.mark.asyncio

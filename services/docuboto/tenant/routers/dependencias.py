@@ -19,10 +19,10 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.database import get_tenant_conn
 
 from tenant.core import audit as audit_core
 from tenant.core.authz import require_permission
-from tenant.core.database import get_tenant_conn
 from tenant.repositories.dependencias_repository import DependenciaRepository
 from tenant.schemas.dependencias import (
     DependenciaCreate,

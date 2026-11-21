@@ -29,8 +29,7 @@ from collections.abc import AsyncGenerator
 import asyncpg
 import pytest
 import pytest_asyncio
-
-from archive.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 from .conftest import _require_dsn, drop_tenant_schema, provision_tenant_schema
 

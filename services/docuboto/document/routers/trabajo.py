@@ -15,10 +15,10 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.trabajo import SqlRepo
 
 from document.core.clearance import require_permission
-from document.core.database import get_tenant_conn
 
 router = APIRouter(prefix="/api/v1/trabajo", tags=["trabajo"])
 

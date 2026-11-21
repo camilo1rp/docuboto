@@ -22,9 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
 from tests.workflow.integration.conftest import insert_radicado
-from workflow.core.database import tenant_schema
 from workflow.repositories.workflow_repository import WorkflowRepository
 from workflow.services.workflow_service import WorkflowService
 

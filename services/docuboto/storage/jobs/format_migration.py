@@ -67,9 +67,9 @@ from __future__ import annotations
 import logging
 
 import asyncpg
+from orpycamcp_common.database import get_pool, tenant_schema
 
 from storage.core.config import settings
-from storage.core.database import get_pool, tenant_schema
 from storage.repositories.preservacion_repository import PreservacionRepository
 from storage.services.format_migration_service import (
     FormatMigrationService,

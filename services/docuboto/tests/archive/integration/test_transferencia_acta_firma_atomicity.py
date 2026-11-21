@@ -39,9 +39,9 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.jobs.indice_reconciliation import _reconciliar_acta
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.services.transferencia_service import TransferenciaService

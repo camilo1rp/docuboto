@@ -39,8 +39,8 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.jobs.indice_reconciliation import _reconciliar_indice
 from archive.repositories.index_repository import IndexRepository
 from archive.schemas.archive import ExpedienteCreate

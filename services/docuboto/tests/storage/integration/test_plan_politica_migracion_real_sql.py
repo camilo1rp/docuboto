@@ -30,8 +30,8 @@ from __future__ import annotations
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from storage.core.database import tenant_schema
 from storage.repositories.preservacion_repository import PreservacionRepository
 
 pytestmark = pytest.mark.integration

@@ -18,8 +18,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.schemas.signature import SignatureCreate
 from storage import api as storage_api
 

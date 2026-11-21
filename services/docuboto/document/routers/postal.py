@@ -16,15 +16,11 @@ from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
+from orpycamcp_common.database import get_tenant_conn, tenant_schema
 from orpycamcp_common.usuario import id_opcional
 
 from document.core.clearance import require_permission, resolve_caller_clearance
-from document.core.database import (
-    get_redis,
-    get_tenant_conn,
-    public_tenant_conn,
-    tenant_schema,
-)
+from document.core.dependencies import get_redis, public_tenant_conn
 from document.schemas.postal import (
     CallbackResult,
     CredencialRotacion,

@@ -32,8 +32,8 @@ from unittest.mock import patch
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.repositories.tercero_repository import TerceroRepository
 from document.services.tercero_service import TerceroService
 from tests.document.integration.test_ventanilla_directorio_integration import (

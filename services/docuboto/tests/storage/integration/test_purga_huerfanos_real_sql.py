@@ -28,8 +28,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 import pytest_asyncio
+from orpycamcp_common.database import tenant_schema
 
-from storage.core.database import tenant_schema
 from storage.repositories.file_repository import FileRepository
 from storage.services.storage_service import StorageService
 from tests.storage.integration.conftest import _require_dsn

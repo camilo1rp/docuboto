@@ -18,8 +18,8 @@ from uuid import UUID
 import asyncpg
 from fastapi import HTTPException, status
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
-from workflow.core.database import tenant_schema
 from workflow.core.dependencias import (
     dependencia_ambigua,
     dependencia_desconocida,

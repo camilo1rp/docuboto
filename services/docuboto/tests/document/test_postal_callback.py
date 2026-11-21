@@ -98,14 +98,14 @@ async def callback_ctx():
     mock_conn = _make_mock_conn()
     fake_redis = _make_fake_redis()
     _override_conn(mock_conn, FakeTenantClient())
-    from document.core.database import get_redis
+    from document.core.dependencies import get_redis
 
     app.dependency_overrides[get_redis] = lambda: fake_redis
     app.state.db_pool = _FakePool(mock_conn)
     # ADR-035: estos tests ejercen el callback, no el estado de la entidad (eso lo
     # cubre `test_estado_entidad_publicas.py`), así que se da por operativa.
     with patch(
-        "document.core.database.entidad_publica", new=AsyncMock(return_value=True)
+        "document.core.dependencies.entidad_publica", new=AsyncMock(return_value=True)
     ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             yield ac, mock_conn, fake_redis

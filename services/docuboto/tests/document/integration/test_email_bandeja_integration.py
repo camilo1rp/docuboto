@@ -24,8 +24,8 @@ from datetime import UTC, datetime
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.repositories.email_mensaje_repository import EmailMensajeRepository
 
 pytestmark = pytest.mark.asyncio

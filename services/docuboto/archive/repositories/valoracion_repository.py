@@ -20,8 +20,7 @@ import uuid
 from datetime import date, datetime
 
 import asyncpg
-
-from archive.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 #: «Valorada con disposición S y sin acto de selección»: el hold NO se levanta solo (migración 076).
 _ESPERA_SELECCION = "COALESCE(v.disposicion = 'S', FALSE) AND hv.valoracion_id IS NOT NULL AND hv.seleccion IS NULL"

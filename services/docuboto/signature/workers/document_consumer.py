@@ -32,10 +32,10 @@ import time
 
 import redis.exceptions as redis_exc
 from orpycamcp_common import events
+from orpycamcp_common.database import acquire_tenant
 
 from signature.core.config import settings
 from signature.core.constants import DLQ_GROUP
-from signature.core.database import acquire_tenant
 from signature.core.redis_client import get_redis
 from signature.jobs import deadletter_retention
 from signature.repositories.cadena_repository import CadenaRepository

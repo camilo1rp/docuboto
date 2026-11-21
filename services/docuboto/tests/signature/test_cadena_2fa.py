@@ -40,11 +40,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.api import AuthUnavailableError
 from notification.api import NotificationDeliveryError
 from signature.core.config import settings
-from signature.core.database import get_tenant_conn
 from signature.core.otp import hmac_otp
 from signature.services import cadena_service
 from tests.signature.app import app

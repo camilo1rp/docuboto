@@ -21,9 +21,9 @@ from datetime import date
 
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response
+from orpycamcp_common.database import get_tenant_conn as get_db
 from orpycamcp_common.usuario import id_opcional, slug_de
 
-from document.core.database import get_tenant_conn as get_db
 from document.schemas.search import SearchResponse
 from document.services.search_service import search_radicados
 

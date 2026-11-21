@@ -28,8 +28,8 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.repositories.archive_repository import ArchiveRepository
 from archive.services.archive_service import ArchiveService
 

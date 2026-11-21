@@ -12,6 +12,8 @@ import logging
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from orpycamcp_common.database import get_conn as get_db_conn
+from orpycamcp_common.database import get_optional_tenant_conn
 from orpycamcp_common.tenant import (
     ERROR_ESTADO_NO_DISPONIBLE,
     ERRORES_ENTIDAD,
@@ -19,7 +21,6 @@ from orpycamcp_common.tenant import (
     intelligence_provider,
 )
 
-from auth.core.database import get_db_conn, get_optional_tenant_conn
 from auth.repositories.audit_repository import AuditRepository
 from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.auth import (

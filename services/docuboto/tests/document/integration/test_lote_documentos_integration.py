@@ -42,8 +42,8 @@ from contextlib import asynccontextmanager
 import asyncpg
 import pytest
 import pytest_asyncio
+from orpycamcp_common.database import acquire_tenant, close_pool, create_pool
 
-from document.core.database import acquire_tenant, close_pool, create_pool
 from document.schemas.batch import BatchDocumentCreate, BatchDocumentsRequest
 from document.services.batch_service import BatchService
 from tests.document.integration import conftest as ic
@@ -63,7 +63,7 @@ async def pool_del_proceso() -> AsyncIterator[None]:
     # esquema de la configuración, no el que entiende asyncpg).
     from tests.document.integration.conftest import DSN
 
-    await create_pool(DSN, min_size=1, max_size=3)
+    await create_pool(DSN, min_size=1, max_size=3, command_timeout=60.0)
     try:
         yield
     finally:

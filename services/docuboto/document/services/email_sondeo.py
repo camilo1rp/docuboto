@@ -48,10 +48,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import asyncpg
+from orpycamcp_common.database import tenant_schema
 from orpycamcp_common.request_log import canal_de_fondo
 
 from document.core.config import settings
-from document.core.database import tenant_schema
 from document.services.email_bandeja_service import EmailBandejaService
 from document.services.email_cuenta_service import ErrorDeCuenta
 from tenant import api as tenant_api

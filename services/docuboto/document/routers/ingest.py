@@ -42,10 +42,11 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import check_permission, require_any_permission, require_permission
-from document.core.database import get_redis, get_tenant_client, get_tenant_conn
+from document.core.dependencies import get_redis, get_tenant_client
 from document.schemas.email_cuenta import (
     AppOAuthCrear,
     AppOAuthResponse,

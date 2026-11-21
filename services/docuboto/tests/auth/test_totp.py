@@ -38,11 +38,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from cryptography.exceptions import InvalidTag
 from httpx import AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth import api as auth_api
 from auth.core.authz import Caller, get_caller
 from auth.core.config import settings
-from auth.core.database import get_tenant_conn
 from auth.core.totp import (
     _hotp,
     build_aad,

@@ -24,8 +24,8 @@ import pytest
 import pytest_asyncio
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
-from tenant.core.database import get_tenant_conn
 from tenant.routers import catalogos, dependencias, pinar
 from tests.tenant.app import app
 

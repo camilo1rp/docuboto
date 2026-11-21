@@ -23,9 +23,9 @@ from contextlib import asynccontextmanager
 
 import asyncpg
 import pytest
+from orpycamcp_common import database
 
 from archive import api as archive_api
-from archive.core import database
 
 
 async def huella_indice_vigente(ref: str, slug: str, conn: asyncpg.Connection) -> dict:

@@ -26,6 +26,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import (
@@ -35,8 +36,8 @@ from document.core.clearance import (
     resolve_caller_clearance,
 )
 from document.core.combinacion import desconocidos, vocabulario
-from document.core.database import get_redis, get_tenant_client, get_tenant_conn
 from document.core.dependencias import marcar_alias_deprecado, usa_alias
+from document.core.dependencies import get_redis, get_tenant_client
 from document.schemas.borrador import (
     BorradorCreate,
     BorradorRadicar,

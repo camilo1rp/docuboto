@@ -24,9 +24,9 @@ import uuid
 import asyncpg
 import pytest
 from cryptography.exceptions import InvalidTag
+from orpycamcp_common.database import tenant_schema
 
 from auth.core.config import settings
-from auth.core.database import tenant_schema
 from auth.core.signing_keys import (
     build_aad,
     decrypt_private_key,

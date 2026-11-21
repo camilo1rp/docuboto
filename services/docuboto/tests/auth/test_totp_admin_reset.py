@@ -30,10 +30,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller
 from auth.core.config import settings
-from auth.core.database import get_tenant_conn
 from auth.core.totp import build_aad, encrypt_secret
 from tests.auth.app import app
 

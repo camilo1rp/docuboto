@@ -24,8 +24,8 @@ from datetime import date
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.repositories.valoracion_repository import ValoracionRepository
 from tests.archive.integration.test_c5_c7_valoracion_sql import _expediente, _hold, _tvd
 

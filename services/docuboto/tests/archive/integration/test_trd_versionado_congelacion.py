@@ -42,8 +42,8 @@ from datetime import date
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.schemas.archive import (
     ExpedienteCreate,
     RadicadoLink,

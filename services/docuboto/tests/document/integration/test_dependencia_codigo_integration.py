@@ -30,8 +30,8 @@ import uuid
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.schemas.borrador import BorradorCreate, BorradorUpdate
 from document.schemas.document import DocumentUpdate
 from document.services.borrador_service import BorradorService

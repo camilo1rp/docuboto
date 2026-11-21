@@ -28,8 +28,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from signature.core.database import _schema as tenant_schema
 from signature.repositories.cadena_repository import CadenaRepository
 from tests.signature.integration.conftest import _require_dsn, insert_radicado
 

@@ -36,9 +36,9 @@ import uuid
 import asyncpg
 import pytest
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.services.transferencia_service import TransferenciaService
 
 from .test_atomicity import _seed_transferencia_lista_para_recibir

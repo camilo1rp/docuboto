@@ -17,10 +17,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import instalar_inyector
 
 from signature.core.config import settings
-from signature.core.database import get_tenant_conn
 from tests.signature.app import app
 
 instalar_inyector(app)

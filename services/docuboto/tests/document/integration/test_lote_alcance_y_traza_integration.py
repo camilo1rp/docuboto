@@ -19,9 +19,9 @@ import json
 import uuid
 
 import pytest
+from orpycamcp_common.database import acquire_tenant
 
 from document.core.constants import SYSTEM_RECONCILER_ID
-from document.core.database import acquire_tenant
 from document.services.batch_service import BatchService, LoteError
 from tests.document.integration.test_lote_documentos_integration import (
     _tenant_registrado,

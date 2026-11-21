@@ -35,11 +35,7 @@ from fastapi import (
 from orpycamcp_common.tenant import slug_valido
 from orpycamcp_common.usuario import ip_de
 
-from document.core.database import (
-    get_public_tenant_conn,
-    get_redis,
-    get_tenant_client,
-)
+from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
 from document.schemas.public import (
     IDEMPOTENCY_KEY_RE,
     PoliticaTratamiento,

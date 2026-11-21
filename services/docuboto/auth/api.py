@@ -30,9 +30,9 @@ from typing import Any
 
 import asyncpg
 from fastapi import HTTPException
+from orpycamcp_common.database import acquire_tenant
 from pydantic import ValidationError
 
-from auth.core.database import acquire_tenant
 from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.signing_key import InternalSignDigestRequest, InternalSignDigestResponse
 from auth.schemas.totp import (

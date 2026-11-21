@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
 from signature.core import params_entidad
 from signature.core.config import settings
-from signature.core.database import _schema as tenant_schema
 
 pytestmark = pytest.mark.asyncio
 

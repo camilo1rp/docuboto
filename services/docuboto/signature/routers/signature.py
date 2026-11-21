@@ -24,11 +24,11 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional
 
 from signature.core.clearance import get_actor, require_permission, resolve_caller_clearance
 from signature.core.constants import NIVELES_CONFORMIDAD_ACREDITADOS
-from signature.core.database import get_tenant_conn
 from signature.repositories.firma_repository import FirmaRepository
 from signature.schemas.firma import (
     FirmaResponse,

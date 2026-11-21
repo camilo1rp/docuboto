@@ -33,9 +33,9 @@ import uuid
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.schemas.fisico import ExpedienteUnidadLink, UnidadCreate
 from archive.schemas.transferencia import TransferenciaCreate, TransferenciaRechazo
 from archive.services.fisico_service import FisicoService

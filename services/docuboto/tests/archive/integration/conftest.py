@@ -51,8 +51,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from orpycamcp_common import migrations
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.services.transferencia_service import TransferenciaService
 
 # La cadena única de migraciones (ADR-053): `services/docuboto/migrations`.

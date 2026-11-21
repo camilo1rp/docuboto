@@ -21,9 +21,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.database import get_tenant_conn
 from auth.repositories.clearance_repository import MAX_LEVEL, ClearanceRepository
 from auth.schemas.security import (
     CallerClearance,

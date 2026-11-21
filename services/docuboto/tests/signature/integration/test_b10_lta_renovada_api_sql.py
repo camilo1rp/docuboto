@@ -23,8 +23,8 @@ from __future__ import annotations
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
-from signature.core.database import get_tenant_conn
 from signature.jobs import renovacion_lta
 from signature.repositories.firma_repository import FirmaRepository
 from tests.signature.app import app

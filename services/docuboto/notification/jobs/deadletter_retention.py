@@ -51,10 +51,11 @@ import asyncio
 import logging
 
 import asyncpg
+from orpycamcp_common.database import acquire_tenant, close_pool, get_pool
+from orpycamcp_common.database import create_pool as init_pool
 
 from notification.core.config import settings
 from notification.core.constants import DLQ_GROUP
-from notification.core.database import acquire_tenant, close_pool, get_pool, init_pool
 from notification.repositories.dead_letter_repository import DeadLetterRepository
 
 logger = logging.getLogger(__name__)

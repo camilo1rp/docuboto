@@ -32,6 +32,7 @@ import uuid
 
 import asyncpg
 from fastapi import Depends, Header, HTTPException, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás módulos del servicio importan de aquí
     CLASIFICADA,
     PUBLICA,
@@ -40,8 +41,6 @@ from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás 
     nivel_efectivo,
     resolve_caller_clearance,
 )
-
-from notification.core.database import get_tenant_conn
 
 try:
     from orpycamcp_common import audit

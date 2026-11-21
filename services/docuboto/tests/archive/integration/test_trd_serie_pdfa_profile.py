@@ -39,8 +39,8 @@ from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.schemas.archive import ExpedienteCreate, RadicadoLink, TrdSerieCreate, TrdSerieUpdate
 from archive.services.aip_wiring_service import AipWiringService
 from archive.services.archive_service import ArchiveService

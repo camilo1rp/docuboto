@@ -28,8 +28,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
-from tenant.core.database import get_tenant_conn
 from tests.tenant.app import app
 
 _HDRS = {"X-User-Id": str(uuid.uuid4()), "X-Tenant-Slug": "demo"}

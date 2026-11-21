@@ -34,7 +34,7 @@ import pytest
 
 from document.core import altcha
 from document.core.config import settings
-from document.core.database import get_redis
+from document.core.dependencies import get_redis
 from document.schemas.public import VentanillaRespuesta
 from document.services.ventanilla_service import VentanillaService
 from tests.document.app import app

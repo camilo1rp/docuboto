@@ -29,9 +29,9 @@ from typing import Any
 
 import asyncpg
 from orpycamcp_common import audit
+from orpycamcp_common.database import acquire_tenant
 
 from document.core.causales_reserva import CAUSALES
-from document.core.database import acquire_tenant
 from document.core.redis_client import get_redis_or_none
 from document.repositories.document_repository import DocumentRepository
 from document.schemas.internal import (

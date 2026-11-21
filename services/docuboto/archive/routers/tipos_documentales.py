@@ -19,6 +19,7 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from orpycamcp_common import audit
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
 from archive.core.actor import Actor, require_actor
 from archive.core.clearance import (
@@ -27,7 +28,6 @@ from archive.core.clearance import (
     nivel_efectivo,
     require_permission,
 )
-from archive.core.database import get_db_conn
 from archive.repositories.archive_repository import ArchiveRepository
 from archive.schemas.archive import (
     TipoDocumentalCreate,

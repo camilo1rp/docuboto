@@ -22,10 +22,10 @@ así que el permiso es uno solo. La escritura audita (ver `metadata_service.py`)
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission
-from document.core.database import get_tenant_conn
 from document.schemas.metadata import MetadataTemplateCreate, MetadataTemplateResponse
 from document.services.metadata_service import (
     MetadataTemplateService,

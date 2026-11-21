@@ -104,7 +104,7 @@ def test_el_aad_ata_tenant_y_webhook() -> None:
 
 
 def test_slug_from_schema_es_inverso_de_tenant_schema() -> None:
-    from notification.core.database import tenant_schema
+    from orpycamcp_common.database import tenant_schema
 
     for slug in ("icetex", "mi-tenant", "a-b-c", "x1-y2"):
         assert webhook_secrets.slug_from_schema(tenant_schema(slug)) == slug

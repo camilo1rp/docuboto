@@ -19,8 +19,7 @@ from __future__ import annotations
 import uuid
 
 import asyncpg
-
-from archive.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 _UB_COLS = "id, parent_id, nivel, codigo, nombre, tipo_archivo, capacidad_ml, " "activo, created_at"
 _UN_COLS = (

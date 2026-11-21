@@ -25,14 +25,13 @@ from collections.abc import Iterable
 
 import asyncpg
 from fastapi import Depends, Header, HTTPException, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import check_permission, mensaje_denegacion, nivel_efectivo
 from orpycamcp_common.tenant import (
     ERROR_ASISTENTE_DESHABILITADO,
     ERROR_ASISTENTE_NO_DISPONIBLE,
     asistente_habilitado,
 )
-
-from knowledge.core.database import get_tenant_conn
 
 try:
     from orpycamcp_common import audit

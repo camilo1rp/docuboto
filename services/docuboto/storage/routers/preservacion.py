@@ -16,11 +16,11 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from orpycamcp_common.usuario import id_opcional, username_de
 
 from storage.core.clearance import require_permission
 from storage.core.config import settings
-from storage.core.database import get_db_conn
 from storage.core.minio_client import get_minio
 from storage.repositories.preservacion_repository import PreservacionRepository
 from storage.schemas.preservacion import (

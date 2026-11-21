@@ -23,8 +23,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
-from tenant.core.database import get_tenant_conn
 from tests.tenant.app import app
 
 URL = "/api/v1/config/asistente"

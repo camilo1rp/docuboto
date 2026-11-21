@@ -25,8 +25,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_optional_tenant_conn, tenant_schema
 
-from auth.core.database import get_optional_tenant_conn, tenant_schema
 from auth.schemas.auth import UserInfoResponse
 from tests.auth.app import app
 from tests.auth.integration.conftest import DSN, RUN_INTEGRATION

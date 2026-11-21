@@ -49,8 +49,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from orpycamcp_common import migrations
-
-from workflow.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 # La cadena única de migraciones (ADR-053): `global/` -> public, `tenant/` -> tenant_*.
 CHAIN = Path(__file__).resolve().parents[5] / "services" / "docuboto" / "migrations"

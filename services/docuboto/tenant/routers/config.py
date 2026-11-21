@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from pydantic import ValidationError
 
 from knowledge import api as knowledge_api
@@ -29,7 +30,6 @@ from tenant.core import audit as audit_core
 from tenant.core import declaracion
 from tenant.core.authz import require_permission
 from tenant.core.calendar import add_business_days, colombian_holidays
-from tenant.core.database import get_tenant_conn
 from tenant.repositories.config_repository import ConfigRepository
 from tenant.schemas.config import (
     AsistenteResponse,

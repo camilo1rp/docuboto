@@ -29,9 +29,9 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import PlainTextResponse
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
 from archive.core.clearance import CLEARANCE_SIN_RESTRICCION, require_permission
-from archive.core.database import get_db_conn
 from archive.repositories.archive_repository import ArchiveRepository
 from archive.schemas.archive import (
     IndiceFirmarResult,

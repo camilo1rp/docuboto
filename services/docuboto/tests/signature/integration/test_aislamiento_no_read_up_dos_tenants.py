@@ -27,8 +27,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from signature.core.database import _schema as tenant_schema
 from signature.repositories.firma_repository import FirmaRepository
 from tests.signature.integration.conftest import insert_radicado
 

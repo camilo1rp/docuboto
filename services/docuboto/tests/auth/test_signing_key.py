@@ -34,11 +34,12 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import NameOID
 from httpx import AsyncClient
+from orpycamcp_common.database import get_conn as get_db_conn
+from orpycamcp_common.database import get_tenant_conn
 
 from auth import api as auth_api
 from auth.core.authz import Caller, get_caller
 from auth.core.config import settings
-from auth.core.database import get_db_conn, get_tenant_conn
 from auth.core.signing_keys import (
     build_aad,
     build_csr,

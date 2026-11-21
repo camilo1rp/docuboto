@@ -26,8 +26,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.repositories.document_repository import DocumentRepository
 from document.schemas.document import DocumentUpdate
 

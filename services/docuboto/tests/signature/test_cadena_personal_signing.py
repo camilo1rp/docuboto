@@ -36,9 +36,9 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.api import SignDigestError
-from signature.core.database import get_tenant_conn
 from signature.providers.base import SignerRef
 from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER

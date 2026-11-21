@@ -35,9 +35,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
+from orpycamcp_common.database import get_tenant_conn
 
 from signature.core.clearance import get_actor, require_permission
-from signature.core.database import get_tenant_conn
 from signature.schemas.cadena import (
     ChallengeResponse,
     FirmarRequest,

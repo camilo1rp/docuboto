@@ -31,12 +31,12 @@ from dataclasses import dataclass, field
 
 import asyncpg
 from fastapi import HTTPException, status
+from orpycamcp_common.database import acquire_tenant
 from orpycamcp_common.tenant import veredicto_entidad
 from pydantic import ValidationError
 
 from signature.core.clearance import enforce_permission
 from signature.core.constants import SYSTEM_RECONCILER_ID
-from signature.core.database import acquire_tenant
 from signature.repositories.cadena_repository import CadenaRepository
 from signature.repositories.firma_repository import FirmaRepository
 from signature.schemas.cadena import InvalidarCircuitosRequest

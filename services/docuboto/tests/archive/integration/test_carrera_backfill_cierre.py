@@ -34,8 +34,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.schemas.archive import ExpedienteCreate, RadicadoLink
 from archive.services.archive_service import ArchiveService
 from tests.archive.conftest import registrar_radicado

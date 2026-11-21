@@ -33,10 +33,10 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
 from archive.core.actor import Actor, require_actor
 from archive.core.clearance import require_permission
-from archive.core.database import get_db_conn
 from archive.schemas.archive import (
     ActaEliminacionCreate,
     ActaEliminacionResponse,

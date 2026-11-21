@@ -21,8 +21,7 @@ import uuid
 
 import asyncpg
 import pytest
-
-from signature.core.database import _schema as tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 pytestmark = pytest.mark.asyncio
 

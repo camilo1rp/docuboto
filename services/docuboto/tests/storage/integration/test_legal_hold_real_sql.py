@@ -24,8 +24,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from storage.core.database import tenant_schema
 from storage.repositories.preservacion_worm_repository import PreservacionWormRepository
 from storage.schemas.preservacion import HoldFijarRequest, HoldLevantarRequest
 from storage.services import legal_hold_service as lhs

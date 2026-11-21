@@ -37,10 +37,10 @@ from datetime import time as hora
 
 import redis.exceptions as redis_exc
 from orpycamcp_common import events
+from orpycamcp_common.database import acquire_tenant, get_pool
 
 from workflow.core.config import settings
 from workflow.core.constants import DLQ_GROUP
-from workflow.core.database import acquire_tenant, get_pool
 from workflow.core.redis_client import get_redis
 from workflow.jobs import deadletter_retention
 from workflow.repositories.dead_letter_repository import DeadLetterRepository

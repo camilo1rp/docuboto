@@ -43,9 +43,9 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate
 from archive.schemas.transferencia import TransferenciaCreate

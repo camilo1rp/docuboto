@@ -13,9 +13,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
 from workflow.core.clearance import require_permission
-from workflow.core.database import get_db_conn
 from workflow.core.dependencias import marcar_alias_deprecado
 from workflow.schemas.workflow import (
     CascadeReassignRequest,

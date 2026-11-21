@@ -23,8 +23,7 @@ import uuid
 from datetime import datetime
 
 import asyncpg
-
-from archive.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 _COLS = (
     "id, tipo, estado, expediente_id, ubicacion_origen_id, ubicacion_destino_id, "

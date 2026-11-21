@@ -26,9 +26,9 @@ from fastapi import (
     Response,
     status,
 )
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
 from archive.core.clearance import check_permission, require_permission
-from archive.core.database import get_db_conn
 from archive.schemas.fisico import (
     ExpedienteEnUnidad,
     ExpedienteUnidadLink,

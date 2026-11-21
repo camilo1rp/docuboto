@@ -24,8 +24,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.schemas.borrador import BorradorCreate, BorradorRadicar
 from document.services.borrador_service import BorradorService
 from document.services.document_service import DocumentService

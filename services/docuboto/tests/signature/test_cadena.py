@@ -29,9 +29,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from signature.core.config import settings
-from signature.core.database import get_tenant_conn
 from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 

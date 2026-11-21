@@ -22,10 +22,10 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import id_opcional, slug_de
 
 from document.core.clearance import require_permission, resolve_caller_clearance
-from document.core.database import get_tenant_conn
 from document.core.operacion_pesada import OperacionPesadaOcupadaError, una_operacion_pesada
 from document.services.import_service import ImportService, PackageValidationError
 

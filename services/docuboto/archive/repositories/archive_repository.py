@@ -15,9 +15,9 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import asyncpg
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.clearance import resolve_caller_clearance
-from archive.core.database import tenant_schema
 from archive.models.archive import Expediente, ExpedienteRadicado, TrdSerie
 
 

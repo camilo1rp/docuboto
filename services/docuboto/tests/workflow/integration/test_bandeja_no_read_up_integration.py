@@ -28,9 +28,9 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
 from tests.workflow.integration.conftest import insert_radicado
-from workflow.core.database import tenant_schema
 from workflow.repositories.workflow_repository import WorkflowRepository
 
 pytestmark = pytest.mark.integration

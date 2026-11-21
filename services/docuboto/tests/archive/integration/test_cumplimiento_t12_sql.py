@@ -29,9 +29,9 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.repositories.aip_repository import AipRepository
 from archive.schemas.transferencia import TransferenciaCreate
 from archive.services.archive_service import ArchiveService

@@ -18,9 +18,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.database import get_tenant_conn
 from auth.schemas.urd import URDCreate, URDResponse
 from auth.services.urd_service import URDService
 

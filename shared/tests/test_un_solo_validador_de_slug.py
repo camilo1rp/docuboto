@@ -142,14 +142,8 @@ def test_quien_importa_el_validador_lo_llama_de_verdad() -> None:
 
 
 @pytestmark_arbol
-def test_cada_database_py_llama_a_slug_valido() -> None:
-    """Los 9 `core/database.py` DEBEN llamar a `slug_valido` (no solo a `_schema_de`,
-    que ya valida pero lanza ValueError sin el 400 del borde HTTP)."""
-    faltan = []
-    dbs = sorted(glob_src(_SERVICIOS, "*/app/core/database.py"))
-    assert len(dbs) >= 9
-    for p in dbs:
-        _, llamados = _importa_y_llama(p)
-        if "slug_valido" not in llamados:
-            faltan.append(str(p.relative_to(_RAIZ)))
-    assert not faltan, faltan
+def test_la_base_de_datos_llama_a_slug_valido() -> None:
+    """`orpycamcp_common.database` (la única desde ADR-047) DEBE llamar a `slug_valido`
+    (no solo a `_schema_de`, que ya valida pero lanza ValueError sin el 400 del borde)."""
+    _, llamados = _importa_y_llama(_RAIZ / "shared" / "orpycamcp_common" / "database.py")
+    assert "slug_valido" in llamados

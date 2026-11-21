@@ -17,11 +17,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
 from orpycamcp_common import deadletter, metricas
+from orpycamcp_common.database import get_pool
 
 from archive.repositories.metricas_repository import contar_agotados
 from auth.core.medidor import _FAMILIAS as _FAMILIAS_AUDIT
 from auth.core.medidor import medir_audit_chain
-from document.core.database import get_pool
 from knowledge.core.medidor import FAMILIAS as _FAMILIAS_INTELIGENCIA
 from knowledge.core.medidor import medir as medir_inteligencia
 from notification.core.constants import DLQ_GROUP as _DLQ_NOTIFICATION

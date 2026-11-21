@@ -42,8 +42,9 @@ from __future__ import annotations
 
 import logging
 
+from orpycamcp_common.database import acquire_tenant, get_pool
+
 from archive.core.config import settings
-from archive.core.database import acquire_tenant, get_pool
 from archive.jobs.indice_reconciliation import list_active_tenants
 from archive.repositories.archive_repository import ArchiveRepository
 from notification import api as notification_api

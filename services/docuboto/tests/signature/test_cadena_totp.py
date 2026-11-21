@@ -21,10 +21,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.api import AuthUnavailableError
 from signature.core.config import settings
-from signature.core.database import get_tenant_conn
 from tests.signature.app import app
 from tests.signature.conftest import TENANT_HEADERS, USER
 from tests.signature.test_cadena import SOL_ID, _exec_sig, _make_conn, _turno_row

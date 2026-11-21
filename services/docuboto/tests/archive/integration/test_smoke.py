@@ -20,8 +20,8 @@ from __future__ import annotations
 import asyncpg
 import pytest
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.schemas.archive import ExpedienteCreate
 from archive.services.archive_service import ArchiveService
 

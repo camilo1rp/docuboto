@@ -23,10 +23,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from orpycamcp_common import events
 from orpycamcp_common import health as health_common
+from orpycamcp_common.database import get_pool
 
 from auth.core.audit_partitions import estado_particion_siguiente
 from auth.routers.auth import get_auth_service
-from document.core.database import get_pool
 from notification.core.config import settings as notification_settings
 from notification.workers.stream_worker import DEADLETTER_STREAM as DLQ_NOTIFICATION
 from signature.workers.document_consumer import DEADLETTER_STREAM as DLQ_SIGNATURE

@@ -25,8 +25,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
-from tenant.core.database import get_tenant_conn
 from tests.tenant.app import app
 
 # El actor imputable llega en X-User-Id; los actos de ciclo de vida lo exigen.

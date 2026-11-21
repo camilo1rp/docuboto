@@ -17,9 +17,9 @@ dependencia activa y la audita.
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller
-from auth.core.database import get_tenant_conn
 from auth.schemas.urd import ContextResponse, ContextSwitchRequest
 from auth.services.urd_service import URDService
 

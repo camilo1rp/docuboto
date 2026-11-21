@@ -21,6 +21,7 @@ import logging
 import uuid
 from typing import Any
 
+from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.trabajo import (
     COLA_APP,
     COLA_WORKER,
@@ -36,7 +37,6 @@ from orpycamcp_common.trabajo import (
 )
 
 from docuboto.core.tasks import heavy_slot
-from document.core.database import acquire_tenant, get_pool
 from document.services.barrido import tenants_activos
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,8 @@ async def _intelligence(_conn: Any, fila: Fila) -> None:
 
 
 async def _verapdf(_conn: Any, fila: Fila) -> None:
-    from storage.core.database import get_pool as pool_storage
+    from orpycamcp_common.database import get_pool as pool_storage
+
     from storage.services.pdfa_ingest_service import run_ingest_validation_background
 
     crudo = fila.payload.get("file_id")

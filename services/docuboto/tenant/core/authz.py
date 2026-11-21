@@ -26,13 +26,12 @@ import logging
 
 import asyncpg
 from fastapi import Depends, Header, HTTPException, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import (  # noqa: F401 — re-exportados: los demás módulos del servicio importan de aquí
     check_permission,
     mensaje_denegacion,
     nivel_efectivo,
 )
-
-from tenant.core.database import get_tenant_conn
 
 try:
     from orpycamcp_common import audit

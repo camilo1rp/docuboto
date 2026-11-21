@@ -31,6 +31,8 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
+from orpycamcp_common.database import tenant_schema
 
 from tests.workflow.app import app
 from tests.workflow.integration.conftest import (
@@ -41,7 +43,6 @@ from tests.workflow.integration.conftest import (
     insert_user,
     set_security_level,
 )
-from workflow.core.database import get_db_conn, tenant_schema
 from workflow.schemas.workflow import FlowStepComplete, FlowStepCreate, TransactionRequest
 from workflow.services.workflow_service import (
     RollbackError,

@@ -34,8 +34,8 @@ from datetime import date, timedelta
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.schemas.fisico import ExpedienteUnidadLink, PrestamoCreate
 from archive.services.fisico_service import FisicoService
 

@@ -33,11 +33,11 @@ from typing import Any
 import asyncpg
 from fastapi import HTTPException
 from orpycamcp_common import audit
+from orpycamcp_common.database import acquire_tenant, get_pool
 from orpycamcp_common.request_log import canal_de_fondo
 from pydantic import ValidationError
 
 from document.core.config import settings
-from document.core.database import acquire_tenant, get_pool
 from document.repositories.postal_repository import PostalRepository
 from document.schemas.postal import PostalCallbackPayload
 from document.services import outbox

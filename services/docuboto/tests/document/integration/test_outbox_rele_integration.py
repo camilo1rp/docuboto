@@ -29,8 +29,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.services import outbox
 
 pytestmark = pytest.mark.integration

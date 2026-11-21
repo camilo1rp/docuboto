@@ -19,9 +19,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
 from archive.core.clearance import require_permission
-from archive.core.database import get_db_conn
 from archive.schemas.metadata import ExpedienteTemplateCreate, ExpedienteTemplateResponse
 from archive.services.metadata_service import (
     ExpedienteTemplateService,

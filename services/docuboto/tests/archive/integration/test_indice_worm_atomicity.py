@@ -37,8 +37,8 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
-from archive.core.database import tenant_schema
 from archive.repositories.index_repository import IndexRepository
 from archive.schemas.archive import ExpedienteCreate, TrdSerieCreate
 from archive.services.archive_service import ArchiveService

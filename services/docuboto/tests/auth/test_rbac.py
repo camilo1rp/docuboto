@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncpg
 import pytest
 from httpx import AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller
-from auth.core.database import get_tenant_conn
 from auth.services import rbac_service as rbac_service_module
 from auth.services.rbac_service import has_permission
 from tests.auth.app import app

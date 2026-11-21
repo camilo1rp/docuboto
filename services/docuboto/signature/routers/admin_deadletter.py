@@ -24,13 +24,13 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from orpycamcp_common.database import get_tenant_conn
 
 from signature.core.clearance import (
     get_actor,
     require_permission,
     resolve_caller_clearance,
 )
-from signature.core.database import get_tenant_conn
 from signature.repositories.dead_letter_repository import DeadLetterRepository
 from signature.schemas.dead_letter import (
     DeadLetterActionResult,

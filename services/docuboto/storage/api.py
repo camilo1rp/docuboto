@@ -35,11 +35,11 @@ from datetime import date, datetime
 from typing import Any
 
 import asyncpg
+from orpycamcp_common.database import get_pool
 from pydantic import ValidationError
 
 from storage.core.config import settings
 from storage.core.constants import SYSTEM_RECONCILER_ID
-from storage.core.database import get_pool
 from storage.core.minio_client import get_minio
 from storage.repositories.file_repository import FileRepository
 from storage.repositories.preservacion_repository import PreservacionRepository

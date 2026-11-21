@@ -40,15 +40,11 @@ import pytest_asyncio
 import redis.asyncio as aioredis
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import tenant_schema
 
 from document.core import altcha
 from document.core.config import settings
-from document.core.database import (
-    get_public_tenant_conn,
-    get_redis,
-    get_tenant_client,
-    tenant_schema,
-)
+from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
 from tests.document.app import app
 from tests.document.integration.conftest import _require_dsn
 from tests.document.integration.politica_stub import ENTIDAD

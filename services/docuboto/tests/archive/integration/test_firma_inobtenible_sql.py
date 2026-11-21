@@ -31,9 +31,9 @@ import asyncpg
 import pytest
 from fastapi import HTTPException
 from orpycamcp_common import audit
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.repositories.transferencia_repository import TransferenciaRepository
 from archive.schemas.archive import TrdSerieCreate
 from archive.schemas.transferencia import FirmaInobtenibleRequest, RevocarFirmaInobtenibleRequest

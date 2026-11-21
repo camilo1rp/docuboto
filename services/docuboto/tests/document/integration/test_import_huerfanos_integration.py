@@ -27,8 +27,8 @@ from unittest.mock import AsyncMock, patch
 import asyncpg
 import pytest
 import pytest_asyncio
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.services.import_huerfanos_service import ImportHuerfanosService
 from document.services.import_service import ImportService
 from storage import api as storage_api

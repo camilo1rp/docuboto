@@ -15,9 +15,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
 from workflow.core.clearance import require_permission
-from workflow.core.database import get_db_conn
 from workflow.schemas.visto_bueno import CadenaCreate, CadenaResponse, VoBoDecision
 from workflow.services.visto_bueno_service import VistoBuenoService
 

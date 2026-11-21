@@ -24,9 +24,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from orpycamcp_common.usuario import instalar_inyector
 
-from archive.core.database import get_db_conn
 from archive.services.transferencia_service import TransferenciaService as _TransferenciaService
 from tests.archive.app import app
 

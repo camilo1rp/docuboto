@@ -21,8 +21,8 @@ import uuid
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.schemas.borrador import BorradorRadicar
 from tests.document.integration import conftest as ic
 

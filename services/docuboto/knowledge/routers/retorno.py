@@ -25,10 +25,11 @@ import time
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, Response
+from orpycamcp_common import database
 from orpycamcp_common.tenant import slug_valido
 
 from document import api as document_api
-from knowledge.core import clave_retorno, contenido, database
+from knowledge.core import clave_retorno, contenido
 from knowledge.core.firma_retorno import comprobar, plazo_nonce
 
 logger = logging.getLogger(__name__)

@@ -20,8 +20,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.repositories.postal_repository import PostalRepository
 
 pytestmark = pytest.mark.integration

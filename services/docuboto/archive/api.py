@@ -14,8 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 import asyncpg
-
-from archive.core.database import acquire_tenant
+from orpycamcp_common.database import acquire_tenant
 
 
 class IndexUnavailableError(Exception):

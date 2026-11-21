@@ -17,11 +17,11 @@ from typing import Literal
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from starlette.background import BackgroundTask
 
 from archive.core.actor import Actor, optional_actor, require_actor
 from archive.core.clearance import require_permission
-from archive.core.database import get_db_conn
 from archive.schemas.fisico import FuidResponse
 from archive.schemas.transferencia import (
     FirmaInobtenibleRequest,

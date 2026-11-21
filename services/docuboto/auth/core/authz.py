@@ -24,9 +24,9 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import Depends, HTTPException, Request, status
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.rbac import make_require_any_permission
 
-from auth.core.database import get_tenant_conn
 from auth.repositories.rbac_repository import RBACRepository
 from auth.services.rbac_service import RBACService, has_permission
 

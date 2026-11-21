@@ -22,10 +22,10 @@ from urllib.parse import quote
 import asyncpg
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from orpycamcp_common.database import tenant_schema
 from orpycamcp_common.tenant import entidad_publica
 from starlette.background import BackgroundTask
 
-from document.core.database import tenant_schema
 from document.core.public_audit import audit_public_access
 from document.core.public_interop import require_public_interop
 from document.repositories.oai_repository import OaiRepository

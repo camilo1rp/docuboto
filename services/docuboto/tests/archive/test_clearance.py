@@ -15,9 +15,9 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 from fastapi import HTTPException
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.clearance import CLASIFICADA, PUBLICA, check_permission, resolve_caller_clearance
-from archive.core.database import tenant_schema
 
 
 # --- hardening de slug (defensa en profundidad ante inyección de schema) -----

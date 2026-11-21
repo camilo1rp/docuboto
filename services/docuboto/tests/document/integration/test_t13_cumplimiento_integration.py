@@ -34,8 +34,8 @@ import uuid
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from document.core.database import tenant_schema
 from document.schemas.document import DocumentCreate
 from document.services.document_service import DocumentService
 from tests.document.integration import conftest as ic

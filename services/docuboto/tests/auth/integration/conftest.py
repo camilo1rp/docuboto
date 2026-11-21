@@ -31,8 +31,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from orpycamcp_common import migrations
-
-from auth.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 RUN_INTEGRATION = os.environ.get("RUN_INTEGRATION") == "1"
 _INTEGRATION_DIR = Path(__file__).resolve().parent

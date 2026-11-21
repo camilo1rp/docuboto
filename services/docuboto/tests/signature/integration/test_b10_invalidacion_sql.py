@@ -21,8 +21,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from orpycamcp_common.database import tenant_schema
 
-from signature.core.database import _schema as tenant_schema
 from signature.services import invalidacion
 
 pytestmark = pytest.mark.asyncio

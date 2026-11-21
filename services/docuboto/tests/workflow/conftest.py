@@ -24,10 +24,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from orpycamcp_common.usuario import instalar_inyector
 
 from tests.workflow.app import app
-from workflow.core.database import get_db_conn
 from workflow.repositories.workflow_repository import Tenencia
 
 instalar_inyector(app)

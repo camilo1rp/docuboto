@@ -25,16 +25,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_conn as get_db_conn
+from orpycamcp_common.database import get_tenant_conn
 from orpycamcp_common.usuario import instalar_inyector
 
 from document.core.config import settings
-from document.core.database import (
-    get_db_conn,
-    get_public_tenant_conn,
-    get_redis,
-    get_tenant_client,
-    get_tenant_conn,
-)
+from document.core.dependencies import get_public_tenant_conn, get_redis, get_tenant_client
 from document.services.ventanilla_service import VentanillaService
 from tenant.api import TenantUnavailableError
 from tests.document.app import app

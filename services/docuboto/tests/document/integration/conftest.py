@@ -41,8 +41,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from orpycamcp_common import migrations
-
-from document.core.database import tenant_schema
+from orpycamcp_common.database import tenant_schema
 
 # Mismo cálculo que `services/docuboto/migrations/runner.py` — DSN "pelado" para conectar con
 # `asyncpg.connect` directamente (sin pasar por el pool de la app). Calculado

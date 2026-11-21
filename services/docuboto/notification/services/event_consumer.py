@@ -55,8 +55,8 @@ import logging
 
 import asyncpg
 from orpycamcp_common import events
+from orpycamcp_common.database import acquire_tenant
 
-from notification.core.database import acquire_tenant
 from notification.repositories.processed_events_repository import ProcessedEventsRepository
 from notification.schemas.notification import NotificationSend
 from notification.services.buzones import resolver_buzon

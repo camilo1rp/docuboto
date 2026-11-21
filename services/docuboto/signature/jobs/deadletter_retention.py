@@ -40,10 +40,10 @@ import asyncio
 import logging
 
 import asyncpg
+from orpycamcp_common.database import acquire_tenant, close_pool, create_pool, get_pool
 
 from signature.core.config import settings
 from signature.core.constants import DLQ_GROUP
-from signature.core.database import acquire_tenant, close_pool, create_pool, get_pool
 from signature.repositories.dead_letter_repository import DeadLetterRepository
 
 logger = logging.getLogger(__name__)

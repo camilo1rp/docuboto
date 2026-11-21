@@ -28,8 +28,8 @@ import logging
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 
-from archive.core.database import get_db_conn
 from archive.routers.public_eliminacion import _tenant_operativo
 from archive.schemas.indice_clasificados import IndiceSeriePublico
 from archive.services.indice_clasificados_service import indice_publico

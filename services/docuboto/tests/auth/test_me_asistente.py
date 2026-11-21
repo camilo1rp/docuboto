@@ -21,8 +21,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import AsyncClient
+from orpycamcp_common.database import get_optional_tenant_conn
 
-from auth.core.database import get_optional_tenant_conn
 from auth.schemas.auth import UserInfoResponse
 from tests.auth.app import app
 

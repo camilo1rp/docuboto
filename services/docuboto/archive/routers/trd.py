@@ -15,6 +15,8 @@ from typing import Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor, require_actor
 from archive.core.clearance import (
@@ -23,7 +25,6 @@ from archive.core.clearance import (
     nivel_efectivo,
     require_permission,
 )
-from archive.core.database import get_db_conn, tenant_schema
 from archive.schemas.archive import (
     CuadroClasificacionResponse,
     DisposicionDecisionCreate,

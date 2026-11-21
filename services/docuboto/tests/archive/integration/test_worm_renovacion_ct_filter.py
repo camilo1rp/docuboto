@@ -35,9 +35,9 @@ from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
 from archive.core.actor import Actor
-from archive.core.database import tenant_schema
 from archive.core.disposition import CT_DISPOSITION_CODES
 from archive.repositories.aip_repository import AipRepository
 from archive.repositories.index_repository import IndexRepository

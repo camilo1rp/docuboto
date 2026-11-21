@@ -114,7 +114,7 @@ def db_conn() -> AsyncMock:
 
 @pytest.fixture
 def app_with_mocks(redis_mock: MagicMock, db_conn: AsyncMock):
-    from notification.core.database import get_tenant_conn
+    from orpycamcp_common.database import get_tenant_conn
 
     async def _tenant_conn() -> AsyncGenerator[AsyncMock, None]:
         yield db_conn
@@ -199,9 +199,9 @@ async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], No
     router tests, which need direct control over conn.fetchrow/fetch/execute
     without the notification/webhook-specific patches in app_with_mocks.
     """
+    from orpycamcp_common.database import get_tenant_conn
     from orpycamcp_common.usuario import instalar_inyector
 
-    from notification.core.database import get_tenant_conn
     from tests.notification.app import app
 
     if not getattr(app, "_inyector_ok", False):

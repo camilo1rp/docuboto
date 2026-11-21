@@ -35,9 +35,9 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
+from orpycamcp_common.database import get_vetted_conn as get_db_conn
 from orpycamcp_common.tenant import entidad_publica
 
-from archive.core.database import get_db_conn
 from archive.schemas.archive import LoteEliminacionPublico
 from archive.services.archive_service import ArchiveService
 

@@ -41,6 +41,7 @@ import uuid
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from orpycamcp_common.database import get_tenant_conn
 
 from notification.core.clearance import (
     get_actor,
@@ -48,7 +49,6 @@ from notification.core.clearance import (
     resolve_caller_clearance,
 )
 from notification.core.constants import DLQ_GROUP
-from notification.core.database import get_tenant_conn
 from notification.repositories.dead_letter_repository import DeadLetterRepository
 from notification.repositories.processed_events_repository import ProcessedEventsRepository
 from notification.schemas.dead_letter import (

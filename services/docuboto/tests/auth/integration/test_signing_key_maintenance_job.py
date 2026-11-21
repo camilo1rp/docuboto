@@ -22,9 +22,9 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
+from orpycamcp_common.database import tenant_schema
 
 from auth.core.config import settings
-from auth.core.database import tenant_schema
 from auth.core.signing_keys import (
     build_aad,
     encrypt_private_key,

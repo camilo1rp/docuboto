@@ -31,9 +31,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn, tenant_schema
 
-from signature.core.database import _schema as tenant_schema
-from signature.core.database import get_tenant_conn
 from signature.repositories.firma_repository import FirmaRepository
 from tests.signature.app import app
 from tests.signature.integration.conftest import insert_radicado

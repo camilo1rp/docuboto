@@ -26,10 +26,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller
 from auth.core.config import settings
-from auth.core.database import get_tenant_conn
 from auth.core.recovery_codes import (
     generate_recovery_code,
     generate_recovery_codes,
