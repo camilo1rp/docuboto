@@ -17,7 +17,6 @@ X-Tenant-Slug header and sets search_path; tests that exercise that validation
 pop the override explicitly.
 """
 
-import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, date, datetime
@@ -26,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.usuario import instalar_inyector
 
 from document.core.config import settings
 from document.core.database import (
@@ -39,18 +39,6 @@ from document.core.database import (
 from document.main import app
 from document.services.ventanilla_service import VentanillaService
 from tenant.api import TenantUnavailableError
-
-# Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
-#
-# Desde que la identidad va firmada, eso es exactamente lo que el servicio
-# rechaza en producción: una petición con cabeceras de usuario que nadie firmó.
-# Aquí se corre en el modo «firma no activada», que es una configuración
-# legítima —la que tiene un despliegue que aún no puso el secreto— y no un
-# atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
-# y la comprobación contra la pila levantada.
-os.environ.pop("IDENTITY_SIGNING_SECRET", None)
-
-from orpycamcp_common.usuario import instalar_inyector
 
 instalar_inyector(app)
 

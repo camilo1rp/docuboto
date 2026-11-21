@@ -14,7 +14,6 @@ DB dependency (get_db_conn) and MinIO client (get_minio) are both mocked
 so tests run without real infrastructure.
 """
 
-import os
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import ExitStack, asynccontextmanager
@@ -24,20 +23,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.usuario import instalar_inyector
 
 from storage import api as storage_api
-from storage.core import config as cfg_module
 from storage.core.database import get_db_conn
 from storage.main import app
-
-# Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway, con `X-User-Id` sin
-# firmar: justo lo que el servicio rechaza cuando hay secreto de identidad (docker-compose lo
-# define por defecto desde B9). Se corre en el modo «firma no activada», que es una configuración
-# legítima, y no en un atajo: la firma la cubren las pruebas de `shared/` y la pila levantada.
-# Igual que signature-service. Se hace AQUÍ, antes de importar la app, y no en el compose.
-os.environ.pop("IDENTITY_SIGNING_SECRET", None)
-
-from orpycamcp_common.usuario import instalar_inyector
 
 instalar_inyector(app)
 

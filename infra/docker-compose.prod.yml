@@ -331,7 +331,6 @@ services:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       APP_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.128.0/17}

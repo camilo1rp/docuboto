@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,22 +17,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.usuario import instalar_inyector
 
 from signature.core.config import settings
 from signature.core.database import get_tenant_conn
 from signature.main import app
-
-# Las pruebas unitarias llaman a la aplicación DIRECTAMENTE, sin gateway.
-#
-# Desde que la identidad va firmada, eso es exactamente lo que el servicio
-# rechaza en producción: una petición con cabeceras de usuario que nadie firmó.
-# Aquí se corre en el modo «firma no activada», que es una configuración
-# legítima —la que tiene un despliegue que aún no puso el secreto— y no un
-# atajo: la firma en sí la cubren `shared/tests/test_la_identidad_viene_firmada.py`
-# y la comprobación contra la pila levantada.
-os.environ.pop("IDENTITY_SIGNING_SECRET", None)
-
-from orpycamcp_common.usuario import instalar_inyector
 
 instalar_inyector(app)
 
