@@ -74,7 +74,7 @@ for d in $(dominios "$@"); do
         extra=()
         [ "$d" = storage ] && extra=(--ignore=tests/storage/integration/test_worm_object_lock_real_s3.py)
         { base_nueva && python migrations/runner.py; } || rc=$?
-        [ $rc -eq 0 ] && { pytest "tests/$d/integration" -q --tb=short -p no:cacheprovider "${extra[@]}" || rc=$?; }
+        [ $rc -eq 0 ] && { pytest "tests/$d/integration" -q --tb=short -p no:cacheprovider ${extra[@]+"${extra[@]}"} || rc=$?; }
     else
         echo "modo desconocido: $modo" >&2; exit 2
     fi
