@@ -8,27 +8,28 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * auth.server.js — Lógica de autenticación OAuth2 PKCE para el lado servidor
- * de SvelteKit (+page.server.js, +layout.server.js, hooks.server.js).
+ * auth.server.js — Sesión del lado servidor de SvelteKit (+page.server.js,
+ * +layout.server.js, hooks.server.js).
+ *
+ * La identidad la emite la app (ADR-048): `POST /api/v1/auth/login` con usuario
+ * y contraseña, `/refresh` que rota el refresh_token y `/logout` que lo revoca.
+ * El navegador nunca habla con el emisor: todo pasa por el SSR.
  *
  * Estrategia de almacenamiento de tokens:
- *  - access_token   → cookie httpOnly, Secure, SameSite=Lax, vida corta (~5 min Keycloak)
- *  - refresh_token  → cookie httpOnly, Secure, SameSite=Lax, vida más larga (~30 min)
- *  - id_token       → NO persiste en cookie; se parsea en memoria para extraer claims
+ *  - access_token   → cookie httpOnly, Secure, SameSite=Lax, vida corta (15 min)
+ *  - refresh_token  → cookie httpOnly, Secure, SameSite=Lax, 12 h como máximo;
+ *                     rota en cada uso (el anterior deja de valer)
  *
  * Los tokens NUNCA se exponen al JavaScript del cliente. El store `auth.js`
  * (cliente) solo recibe los claims del JWT extraídos por el servidor.
- *
- * El code_verifier se transmite al servidor en una cookie httpOnly de vida
- * muy corta (solo dura el ida y vuelta del flujo de autorización).
  *
  * Este módulo solo se importa en archivos *.server.js / hooks.server.js;
  * SvelteKit previene su inclusión en el bundle cliente.
  */
 
 import { dev } from "$app/environment";
-import { KEYCLOAK_CLIENT_ID } from "$lib/utils/config.js";
-import { KEYCLOAK_TOKEN_URL, KEYCLOAK_LOGOUT_URL } from "$lib/utils/config.server.js";
+import { API_V1 } from "$lib/utils/config.server.js";
+import { codigoError } from "$lib/utils/apiError.js";
 
 // ---------------------------------------------------------------------------
 // Constantes de cookies
@@ -36,8 +37,9 @@ import { KEYCLOAK_TOKEN_URL, KEYCLOAK_LOGOUT_URL } from "$lib/utils/config.serve
 
 export const COOKIE_ACCESS_TOKEN = "op_access_token";
 export const COOKIE_REFRESH_TOKEN = "op_refresh_token";
-export const COOKIE_PKCE_VERIFIER = "op_pkce_verifier";
-export const COOKIE_PKCE_STATE = "op_pkce_state";
+
+/** Vida máxima de la sesión (la del refresh_token en el backend, ADR-048). */
+const REFRESH_MAX_AGE_S = 12 * 60 * 60;
 
 /**
  * Opciones base para todas las cookies de sesión.
@@ -51,44 +53,53 @@ const COOKIE_BASE = /** @type {const} */ ({
 });
 
 // ---------------------------------------------------------------------------
-// Intercambio de código de autorización por tokens (server-side)
+// Inicio de sesión
 // ---------------------------------------------------------------------------
 
+/** Error de inicio de sesión con el código del backend (`invalid_credentials`, …). */
+export class LoginError extends Error {
+  /**
+   * @param {string} code
+   * @param {number} status
+   */
+  constructor(code, status) {
+    super(code);
+    this.code = code;
+    this.status = status;
+  }
+}
+
 /**
- * Intercambia el authorization_code por access_token + refresh_token.
- * Llamado desde el callback (+page.server.js) con el code_verifier de la cookie.
- *
- * @param {string} code          — authorization_code de Keycloak
- * @param {string} codeVerifier  — verifier PKCE (de cookie httpOnly)
- * @param {string} redirectUri   — debe coincidir exactamente con el redirect_uri usado al iniciar
+ * Pide los tokens con usuario y contraseña.
+ * @param {string} username
+ * @param {string} password
+ * @param {string} tenantSlug
  * @returns {Promise<TokenSet>}
  */
-export async function exchangeCode(code, codeVerifier, redirectUri) {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    client_id: KEYCLOAK_CLIENT_ID,
-    code,
-    code_verifier: codeVerifier,
-    redirect_uri: redirectUri,
-  });
-
-  const res = await fetch(KEYCLOAK_TOKEN_URL, {
+export async function login(username, password, tenantSlug) {
+  const res = await fetch(`${API_V1}/auth/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, tenant_slug: tenantSlug }),
   });
-
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    // sobre-ajeno: esto NO es el sobre de error del gateway sino el de OAuth2
-    // (RFC 6749 §5.2) que devuelve Keycloak — `{error, error_description}`,
-    // plano por especificación. `codigoError`/`mensajeError` leerían otra cosa.
-    throw new Error(
-      `Token exchange failed: ${err.error_description ?? err.error ?? `HTTP ${res.status}`}`,
-    );
+    const cuerpo = await res.json().catch(() => ({}));
+    throw new LoginError(codigoError(cuerpo) ?? "login_failed", res.status);
   }
-
   return res.json();
+}
+
+/**
+ * `next` solo si es una ruta interna: un `next=https://otro.sitio` convertiría
+ * el login en un redirector abierto.
+ * @param {string|null} next
+ * @returns {string}
+ */
+export function destinoSeguro(next) {
+  if (!next || !next.startsWith("/") || next.startsWith("//") || next.startsWith("/\\")) {
+    return "/dashboard";
+  }
+  return next;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,47 +107,36 @@ export async function exchangeCode(code, codeVerifier, redirectUri) {
 // ---------------------------------------------------------------------------
 
 /**
- * Renueva el access_token usando el refresh_token.
+ * Renueva el access_token usando el refresh_token (que rota).
  * @param {string} refreshToken
- * @returns {Promise<TokenSet|null>} — null si el refresh_token ha expirado
+ * @returns {Promise<TokenSet|null>} — null si el refresh_token ya no vale
  */
 export async function refreshAccessToken(refreshToken) {
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    client_id: KEYCLOAK_CLIENT_ID,
-    refresh_token: refreshToken,
-  });
-
-  const res = await fetch(KEYCLOAK_TOKEN_URL, {
+  const res = await fetch(`${API_V1}/auth/refresh`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
   });
-
   if (!res.ok) return null;
   return res.json();
 }
 
 // ---------------------------------------------------------------------------
-// Logout en Keycloak (revoca la sesión SSO)
+// Cierre de sesión (revoca el refresh_token)
 // ---------------------------------------------------------------------------
 
 /**
- * Notifica a Keycloak del logout para invalidar la sesión SSO.
+ * Revoca la sesión en el backend. Best-effort: el cierre local no espera.
  * @param {string} refreshToken
  */
 export async function revokeSession(refreshToken) {
   if (!refreshToken) return;
-  const body = new URLSearchParams({
-    client_id: KEYCLOAK_CLIENT_ID,
-    refresh_token: refreshToken,
-  });
-  await fetch(KEYCLOAK_LOGOUT_URL, {
+  await fetch(`${API_V1}/auth/logout`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
   }).catch(() => {
-    // No bloquear el logout local si Keycloak no responde
+    // No bloquear el logout local si la app no responde
   });
 }
 
@@ -146,7 +146,7 @@ export async function revokeSession(refreshToken) {
 
 /**
  * Decodifica el payload de un JWT sin verificar la firma.
- * La verificación real la hace Keycloak/api-gateway; aquí solo extraemos claims
+ * La verificación real la hace la app en cada petición; aquí solo extraemos claims
  * para mostrar en la UI (roles, tenant, nombre, etc.).
  *
  * @param {string} token — JWT en formato header.payload.signature
@@ -166,7 +166,7 @@ export function decodeJwt(token) {
 
 /**
  * Margen de seguridad para dar por agotado un access_token ANTES de que el
- * emisor lo rechace. Cubre el desfase entre el reloj de Keycloak —que fija
+ * emisor lo rechace. Cubre el desfase entre el reloj del emisor —que fija
  * `exp` en el instante en que acuña el token— y el del navegador, que empieza a
  * contar el `maxAge` de la cookie cuando la recibe: la cookie sobrevive
  * siempre al token por, al menos, el viaje de ida y vuelta.
@@ -179,7 +179,7 @@ export const MARGEN_EXPIRACION_S = 15;
  * Toda la sesión del frontend descansaba en una premisa que nadie comprobaba:
  * que la cookie desaparece exactamente cuando el token caduca. No es cierto —la
  * cookie se fija con un `maxAge` relativo al reloj del navegador y `exp` es
- * absoluto, del reloj de Keycloak— y la consecuencia se ve desde la primera
+ * absoluto, del reloj del emisor— y la consecuencia se ve desde la primera
  * pantalla: con la cookie presente y el token muerto, la guarda daba la sesión
  * por buena, el refresco no se intentaba (solo corre si la cookie FALTA) y
  * cada pantalla se dibujaba entera con «El token es inválido o expiró» dentro.
@@ -195,7 +195,7 @@ export const MARGEN_EXPIRACION_S = 15;
 export function tokenVigente(token, margenS = MARGEN_EXPIRACION_S) {
   if (!token) return false;
   const claims = decodeJwt(token);
-  // Sin `exp` no hay forma de saberlo. Keycloak siempre lo emite; si un día
+  // Sin `exp` no hay forma de saberlo. El emisor siempre lo pone; si un día
   // faltara, tratarlo como vigente devolvería el defecto que esto corrige.
   if (!claims || typeof claims.exp !== "number") return false;
   return claims.exp * 1000 > Date.now() + margenS * 1000;
@@ -206,11 +206,10 @@ export function tokenVigente(token, margenS = MARGEN_EXPIRACION_S) {
 // ---------------------------------------------------------------------------
 
 /**
- * Extrae los claims que la UI necesita del JWT de Keycloak.
+ * Extrae los claims que la UI necesita del access token (ADR-048).
  *
- * Keycloak pone los roles en `realm_access.roles[]`.
- * Los permisos granulares vienen del api-gateway via `/auth/me` (no del JWT).
- * El tenant_slug es un atributo del usuario en Keycloak → claim personalizado.
+ * `sub` ya es `auth_users.id`. Los permisos granulares vienen de `/auth/me`
+ * (no del JWT); el token no lleva roles.
  *
  * @param {JwtClaims} claims — payload del JWT
  * @returns {SessionUser}
@@ -218,7 +217,6 @@ export function tokenVigente(token, margenS = MARGEN_EXPIRACION_S) {
 export function extractSessionUser(claims) {
   if (!claims) return null;
 
-  const roles = claims.realm_access?.roles ?? [];
   const tenantSlug = claims.tenant_slug ?? claims["tenant_slug"] ?? null;
 
   return {
@@ -226,7 +224,7 @@ export function extractSessionUser(claims) {
     email: claims.email ?? null,
     name: claims.name ?? claims.preferred_username ?? claims.sub,
     preferred_username: claims.preferred_username ?? null,
-    roles,
+    roles: [],
     tenant_slug: tenantSlug,
     // Permisos granulares (+ niveles CRUD): se cargan de /auth/me post-login
     // (ver layout.server.js). Fail-closed: `{}` hasta que /auth/me responda.
@@ -245,19 +243,19 @@ export function extractSessionUser(claims) {
  * @param {TokenSet} tokenSet
  */
 export function setSessionCookies(cookies, tokenSet) {
-  // access_token: vida corta (usa expires_in de Keycloak, máx 10 min)
-  const accessMaxAge = Math.min(tokenSet.expires_in ?? 300, 600);
+  // access_token: vida corta (expires_in del emisor, máx 15 min)
+  const accessMaxAge = Math.min(tokenSet.expires_in ?? 300, 900);
   cookies.set(COOKIE_ACCESS_TOKEN, tokenSet.access_token, {
     ...COOKIE_BASE,
     maxAge: accessMaxAge,
   });
 
-  // refresh_token: vida más larga (usa refresh_expires_in de Keycloak)
+  // refresh_token: la sesión entera. El backend lo vence antes por inactividad
+  // (30 min) o por tope absoluto (12 h); la cookie no necesita saberlo.
   if (tokenSet.refresh_token) {
-    const refreshMaxAge = tokenSet.refresh_expires_in ?? 1800;
     cookies.set(COOKIE_REFRESH_TOKEN, tokenSet.refresh_token, {
       ...COOKIE_BASE,
-      maxAge: refreshMaxAge,
+      maxAge: REFRESH_MAX_AGE_S,
     });
   }
 }
@@ -271,39 +269,6 @@ export function clearSessionCookies(cookies) {
   cookies.delete(COOKIE_REFRESH_TOKEN, { path: "/" });
 }
 
-/**
- * Guarda el code_verifier PKCE en una cookie httpOnly de vida corta.
- * @param {import('@sveltejs/kit').Cookies} cookies
- * @param {string} verifier
- */
-export function storePkceVerifierCookie(cookies, verifier) {
-  cookies.set(COOKIE_PKCE_VERIFIER, verifier, {
-    ...COOKIE_BASE,
-    maxAge: 300, // 5 minutos — solo durante el flujo de autorización
-  });
-}
-
-/**
- * Guarda el state CSRF en una cookie httpOnly de vida corta.
- * @param {import('@sveltejs/kit').Cookies} cookies
- * @param {string} state
- */
-export function storePkceStateCookie(cookies, state) {
-  cookies.set(COOKIE_PKCE_STATE, state, {
-    ...COOKIE_BASE,
-    maxAge: 300,
-  });
-}
-
-/**
- * Elimina las cookies PKCE temporales tras el intercambio.
- * @param {import('@sveltejs/kit').Cookies} cookies
- */
-export function clearPkceCookies(cookies) {
-  cookies.delete(COOKIE_PKCE_VERIFIER, { path: "/" });
-  cookies.delete(COOKIE_PKCE_STATE, { path: "/" });
-}
-
 // ---------------------------------------------------------------------------
 // JSDoc types (solo documentación, sin runtime)
 // ---------------------------------------------------------------------------
@@ -312,9 +277,7 @@ export function clearPkceCookies(cookies) {
  * @typedef {object} TokenSet
  * @property {string} access_token
  * @property {string} [refresh_token]
- * @property {string} [id_token]
  * @property {number} [expires_in]
- * @property {number} [refresh_expires_in]
  * @property {string} [token_type]
  */
 
@@ -324,7 +287,6 @@ export function clearPkceCookies(cookies) {
  * @property {string} [email]
  * @property {string} [name]
  * @property {string} [preferred_username]
- * @property {{ roles: string[] }} [realm_access]
  * @property {string} [tenant_slug]
  * @property {number} [exp]
  * @property {number} [iat]
@@ -333,8 +295,8 @@ export function clearPkceCookies(cookies) {
 /**
  * @typedef {object} SessionUser
  * @property {string} sub
- *   Identificador de Keycloak. **No** es el de la persona dentro del tenant:
- *   ver `user_id`. Confundirlos es lo que dejó sin funcionar tres pantallas.
+ *   `sub` del access token: ya es `auth_users.id` (ADR-048). `user_id`, que
+ *   resuelve `/auth/me`, es el mismo valor.
  * @property {string} [user_id]
  *   Identidad INTERNA del tenant (`auth_users.id`), resuelta por `/auth/me`.
  *   Es la que el backend escribe en las columnas de autoría (`creada_por`,

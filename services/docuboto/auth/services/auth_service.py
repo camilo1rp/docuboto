@@ -10,8 +10,8 @@
 """El proveedor de identidad del proceso (ADR-048).
 
 Personas: contraseña argon2id contra `auth_users`, access JWT de 15 min y un
-refresh opaco de 12 h que rota en cada uso; presentar uno ya usado revoca toda
-la familia. Máquinas: `client_credentials` contra `public.auth_service_accounts`.
+refresh opaco de 12 h (30 min de inactividad) que rota en cada uso; presentar
+uno ya usado revoca toda la familia. Máquinas: `client_credentials` contra `public.auth_service_accounts`.
 
 La entidad se comprueba al emitir (login y refresh): una entidad sin registro o
 sin schema no emite tokens. El `sub` del access token es `auth_users.id`, así
@@ -174,7 +174,9 @@ class AuthService:
         async with _en_entidad(conn, slug):
             repo = IdentityRepository(conn)
             async with conn.transaction():
-                fila = await repo.lock_refresh(_hash_refresh(refresh_token))
+                fila = await repo.lock_refresh(
+                    _hash_refresh(refresh_token), idle_s=settings.refresh_token_idle_s
+                )
                 if fila is None:
                     raise AuthError(401, "invalid_refresh_token")
                 user = await repo.user_by_id(fila["user_id"])

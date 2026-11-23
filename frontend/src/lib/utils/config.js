@@ -20,7 +20,6 @@
 import { env } from "$env/dynamic/public";
 
 const PUBLIC_API_URL = env.PUBLIC_API_URL ?? "";
-const PUBLIC_KEYCLOAK_URL = env.PUBLIC_KEYCLOAK_URL ?? "";
 
 // ---------------------------------------------------------------------------
 // Gateway
@@ -33,38 +32,11 @@ export const API_BASE = PUBLIC_API_URL;
 export const API_V1 = `${API_BASE}/api/v1`;
 
 // ---------------------------------------------------------------------------
-// Keycloak / OAuth2 PKCE
-// ---------------------------------------------------------------------------
-
-/** URL base de Keycloak (ej. http://localhost:19180) */
-export const KEYCLOAK_URL = PUBLIC_KEYCLOAK_URL;
-
-/** Realm de OrpycaMCP */
-export const KEYCLOAK_REALM = "orpycamcp";
-
-/** Client ID público del frontend (sin secret) — ver realm-dev.json */
-export const KEYCLOAK_CLIENT_ID = "orpycamcp-frontend";
-
-/**
- * URL del Authorization Endpoint de Keycloak.
- * SvelteKit redirige al navegador a esta URL para iniciar el flujo PKCE.
- */
-export const KEYCLOAK_AUTH_URL = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth`;
-
-/**
- * URL del end_session_endpoint de Keycloak para redirección del navegador.
- * Úsala para construir la URL de logout a la que el servidor redirige al usuario.
- * Para revocación back-channel (server-side), usa config.server.js.
- */
-export const KEYCLOAK_LOGOUT_URL = `${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/logout`;
-
-// ---------------------------------------------------------------------------
 // Rutas de la aplicación (SvelteKit client-side)
 // ---------------------------------------------------------------------------
 
 export const ROUTES = {
   login: "/login",
-  callback: "/login/callback",
   logout: "/logout",
   forbidden: "/403",
   dashboard: "/dashboard",

@@ -77,9 +77,12 @@ class AuthSettings(CommonSettings):
     # (fail-closed); nunca se cae a una clave implícita.
     identity_key_encryption_key: str = ""
     # Vidas: access 15 min; refresh 12 h absolutas desde el inicio de sesión (la
-    # rotación no las alarga); token de servicio 5 min.
+    # rotación no las alarga) y 30 min de inactividad (el `ssoSessionIdleTimeout`
+    # que tenía el realm): un refresh emitido hace más de eso ya no rota.
+    # Token de servicio 5 min.
     access_token_ttl_s: int = 900
     refresh_token_ttl_s: int = 43200
+    refresh_token_idle_s: int = 1800
     service_token_ttl_s: int = 300
     # Tras rotar, la clave anterior sigue en la JWKS este tiempo: más que la vida
     # del token más largo firmado con ella.

@@ -108,6 +108,21 @@ async def test_el_refresh_no_alarga_la_sesion(
     assert t2.refresh_token
 
 
+async def test_un_refresh_inactivo_no_rota(
+    entidad: tuple[str, asyncpg.Connection, uuid.UUID],
+) -> None:
+    slug, conn, _ = entidad
+    svc = AuthService()
+    t = await svc.login(conn, "operador", CLAVE, slug)
+    schema = "tenant_" + slug.replace("-", "_")
+    await conn.execute(
+        f'UPDATE "{schema}".auth_refresh_tokens SET issued_at = now() - interval \'31 minutes\''
+    )
+    with pytest.raises(AuthError) as e:
+        await svc.refresh(conn, t.refresh_token or "")
+    assert e.value.code == "invalid_refresh_token"
+
+
 async def test_bloqueo_por_intentos(
     entidad: tuple[str, asyncpg.Connection, uuid.UUID], monkeypatch: pytest.MonkeyPatch
 ) -> None:

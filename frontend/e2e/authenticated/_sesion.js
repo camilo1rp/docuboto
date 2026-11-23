@@ -26,7 +26,7 @@
  * represente a una oficina. Subir el tope solo para las pruebas taparía
  * precisamente el eje que existe para que la cuota sea de cada quien.
  *
- * Los tres usuarios `e2eN` están en `infra/keycloak/realm-dev.json` y comparten
+ * Los tres usuarios `e2eN` los crea `scripts/seed_demo.py` y comparten
  * **el mismo grupo** que `operador` —«Demostración», los 25 permisos—, así que
  * repartir la carga no cambia el sujeto de la prueba. Si fueran perfiles
  * distintos, un fallo de permisos se leería como un fallo de la pantalla.
@@ -50,26 +50,9 @@ export function estadoDe(usuario) {
 }
 
 /**
- * Iniciar sesión contra el Keycloak real — UN solo sitio que sepa hacerlo.
- *
- * Estaba copiado en tres archivos, y dos de las copias usaban
- * `getByLabel(/contraseña|password/i)`, que en el tema por defecto de Keycloak
- * **casa con dos elementos**: el `<input>` y el botón de mostrar/ocultar, cuyo
- * `aria-label` es «Show password». Playwright falla en modo estricto, así que
- * los cuatro tests de esas dos copias caían antes de llegar a comprobar nada
- * — y ninguno se había ejecutado nunca desde que se escribieron.
- *
- * Quedaba una **cuarta** copia que este mismo texto no contaba: la de
- * `asistente-dock.spec.js`, que era la que funcionaba y por eso nadie la
- * miró al unificar. Retirada (2026-09-19): hoy ninguna spec inicia sesión
- * por su cuenta — lo hace `_auth.setup.js` una sola vez y las demás heredan
- * `ESTADO_SESION`. Este helper lo usan el setup y la prueba del propio login.
- *
- * Se localiza por los **id del formulario de Keycloak** (`#username`,
- * `#password`, `#kc-login`), que es la copia que sí funcionaba
- * (`asistente-dock.spec.js`, retirada con el asistente en ADR-046 §6). No es una preferencia de estilo: el nombre
- * accesible de esa página lo fija un tema de terceros que puede cambiar de
- * idioma —hoy sale en inglés— mientras los id son su contrato estable.
+ * Iniciar sesión por el formulario propio de /login (ADR-048) — UN solo sitio
+ * que sepa hacerlo. Se localiza por los `id` del formulario, que son su
+ * contrato estable.
  *
  * @param {import('@playwright/test').Page} page
  * @param {{ destino?: RegExp }} [opciones] `destino` es la URL a la que se
@@ -89,9 +72,12 @@ export async function iniciarSesion(page, { destino = /\/dashboard/, usuario } =
   }
 
   await page.goto("/login");
-  await page.fill("#username", username);
-  await page.fill("#password", password);
-  await Promise.all([page.waitForURL(destino), page.click("#kc-login")]);
+  await page.fill("#login-username", username);
+  await page.fill("#login-password", password);
+  await Promise.all([
+    page.waitForURL(destino),
+    page.getByRole("button", { name: "Ingresar" }).click(),
+  ]);
 }
 
 /** ¿Hay credenciales para los casos que necesitan identidad? */

@@ -8,7 +8,7 @@
 // SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
 /**
- * Tiempo límite de respuesta para las llamadas del SSR al api-gateway y a Keycloak.
+ * Tiempo límite de respuesta para las llamadas del SSR a la app.
  *
  * **El problema.** Ni una sola de las ~190 llamadas server-side declaraba
  * `signal`. El `fetch` de Node no tiene tiempo límite por defecto: si el
@@ -51,7 +51,7 @@ let instalado = false;
  *
  * Idempotente: llamarlo dos veces no encadena dos envoltorios.
  *
- * @param {string[]} prefijos URL cuyo comienzo activa el tope (gateway, Keycloak).
+ * @param {string[]} prefijos URL cuyo comienzo activa el tope (la app).
  * @param {number} [ms] Milisegundos de espera de cabeceras.
  */
 export function instalarTiempoLimite(prefijos, ms = TIEMPO_LIMITE_POR_DEFECTO) {

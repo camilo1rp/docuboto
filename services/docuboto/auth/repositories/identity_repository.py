@@ -105,12 +105,15 @@ class IdentityRepository:
             expires_at,
         )
 
-    async def lock_refresh(self, token_hash: bytes) -> asyncpg.Record | None:
+    async def lock_refresh(self, token_hash: bytes, *, idle_s: int) -> asyncpg.Record | None:
+        """La fila del refresh, bloqueada. `vencido`: pasó su plazo absoluto o lleva
+        más de `idle_s` sin rotar."""
         return await self._conn.fetchrow(
             "SELECT id, user_id, family_id, expires_at, used_at, revoked_at, "
-            "expires_at <= now() AS vencido "
+            "(expires_at <= now() OR issued_at <= now() - make_interval(secs => $2)) AS vencido "
             "FROM auth_refresh_tokens WHERE token_hash = $1 FOR UPDATE",
             token_hash,
+            float(idle_s),
         )
 
     async def mark_refresh_used(self, refresh_id: uuid.UUID) -> None:

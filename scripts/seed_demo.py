@@ -72,6 +72,12 @@ CLAVE = "orpycamcp_dev"
 # mismo usuario repetido enseñaría una pantalla que no corresponde a nada.
 FIRMANTES = ("jefe", "secretaria", "archivista")
 
+# Las identidades de reparto de la suite e2e autenticada
+# (`frontend/e2e/authenticated/_sesion.js`): mismo grupo que `operador`. Antes
+# venían del realm de desarrollo; con la identidad emitida por la app (ADR-048)
+# las crea este guion.
+E2E = ("e2e1", "e2e2", "e2e3")
+
 # Marca con la que se reconoce lo que crea este script, para poder deshacerlo sin
 # tocar nada más. Va SOLO en asuntos y descripciones —donde se lee como «esto es
 # de demostración»— y nunca en el nombre de una dependencia: ahí rompería el
@@ -561,7 +567,7 @@ async def _montar_grupo(
     #
     # Se acota a los usuarios que ESTE guion administra: sacar a alguien que una
     # persona hubiera añadido a mano sería un borrado que nadie pidió.
-    administrados = [u.upper() for u in (USUARIO, *FIRMANTES, USUARIO_CONSULTA)]
+    administrados = [u.upper() for u in (USUARIO, *FIRMANTES, *E2E, USUARIO_CONSULTA)]
     sobrantes = await conn.fetch(
         "SELECT m.user_id, u.username FROM auth_memberships m "
         "JOIN auth_users u ON u.id = m.user_id "
@@ -599,11 +605,11 @@ async def aprovisionar() -> None:
     try:
         esquema = f"tenant_{TENANT}"
         await conn.execute(f'SET search_path TO "{esquema}"')
-        for quien in (USUARIO, *FIRMANTES, USUARIO_CONSULTA):
+        for quien in (USUARIO, *FIRMANTES, *E2E, USUARIO_CONSULTA):
             await _asegurar_usuario(conn, quien)
         ok(
-            f"{2 + len(FIRMANTES)} usuarios aprovisionados: {USUARIO}, "
-            f"{', '.join(FIRMANTES)}, {USUARIO_CONSULTA}"
+            f"{2 + len(FIRMANTES) + len(E2E)} usuarios aprovisionados: {USUARIO}, "
+            f"{', '.join(FIRMANTES)}, {', '.join(E2E)}, {USUARIO_CONSULTA}"
         )
 
         # `upper(...)` en los dos lados: el auth-service guarda el nombre en
@@ -636,7 +642,7 @@ async def aprovisionar() -> None:
             # sistema, no cómo repartir competencias entre cargos. Un reparto de
             # roles realista es otra demostración, y probablemente otra decisión
             # de cada entidad.
-            miembros=(USUARIO, *(f for f in FIRMANTES if f != USUARIO_INTERMEDIO)),
+            miembros=(USUARIO, *(f for f in FIRMANTES if f != USUARIO_INTERMEDIO), *E2E),
         )
         ok(
             f"«{GRUPO_DEMO}» con {n_demo} permisos, nivel CRUD 3 (TRD en 4), "
