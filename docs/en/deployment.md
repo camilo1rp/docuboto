@@ -31,9 +31,9 @@ hardware figure in the documentation: any other is a mistake.
 
 A guard (`shared/tests/test_hardware_figure.py`) adds up the `deploy.resources.limits`
 of the default profile in `infra/docker-compose.prod.yml` and fails if they exceed
-this figure. **Today they do** (13.5 CPU / 20.75 GB of limits: Keycloak and Redis are still there, not counting
-the `split` profile): the figure is the redesign's target (ADR-047,
-ADR-048, ADR-049), and the guard is marked as a strict expected failure until the
+this figure. **Today they do** (11 CPU / 16.25 GB of limits: no gateway or worker since ADR-047, but
+Keycloak, Redis and the object store are still there): the figure is the redesign's target (ADR-048,
+ADR-049, ADR-050), and the guard is marked as a strict expected failure until the
 manifest fits. When it fits, the mark comes off.
 
 ### Software
@@ -136,9 +136,9 @@ The template is `infra/nginx/orpyca.conf.template`; the official image substitut
 
 Why containerised rather than on the server:
 
-- With nginx on the host, the gateway would see the docker-proxy IP as its peer (see `TRUSTED_PROXIES`,
+- With nginx on the host, the app would see the docker-proxy IP as its peer (see `TRUSTED_PROXIES`,
   below).
-- Services call `https://${KEYCLOAK_HOSTNAME}` from inside the network: `edge` carries that name (and
+- The app and the SSR call `https://${KEYCLOAK_HOSTNAME}` from inside the network: `edge` carries that name (and
   the other two) as **aliases** on `orpycamcp-net`, so Docker DNS resolves it to `edge` itself, with a
   valid certificate, no hairpin NAT and no external DNS. That is what makes the SSR's PKCE login work
   (`INTERNAL_KEYCLOAK_URL`).
@@ -149,8 +149,24 @@ What each domain publishes:
 |---|---|---|
 | `ORPYCA_REGISTRY` / `ORPYCA_VERSION` | Image registry and the version to deploy (an `X.Y.Z` tag; never `latest`). **Mandatory** (`:?`) in `docker-compose.prod.yml`; `release-<version>.yml` no longer uses them because it pins every image by digest | `ghcr.io/camilo1rp/docuboto` / `1.0.0` |
 | `FRONTEND_HOSTNAME` | `frontend:3000` | HSTS; the SSR emits the other headers |
-| `API_PUBLIC_HOSTNAME` | `api-gateway:8080` | `/health/ready` only from the `edge` container itself (`127.0.0.1`); probe it with `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. The network gateway's IP (`172.20.0.1`) is **not** allowed: it is what nginx sees for any internet client |
+| `API_PUBLIC_HOSTNAME` | `app:8000` | `/metrics` answers 404; `/health/ready` only from the `edge` container itself (`127.0.0.1`); probe it with `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. The network gateway's IP (`172.20.0.1`) is **not** allowed: it is what nginx sees for any internet client |
 | `KEYCLOAK_HOSTNAME` | `keycloak:8080` | **allow-list**: only `/realms/orpycamcp/` and `/resources/`; everything else (including `/admin/`, `/realms/master`, `/realms/master;x/…`) answers 404, and so does any path containing `;` |
+
+**Rate limiting (ADR-047).** The per-IP bucket lives in `edge` (nginx `limit_req`, in memory, no
+Redis), with the budgets the retired api-gateway had:
+
+| Zone | What it covers | Limit per IP |
+|---|---|---|
+| `api_ip` | everything | 1200/min (`20r/s`) |
+| `login_ip` | `/api/v1/auth/token` and `/refresh`, and the SSR's `/login` | 20/min |
+| `radicacion` | anonymous filings: `POST` to the window/PQRS and to the SSR's public form (`/radicacion`) | 5/min, `POST` only |
+| `cosecha_ip` | public OAI-PMH and CMIS | 30/min |
+
+Over the limit, nginx answers `429`. nginx doesn't know who anyone is, and a whole office behind a
+NAT shares one IP, so the app enforces the **per-person quota** (`UserRateLimitMiddleware`,
+`RATE_LIMIT_PER_USER`, 120 requests per minute by default; `429 rate_limit_exceeded` with
+`Retry-After: 60`). The window lives in process memory. Requests without a person don't count
+there: the per-IP bucket covers them.
 
 Keycloak's admin console is **not published**: use it through an SSH tunnel
 (`ssh -L 8080:localhost:8080 server`, towards the container's port) or `docker compose exec keycloak`.
@@ -164,23 +180,22 @@ docker compose -f docker-compose.prod.yml --env-file .env exec edge nginx -t
 
 ### Verified IP on the public window (`TRUSTED_PROXIES`)
 
-The window's authorization record (Law 1581/2012, ADR-031) stores the client IP **only if the gateway can vouch for it**. The gateway derives it by walking `X-Forwarded-For` **from the right**, dropping the `TRUSTED_PROXIES` hops; it signs it with `IDENTITY_SIGNING_SECRET` (bound to the route, valid 120 s) and document-service accepts only that signature: it **never** reads `X-Forwarded-For`. For `ip_verificada` to be `true` in production:
+The window's authorization record (Law 1581/2012, ADR-031) stores the client IP **only if the app can vouch for it**. `UsuarioActualMiddleware` derives it once per request by walking `X-Forwarded-For` **from the right**, dropping the `TRUSTED_PROXIES` hops, and stores it in `request.state`; no domain reads `X-Forwarded-For` again. For `ip_verificada` to be `true` in production:
 
-1. `IDENTITY_SIGNING_SECRET` set (mandatory in production; without it the IP is null).
-2. The api-gateway's `TRUSTED_PROXIES` must include **the `edge` network and the SSR frontend's** (the two hops that chain `X-Forwarded-For`: nginx uses `proxy_add_x_forwarded_for` and the SSR forwards the browser's IP). The manifest default is **`172.20.128.0/17`**: the `ip_range` of `orpycamcp-net` (the subnet is `172.20.0.0/16`, but containers only get addresses from its upper half). If one is missing, the gateway sees the proxy itself as the client: the record shows the proxy's IP, not the person's.
+1. The app's `TRUSTED_PROXIES` must include **the `edge` network and the SSR frontend's** (the two hops that chain `X-Forwarded-For`: nginx uses `proxy_add_x_forwarded_for` and the SSR forwards the browser's IP). The manifest default is **`172.20.128.0/17`**: the `ip_range` of `orpycamcp-net` (the subnet is `172.20.0.0/16`, but containers only get addresses from its upper half). If one is missing, the app sees the proxy itself as the client: the record shows the proxy's IP, not the person's.
 
-   **Why the network's gateway (`172.20.0.1`) is left out.** nginx *appends* `$remote_addr` to whatever the client sent in `X-Forwarded-For`. If `$remote_addr` ever were `172.20.0.1` (an IPv6 client served through docker-proxy, or a process on the server itself) and that IP were trusted, the API gateway would skip it and keep the entry **forged by the client**, which would end up sealed in `audit_log` and in the record (ADR-031). With the network's gateway outside the trusted range the outcome is *fail-closed*: `172.20.0.1` is recorded, never an invented IP. A guard (`test_trusted_proxies_excluye_el_gateway_de_la_red`) prevents going back to a `/16`. If you change the network's subnet in the compose file, change `TRUSTED_PROXIES` with it.
+   **Why the network's gateway (`172.20.0.1`) is left out.** nginx *appends* `$remote_addr` to whatever the client sent in `X-Forwarded-For`. If `$remote_addr` ever were `172.20.0.1` (an IPv6 client served through docker-proxy, or a process on the server itself) and that IP were trusted, the app would skip it and keep the entry **forged by the client**, which would end up sealed in `audit_log` and in the record (ADR-031). With the network's gateway outside the trusted range the outcome is *fail-closed*: `172.20.0.1` is recorded, never an invented IP. A guard (`test_trusted_proxies_excluye_el_gateway_de_la_red`) prevents going back to a `/16`. If you change the network's subnet in the compose file, change `TRUSTED_PROXIES` with it.
 
    **IPv6.** Docker delivers IPv6 clients through its docker-proxy, which hides the real IP (you would see `172.20.0.1`). To keep it, enable `"ip6tables": true` in `/etc/docker/daemon.json`; without it an IPv6 client's IP shows as `172.20.0.1` (uninformative, but it cannot be forged).
-3. With `TRUSTED_PROXIES` empty (the default) the header is ignored and the socket address is used: safe, but uninformative.
+2. With `TRUSTED_PROXIES` empty (the default) the header is ignored and the socket address is used: safe, but uninformative.
 
-   **The API gateway refuses to start if it is left that way (ARC-B4).** The production manifest sets `APP_ENV=production` and `GATEWAY_RED_DOCKER_GATEWAY=172.20.0.1` (it must equal the network's `gateway:`; a guard checks it); if `TRUSTED_PROXIES` covers that IP, startup ends with an error that explains it. If the variable is empty, the IP is derived from the container's default route. **Production only:** in development `docker-compose.yml` sets `172.16.0.0/12` (which does contain it) on purpose and is not checked.
+   **The app refuses to start if it is left that way (ARC-B4).** Its `lifespan` checks it (the api-gateway used to). The production manifest sets `APP_ENV=production` and `GATEWAY_RED_DOCKER_GATEWAY=172.20.0.1` (it must equal the network's `gateway:`; a guard checks it); if `TRUSTED_PROXIES` covers that IP, startup ends with an error that explains it. If the variable is empty, the IP is derived from the container's default route. **Production only:** in development `docker-compose.yml` sets `172.16.0.0/12` (which does contain it) on purpose and is not checked.
 
 **Important:** the IP is only reliable if the frontend is reachable **only through `edge`**. An SSR port exposed directly (in development, `19300` with `XFF_DEPTH=1`) accepts a client-forged `X-Forwarded-For` and chains it as if trusted; in production no service except `edge` publishes ports (manifest guard).
 
 If your `infra/.env` comes from an earlier version and sets `TRUSTED_PROXIES=172.20.0.0/16`, **change it** to `172.20.128.0/17` (or delete it): with the `/16` the network's gateway becomes trusted again.
 
-Without a valid signature the record says `ip=null, ip_verificada=false` and filing is **not** blocked.
+Without a usable IP the record says `ip=null, ip_verificada=false` and filing is **not** blocked.
 
 ### Each entity's data-processing policy
 
@@ -220,14 +235,28 @@ nano .env
 | `MINIO_ROOT_PASSWORD` | Object-store root password (the `MINIO_` prefix is historical, ADR-027) | `<openssl rand -base64 32>` |
 | `KEYCLOAK_HOSTNAME` | Keycloak FQDN domain | `keycloak.yourdomain.com` |
 | `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin password | `<secure password>` |
-| `KEYCLOAK_*_SECRET` | OAuth2 client secrets | `<32 char hex>` |
+| `KEYCLOAK_AUTH_SERVICE_SECRET` | Secret of the app's confidential OAuth2 client | `<32 char hex>` |
 | `FRONTEND_HOSTNAME` | Public FQDN of the SSR frontend (defines `ORIGIN` and the login `redirect_uri`) | `app.yourdomain.com` |
-| `API_PUBLIC_HOSTNAME` | Public FQDN of the api-gateway as the browser sees it | `api.yourdomain.com` |
-| `SIGNATURE_SECRET` | HMAC key for signature sealing (E06). Random, rotate it. **The service refuses to start without it** | `<openssl rand -base64 32>` |
-| `MINIO_ROOT_USER` | Object store user. **storage-service refuses to start without it** | `orpyca_prod` |
-| `KNOWLEDGE_INTERNAL_TOKEN` | Internal ingestion token (E21). Empty ⇒ ingestion is fail-closed | `<openssl rand -base64 32>` |
+| `API_PUBLIC_HOSTNAME` | Public FQDN of the API (the app, behind `edge`) as the browser sees it | `api.yourdomain.com` |
+| `SIGNATURE_SECRET` | HMAC key for signature sealing (E06). Random, rotate it. **The app refuses to start without it** | `<openssl rand -base64 32>` |
+| `MINIO_ROOT_USER` | Object store user. **The app refuses to start without it** | `orpyca_prod` |
 | `SMTP_HOST` | SMTP host | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | SMTP password or application token | `app-specific-password` |
+
+**There are no internal tokens to generate (ADR-047).** Calls between domains are function calls
+inside one process: `X-Internal-Token`, every `*_INTERNAL_TOKEN`, every `*_SERVICE_URL`,
+`IDENTITY_SIGNING_SECRET`, `AUTH_CACHE_MAC_SECRET` and `KEYCLOAK_API_GATEWAY_SECRET` are gone. If your
+`infra/.env` comes from an earlier version, delete them: nothing reads them. The other variable names
+don't change; the app reads all of them from `docuboto/config.py`.
+
+### App variables (optional)
+
+| Variable | Default | What it does |
+|---|---|---|
+| `HEAVY_JOBS_CONCURRENCY` | `1` | Slots for heavy work (veraPDF, format migration, LTA renewal, the `worker` queue of `trabajo_fuera`). They share one semaphore inside the process; raise it only if the machine has spare CPU |
+| `RATE_LIMIT_PER_USER` | `120` | Requests per person per minute (§4, rate limiting) |
+| `FORMAT_MIGRATION_ENABLED` | `true` in the manifests | Loop that migrates obsolete formats; runs in the app (it used to run in the `worker` container) |
+| `TRUSTED_PROXIES` | `172.20.128.0/17` in prod | Hops allowed to write `X-Forwarded-For` (see above); the app reads it |
 
 ### Variables that block startup when missing
 
@@ -237,26 +266,26 @@ credentials were the development ones printed in `CLAUDE.md` itself. A deploymen
 that forgot to set them **did not fail** — it started up and signed (or stored
 official attachments) with a key anyone can read on GitHub.
 
-The defaults are now empty strings **and** startup checks them: `signature-service`
-and `storage-service` refuse to serve without `SIGNATURE_SECRET`,
+The defaults are now empty strings **and** startup checks them: the app refuses to
+serve without `SIGNATURE_SECRET`,
 `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY`. Example placeholders
 (`change-me-in-production` and friends) are rejected too, in case someone copies
 `.env.example` untouched. The error message names the variable, never the value
 received.
 
-**`ALTCHA_HMAC_KEY` (C16, ADR-038) is required**: a key (≥ 32 bytes; `openssl rand -hex 32`) with which document-service signs the anti-bot challenges of the anonymous public window. The production manifest demands it (`${ALTCHA_HMAC_KEY:?}`) and the service **does not start** without it or with fewer than 32 bytes. It never reaches the browser; rotating it only invalidates live challenges (≤ `ALTCHA_TTL_SEGUNDOS`, default 300). `ALTCHA_MAXNUMBER` (100000) caps the client's cost. If Redis goes down, the window answers `503 antirrobots_no_disponible` (fail-closed: without Redis the single use of a challenge cannot be guaranteed).
+**`ALTCHA_HMAC_KEY` (C16, ADR-038) is required**: a key (≥ 32 bytes; `openssl rand -hex 32`) with which the app signs the anti-bot challenges of the anonymous public window. The production manifest demands it (`${ALTCHA_HMAC_KEY:?}`) and the app **does not start** without it or with fewer than 32 bytes. It never reaches the browser; rotating it only invalidates live challenges (≤ `ALTCHA_TTL_SEGUNDOS`, default 300). `ALTCHA_MAXNUMBER` (100000) caps the client's cost. If Redis goes down, the window answers `503 antirrobots_no_disponible` (fail-closed: without Redis the single use of a challenge cannot be guaranteed).
 
 If you use email ingestion (E19), `EMAIL_ENCRYPTION_KEY` is required: mailbox
 credentials are encrypted at rest with it. There are no `IMAP_*` variables any
 more — each mailbox is configured from `/admin/correo` and lives in
 `email_cuenta`. For automatic polling, `EMAIL_SONDEO_TENANT_SLUG` declares
-**which institution owns the mailboxes the process polls**; without it the worker
+**which institution owns the mailboxes the process polls**; without it polling
 does not start even when `EMAIL_SONDEO_ENABLED` is on.
 
 ### CORS
 
 `CORS_ALLOW_ORIGINS` is **empty by default and the middleware is not installed at
-all**. This is not a regression: the frontend talks to the gateway **from the
+all**. This is not a regression: the frontend talks to the API **from the
 server** (SSR), not from the browser, so a typical deployment needs no CORS. Only
 declare it for a third-party integration or an SPA on another domain:
 
@@ -267,7 +296,7 @@ CORS_ALLOW_ORIGINS=https://sgd.entidad.gov.co,https://portal.entidad.gov.co
 > The `*` wildcard is accepted but **disables credentials**. The previous setting
 > was `allow_origins=["*"]` **together with** `allow_credentials=True`, hardcoded:
 > with credentials Starlette cannot answer `*`, so it reflects whatever `Origin`
-> arrives — any page on the internet could call the gateway with the visitor's
+> arrives — any page on the internet could call the API with the visitor's
 > credentials.
 
 ### Audit log partitions
@@ -284,7 +313,7 @@ runs it once. Schedule it monthly:
 ```bash
 # Creates (and hardens) the next 3 months of partitions. Idempotent.
 docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
-    -v "$PWD/scripts:/scripts:ro" auth-service \
+    -v "$PWD/scripts:/scripts:ro" app \
     python /scripts/audit_partitions.py --meses 3
 
 # For monitoring: exit 0 if up to date, 1 if next month's partition is missing.
@@ -294,11 +323,11 @@ docker compose -f infra/docker-compose.prod.yml run --rm --no-deps \
 It runs several months ahead on purpose: if the cron fails silently, there is
 slack before entries start landing in the default partition again.
 
-**A cron failure is visible without reading any log.** auth-service's
+**A cron failure is visible without reading any log.** The app's
 `GET /health/ready` applies the same logic as `--verificar` (does next month's partition
 exist?) read-only and with the application role: if it is missing it answers **200** with
 `"degraded": ["audit_particiones"]` and `"audit_particiones": "degraded"` (an operations
-alert, it does not pull the service out of the balancer); if it cannot query, `unknown`
+alert, it does not pull the app out of the balancer); if it cannot query, `unknown`
 and it does not accuse. Alert on that field in the monitoring you already have.
 
 ### Daily audit-chain verification
@@ -311,7 +340,7 @@ and it does not accuse. Alert on that field in the monitoring you already have.
 # break, a regression or an unreadable anchor. Read-only.
 docker compose -f infra/docker-compose.prod.yml run --rm --no-deps -T \
     -e "DATABASE_URL=postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}" \
-    auth-service python -m app.ops.verify_audit_chains \
+    app python -m auth.ops.verify_audit_chains \
     --anclas - < /srv/orpyca/backups/anclas-auditoria.tsv
 ```
 
@@ -329,7 +358,7 @@ retention could not be read completely the seal carries `retencion_capturada_com
 and the script exits **4**; `restore.sh` refuses that backup unless
 `RESTORE_ACEPTAR_RETENCION_INCOMPLETA=1`. A previous version under live COMPLIANCE fails
 the restore unless `RESTORE_ACEPTAR_PERDIDA_VERSIONES=1`; the restore is recorded by
-`app.ops.registrar_restauracion` (`storage.restauracion` audit entry plus
+`auth.ops.registrar_restauracion` (`storage.restauracion` audit entry plus
 `preservacion_worm_objeto.version_id` update, one transaction). `restore.sh` reuses it instead of the previous heredoc.
 In development, `BACKUP_AUDIT_EXCLUIR_PREFIJOS="itest"` leaves out the disposable tenants
 the integration tests left behind (the record is append-only and cannot be deleted);
@@ -342,8 +371,8 @@ the integration tests left behind (the record is append-only and cannot be delet
 
 ### Issuer (`iss`) contract — critical
 
-The tokens' `iss` is **always the public URL** through which the browser logs in. Any
-service that validates JWTs (`auth-service`, `signature-service`) must expect exactly
+The tokens' `iss` is **always the public URL** through which the browser logs in. The
+app, which validates the JWTs, must expect exactly
 that `iss` or it will reject **every** token (fail-closed).
 
 - **Production (single host):** Keycloak runs with `--hostname-strict=true
@@ -353,13 +382,12 @@ that `iss` or it will reject **every** token (fail-closed).
   ↔ internal network `keycloak:8080`); that is why `KEYCLOAK_ISSUER` is set there with
   the realm's public URL.
 
-On startup, `auth-service` and `signature-service` log the expected `iss` and emit a
-**fail-fast WARNING** if `KEYCLOAK_URL` points at an internal Docker host without
-`KEYCLOAK_ISSUER` defined (a configuration that would reject every token). Check this
-log after deployment:
+On startup, the app emits a **fail-fast WARNING** if `KEYCLOAK_URL` points at an
+internal Docker host without `KEYCLOAK_ISSUER` defined (a configuration that would
+reject every token). After deployment, check that it doesn't appear:
 
 ```bash
-docker compose -f docker-compose.prod.yml logs auth-service | grep "issuer esperado"
+docker compose -f docker-compose.prod.yml logs app | grep "esperado sera"
 ```
 
 ### SSR frontend
@@ -390,12 +418,36 @@ docker compose exec postgres psql -U orpycamcp -c "ALTER USER orpycamcp PASSWORD
 
 # 3. Update .env and restart the services
 sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=$NEW_PASSWORD/" .env
-docker compose restart document-service tenant-service auth-service
+docker compose restart app
 ```
 
 ---
 
 ## Deployment with Docker Compose
+
+### Which containers run (ADR-047)
+
+Docuboto is **one process**: the `app` container (image `infra/Dockerfile.app`) serves the whole API,
+with the nine domain packages in the same `FastAPI`, and runs the event consumers and background
+loops (format migration, LTA renewal, `trabajo_fuera` queues) in that same process. The image carries
+JRE, veraPDF and Ghostscript for PDF/A validation. There is no `api-gateway`, no `worker` container
+(`infra/Dockerfile.worker` is gone), no `split` profile and no E2E stack.
+
+| Container | Production (`infra/docker-compose.prod.yml`) | Development (`docker-compose.yml`) |
+|---|---|---|
+| `migrate-docuboto` | yes, one-shot (`app` image) | yes, one-shot |
+| `postgres` | yes | yes (`127.0.0.1:15432`) |
+| `redis` | yes | yes (`127.0.0.1:16379`) |
+| `minio` (RustFS) | yes | yes (`19900`) |
+| `keycloak` | yes | yes (`19180`) |
+| `app` | yes | yes (`127.0.0.1:19000`) |
+| `frontend` | yes | yes (`19300`) |
+| `edge` (nginx) | yes, the only one with `ports:` | no |
+| `mailpit` | no | optional (own profile) |
+
+**ADR-047's target —four containers: `app`, `postgres`, `edge`, `frontend`— isn't reached yet.**
+Keycloak, Redis and the object store stay in the manifest until ADR-048 (own identity), ADR-049
+(events in PostgreSQL) and ADR-050 (bytes on disk) retire them.
 
 ### Using docker-compose.prod.yml
 
@@ -417,14 +469,28 @@ docker compose -f docker-compose.prod.yml up -d
 
 # 5. Check the status
 docker compose ps
-docker compose logs -f api-gateway
+docker compose logs -f app
 
-# 6. Create the first tenant (once Keycloak is up)
+# 6. Create the entity (once Keycloak is up)
 #    The script runs ON THE HOST, not inside a container, and takes its three
 #    arguments positionally: <slug> <name> <code>.
 cd ..
 COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
   ./scripts/init-tenant.sh my-institution "My Institution" MYINST
+```
+
+**One installation, one entity (ADR-047 §3).** `public.tenants` is the configuration row of the
+installation's entity: it has no lifecycle states (`status`, `provisioning_status`), there is no
+HTTP entity registry and no suspended-entity veto. The `tenant_{slug}` schema stays. Two declared
+leftovers: buckets are still named per entity (`orpycamcp-<slug>-documents`; ADR-050 retires them)
+and `init_tenant.py` still creates the Keycloak intelligence client (ADR-048 replaces it).
+
+**Personal signing certificate.** After you issue a person's certificate offline with
+`scripts/gen-user-cert.sh`, load it inside the container (there is no internal HTTP route any more):
+
+```bash
+docker compose exec -T app python -m auth.ops.activar_certificado \
+  --tenant <slug> --user-id <uuid> --cert - < user.crt
 ```
 
 ### Post-deployment verification
@@ -433,7 +499,7 @@ COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
 # Review each service's logs
 docker compose logs -f postgres      # Connection errors
 docker compose logs -f keycloak      # OIDC/realm issues
-docker compose logs -f api-gateway   # Errores de ruteo
+docker compose logs -f app           # Application errors
 
 # Try the health check (through Nginx if it is configured)
 curl -k https://keycloak.yourdomain.com/health
@@ -450,36 +516,37 @@ docker compose exec redis redis-cli -a $REDIS_PASSWORD ping
 
 #### The two probes: `/health` and `/health/ready`
 
-Every service exposes **two** routes, and they are not interchangeable:
+The app exposes **two** routes, and they are not interchangeable:
 
 | Route | Question | Checks | Consumed by |
 |---|---|---|---|
 | `/health` | Is the process answering? | Nothing | The container `healthcheck` |
-| `/health/ready` | Can it serve traffic **right now**? | Database, Redis, SMTP, event consumer | The load balancer / reverse proxy |
+| `/health/ready` | Can it serve traffic **right now**? | Decides on database and Redis; reports, without deciding, Keycloak, object store, SMTP, next month's `audit_log` partition and each event consumer with its DLQ | The load balancer / reverse proxy |
 
-`/health` **depends on nothing, deliberately**. Restarting a service because
+`/health` **depends on nothing, deliberately**. Restarting the app because
 Postgres is down does not fix Postgres: it discards in-flight work and adds a
 restart storm to an ongoing incident. `/health/ready` returns **503** when the
-service cannot work, which is the signal for the balancer to stop sending it
+app cannot work, which is the signal for the balancer to stop sending it
 requests **without restarting it**.
 
-Configure the reverse proxy to drop a service whose `/health/ready` answers 503;
+Configure the reverse proxy to drop the app when `/health/ready` answers 503;
 leave restarts to `/health`.
 
 ```bash
-# Aggregate diagnosis (gateway + its ten services)
-curl -s https://yourdomain.gov.co/health/ready | jq
+# Aggregate diagnosis (only from the edge container itself, see §4)
+docker compose exec edge wget --no-check-certificate -qO- \
+  --header "Host: $API_PUBLIC_HOSTNAME" https://127.0.0.1/health/ready
 ```
 
-In `checks.consumer`, the value `reiniciando` means the event consumer died and
-is retrying: the service answers requests, but what that consumer does —routing
+In `consumers`, the value `reiniciando` for a consumer means it died and is
+retrying: the app answers requests, but what that consumer does —routing
 incoming mail, sending email, sealing signatures, feeding the search index— **is
-not happening**. Worth investigating even while the service shows as available.
+not happening**. Worth investigating even while the app shows as available.
 
 Probes report state as a single word (`ok`, `error`, `unreachable`) and never the
 failure detail: they are reachable without authentication and the text of a
 network exception carries internal hostnames and ports. The real reason is in the
-service log.
+app log.
 
 ---
 
@@ -498,14 +565,17 @@ docker swarm join --token <TOKEN> manager-node-ip
 docker stack deploy -c docker-compose.prod.yml orpyca-mcp
 ```
 
-### Single-use identity (Redis required) and `search_path` (ADR-044)
+### Identity and `search_path` (ADR-044, ADR-047)
 
-The identity the gateway signs for each service is **single-use**: it carries a 128-bit nonce (`X-Identity-Nonce`, signature format **v3**) that the destination service claims in Redis (`SET NX EX`, key `orpycamcp:identidad:nonce:v3:{tenant}:{nonce}`, lifetime ≤ 180 s). Operational consequences:
+Identity is resolved **once per request**: `UsuarioActualMiddleware` validates the JWT, puts the person
+in `request.state` and strips the identity headers the client sends (`X-User-Id`, `X-Username`,
+`X-User-Roles`, `X-Canal`, `X-Tenant-Slug`; it resets the last one from the token's slug). With no
+network hops between domains there is no header to sign: ADR-047 retired the nonce-signed identity
+(`IDENTITY_SIGNING_SECRET`, `X-Identity-Nonce`), and with it Redis as a hard dependency of every
+authenticated request.
 
-- **Redis is a hard dependency of every request carrying a person identity.** With Redis down those requests answer `503 identidad_no_verificable` (`Retry-After: 1`); the public window, `/health`, public webhooks and internal calls without `X-User-Id` stay up. **`storage-service` now needs `REDIS_URL` too** (and `depends_on: redis`); all ten components holding `IDENTITY_SIGNING_SECRET` need it. A service with the secret and no `REDIS_URL` **refuses to start** (`lifespan.startup.failed`). Do not set `maxmemory-policy allkeys-*` on that Redis: it could evict a nonce and reopen replay (the default, `noeviction`, is correct). In production keep `--appendonly yes`; without it a Redis restart forgets up to 180 s of nonces.
-- **Atomic cut-over.** Going from v2 to v3 changes the HMAC base and there is no compatibility branch: rebuild and start the gateway and the nine services **at the same time** (`docker compose up -d --build api-gateway auth-service tenant-service document-service archive-service storage-service workflow-service notification-service signature-service knowledge-service`). If versions coexist, every authenticated request answers 401.
-- **`search_path` = the tenant only.** This change does **not** need an atomic cut-over: apply the migrations (`migrate-docuboto`), then rebuild the services. The `pg_trgm`, `unaccent`, `pgcrypto` and `vector` extensions **must live in `public`**; global migrations `document/005` and `knowledge/002` abort with a clear message otherwise. Migration `tenant-service/global/005` removes the 14 tenant tables that had landed in `public`.
-- Check on the stack: an authenticated GET through the gateway answers 200; the same request replayed straight at the service with the captured headers, 401; with `docker compose stop redis`, the authenticated GET answers 503 while `/health` and a public route answer 200.
+The `search_path` of every tenant connection is **only** the `tenant_{slug}` schema. The extensions
+(`pg_trgm`, `unaccent`) **must live in `public`**; `migrations/global/010_extensions.sql` creates them.
 
 ### Option 2: Kubernetes (not supported yet)
 
@@ -513,19 +583,19 @@ The identity the gateway signs for each service is **single-use**: it carries a 
 `kustomization`), and automatic conversion from Compose has not been tested: the `migrate-docuboto`
 containers, the `service_completed_successfully` dependencies and file-based secrets do not translate
 by themselves. The supported route is Docker Compose (Option 1) or Swarm. If you scale replicas on any
-orchestrator, **review the in-memory state first**: the api-gateway limiter counts in Redis, but the
-MCP proposals' `jti` consumption and other caches are per process.
+orchestrator, **review the in-memory state first**: the per-person quota (`RATE_LIMIT_PER_USER`), the heavy-work
+semaphore (`HEAVY_JOBS_CONCURRENCY`) and other caches are per process, and the background loops run in
+every `app` replica.
 
-### Service scalability
+### Scalability
 
-This manifest runs **one replica** of each service. One tenant and about 10
-concurrent users fit in a single instance. `deploy.replicas` is `1` on
-`api-gateway`, `document-service`, `storage-service`, and `frontend`; the rest
-were already one instance. The nine database services open `DB_POOL_MAX_SIZE=3`.
-Keycloak is capped at 1 GB.
+This manifest runs **one replica** of `app` and of `frontend`. One entity and about 10–15
+concurrent users fit in a single process. The app opens **one pool** of `DB_POOL_MAX_SIZE=10`
+connections; Keycloak, `KC_DB_POOL_MAX_SIZE=30` against the same Postgres (40 in total, plus headroom
+for migrations, backups and `psql`). Keycloak is capped at 1 GB.
 
-Raising replicas in this design (separate processes, signed identity, a pool per
-service) inflates the connection budget again and is not part of Docuboto 2.0.
+With one process you can't replicate only the slow domain (ADR-047); at the target customer's volume
+you don't need to.
 
 ---
 
@@ -548,7 +618,7 @@ service) inflates the connection budget again and is not part of Docuboto 2.0.
 ENV_FILE=infra/.env BACKUP_DIR=/srv/orpyca/backups ./infra/backup.sh
 ```
 
-Dumps PostgreSQL (every schema: `public`, holding the tenant registry and the
+Dumps PostgreSQL (every schema: `public`, holding the entity's row and the
 `audit_log`, plus one `tenant_*` per institution) and mirrors the object store. Three
 guarantees worth knowing because they change how you operate it:
 
@@ -660,7 +730,7 @@ stopping services and before `pg_restore`** (pre-flight) it creates or checks ea
 with `get-object-lock-configuration` and requires `Enabled`; if not (the bucket existed without it and
 that cannot be enabled afterwards), it **aborts with nothing stopped or restored**: "no data has been
 touched" is true. `backup.sh` no longer swallows a failure while listing
-buckets: it requires the mirror to contain `orpycamcp-<slug>-documents` for every tenant that has not been decommissioned (`active` and `suspended`);
+buckets: it requires the mirror to contain `orpycamcp-<slug>-documents` for every entity registered in `public.tenants`;
 with the object store unresponsive or the wrong network the backup **fails** instead of finishing
 "successfully" with an empty mirror. Both scripts take the network of the `minio` service and use
 `amazon/aws-cli` by tag and digest (`S3_CLI_IMAGEN` overrides it).
@@ -761,17 +831,17 @@ scaling replicas is safe. To watch them run by hand **before** starting:
 
 **Development.** `docker-compose.yml` does the same: `docker compose up -d --build` builds the images, runs
 `migrate-docuboto`, and only then starts each service. The migrator reuses the `orpycamcp/app:dev` image
-(`pull_policy: never`, no `build:` of its own). To recreate **one** service with a new image (the `--no-deps`
+(`pull_policy: never`, no `build:` of its own). To recreate the app with a new image (the `--no-deps`
 form skips the migrator on purpose):
 
 ```bash
-docker compose build app <svc>-service \
+docker compose build app \
   && docker compose run --rm --no-deps migrate-docuboto \
-  && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose up -d --no-build --no-deps <svc>-service
+  && DB_APP_USER=orpycamcp DB_APP_PASSWORD=orpycamcp docker compose up -d --no-build --no-deps app
 ```
 
-If the migrator fails, the `&&` doesn't recreate the service. Recreating with the **same** image
-(`up -d --no-build --no-deps <svc>-service`) needs no migration: the migrator already applied it.
+If the migrator fails, the `&&` doesn't recreate the app. Recreating with the **same** image
+(`up -d --no-build --no-deps app`) needs no migration: the migrator already applied it.
 
 ### Deploy
 
@@ -877,30 +947,29 @@ kibana:
 
 ### Metrics with Prometheus
 
-Five services expose `GET /metrics` (text format 0.0.4) on their **own port**: `auth-service:8001`,
-`archive-service:8004`, `workflow-service:8006`, `notification-service:8007` and
-`signature-service:8008`. The gateway, tenant, document, storage, knowledge and mcp do not expose it. The exporter is
+The app exposes **one** `GET /metrics` (text format 0.0.4) on its internal port, `app:8000`
+(ADR-047: there used to be five, one per service). The exporter is
 in-house (`orpycamcp_common.metricas`, ADR-041): no `prometheus_client`, **no tenant or identity label**, and lazy
 measurement (cache of `METRICS_TTL_SECONDS`, 30 s by default, 10 s deadline).
 
-| Family | Service | Meaning |
+| Family | Signal | Meaning |
 |---|---|---|
-| `orpycamcp_signal_measured{signal}` | all five | `1` = the last measurement was complete in every tenant; `0` = **not verified** |
-| `orpycamcp_signal_last_success_timestamp_seconds{signal}` | all five | epoch of the last complete measurement |
-| `orpycamcp_dlq_pending_events` | workflow, signature, notification | pending events in the service's own dead-letter group |
+| `orpycamcp_signal_measured{signal}` | all | `1` = the last measurement was complete in every tenant; `0` = **not verified** |
+| `orpycamcp_signal_last_success_timestamp_seconds{signal}` | all | epoch of the last complete measurement |
+| `orpycamcp_dlq_pending_events` | `dlq` | pending events in the workflow, signature and notification dead-letter groups |
 | `orpycamcp_dlq_oldest_pending_timestamp_seconds` | same | oldest pending event (absent if none) |
-| `orpycamcp_worm_exhausted_artifacts{artifact,phase}` | archive | WORM artifacts whose retry was exhausted |
-| `orpycamcp_audit_chain_breaks`, `_declared_breaks`, `_verification_ok`, `_last_verification_timestamp_seconds` | auth | last **complete** `verify_audit_chains` run |
+| `orpycamcp_worm_exhausted_artifacts{artifact,phase}` | `worm` | WORM artifacts whose retry was exhausted |
+| `orpycamcp_audit_chain_breaks`, `_declared_breaks`, `_verification_ok`, `_last_verification_timestamp_seconds` | `audit_chain` | last **complete** `verify_audit_chains` run |
+| `orpycamcp_intelligence_sends`, `_barrier_denials`, `_fallbacks`, `_suspensions` | `intelligence` | sends and denials of the intelligence gateway |
 
 **"Not verified" is not 0.** If a signal's measurement fails in any tenant, `orpycamcp_signal_measured{signal="…"} 0`
 is emitted and **no value series** of that signal is; never a partial sum. An `orpycamcp_dlq_pending_events 0` with
 `signal_measured 1` is a measured zero. With replicas, each reports the same database state: aggregate with `max()`,
 not `sum()`.
 
-**How it is protected.** The gateway does not route `/metrics` (it only forwards `/api/v1/`), the service answers
-**404** to any request carrying `X-Forwarded-For`, `Forwarded` or `X-Real-IP` (Prometheus does not send them; nginx and
-the gateway do), and the production nginx answers 404 to `/metrics` on the API host. In production the services publish
-no `ports:`: Prometheus must join `orpycamcp-net` and scrape by service DNS name. **Prometheus is not part of this
+**How it is protected.** The app answers **404** to any `/metrics` request carrying `X-Forwarded-For`, `Forwarded`
+or `X-Real-IP` (Prometheus does not send them; nginx does), and the production nginx answers 404 to `/metrics` on the
+API host. In production the app publishes no `ports:`: Prometheus must join `orpycamcp-net` and scrape `app:8000`. **Prometheus is not part of this
 version's manifest**; if you deploy it, pin its image by tag **and digest** (`docker buildx imagetools inspect
 <image>:<tag>`; never `:latest`) and publish no `ports:` for Prometheus or Grafana: reach them through a tunnel or an
 authenticated internal proxy, not by opening the port to the outside.
@@ -913,15 +982,11 @@ scrape_configs:
     scrape_interval: 60s
     static_configs:
       - targets:
-          - auth-service:8001
-          - archive-service:8004
-          - workflow-service:8006
-          - notification-service:8007
-          - signature-service:8008
+          - app:8000
 ```
 
 **The audit chain is measured by the last job, not by the scrape.** `orpycamcp_audit_chain_*` comes from
-`public.audit_chain_runs`, where `python -m app.ops.verify_audit_chains` records one row per run (`backup.sh` invokes
+`public.audit_chain_runs`, where `python -m auth.ops.verify_audit_chains` records one row per run (`backup.sh` invokes
 it with `--origen backup` and `restore.sh` with `--origen restore`). A run narrowed with `--slug` or
 `--excluir-prefijo` is recorded as **partial** and does not count. To have a signal even without a backup, schedule a
 daily cron from the host (without mounting the repo writable):
@@ -929,7 +994,7 @@ daily cron from the host (without mounting the repo writable):
 ```bash
 # /etc/cron.d/orpyca-verify-audit
 30 3 * * * orpyca cd /srv/orpyca && docker compose -f infra/docker-compose.prod.yml run --rm --no-deps -T \
-  auth-service python -m app.ops.verify_audit_chains --anclas - --origen cron < /srv/orpyca/backups/anclas-auditoria.tsv
+  app python -m auth.ops.verify_audit_chains --anclas - --origen cron < /srv/orpyca/backups/anclas-auditoria.tsv
 ```
 
 (No `--emitir-ancla`: the cron only verifies and records; anchoring stays with `backup.sh`.)
@@ -997,7 +1062,7 @@ Configure alerts for:
 - [ ] CORS configured restrictively
 - [ ] Audit logging enabled in PostgreSQL and Keycloak
 - [ ] Daily backup with recovery testing
-- [ ] Rate limiting enabled on api-gateway
+- [ ] Per-IP rate limiting in `edge` (`limit_req`) and `RATE_LIMIT_PER_USER` in the app
 - [ ] Security headers (HSTS, X-Content-Type-Options, etc.)
 
 ### Security headers in Nginx

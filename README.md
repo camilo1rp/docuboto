@@ -14,15 +14,15 @@ Upstream: https://gitlab.com/orpyca/orfeo_mcp
 ```bash
 cd docuboto
 docker compose up -d
-docker compose logs -f api-gateway
+docker compose logs -f app
 ```
 
 **Dev entry points** (same ports as OrpycaMCP; credentials still use the upstream `orpycamcp_*` defaults until you change `.env`):
 
 | Surface | URL | Dev credentials |
 |---|---|---|
-| API Gateway | http://localhost:19080 | — |
-| API Docs | http://localhost:19080/docs | — |
+| App (API) | http://localhost:19000 | — |
+| API Docs | http://localhost:19000/docs | — |
 | Keycloak Admin | http://localhost:19180/admin | `admin` / `orpycamcp_dev` |
 | Object store | http://localhost:19900 | `orpycamcp` / `orpycamcp_dev` |
 | PostgreSQL | `localhost:15432` | `orpycamcp` / `orpycamcp` (db `orpycamcp_db`) |

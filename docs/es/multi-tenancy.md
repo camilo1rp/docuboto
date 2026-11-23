@@ -12,9 +12,9 @@ Cada institución (tenant) tiene su propio schema de base de datos (`tenant_{slu
 
 ## ¿Cómo agregar una institución?
 
-El alta es una **operación de plataforma**, no de aplicación: `/api/v1/tenants` **no se expone por el
-api-gateway, a propósito** (cualquier usuario autenticado de una entidad podría enumerar y escribir
-el registro de las demás; hallazgo crítico 2026-07). La hace `scripts/init_tenant.py` (que
+Una instalación sirve a **una entidad** (ADR-047 §3); el schema por entidad se conserva porque cuesta
+una sentencia por conexión y deja abierta la opción de alojar varias. El alta es una **operación de
+plataforma**, no de aplicación: no hay ruta HTTP para ella. La hace `scripts/init_tenant.py` (que
 `scripts/init-tenant.sh` ejecuta en un contenedor, con el rol propietario de la base):
 
 ```bash
@@ -25,23 +25,22 @@ Esto:
 1. Valida el slug (`^[a-z0-9-]+$`: minúsculas, dígitos y **guion**, sin guion bajo) y lo registra en `public.tenants`
 2. Crea el schema `tenant_gobernacion_caldas` (el guion pasa a guion bajo) y el `GRANT USAGE` del rol de aplicación
 3. Aplica la cadena de migraciones de `services/docuboto/migrations/` (`global/` a `public`, `tenant/` al esquema nuevo) y la anota en el libro `public.schema_migrations` (ADR-053)
-4. Pasa la entidad de `provisioning_status='pending'` a `active`
 
-`POST /tenants` del tenant-service (interno, sin ruta en el gateway) solo registra la fila `pending` y deja
-su asiento en `audit_log`: el servicio opera con el rol de aplicación y **no ejecuta DDL**. Tampoco toca el
-almacén de objetos: los buckets (`orpycamcp-{slug}-documents`, y los de preservación) los crea el
-storage-service la primera vez que los necesita.
+La app opera con el rol de aplicación y **no ejecuta DDL**. Los buckets (`orpycamcp-{slug}-documents`,
+y los de preservación) los crea el paquete `storage` la primera vez que los necesita; ADR-050 retira el
+almacén de objetos.
 
 ## ¿Qué puede salir mal?
 
 - **Slug duplicado**: el sistema devuelve `409 Conflict`
 - **Slug no válido** (mayúsculas, guion bajo, guion inicial, menos de 2 o más de 54 caracteres; el mismo validador que todos los servicios, `orpycamcp_common.tenant`): `422`; el schema se llama `tenant_{slug}` y PostgreSQL trunca los identificadores a 63 bytes sin avisar
 - **Schema ya existe**: el provisioning es idempotente, no falla
-- **Migración fallida**: la entidad queda en `pending` y no atiende peticiones hasta que la provisión termine
+- **Migración fallida**: sin schema la entidad responde `503 tenant_no_provisionado` hasta que la provisión termine
 
 ## ¿Cómo funciona el aislamiento en cada request?
 
-El gateway valida el JWT (claim `tenant_slug`) y reenvía el tenant al servicio. La dependencia
+`UsuarioActualMiddleware` valida el JWT una vez por petición y deja el slug (claim `tenant_slug`) en
+`request.state`; un `X-Tenant-Slug` que mande el cliente se borra. La dependencia
 `get_tenant_conn` **valida el slug con `orpycamcp_common.tenant` (un solo validador: `^[a-z0-9][a-z0-9-]{1,53}$`, falla cerrado con `400 invalid_tenant`), lo
 convierte en nombre de schema y lo entrecomilla** antes de fijar el `search_path` en una conexión
 `asyncpg`; el nombre de un schema no admite `$1`, así que la validación es lo que impide la inyección:
@@ -67,21 +66,12 @@ validar ni sin comillas en un `SET search_path`.
 El stream **no lleva el slug**: es uno por servicio, y la entidad viaja dentro del sobre firmado del
 evento (ADR-010).
 
-<!-- TODO: translate to English -->
-
 ## Estado de la entidad
 
-Una entidad solo se atiende si está **operativa**: `public.tenants.status = 'active'`,
-`provisioning_status = 'active'` y su schema existe. El api-gateway lo hace cumplir con el
-`tenant_estado` de `/auth/validate` (la suspensión surte efecto en ≤ 15 s, el TTL de la caché de
-validación), y cada `get_tenant_conn` lo vuelve a comprobar antes de fijar el `search_path`. Las
-rutas públicas responden el mismo `404` a una entidad inexistente, dada de baja o sin aprovisionar; una entidad **suspendida** conserva las lecturas públicas (verificación, OAI, CMIS, publicidad de la eliminación) y sus escrituras responden `503 canal_no_disponible`.
-**Excepción de conservación (B10, ADR-035 §8):** la suspensión detiene la operación, no la obligación
-de conservar. storage-service admite para una entidad `suspended` (nunca `inactive`) solo las rutas
-internas de la lista explícita `RUTAS_DE_CONSERVACION` (`app/core/conservacion.py`) con
-`X-Internal-Token` válido, y asienta cada admisión (`entidad.conservacion_admitida`); las fases de
-conservación de archive-service (retención WORM, fixity) y el job de renovación LTA de signature-service
-recorren entidades `active` y `suspended`; el empaquetado de un AIP nuevo espera a la reactivación
-(necesita los anexos, que document-service veta), mientras la retención del AIP existente sigue.
-Todo lo demás sigue vetado.
+Sin estados de ciclo de vida (ADR-047 §3): `public.tenants` es la fila de configuración de la
+entidad. Se atiende si existe su fila y su schema; si falta la fila, `403 tenant_inactivo`, y si falta
+el schema, `503 tenant_no_provisionado`. `get_tenant_conn` y `get_vetted_conn`
+(`orpycamcp_common.database`) lo comprueban antes de ceder la conexión. Las rutas públicas responden
+el mismo `404` a una entidad inexistente o sin schema. Ya no hay entidad suspendida ni excepciones de
+conservación.
 Detalle y alternativas en [ADR-035](adr/ADR-035-estado-de-la-entidad-cumplimiento-en-el-borde.md).
