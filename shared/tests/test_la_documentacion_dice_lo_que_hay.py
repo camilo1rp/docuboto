@@ -138,6 +138,7 @@ def test_la_cabecera_del_roadmap_tiene_fecha_igual_en_los_dos_idiomas() -> None:
 #: Páginas de `docs/es/` que a propósito no tienen versión inglesa, con su motivo.
 _SOLO_EN_ESPANOL: dict[str, str] = {
     "adr/": "las decisiones de arquitectura se escriben y se razonan en español",
+    "cr/": "solicitudes de cambio internas para una instalación concreta",
     "historia/": "archivo de las cadenas de migraciones anteriores a ADR-053; no se ejecuta",
     "plan-brechas-silvania.md": "plan interno de backend para las brechas de operación de Silvania",
     "plan-pruebas.md": "plan de pruebas del proyecto, de uso interno",
