@@ -9,8 +9,7 @@ public access (PQRSD, Ley 1712), and an optional outbound gateway to an intellig
 
 It is a fork of [OrpycaMCP](https://gitlab.com/orpyca/orfeo_mcp) (AGPL-3.0). Internal
 identifiers still use the upstream prefix: the shared library is `orpycamcp_common`, Redis
-streams are `orpycamcp.*`, the Docker network is `orpycamcp-net`, the Keycloak realm is
-`orpycamcp`. Treat `orpycamcp` as "the system" when you read the code.
+streams are `orpycamcp.*`, the Docker network is `orpycamcp-net`. Treat `orpycamcp` as "the system" when you read the code.
 
 This document is the map. The reasoning behind each decision lives in the ADRs under
 [`docs/es/adr/`](docs/es/adr/) (Spanish) and the indexes in [`docs/en/adrs.md`](docs/en/adrs.md).
@@ -46,18 +45,15 @@ graph TB
         PG[("PostgreSQL 15<br/>one DB, schema per tenant")]
         RD[("Redis<br/>Streams · cache")]
         S3[("RustFS (S3)<br/>Object Lock / WORM")]
-        KC["Keycloak (OIDC)"]
     end
 
     Browser --> NGINX --> FE
     NGINX --> MW
-    NGINX --> KC
     FE -->|server-side fetch, Bearer JWT| MW
     DOM -.->|"ingest · query (only with PPI_PROVIDER_URL)"| PPI
     DOM & BG <-->|events| RD
     DOM & BG --> PG
     DOM --> S3
-    DOM --> KC
 ```
 
 | Layer | Technology |
@@ -67,12 +63,12 @@ graph TB
 | Database | PostgreSQL 15, one database, one schema per tenant (no pgvector) |
 | Messaging | Redis Streams with consumer groups (until ADR-049) |
 | Object storage | RustFS (S3-compatible), Object Lock for preservation (ADR-027, ADR-023; until ADR-050) |
-| Identity | Keycloak (OIDC, Authorization Code + PKCE; until ADR-048), TOTP 2FA in the `auth` package |
+| Identity | Issued by the app (ADR-048): argon2id passwords, ES256 JWTs with a published JWKS, OIDC discovery and `client_credentials` for service accounts; TOTP 2FA in the `auth` package as a signing step-up |
 | Intelligence | None in-process (ADR-046). Optional external provider over PPI v1.4.0, off by default (ADR-045, ADR-051) |
 | Packaging | Docker Compose (dev and production), GitHub Actions |
 
-ADR-047 targets four containers (`app`, `postgres`, `edge`, `frontend`). Keycloak, Redis, and
-the object store are still in the manifests until ADR-048, ADR-049, and ADR-050 remove them.
+ADR-047 targets four containers (`app`, `postgres`, `edge`, `frontend`). Keycloak is gone
+(ADR-048); Redis and the object store are still in the manifests until ADR-049 and ADR-050 remove them.
 
 ---
 
@@ -92,7 +88,7 @@ docuboto/
 │   ├── orpycamcp_common/     # Cross-cutting library installed in the image (§6)
 │   └── tests/                # Repo-wide architecture guard tests (§11)
 ├── frontend/                 # SvelteKit app, unit tests (vitest), e2e (Playwright)
-├── infra/                    # Dockerfile.app, production compose, nginx edge, Keycloak realms, backup/restore
+├── infra/                    # Dockerfile.app, production compose, nginx edge, backup/restore
 ├── scripts/                  # Tenant provisioning, seeds, test-app/lint/ci-local, dev PKI, preflight checks
 ├── contracts/ppi/            # PPI contract, one frozen directory per version (v1.4.0)
 ├── docs/{es,en}/             # MkDocs site (Spanish is primary), ADRs in docs/es/adr/
@@ -109,7 +105,7 @@ docuboto/
 | Module | Role |
 |---|---|
 | `main.py` | `create_app()`: the only place that defines middleware and exception handlers; mounts every package's `DOMAIN_ROUTERS` plus `/health` and `/metrics`. |
-| `config.py` | `pydantic-settings`: `CommonSettings` (database, pool, Redis, Keycloak, log level) and one `Settings` class per domain (`docuboto.config.archive`, …). Environment variable names are unchanged and carry no prefix. |
+| `config.py` | `pydantic-settings`: `CommonSettings` (database, pool, Redis, log level) and one `Settings` class per domain (`docuboto.config.archive`, …). Environment variable names are unchanged and carry no prefix. |
 | `core/lifespan.py` | Opens the single database pool and starts the background tasks. |
 | `core/tasks.py` | `BackgroundTasks` group for event consumers, LTA renewal, format migration, and the `trabajo_fuera` queues (`app` light; `worker` heavy, a name kept in the schema). Heavy work takes a slot from `heavy_slot()`, a semaphore of `HEAVY_JOBS_CONCURRENCY` (default 1). |
 | `core/security.py` | `SecurityHeadersMiddleware` (`X-Request-Id`, `nosniff`, `DENY`, `no-referrer`) and `UserRateLimitMiddleware` (per-person quota, `RATE_LIMIT_PER_USER`, default 120/min, `429` with `Retry-After: 60`). |
@@ -120,7 +116,7 @@ Each domain package owns one bounded context. Its `main.py` only exports `DOMAIN
 
 | Package | Owns |
 |---|---|
-| `auth` | Keycloak integration and token validation, user provisioning, RBAC (roles, permissions, CRUD levels), security clearance, TOTP, personal signing-key custody, `audit_log` queries. |
+| `auth` | Identity issuer (login, rotating refresh sessions, ES256 JWTs, JWKS, `client_credentials`; ADR-048), RBAC (roles, permissions, CRUD levels), security clearance, TOTP, personal signing-key custody, `audit_log` queries. |
 | `tenant` | The installation's entity configuration, *dependencias* (org units), catalogs, business-day calendar, PINAR. |
 | `document` | The registration core: incoming/outgoing/internal *radicados*, attachments, replies, drafts, annulment, declassification, third parties, search (PostgreSQL FTS) and reports, public counter (PQRSD, ALTCHA), email intake (IMAP/OAuth), postal dispatch, import/export packages, OAI-PMH, CMIS. |
 | `archive` | *Expedientes*, TRD/TVD and classification chart, electronic index (signed XML), physical archive (locations, units, loans), transfers + FUID, disposal (*eliminación*), legal holds. |
@@ -217,25 +213,25 @@ graph LR
   states (`status`, `provisioning_status` were removed with ADR-047): no suspended-entity veto,
   no conservation exemptions.
 - The entity is provisioned with `scripts/init-tenant.sh` / `scripts/init_tenant.py`, which
-  apply the tenant migrations to the new schema. The per-tenant buckets and the Keycloak
-  intelligence client it creates stay until ADR-050 and ADR-048.
+  apply the tenant migrations to the new schema and register the intelligence service account
+  in `public.auth_service_accounts`. The per-tenant buckets stay until ADR-050.
 
-### 5.2 Authentication and identity (ADR-013, ADR-036, ADR-047)
+### 5.2 Authentication and identity (ADR-013, ADR-036, ADR-047, ADR-048)
 
 ```mermaid
 sequenceDiagram
     participant U as Browser
     participant FE as frontend (SSR)
-    participant KC as Keycloak
     participant MW as app — UsuarioActualMiddleware
     participant R as router (domain package)
 
-    U->>KC: Authorization Code + PKCE
-    KC-->>FE: tokens (stored in httpOnly cookies)
+    U->>FE: username + password (login form)
+    FE->>MW: POST /api/v1/auth/login
+    MW-->>FE: ES256 access JWT + opaque rotating refresh (stored in httpOnly cookies)
     U->>FE: page request
     FE->>MW: Authorization: Bearer <JWT>
     MW->>MW: drop client X-User-Id, X-Username, X-User-Roles, X-Canal, X-Tenant-Slug
-    MW->>MW: validate the JWT in-process (auth package); put the caller in request.state;<br/>re-set X-Tenant-Slug from the token
+    MW->>MW: verify the JWT with the app's own keys (iss, aud, ES256); put the caller in request.state;<br/>re-set X-Tenant-Slug from the token
     MW->>R: request
     R->>R: resolve permission + clearance in tenant DB
 ```
@@ -246,7 +242,14 @@ Key points:
   resolves the caller once and leaves it in `request.state`; no package resolves it again.
   Identity headers a client sends are discarded. The nonce-signed identity headers, the
   internal tokens, and the gateway's validation cache are gone: without network hops there's
-  nothing to sign.
+  nothing to sign. The token's `sub` is `auth_users.id`, so verifying it needs no database
+  lookup beyond the cached public keys.
+- **The app is the issuer** (ADR-048). People log in with argon2id passwords (12-character
+  minimum, history of 5, lockout after 5 failures); the refresh token rotates on every use and
+  reuse revokes the whole session. Signing keys live in `public.auth_jwt_keys` and rotate with an
+  overlap window. Per-entity service accounts (`public.auth_service_accounts`) get tokens through
+  `POST /oauth/token`; the PPI gateway mints its own in-process. The PPI provider verifies them
+  against `/.well-known/jwks.json`.
 - **Permissions and clearance are resolved against the database** on every request and
   deliberately **not cached**, so a revoked permission takes effect on the next call. The
   gates live once, in `orpycamcp_common.clearance` (`require_permission`,
@@ -342,7 +345,7 @@ database trigger rejects `UPDATE`/`DELETE`, and the application role only has
 ### 5.8 Observability
 
 - `/health` is liveness only (never touches dependencies); `/health/ready` checks
-  the database and Redis and returns 503 when the app can't serve; Keycloak, the object store,
+  the database and Redis and returns 503 when the app can't serve; the object store,
   SMTP, next month's `audit_log` partition, and each supervised consumer are reported without
   deciding (`orpycamcp_common.health`).
 - `SecurityHeadersMiddleware` generates `X-Request-Id`; the app logs it in one JSON line per request
@@ -457,12 +460,12 @@ Domain vocabulary (radicado, expediente, TRD, FUID, PINAR, …) is defined in
 ## 10. Deployment
 
 - **Development** — `docker compose up -d` from the repo root starts `migrate-docuboto`
-  (one-shot), `postgres`, `redis`, `minio` (RustFS), `keycloak`, `app` (host port 19000), and
+  (one-shot), `postgres`, `redis`, `minio` (RustFS), `app` (host port 19000), and
   `frontend` (19300) on `orpycamcp-net`. Mailpit (`--profile dev`) captures email.
 - **Production** — `infra/docker-compose.prod.yml` runs the same containers without Mailpit,
   plus `edge` (nginx from [`infra/nginx/orpyca.conf.template`](infra/nginx/orpyca.conf.template)),
   which terminates TLS, applies the per-IP rate limits (`limit_req`), and routes by hostname to
-  the frontend, the app, and Keycloak's realm paths. Only the edge is published. The `app`
+  the frontend and the app (which also serves the OIDC issuer). Only the edge is published. The `app`
   image (`infra/Dockerfile.app`) carries the JRE, veraPDF, and Ghostscript for preservation.
   Required secrets are enforced with `${VAR:?}` and checked by `scripts/preflight-prod.sh`.
   Backups and restores (`infra/backup.sh`, `infra/restore.sh`) are fail-closed and respect

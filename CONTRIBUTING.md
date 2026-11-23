@@ -33,7 +33,7 @@ docker compose exec document-service pytest tests/ -v
 1. **Branch naming**: Feature branches use kebab-case prefixed with the service/area:
    ```
    document/radicacion-validation
-   auth/keycloak-realm-sync
+   auth/password-policy
    infra/docker-registry-setup
    ```
 
@@ -102,7 +102,7 @@ Or use the unified script:
 - One test file per router: `tests/test_<resource>.py`
 - Use `conftest.py` for shared fixtures (mock clients, test data)
 - Async tests require `@pytest.mark.asyncio` and `pytest-asyncio` plugin
-- Mock external services (Keycloak, MinIO, SMTP) — no external dependencies in tests
+- Mock external services (object store, SMTP) — no external dependencies in tests
 
 ## Code Standards
 

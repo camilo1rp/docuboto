@@ -63,7 +63,6 @@ la app.
 |---|---|---|
 | API de la app (docs) | http://localhost:19000/docs | — |
 | Frontend (SvelteKit) | http://localhost:19300 | — |
-| Keycloak Admin | http://localhost:19180/admin | admin / orpycamcp_dev |
 | Almacén de objetos (API S3) | http://localhost:19900 | orpycamcp / orpycamcp_dev |
 
 > El almacén de objetos es **RustFS** desde el ADR-027 (MinIO archivó su proyecto libre y
@@ -77,7 +76,7 @@ la app.
 
 ```bash
 # 1. Obtener token de acceso (contra la app, puerto 19000)
-TOKEN=$(curl -s -X POST 'http://localhost:19000/api/v1/auth/token' \
+TOKEN=$(curl -s -X POST 'http://localhost:19000/api/v1/auth/login' \
   -H 'Content-Type: application/json' \
   -d '{"username": "operador", "password": "orpycamcp_dev", "tenant_slug": "demo"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
@@ -320,10 +319,12 @@ Si el navegador ya tiene una sesión activa, `/` **redirige automáticamente (30
 `/dashboard`**: un usuario autenticado nunca ve la landing. Para volver a verla, cerrar
 sesión desde el menú de usuario.
 
-Desde la landing, «Iniciar sesión» lleva a `/login`, que arranca el flujo OAuth2
-Authorization Code + PKCE contra Keycloak (el intercambio del código y la custodia del
-token ocurren **server-side**; el JWT vive en una cookie `httpOnly` y nunca es visible al
-JavaScript del navegador).
+Desde la landing, «Iniciar sesión» lleva a `/login`, un formulario propio de usuario y
+contraseña: lo envía el SSR a `POST /api/v1/auth/login` (ADR-048) y la custodia del token
+ocurre **server-side**; el JWT vive en una cookie `httpOnly` y nunca es visible al
+JavaScript del navegador. Las personas de la entidad demo (`operador`, `jefe`, `secretaria`,
+`archivista`, `consulta`, `e2e1..3`) las crea `scripts/seed_demo.py` con la clave
+`orpycamcp_dev`.
 
 ### 2. El panel personal (`/dashboard`)
 

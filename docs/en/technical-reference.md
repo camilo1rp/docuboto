@@ -10,7 +10,7 @@ This is the map of what Docuboto already does and how it is built, so tech leads
 - **Tech leads**: read Architecture and Core modules to find the owning service of any change, then How to plan new work.
 - **Deeper reasons** behind each decision live in the ADRs under `docs/es/adr/` (Spanish). References like ADR-035 point there.
 
-Naming note: internal identifiers still use the upstream prefix `orpycamcp` (shared library `orpycamcp_common`, Redis streams `orpycamcp.*`, Keycloak realm `orpycamcp`). Read `orpycamcp` as "the system".
+Naming note: internal identifiers still use the upstream prefix `orpycamcp` (shared library `orpycamcp_common`, Redis streams `orpycamcp.*`). Read `orpycamcp` as "the system".
 
 ## System overview
 
@@ -27,7 +27,7 @@ It is a fork of [OrpycaMCP](https://gitlab.com/orpyca/orfeo_mcp) under AGPL-3.0.
 | Database | PostgreSQL 15, one database, one schema per tenant |
 | Messaging | Redis Streams with consumer groups and a transactional outbox |
 | Object storage | RustFS (S3-compatible) with Object Lock / WORM for preservation |
-| Identity | Keycloak (OIDC, Authorization Code + PKCE), TOTP 2FA in auth-service |
+| Identity | Issued by the app (ADR-048): argon2id, ES256 JWTs, JWKS, OIDC discovery and `client_credentials`; TOTP 2FA as a signing step-up |
 | Intelligence | No in-process models (ADR-046). knowledge-service answers from document-service FTS, or delegates to a provider over PPI v1.4.0 when the tenant is on `ppi` (ADR-051). No MCP layer, no generation route |
 | Packaging and CI | Docker Compose (dev and prod), GitLab CI, MkDocs bilingual docs |
 
@@ -56,7 +56,7 @@ The four largest areas (archive, frontend, document, signature) hold about two t
 
 ### Environments
 
-- **Development**: `docker compose up -d` from the repo root. Host ports in the 19xxx range (gateway on 19080, API docs on `/docs`, Keycloak admin on 19180). Mailpit captures email.
+- **Development**: `docker compose up -d` from the repo root. Host ports in the 19xxx range (gateway on 19080, API docs on `/docs`). Mailpit captures email.
 - **Production**: `infra/docker-compose.prod.yml` adds an nginx `edge` container that terminates TLS and routes by hostname; only the edge is published. `scripts/preflight-prod.sh` checks required secrets. Backup and restore scripts in `infra/` are fail-closed and respect Object Lock retention.
 - **New tenant**: `scripts/init-tenant.sh` / `scripts/init_tenant.py` create the schema and run every service's tenant migrations.
 
@@ -69,7 +69,6 @@ graph TB
     Browser["Browser"]
     EDGE["edge (nginx)<br/>TLS, host routing, per-IP rate limit"]
     FE["frontend (SvelteKit SSR)<br/>BFF, tokens in httpOnly cookies"]
-    KC["Keycloak<br/>OIDC login with PKCE (until ADR-048)"]
 
     subgraph app["app — one FastAPI process (services/docuboto)"]
         MW["middleware<br/>request id, caller from JWT, per-user quota"]
@@ -91,7 +90,6 @@ graph TB
 
     Browser --> EDGE
     EDGE --> FE
-    EDGE --> KC
     EDGE -->|API clients| MW
     FE -->|Bearer JWT| MW
     KNO -.->|"PPI v1.4.0, only with PPI_PROVIDER_URL"| PPI["Intelligence provider (optional)"]
@@ -195,7 +193,7 @@ Per-IP limits (general, login, anonymous filing, OAI/CMIS harvesting) live in `e
 
 ### auth-service
 
-Authentication facade over Keycloak plus RBAC, user-role-dependency assignments (URD), security clearance, TOTP 2FA, custody of personal signing keys and the global audit log. 102 Python files, 41 test files.
+The identity issuer (login, rotating sessions, ES256 JWTs, JWKS, service accounts; ADR-048) plus RBAC, user-role-dependency assignments (URD), security clearance, TOTP 2FA, custody of personal signing keys and the global audit log. 102 Python files, 41 test files.
 
 | Router | Prefix | Capabilities |
 | --- | --- | --- |
@@ -434,13 +432,13 @@ SvelteKit 2 on Svelte 4 with Bulma, server-rendered, acting as backend-for-front
 
 | Area | Screens (`src/routes`) |
 | --- | --- |
-| Public `(public)` | `/` landing, `/login` (Keycloak PKCE), `/radicacion` (citizen PQRSD with ALTCHA), `/consulta` (status check), `/eliminacion` (published disposal inventories), `/indice-clasificados` |
+| Public `(public)` | `/` landing, `/login` (the app's own login form), `/radicacion` (citizen PQRSD with ALTCHA), `/consulta` (status check), `/eliminacion` (published disposal inventories), `/indice-clasificados` |
 | Operations `(app)` | `/dashboard`, `/radicar`, `/bandeja` (inbox and workflow), `/borradores` (drafts, rich editor), `/firmas`, `/anulaciones`, `/desclasificaciones`, `/envios`, `/correo`, `/busqueda`, `/reportes`, `/perfil` (2FA, signing key) |
 | Archive `(app)` | `/expedientes`, `/expedientes/[id]` (index, disposition, publication), `/transferencias`, `/archivo-fisico` |
 | Knowledge (gated) | Search / antecedentes tabs appear only when the entity flag and `PERM_CONOCIMIENTO` allow it; there is no «Preguntar» panel and no «Sugerir con antecedentes» button (ADR-051) |
 | Admin `(app)/admin` | `usuarios`, `grupos`, `auditoria`, `seguridad/claves`, `dependencias`, `trd`, `tvd`, `eliminacion`, `preservacion`, `pinar`, `metadatos`, `plantillas`, `catalogos`, `parametros` (includes the knowledge flag card), `flujos/reglas`, `flujos/reasignacion`, `correo`, `notificaciones`, `colas` (dead letters), `interoperabilidad`, `terceros` |
 
-**`src/lib`**: `components/` (116 files: `ui/` such as `DataTable`, `Modal`, `Stepper`; `layout/`; `workflow/`; about 30 `features/` widgets; `editor/RichEditor` lazy-loads TipTap), `server/` (client IP, fetch timeouts, security headers, HTML sanitizer), `services/auth.server.js` (PKCE, refresh, cookies), `stores/`, `utils/`, `guardianes/` (contract tests against backend gates).
+**`src/lib`**: `components/` (116 files: `ui/` such as `DataTable`, `Modal`, `Stepper`; `layout/`; `workflow/`; about 30 `features/` widgets; `editor/RichEditor` lazy-loads TipTap), `server/` (client IP, fetch timeouts, security headers, HTML sanitizer), `services/auth.server.js` (login, refresh, cookies), `stores/`, `utils/`, `guardianes/` (contract tests against backend gates).
 
 **Session**: `hooks.server.js` keeps `op_access_token` and `op_refresh_token` in httpOnly cookies, refreshes 15 s before expiry, sets `locals.user`, propagates the client IP, applies security headers and fetch timeouts; `(app)/+layout.server.js` redirects to `/login?next=` without a session.
 
@@ -495,7 +493,7 @@ Every capability in the table below sits on one stage of this path; the event pu
 | Email intake | IMAP and OAuth mailboxes, shared inbox (reserve, file, discard), filing receipt; automatic polling off by default, one tenant per deployment | document | Live |
 | Notifications and webhooks | Email on assignment, overdue, filing and returns; HMAC-signed webhooks with SSRF guard and encrypted secrets | notification | Live |
 | Interoperability | Export/import packages are live; OAI-PMH and CMIS are off by default (`public_interop_enabled`) | document, archive | Off by default |
-| Identity and access | Keycloak login, RBAC with CRUD levels, user-role-dependency (URD), context switch, clearance, TOTP, signing keys | auth | Live |
+| Identity and access | Own login and OIDC issuer (ADR-048), RBAC with CRUD levels, user-role-dependency (URD), context switch, clearance, TOTP, signing keys | auth | Live |
 | Audit | Hash-chained audit with denials, query and chain verification UI | auth, all | Live |
 | Tenant administration | Tenants with lifecycle state and suspension, dependencias tree, catalogs, holidays and business days, parameters, PINAR plan | tenant | Live |
 | MCP for external agents | Not available: Docuboto is not a tool server for agents; an agent uses the HTTP API with a scoped service account (ADR-051 §5) | — | Not available |
@@ -563,7 +561,6 @@ archive-service, storage-service, auth-service and tenant-service publish no str
 
 | System | Used by | Purpose | Default |
 | --- | --- | --- | --- |
-| Keycloak | auth-service, frontend, gateway | OIDC login, PKCE, token validation | Required |
 | TSA (RFC 3161), OCSP | signature-service | Timestamps and revocation evidence | Local in-process TSA in dev |
 | veraPDF, Ghostscript, WeasyPrint | storage-service | PDF/A validation, migration, rendering | Stub validator; migrator and renderer `none` |
 | SMTP | notification-service | Email | Mailpit in dev |
@@ -579,7 +576,7 @@ Security is enforced in layers and checked by 81 architecture guard tests, but t
 
 | Control | How it works | Where |
 | --- | --- | --- |
-| Authentication | Keycloak OIDC with PKCE; tokens in httpOnly cookies; gateway validates every call | frontend `hooks.server.js`, gateway `JWTValidationMiddleware` |
+| Authentication | The app issues ES256 JWTs (ADR-048); tokens in httpOnly cookies; `UsuarioActualMiddleware` verifies every call against the app's own keys | frontend `hooks.server.js`, `orpycamcp_common.usuario` |
 | Authorization | Permission + CRUD level resolved in the tenant DB on every request, never cached | `orpycamcp_common.rbac`, `require_permission` on every route |
 | Clearance (no-read-up) | Users and objects carry a security level; filters live in the SQL `WHERE` | `rbac.nivel_efectivo`, DLQ, inboxes, knowledge, audit |
 | Tenant isolation | Schema per tenant, `search_path` tenant-only, suspended tenants vetoed at edge and in each service | `get_tenant_conn`, ADR-035, ADR-044 |
