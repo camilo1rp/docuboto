@@ -84,8 +84,8 @@ async def _tenant_registrado(conn: asyncpg.Connection, slug: str) -> AsyncIterat
     codigo = f"IT{slug.replace('itest-', '')[:6].upper()}"
     await conn.execute(
         """
-        INSERT INTO public.tenants (id, slug, name, code, status)
-        VALUES ($1, $2, $3, $4, 'active')
+        INSERT INTO public.tenants (id, slug, name, code)
+        VALUES ($1, $2, $3, $4)
         """,
         uuid.uuid4(),
         slug,

@@ -353,8 +353,8 @@ async def test_sin_la_crl_de_la_tsa_anterior_no_se_renueva(tenant_ctx, monkeypat
 
 
 async def test_la_conservacion_recorre_activas_y_suspendidas() -> None:
-    """ARCH H3: la obligación de conservar no se suspende con la entidad. Mutación: volver a
-    `status = 'active'` -> cae."""
+    """ARCH H3: la conservación recorre todas las entidades registradas (ADR-047 §3: sin
+    estados). Mutación: volver a filtrar por estado -> cae."""
     consultas: list[str] = []
 
     class _Conn:
@@ -375,8 +375,7 @@ async def test_la_conservacion_recorre_activas_y_suspendidas() -> None:
 
     assert await renovacion_lta._tenants_de_conservacion(_Pool()) == ["a", "b"]
     sql = consultas[0]
-    assert "'active'" in sql and "'suspended'" in sql and "inactive" not in sql
-    assert "provisioning_status = 'active'" in sql
+    assert "public.tenants" in sql and "status" not in sql
 
 
 async def test_tsa_revocada_no_renueva_y_se_asienta_una_vez(tenant_ctx, monkeypatch, storage) -> None:

@@ -46,7 +46,7 @@ from signature.api import (
     SignPersonalOutcome,
     VerifyResult,
 )
-from storage.api import WormProtectionOutcome, WormRenewalOutcome
+from storage.api import PurgaHuerfano, WormProtectionOutcome, WormRenewalOutcome
 from tests.archive.test_transferencia_acta_firma_personal import _signed_personal
 
 from .test_atomicity import _seed_transferencia_lista_para_recibir_con_documento
@@ -1471,7 +1471,7 @@ async def test_el_barrido_recoge_solo_los_sobres_sin_referencia_y_vencida_la_gra
         )
     with patch(
         "storage.api.purge_orphans",
-        new=AsyncMock(return_value=[{"file_id": str(huerfano), "resultado": "purgado"}]),
+        new=AsyncMock(return_value=[PurgaHuerfano(file_id=huerfano, resultado="purgado")]),
     ) as purga:
         res = await svc.purgar_sobres_huerfanos()
     assert res == {"candidatos": 1, "purgados": 1, "fallidos": 0}

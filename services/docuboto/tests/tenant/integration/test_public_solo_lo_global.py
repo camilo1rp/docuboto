@@ -96,6 +96,7 @@ _GLOBALES_CONOCIDOS = {
     "divipola_departamento",
     "divipola_municipio",
     "schema_migrations",
+    "schema_version",
 }
 
 
