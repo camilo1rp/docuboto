@@ -31,9 +31,8 @@ cifra de hardware de la documentación: cualquier otra es un error.
 
 Un guardián (`shared/tests/test_hardware_figure.py`) suma los `deploy.resources.limits`
 del perfil por defecto de `infra/docker-compose.prod.yml` y falla si exceden esta
-cifra. **Hoy la exceden** (11 CPU / 16,25 GB de límites: sin gateway ni worker desde
-ADR-047, pero Keycloak, Redis y el almacén de objetos siguen ahí): la cifra es la meta del
-rediseño (ADR-048, ADR-049, ADR-050), y el guardián está marcado como fallo esperado
+cifra. **Hoy la exceden** (sin gateway ni worker desde ADR-047 ni Keycloak desde ADR-048, pero Redis y el almacén de objetos siguen ahí): la cifra es la meta del
+rediseño (ADR-049, ADR-050), y el guardián está marcado como fallo esperado
 estricto hasta que el manifiesto quepa. Cuando quepa, la marca se quita.
 
 ### Software
@@ -77,8 +76,8 @@ sudo chown $USER:$USER /srv/orpyca -R
 ### 2. Obtener certificados TLS
 
 El servicio `edge` (nginx en contenedor, §4) monta `/etc/letsencrypt` del servidor en solo lectura y
-necesita **un certificado por dominio**: `FRONTEND_HOSTNAME`, `API_PUBLIC_HOSTNAME` y
-`KEYCLOAK_HOSTNAME`. Con Let's Encrypt (gratuito, requiere el puerto 80 libre y los tres nombres
+necesita **un certificado por dominio**: `FRONTEND_HOSTNAME` y `API_PUBLIC_HOSTNAME`. Con Let's
+Encrypt (gratuito, requiere el puerto 80 libre y los dos nombres
 resolviendo al servidor), la **primera emisión** va con `--standalone` y **antes del primer `up`** (el
 puerto 80 aún no lo ocupa nadie):
 
@@ -86,7 +85,6 @@ puerto 80 aún no lo ocupa nadie):
 sudo apt install certbot
 sudo certbot certonly --standalone -d app.yourdomain.com
 sudo certbot certonly --standalone -d api.yourdomain.com
-sudo certbot certonly --standalone -d keycloak.yourdomain.com
 # Certificados en /etc/letsencrypt/live/<dominio>/{fullchain,privkey}.pem
 ```
 
@@ -132,17 +130,15 @@ sudo ufw enable
 La entrada la hace el servicio `edge` de `infra/docker-compose.prod.yml` (ADR-033): nginx en
 contenedor, **el único servicio con `ports:`** (`80:80`, `443:443`). No se instala nginx en el
 servidor. La plantilla es `infra/nginx/orpyca.conf.template`; la imagen oficial sustituye
-`${FRONTEND_HOSTNAME}`, `${API_PUBLIC_HOSTNAME}` y `${KEYCLOAK_HOSTNAME}` al arrancar, así que **no hay
-nada que copiar ni editar**: los tres dominios salen del mismo `infra/.env`.
+`${FRONTEND_HOSTNAME}` y `${API_PUBLIC_HOSTNAME}` al arrancar, así que **no hay
+nada que copiar ni editar**: los dos dominios salen del mismo `infra/.env`.
 
 Por qué en contenedor y no en el servidor:
 
 - Con nginx en el servidor, la app vería como par a la IP del docker-proxy
   (ver `TRUSTED_PROXIES`, abajo).
-- La app y el SSR llaman a `https://${KEYCLOAK_HOSTNAME}` desde dentro de la red: `edge` lleva ese
-  nombre (y los otros dos) como **alias** en `orpycamcp-net`, así que el DNS de Docker lo resuelve al
-  propio `edge`, con certificado válido, sin *hairpin* NAT ni DNS externo. Eso es lo que hace funcionar
-  el login PKCE del SSR (`INTERNAL_KEYCLOAK_URL`).
+- `edge` lleva los dos nombres públicos como **alias** en `orpycamcp-net`: dentro de la red el DNS
+  de Docker los resuelve al propio `edge`, con certificado válido, sin *hairpin* NAT ni DNS externo.
 
 Qué publica cada dominio:
 
@@ -150,7 +146,6 @@ Qué publica cada dominio:
 |---|---|---|
 | `FRONTEND_HOSTNAME` | `frontend:3000` | HSTS; el resto de cabeceras las emite el SSR |
 | `API_PUBLIC_HOSTNAME` | `app:8000` | `/metrics` responde 404; `/health/ready` solo desde el propio contenedor `edge` (`127.0.0.1`); sondeo: `docker exec <edge> wget --no-check-certificate -qO- --header 'Host: <API_PUBLIC_HOSTNAME>' https://127.0.0.1/health/ready`. La IP del gateway de la red (`172.20.0.1`) **no** se admite: es la que ve nginx para cualquier cliente de internet |
-| `KEYCLOAK_HOSTNAME` | `keycloak:8080` | lista de **admisión**: solo `/realms/orpycamcp/` y `/resources/`; todo lo demás (incluidos `/admin/`, `/realms/master`, `/realms/master;x/…`) responde 404, y una ruta con `;` también |
 
 **Límite de tasa (ADR-047).** El cubo por IP vive en `edge` (`limit_req` de nginx, en memoria, sin
 Redis), con los presupuestos que tenía el api-gateway retirado:
@@ -158,7 +153,7 @@ Redis), con los presupuestos que tenía el api-gateway retirado:
 | Zona | Qué cubre | Límite por IP |
 |---|---|---|
 | `api_ip` | todo lo que entra | 1200/min (`20r/s`) |
-| `login_ip` | `/api/v1/auth/token` y `/refresh`, y el `/login` del SSR | 20/min |
+| `login_ip` | `/api/v1/auth/login`, `/refresh` y `/password`, `/oauth/token`, y el `/login` del SSR | 20/min |
 | `radicacion` | altas anónimas: `POST` a ventanilla/PQRS y al formulario público del SSR (`/radicacion`) | 5/min, solo `POST` |
 | `cosecha_ip` | OAI-PMH y CMIS públicos | 30/min |
 
@@ -168,9 +163,8 @@ IP, así que la **cuota por persona** la pone la app (`UserRateLimitMiddleware`,
 `Retry-After: 60`). La ventana vive en memoria del proceso. Una petición sin persona no cuenta
 ahí: la cubre el cubo por IP.
 
-La consola de administración de Keycloak **no se publica**: úsela por túnel SSH
-(`ssh -L 8080:localhost:8080 servidor`, hacia el puerto del contenedor) o con
-`docker compose exec keycloak`.
+El emisor de identidad (ADR-048) sale por `API_PUBLIC_HOSTNAME`: `/.well-known/openid-configuration`,
+`/.well-known/jwks.json` y `/oauth/token`. Es lo que el proveedor PPI declara como emisor.
 
 ```bash
 cd infra
@@ -219,7 +213,7 @@ cp infra/.env.example .env
 openssl rand -base64 32  # PostgreSQL password
 openssl rand -base64 32  # Redis password
 openssl rand -base64 32  # clave del almacén de objetos
-openssl rand -base64 32  # Keycloak admin password
+openssl rand -base64 32  # IDENTITY_KEY_ENCRYPTION_KEY
 
 # 3. Editar .env con valores reales
 nano .env
@@ -233,23 +227,22 @@ nano .env
 | `DB_PASSWORD` | Contraseña PostgreSQL (32+ caracteres) | `<openssl rand -base64 32>` |
 | `REDIS_PASSWORD` | Contraseña Redis (32+ caracteres) | `<openssl rand -base64 32>` |
 | `MINIO_ROOT_PASSWORD` | Clave raíz del almacén de objetos (el prefijo `MINIO_` es histórico, ADR-027) | `<openssl rand -base64 32>` |
-| `KEYCLOAK_HOSTNAME` | Dominio FQDN de Keycloak | `keycloak.yourdomain.com` |
-| `KEYCLOAK_ADMIN_PASSWORD` | Contraseña admin Keycloak | `<secure password>` |
-| `KEYCLOAK_AUTH_SERVICE_SECRET` | Secreto del cliente OAuth2 confidencial de la app | `<32 char hex>` |
+| `IDENTITY_KEY_ENCRYPTION_KEY` | KEK (base64 de 32 bytes) que sella las claves privadas con que la app firma sus JWT (ADR-048). **La app no arranca sin ella**; perderla obliga a rotar la clave de firma y cierra todas las sesiones | `<openssl rand -base64 32>` |
 | `ORPYCA_REGISTRY` / `ORPYCA_VERSION` | Registro de imágenes y versión a desplegar (un tag `X.Y.Z`; nunca `latest`). **Obligatorias** (`:?`) en `docker-compose.prod.yml`; `release-<versión>.yml` ya no las usa porque fija cada imagen por digest | `ghcr.io/camilo1rp/docuboto` / `1.0.0` |
-| `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN` y el `redirect_uri` del login) | `app.yourdomain.com` |
-| `API_PUBLIC_HOSTNAME` | FQDN público de la API (la app, detrás de `edge`) que ve el navegador | `api.yourdomain.com` |
+| `FRONTEND_HOSTNAME` | FQDN público del frontend SSR (define `ORIGIN`) | `app.yourdomain.com` |
+| `API_PUBLIC_HOSTNAME` | FQDN público de la API (la app, detrás de `edge`). `https://${API_PUBLIC_HOSTNAME}` es el `iss` de los JWT (`IDENTITY_ISSUER`) | `api.yourdomain.com` |
 | `SIGNATURE_SECRET` | Clave HMAC del sellado de firma (E06). Aleatoria, rotar. **El servicio no arranca sin ella** | `<openssl rand -base64 32>` |
 | `MINIO_ROOT_USER` | Usuario del almacén de objetos. **La app no arranca sin él** | `orpyca_prod` |
 | `WEBHOOK_SECRET_KEK` | KEK (base64 de 32 bytes) que cifra en reposo el secreto HMAC de los webhooks. **La app no arranca sin ella**; distinta de las demás KEK | `<openssl rand -base64 32>` |
-| `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 de 32 bytes) que cifra el secreto del cliente de servicio de inteligencia. **`init_tenant.py` no da de alta una entidad sin ella**, con o sin el fragmento intelligence (ADR-053 §5) | `<openssl rand -base64 32>` |
+| `INTELLIGENCE_CREDENTIAL_KEK` | KEK (base64 de 32 bytes) que sella la clave de seudónimo y la de retorno de inteligencia. **`init_tenant.py` no da de alta una entidad sin ella**, con o sin el fragmento intelligence (ADR-053 §5) | `<openssl rand -base64 32>` |
 | `SMTP_HOST` | Host SMTP | `smtp.gmail.com` |
 | `SMTP_PASSWORD` | Contraseña o token de aplicación SMTP | `app-specific-password` |
 
 **No hay tokens internos que generar (ADR-047).** Las llamadas entre dominios son llamadas a
 función dentro de un proceso: ya no existen `X-Internal-Token`, los `*_INTERNAL_TOKEN`, los
 `*_SERVICE_URL`, `IDENTITY_SIGNING_SECRET`, `AUTH_CACHE_MAC_SECRET` ni
-`KEYCLOAK_API_GATEWAY_SECRET`. Si su `infra/.env` viene de una versión anterior, bórrelas: nadie
+`KEYCLOAK_API_GATEWAY_SECRET`; tampoco, desde ADR-048, `KEYCLOAK_HOSTNAME`,
+`KEYCLOAK_ADMIN_USER`, `KEYCLOAK_ADMIN_PASSWORD` ni `KEYCLOAK_AUTH_SERVICE_SECRET`. Si su `infra/.env` viene de una versión anterior, bórrelas: nadie
 las lee. Los nombres de las demás variables no cambian; la app las lee todas desde
 `docuboto/config.py`.
 
@@ -372,40 +365,46 @@ definas en producción**.
 > el archivo, y ordenar lo viejo no lo compensa. La función arranca en el primer mes
 > que no solape: el default se congela y deja de crecer.
 
-### Contrato de issuer (`iss`) — crítico
+### Identidad (ADR-048)
 
-El `iss` de los tokens es **siempre la URL pública** por la que el navegador hace
-login. La app, que valida los JWT, debe
-esperar exactamente ese `iss` o rechazará **todos** los tokens (fail-closed).
+La app emite la identidad: no hay proveedor externo que levantar.
 
-- **Producción (single-host):** Keycloak corre con `--hostname-strict=true
-  --hostname=${KEYCLOAK_HOSTNAME}`, por lo que navegador y servicios usan el mismo
-  host. `expected_issuer` se deriva de `KEYCLOAK_URL` y **no hace falta override**.
-- **Desarrollo (`docker-compose.yml`):** hay split (navegador `localhost:19180` ↔
-  red interna `keycloak:8080`); por eso allí se fija `KEYCLOAK_ISSUER` con la URL
-  pública del realm.
+- **Personas.** `POST /api/v1/auth/login` con usuario, contraseña (argon2id) y entidad; access JWT
+  ES256 de 15 min y un refresh opaco que rota en cada uso, con 30 min de inactividad y 12 h como
+  máximo. Presentar un refresh ya usado revoca la sesión entera. Política: 12 caracteres como
+  mínimo, sin repetir las últimas 5, bloqueo de 15 min tras 5 intentos fallidos (`PASSWORD_*`,
+  `LOGIN_*`).
+- **Emisor.** `IDENTITY_ISSUER` es el `iss` de todo token y la base del descubrimiento OIDC; el
+  manifiesto lo fija a `https://${API_PUBLIC_HOSTNAME}`. Las claves de firma viven en
+  `public.auth_jwt_keys`, selladas con `IDENTITY_KEY_ENCRYPTION_KEY`; la primera se crea sola.
+- **Rotar la clave de firma** sin cortar sesiones: `docker compose exec app python -m
+  auth.ops.rotate_jwt_key`. La anterior sigue publicada en la JWKS una hora (`JWT_KEY_OVERLAP_S`).
+- **Primer usuario de la entidad.** No hay alta en el primer login: el primero se crea fuera de
+  banda y queda ROOT:
 
-Al arrancar, la app emite un **WARNING fail-fast** si `KEYCLOAK_URL` apunta a un host
-interno de Docker sin `KEYCLOAK_ISSUER` definido (configuración que rechazaría todo
-token). Verifica tras el despliegue que no aparece:
+  ```bash
+  docker compose exec -e GRANT_ROOT_PASSWORD='<clave>' app \
+    python -m auth.ops.grant_root --tenant <slug> --user <usuario> --create --email <correo>
+  ```
 
-```bash
-docker compose -f docker-compose.prod.yml logs app | grep "esperado sera"
-```
+  Los demás los crea un administrador (`POST /api/v1/auth/users` con `password`, o la pantalla de
+  usuarios), que también restablece contraseñas con `PUT /api/v1/auth/users/{id}/password`.
+- **Proveedor PPI.** Declara como emisor `https://${API_PUBLIC_HOSTNAME}`, con
+  `jwks_uri = https://${API_PUBLIC_HOSTNAME}/.well-known/jwks.json`, audiencia la suya y
+  `client_id = intelligence-<slug>`. La cuenta la crea `init_tenant.py`; no tiene secreto porque el
+  token lo firma el propio proceso.
 
 ### Frontend SSR
 
 El frontend (SvelteKit + adapter-node) corre en su **propio contenedor** detrás del
-proxy reverso. Necesita resolver correctamente el `origin` para construir el
-`redirect_uri` del login PKCE:
+proxy reverso. El formulario de `/login` envía a la acción del SSR, que llama a la app por la red
+interna; SvelteKit comprueba el origen del envío, así que necesita resolver bien el suyo:
 
 - `ORIGIN=https://${FRONTEND_HOSTNAME}` (o `PROTOCOL_HEADER=x-forwarded-proto` +
   `HOST_HEADER=x-forwarded-host` si el proxy los inyecta).
-- URLs **públicas** (navegador): `PUBLIC_API_URL`, `PUBLIC_KEYCLOAK_URL`.
-- URLs **internas** (SSR → red Docker): `INTERNAL_API_URL`, `INTERNAL_KEYCLOAK_URL`.
-
-El `redirect_uri` resultante (`https://${FRONTEND_HOSTNAME}/login/callback`) debe
-estar en `redirectUris`/`webOrigins` del cliente `orpycamcp-frontend` en Keycloak.
+- URL **pública** (navegador): `PUBLIC_API_URL`.
+- URL **interna** (SSR → red Docker): `INTERNAL_API_URL`.
+- `PORTAL_TENANT_SLUG`: la entidad de la instalación. Con ella el login no pide la entidad.
 
 ### Rotación de secretos
 
@@ -470,15 +469,14 @@ contenedor `worker` (`infra/Dockerfile.worker` se retiró), ni perfil `split`, n
 | `postgres` | sí | sí (`127.0.0.1:15432`) |
 | `redis` | sí | sí (`127.0.0.1:16379`) |
 | `minio` (RustFS) | sí | sí (`19900`) |
-| `keycloak` | sí | sí (`19180`) |
 | `app` | sí | sí (`127.0.0.1:19000`) |
 | `frontend` | sí | sí (`19300`) |
 | `edge` (nginx) | sí, el único con `ports:` | no |
 | `mailpit` | no | opcional (perfil propio) |
 
 **La meta de ADR-047 —cuatro contenedores: `app`, `postgres`, `edge`, `frontend`— todavía no se
-cumple.** Keycloak, Redis y el almacén de objetos siguen en el manifiesto hasta que los retiren
-ADR-048 (identidad propia), ADR-049 (eventos en PostgreSQL) y ADR-050 (bytes en disco).
+cumple.** Keycloak ya salió (ADR-048); Redis y el almacén de objetos siguen en el manifiesto hasta
+que los retiren ADR-049 (eventos en PostgreSQL) y ADR-050 (bytes en disco).
 
 ### Usando docker-compose.prod.yml
 
@@ -502,20 +500,22 @@ docker compose -f docker-compose.prod.yml up -d
 docker compose ps
 docker compose logs -f app
 
-# 6. Crear la entidad (después de que Keycloak esté listo)
+# 6. Crear la entidad y su primer usuario (ver «Identidad»)
 #    El script corre DESDE EL HOST, no dentro de un contenedor, y toma los tres
 #    argumentos por posición: <slug> <nombre> <código>.
 cd ..
 COMPOSE_FILE=infra/docker-compose.prod.yml ENV_FILE=infra/.env \
   ./scripts/init-tenant.sh mi-institucion "Mi Institución" MIST
+docker compose -f infra/docker-compose.prod.yml exec -e GRANT_ROOT_PASSWORD='<clave>' app \
+  python -m auth.ops.grant_root --tenant mi-institucion --user admin --create
 ```
 
 **Una instalación, una entidad (ADR-047 §3).** `public.tenants` es la fila de configuración de la
 entidad de la instalación: no tiene estados de ciclo de vida (`status`, `provisioning_status`), no
 hay registro de entidades por HTTP ni veto de entidad suspendida. Se conserva el esquema
-`tenant_{slug}`. Dos pendientes declarados: los buckets siguen nombrándose por entidad
-(`orpycamcp-<slug>-documents`; lo retira ADR-050) e `init_tenant.py` sigue creando el cliente de
-inteligencia de Keycloak (lo sustituye ADR-048).
+`tenant_{slug}`. Un pendiente declarado: los buckets siguen nombrándose por entidad
+(`orpycamcp-<slug>-documents`; lo retira ADR-050). La cuenta de servicio de inteligencia la crea
+`init_tenant.py` en `public.auth_service_accounts` (ADR-048).
 
 **Certificado de firma personal.** Tras emitir offline el certificado de una persona con
 `scripts/gen-user-cert.sh`, cárguelo dentro del contenedor (ya no hay ruta interna HTTP):
@@ -530,11 +530,10 @@ docker compose exec -T app python -m auth.ops.activar_certificado \
 ```bash
 # Revisar logs de cada servicio
 docker compose logs -f postgres      # Errores de conexión
-docker compose logs -f keycloak      # OIDC/realm issues
 docker compose logs -f app           # Errores de la aplicación
 
 # Probar health check (a través de Nginx si está configurado)
-curl -k https://keycloak.yourdomain.com/health
+curl -k https://api.yourdomain.com/.well-known/openid-configuration
 
 # Verificar que el almacén de objetos está funcionando
 #
@@ -553,7 +552,7 @@ La app expone **dos** rutas, y no son intercambiables:
 | Ruta | Pregunta | Comprueba | Quién la consulta |
 |---|---|---|---|
 | `/health` | ¿Responde el proceso? | Nada | El `healthcheck` del contenedor |
-| `/health/ready` | ¿Puede atender tráfico **ahora**? | Decide con base de datos y Redis; informa sin decidir Keycloak, almacén, SMTP, partición de `audit_log` del mes siguiente y cada consumidor de eventos con su DLQ | El balanceador / proxy reverso |
+| `/health/ready` | ¿Puede atender tráfico **ahora**? | Decide con base de datos y Redis; informa sin decidir almacén, SMTP, partición de `audit_log` del mes siguiente y cada consumidor de eventos con su DLQ | El balanceador / proxy reverso |
 
 `/health` **no depende de nada a propósito**. Reiniciar la app porque
 Postgres está caído no arregla Postgres: tira el trabajo en vuelo y suma una
@@ -625,8 +624,8 @@ corren en cada réplica de `app`.
 
 Este manifiesto corre **una réplica** de `app` y de `frontend`. Con una entidad y unos 10–15
 usuarios concurrentes, un proceso cubre la carga. La app abre **un pool** de
-`DB_POOL_MAX_SIZE=10` conexiones; Keycloak, `KC_DB_POOL_MAX_SIZE=30` contra el mismo Postgres
-(40 en total, más margen para migraciones, respaldos y `psql`). Keycloak tiene un tope de 1 GB.
+`DB_POOL_MAX_SIZE=10` conexiones, y es la única: la identidad la emite la propia app (ADR-048).
+Queda margen para migraciones, respaldos y `psql`.
 
 Con un proceso no se puede replicar solo el dominio que va lento (ADR-047); al volumen del cliente
 objetivo no hace falta.
@@ -720,7 +719,7 @@ RESTORE_OPERADOR="Nombre Apellido" ENV_FILE=infra/.env ./infra/restore.sh /srv/o
 
 `RESTORE_OPERADOR` es **obligatorio** (la persona que ejecuta la restauración; el script termina antes de confirmar o parar nada si falta): el acta `storage.restauracion` de `audit_log` se atribuye a `operador:<nombre>` y declara, por tenant, la **ventana de traza perdida** —el extremo de `audit_log` (conteo, id y hash del último asiento) se anota *antes* de `pg_restore` y se compara con el restaurado—. Restaurar un respaldo anterior al estado vivo suprime legalmente los asientos posteriores; el acta dice cuáles `(desde_id, hasta_id]` y cuántos.
 
-Para las aplicaciones y Keycloak pero **deja en pie Postgres y el almacén**, que son el
+Para las aplicaciones pero **deja en pie Postgres y el almacén**, que son el
 destino del trabajo. Exige confirmación escrita: restaurar destruye el estado
 actual y es irreversible.
 
@@ -1090,11 +1089,10 @@ Configurar alertas para:
 > `ports:` salvo `edge` (80 y 443), Redis lleva `--requirepass ${REDIS_PASSWORD:?}`, toda credencial es obligatoria
 > (`${VAR:?}`) y sin valor por defecto, y las imágenes de terceros llevan **tag y digest** (`@sha256:`; un
 > tag se puede mover en el registro, el digest no). `TRUSTED_PROXIES` no incluye el gateway de la red, la
-> plantilla de nginx cubre los tres dominios y `infra/.env.example` contiene toda variable del manifiesto.
+> plantilla de nginx cubre los dos dominios y `infra/.env.example` contiene toda variable del manifiesto.
 > Para actualizar una imagen: `docker buildx imagetools inspect <imagen>:<tag>`, copiar el `Digest` al
 > manifiesto (y a `docker-compose.yml`, para que lo validado en desarrollo sea lo que va a producción) y
-> correr el guardián. **Keycloak 24.0.5 está fuera de soporte**: actualizarlo es una tanda aparte (cambia la
-> API de administración y el tema).
+> correr el guardián.
 > Lo que depende del **host** se comprueba, desde fuera del servidor, con
 > `scripts/preflight-prod.sh <host-publico>` (TLS válido, HTTP redirige a HTTPS, puertos
 > internos cerrados). Lo demás sigue siendo manual.
@@ -1103,11 +1101,11 @@ Configurar alertas para:
 - [ ] PostgreSQL no es accesible externamente (manifiesto: guardián; host: `preflight-prod.sh`)
 - [ ] El almacén de objetos requiere autenticación (sin acceso público)
 - [ ] Redis requiere contraseña (manifiesto: guardián)
-- [ ] Keycloak usa HTTPS con certificado válido (los tres dominios tienen certificado y `edge` los sirve; la consola `/admin/` no es pública)
+- [ ] Los dos dominios tienen certificado válido y `edge` los sirve; `IDENTITY_KEY_ENCRYPTION_KEY` es propia de la instalación
 - [ ] Solo `edge` publica puertos (80 y 443): Docker se salta ufw en los puertos publicados (manifiesto: guardián; host: `scripts/preflight-prod.sh`)
 - [ ] `TRUSTED_PROXIES` sin el gateway de la red (`172.20.128.0/17`, no el `/16`)
 - [ ] CORS configurado restringidamente
-- [ ] Audit logging habilitado en PostgreSQL y Keycloak
+- [ ] Audit logging habilitado en PostgreSQL
 - [ ] Backup diario con pruebas de recuperación
 - [ ] Límite de tasa por IP en `edge` (`limit_req`) y `RATE_LIMIT_PER_USER` en la app
 - [ ] Headers de seguridad (HSTS, X-Content-Type-Options, etc.)
@@ -1116,7 +1114,7 @@ Configurar alertas para:
 
 Están en `infra/nginx/orpyca.conf.template` (servicio `edge`). Lo importante de esa plantilla no son las
 cabeceras: son las tres cosas que dependen de `X-Forwarded-*` y fallan en silencio sin ellas — el
-`redirect_uri` del login PKCE, la IP real que se sella en `audit_log` (registro con
+origen que SvelteKit comprueba en el formulario de login, la IP real que se sella en `audit_log` (registro con
 valor probatorio) y el reparto del límite por IP. Lleva también `proxy_buffering off`,
 sin el cual nginx vuelve a acumular en disco cada descarga que el sistema sirve por
 trozos (anexos, ZIP de expediente, AIP).
@@ -1157,7 +1155,7 @@ un fallo, y una vulnerabilidad con corrección disponible también.
 ```bash
 # 1. Verificar logs
 docker compose logs postgres
-docker compose logs keycloak
+docker compose logs app
 
 # 2. Comprobar variables de entorno
 docker compose config | grep -A 5 "environment"
