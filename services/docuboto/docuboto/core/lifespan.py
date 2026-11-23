@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             f"{altcha.HMAC_MIN_BYTES} bytes (openssl rand -hex 32)"
         )
     webhook_secrets.validate_kek_at_startup()
-    settings.auth.identity_key_bytes  # forma válida o no arranca (ADR-048)
+    _ = settings.auth.identity_key_bytes  # forma válida o no arranca (ADR-048)
     for retirada, sustituta in variables_retiradas_presentes():
         logger.error(
             "La variable %s ya NO tiene efecto y se ignora: use %s.",

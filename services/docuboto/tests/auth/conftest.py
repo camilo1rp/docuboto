@@ -14,8 +14,6 @@ The DB dependency (get_db_conn) is overridden with an AsyncMock connection
 so tests run without a real PostgreSQL instance.
 """
 
-import time
-import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock

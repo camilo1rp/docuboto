@@ -27,13 +27,13 @@ from auth.core.authz import Caller, get_caller, require_any_permission, require_
 from auth.repositories.clearance_repository import MAX_LEVEL, ClearanceRepository
 from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.rbac import (
-    PasswordSet,
     EffectivePermissions,
     GroupCreate,
     GroupPermissionItem,
     GroupPermissionSet,
     GroupResponse,
     GroupUpdate,
+    PasswordSet,
     PermissionResponse,
     UserCreate,
     UserPickItem,
