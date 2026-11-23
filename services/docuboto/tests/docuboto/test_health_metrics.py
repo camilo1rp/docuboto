@@ -10,7 +10,7 @@
 """Un `/health` y un `/metrics` para el proceso (ADR-047).
 
 Lo que vigilaban las sondas de cada dominio sigue en la única: el consumidor
-muerto y su DLQ se ven, Keycloak, el almacén y SMTP se informan sin decidir el
+muerto y su DLQ se ven, el almacén y SMTP se informan sin decidir el
 503, y `/metrics` no responde a nada que haya pasado por un proxy.
 """
 
@@ -56,7 +56,6 @@ def _redis_sano() -> MagicMock:
 def _informativos_caidos():  # noqa: ANN202
     fallo = AsyncMock(side_effect=RuntimeError("caído"))
     return (
-        patch.object(health, "_ping_keycloak", fallo),
         patch.object(health, "_ping_storage", fallo),
         patch.object(health, "_ping_smtp", fallo),
         patch.object(health, "_audit_particiones", AsyncMock(return_value="degraded")),
@@ -71,12 +70,11 @@ def test_health_no_tiene_dependencias() -> None:
 def test_ready_lo_deciden_la_base_y_redis() -> None:
     conn = MagicMock(fetchval=AsyncMock(return_value=1))
     p = _informativos_caidos()
-    with patch.object(health, "get_pool", return_value=_Pool(conn)), p[0], p[1], p[2], p[3]:
+    with patch.object(health, "get_pool", return_value=_Pool(conn)), p[0], p[1], p[2]:
         r = _app(_redis_sano()).get("/health/ready")
     assert r.status_code == 200, r.text
     cuerpo = r.json()
-    # Keycloak, almacén y SMTP caídos se informan, no sacan al proceso de servicio.
-    assert cuerpo["checks"]["keycloak"] != "ok"
+    # Almacén y SMTP caídos se informan, no sacan al proceso de servicio.
     assert cuerpo["checks"]["storage"] != "ok"
     assert cuerpo["checks"]["smtp"] != "ok"
     assert cuerpo["degraded"] == ["audit_particiones"]
@@ -85,7 +83,7 @@ def test_ready_lo_deciden_la_base_y_redis() -> None:
 def test_ready_sin_redis_es_503() -> None:
     conn = MagicMock(fetchval=AsyncMock(return_value=1))
     p = _informativos_caidos()
-    with patch.object(health, "get_pool", return_value=_Pool(conn)), p[0], p[1], p[2], p[3]:
+    with patch.object(health, "get_pool", return_value=_Pool(conn)), p[0], p[1], p[2]:
         r = _app(None).get("/health/ready")
     assert r.status_code == 503
     assert r.json()["status"] == "not_ready"
@@ -100,7 +98,7 @@ def test_el_consumidor_muerto_y_su_dlq_se_ven() -> None:
         patch.object(health, "get_pool", return_value=_Pool(conn)),
         patch.object(health.events, "consumer_status", return_value=estados),
         patch.object(health.health_common, "consumer_report", informe),
-        p[0], p[1], p[2], p[3],
+        p[0], p[1], p[2],
     ):
         r = _app(_redis_sano()).get("/health/ready")
     assert r.status_code == 200

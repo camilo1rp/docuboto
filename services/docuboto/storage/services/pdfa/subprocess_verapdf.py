@@ -26,7 +26,7 @@ punto responde a un vector concreto de un PDF/entrada adversarial:
     "flavours" reales de veraPDF antes de tocar el subprocess: un
     `PDFA_PROFILE` mal configurado nunca se cuela como argumento arbitrario.
   - ENV SCRUBBEADO: el hijo NUNCA hereda `os.environ` (que en este proceso
-    incluye `DATABASE_URL`, `MINIO_SECRET_KEY`, `KEYCLOAK_CLIENT_SECRET`,
+    incluye `DATABASE_URL`, `MINIO_SECRET_KEY`, `IDENTITY_KEY_ENCRYPTION_KEY`,
     `INTERNAL_SERVICE_TOKEN`...). Solo se le da un `PATH` mínimo (para que
     el wrapper `verapdf` encuentre `java`) y el cap de heap de la JVM.
   - Grupo de proceso propio (`start_new_session=True`) + `killpg` en

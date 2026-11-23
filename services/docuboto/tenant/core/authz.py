@@ -9,10 +9,8 @@
 
 """Gate de autorización RBAC resuelto en la BD del tenant por request (E08/E14).
 
-Keycloak autentica; la BD del tenant autoriza. El api-gateway inyecta la identidad
-ya validada (`X-User-Id` = auth_users.id interno UUID, `X-Tenant-Slug`) — NUNCA
-media el acceso por sí mismo (solo enruta prefijo→upstream, ver
-`api-gateway/tenant/routers/proxy.py`). Las tablas `auth_users`/`auth_memberships`/
+El emisor del proceso autentica (ADR-048); la BD del tenant autoriza.
+`UsuarioActualMiddleware` deja la identidad ya verificada (`sub` = auth_users.id). Las tablas `auth_users`/`auth_memberships`/
 `auth_group_permissions`/`auth_permissions` las provisiona auth-service pero VIVEN
 en el schema del tenant (ADR-002/ADR-012), así que tenant-service las resuelve con
 su propia conexión ya posicionada en el tenant por `get_tenant_conn` — mismo patrón

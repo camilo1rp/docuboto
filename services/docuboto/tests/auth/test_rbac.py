@@ -38,7 +38,6 @@ class _FakeTx:
 # resuelve normalmente vía BD, pero aquí se sobreescribe para aislar el endpoint.
 _ADMIN_CALLER = Caller(
     user_id=uuid.uuid4(),
-    keycloak_sub="kc-admin",
     is_root=True,
     permissions={"USUA_PERM_ADMIN": 5},
 )
@@ -46,7 +45,6 @@ _ADMIN_CALLER = Caller(
 # router) pero no debe poder auto-escalarse a ROOT (hallazgo Alto cerrado).
 _NONROOT_ADMIN_CALLER = Caller(
     user_id=uuid.uuid4(),
-    keycloak_sub="kc-admin-nonroot",
     is_root=False,
     permissions={"USUA_PERM_ADMIN": 5},
 )
@@ -91,7 +89,6 @@ async def test_create_user(client: AsyncClient) -> None:
         "id": new_id,
         "username": "JPEREZ",
         "email": "j@x.co",
-        "keycloak_sub": None,
         "is_root": False,
         "is_active": True,
     }
@@ -141,7 +138,6 @@ async def test_user_permissions_resolution(client: AsyncClient) -> None:
         "id": uid,
         "username": "JPEREZ",
         "email": None,
-        "keycloak_sub": None,
         "is_root": False,
         "is_active": True,
     }
@@ -180,7 +176,7 @@ async def test_list_pickable_users_perm_radi(client: AsyncClient) -> None:
     ]
     _override_caller(
         conn,
-        Caller(user_id=u1, keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}),
+        Caller(user_id=u1, is_root=False, permissions={"PERM_RADI": 3}),
     )
     resp = await client.get(
         "/api/v1/auth/users/pickable", headers={**TENANT_HEADERS, "X-User-Id": str(u1)}
@@ -208,7 +204,7 @@ async def test_pickable_dice_cuantos_usuarios_hay_en_total(client: AsyncClient) 
     conn.fetchval.return_value = 940  # activos en el tenant
     _override_caller(
         conn,
-        Caller(user_id=u1, keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}),
+        Caller(user_id=u1, is_root=False, permissions={"PERM_RADI": 3}),
     )
 
     resp = await client.get(
@@ -235,7 +231,7 @@ async def test_pickable_cuenta_solo_los_activos(client: AsyncClient) -> None:
     conn.fetchval.return_value = 1
     _override_caller(
         conn,
-        Caller(user_id=u1, keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}),
+        Caller(user_id=u1, is_root=False, permissions={"PERM_RADI": 3}),
     )
 
     await client.get(
@@ -258,7 +254,6 @@ async def test_list_group_members(client: AsyncClient) -> None:
             "id": u1,
             "username": "ANA",
             "email": "ana@x.co",
-            "keycloak_sub": None,
             "is_root": False,
             "is_active": True,
         },
@@ -266,7 +261,6 @@ async def test_list_group_members(client: AsyncClient) -> None:
             "id": u2,
             "username": "BETO",
             "email": None,
-            "keycloak_sub": None,
             "is_root": False,
             "is_active": True,
         },
@@ -313,7 +307,6 @@ async def test_list_group_members_denied_without_admin(client: AsyncClient) -> N
         conn,
         Caller(
             user_id=uuid.uuid4(),
-            keycloak_sub="kc-op",
             is_root=False,
             permissions={"PERM_RADI": 3},
         ),
@@ -367,7 +360,6 @@ async def test_list_group_permissions_denied_without_admin(client: AsyncClient) 
         conn,
         Caller(
             user_id=uuid.uuid4(),
-            keycloak_sub="kc-op",
             is_root=False,
             permissions={"PERM_RADI": 3},
         ),
@@ -388,7 +380,6 @@ async def test_list_pickable_users_denies_without_perm_radi(client: AsyncClient)
         conn,
         Caller(
             user_id=uuid.uuid4(),
-            keycloak_sub="kc-nobody",
             is_root=False,
             permissions={"USUA_PERM_CONSULTA": 1},
         ),
@@ -434,7 +425,7 @@ async def test_pickable_es_any_of_radi_o_admin(
     _override_caller(
         conn,
         Caller(
-            user_id=uid, keycloak_sub="kc", is_root=False, permissions={p: 1 for p in concedidos}
+            user_id=uid, is_root=False, permissions={p: 1 for p in concedidos}
         ),
     )
     resp = await client.get(
@@ -468,7 +459,7 @@ async def test_gate_denies_without_admin(client: AsyncClient) -> None:
     _override_conn(conn)
     # Sobreescribe el llamante con uno sin permiso de administración.
     app.dependency_overrides[get_caller] = lambda: Caller(
-        user_id=uuid.uuid4(), keycloak_sub="kc-op", is_root=False, permissions={"PERM_RADI": 3}
+        user_id=uuid.uuid4(), is_root=False, permissions={"PERM_RADI": 3}
     )
     resp = await client.post(
         "/api/v1/auth/users",
@@ -496,7 +487,7 @@ async def test_gate_missing_user_id_is_401(client: AsyncClient) -> None:
 async def test_gate_not_provisioned_is_403(client: AsyncClient) -> None:
     """UUID válido en X-User-Id pero sin fila en auth_users → 403 (no provisionado).
 
-    X-User-Id es ahora el auth_users.id interno (UUID), NO el keycloak_sub.
+    X-User-Id es el auth_users.id interno (UUID): el `sub` del access token.
     Un UUID no encontrado en la BD significa que el usuario no está aprovisionado.
     """
     conn = AsyncMock()
@@ -539,7 +530,6 @@ async def test_create_user_audits_action(
         "id": new_id,
         "username": "JPEREZ",
         "email": "j@x.co",
-        "keycloak_sub": None,
         "is_root": False,
         "is_active": True,
     }
@@ -596,7 +586,6 @@ async def test_create_user_audit_failure_reverts_mutation(
         "id": new_id,
         "username": "JPEREZ",
         "email": "j@x.co",
-        "keycloak_sub": None,
         "is_root": False,
         "is_active": True,
     }
@@ -627,7 +616,6 @@ async def test_create_user_without_tenant_slug_fails_closed(
         "id": uuid.uuid4(),
         "username": "JPEREZ",
         "email": None,
-        "keycloak_sub": None,
         "is_root": False,
         "is_active": True,
     }
@@ -643,7 +631,7 @@ async def test_create_user_without_tenant_slug_fails_closed(
         await service.create_user(
             username="jperez",
             email=None,
-            keycloak_sub=None,
+            password=None,
             is_root=False,
             tenant_slug=None,
             actor=str(_ADMIN_CALLER.user_id),
@@ -806,7 +794,6 @@ async def test_create_user_root_can_create_root(
         "id": new_id,
         "username": "SUPER",
         "email": "s@x.co",
-        "keycloak_sub": None,
         "is_root": True,
         "is_active": True,
     }

@@ -140,8 +140,8 @@ _DOC_TIPO = Literal["CC", "CE", "NIT", "PA", "TI", "PEP", "PPT"]
 
 
 class PrestatarioInterno(BaseModel):
-    """Un usuario del sistema. SIEMPRE `auth_users.id`, nunca el `sub` de Keycloak:
-    el INSERT lo valida contra `auth_users` (activo) y un `sub` no existe ahí."""
+    """Un usuario del sistema. SIEMPRE `auth_users.id`: el INSERT lo valida
+    contra `auth_users` (activo)."""
 
     model_config = ConfigDict(extra="forbid")
 

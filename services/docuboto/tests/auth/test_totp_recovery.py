@@ -150,7 +150,7 @@ def _override(conn: AsyncMock) -> None:
 
     app.dependency_overrides[get_tenant_conn] = _conn_dep
     app.dependency_overrides[get_caller] = lambda: Caller(
-        user_id=USER_ID, keycloak_sub="kc-sub", is_root=False, permissions={}
+        user_id=USER_ID, is_root=False, permissions={}
     )
 
 

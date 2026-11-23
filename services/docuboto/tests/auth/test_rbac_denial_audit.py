@@ -41,7 +41,6 @@ USER = uuid.uuid4()
 
 _NON_ADMIN = Caller(
     user_id=USER,
-    keycloak_sub="kc-op",
     is_root=False,
     permissions={"PERM_RADI": 3},
 )

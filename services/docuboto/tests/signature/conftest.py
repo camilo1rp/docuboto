@@ -31,9 +31,8 @@ instalar_inyector(app)
 # HMAC con clave vacía, que es justo la configuración que el guard rechaza.
 settings.signature_secret = "test-signature-secret-0123456789abcdef"
 
-# X-User-Id now carries the internal auth_users.id UUID (not keycloak_sub).
-# auth-service /validate resolves keycloak_sub → auth_users.id before the gateway
-# injects the header; tests use a fixed UUID that matches the mock's user row.
+# X-User-Id carries the internal auth_users.id UUID (the access token's `sub`,
+# ADR-048); tests use a fixed UUID that matches the mock's user row.
 USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 # Both headers are required for every authenticated request.

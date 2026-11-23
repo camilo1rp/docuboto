@@ -83,7 +83,7 @@ def _patch_audit(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
 
 def _caller() -> Caller:
-    return Caller(user_id=USER_ID, keycloak_sub="kc-sub", is_root=False, permissions={})
+    return Caller(user_id=USER_ID, is_root=False, permissions={})
 
 
 def _make_conn() -> AsyncMock:
@@ -155,7 +155,6 @@ def _user_row(user_id: uuid.UUID = USER_ID) -> dict:
         "id": user_id,
         "username": "OPERADOR",
         "email": "operador@demo.orpycamcp.local",
-        "keycloak_sub": "kc-sub",
         "is_root": False,
         "is_active": True,
     }
@@ -940,11 +939,11 @@ async def test_internal_verify_no_active_credential_returns_no_activo(
 async def test_internal_verify_unknown_user_returns_no_activo(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """RBACRepository.get_user_by_keycloak_sub finds nothing → fail-closed,
+    """RBACRepository.get_user finds nothing → fail-closed,
     never a 500 — the caller (signature-service) treats this identically to
     'no TOTP configured'."""
     conn = _make_conn()
-    conn.fetchrow.side_effect = [None]  # get_user_by_keycloak_sub → not provisioned
+    conn.fetchrow.side_effect = [None]  # get_user → not provisioned
     try:
         resp = await _verify(monkeypatch, conn, "123456")
         assert resp["motivo"] == "no_activo"
@@ -984,19 +983,11 @@ async def test_internal_verify_lockout_honored_before_comparing_code(
 async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
     client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression test: enroll's AESGCM AAD must be bound to the bearer's
-    OWN ``tenant_slug`` JWT claim — the same source ``/internal/totp/verify``
-    uses — not the ``X-Tenant-Slug`` header (which the gateway derives from
-    that very claim, but which is a second, independent value once it
-    reaches this service). signature pasa a `auth.api.verify_totp` el tenant
-    de la sesión, que es ese mismo claim. The bearer's claim ("otro-tenant") deliberately
-    differs from the header ("demo") here: under the old header-sourced
-    enroll, this mismatch would make ``verify`` fail to decrypt (``InvalidTag``,
-    surfaced as a 500) even though it's the SAME bearer used for both calls.
+    """Enroll's AESGCM AAD is bound to the session's tenant — the same one
+    signature passes to `auth.api.verify_totp`. `UsuarioActualMiddleware`
+    (ADR-048) rewrites `X-Tenant-Slug` from the verified token, so the tenant
+    used here is the token's, never a client-sent header.
     """
-    claims = {"user_id": "kc-sub", "tenant_slug": "otro-tenant", "username": "operador"}
-    monkeypatch.setattr("auth.routers.totp.validate_token", AsyncMock(return_value=claims))
-
     captured: dict = {}
 
     async def _enroll_fetchrow(query: str, *args: object):
@@ -1017,7 +1008,7 @@ async def test_enroll_and_verify_derive_aad_from_same_bearer_claim(
         resp = await client.post(
             "/api/v1/auth/me/totp/enroll",
             json={},
-            headers={**TENANT_HEADERS, "Authorization": "Bearer faketoken"},
+            headers={**TENANT_HEADERS, "X-Tenant-Slug": "otro-tenant", "Authorization": "Bearer faketoken"},
         )
         assert resp.status_code == 201
     finally:

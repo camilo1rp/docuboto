@@ -26,7 +26,6 @@ USER_ID = uuid.uuid4()
 TENANT_HEADERS = {"X-Tenant-Slug": "demo"}
 _ADMIN = Caller(
     user_id=USER_ID,
-    keycloak_sub="kc-admin",
     is_root=True,
     permissions={"USUA_PERM_ADMIN": 5},
 )
@@ -120,7 +119,6 @@ async def test_urd_gate_denies_without_admin(client: AsyncClient) -> None:
         conn,
         Caller(
             user_id=USER_ID,
-            keycloak_sub="kc-op",
             is_root=False,
             permissions={"PERM_RADI": 3},
         ),

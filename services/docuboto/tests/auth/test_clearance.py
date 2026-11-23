@@ -37,7 +37,7 @@ class _FakeTx:
 
 def _caller(*, is_root: bool = False, admin: bool = False) -> Caller:
     perms = {"USUA_PERM_ADMIN": 5} if admin else {"PERM_RADI": 3}
-    return Caller(user_id=_USER, keycloak_sub="kc", is_root=is_root, permissions=perms)
+    return Caller(user_id=_USER, is_root=is_root, permissions=perms)
 
 
 def _override(conn: AsyncMock, caller: Caller) -> None:

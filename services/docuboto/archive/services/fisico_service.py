@@ -549,7 +549,7 @@ class FisicoService:
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "prestatario_inexistente",
                 "El usuario indicado no existe o está inactivo. Use el `id` de "
-                "usuario del sistema (GET .../prestatarios-elegibles), no el de Keycloak.",
+                "usuario del sistema (GET .../prestatarios-elegibles).",
             )
         if d["prestatario_sin_acceso"]:
             raise _error(

@@ -273,8 +273,7 @@ async def units_of_expediente(
 
 def _performed_by(actor: uuid.UUID | None) -> str | None:
     """Quién ejecutó el movimiento: el UUID de `auth_users.id` (`X-User-Id`),
-    NUNCA el login. Un username es mutable (Keycloak permite renombrar aun con
-    `editUsernameAllowed=false`) y reasignable; una fila de custodia física
+    NUNCA el login. Un username es mutable y reasignable; una fila de custodia física
     atribuida a un nombre deja de ser reconstruible el día que el nombre cambia
     (AREA-02-08). Misma regla que `archive/core/actor.py::Actor.audit_actor`, sin
     fallback a `X-Username`."""

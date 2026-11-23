@@ -28,7 +28,6 @@ from tests.auth.test_rbac import TENANT_HEADERS, _override_conn, _patch_audit
 
 _LECTOR = Caller(
     user_id=uuid.uuid4(),
-    keycloak_sub="kc-lector",
     is_root=False,
     permissions={"USUA_PERM_ADMIN": 1},
 )
@@ -99,7 +98,7 @@ async def test_admin_nivel_3_pasa_el_gate(
     conn.fetchrow.return_value = {"id": _G, "name": "G", "description": None}
     _override_conn(conn)
     app.dependency_overrides[get_caller] = lambda: Caller(
-        user_id=uuid.uuid4(), keycloak_sub="kc", is_root=False, permissions={"USUA_PERM_ADMIN": 3}
+        user_id=uuid.uuid4(), is_root=False, permissions={"USUA_PERM_ADMIN": 3}
     )
 
     resp = await client.post("/api/v1/auth/groups", json={"name": "G"}, headers=TENANT_HEADERS)
@@ -111,7 +110,6 @@ async def test_admin_nivel_3_pasa_el_gate(
 def _admin_no_root(nivel: int = 3) -> Caller:
     return Caller(
         user_id=uuid.uuid4(),
-        keycloak_sub="kc-nr",
         is_root=False,
         permissions={"USUA_PERM_ADMIN": nivel},
     )

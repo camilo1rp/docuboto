@@ -13,7 +13,7 @@ seguridad — no bloqueante).
 
 `WebhookCreate.url` (schema Pydantic) solo validaba la FORMA de la URL, nunca
 su DESTINO: un administrador podía suscribir un webhook a un servicio interno
-de la red Docker (`postgres`, `keycloak`, `document-service`, ...) o a un
+de la red Docker (`postgres`, `redis`, `app`, ...) o a un
 rango no enrutable (loopback/link-local/privado). No es explotable como SSRF
 clásico (POST con cuerpo fijo, sin cabeceras controlables por el atacante, sin
 redirects, ciego — `_deliver_one` nunca devuelve la respuesta al llamante),

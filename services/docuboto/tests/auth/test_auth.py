@@ -7,24 +7,22 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""
-Tests for auth-service endpoints.
+"""`GET /api/v1/auth/me`: identidad del portador y permisos efectivos.
 
-Keycloak is mocked entirely — these tests verify the FastAPI layer, schema
-validation, audit logging, and correct error mapping without requiring a live
-Keycloak instance.
+La persona llega ya verificada (lo que deja `UsuarioActualMiddleware`); el
+emisor y la verificación del token los prueba `test_identidad.py`.
 """
 
 import uuid
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
 from orpycamcp_common.database import get_optional_tenant_conn
 
 from tests.auth.app import app
-from tests.auth.conftest import FAKE_TOKEN_RESPONSE
+from tests.auth.fakes_identidad import como
 
 
 def _override_optional_conn(conn: AsyncMock | None) -> None:
@@ -34,202 +32,6 @@ def _override_optional_conn(conn: AsyncMock | None) -> None:
         yield conn
 
     app.dependency_overrides[get_optional_tenant_conn] = _dep
-
-# ---------------------------------------------------------------------------
-# POST /api/v1/auth/token
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_token_success(client: AsyncClient) -> None:
-    """Successful ROPC login returns a token pair."""
-    with (
-        patch(
-            "auth.services.auth_service.AuthService.login",
-            new_callable=AsyncMock,
-        ) as mock_login,
-    ):
-        from auth.schemas.auth import TokenResponse
-
-        mock_login.return_value = TokenResponse(**FAKE_TOKEN_RESPONSE)
-
-        response = await client.post(
-            "/api/v1/auth/token",
-            json={"username": "operador", "password": "orpycamcp_dev", "tenant_slug": "demo"},
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert "access_token" in body
-    assert "refresh_token" in body
-    assert body["token_type"] == "Bearer"
-    assert body["expires_in"] == 300
-
-
-@pytest.mark.asyncio
-async def test_token_invalid_credentials(client: AsyncClient) -> None:
-    """Wrong password returns 401 with structured error."""
-    from auth.services.auth_service import KeycloakError
-
-    with patch(
-        "auth.services.auth_service.AuthService.login",
-        new_callable=AsyncMock,
-        side_effect=KeycloakError(401, "invalid_credentials"),
-    ):
-        response = await client.post(
-            "/api/v1/auth/token",
-            json={"username": "operador", "password": "wrong", "tenant_slug": "demo"},
-        )
-
-    assert response.status_code == 401
-    body = response.json()
-    assert body["detail"]["error"] == "invalid_credentials"
-
-
-@pytest.mark.asyncio
-async def test_token_tenant_mismatch(client: AsyncClient) -> None:
-    """A user logging in with a tenant they don't belong to returns 403."""
-    from auth.services.auth_service import KeycloakError
-
-    with patch(
-        "auth.services.auth_service.AuthService.login",
-        new_callable=AsyncMock,
-        side_effect=KeycloakError(403, "tenant_mismatch"),
-    ):
-        response = await client.post(
-            "/api/v1/auth/token",
-            json={"username": "operador", "password": "orpycamcp_dev", "tenant_slug": "other"},
-        )
-
-    assert response.status_code == 403
-    assert response.json()["detail"]["error"] == "tenant_mismatch"
-
-
-# ---------------------------------------------------------------------------
-# POST /api/v1/auth/refresh
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_refresh_token(client: AsyncClient) -> None:
-    """Valid refresh token returns a new token pair."""
-    from auth.schemas.auth import TokenResponse
-
-    with patch(
-        "auth.services.auth_service.AuthService.refresh",
-        new_callable=AsyncMock,
-        return_value=TokenResponse(**FAKE_TOKEN_RESPONSE),
-    ):
-        response = await client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": "eyFAKE_REFRESH_TOKEN"},
-        )
-
-    assert response.status_code == 200
-    assert "access_token" in response.json()
-
-
-@pytest.mark.asyncio
-async def test_refresh_invalid_token(client: AsyncClient) -> None:
-    """Expired or invalid refresh token returns 401."""
-    from auth.services.auth_service import KeycloakError
-
-    with patch(
-        "auth.services.auth_service.AuthService.refresh",
-        new_callable=AsyncMock,
-        side_effect=KeycloakError(401, "invalid_refresh_token"),
-    ):
-        response = await client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": "expired-token"},
-        )
-
-    assert response.status_code == 401
-
-
-# ---------------------------------------------------------------------------
-# POST /api/v1/auth/logout
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_logout(client: AsyncClient) -> None:
-    """Logout returns 204 and invalidates the token in Keycloak."""
-    with patch(
-        "auth.services.auth_service.AuthService.logout",
-        new_callable=AsyncMock,
-        return_value=None,
-    ):
-        response = await client.post(
-            "/api/v1/auth/logout",
-            json={"refresh_token": "eyFAKE_REFRESH_TOKEN"},
-        )
-
-    assert response.status_code == 204
-
-
-# ---------------------------------------------------------------------------
-# GET /api/v1/auth/validate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_validate_valid_token(client: AsyncClient) -> None:
-    """api-gateway calls /validate with a valid token and gets user info back."""
-    from auth.schemas.auth import ValidateResponse
-
-    expected = ValidateResponse(
-        valid=True,
-        user_id="some-uuid",
-        username="operador",
-        tenant_slug="demo",
-        roles=["operator"],
-    )
-
-    with patch(
-        "auth.services.auth_service.AuthService.validate",
-        new_callable=AsyncMock,
-        return_value=expected,
-    ):
-        response = await client.get(
-            "/api/v1/auth/validate",
-            headers={"Authorization": "Bearer eyFAKE_ACCESS_TOKEN"},
-        )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["valid"] is True
-    assert body["username"] == "operador"
-    assert body["tenant_slug"] == "demo"
-    assert "operator" in body["roles"]
-
-
-@pytest.mark.asyncio
-async def test_validate_expired_token(client: AsyncClient) -> None:
-    """An expired token returns valid=False (not an HTTP error — gateway decides)."""
-    from auth.schemas.auth import ValidateResponse
-
-    with patch(
-        "auth.services.auth_service.AuthService.validate",
-        new_callable=AsyncMock,
-        return_value=ValidateResponse(valid=False),
-    ):
-        response = await client.get(
-            "/api/v1/auth/validate",
-            headers={"Authorization": "Bearer expired.token.here"},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["valid"] is False
-
-
-@pytest.mark.asyncio
-async def test_validate_missing_header(client: AsyncClient) -> None:
-    """Missing Authorization header returns 401."""
-    response = await client.get("/api/v1/auth/validate")
-    assert response.status_code == 401
-    assert response.json()["detail"]["error"] == "missing_token"
-
 
 # ---------------------------------------------------------------------------
 # GET /api/v1/auth/me
@@ -252,11 +54,7 @@ async def test_me_returns_user_info(client: AsyncClient) -> None:
         roles=["operator"],
     )
 
-    with patch(
-        "auth.services.auth_service.AuthService.get_current_user",
-        new_callable=AsyncMock,
-        return_value=expected,
-    ):
+    with como(expected):
         response = await client.get(
             "/api/v1/auth/me",
             headers={"Authorization": "Bearer eyFAKE_ACCESS_TOKEN"},
@@ -287,12 +85,11 @@ async def test_me_permissions_populated(client: AsyncClient) -> None:
     )
 
     conn = AsyncMock()
-    # get_user_by_keycloak_sub → user exists
+    # get_user → user exists
     conn.fetchrow.return_value = {
         "id": user_id,
         "username": "OPERADOR",
         "email": "operador@demo.orpycamcp.local",
-        "keycloak_sub": sub,
         "is_root": False,
         "is_active": True,
     }
@@ -305,11 +102,7 @@ async def test_me_permissions_populated(client: AsyncClient) -> None:
     conn.fetchval.return_value = False
     _override_optional_conn(conn)
 
-    with patch(
-        "auth.services.auth_service.AuthService.get_current_user",
-        new_callable=AsyncMock,
-        return_value=user_info,
-    ):
+    with como(user_info):
         response = await client.get(
             "/api/v1/auth/me",
             headers={
@@ -353,7 +146,6 @@ async def test_me_permission_levels_distinguish_read_from_write(client: AsyncCli
         "id": user_id,
         "username": "LECTOR",
         "email": "lector@demo.orpycamcp.local",
-        "keycloak_sub": sub,
         "is_root": False,
         "is_active": True,
     }
@@ -362,11 +154,7 @@ async def test_me_permission_levels_distinguish_read_from_write(client: AsyncCli
     conn.fetchval.return_value = False
     _override_optional_conn(conn)
 
-    with patch(
-        "auth.services.auth_service.AuthService.get_current_user",
-        new_callable=AsyncMock,
-        return_value=user_info,
-    ):
+    with como(user_info):
         response = await client.get(
             "/api/v1/auth/me",
             headers={
@@ -398,15 +186,11 @@ async def test_me_permissions_empty_when_not_provisioned(client: AsyncClient) ->
     )
 
     conn = AsyncMock()
-    # get_user_by_keycloak_sub → user NOT provisioned in tenant
+    # get_user → user NOT provisioned in tenant
     conn.fetchrow.return_value = None
     _override_optional_conn(conn)
 
-    with patch(
-        "auth.services.auth_service.AuthService.get_current_user",
-        new_callable=AsyncMock,
-        return_value=user_info,
-    ):
+    with como(user_info):
         response = await client.get(
             "/api/v1/auth/me",
             headers={
@@ -442,7 +226,6 @@ async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
         "id": user_id,
         "username": "ADMIN",
         "email": "admin@demo.test",
-        "keycloak_sub": sub,
         "is_root": True,
         "is_active": True,
     }
@@ -451,11 +234,7 @@ async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
     conn.fetchval.return_value = True  # is_root
     _override_optional_conn(conn)
 
-    with patch(
-        "auth.services.auth_service.AuthService.get_current_user",
-        new_callable=AsyncMock,
-        return_value=user_info,
-    ):
+    with como(user_info):
         response = await client.get(
             "/api/v1/auth/me",
             headers={
@@ -472,15 +251,6 @@ async def test_me_root_includes_usua_perm_root(client: AsyncClient) -> None:
     # RBACService.resolve_effective_permissions embeds USUA_PERM_ROOT at crud=5.
     assert body["permission_levels"]["USUA_PERM_ROOT"] == 5
     assert body["permission_levels"]["PERM_RADI"] == 5
-
-
-# ---------------------------------------------------------------------------
-# GET /health
-# ---------------------------------------------------------------------------
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -533,11 +303,7 @@ async def test_me_entidad_sin_schema_permisos_vacios(client: AsyncClient) -> Non
     conn.fetchrow.side_effect = asyncpg.UndefinedTableError('relation "auth_users" does not exist')
     app.state.db_pool = _PoolFalso(conn)
     try:
-        with patch(
-            "auth.services.auth_service.AuthService.get_current_user",
-            new_callable=AsyncMock,
-            return_value=user_info,
-        ):
+        with como(user_info):
             response = await client.get(
                 "/api/v1/auth/me",
                 headers={"Authorization": "Bearer eyFAKE", "X-Tenant-Slug": "sin-schema-b7"},
@@ -547,7 +313,7 @@ async def test_me_entidad_sin_schema_permisos_vacios(client: AsyncClient) -> Non
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["user_id"] == "kc-sub-1"  # el `sub`: no hay usuario interno
+    assert body["permissions"] == []  # no hay usuario interno
     assert body["permissions"] == []
     assert body["permission_levels"] == {}
     conn.fetchrow.assert_not_awaited()
@@ -568,11 +334,7 @@ async def test_me_entidad_con_schema_sigue_resolviendo_permisos(client: AsyncCli
     conn.fetchrow.return_value = None  # usuario no aprovisionado
     app.state.db_pool = _PoolFalso(conn)
     try:
-        with patch(
-            "auth.services.auth_service.AuthService.get_current_user",
-            new_callable=AsyncMock,
-            return_value=user_info,
-        ):
+        with como(user_info):
             response = await client.get(
                 "/api/v1/auth/me",
                 headers={"Authorization": "Bearer eyFAKE", "X-Tenant-Slug": "demo"},

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncGenerator
-from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -27,7 +26,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from orpycamcp_common.database import get_optional_tenant_conn, tenant_schema
 
-from auth.schemas.auth import UserInfoResponse
 from tests.auth.app import app
 from tests.auth.integration.conftest import DSN, RUN_INTEGRATION
 
@@ -48,24 +46,15 @@ async def pool() -> AsyncGenerator[asyncpg.Pool, None]:
         await p.close()
 
 
-async def _me(slug: str) -> tuple[int, dict]:
-    info = UserInfoResponse(
-        user_id="kc-sub-b7", username="x", email="x@y.co", tenant_slug=slug, roles=[]
-    )
-    with patch(
-        "auth.services.auth_service.AuthService.get_current_user",
-        new_callable=AsyncMock,
-        return_value=info,
-    ):
-        from auth.routers.auth import set_auth_service
-        from auth.services.auth_service import AuthService
+_UID = "6f0c1d2e-0000-4000-8000-0000000000b7"
 
-        set_auth_service(AuthService())
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-            r = await ac.get(
-                "/api/v1/auth/me",
-                headers={"Authorization": "Bearer eyFAKE", "X-Tenant-Slug": slug},
-            )
+
+async def _me(slug: str) -> tuple[int, dict]:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        r = await ac.get(
+            "/api/v1/auth/me",
+            headers={"X-User-Id": _UID, "X-Tenant-Slug": slug},
+        )
     return r.status_code, r.json()
 
 
@@ -78,7 +67,7 @@ async def test_entidad_sin_schema_responde_200_con_permisos_vacios(pool: asyncpg
     status, body = await _me(slug)
 
     assert status == 200, body
-    assert body["user_id"] == "kc-sub-b7"
+    assert body["user_id"] == _UID
     assert body["permissions"] == []
     assert body["permission_levels"] == {}
 
