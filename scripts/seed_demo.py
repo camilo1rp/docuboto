@@ -68,20 +68,9 @@ TENANT = "demo"
 USUARIO = "operador"
 CLAVE = "orpycamcp_dev"
 
-# Los otros firmantes del realm de desarrollo (`infra/keycloak/realm-dev.json`).
-# Existen para que la cadena de firma MÚLTIPLE sea de verdad: una cadena con el
+# Los otros firmantes de la entidad de desarrollo. Existen para que la cadena de firma MÚLTIPLE sea de verdad: una cadena con el
 # mismo usuario repetido enseñaría una pantalla que no corresponde a nada.
 FIRMANTES = ("jefe", "secretaria", "archivista")
-
-# Keycloak NO reimporta un realm que ya existe: quien levantó el sistema antes de
-# que estos usuarios entraran en `realm-dev.json` no los tendría, y el demo
-# fallaría con un 401 sin explicar por qué. Se crean por la API de
-# administración si faltan — con las credenciales de DESARROLLO que documenta el
-# CLAUDE.md, y solo en el realm `orpycamcp`.
-KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://keycloak:8080")
-KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "orpycamcp")
-KEYCLOAK_ADMIN = os.getenv("KEYCLOAK_ADMIN", "admin")
-KEYCLOAK_ADMIN_PASS = os.getenv("KEYCLOAK_ADMIN_PASSWORD", "orpycamcp_dev")
 
 # Marca con la que se reconoce lo que crea este script, para poder deshacerlo sin
 # tocar nada más. Va SOLO en asuntos y descripciones —donde se lee como «esto es
@@ -343,7 +332,7 @@ class Api:
 
     async def autenticar(self) -> str:
         resp = await self._cliente.post(  # type: ignore[union-attr]
-            "/api/v1/auth/token",
+            "/api/v1/auth/login",
             json={"username": USUARIO, "password": CLAVE, "tenant_slug": TENANT},
         )
         if resp.status_code != 200:
@@ -367,7 +356,7 @@ class Api:
         for intento in range(5):
             cabeceras = {**self.cabeceras, **extra}
             r = await self._cliente.request(metodo, ruta, headers=cabeceras, **kw)  # type: ignore[union-attr]
-            # El token de Keycloak caduca en minutos y una siembra con volumen
+            # El access token caduca en minutos y una siembra con volumen
             # dura más que eso: sin renovarlo, el guion abortaba a mitad con un
             # 401 que parecía un problema de permisos y era un reloj. Se renueva
             # UNA vez por petición —si el token recién pedido tampoco vale, el
@@ -444,113 +433,35 @@ def _dsn() -> str:
     return crudo.replace("postgresql+asyncpg://", "postgresql://")
 
 
-async def _crear_en_keycloak(username: str) -> bool:
-    """Crea el usuario en Keycloak si no está. `True` si quedó creado.
+async def _asegurar_usuario(conn: Any, username: str) -> None:
+    """Crea a la persona en `auth_users` con la clave de desarrollo si no está.
 
-    Solo tiene sentido en desarrollo, y por eso usa las credenciales de
-    desarrollo: en una instalación real los usuarios los crea la entidad, no un
-    guion de demostración.
+    La identidad la emite Docuboto (ADR-048): no hay realm que poblar ni alta en
+    el primer login. Solo tiene sentido en desarrollo, y por eso usa la clave de
+    desarrollo: en una instalación real a las personas las crea la entidad. Si
+    ya existe, se le repone la clave para que el demo siempre pueda entrar.
     """
-    async with httpx.AsyncClient(base_url=KEYCLOAK_URL, timeout=30.0) as kc:
-        tok = await kc.post(
-            "/realms/master/protocol/openid-connect/token",
-            data={
-                "grant_type": "password",
-                "client_id": "admin-cli",
-                "username": KEYCLOAK_ADMIN,
-                "password": KEYCLOAK_ADMIN_PASS,
-            },
-        )
-        if tok.status_code != 200:
-            return False
-        cab = {"Authorization": f"Bearer {tok.json()['access_token']}"}
+    from argon2 import PasswordHasher
 
-        # Keycloak 24+ descarta en silencio los atributos que el «user profile»
-        # no declara, y `tenant_slug` es uno de ellos: el usuario se crea, el
-        # atributo desaparece, y entrar falla luego con `tenant_mismatch` sin
-        # que nada mencione el atributo perdido. (Los usuarios del
-        # `realm-dev.json` sí lo tienen porque la importación no pasa por ese
-        # filtro.) Se habilita la política de atributos no gestionados antes de
-        # crear a nadie.
-        perfil = await kc.get(f"/admin/realms/{KEYCLOAK_REALM}/users/profile", headers=cab)
-        if perfil.status_code == 200:
-            cfg = perfil.json()
-            if cfg.get("unmanagedAttributePolicy") != "ENABLED":
-                cfg["unmanagedAttributePolicy"] = "ENABLED"
-                await kc.put(
-                    f"/admin/realms/{KEYCLOAK_REALM}/users/profile", headers=cab, json=cfg
-                )
-        # `firstName`/`lastName` y `requiredActions: []` NO son adorno: sin ellos
-        # Keycloak deja la cuenta con acciones pendientes y responde
-        # «Account is not fully set up» al primer intento de entrar — un 400 que
-        # no menciona en ningún sitio que falte el apellido.
-        cuerpo = {
-            "username": username,
-            "email": f"{username}@demo.orpycamcp.local",
-            "emailVerified": True,
-            "firstName": username.capitalize(),
-            "lastName": "Demo",
-            "enabled": True,
-            "requiredActions": [],
-            "attributes": {"tenant_slug": [TENANT]},
-            "credentials": [{"type": "password", "value": CLAVE, "temporary": False}],
-        }
-        alta = await kc.post(f"/admin/realms/{KEYCLOAK_REALM}/users", headers=cab, json=cuerpo)
-        if alta.status_code == 201:
-            return True
-        if alta.status_code != 409:
-            return False
-
-        # Ya existía pero no podía entrar: se completa en vez de rendirse. Es el
-        # caso de quien probó una versión anterior de este guion y se quedó con
-        # una cuenta a medio crear.
-        busca = await kc.get(
-            f"/admin/realms/{KEYCLOAK_REALM}/users",
-            headers=cab,
-            params={"username": username, "exact": "true"},
-        )
-        filas = busca.json() if busca.status_code == 200 else []
-        if not filas:
-            return False
-        uid = filas[0]["id"]
-        arreglo = await kc.put(
-            f"/admin/realms/{KEYCLOAK_REALM}/users/{uid}", headers=cab, json=cuerpo
-        )
-        return arreglo.status_code in (204, 200)
-
-
-async def _asegurar_usuario(api_base: str, username: str) -> None:
-    """Provoca que el auth-service aprovisione al usuario en el tenant.
-
-    `auth_users` la escribe el auth-service al validar el PRIMER token de cada
-    persona, así que un usuario del realm que nunca ha entrado no existe en el
-    esquema del tenant y no se le puede conceder nada. En vez de insertar la
-    fila por detrás —donde es fácil que el id no case con el de Keycloak y el
-    fallo aparezca semanas después— se pide un token en su nombre, que es
-    exactamente lo que haría esa persona al entrar.
-    """
-    async with httpx.AsyncClient(base_url=api_base, timeout=30.0) as c:
-        cuerpo = {"username": username, "password": CLAVE, "tenant_slug": TENANT}
-        r = await c.post("/api/v1/auth/token", json=cuerpo)
-        if r.status_code != 200 and await _crear_en_keycloak(username):
-            aviso(f"«{username}» no estaba en Keycloak: creado")
-            r = await c.post("/api/v1/auth/token", json=cuerpo)
-        if r.status_code != 200:
-            raise Fallo(
-                f"No se pudo entrar como «{username}» ({r.status_code}), ni crearlo "
-                f"en Keycloak. Comprueba que Keycloak responde en {KEYCLOAK_URL} y "
-                "que las credenciales de administración de desarrollo son las del "
-                "docker-compose."
-            )
-        me = await c.get(
-            "/api/v1/auth/me",
-            headers={
-                "Authorization": f"Bearer {r.json()['access_token']}",
-                "X-Tenant-Slug": TENANT,
-            },
-        )
-        if me.status_code != 200:
-            raise Fallo(f"«{username}» entró pero /auth/me devolvió {me.status_code}")
+    cifrada = PasswordHasher().hash(CLAVE)
+    fila = await conn.fetchrow(
+        """
+        INSERT INTO auth_users (username, email, password_hash, password_changed_at)
+        VALUES (upper($1), $2, $3, now())
+        ON CONFLICT (username) DO UPDATE
+            SET password_hash = EXCLUDED.password_hash,
+                failed_logins = 0, locked_until = NULL, is_active = true
+        RETURNING id
+        """,
+        username,
+        f"{username}@demo.orpycamcp.local",
+        cifrada,
+    )
+    await conn.execute(
+        "INSERT INTO auth_password_history (user_id, password_hash) VALUES ($1, $2)",
+        fila["id"],
+        cifrada,
+    )
 
 
 async def _montar_grupo(
@@ -672,7 +583,7 @@ async def _montar_grupo(
     return int(concedidos or 0)
 
 
-async def aprovisionar(api_base: str) -> None:
+async def aprovisionar() -> None:
     """Grupos, permisos y membresía: la ÚNICA parte que va por SQL.
 
     Es administración de la plataforma, no gestión documental — la misma
@@ -680,24 +591,20 @@ async def aprovisionar(api_base: str) -> None:
     precisamente porque produce documentos, y esos tienen que nacer con su
     auditoría y su índice.
 
-    El usuario se toma de `auth_users`, donde el auth-service lo aprovisiona al
-    entrar por primera vez; si no está, se dice qué hacer en vez de crearlo por
-    detrás y arriesgar una identidad que no case con la de Keycloak.
+    Las personas se crean aquí también, en `auth_users`, con la clave de
+    desarrollo: la identidad la emite Docuboto (ADR-048).
     """
     paso("Aprovisionando usuarios y permisos (única parte por SQL: es administración)")
-    # Antes que el SQL: que existan. Cada uno entra una vez y el auth-service
-    # crea su fila con el id que le corresponde.
-    for quien in (USUARIO, *FIRMANTES, USUARIO_CONSULTA):
-        await _asegurar_usuario(api_base, quien)
-    ok(
-        f"{2 + len(FIRMANTES)} usuarios aprovisionados: {USUARIO}, "
-        f"{', '.join(FIRMANTES)}, {USUARIO_CONSULTA}"
-    )
-
     conn = await asyncpg.connect(_dsn())
     try:
         esquema = f"tenant_{TENANT}"
         await conn.execute(f'SET search_path TO "{esquema}"')
+        for quien in (USUARIO, *FIRMANTES, USUARIO_CONSULTA):
+            await _asegurar_usuario(conn, quien)
+        ok(
+            f"{2 + len(FIRMANTES)} usuarios aprovisionados: {USUARIO}, "
+            f"{', '.join(FIRMANTES)}, {USUARIO_CONSULTA}"
+        )
 
         # `upper(...)` en los dos lados: el auth-service guarda el nombre en
         # MAYÚSCULAS (convención heredada de Orfeo), así que una comparación
@@ -709,9 +616,7 @@ async def aprovisionar(api_base: str) -> None:
         if usuario is None:
             raise Fallo(
                 f"El usuario «{USUARIO}» no está aprovisionado en {esquema}.auth_users. "
-                f"Entra una vez en la interfaz con «{USUARIO}» y vuelve a ejecutar esto: "
-                "el auth-service lo crea al validar su primer token, y así su id "
-                "coincide con el de Keycloak."
+                "Debió crearlo el paso anterior: revisa la conexión a la base."
             )
 
         # Los dos grupos se montan con el MISMO código. Que el grupo pobre no
@@ -770,7 +675,7 @@ async def aprovisionar(api_base: str) -> None:
 
 
 async def principal(gateway: str) -> int:
-    await aprovisionar(gateway)
+    await aprovisionar()
     async with Api(gateway) as api:
         paso("Entrando al sistema como haría una persona")
         user_id = await api.autenticar()

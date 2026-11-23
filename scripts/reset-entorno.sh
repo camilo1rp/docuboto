@@ -31,8 +31,8 @@
 #
 # ## Qué DESTRUYE
 #
-# `docker compose down -v` borra los volúmenes: Postgres (incluido el schema
-# `keycloak`, que se reimporta solo desde `realm-dev.json`), MinIO y Redis.
+# `docker compose down -v` borra los volúmenes: Postgres (con las personas y
+# las claves de firma de los JWT), MinIO y Redis.
 # Todo lo que hubiera en la instalación se pierde. Por eso pide confirmación
 # tecleada y no acepta un simple «sí»: la frase nombra el acto.
 #
@@ -133,24 +133,16 @@ if [[ -z "$RED" ]]; then
 fi
 
 azul "4/8 · Esperando a que responda lo que la siembra necesita"
-# Esperar al gateway NO basta, y esto costó un reset entero: su `/health` no
-# depende de Keycloak, así que contestaba a los 10 s mientras Keycloak seguía
-# importando el realm sobre una base recién creada. La siembra arrancaba y moría
-# con un `ConnectError` que no nombra a nadie.
-#
-# Dos correcciones, y la segunda es la de fondo:
-#   · se comprueba lo que el seed usa PRIMERO —el realm de Keycloak— además del
-#     gateway y de auth-service;
-#   · se comprueba DESDE DENTRO de la red, por los mismos nombres y puertos que
-#     usará la siembra. Una comprobación de disponibilidad que recorre otra ruta
-#     que aquello a lo que da paso no prueba nada: desde el host, por el puerto
-#     publicado, es otro camino.
+# Se comprueba lo que la siembra usa —la app y su emisor de identidad— DESDE
+# DENTRO de la red, por los mismos nombres y puertos que usará la siembra. Una
+# comprobación de disponibilidad que recorre otra ruta que aquello a lo que da
+# paso no prueba nada: desde el host, por el puerto publicado, es otro camino.
 espera_dependencias() {
   docker run --rm --network "$1" orpycamcp-scripts:dev -c '
 import sys, time, httpx
 urls = [
-    "http://keycloak:8080/realms/orpycamcp/.well-known/openid-configuration",
     "http://app:8000/health",
+    "http://app:8000/.well-known/openid-configuration",
 ]
 limite = time.time() + 600
 pendientes = list(urls)
@@ -170,12 +162,12 @@ if pendientes:
 '
 }
 
-espera_dependencias "$RED" || { rojo "Las dependencias no respondieron. Mira: docker compose logs keycloak"; exit 1; }
-verde "la app y el realm de Keycloak responden"
+espera_dependencias "$RED" || { rojo "La app no respondió. Mira: docker compose logs app"; exit 1; }
+verde "la app y su emisor de identidad responden"
 
 # Los guiones corren DENTRO de la red: sus valores por defecto ya son nombres
-# internos (`postgres:5432`, `keycloak:8080`) porque hablan con Postgres por
-# asyncpg y con Keycloak por su API de administración. El repo se monta `:ro`;
+# internos (`postgres:5432`, `app:8000`) porque hablan con Postgres por
+# asyncpg y con la app por HTTP. El repo se monta `:ro`;
 # `secrets/perfiles-csr` es lo ÚNICO con escritura, con `--user` para que lo que
 # salga sea del usuario y no de root.
 GW_INTERNO="http://app:8000"
@@ -195,8 +187,7 @@ guion() {
 azul "5/8 · Creando el tenant y aplicando sus migraciones"
 # Sobre un volumen nuevo NO existe `tenant_demo`, y `seed_demo.py` da por hecho
 # que sí —su propio mensaje de error lo dice—. Sin este paso la siembra muere
-# con un 500 al pedir el primer token, después de haber creado el usuario en
-# Keycloak: un estado a medias que se lee como «Keycloak está mal».
+# al crear a la primera persona, sin decir que faltaba el tenant.
 #
 # Corre desde el HOST porque así está escrito `init-tenant.sh`, que orquesta
 # `docker compose exec` sobre los servicios.
@@ -257,7 +248,6 @@ cat <<FIN
   Interfaz     http://localhost:19300
   MailHog      http://localhost:8025      (los OTP por correo llegan aquí)
   Almacén S3   http://localhost:19900  (RustFS, sin consola web — ver ADR-027)
-  Keycloak     http://localhost:19180/admin
 
   Los perfiles y sus secretos TOTP están en la tarjeta de arriba.
   El recorrido funcional completo: docs/es/plan-pruebas.md

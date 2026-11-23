@@ -165,19 +165,18 @@ class Sesion:
 
     async def entrar(self) -> None:
         r = await self._c.post(
-            f"{GATEWAY}/api/v1/auth/token",
+            f"{GATEWAY}/api/v1/auth/login",
             json={"username": self.usuario, "password": CLAVE, "tenant_slug": TENANT},
         )
         if r.status_code != 200:
             raise Fallo(
                 f"No se pudo autenticar como «{self.usuario}» ({r.status_code}). "
                 "Ejecuta antes `python scripts/seed_demo.py`, que es quien crea los "
-                "usuarios en Keycloak y los aprovisiona en el tenant."
+                "usuarios en el tenant."
             )
         self._token = r.json()["access_token"]
         me = await self.pedir("GET", "/api/v1/auth/me")
-        # `user_id`, no `sub`: el de Keycloak y el de `auth_users` son distintos
-        # y confundirlos ya rompió tres pantallas en este proyecto.
+        # `user_id` de `/auth/me`: es `auth_users.id` (ADR-048).
         self.user_id = str((me.json() or {}).get("user_id") or "")
         if not self.user_id:
             raise Fallo(

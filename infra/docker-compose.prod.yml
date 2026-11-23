@@ -13,7 +13,7 @@ name: orpyca-mcp
 # ✓ All credentials from environment variables (.env file)
 # ✓ PostgreSQL backup strategy configured
 # ✓ MinIO access logs enabled
-# ✓ Keycloak TLS certificate installed
+# ✓ TLS certificates installed for the public hostnames
 # ✓ Redis persistence enabled (RDB or AOF)
 # ✓ All services have resource limits
 # ✓ External logging configured (ELK, Datadog, etc.)
@@ -51,7 +51,6 @@ volumes:
   minio-data:
   objectstore-data:
   redis-data:
-  # Keycloak uses external PostgreSQL, no separate volume
 
 # Migraciones al arrancar (AREA-13-08, ADR-053). Todo servicio espera a
 # `migrate-docuboto`, el único migrador (imagen `app`,
@@ -95,8 +94,8 @@ services:
     # entidad, un proceso, ADR-047) abre un pool de `DB_POOL_MAX_SIZE=10`
     # conexiones para la app.
     #
-    # Keycloak se acota a `KC_DB_POOL_MAX_SIZE=30` contra el mismo Postgres.
-    # Suma: 40, más margen para migraciones, respaldos y `psql` de operación.
+    # La identidad la emite la propia app (ADR-048): no hay otro pool contra
+    # este Postgres. Queda margen para migraciones, respaldos y `psql`.
     #
     # Se deja `max_connections=300`. Bajar el cupo del servidor es otro cambio:
     # el monolito de Docuboto 2.0 pasa a un solo pool, y esa es la cuenta que
@@ -117,11 +116,6 @@ services:
       - orpycamcp-net
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # OJO con la ruta: este compose vive en infra/, el script en la raíz. Con
-      # `./scripts/...` Docker no falla — crea un DIRECTORIO vacío y lo monta, así
-      # que el init no corre y no existe el schema `keycloak`. El fallo aparece
-      # después, en Keycloak.
-      - ../scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
       # Optional: database backup script
       # - ./infra/postgres/backup.sh:/usr/local/bin/backup.sh:ro
     healthcheck:
@@ -242,79 +236,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
-    container_name: orpycamcp-keycloak-prod
-    restart: unless-stopped
-    command: start --db=postgres --hostname-strict=true --hostname=${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME}
-      KC_DB_USERNAME: ${DB_USER}
-      KC_DB_PASSWORD: ${DB_PASSWORD}
-      KC_DB_SCHEMA: keycloak
-      # Keycloak abre por defecto hasta 100 conexiones contra el MISMO Postgres
-      # que usa la app. Acotarlo es la otra mitad del presupuesto
-      # de conexiones documentado en el bloque `postgres` de este fichero: sin
-      # este tope, un pico de carga documental y el inicio de sesión compiten por
-      # el mismo cupo y lo que falla es el login.
-      KC_DB_POOL_MAX_SIZE: "30"
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?Keycloak admin user required}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Keycloak admin password required}
-
-      # TLS TERMINADO EN EL REVERSE PROXY (es el despliegue que documenta la guía
-      # y el que asume el resto de este fichero: todos los servicios usan `expose:`,
-      # ninguno publica puerto). Keycloak habla HTTP plano DENTRO de la red Docker
-      # y confía en las cabeceras X-Forwarded-* del proxy.
-      #
-      # La configuración anterior (HTTPS_ENABLED=true + HTTP_ENABLED=false) con el
-      # bloque de certificados comentado abajo hacía que el contenedor muriera al
-      # arrancar con «Key material not provided» — y sin identidad no hay sistema.
-      # Si terminas TLS AQUÍ en vez de en el proxy: invierte estas dos variables,
-      # descomenta el montaje de certificados y añade KC_HTTPS_PORT: "8443".
-      KC_HTTP_ENABLED: "true"
-      KC_HTTPS_ENABLED: "false"
-      KC_PROXY_HEADERS: xforwarded
-
-      # Performance tuning
-      # KC_CACHE_STACK solo aplica a clúster; `kubernetes` sobre Compose plano hace
-      # que el descubrimiento JGroups falle. Con una sola instancia, `default` basta.
-      KC_CACHE: local
-      # El contenedor tiene 1 GB. Sin esto el heap de Java asume el RAM del host
-      # y el proceso se sale del límite. 70 % deja sitio a metaspace y nativo.
-      JAVA_OPTS_APPEND: "-XX:MaxRAMPercentage=70.0"
-    networks:
-      - orpycamcp-net
-    # Montajes opcionales (descomenta y añade `volumes:` como lista cuando los uses):
-    # volumes:
-    #   # Certificado TLS (si NO terminas TLS en el reverse proxy):
-    #   - ./certs/tls.crt:/etc/x509/https/tls.crt:ro
-    #   - ./certs/tls.key:/etc/x509/https/tls.key:ro
-    #   # Realm de PRODUCCIÓN propio. NO reutilizar `realm-dev.json`: trae dos
-    #   # usuarios con contraseña publicada en el repositorio, secretos de cliente
-    #   # `change-me-in-production`, `sslRequired: none` y redirectUris a localhost.
-    #   # Parte de `infra/keycloak/realm-prod.json.example`, cópialo a
-    #   # `realm-prod.json` y sustituye todo lo que aparece entre <>:
-    #   - ./keycloak/realm-prod.json:/opt/keycloak/data/import/realm-prod.json:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 1G
-        reservations:
-          cpus: '1'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ─── Application Services ──────────────────────────────────────────────────────
-
   app:
     # Proceso unificado Docuboto 2.0. Imagen publicada por `release.yml` en cada
     # tag X.Y.Z y fijada por digest en `release-<versión>.yml`. Un proceso (ADR-047): los
@@ -348,10 +269,10 @@ services:
       # renovación LTA y la cola pesada. Comparten HEAVY_JOBS_CONCURRENCY plazas.
       FORMAT_MIGRATION_ENABLED: ${FORMAT_MIGRATION_ENABLED:-true}
       HEAVY_JOBS_CONCURRENCY: ${HEAVY_JOBS_CONCURRENCY:-1}
-      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
-      KEYCLOAK_REALM: orpycamcp
-      KEYCLOAK_CLIENT_ID: auth-service
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_AUTH_SERVICE_SECRET:?Auth Service secret required}
+      # Emisor de identidad (ADR-048): `iss` y descubrimiento OIDC en la URL
+      # pública del API; la clave sella los pares de firma de los JWT.
+      IDENTITY_ISSUER: https://${API_PUBLIC_HOSTNAME:?Public API hostname required}
+      IDENTITY_KEY_ENCRYPTION_KEY: ${IDENTITY_KEY_ENCRYPTION_KEY:?Identity key encryption key required (openssl rand -base64 32)}
       TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?TOTP encryption key required (openssl rand -base64 32)}
       SIGNING_KEY_ENCRYPTION_KEY: ${SIGNING_KEY_ENCRYPTION_KEY:?Signing key encryption key required (openssl rand -base64 32)}
       SIGNING_KEY_CA_USERS_CERT_PATH: /run/secrets/ca-users-public/ca-users.crt
@@ -420,10 +341,11 @@ services:
 
   frontend:
     # SvelteKit SSR (adapter-node) detrás del reverse proxy/TLS. Split de URLs:
-    #   - PUBLIC_* → orígenes públicos HTTPS que ve el NAVEGADOR (login PKCE, logout)
+    #   - PUBLIC_* → orígenes públicos HTTPS que ve el NAVEGADOR
     #   - INTERNAL_* → cómo alcanza el SSR a la app dentro de la red Docker
     # ORIGIN + PROTOCOL_HEADER/HOST_HEADER son IMPRESCINDIBLES tras un proxy: sin
-    # ellos adapter-node deriva mal `url.origin` y arma un redirect_uri inválido.
+    # ellos adapter-node deriva mal `url.origin` y rechaza el formulario de login
+    # por CSRF.
     # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
     # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
     # Para construir en el propio servidor: infra/docker-compose.build.yml.
@@ -443,13 +365,10 @@ services:
       ORIGIN: https://${FRONTEND_HOSTNAME:?Frontend hostname required}
       PROTOCOL_HEADER: x-forwarded-proto
       HOST_HEADER: x-forwarded-host
-      # Públicas (navegador): la app y Keycloak por su dominio público HTTPS.
+      # Pública (navegador): la app por su dominio público HTTPS.
       PUBLIC_API_URL: https://${API_PUBLIC_HOSTNAME:?Public API hostname required}
-      PUBLIC_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
-      # Internas (SSR): la app por la red Docker; Keycloak por su hostname
-      # público (hostname-strict=true + TLS solo aceptan el dominio del cert).
+      # Interna (SSR): la app por la red Docker.
       INTERNAL_API_URL: http://app:8000
-      INTERNAL_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
     networks:
       - orpycamcp-net
     # Tras reverse proxy: no publicar el puerto, solo exponerlo a la red interna.
@@ -457,7 +376,6 @@ services:
       - "3000"
     depends_on:
       - app
-      - keycloak
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
       interval: 30s
@@ -481,20 +399,18 @@ services:
   # ─── Entrada de producción (ADR-033) ───────────────────────────────────────────
   # ÚNICO servicio que publica puertos. nginx corre en contenedor y no en el
   # anfitrión porque con nginx en el anfitrión la app vería como par a la IP
-  # del docker-proxy, y porque `edge` lleva los tres hostnames públicos como
-  # alias en `orpycamcp-net`.
-  # Los alias hacen que, dentro de la red, `https://${KEYCLOAK_HOSTNAME}` resuelva
-  # a este mismo servicio: certificado válido, sin hairpin NAT ni DNS externo.
+  # del docker-proxy, y porque `edge` lleva los dos hostnames públicos como
+  # alias en `orpycamcp-net`: dentro de la red resuelven a este mismo servicio,
+  # con certificado válido, sin hairpin NAT ni DNS externo.
   edge:
     image: nginx:1.30-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
     restart: unless-stopped
     environment:
       FRONTEND_HOSTNAME: ${FRONTEND_HOSTNAME:?Frontend hostname required}
       API_PUBLIC_HOSTNAME: ${API_PUBLIC_HOSTNAME:?Public API hostname required}
-      KEYCLOAK_HOSTNAME: ${KEYCLOAK_HOSTNAME:?Keycloak hostname required}
       # La imagen solo sustituye estas variables en la plantilla: así los `$host`,
       # `$remote_addr`... de nginx llegan intactos.
-      NGINX_ENVSUBST_FILTER: ^(FRONTEND|API_PUBLIC|KEYCLOAK)_HOSTNAME$$
+      NGINX_ENVSUBST_FILTER: ^(FRONTEND|API_PUBLIC)_HOSTNAME$$
     ports:
       - "80:80"
       - "443:443"
@@ -510,13 +426,11 @@ services:
     networks:
       orpycamcp-net:
         aliases:
-          - ${KEYCLOAK_HOSTNAME}
           - ${FRONTEND_HOSTNAME}
           - ${API_PUBLIC_HOSTNAME}
     depends_on:
       - frontend
       - app
-      - keycloak
     deploy:
       resources:
         limits:

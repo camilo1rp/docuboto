@@ -21,9 +21,8 @@
 # acoplamiento invisible.
 #
 # **Por qué los guiones corren DENTRO de la red.** No es una comodidad: sus
-# valores por defecto ya son nombres internos (`postgres:5432`,
-# `keycloak:8080`), porque `seed_demo.py` habla con Postgres por asyncpg y con
-# Keycloak por su API de administración, y ninguno de los dos está publicado
+# valores por defecto ya son nombres internos (`postgres:5432`, `app:8000`),
+# porque `seed_demo.py` habla con Postgres por asyncpg, y ninguno está publicado
 # igual desde fuera.
 #
 # **Lo que esta imagen NO hace**: emitir certificados. `gen-user-cert.sh` corre
@@ -31,11 +30,12 @@
 # ningún contenedor, y esa invariante la declara el propio script.
 FROM python:3.11-slim
 
-# Sin `requirements.lock` propio: son dos dependencias directas de una
+# Sin `requirements.lock` propio: son tres dependencias directas de una
 # herramienta de desarrollo, no de un servicio desplegable. Fijar las MAYORES
 # evita la sorpresa de una incompatible sin imponer un lockfile más que
 # mantener. Si algún día esto crece, lo que toca es el lock, no más pines.
-RUN pip install --no-cache-dir "httpx>=0.27,<0.29" "asyncpg>=0.29,<0.31"
+# `argon2-cffi`: la siembra crea a sus personas con contraseña (ADR-048).
+RUN pip install --no-cache-dir "httpx>=0.27,<0.29" "asyncpg>=0.29,<0.31" "argon2-cffi>=23.1,<26"
 
 WORKDIR /repo
 

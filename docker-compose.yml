@@ -21,7 +21,6 @@ volumes:
   # cuando la migración a RustFS esté asentada y alguien lo decida a sabiendas.
   minio-data:
   objectstore-data:
-  keycloak-data:
   redis-data:
 
 # Migraciones al arrancar en DESARROLLO (C19, ADR-041, ADR-053): la app
@@ -69,7 +68,6 @@ services:
       - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     networks:
       - orpycamcp-net
     healthcheck:
@@ -149,51 +147,10 @@ services:
       timeout: 5s
       retries: 3
 
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
-    container_name: orpycamcp-keycloak
-    command: start-dev --import-realm
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://postgres:5432/orpycamcp_db
-      KC_DB_USERNAME: orpycamcp
-      KC_DB_PASSWORD: orpycamcp
-      KC_DB_SCHEMA: keycloak
-      KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: orpycamcp_dev
-      KC_HOSTNAME_STRICT: "false"
-      KC_HTTP_ENABLED: "true"
-      # Fija las frontend-URLs (incluido el `iss` de los tokens) a la URL pública
-      # por la que el navegador hace el login PKCE. Aunque el SSR del frontend y
-      # los backends alcancen Keycloak internamente por http://keycloak:8080, el
-      # issuer emitido es SIEMPRE http://localhost:19180/realms/orpycamcp → así
-      # navegador y servidor coinciden y la validación del `iss` no rechaza tokens.
-      KC_HOSTNAME: http://localhost:19180
-    ports:
-      - "19180:8080"
-    volumes:
-      # `realm-dev.json`, no `realm-export.json`: el nombre anterior no decía para
-      # qué entorno servía, y este trae usuarios con contraseña publicada en el
-      # repositorio. Producción parte de `realm-prod.json.example` (11.6).
-      # Ese JSON NO admite comentarios: Jackson aborta la importación ante
-      # cualquier clave desconocida y el contenedor no arranca. La explicación
-      # del realm vive en `infra/keycloak/README.md`.
-      - ./infra/keycloak/realm-dev.json:/opt/keycloak/data/import/realm-dev.json:ro
-      # Tema propio de las pantallas de identidad. La de acceso es la ÚNICA del
-      # recorrido que no pasa por SvelteKit, así que sin esto sale con el tema
-      # por defecto —fondo gris, botón azul, textos en inglés— justo ANTES de la
-      # pantalla de Orpyca. Solo lectura: el contenedor no escribe aquí.
-      - ./infra/keycloak/themes:/opt/keycloak/themes:ro
-    networks:
-      - orpycamcp-net
-    depends_on:
-      postgres:
-        condition: service_healthy
-
   # ─── Aplicación (ADR-047) ─────────────────────────────────────────────────────
   # Un proceso: los nueve paquetes de dominio, sus bucles de fondo y los
-  # consumidores de eventos. Keycloak, Redis y el almacén siguen hasta
-  # ADR-048/049/050.
+  # consumidores de eventos, y el emisor de identidad (ADR-048). Redis y el
+  # almacén siguen hasta ADR-049/050.
 
   app:
     image: orpycamcp/app:dev
@@ -225,11 +182,10 @@ services:
       - SMTP_HOST=mailpit
       - SMTP_PORT=1025
       - SMTP_FROM=noreply@orpycamcp.local
-      - KEYCLOAK_URL=http://keycloak:8080
-      - KEYCLOAK_REALM=orpycamcp
-      - KEYCLOAK_ISSUER=http://localhost:19180/realms/orpycamcp
-      - KEYCLOAK_CLIENT_ID=auth-service
-      - KEYCLOAK_CLIENT_SECRET=change-me-in-production
+      # Emisor de identidad (ADR-048): el `iss` es la URL del API que ve el
+      # navegador; la clave sella los pares ES256 de `public.auth_jwt_keys`.
+      - IDENTITY_ISSUER=${IDENTITY_ISSUER:-http://localhost:19000}
+      - IDENTITY_KEY_ENCRYPTION_KEY=${IDENTITY_KEY_ENCRYPTION_KEY:-ldKe5h1atebKc1BHsdda9AXaH14ZZjINEQXQyK3sfXg=}
       - TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY:-}
       - SIGNING_KEY_ENCRYPTION_KEY=${SIGNING_KEY_ENCRYPTION_KEY:-}
       - SIGNING_KEY_CA_USERS_CERT_PATH=/run/secrets/ca-users-public/ca-users.crt
@@ -263,8 +219,6 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      keycloak:
-        condition: service_started
     restart: "no"
     mem_limit: 4g
     memswap_limit: 4g
@@ -292,14 +246,12 @@ services:
       - ADDRESS_HEADER=x-forwarded-for
       - XFF_DEPTH=1
       # Origen público por el que el navegador alcanza el frontend. adapter-node
-      # lo usa para derivar `url.origin` (p. ej. el redirect_uri del login PKCE).
-      # Sin esto, SSR infiere el esquema/host del request y arma un redirect_uri
-      # https:// que Keycloak rechaza. En prod tras TLS: ORIGIN=https://dominio,
+      # lo usa para derivar `url.origin` (la comprobación CSRF de los formularios,
+      # como el de inicio de sesión). En prod tras TLS: ORIGIN=https://dominio,
       # o usar PROTOCOL_HEADER=x-forwarded-proto + HOST_HEADER=x-forwarded-host.
       - ORIGIN=http://localhost:19300
-      # Públicas — las construye y usa el JS del navegador (login PKCE, logout).
+      # Pública — la usa el JS del navegador.
       - PUBLIC_API_URL=http://localhost:19000
-      - PUBLIC_KEYCLOAK_URL=http://localhost:19180
       # Entidad de las pantallas PÚBLICAS (ventanilla y consulta ciudadana).
       # En producción cada entidad despliega su sitio con SU slug; sin esta
       # variable las pantallas públicas se declaran no habilitadas en vez de
@@ -307,15 +259,13 @@ services:
       - PORTAL_TENANT_SLUG=demo
       # La política de tratamiento de datos la publica la ENTIDAD (parámetros del tenant) y
       # la sirve la ventanilla (ADR-031): ya no se configura aquí.
-      # Internas — solo SSR dentro del contenedor (token exchange, userinfo,
-      # back-channel logout y los proxys +server.js a la app). Nunca llegan al cliente.
+      # Interna — solo SSR dentro del contenedor (login, refresh, logout y los
+      # proxys +server.js a la app). Nunca llega al cliente.
       - INTERNAL_API_URL=http://app:8000
-      - INTERNAL_KEYCLOAK_URL=http://keycloak:8080
     networks:
       - orpycamcp-net
     depends_on:
       - app
-      - keycloak
     restart: "no"
 
   # ─── Development Tools ────────────────────────────────────────────────────────
