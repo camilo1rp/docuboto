@@ -101,8 +101,8 @@
   }
 
   const SONDEO_MS = 12000;
-  // Umbral de inactividad REAL de la persona, muy por debajo del de Keycloak
-  // (30 min en producción): el sondeo tiene que parar con margen para que el
+  // Umbral de inactividad REAL de la persona, muy por debajo del de la sesión
+  // (30 min, ADR-048): el sondeo tiene que parar con margen para que el
   // temporizador del servidor llegue a expirar de verdad.
   const INACTIVIDAD_MS = 5 * 60 * 1000;
 
@@ -348,11 +348,11 @@
     if (!bandejaInaccesible) sondeo = setInterval(mirarSiHayNovedades, SONDEO_MS);
 
     // El sondeo PARA sin interacción real de la persona. No es un cierre de
-    // sesión desde el navegador —ese control vive en Keycloak y ahí debe
+    // sesión desde el navegador —ese control vive en el servidor y ahí debe
     // quedarse—: es dejar de FINGIR actividad. Cada sondeo pasa por el
     // `handle` del servidor, dispara el refresco transparente del token y
-    // reinicia el contador de inactividad de Keycloak, así que una pestaña
-    // olvidada mantenía la sesión viva hasta el tope absoluto de 10 h con la
+    // reinicia el contador de inactividad de la sesión, así que una pestaña
+    // olvidada mantenía la sesión viva hasta el tope absoluto de 12 h con la
     // pantalla desbloqueada. El servidor tenía la política correcta y esta
     // pantalla la desactivaba sin que nadie lo hubiera decidido.
     const dejarDeVigilar = vigilarInactividad({
