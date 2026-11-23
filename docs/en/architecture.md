@@ -32,27 +32,24 @@ graph TB
         PG[("PostgreSQL 15")]
         REDIS[("Redis<br/>Streams + cache")]
         MINIO[("RustFS<br/>S3 object store")]
-        KC["Keycloak<br/>OIDC"]
         MAIL["Mailpit<br/>(dev only)"]
     end
 
     Cliente --> EDGE
     EDGE -->|JWT Bearer| MW
-    EDGE --> KC
     DOM --> PG
     BG --> PG
     DOM <--> REDIS
     BG <--> REDIS
     DOM --> MINIO
-    DOM --> KC
     DOM --> MAIL
     DOM -.->|PPI, only with PPI_PROVIDER_URL| PPI["Intelligence provider<br/>(optional)"]
 ```
 
 ADR-047 targets four containers (`app`, `postgres`, `edge`, `frontend`). **That target isn't
-reached yet**: Keycloak, Redis, and the object store stay in the manifests until
-[ADR-048](adr/ADR-048-identidad-emitida-por-docuboto.md),
-[ADR-049](adr/ADR-049-eventos-en-postgresql-sin-redis.md), and
+reached yet**: Keycloak is gone ([ADR-048](adr/ADR-048-identidad-emitida-por-docuboto.md): the
+app issues identity itself), but Redis and the object store stay in the manifests until
+[ADR-049](adr/ADR-049-eventos-en-postgresql-sin-redis.md) and
 [ADR-050](adr/ADR-050-bytes-en-disco-y-archivo-sellado.md) remove them.
 
 Docuboto does not call any language model
@@ -79,7 +76,7 @@ their veto at the edge are retired (ADR-047 §1 and §3).
 | Module | What it does |
 |---|---|
 | `main.py` | `create_app()`: the only place with middleware and exception handlers; mounts each package's `DOMAIN_ROUTERS`, `/health`, and `/metrics` |
-| `config.py` | `CommonSettings` (database, pool, Redis, Keycloak, log) and one `Settings` class per domain; environment variable names are unchanged and carry no prefix |
+| `config.py` | `CommonSettings` (database, pool, Redis, log) and one `Settings` class per domain; environment variable names are unchanged and carry no prefix |
 | `core/lifespan.py` | One database pool and the start of the background tasks |
 | `core/tasks.py` | `BackgroundTasks`: consumers, LTA renewal, format migration, and the `trabajo_fuera` queues (`app`, light; `worker`, heavy, a name kept in the schema). Heavy work takes a slot from `heavy_slot()`, a semaphore of `HEAVY_JOBS_CONCURRENCY` (default 1) |
 | `core/security.py` | `SecurityHeadersMiddleware` (`X-Request-Id`, `nosniff`, `DENY`, `no-referrer`) and `UserRateLimitMiddleware` (`RATE_LIMIT_PER_USER`, 120/min per person) |
@@ -96,15 +93,14 @@ The nine packages live side by side (`services/docuboto/<package>/`), with their
 | PostgreSQL | 5432 | **15432** | Single database, multi-schema |
 | Redis | 6379 | **16379** | Event streams + cache (until ADR-049) |
 | RustFS (`minio`) | 9000 | **19900** | S3 object store (replaces MinIO, ADR-027; until ADR-050). No web console: inspect it with `aws-cli` |
-| Keycloak | 8080 | **19180** | Identity Provider (OIDC, until ADR-048) |
 | Mailpit | 1025 (SMTP) / 8025 (web) | 1025 / 8025 | Email capture in development (`dev` profile) |
-| `edge` | 80 / 443 | 80 / 443 | Production only: nginx with TLS, per-IP rate limiting, and proxying to `app`, `frontend`, and Keycloak |
+| `edge` | 80 / 443 | 80 / 443 | Production only: nginx with TLS, per-IP rate limiting, and proxying to `app` and `frontend` |
 
 > The 19xxx/15432/16379 range avoids clashing with other development stacks on the same machine.
 
 | Package | Responsibility |
 |---|---|
-| `auth` | Keycloak integration, JWT validation, RBAC, clearance (RF-SEG-08), TOTP, signing-key custody |
+| `auth` | Identity issuer (login, sessions, ES256 JWTs, JWKS and `client_credentials`, ADR-048), RBAC, clearance (RF-SEG-08), TOTP, signing-key custody |
 | `tenant` | Configuration of the installation's entity, dependencias, catalogs, PINAR |
 | `document` | E/S/I registration, attachments, replies, annulment, import/export, IMAP ingestion, OAI-PMH/CMIS |
 | `archive` | Case files, TRD/CCD, electronic index, physical archive, transfers, disposal |
@@ -122,7 +118,8 @@ Summary of what each one exposes:
 ### `auth`
 | Router | What it manages |
 |---|---|
-| `auth` | Login/token against Keycloak |
+| `auth` | Login, refresh, logout and password change (ADR-048) |
+| `oidc` | OIDC discovery, JWKS and `POST /oauth/token` (`client_credentials`) for service accounts |
 | `clearance` | Security levels (classification of users/documents) |
 | `rbac` | Roles and permissions (admin) |
 | `urd` | User management (admin) |
@@ -287,15 +284,15 @@ row, with no lifecycle states. The object store still uses per-entity bucket nam
 ```mermaid
 sequenceDiagram
     participant U as User/Frontend
-    participant KC as Keycloak
+    participant L as app — POST /api/v1/auth/login
     participant MW as app — UsuarioActualMiddleware
     participant R as package router
 
-    U->>KC: Authorization Code + PKCE
-    KC-->>U: JWT (claims: tenant_slug, user_id, roles[])
+    U->>L: username + password + entity (from the SSR)
+    L-->>U: ES256 access JWT (sub = auth_users.id, tenant_slug) + opaque refresh
     U->>MW: request + Authorization: Bearer <JWT>
     MW->>MW: drops client X-User-Id, X-Username, X-User-Roles, X-Canal, X-Tenant-Slug
-    MW->>MW: validates the JWT in-process; puts the user in request.state; re-sets X-Tenant-Slug
+    MW->>MW: checks signature, iss and aud with the app's own keys; puts the user in request.state; re-sets X-Tenant-Slug
     MW->>R: request
     R->>R: search_path = tenant_{slug}; checks permission/clearance in the DB
 ```
