@@ -47,7 +47,7 @@ set -euo pipefail
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$RAIZ"
 
-GATEWAY="http://localhost:19080"
+GATEWAY="http://localhost:19000"
 RADICADOS=180
 EXPEDIENTES=12
 TERCEROS=40
@@ -150,8 +150,7 @@ espera_dependencias() {
 import sys, time, httpx
 urls = [
     "http://keycloak:8080/realms/orpycamcp/.well-known/openid-configuration",
-    "http://auth-service:8001/health",
-    "http://api-gateway:8080/health",
+    "http://app:8000/health",
 ]
 limite = time.time() + 600
 pendientes = list(urls)
@@ -172,14 +171,14 @@ if pendientes:
 }
 
 espera_dependencias "$RED" || { rojo "Las dependencias no respondieron. Mira: docker compose logs keycloak"; exit 1; }
-verde "gateway, auth y el realm de Keycloak responden"
+verde "la app y el realm de Keycloak responden"
 
 # Los guiones corren DENTRO de la red: sus valores por defecto ya son nombres
 # internos (`postgres:5432`, `keycloak:8080`) porque hablan con Postgres por
 # asyncpg y con Keycloak por su API de administración. El repo se monta `:ro`;
 # `secrets/perfiles-csr` es lo ÚNICO con escritura, con `--user` para que lo que
 # salga sea del usuario y no de root.
-GW_INTERNO="http://api-gateway:8080"
+GW_INTERNO="http://app:8000"
 CSR_DIR="$RAIZ/secrets/perfiles-csr"
 mkdir -p "$CSR_DIR"
 
@@ -219,7 +218,7 @@ azul "8/8 · Segundo factor y credenciales de firma por perfil"
 SALIDA_FASE1="$(mktemp)"
 trap 'rm -f "$SALIDA_FASE1"' EXIT
 guion scripts/perfiles_prueba.py --enrolar \
-  --gateway "$GW_INTERNO" --auth "http://auth-service:8001" \
+  --gateway "$GW_INTERNO" \
   --csr-dir /repo/secrets/perfiles-csr | tee "$SALIDA_FASE1"
 SECRETOS="$(sed -n 's/^SECRETOS_TOTP=//p' "$SALIDA_FASE1" | tail -1)"
 
@@ -233,12 +232,19 @@ for CSR in "$CSR_DIR"/*.csr; do
   verde "$(basename "${CSR%.csr}.crt") emitido"
 done
 
-# Fase 2 (contenedor): cargar los certificados y dejar a `archivista` revocado.
+# Fase 2: cargar los certificados dentro de la app (ADR-047: sin ruta HTTP) y
+# dejar a `archivista` revocado.
+for CRT in "$CSR_DIR"/*.crt; do
+  [[ -e "$CRT" ]] || continue
+  docker compose exec -T app python -m auth.ops.activar_certificado \
+    --tenant demo --user-id "$(cat "${CRT%.crt}.user_id")" --cert - < "$CRT" >/dev/null
+  verde "$(basename "$CRT") cargado"
+done
 guion scripts/perfiles_prueba.py --activar \
-  --gateway "$GW_INTERNO" --auth "http://auth-service:8001" \
+  --gateway "$GW_INTERNO" \
   --csr-dir /repo/secrets/perfiles-csr --secretos "$SECRETOS"
 
-# Los CSR y los .crt ya cumplieron: el certificado vive en auth-service y la
+# Los CSR y los .crt ya cumplieron: el certificado vive en la base de la app y la
 # privada nunca salió de ahí. Dejarlos sería material criptográfico olvidado en
 # el árbol, que es como se acaba reutilizando uno viejo sin saberlo.
 rm -f "$CSR_DIR"/*.csr "$CSR_DIR"/*.crt "$CSR_DIR"/*.user_id

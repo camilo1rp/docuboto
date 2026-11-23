@@ -292,10 +292,7 @@ echo "── Parando servicios de aplicación..."
 # `|| true`: parar un servicio que no está levantado no es un error, y bajo
 # `set -e` abortaría la restauración por algo que no importa.
 "${COMPOSE[@]}" stop \
-    app worker \
-    api-gateway auth-service tenant-service document-service storage-service \
-    workflow-service archive-service notification-service signature-service \
-    knowledge-service frontend keycloak || true
+    app frontend keycloak || true
 
 
 # ── Extremo de audit_log ANTES de restaurar (ARC-M4) ────────────────────────

@@ -1,0 +1,232 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from orpycamcp_common.database import get_tenant_conn
+from orpycamcp_common.usuario import instalar_inyector
+
+from docuboto.config import signature as settings
+from tests.signature.app import app
+
+instalar_inyector(app)
+
+
+# El default de `signature_secret` es "" desde que el arranque exige que venga
+# del entorno (11.5). Los tests fijan aquí un valor propio: sin él ejercerían el
+# HMAC con clave vacía, que es justo la configuración que el guard rechaza.
+settings.signature_secret = "test-signature-secret-0123456789abcdef"
+
+# X-User-Id now carries the internal auth_users.id UUID (not keycloak_sub).
+# auth-service /validate resolves keycloak_sub → auth_users.id before the gateway
+# injects the header; tests use a fixed UUID that matches the mock's user row.
+USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
+# Both headers are required for every authenticated request.
+# X-User-Id = internal auth_users.id (uuid); get_actor + require_permission read it.
+TENANT_HEADERS = {"X-Tenant-Slug": "demo", "X-User-Id": str(USER)}
+
+
+def _make_mock_conn() -> AsyncMock:
+    conn = AsyncMock()
+    conn.execute.return_value = None
+    conn.fetchrow.return_value = None
+    # Default True: check_permission (require_permission dep) sees the user as authorised.
+    # Tests that need permission denied override with fetchval.return_value = None
+    # or side_effect = [None, ...].
+    conn.fetchval.return_value = True
+    # audit.append uses `async with conn.transaction():` then conn.execute (INSERT).
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    return conn
+
+
+def en_proceso(monkeypatch: pytest.MonkeyPatch, conn: AsyncMock) -> None:
+    """`signature.api` abre su propia conexión al tenant; en estas suites, la del doble."""
+
+    @asynccontextmanager
+    async def _conn(*_a: object, **_k: object) -> AsyncIterator[AsyncMock]:
+        yield conn
+
+    monkeypatch.setattr("signature.api._tenant_conn", _conn)
+
+
+class SelloRespuesta:
+    """Forma de respuesta del sello institucional: código y cuerpo, como la vieja ruta."""
+
+    def __init__(self, status_code: int, body: dict) -> None:
+        self.status_code = status_code
+        self._body = body
+
+    def json(self) -> dict:
+        return self._body
+
+
+async def sellar(
+    conn: AsyncMock, body: dict, *, tenant_slug: str = "demo", actor: uuid.UUID = USER
+) -> SelloRespuesta:
+    """Sello institucional directo al servicio (``signing_service.sign_payload``).
+
+    Ya no tiene ruta HTTP (ADR-047 §1): estas suites ejercen lo que hace el sello,
+    no un transporte. El gate de quién lo pide vive en ``test_sign_xml_sello_no_es_publico.py``.
+    """
+    from fastapi import HTTPException
+    from pydantic import ValidationError
+
+    from signature.schemas.firma import SignXmlRequest
+    from signature.services import signing_service
+
+    try:
+        firma = await signing_service.sign_payload(
+            conn=conn,
+            tenant_slug=tenant_slug,
+            payload=SignXmlRequest(**body),
+            firmante_id=actor,
+            origen="manual",
+        )
+    except ValidationError as exc:
+        return SelloRespuesta(422, {"detail": exc.errors(include_url=False)})
+    except HTTPException as exc:
+        return SelloRespuesta(exc.status_code, {"detail": exc.detail})
+    return SelloRespuesta(201, firma.model_dump(mode="json"))
+
+
+@pytest_asyncio.fixture
+async def client_with_conn() -> AsyncGenerator[tuple[AsyncClient, AsyncMock], None]:
+    """Yields (client, mock_conn) with PERM_FIRMA granted and tenant conn overridden.
+
+    auth is provided via X-User-Id in TENANT_HEADERS (not via get_current_user —
+    that dependency no longer exists in the signature-service routers).
+    """
+    conn = _make_mock_conn()
+
+    async def _conn_dep() -> AsyncGenerator[AsyncMock, None]:
+        yield conn
+
+    app.dependency_overrides[get_tenant_conn] = _conn_dep
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac, conn
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _entidad_sin_parametros_por_defecto(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> AsyncMock | None:
+    """Doble por defecto de la lectura de ``sgd_param_admin`` (política de la entidad).
+
+    ``firmar`` resuelve el modo del gate XAdES con una consulta a la tabla de
+    parámetros del tenant (``app.core.params_entidad.leer_param``). Los dobles de
+    conexión de estas suites encadenan ``fetchval``/``fetchrow`` en un orden
+    FIJO, así que esa consulta extra los desordenaría. El doble emula «la
+    entidad no define el parámetro»: manda el entorno, que es lo que ya fijaban
+    estos tests con ``monkeypatch.setattr(settings, "firma_personal_require_xades", ...)``.
+    Los tests de la política de la entidad lo sustituyen (y el tier de
+    integración la lee de una tabla real).
+    """
+    if "/integration/" in request.node.nodeid:
+        return None  # el tier real lee la tabla de verdad
+    mock = AsyncMock(return_value=None)
+    monkeypatch.setattr("signature.core.params_entidad.leer_param", mock)
+    return mock
+
+
+#: Huella que devuelven por defecto los productores de radicado/expediente en estas
+#: suites; coincide con la `payload_sha256` de las filas de cadena de los dobles.
+HUELLA_PRODUCTOR = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def _productores_de_huella_por_defecto(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
+    """Dobles por defecto de las huellas que resuelve el SERVIDOR (AREA-04-09 Media-2).
+
+    Una cadena sobre `radicado`/`expediente` fija la huella al abrirse y la relee
+    antes de cada firma (document-service / archive-service). Sin red en estas
+    suites, el productor «no ha cambiado nada»: devuelve `HUELLA_PRODUCTOR`. Los
+    tests del gate, de la apertura y de los clientes salientes lo sustituyen.
+    """
+    radicado = AsyncMock(return_value={"huella_sha256": HUELLA_PRODUCTOR})
+    expediente = AsyncMock(return_value={"huella_sha256": HUELLA_PRODUCTOR, "version": 1})
+    monkeypatch.setattr("signature.services.cadena_service.get_huella_radicado", radicado)
+    monkeypatch.setattr("signature.services.cadena_service.get_huella_indice_expediente", expediente)
+    return {"radicado": radicado, "expediente": expediente}
+
+
+@pytest.fixture(autouse=True)
+def _totp_status_sin_totp_por_defecto(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Doble por defecto de ``auth.api.totp_status``.
+
+    El OTP-correo en un acto de nivel >= 2 consulta si el actor ya tiene TOTP
+    activo (AREA-04-02). La respuesta tiene la FORMA REAL del contrato
+    (``{"activo": bool, "user_id": str}``, ver ``InternalTotpStatusResponse`` en
+    auth-service y su prueba), con el dueño del bearer == el actor de prueba. Los
+    tests que ejercen el veto o la incoherencia de identidad lo sustituyen.
+    """
+    mock = AsyncMock(return_value={"activo": False, "user_id": str(USER)})
+    monkeypatch.setattr("auth.api.totp_status", mock)
+    return mock
+
+
+@pytest.fixture(autouse=True)
+def _estado_de_credencial_personal_sin_clave_por_defecto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock:
+    """Doble por defecto de ``auth.api.signing_key_status``.
+
+    ``firmar`` y ``/challenge`` consultan la credencial personal del actor. Sin BD
+    de auth en estas suites, el actor «no tiene
+    certificado» (``sin_clave``): es el caso de la firma nativa por OTP. Los tests
+    de la firma personal y del gate XAdES lo sustituyen.
+    """
+    mock = AsyncMock(return_value={"estado": "sin_clave"})
+    monkeypatch.setattr("auth.api.signing_key_status", mock)
+    return mock
+
+
+@pytest.fixture(autouse=True)
+def _nivel_vigente_neutro(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """B9-2: la relectura del nivel bajo bloqueo hace dos consultas más dentro de la
+    transacción de firmar/challenge, y las suites de mocks fijan la SECUENCIA exacta
+    de ``fetchrow``/``fetchval``. Aquí se devuelve la solicitud tal cual; la
+    relectura real se prueba en ``test_nivel_vigente_bajo_bloqueo.py`` (unit, marca
+    ``nivel_vigente_real``) y en ``tests/integration`` contra Postgres real.
+
+    B9-S1: igual para la lectura con ``max(copia, nivel vivo)``
+    (``_assert_can_read_vigente``, que añade una consulta a ``get``): se neutraliza
+    al comportamiento previo (solo la copia) salvo marca ``lectura_vigente_real``.
+
+    NO aplica a ``tests/integration`` (re-auditoria B9 E): ese tier ejerce la
+    lectura/relectura reales contra Postgres, y neutralizarlas ahi daria falsos
+    verdes en un carril que existe justamente para no mockear el SQL.
+    """
+    if "/integration/" in request.node.nodeid:
+        return
+    from signature.services.cadena_service import CadenaFirmaService
+
+    if not request.node.get_closest_marker("nivel_vigente_real"):
+
+        async def _identidad(self, sol, clearance, actor=None):  # noqa: ANN001
+            return dict(sol)
+
+        monkeypatch.setattr(CadenaFirmaService, "_sol_con_nivel_vigente", _identidad)
+
+    if not request.node.get_closest_marker("lectura_vigente_real"):
+
+        async def _solo_copia(self, sol, actor):  # noqa: ANN001
+            await self._assert_can_read(sol, actor)
+            return dict(sol)
+
+        monkeypatch.setattr(CadenaFirmaService, "_assert_can_read_vigente", _solo_copia)

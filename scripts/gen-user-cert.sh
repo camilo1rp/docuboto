@@ -46,12 +46,9 @@
 #   out-dir    Directorio de salida del certificado emitido. Por defecto:
 #              el mismo directorio que csr-file.
 #
-# Tras emitir, carga el certificado en auth-service con:
-#   curl -X POST http://localhost:19001/internal/signing-key/activate \
-#        -H "X-Internal-Token: $SIGNING_KEY_INTERNAL_TOKEN" \
-#        -H "X-Tenant-Slug: <slug>" \
-#        -H "Content-Type: application/json" \
-#        -d "{\"user_id\": \"<uuid>\", \"cert_pem\": $(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1]).read()))' <out-dir>/user.crt)}"
+# Tras emitir, carga el certificado (ADR-047: sin ruta HTTP, por la app):
+#   docker compose exec -T app python -m auth.ops.activar_certificado \
+#       --tenant <slug> --user-id <uuid> --cert - < <out-dir>/user.crt
 #
 # Requiere: openssl.
 
@@ -98,7 +95,7 @@ mkdir -p "$CA_DIR" "$OUT_DIR"
 # Espejo PÚBLICO de la sub-CA (E17/F4, Incremento 2 — Baja #4): auth-service
 # monta SOLO este directorio (./secrets/ca-users-public, ver
 # docker-compose.yml -> SIGNING_KEY_CA_USERS_CERT_PATH) para verificar
-# leaf.verify_directly_issued_by(sub_ca) en /internal/signing-key/activate —
+# leaf.verify_directly_issued_by(sub_ca) en auth.ops.activar_certificado —
 # NUNCA $CA_DIR (que contiene ca-users.key) se monta en ningún contenedor.
 CA_PUBLIC_DIR="$PROJECT_ROOT/secrets/ca-users-public"
 
@@ -164,8 +161,8 @@ openssl x509 -req -in "$CSR_FILE" \
 echo ""
 echo "  OK  $OUT_CERT"
 echo ""
-echo "Carga el certificado en auth-service con POST /internal/signing-key/activate"
-echo "(ver el encabezado de este script para el ejemplo curl completo)."
+echo "Carga el certificado con:"
+echo "  docker compose exec -T app python -m auth.ops.activar_certificado --tenant <slug> --user-id <uuid> --cert - < $OUT_CERT"
 echo ""
 echo "La clave privada de esta CA NUNCA sale de $CA_DIR — no la montes en"
 echo "ningún contenedor. Este par es SOLO para desarrollo/pruebas — NO lo"

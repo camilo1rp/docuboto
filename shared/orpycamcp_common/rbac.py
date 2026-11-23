@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 PUBLICA = 1
 CLASIFICADA = 3  # nivel máximo (security_levels.code)
+#: Nivel con el que una pre-condición interna mira sin recorte (el máximo).
+CLEARANCE_SIN_RESTRICCION = CLASIFICADA
 
 
 async def resolve_caller_clearance(

@@ -50,7 +50,7 @@ def test_nadie_escribe_radicados_fuera_de_document() -> None:
 
 
 def test_document_api_es_quien_mueve_el_flujo() -> None:
-    api = RAIZ / "services" / "document-service" / "document" / "api.py"
+    api = RAIZ / "services" / "docuboto" / "document" / "api.py"
     texto = api.read_text(encoding="utf-8")
     assert "UPDATE radicados SET status" in texto
     assert "flujo_dept" in texto

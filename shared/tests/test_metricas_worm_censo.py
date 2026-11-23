@@ -29,7 +29,7 @@ from tests._chain import CHAIN, create_table
 
 RAIZ = Path(__file__).resolve().parents[2]
 MIGRACIONES = CHAIN / "tenant"
-REPO = RAIZ / "services" / "archive-service" / "archive" / "repositories" / "metricas_repository.py"
+REPO = RAIZ / "services" / "docuboto" / "archive" / "repositories" / "metricas_repository.py"
 
 _FASES = {"worm_reconcile_agotado": "reconcile", "worm_renovacion_agotado": "renewal"}
 

@@ -1,0 +1,250 @@
+# OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
+# Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
+# Contacto: aurigadl@gmail.com
+#
+# Software libre: este archivo se distribuye bajo la Licencia Pública General
+# Affero de GNU (AGPL) versión 3 o, a su elección, cualquier versión posterior,
+# conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
+# SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
+
+"""
+archive-service — FastAPI application factory.
+
+Responsibilities:
+- Expediente management (grouping of related radicados by matter/case)
+- TRD (Tabla de Retención Documental) catalogue — retention schedules and dispositions
+- Tenant-isolated storage: PostgreSQL schema per tenant (SET search_path)
+"""
+
+import asyncio
+import logging
+import time
+
+from orpycamcp_common import request_log
+
+from archive.jobs.disposicion_alerta import run_once as _disposicion_alerta_once
+from archive.jobs.indice_reconciliation import run_once as _reconcile_indices_once
+from archive.jobs.indice_reconciliation import run_once_actas as _reconcile_actas_once
+from archive.jobs.indice_reconciliation import (
+    run_once_actas_eliminacion_worm as _reconcile_actas_eliminacion_worm_once,
+)
+from archive.jobs.indice_reconciliation import (
+    run_once_actas_worm as _reconcile_actas_worm_once,
+)
+from archive.jobs.indice_reconciliation import run_once_aip as _reconcile_aip_once
+from archive.jobs.indice_reconciliation import (
+    run_once_aip_reempaquetado as _reconcile_aip_reempaquetado_once,
+)
+from archive.jobs.indice_reconciliation import (
+    run_once_firmas_personales_worm as _reconcile_firmas_personales_worm_once,
+)
+from archive.jobs.indice_reconciliation import (
+    run_once_fixity_premis as _reconcile_fixity_premis_once,
+)
+from archive.jobs.indice_reconciliation import (
+    run_once_origen_legado as _completar_origen_legado_once,
+)
+from archive.jobs.indice_reconciliation import (
+    run_once_valoracion_holds as _reconcile_valoracion_holds_once,
+)
+from archive.jobs.indice_reconciliation import run_once_worm as _reconcile_worm_once
+from archive.jobs.indice_reconciliation import (
+    run_once_worm_renovacion as _reconcile_worm_renovacion_once,
+)
+from archive.routers.batch import router as batch_router
+from archive.routers.eliminacion import router as eliminacion_router
+from archive.routers.expedientes import router as expedientes_router
+from archive.routers.fisico import router as fisico_router
+from archive.routers.indice import router as indice_router
+from archive.routers.metadata import router as metadata_router
+from archive.routers.oai import router as oai_router
+from archive.routers.public_eliminacion import router as public_eliminacion_router
+from archive.routers.public_indice import router as public_indice_router
+from archive.routers.tipos_documentales import router as tipos_documentales_router
+from archive.routers.transferencias import router as transferencias_router
+from archive.routers.trd import router as trd_router
+from archive.routers.tvd import router as tvd_router
+from docuboto.config import archive as settings
+
+logger = logging.getLogger(__name__)
+
+
+async def _indice_reconciliation_loop() -> None:
+    """Loop de fondo (residual Ac. AGN 001/2024 art. 4.3.2.4): barre todos
+    los tenants activos cada `indice_reconciliation_interval_seconds`. Un
+    fallo de UNA barrida (p. ej. Postgres momentáneamente inalcanzable)
+    queda contenido aquí — el loop NUNCA muere por una excepción, solo
+    reintenta en la siguiente iteración.
+
+    Incluye la 3ra fase (E10 Inc.1, cableado WORM del índice,
+    `run_once_worm`) en el MISMO ciclo/cadencia que el sellado — está
+    tan estrechamente acoplada a "el índice ya quedó 'firmado'" que no
+    amerita un kill-switch/intervalo propio (a diferencia del acta, que sí
+    tiene cadencia dedicada por ser aditiva y menos urgente, ver
+    `_acta_reconciliation_loop`). Un fallo en la fase WORM tampoco debe
+    impedir que la siguiente iteración reintente el sellado.
+
+    Incluye también la 5ª fase (E10 debt, renovación de retención WORM para
+    series CT, `run_once_worm_renovacion`) — piggyback en el MISMO ciclo por
+    el mismo criterio: reactiva a "el índice/acta ya quedó protegido", sin
+    kill-switch/intervalo propio (solo la ventana de antelación
+    `worm_renovacion_ventana_dias` es configurable). Cubre ÍNDICE Y ACTA en
+    una sola llamada (ver el docstring de `run_once_worm_renovacion`).
+
+    Incluye también la 6ª fase (E10 debt "AIP sin-wiring", cableado del AIP
+    OAIS al cierre, `run_once_aip`) — piggyback en el MISMO ciclo, mismo
+    criterio: reactiva a "el índice ya quedó firmado+protegido bajo WORM",
+    sin kill-switch/intervalo propio."""
+    request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
+    ultimo_reempaque: float | None = None
+    while True:
+        try:
+            await _reconcile_indices_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación del sellado del índice",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del índice",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_worm_renovacion_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de renovación de retención WORM (series CT)",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_aip_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de cableado del AIP",
+                exc_info=True,
+            )
+        # Fase 11 (C-6): cadencia PROPIA (`aip_reempaquetado_intervalo_s`, 0 = apagada).
+        ahora = time.monotonic()
+        if settings.aip_reempaquetado_intervalo_s > 0 and (
+            ultimo_reempaque is None
+            or ahora - ultimo_reempaque >= settings.aip_reempaquetado_intervalo_s
+        ):
+            ultimo_reempaque = ahora
+            try:
+                await _reconcile_aip_reempaquetado_once()
+            except Exception:
+                logger.warning("Fallo en la barrida de reempaquetado del AIP", exc_info=True)
+        # Fase 12 (C-5, ADR-043): aplica la valoración de la TVD a los holds del fondo vencido.
+        try:
+            await _reconcile_valoracion_holds_once()
+        except Exception:
+            logger.warning("Fallo en la barrida de valoración de holds", exc_info=True)
+        try:
+            await _completar_origen_legado_once()
+        except Exception:
+            logger.warning(
+                "Fallo en el backfill del origen de vínculos legados",
+                exc_info=True,
+            )
+        await asyncio.sleep(settings.indice_reconciliation_interval_seconds)
+
+
+async def _acta_reconciliation_loop() -> None:
+    """Loop de fondo GEMELO (H-H, E06/F4) para el sellado del acta de
+    transferencia — cadencia PROPIA y MENOR
+    (`settings.acta_reconciliation_interval_seconds`, default mayor que la
+    del índice: el sellado del acta es aditivo, menos urgente). Igual que
+    `_indice_reconciliation_loop`, el loop NUNCA muere por una excepción.
+
+    Incluye la 4ª fase (E10 Inc.2 wiring, cableado WORM del acta,
+    `run_once_actas_worm`, y su gemela del acta de eliminación,
+    `run_once_actas_eliminacion_worm`, AREA-06-02) en el MISMO ciclo/cadencia que el sellado — mismo
+    criterio que ató `run_once_worm` al ciclo del índice
+    (`_indice_reconciliation_loop`): tan estrechamente acoplada a "el acta ya
+    quedó 'firmado'" que no amerita kill-switch/intervalo propio. Un fallo en
+    la fase WORM tampoco debe impedir que la siguiente iteración reintente el
+    sellado."""
+    request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
+    while True:
+        try:
+            await _reconcile_actas_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación del sellado del acta",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_actas_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del acta",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_actas_eliminacion_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de reconciliación WORM del acta de eliminación",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_firmas_personales_worm_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida WORM de las firmas personales del acta",
+                exc_info=True,
+            )
+        try:
+            await _reconcile_fixity_premis_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida del evento PREMIS de fixity de la recepción",
+                exc_info=True,
+            )
+        await asyncio.sleep(settings.acta_reconciliation_interval_seconds)
+
+
+async def _disposicion_alerta_loop() -> None:
+    """Loop de fondo (E04, RF-TRD-08 + RF-TRD-06 R.4.8): barre los
+    vencimientos de disposición sin decidir y avisa a quien puede decidir.
+
+    Tercer bucle con el mismo molde que los dos de arriba —kill-switch propio,
+    cadencia propia, y NUNCA muere por una excepción— y con la cadencia más
+    larga de los tres (semanal por defecto): un vencimiento no caduca, y el
+    intervalo ES la cadencia del aviso, así que bajarlo convierte el aviso en
+    ruido que acaba filtrado a la papelera.
+
+    **Este bucle no ejecuta ninguna disposición.** Cuenta y avisa; decidir es
+    de una persona y ejecutar (RF-TRD-07) todavía no existe."""
+    request_log.canal_de_fondo()  # proceso de fondo: sus asientos son del canal 'system' (AREA-03-07)
+    while True:
+        try:
+            await _disposicion_alerta_once()
+        except Exception:
+            logger.warning(
+                "Fallo en la barrida de alerta de disposición vencida",
+                exc_info=True,
+            )
+        await asyncio.sleep(settings.disposicion_alerta_interval_seconds)
+
+
+DOMAIN_ROUTERS = (
+    batch_router,
+    eliminacion_router,
+    public_eliminacion_router,
+    public_indice_router,
+    expedientes_router,
+    indice_router,
+    fisico_router,
+    transferencias_router,
+    metadata_router,
+    oai_router,
+    tipos_documentales_router,
+    trd_router,
+    tvd_router,
+)
+
+

@@ -7,7 +7,10 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""One database pool and one Redis client, bound into every domain module."""
+"""One database pool (`orpycamcp_common.database`) and one Redis client for every domain.
+
+Redis is still bound into each consumer module; ADR-049 retires it.
+"""
 
 from __future__ import annotations
 
@@ -16,22 +19,12 @@ from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
+from orpycamcp_common import database
 
-from docuboto.core.config import settings
-
-_MODULOS_DB = (
-    "auth.core.database",
-    "tenant.core.database",
-    "document.core.database",
-    "archive.core.database",
-    "storage.core.database",
-    "workflow.core.database",
-    "notification.core.database",
-    "signature.core.database",
-    "knowledge.core.database",
-)
+from docuboto import config as settings
 
 _MODULOS_REDIS = (
+    "document.core.redis_client",
     "workflow.core.redis_client",
     "notification.core.redis_client",
     "signature.core.redis_client",
@@ -40,24 +33,20 @@ _MODULOS_REDIS = (
 
 
 async def crear_pool() -> asyncpg.Pool:
-    return await asyncpg.create_pool(
-        dsn=settings.database_url_asyncpg,
-        min_size=settings.db_pool_min_size,
-        max_size=settings.db_pool_max_size,
-        command_timeout=settings.db_command_timeout,
+    return await database.create_pool(
+        settings.common.database_url_asyncpg,
+        min_size=settings.common.db_pool_min_size,
+        max_size=settings.common.db_pool_max_size,
+        command_timeout=settings.common.db_command_timeout,
     )
 
 
 def bind_pool(pool: asyncpg.Pool) -> None:
-    for nombre in _MODULOS_DB:
-        modulo: Any = importlib.import_module(nombre)
-        modulo._pool = pool
+    database.bind_pool(pool)
 
 
 def unbind_pool() -> None:
-    for nombre in _MODULOS_DB:
-        modulo: Any = importlib.import_module(nombre)
-        modulo._pool = None
+    database.bind_pool(None)
 
 
 def bind_redis(client: aioredis.Redis) -> None:

@@ -1,17 +1,16 @@
 -- OrpycaMCP — Sistema de Gestión Documental Electrónico de Archivo (SGDEA).
 -- Desarrollo original de Orpyca; adaptado a partir de Orfeo bajo licencia GPL.
 --
--- The registry of tenants. Each one owns a `tenant_<slug>` schema.
+-- The installation's entity (ADR-047 §3): one row of configuration per
+-- installation. It owns the `tenant_<slug>` schema; there are no lifecycle states.
 
 CREATE TABLE public.tenants (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     slug character varying(100) NOT NULL,
     name text NOT NULL,
     code character varying(20) NOT NULL,
-    status character varying(20) DEFAULT 'active'::character varying NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    provisioning_status character varying(20) DEFAULT 'active'::character varying NOT NULL,
     asistente_habilitado boolean DEFAULT false NOT NULL,
     intelligence_provider text DEFAULT 'local'::text NOT NULL,
     intelligence_levels smallint[] DEFAULT '{1}'::smallint[] NOT NULL,
@@ -27,4 +26,3 @@ CREATE TABLE public.tenants (
 CREATE INDEX ix_tenants_code ON public.tenants USING btree (code);
 CREATE INDEX ix_tenants_created_at ON public.tenants USING btree (created_at);
 CREATE INDEX ix_tenants_slug ON public.tenants USING btree (slug);
-CREATE INDEX ix_tenants_status ON public.tenants USING btree (status);

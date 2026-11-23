@@ -7,58 +7,44 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""La frontera de `/metrics` (C18, ADR-041): qué servicios lo exponen y qué no pueden decir.
+"""La frontera de `/metrics` (C18, ADR-041, ADR-047): una ruta, sus señales y nada de identidad.
 
-Una frontera se escribe por ADMISIÓN: el conjunto de servicios con `metrics.py` es
-EXACTAMENTE el esperado, cada uno declara solo `GET /metrics`, el gateway no lo
-enruta y ninguna familia puede llevar identidad.
+Un proceso, un `/metrics` (`docuboto/routers/metrics.py`). Se escribe por
+ADMISIÓN: el conjunto de señales es EXACTAMENTE el esperado, el router declara
+solo `GET /metrics`, `edge` no lo publica y ninguna familia lleva identidad.
 
 Mutaciones que deben caer (descritas, no ejecutadas):
 
-* añadir `metrics.py` a un servicio que no está en la lista →
-  `test_el_conjunto_de_servicios_con_metrics_es_el_admitido`;
-* una segunda ruta (o un POST) en un `metrics.py` → `test_cada_metrics_declara_solo_get_metrics`
+* un `metrics.py` en un dominio → `test_solo_la_app_expone_metrics`;
+* una segunda ruta (o un POST) → `test_metrics_declara_solo_get_metrics`
   (de eso depende que `test_toda_ruta_lleva_gate` lo pueda eximir);
-* una etiqueta `tenant`/`slug`/`user_id` en `FAMILIAS` → `test_ninguna_familia_lleva_identidad`;
-* una ruta `/metrics` en el gateway → `test_el_gateway_no_enruta_metrics`;
-* un servicio que escribe `evento_dead_letter` sin señal `dlq` (o al revés) →
-  `test_la_senal_dlq_la_tienen_los_que_escriben_la_dlq`.
+* una señal nueva sin tocar `ADMITIDAS` → `test_las_senales_son_las_admitidas`;
+* un dominio que escribe `evento_dead_letter` sin entrar en la señal `dlq` →
+  `test_la_senal_dlq_cubre_a_los_que_escriben_la_dlq`;
+* una etiqueta `tenant`/`slug`/`user_id` en `FAMILIAS` → `test_ninguna_familia_lleva_identidad`.
 """
 
 from __future__ import annotations
-
-from tests._compose import glob_src
 
 import ast
 import re
 from pathlib import Path
 
 from orpycamcp_common.metricas import ETIQUETAS_PROHIBIDAS, FAMILIAS
+from tests._compose import APP, glob_src
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = RAIZ / "services"
+METRICS = APP / "docuboto" / "routers" / "metrics.py"
+NGINX = RAIZ / "infra" / "nginx" / "orpyca.conf.template"
 
-#: Señal(es) que expone cada servicio. Lista de admisión: añadir uno exige tocar esto.
-ADMITIDOS = {
-    "auth-service": {"audit_chain"},
-    "archive-service": {"worm"},
-    "workflow-service": {"dlq"},
-    "signature-service": {"dlq"},
-    "notification-service": {"dlq"},
-    "knowledge-service": {"intelligence"},
-}
+#: Señales del proceso. Lista de admisión: añadir una exige tocar esto.
+ADMITIDAS = {"dlq", "audit_chain", "worm", "intelligence"}
 
 
-def _con_metrics() -> dict[str, Path]:
-    return {p.parts[-4]: p for p in sorted(glob_src(SERVICIOS, "*/app/routers/metrics.py"))}
-
-
-def test_el_conjunto_de_servicios_con_metrics_es_el_admitido() -> None:
-    encontrados = _con_metrics()
-    assert len(encontrados) >= 5, "censo de metrics.py vacío: guardián ciego"  # anti-vacuidad
-    assert set(encontrados) == set(ADMITIDOS), (
-        f"servicios con /metrics: {sorted(encontrados)}; admitidos: {sorted(ADMITIDOS)}"
-    )
+def test_solo_la_app_expone_metrics() -> None:
+    encontrados = sorted(glob_src(SERVICIOS, "*/app/routers/metrics.py"))
+    assert encontrados == [METRICS], encontrados
 
 
 def _rutas(fuente: str) -> list[tuple[str, str]]:
@@ -77,11 +63,11 @@ def _rutas(fuente: str) -> list[tuple[str, str]]:
     return out
 
 
-def test_cada_metrics_declara_solo_get_metrics() -> None:
+def test_metrics_declara_solo_get_metrics() -> None:
     """Condición de la exención de `test_toda_ruta_lleva_gate`: sin gate, una sola ruta."""
-    for svc, ruta in _con_metrics().items():
-        assert _rutas(ruta.read_text(encoding="utf-8")) == [("get", "/metrics")], svc
-        assert "include_in_schema=False" in ruta.read_text(encoding="utf-8"), svc
+    texto = METRICS.read_text(encoding="utf-8")
+    assert _rutas(texto) == [("get", "/metrics")]
+    assert "include_in_schema=False" in texto
 
 
 def test_control_positivo_el_detector_de_rutas_ve_una_segunda_ruta() -> None:
@@ -92,32 +78,24 @@ def test_control_positivo_el_detector_de_rutas_ve_una_segunda_ruta() -> None:
     assert _rutas(sintetico) == [("get", "/metrics"), ("post", "/otra")]
 
 
-def test_cada_servicio_expone_la_senal_que_le_toca() -> None:
-    for svc, ruta in _con_metrics().items():
-        texto = ruta.read_text(encoding="utf-8")
-        esperadas = ADMITIDOS[svc]
-        vistas = set(re.findall(r'metricas\.Senal\(\s*"(\w+)"', texto))
-        if "dlq" in esperadas:
-            assert "metricas.senal_dlq(" in texto, svc
-            vistas.add("dlq")
-        assert vistas == esperadas, f"{svc}: señales {vistas} != {esperadas}"
+def test_las_senales_son_las_admitidas() -> None:
+    texto = METRICS.read_text(encoding="utf-8")
+    vistas = set(re.findall(r'metricas\.Senal\(\s*"(\w+)"', texto))
+    assert vistas == ADMITIDAS, vistas
 
 
-def test_la_senal_dlq_la_tienen_los_que_escriben_la_dlq() -> None:
-    escriben = {p.parts[-4] for p in glob_src(SERVICIOS, "*/app/repositories/dead_letter_repository.py")}
+def test_la_senal_dlq_cubre_a_los_que_escriben_la_dlq() -> None:
+    escriben = {p.parts[-3] for p in glob_src(SERVICIOS, "*/app/repositories/dead_letter_repository.py")}
     assert len(escriben) >= 3, f"censo de la DLQ vacío o incompleto: {sorted(escriben)}"
-    con_senal = {s for s, r in _con_metrics().items() if "metricas.senal_dlq(" in r.read_text(encoding="utf-8")}
-    assert con_senal == escriben
+    texto = METRICS.read_text(encoding="utf-8")
+    medidos = {d for d in escriben if f"from {d}.core.constants import DLQ_GROUP" in texto}
+    assert medidos == escriben, f"escriben la DLQ: {sorted(escriben)}; medidos: {sorted(medidos)}"
 
 
-def test_el_gateway_no_enruta_metrics() -> None:
-    fuentes = list((SERVICIOS / "api-gateway" / "app").rglob("*.py"))
-    assert fuentes, "no se encontró el gateway"
-    for f in fuentes:
-        assert "/metrics" not in f.read_text(encoding="utf-8"), f"{f}: el gateway no debe tocar /metrics"
-    proxy = (SERVICIOS / "api-gateway" / "app" / "routers" / "proxy.py").read_text(encoding="utf-8")
-    # su única ruta de reenvío cuelga de /api/v1/: nada de /metrics se alcanza por ahí
-    assert '"/api/v1/{path:path}"' in proxy
+def test_edge_no_publica_metrics() -> None:
+    texto = NGINX.read_text(encoding="utf-8")
+    assert "location = /metrics {\n        return 404;" in texto
+    assert "location /metrics/ {\n        return 404;" in texto
 
 
 def test_ninguna_familia_lleva_identidad() -> None:

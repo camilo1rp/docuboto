@@ -29,7 +29,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 SCRIPT = RAIZ / "scripts" / "init_tenant.py"
 TENANT = CHAIN / "tenant" / "800_intelligence_state.sql"
 APP_ROLE = CHAIN / "global" / "020_app_role.sql"
-CONFIG = (RAIZ / "services/auth-service/auth/core/config.py").read_text(encoding="utf-8")
+CONFIG = (RAIZ / "services/docuboto/docuboto/config.py").read_text(encoding="utf-8")
 
 
 def _modulo() -> Any:

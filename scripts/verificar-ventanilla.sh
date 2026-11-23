@@ -32,7 +32,7 @@
 
 set -euo pipefail
 
-GATEWAY_URL="${GATEWAY_URL:-http://localhost:19080}"
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:19000}"
 SLUGS=("$@")
 if [ ${#SLUGS[@]} -eq 0 ] && [ -n "${PORTAL_TENANT_SLUG:-}" ]; then
     SLUGS=("$PORTAL_TENANT_SLUG")

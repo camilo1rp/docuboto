@@ -24,7 +24,7 @@ import ast
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parents[2]
-KNOWLEDGE = RAIZ / "services" / "knowledge-service" / "knowledge" / "routers" / "knowledge.py"
+KNOWLEDGE = RAIZ / "services" / "docuboto" / "knowledge" / "routers" / "knowledge.py"
 
 _METODOS = {"get", "post", "put", "patch", "delete"}
 
@@ -97,10 +97,7 @@ def test_ninguna_otra_ruta_de_consulta_de_knowledge_queda_fuera() -> None:
     routers = {p.name for p in KNOWLEDGE.parent.glob("*.py")} - {"__init__.py"}
     assert routers == {
         "knowledge.py",
-        "health.py",
         "retorno.py",
-        "metrics.py",
-        "inteligencia.py",
         "ingesta.py",
     }, (
         f"routers nuevos en knowledge-service: {sorted(routers)}. Si consultan la base de "
@@ -109,21 +106,16 @@ def test_ninguna_otra_ruta_de_consulta_de_knowledge_queda_fuera() -> None:
     )
 
 
-def test_las_metricas_y_la_configuracion_interna_no_son_una_consulta() -> None:
-    """El scrape y el acto de configuración no pasan por el permiso del funcionario."""
-    metricas = (KNOWLEDGE.parent / "metrics.py").read_text()
+def test_las_metricas_no_son_una_consulta() -> None:
+    """El scrape no pasa por el permiso del funcionario.
+
+    El acto de configuración (capacidades, aceptación, purga, inventario) ya no
+    es una ruta: es `knowledge.api`, que llama tenant en proceso (ADR-047 §1).
+    """
+    # Un solo `/metrics` en el proceso (ADR-047).
+    metricas = (KNOWLEDGE.parents[2] / "docuboto" / "routers" / "metrics.py").read_text()
     assert "/metrics" in metricas
     assert "require_asistente_habilitado" not in metricas
-    interna = (KNOWLEDGE.parent / "inteligencia.py").read_text()
-    rutas = _rutas(interna)
-    # capabilities, acceptance, purge y el conteo del inventario.
-    assert len(rutas) == 4
-    for fn in rutas:
-        nombres = _nombres(_decoradores(fn))
-        assert "require_asistente_habilitado" not in nombres
-        assert "require_permission" not in nombres
-    # El token va en el router, no en cada decorador.
-    assert "require_internal_token" in interna
 
 
 def test_el_retorno_se_firma_y_no_consulta() -> None:

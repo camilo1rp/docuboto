@@ -22,10 +22,10 @@ no aprobados): la lista solo puede BAJAR. Un emisor nuevo sin nivel rompe el tes
 
 from __future__ import annotations
 
-from tests._compose import paquete_de
-
 import ast
 from pathlib import Path
+
+from tests._compose import paquete_de
 
 RAIZ = Path(__file__).resolve().parents[2]
 SERVICIOS = ("document-service", "workflow-service")

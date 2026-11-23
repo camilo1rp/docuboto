@@ -363,7 +363,7 @@ async def esquemas_a_medir(conn: asyncpg.Connection) -> list[str]:
     saldrá «no verificada», que es lo honesto.
     """
     filas = await conn.fetch(
-        "SELECT slug FROM public.tenants WHERE provisioning_status = 'active' ORDER BY slug"
+        "SELECT slug FROM public.tenants ORDER BY slug"
     )
     return [tenant_schema(f["slug"]) for f in filas]
 

@@ -10,11 +10,11 @@
 """Tests de orpycamcp_common.audit (lógica de hash; sin BD real)."""
 
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from datetime import datetime
-
 import pytest
+
 from orpycamcp_common import audit
 
 _FIELDS = dict(

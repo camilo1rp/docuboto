@@ -26,7 +26,7 @@ networks:
     # El `gateway` (172.20.0.1) queda FUERA de `ip_range`: los contenedores reciben
     # IP solo de 172.20.128.0/17, y `TRUSTED_PROXIES` confía únicamente en ese rango.
     # Así, si un cliente llega al `edge` con la IP del gateway de la red (IPv6 servido
-    # por docker-proxy, o un proceso del anfitrión), el gateway de la API NO la salta
+    # por docker-proxy, o un proceso del anfitrión), la app NO la salta
     # como «salto de confianza» y se queda con ella, en vez de con una entrada de
     # `X-Forwarded-For` forjada por el cliente (ADR-033; ADR-031 por el sello en
     # `audit_log`).
@@ -91,18 +91,12 @@ services:
     restart: unless-stopped
     # ── Presupuesto de conexiones ──────────────────────────────────────────
     #
-    # Postgres trae `max_connections=100` por defecto. Este despliegue (un tenant,
-    # una réplica por servicio) abre `DB_POOL_MAX_SIZE=3` por servicio:
-    #
-    #   auth 3 · tenant 3 · document 3 · storage 3 · workflow 3
-    #   archive 3 · notification 3 · signature 3 · knowledge 3
-    #   ────────────────────────────────────────────────────────────────────
-    #   = 27 conexiones de las aplicaciones
-    #
-    # (api-gateway no abre pool: no toca la base de datos.)
+    # Postgres trae `max_connections=100` por defecto. Este despliegue (una
+    # entidad, un proceso, ADR-047) abre un pool de `DB_POOL_MAX_SIZE=10`
+    # conexiones para la app.
     #
     # Keycloak se acota a `KC_DB_POOL_MAX_SIZE=30` contra el mismo Postgres.
-    # Suma: 57, más margen para migraciones, respaldos y `psql` de operación.
+    # Suma: 40, más margen para migraciones, respaldos y `psql` de operación.
     #
     # Se deja `max_connections=300`. Bajar el cupo del servidor es otro cambio:
     # el monolito de Docuboto 2.0 pasa a un solo pool, y esa es la cuenta que
@@ -198,7 +192,7 @@ services:
     # instrumentos de recuperación.
     #
     # Por qué RustFS: lo decidió una batería de conformidad WORM contra el
-    # almacén REAL (`services/storage-service/tests/integration/
+    # almacén REAL (`services/docuboto/tests/storage/integration/
     # test_worm_object_lock_real_s3.py`). Medido: RustFS 1.0.0 **7/7**, MinIO
     # **7/7** (línea base), Garage **0/7** (control negativo). Las siete pruebas
     # incluyen borrar la versión retenida con credencial RAÍZ, que es lo que
@@ -260,7 +254,7 @@ services:
       KC_DB_PASSWORD: ${DB_PASSWORD}
       KC_DB_SCHEMA: keycloak
       # Keycloak abre por defecto hasta 100 conexiones contra el MISMO Postgres
-      # que usan los nueve servicios. Acotarlo es la otra mitad del presupuesto
+      # que usa la app. Acotarlo es la otra mitad del presupuesto
       # de conexiones documentado en el bloque `postgres` de este fichero: sin
       # este tope, un pico de carga documental y el inicio de sesión compiten por
       # el mismo cupo y lo que falla es el login.
@@ -321,38 +315,20 @@ services:
 
   # ─── Application Services ──────────────────────────────────────────────────────
 
-
   app:
     # Proceso unificado Docuboto 2.0. Imagen publicada por `release.yml` en cada
-    # tag X.Y.Z y fijada por digest en `release-<versión>.yml`. Los nueve servicios de dominio y el
-    # api-gateway quedan en el perfil `split`.
+    # tag X.Y.Z y fijada por digest en `release-<versión>.yml`. Un proceso (ADR-047): los
+    # nueve paquetes de dominio, sus bucles de fondo y los consumidores de eventos.
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/app:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
       EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
       APP_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.128.0/17}
       GATEWAY_RED_DOCKER_GATEWAY: 172.20.0.1
-      AUTH_SERVICE_URL: http://app:8000
-      TENANT_SERVICE_URL: http://app:8000
-      DOCUMENT_SERVICE_URL: http://app:8000
-      ARCHIVE_SERVICE_URL: http://app:8000
-      STORAGE_SERVICE_URL: http://app:8000
-      WORKFLOW_SERVICE_URL: http://app:8000
-      NOTIFICATION_SERVICE_URL: http://app:8000
-      SIGNATURE_SERVICE_URL: http://app:8000
-      KNOWLEDGE_SERVICE_URL: http://app:8000
-      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
-      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
-      ARCHIVE_INTERNAL_TOKEN: ${ARCHIVE_INTERNAL_TOKEN:?Archive internal token required}
-      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
-      SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
-      SIGNING_KEY_INTERNAL_TOKEN: ${SIGNING_KEY_INTERNAL_TOKEN:?Signing key internal token required}
-      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
       ALTCHA_HMAC_KEY: ${ALTCHA_HMAC_KEY:?ALTCHA_HMAC_KEY es obligatorio}
       ALTCHA_TTL_SEGUNDOS: ${ALTCHA_TTL_SEGUNDOS:-300}
       ALTCHA_MAXNUMBER: ${ALTCHA_MAXNUMBER:-100000}
@@ -368,6 +344,10 @@ services:
       MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
       MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
       PDFA_PROFILE: ${PDFA_PROFILE:-2b}
+      # Bucles que antes corrían en el `worker` (ADR-047): migración de formato,
+      # renovación LTA y la cola pesada. Comparten HEAVY_JOBS_CONCURRENCY plazas.
+      FORMAT_MIGRATION_ENABLED: ${FORMAT_MIGRATION_ENABLED:-true}
+      HEAVY_JOBS_CONCURRENCY: ${HEAVY_JOBS_CONCURRENCY:-1}
       KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
       KEYCLOAK_REALM: orpycamcp
       KEYCLOAK_CLIENT_ID: auth-service
@@ -438,711 +418,10 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  worker:
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/worker:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      APP_ENV: production
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      DOCUMENT_SERVICE_URL: http://app:8000
-      STORAGE_SERVICE_URL: http://app:8000
-      SIGNATURE_SERVICE_URL: http://app:8000
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      MINIO_USE_SSL: "false"
-      PRESERVATION_ENABLED: "true"
-      PRESERVATION_REPLICA_ENABLED: "true"
-      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
-      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
-      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
-      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
-      PDFA_PROFILE: ${PDFA_PROFILE:-2b}
-      FORMAT_MIGRATION_ENABLED: ${FORMAT_MIGRATION_ENABLED:-true}
-      SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
-      SIGNER_PROVIDER: ${SIGNER_PROVIDER:-xades_local}
-      SIGNER_CERT_DIR: /run/secrets/signing
-      SIGNER_TIMESTAMP_ENABLED: ${SIGNER_TIMESTAMP_ENABLED:-true}
-      TSA_URL: ${TSA_URL:-}
-      TSA_CERT_DIR: /run/secrets/tsa
-      TSA_ESSCERTID_CORTE: ${TSA_ESSCERTID_CORTE:-2026-10-04T00:00:00Z}
-      SIGNER_LT_ENABLED: ${SIGNER_LT_ENABLED:-false}
-      SIGNER_LT_REQUIRE: ${SIGNER_LT_REQUIRE:-false}
-      SIGNER_OCSP_ENABLED: ${SIGNER_OCSP_ENABLED:-true}
-      SIGNER_OCSP_REQUIRE: ${SIGNER_OCSP_REQUIRE:-false}
-    volumes:
-      - ../secrets/signing:/run/secrets/signing:ro
-      - ../secrets/tsa:/run/secrets/tsa:ro
-    networks:
-      - orpycamcp-net
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4G
-        reservations:
-          cpus: '1'
-          memory: 1G
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  api-gateway:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/api-gateway:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    # Una réplica: 10 usuarios concurrentes no justifican más. Sin container_name
-    # fijo, Compose nombra el contenedor.
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      AUTH_CACHE_MAC_SECRET: ${AUTH_CACHE_MAC_SECRET:?AUTH_CACHE_MAC_SECRET es obligatorio}
-      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
-      KEYCLOAK_REALM: orpycamcp
-      KEYCLOAK_CLIENT_ID: api-gateway
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_API_GATEWAY_SECRET:?API Gateway Keycloak secret required}
-      TENANT_HEADER: X-Tenant-Slug
-      # Intermediarios de CONFIANZA: solo se cree el `X-Forwarded-For` que
-      # escriben ellos (ver services/api-gateway/app/core/client_ip.py). Sin
-      # declararlos, la cabecera se ignora entera y todo el tráfico comparte la
-      # IP del contenedor del SSR — que es el estado fail-closed, correcto pero
-      # inservible para limitar por IP. Por defecto: el `ip_range` de esta red
-      # (172.20.128.0/17), donde viven el frontend SSR y el `edge`, y NO el gateway
-      # de la red (172.20.0.1): ver el comentario de `networks:`.
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.20.128.0/17}
-      # Perfil de producción: el gateway NO arranca si TRUSTED_PROXIES contiene la puerta
-      # de enlace de la red (ARC-B4). Debe coincidir con `gateway:` de `networks:` arriba
-      # (lo vigila shared/tests/test_manifiesto_prod_seguro.py).
-      APP_ENV: production
-      GATEWAY_RED_DOCKER_GATEWAY: 172.20.0.1
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8080"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      # `curl` NO existe en `python:3.11-slim`, que es la base de esta imagen: el
-      # healthcheck fallaba SIEMPRE con «executable file not found». Docker lo
-      # cuenta como fallo del contenedor, así que el gateway quedaba `unhealthy`
-      # de forma permanente y todo `depends_on: service_healthy` que apunte a él
-      # se bloquea. Se usa el mismo intérprete que ya corre dentro, igual que en
-      # los demás servicios de este fichero.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  auth-service:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/auth-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-auth-service-prod
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
-      KEYCLOAK_REALM: orpycamcp
-      KEYCLOAK_CLIENT_ID: auth-service
-      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_AUTH_SERVICE_SECRET:?Auth Service secret required}
-      DB_POOL_MAX_SIZE: "3"
-      # ── Claves de cifrado en reposo (KEK) ────────────────────────────────────
-      # Ambas son base64 de 32 bytes y son SECRETOS DISTINTOS con propósitos
-      # distintos: TOTP_ENCRYPTION_KEY cifra el secreto TOTP del segundo factor,
-      # SIGNING_KEY_ENCRYPTION_KEY envuelve la clave privada de firma personal.
-      # Sin ellas los endpoints correspondientes fallan CERRADOS (500), que es lo
-      # correcto — pero en producción eso significa «nadie enrola 2FA ni firma»,
-      # así que se exigen con `:?` en vez de dejarlas vacías por defecto.
-      # Generar: openssl rand -base64 32
-      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:?TOTP encryption key required (openssl rand -base64 32)}
-      SIGNING_KEY_ENCRYPTION_KEY: ${SIGNING_KEY_ENCRYPTION_KEY:?Signing key encryption key required (openssl rand -base64 32)}
-      # Token servicio-a-servicio que protege POST /internal/signing-key/* — el
-      # llamante es signature-service, que debe traer EXACTAMENTE este valor.
-      SIGNING_KEY_INTERNAL_TOKEN: ${SIGNING_KEY_INTERNAL_TOKEN:?Signing key internal token required}
-      # Certificado PÚBLICO de la sub-CA que emite las credenciales de usuario.
-      # La clave privada (ca-users.key) NUNCA se monta aquí.
-      SIGNING_KEY_CA_USERS_CERT_PATH: /run/secrets/ca-users-public/ca-users.crt
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    volumes:
-      # Solo material público, solo lectura.
-      - ../secrets/ca-users-public:/run/secrets/ca-users-public:ro
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8001"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  tenant-service:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/tenant-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-tenant-service-prod
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      DB_POOL_MAX_SIZE: "3"
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      # Vacío: pasar a ppi responde que la pasarela no está configurada.
-      KNOWLEDGE_SERVICE_URL: http://knowledge-service:8011
-      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8002"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  document-service:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/document-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      # Custodia de las credenciales de los buzones institucionales. Sin ella el
-      # servicio arranca pero no puede descifrar lo que guardó, y la ingesta de
-      # correo queda muerta sin decirlo. Faltaba en este manifiesto por completo.
-      EMAIL_ENCRYPTION_KEY: ${EMAIL_ENCRYPTION_KEY:?EMAIL_ENCRYPTION_KEY es obligatorio}
-      # El AÑO del número de radicado se decide aquí, no en UTC: Colombia es
-      # UTC-5 y lo radicado el 31 de diciembre por la tarde recibía el número
-      # del año siguiente, contradiciendo la fecha de su propio acuse.
-      TZ_RADICACION: ${TZ_RADICACION:-America/Bogota}
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      # D-02: secreto compartido con storage-service.INTERNAL_SERVICE_TOKEN.
-      # document-service MEDIA la descarga de anexos (gate por clearance vigente)
-      # y necesita este token para hablar con storage. Sin él, storage responde
-      # 401 a TODA descarga — fail-closed correcto, sistema inservible.
-      DB_POOL_MAX_SIZE: "3"
-      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
-      # Token que protege los endpoints /internal de ESTE servicio (los consume
-      # archive-service al ensamblar el AIP y el export del expediente).
-      INTERNAL_SERVICE_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
-      # C16 (ADR-038): clave HMAC con la que se firman los retos ALTCHA de la
-      # ventanilla pública anónima. `openssl rand -hex 32`; nunca llega al
-      # navegador. Sin ella (o con menos de 32 bytes) el servicio no arranca.
-      ALTCHA_HMAC_KEY: ${ALTCHA_HMAC_KEY:?ALTCHA_HMAC_KEY es obligatorio}
-      ALTCHA_TTL_SEGUNDOS: ${ALTCHA_TTL_SEGUNDOS:-300}
-      ALTCHA_MAXNUMBER: ${ALTCHA_MAXNUMBER:-100000}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8003"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  storage-service:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/storage-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    # Una réplica. Sin container_name fijo, Compose nombra el contenedor.
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      DB_POOL_MAX_SIZE: "3"
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      # El campo real es `minio_use_ssl` (core/config.py:24). `MINIO_SECURE` no
-      # existe y `extra="ignore"` lo descartaba en silencio: la variable prometía
-      # TLS sobre tráfico que iba en claro. Se deja en false porque el MinIO de
-      # este compose no tiene certificados y el tráfico no sale de la red Docker;
-      # ponerlo en true exige montarlos y configurar MinIO en modo TLS.
-      MINIO_USE_SSL: "false"
-      # Token que protege los endpoints internos de storage. Es el MISMO valor
-      # que STORAGE_INTERNAL_TOKEN en document/archive/signature-service.
-      INTERNAL_SERVICE_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
-      # WORM/Object-Lock (E10). Sin APP_ENV=production el resolutor exige modo
-      # COMPLIANCE explícito; sin PRESERVATION_ENABLED el índice electrónico y el
-      # acta de transferencia se cierran SIN protección y el trabajo de reintento
-      # acumula backlog en silencio.
-      APP_ENV: production
-      PRESERVATION_ENABLED: "true"
-      PRESERVATION_REPLICA_ENABLED: "true"
-      MINIO_SECONDARY_ENDPOINT: ${MINIO_SECONDARY_ENDPOINT:?almacén de preservación fuera del servidor requerido}
-      MINIO_SECONDARY_ACCESS_KEY: ${MINIO_SECONDARY_ACCESS_KEY:?clave de acceso del almacén de preservación requerida}
-      MINIO_SECONDARY_SECRET_KEY: ${MINIO_SECONDARY_SECRET_KEY:?secreto del almacén de preservación requerido}
-      MINIO_SECONDARY_USE_SSL: ${MINIO_SECONDARY_USE_SSL:-true}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      # VERAPDF_BINARY/PDFA_VALIDATOR/PRESERVATION_PDFA_VALIDATION_ENABLED ya
-      # vienen como ENV del stage "production" del Dockerfile (valores por
-      # defecto correctos para este despliegue) -- se sobrescriben acá SOLO
-      # si una instalación concreta necesita desviarse (p. ej. un perfil PDF/A
-      # institucional distinto de "2b", ver PDFA_PROFILE en core/config.py).
-      PDFA_PROFILE: ${PDFA_PROFILE:-2b}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8005"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      replicas: 1
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  workflow-service:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/workflow-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-workflow-service-prod
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      DB_POOL_MAX_SIZE: "3"
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8006"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  archive-service:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/archive-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-archive-service-prod
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      DB_POOL_MAX_SIZE: "3"
-      # D-02, los tres pares emisor/receptor de este servicio:
-      #  - storage:   AIP, protección WORM del índice y del acta
-      #  - signature: POST /internal/sign-indice (reconciliación del sellado)
-      #  - document:  export del expediente por-radicado con recorte de clearance
-      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
-      SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
-      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
-      # D-02 ENTRANTE (AREA-04-09): signature-service pide la huella del índice vigente.
-      INTERNAL_SERVICE_TOKEN: ${ARCHIVE_INTERNAL_TOKEN:?Archive internal token required}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8004"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  notification-service:
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/notification-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-notification-service-prod
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      DB_POOL_MAX_SIZE: "3"
-      SMTP_HOST: ${SMTP_HOST:?SMTP host required}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USER: ${SMTP_USER:?SMTP user required}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:?SMTP password required}
-      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:?From email required}
-      SMTP_TLS: "true"
-      # D-02: POST /notifications/send está SELLADO servicio-a-servicio. Por ahí
-      # sale el OTP del segundo factor; sin este token nadie con 2FA puede entrar.
-      INTERNAL_SERVICE_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
-      # KEK que cifra en reposo el secreto HMAC de los webhooks (base64 de 32 bytes:
-      # openssl rand -base64 32). Obligatoria y DISTINTA de las demás KEK; si se
-      # pierde, los secretos de los webhooks son irrecuperables (hay que volver a
-      # darlos de alta). Rotación: docs/es/deployment.md.
-      WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?WEBHOOK_SECRET_KEK es obligatoria (openssl rand -base64 32)}
-      WEBHOOK_SECRET_KEKS: ${WEBHOOK_SECRET_KEKS:-{}}
-      WEBHOOK_SECRET_KEK_ACTIVE_VERSION: ${WEBHOOK_SECRET_KEK_ACTIVE_VERSION:-1}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8007"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  signature-service:
-    # Firma electrónica (E06). Contexto raíz: el Dockerfile instala shared/orpycamcp_common (ADR-010).
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/signature-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-signature-service-prod
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      DB_POOL_MAX_SIZE: "3"
-      # En prod el navegador y los servicios usan el MISMO hostname público de
-      # Keycloak (DNS real), así que el `iss` coincide sin override: expected_issuer
-      # se deriva de KEYCLOAK_URL. NO se setea KEYCLOAK_ISSUER (a diferencia de dev,
-      # donde el split localhost:19180 ↔ keycloak:8080 obliga al override).
-      KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
-      KEYCLOAK_REALM: orpycamcp
-      SIGNATURE_SECRET: ${SIGNATURE_SECRET:?Signature secret required}
-      # Faltaba: este servicio consume orpycamcp.document.events. Sin REDIS_URL,
-      # `from_url` no falla al construir (es perezoso) y el bucle del consumer se
-      # traga la excepción, así que /health sigue en verde para siempre mientras
-      # `firma_solicitud.nivel_seguridad` queda desfasado respecto a las
-      # reclasificaciones — y el gate de 2FA para nivel>=2 nunca se dispara.
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET es obligatorio}
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      # ── Sello institucional XAdES (E06) ─────────────────────────────────────
-      # SIGNER_ALLOW_DEV_SEAL y TSA_ALLOW_DEV_SEAL NO se ponen a propósito: en
-      # producción un tenant sin sello propio debe fallar cerrado (503), no
-      # firmar con el par compartido de desarrollo.
-      SIGNER_PROVIDER: ${SIGNER_PROVIDER:-xades_local}
-      SIGNER_CERT_DIR: /run/secrets/signing
-      SIGNER_TIMESTAMP_ENABLED: ${SIGNER_TIMESTAMP_ENABLED:-true}
-      TSA_URL: ${TSA_URL:-}
-      TSA_CERT_DIR: /run/secrets/tsa
-      # Fecha de corte del ESSCertID (sustituye a TSA_ESSCERTID_OBLIGATORIO, que
-      # ya no se lee). Vacío = el default del servicio (2026-10-04T00:00:00Z).
-      TSA_ESSCERTID_CORTE: ${TSA_ESSCERTID_CORTE:-2026-10-04T00:00:00Z}
-      # Respaldo de la política XAdES para la entidad que no define el parámetro
-      # firma_personal_require_xades (off|clasificados|todos).
-      FIRMA_PERSONAL_REQUIRE_XADES: ${FIRMA_PERSONAL_REQUIRE_XADES:-off}
-      SIGNER_LT_ENABLED: ${SIGNER_LT_ENABLED:-false}
-      SIGNER_LT_REQUIRE: ${SIGNER_LT_REQUIRE:-false}
-      SIGNER_OCSP_ENABLED: ${SIGNER_OCSP_ENABLED:-true}
-      SIGNER_OCSP_REQUIRE: ${SIGNER_OCSP_REQUIRE:-false}
-      # ── D-02: los cuatro pares emisor/receptor de este servicio ─────────────
-      STORAGE_INTERNAL_TOKEN: ${STORAGE_INTERNAL_TOKEN:?Storage internal token required}
-      SIGNATURE_INTERNAL_TOKEN: ${SIGNATURE_INTERNAL_TOKEN:?Signature internal token required}
-      SIGNING_KEY_INTERNAL_TOKEN: ${SIGNING_KEY_INTERNAL_TOKEN:?Signing key internal token required}
-      NOTIFICATION_INTERNAL_TOKEN: ${NOTIFICATION_INTERNAL_TOKEN:?Notification internal token required}
-      # AREA-04-09 Media-2: huella del PDF vigente del radicado (document) y del
-      # índice vigente del expediente (archive), resueltas en el servidor.
-      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
-      ARCHIVE_INTERNAL_TOKEN: ${ARCHIVE_INTERNAL_TOKEN:?Archive internal token required}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-    volumes:
-      # Solo lectura y solo material que este servicio necesita. La clave privada
-      # de la CA (secrets/ca-authority*) NUNCA se monta aquí.
-      - ../secrets/signing:/run/secrets/signing:ro
-      - ../secrets/tsa:/run/secrets/tsa:ro
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8008"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8008/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  knowledge-service:
-    # Capa de conocimiento (E21, ADR-046): sin modelos ni ingesta. /search y
-    # /antecedentes consultan la búsqueda de texto completo de document-service.
-    # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
-    # `release-<versión>.yml`, que la fija por digest (ADR-053 §3).
-    # Para construir en el propio servidor: infra/docker-compose.build.yml.
-    image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/knowledge-service:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
-    container_name: orpycamcp-knowledge-service-prod
-    restart: unless-stopped
-    profiles: ["split"]
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_APP_USER:?DB_APP_USER es obligatorio}:${DB_APP_PASSWORD:?DB_APP_PASSWORD es obligatorio}@postgres:5432/${DB_NAME}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      IDENTITY_SIGNING_SECRET: ${IDENTITY_SIGNING_SECRET:?IDENTITY_SIGNING_SECRET es obligatorio}
-      DB_POOL_MAX_SIZE: "3"
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      INTELLIGENCE_INTERNAL_TOKEN: ${INTELLIGENCE_INTERNAL_TOKEN:-}
-      DOCUMENT_INTERNAL_TOKEN: ${DOCUMENT_INTERNAL_TOKEN:?Document internal token required}
-      INTELLIGENCE_CREDENTIAL_KEK: ${INTELLIGENCE_CREDENTIAL_KEK:?INTELLIGENCE_CREDENTIAL_KEK es obligatoria (openssl rand -base64 32)}
-      # Sin PPI: la ingesta corre en `app` (ADR-051 §2).
-    networks:
-      - orpycamcp-net
-    expose:
-      - "8011"
-    depends_on:
-      migrate-docuboto:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8011/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    deploy:
-      resources:
-        limits:
-          # Sin modelos desde D0 (ADR-046): el mismo tope que el resto de servicios.
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   frontend:
     # SvelteKit SSR (adapter-node) detrás del reverse proxy/TLS. Split de URLs:
     #   - PUBLIC_* → orígenes públicos HTTPS que ve el NAVEGADOR (login PKCE, logout)
-    #   - INTERNAL_* → cómo alcanza el SSR al gateway dentro de la red Docker
+    #   - INTERNAL_* → cómo alcanza el SSR a la app dentro de la red Docker
     # ORIGIN + PROTOCOL_HEADER/HOST_HEADER son IMPRESCINDIBLES tras un proxy: sin
     # ellos adapter-node deriva mal `url.origin` y arma un redirect_uri inválido.
     # Imagen publicada por `release.yml` en cada tag X.Y.Z; en producción corre
@@ -1155,8 +434,7 @@ services:
       PORT: "3000"
       # adapter-node limita el cuerpo a 512 KB por defecto y las subidas de anexos
       # pasan por el SSR: sin esto, todo PDF escaneado real muere en 413. Coincide
-      # con el tope del gateway (MAX_REQUEST_BODY_BYTES) — subirlo aquí sin el
-      # flujo por trozos del gateway cambiaría el 413 por un OOM.
+      # con `client_max_body_size` de `edge` (512 MiB).
       BODY_SIZE_LIMIT: "536870912"
       # Sin esto el SSR ve la IP del proxy, no la del navegador, y todo el tráfico
       # comparte un único cubo de limitación de tasa (ver Dockerfile del frontend).
@@ -1165,10 +443,10 @@ services:
       ORIGIN: https://${FRONTEND_HOSTNAME:?Frontend hostname required}
       PROTOCOL_HEADER: x-forwarded-proto
       HOST_HEADER: x-forwarded-host
-      # Públicas (navegador): gateway y Keycloak por su dominio público HTTPS.
+      # Públicas (navegador): la app y Keycloak por su dominio público HTTPS.
       PUBLIC_API_URL: https://${API_PUBLIC_HOSTNAME:?Public API hostname required}
       PUBLIC_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
-      # Internas (SSR): el gateway por la red Docker; Keycloak por su hostname
+      # Internas (SSR): la app por la red Docker; Keycloak por su hostname
       # público (hostname-strict=true + TLS solo aceptan el dominio del cert).
       INTERNAL_API_URL: http://app:8000
       INTERNAL_KEYCLOAK_URL: https://${KEYCLOAK_HOSTNAME}
@@ -1202,7 +480,7 @@ services:
 
   # ─── Entrada de producción (ADR-033) ───────────────────────────────────────────
   # ÚNICO servicio que publica puertos. nginx corre en contenedor y no en el
-  # anfitrión porque con nginx en el anfitrión el gateway vería como par a la IP
+  # anfitrión porque con nginx en el anfitrión la app vería como par a la IP
   # del docker-proxy, y porque `edge` lleva los tres hostnames públicos como
   # alias en `orpycamcp-net`.
   # Los alias hacen que, dentro de la red, `https://${KEYCLOAK_HOSTNAME}` resuelva
@@ -1256,12 +534,4 @@ services:
     image: ${ORPYCA_REGISTRY:?Registro de imágenes requerido (p. ej. ghcr.io/camilo1rp/docuboto)}/app:${ORPYCA_VERSION:?Versión requerida (un tag X.Y.Z; nunca latest)}
     environment:
       MIGRATIONS_DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
-
-
-
-
-
-
-
-
 

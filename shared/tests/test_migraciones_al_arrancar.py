@@ -37,7 +37,7 @@ CHAIN = RAIZ / "services" / "docuboto" / "migrations"
 
 #: Lleva `DATABASE_URL` en el manifiesto de producción pero su código no la lee
 #: (lo comprueba `test_la_excepcion_del_gateway_sigue_siendo_cierta`).
-_NO_CONNECTION = {"api-gateway"}
+_NO_CONNECTION: set[str] = set()
 
 _MANIFIESTOS = [pytest.param(COMPOSE_PROD, id="prod"), pytest.param(COMPOSE_DEV, id="dev")]
 
@@ -63,8 +63,8 @@ def test_todo_servicio_que_conecta_a_la_base_espera_al_migrador(compose) -> None
     de un servicio en dev (o en prod) deja de migrar antes de servir."""
     todos = servicios(compose)
     con_base = _db_services(todos)
-    # Control positivo: `app`, `worker` y los nueve de dominio del perfil `split`.
-    assert len(con_base) >= 11, f"solo {con_base}: guardián ciego"
+    # Control positivo: un proceso (ADR-047).
+    assert con_base == ["app"], f"{con_base}: guardián ciego o servicio de más"
     assert MIGRATOR in todos, f"{compose.name}: falta {MIGRATOR}"
     mal: list[str] = []
     for nombre in con_base:
@@ -73,19 +73,6 @@ def test_todo_servicio_que_conecta_a_la_base_espera_al_migrador(compose) -> None
         if cond != "service_completed_successfully":
             mal.append(f"{nombre}: no depende de {MIGRATOR} con service_completed_successfully")
     assert not mal, "Migraciones al arrancar (fail-closed):\n  " + "\n  ".join(mal)
-
-
-def test_la_excepcion_del_gateway_sigue_siendo_cierta() -> None:
-    """Si el gateway empieza a leer `DATABASE_URL`, deja de estar exento."""
-    for svc in _NO_CONNECTION:
-        fuentes = [p for p in (RAIZ / "services" / svc).rglob("*.py") if "tests" not in p.parts]
-        assert fuentes, f"{svc}: sin fuentes; guardián ciego"
-        leen = [
-            p.relative_to(RAIZ).as_posix()
-            for p in fuentes
-            if re.search(r"DATABASE_URL|database_url|asyncpg", p.read_text(encoding="utf-8"))
-        ]
-        assert not leen, f"{svc} conecta a la base y debe esperar a {MIGRATOR}: {leen}"
 
 
 @pytest.mark.parametrize("compose", _MANIFIESTOS)
@@ -121,7 +108,7 @@ def test_en_dev_el_migrador_reutiliza_la_imagen_de_app() -> None:
 @pytest.mark.parametrize("compose", _MANIFIESTOS)
 def test_el_proceso_unificado_solo_espera_a_su_migrador(compose) -> None:  # noqa: ANN001
     todos = servicios(compose)
-    for nombre in ("app", "worker"):
+    for nombre in ("app",):
         deps = todos[nombre].get("depends_on") or {}
         migradores = [k for k in deps if str(k).startswith("migrate-")]
         assert migradores == [MIGRATOR], f"{nombre}: {migradores}"

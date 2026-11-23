@@ -148,5 +148,5 @@ if [ "$creados" -gt 0 ]; then
   echo
   echo "Escritos en ${ENV_FILE} (gitignorado: NO se commitea, y no debe)."
   echo "Docker Compose lo lee solo. Levanta o recrea los servicios para que apliquen:"
-  echo "    docker compose up -d --force-recreate app worker"
+  echo "    docker compose up -d --force-recreate app"
 fi
