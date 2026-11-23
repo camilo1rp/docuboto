@@ -226,3 +226,19 @@ async def signing_key_revocation_status(*, tenant_slug: str, fingerprint: str) -
     async with _tenant_conn(tenant_slug) as conn:
         estado = await SigningKeyService(conn).revocation_status(fingerprint)
     return estado.model_dump(mode="json")
+
+
+async def service_token(conn: asyncpg.Connection, *, tenant_slug: str, audience: str) -> tuple[str, int]:
+    """Token de la cuenta de servicio de la entidad para `audience` (ADR-048 §3).
+
+    Lo firma el propio proceso: no hay secreto que abrir ni emisor externo al
+    que pedírselo. `(token, segundos de vida)`. Sin cuenta activa, `AuthUnavailableError`.
+    """
+    from auth.repositories.identity_repository import IdentityRepository
+    from auth.services.auth_service import emitir_token_servicio
+
+    cuenta = await IdentityRepository(conn).service_account_for(tenant_slug, audience)
+    if cuenta is None:
+        raise AuthUnavailableError("sin cuenta de servicio")
+    respuesta = await emitir_token_servicio(conn, cuenta)
+    return respuesta.access_token, respuesta.expires_in

@@ -27,6 +27,7 @@ from auth.core.authz import Caller, get_caller, require_any_permission, require_
 from auth.repositories.clearance_repository import MAX_LEVEL, ClearanceRepository
 from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.rbac import (
+    PasswordSet,
     EffectivePermissions,
     GroupCreate,
     GroupPermissionItem,
@@ -116,7 +117,7 @@ async def create_user(
         row = await service.create_user(
             username=payload.username,
             email=payload.email,
-            keycloak_sub=payload.keycloak_sub,
+            password=payload.password,
             is_root=payload.is_root,
             tenant_slug=request.headers.get("X-Tenant-Slug"),
             actor=str(caller.user_id),
@@ -125,6 +126,28 @@ async def create_user(
     except asyncpg.UniqueViolationError:
         raise _conflict(f"Ya existe un usuario con el nombre «{payload.username}»")
     return UserResponse(**dict(row))
+
+
+@router.put(
+    "/users/{user_id}/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission("USUA_PERM_ADMIN", min_crud=2))],
+)
+async def set_user_password(
+    user_id: uuid.UUID,
+    payload: PasswordSet,
+    request: Request,
+    caller: Caller = Depends(get_caller),
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> None:
+    """Un administrador fija la contraseña de una persona y cierra sus sesiones (ADR-048)."""
+    await RBACService(conn).set_password(
+        user_id=user_id,
+        password=payload.password,
+        tenant_slug=request.headers.get("X-Tenant-Slug"),
+        actor=str(caller.user_id),
+        caller_is_root=caller.is_root,
+    )
 
 
 @router.get("/users", response_model=list[UserResponse])

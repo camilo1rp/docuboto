@@ -9,10 +9,11 @@
 
 """Un llamante por petición, tomado del JWT. Las cabeceras `X-User-Id` no cuentan.
 
-El gateway firmaba quién eras y lo inyectaba. En un solo proceso esa firma es un
-salto de más: el middleware valida el Bearer y deja un `Usuario` en
-`request.state`. Sin veto de entidad suspendida en el borde (ADR-047 §3). Un `X-User-Id` de cliente se
-ignora. Permiso y clearance siguen saliendo de la BD.
+El middleware verifica el Bearer contra las claves que firma el propio proceso
+(ADR-048) y deja un `Usuario` en `request.state`. El `sub` ya es `auth_users.id`:
+no hay alta perezosa ni consulta a la BD por petición. La entidad se comprueba al
+emitir el token (login y refresh), no en cada petición. Un `X-User-Id` de cliente
+se ignora. Permiso y clearance siguen saliendo de la BD.
 """
 
 from __future__ import annotations
@@ -36,8 +37,12 @@ _PUBLICAS = frozenset(
         "/health",
         "/health/ready",
         "/metrics",
-        "/api/v1/auth/token",
+        "/api/v1/auth/login",
         "/api/v1/auth/refresh",
+        "/api/v1/auth/logout",
+        "/.well-known/openid-configuration",
+        "/.well-known/jwks.json",
+        "/oauth/token",
     }
 )
 _RUTAS_OPENAPI = frozenset(
@@ -61,7 +66,6 @@ class Usuario:
     id: uuid.UUID | None
     tenant_slug: str
     username: str = ""
-    roles: tuple[str, ...] = ()
     canal: str = "api"
     ip: str = ""
 
@@ -313,14 +317,10 @@ class UsuarioActualMiddleware:
 
         ip = str(state.get("ip") or "unknown")
 
-        roles = payload.get("roles") or []
-        if not isinstance(roles, list):
-            roles = []
         usuario = Usuario(
             id=_uuid(payload.get("user_id")),
             tenant_slug=slug,
             username=str(payload.get("username") or ""),
-            roles=tuple(str(r) for r in roles),
             canal="api",
             ip=ip,
         )
@@ -385,8 +385,6 @@ async def _validar(scope: dict[str, Any], token: str) -> dict[str, Any] | None:
             "user_id": getattr(result, "user_id", None),
             "username": getattr(result, "username", ""),
             "tenant_slug": getattr(result, "tenant_slug", None),
-            "roles": getattr(result, "roles", []) or [],
-            "tenant_estado": getattr(result, "tenant_estado", None),
         }
 
     return None

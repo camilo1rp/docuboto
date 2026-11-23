@@ -10,7 +10,7 @@
 """La configuración del proceso (ADR-047): una clase `Settings` por familia.
 
 Había nueve `core/config.py`, uno por servicio, con la base de datos, el pool,
-Redis y Keycloak repetidos en cada uno. Aquí `CommonSettings` lleva lo común y
+Redis y el emisor de identidad repetidos en cada uno. Aquí `CommonSettings` lleva lo común y
 cada dominio tiene su `Settings` con lo suyo; las instancias se llaman como el
 dominio (`docuboto.config.archive`, `docuboto.config.storage`, …).
 
@@ -32,7 +32,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class CommonSettings(BaseSettings):
-    """Lo que comparten todas las familias: base de datos, pool, Redis, Keycloak, log."""
+    """Lo que comparten todas las familias: base de datos, pool, Redis, log."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)
 
@@ -44,8 +44,6 @@ class CommonSettings(BaseSettings):
     # indefinidamente y el pool se agota sin que nada lo delate.
     db_command_timeout: float = 120.0
     redis_url: str = "redis://redis:6379/0"
-    keycloak_url: str = "http://keycloak:8080"
-    keycloak_realm: str = "orpycamcp"
     log_level: str = "info"
 
     @property
@@ -66,36 +64,40 @@ def _decode_aes256(b64: str, label: str) -> bytes:
 
 class AuthSettings(CommonSettings):
 
-    keycloak_client_id: str = "auth-service"
-    keycloak_client_secret: str = "change-me-in-production"
+    # --- Emisor de identidad (ADR-048) ---
+    # `iss` de todo JWT que firma el proceso y base de las URL del descubrimiento
+    # OIDC. Es la URL pública del API (`https://{API_PUBLIC_HOSTNAME}` en prod):
+    # el proveedor PPI la declara como emisor y baja de ahí la JWKS.
+    identity_issuer: str = "http://localhost:8000"
+    # `aud` de los tokens de persona. Un token de cuenta de servicio lleva el
+    # audience de su fila (p. ej. el del proveedor) y no entra a este API.
+    identity_user_audience: str = "docuboto"
+    # AES-256 (32 bytes, base64) que sella la clave privada de firma de los JWT en
+    # `public.auth_jwt_keys`. Vacía: el proceso no emite ni verifica tokens
+    # (fail-closed); nunca se cae a una clave implícita.
+    identity_key_encryption_key: str = ""
+    # Vidas: access 15 min; refresh 12 h absolutas desde el inicio de sesión (la
+    # rotación no las alarga); token de servicio 5 min.
+    access_token_ttl_s: int = 900
+    refresh_token_ttl_s: int = 43200
+    service_token_ttl_s: int = 300
+    # Tras rotar, la clave anterior sigue en la JWKS este tiempo: más que la vida
+    # del token más largo firmado con ella.
+    jwt_key_overlap_s: int = 3600
 
-    # Keycloak client that issues tokens via Resource Owner Password Credentials.
-    # Must have directAccessGrantsEnabled=true in realm config.
-    keycloak_gateway_client_id: str = "api-gateway"
-    keycloak_gateway_client_secret: str = "change-me-in-production"
-
-    # Issuer (claim `iss`) esperado en los tokens. Por defecto se deriva de
-    # `keycloak_realm_url`, pero debe poder sobreescribirse: en despliegues con
-    # Docker, los tokens se emiten con la URL pública de Keycloak (p. ej.
-    # http://localhost:19180/realms/orpycamcp) mientras el servicio resuelve
-    # Keycloak por la URL interna (http://keycloak:8080). Si difieren, fija aquí
-    # el issuer público para que la validación del `iss` no rechace tokens válidos.
-    keycloak_issuer: str | None = None
-
-    # Clientes del realm (claim `azp`) cuyos tokens se aceptan como credencial de
-    # API, separados por comas. Lista VACÍA = no se acepta ninguno (fail-closed).
-    # Un cliente real nuevo del realm, que sí deba entrar a la API, se añade aquí
-    # o sus tokens dan 401. El cliente `intelligence-{slug}` que crea
-    # `scripts/init_tenant.py` no entra: su token solo se presenta al proveedor
-    # (ADR-045 §4).
-    allowed_azp: str = "orpycamcp-frontend,api-gateway"
+    # --- Política de contraseñas (la que tenía el realm) ---
+    password_min_length: int = 12
+    password_history: int = 5
+    login_max_failed: int = 5
+    login_lockout_seconds: int = 900
 
     @property
-    def allowed_azp_set(self) -> frozenset[str]:
-        return frozenset(c.strip() for c in self.allowed_azp.split(",") if c.strip())
-
-    # JWKS public key cache TTL (seconds)
-    jwks_cache_ttl: int = 600
+    def identity_key_bytes(self) -> bytes:
+        if not self.identity_key_encryption_key:
+            raise RuntimeError(
+                "IDENTITY_KEY_ENCRYPTION_KEY no configurada: el proceso no firma tokens"
+            )
+        return _decode_aes256(self.identity_key_encryption_key, "IDENTITY_KEY_ENCRYPTION_KEY")
 
     # --- TOTP (RFC 6238, E06) — 2FA para la firma personal, junto a auth_users ---
     # Clave AES-256 (32 bytes, base64) para cifrar en reposo el secreto TOTP
@@ -227,60 +229,6 @@ class AuthSettings(CommonSettings):
         if len(key) != 32:
             raise RuntimeError("totp_encryption_key debe decodificar a 32 bytes (AES-256)")
         return key
-
-    @property
-    def keycloak_realm_url(self) -> str:
-        return f"{self.keycloak_url}/realms/{self.keycloak_realm}"
-
-    @property
-    def expected_issuer(self) -> str:
-        """Issuer (`iss`) que debe traer todo token. Override vía KEYCLOAK_ISSUER."""
-        return self.keycloak_issuer or self.keycloak_realm_url
-
-    def issuer_config_warnings(self) -> list[str]:
-        """Fail-fast visible del contrato de issuer (complementa la nota de
-        infra/.env.example). Devuelve avisos a emitir en el arranque; lista vacía
-        significa configuración coherente.
-
-        Caso roto clásico: ``KEYCLOAK_URL`` apunta a un host interno de Docker
-        (p. ej. ``keycloak``) y no se definió ``KEYCLOAK_ISSUER``. Entonces
-        ``expected_issuer`` queda con la URL interna, que NUNCA coincide con el
-        ``iss`` público de los tokens del navegador → el servicio rechaza todos
-        los tokens (fail-closed) sin pista visible. Aquí lo hacemos explícito.
-
-        No dispara en dev (allí ``KEYCLOAK_ISSUER`` sí está definido) ni en prod
-        single-host (el host es un FQDN con puntos, no un nombre de servicio).
-        """
-        from urllib.parse import urlparse
-
-        warnings: list[str] = []
-        host = urlparse(self.keycloak_url).hostname or ""
-        looks_internal = host not in ("localhost", "127.0.0.1") and "." not in host
-        if self.keycloak_issuer is None and looks_internal:
-            warnings.append(
-                f"KEYCLOAK_ISSUER sin definir y KEYCLOAK_URL apunta a un host interno "
-                f"('{host}'): el `iss` esperado sera '{self.expected_issuer}', que no "
-                f"coincidira con el issuer publico de los tokens del navegador y se "
-                f"rechazaran TODOS los tokens (fail-closed). Define KEYCLOAK_ISSUER con "
-                f"la URL publica del realm."
-            )
-        return warnings
-
-    @property
-    def keycloak_token_url(self) -> str:
-        return f"{self.keycloak_realm_url}/protocol/openid-connect/token"
-
-    @property
-    def keycloak_logout_url(self) -> str:
-        return f"{self.keycloak_realm_url}/protocol/openid-connect/logout"
-
-    @property
-    def keycloak_jwks_url(self) -> str:
-        return f"{self.keycloak_realm_url}/protocol/openid-connect/certs"
-
-    @property
-    def keycloak_userinfo_url(self) -> str:
-        return f"{self.keycloak_realm_url}/protocol/openid-connect/userinfo"
 
 
 auth = AuthSettings()
@@ -1334,8 +1282,8 @@ signature = SignatureSettings()
 class KnowledgeSettings(CommonSettings):
 
     ppi_provider_url: str = ""
-    # KEK que abre la clave de seudónimo, la de retorno y el secreto del
-    # cliente de servicio. Vacía: no hay consulta al proveedor ni declaración.
+    # KEK que abre la clave de seudónimo y la de retorno. Vacía: no hay
+    # consulta al proveedor ni declaración.
     intelligence_credential_kek: str = ""
     # Clave pública fijada para comprobar la declaración. Vacía: no se lee.
     ppi_capabilities_public_key: str = ""

@@ -12,41 +12,42 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class TokenRequest(BaseModel):
+class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=150)
-    password: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1, max_length=1024)
     tenant_slug: str = Field(..., min_length=1, max_length=100)
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str = Field(..., min_length=1)
+    refresh_token: str = Field(..., min_length=1, max_length=512)
 
 
 class LogoutRequest(BaseModel):
-    refresh_token: str = Field(..., min_length=1)
+    refresh_token: str = Field(..., min_length=1, max_length=512)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=1024)
+    new_password: str = Field(..., min_length=1, max_length=1024)
 
 
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
+    #: `None` en el token de una cuenta de servicio: no hay sesión que renovar.
+    refresh_token: str | None = None
     token_type: str = "Bearer"
     expires_in: int
 
 
 class ValidateResponse(BaseModel):
+    """Lo que `UsuarioActualMiddleware` necesita de un access token ya verificado."""
+
     valid: bool
     user_id: str = ""
     username: str = ""
     tenant_slug: str | None = None
-    roles: list[str] = []
-    #: Segundos que le quedan al token (`exp - ahora`, >= 0). El api-gateway acota
-    #: con él el TTL de su caché de validación: sin este campo la caché nunca
-    #: sabría cuándo caduca el token y usaría siempre su máximo.
+    #: Segundos que le quedan al token (`exp - ahora`, >= 0).
     expires_in: int | None = None
-    #: Estado de la entidad del token (ADR-035). `None` = el token no trae
-    #: `tenant_slug`. `desconocido` = el registro no respondió. El api-gateway lo
-    #: hace cumplir y falla cerrado ante todo lo que no sea `operativa`.
-    tenant_estado: Literal["operativa", "inactiva", "no_provisionada", "desconocido"] | None = None
 
 
 class UserInfoResponse(BaseModel):
@@ -56,12 +57,11 @@ class UserInfoResponse(BaseModel):
     username: str
     email: str
     tenant_slug: str | None
-    roles: list[str]
     permissions: list[str] = []
     """Effective permission names for the authenticated user (D-07 / RBAC mirror).
 
     Resolved from the tenant DB on each call; empty when the user has no
-    tenant context (superadmin) or is not provisioned in the tenant (fail-closed).
+    tenant context or is not provisioned in the tenant (fail-closed).
     Root users always include ``USUA_PERM_ROOT``. Kept as a flat name list for
     backwards compatibility with existing consumers (frontend store, other
     services) — see ``permission_levels`` for the CRUD level of each.
@@ -78,7 +78,7 @@ class UserInfoResponse(BaseModel):
     """Proveedor de inteligencia de la entidad (ADR-045). ``local`` si no se pudo leer.
 
     La UI lo usa para decidir qué mostrar. knowledge-service vuelve a leer la
-    columna en cada envío. ``ALLOWED_AZP`` no cambia.
+    columna en cada envío.
     """
     permission_levels: dict[str, int] = Field(default_factory=dict)
     """CRUD level (0-5) per permission name — same keys as ``permissions``, added
@@ -92,9 +92,3 @@ class UserInfoResponse(BaseModel):
     Fail-closed like ``permissions``: empty dict (never omitted/null) when
     there is no tenant context or the user is not provisioned.
     """
-
-
-class HealthResponse(BaseModel):
-    status: str
-    keycloak: str
-    database: str

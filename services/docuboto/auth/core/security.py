@@ -7,133 +7,204 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""
-JWT validation against Keycloak's public JWKS endpoint.
+"""Docuboto firma y verifica sus propios JWT (ADR-048).
 
-The JWKS is cached in memory for `settings.jwks_cache_ttl` seconds to avoid
-hitting Keycloak on every request.  A lock prevents stampedes when the cache
-expires under concurrent load.
+Las claves son pares ES256 en `public.auth_jwt_keys`, con la privada sellada
+con AES-GCM. Se firma con la más reciente sin `retired_at`; la JWKS publica
+también las retiradas hace menos de `jwt_key_overlap_s`, de modo que rotar no
+corta las sesiones ni el token de servicio del proveedor.
+
+ES256 y no Ed25519: el proveedor PPI acepta RS256 y ES256, y la decisión del ADR
+dejaba abierta esa alternativa.
+
+Las claves públicas y la de firma se guardan en memoria `_TTL_S` segundos; un
+`kid` desconocido fuerza una relectura, como mucho cada `_RELECTURA_MIN_S`.
 """
+
+from __future__ import annotations
 
 import asyncio
-import logging
+import json
+import secrets
 import time
+import uuid
 from typing import Any
 
-import httpx
+import asyncpg
 import jwt
-from jwt import InvalidTokenError, PyJWKSet
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from jwt import InvalidTokenError
+from jwt.algorithms import ECAlgorithm
+from orpycamcp_common.kek import seal, unseal
 
 from docuboto.config import auth as settings
 
-logger = logging.getLogger(__name__)
+ALG = "ES256"
+_TTL_S = 60.0
+_RELECTURA_MIN_S = 5.0
+#: Cerrojo de la generación de la primera clave (dos peticiones a la vez no
+#: deben crear dos claves activas).
+_CERROJO = 0x4F52505943414A57
 
-# ---------------------------------------------------------------------------
-# JWKS in-memory cache
-# ---------------------------------------------------------------------------
-
-_jwks_cache: dict[str, Any] = {}
-_jwks_fetched_at: float = 0.0
-_jwks_lock = asyncio.Lock()
-
-
-async def _get_jwks() -> dict[str, Any]:
-    """Return cached JWKS, refreshing from Keycloak when TTL has expired."""
-    global _jwks_cache, _jwks_fetched_at
-
-    now = time.monotonic()
-    if _jwks_cache and (now - _jwks_fetched_at) < settings.jwks_cache_ttl:
-        return _jwks_cache
-
-    async with _jwks_lock:
-        # Double-check inside the lock — another coroutine may have refreshed.
-        now = time.monotonic()
-        if _jwks_cache and (now - _jwks_fetched_at) < settings.jwks_cache_ttl:
-            return _jwks_cache
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(settings.keycloak_jwks_url)
-            response.raise_for_status()
-            _jwks_cache = response.json()
-            _jwks_fetched_at = time.monotonic()
-            logger.info("JWKS refreshed from Keycloak")
-
-    return _jwks_cache
+_VIGENTES = """
+SELECT kid, public_jwk, private_key_cifrado, private_key_nonce, retired_at
+  FROM public.auth_jwt_keys
+ WHERE retired_at IS NULL OR retired_at > now() - make_interval(secs => $1)
+ ORDER BY created_at DESC
+"""
 
 
-def _select_signing_key(jwks: dict[str, Any], token: str) -> Any:
-    """Return the public key from the JWKS whose ``kid`` matches the token header.
-
-    python-jose accepted the whole JWKS in ``decode`` and picked the key itself;
-    PyJWT requires us to resolve the signing key by ``kid`` first.
-    """
-    kid = jwt.get_unverified_header(token).get("kid")
-    jwk_set = PyJWKSet.from_dict(jwks)
-    for key in jwk_set.keys:
-        if key.key_id == kid:
-            return key.key
-    raise InvalidTokenError(f"No signing key in JWKS matches kid={kid!r}")
+class _Llavero:
+    def __init__(self) -> None:
+        self.publicas: dict[str, Any] = {}
+        self.jwks: list[dict[str, Any]] = []
+        self.firma: tuple[str, ec.EllipticCurvePrivateKey] | None = None
+        self.leido: float = 0.0
+        self.cerrojo = asyncio.Lock()
 
 
-def _extract_claims(payload: dict[str, Any]) -> dict[str, Any]:
-    """Normalise raw JWT payload into the claims shape the platform uses."""
-    realm_access = payload.get("realm_access", {})
-    roles: list[str] = realm_access.get("roles", [])
-
-    # tenant_slug is stored as a user attribute in Keycloak and mapped to the
-    # token as a plain string claim via a protocol mapper.
-    tenant_slug: str | None = payload.get("tenant_slug")
-
-    return {
-        "user_id": payload.get("sub", ""),
-        "username": payload.get("preferred_username", ""),
-        "email": payload.get("email", ""),
-        "tenant_slug": tenant_slug,
-        "roles": roles,
-        "exp": payload.get("exp"),
-        "iat": payload.get("iat"),
-    }
+_llavero = _Llavero()
 
 
-async def validate_token(token: str) -> dict[str, Any]:
-    """
-    Validate a Bearer JWT against Keycloak's public JWKS.
+def olvidar() -> None:
+    """Tira lo leído: la próxima operación relee la tabla. Para pruebas y rotación."""
+    global _llavero
+    _llavero = _Llavero()
 
-    Returns normalised claims on success.
-    Raises ``PyJWTError`` on any validation failure (expired, bad signature, etc.).
-    """
-    jwks = await _get_jwks()
 
-    signing_key = _select_signing_key(jwks, token)
-    payload = jwt.decode(
-        token,
-        signing_key,
-        algorithms=["RS256"],
-        issuer=settings.expected_issuer,  # reject tokens from another realm/IdP
-        # Keycloak access tokens may omit 'aud' for bearer-only flows; issuer is
-        # verified instead. 'verify_iss' is enabled implicitly by passing issuer.
-        options={
-            "verify_aud": False,
-            # Sin `exp`/`iat`/`iss`/`sub` el token no se acepta: PyJWT solo valida
-            # `exp` SI viene, así que un token sin él valdría para siempre.
-            "require": ["exp", "iat", "iss", "sub"],
-        },
+def _aad(kid: str) -> bytes:
+    return f"jwt-key:{kid}".encode()
+
+
+def _jwk_publica(kid: str, privada: ec.EllipticCurvePrivateKey) -> dict[str, Any]:
+    jwk = json.loads(ECAlgorithm.to_jwk(privada.public_key()))
+    jwk.update({"kid": kid, "use": "sig", "alg": ALG})
+    return jwk
+
+
+async def generar_clave(conn: asyncpg.Connection) -> str:
+    """Crea un par nuevo; pasa a ser la clave de firma. Devuelve el `kid`."""
+    kid = uuid.uuid4().hex
+    privada = ec.generate_private_key(ec.SECP256R1())
+    pem = privada.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
     )
-
-    # Un ID token (typ=ID) comparte firma, `iss` y `sub` con el access token y
-    # lleva el mapper `tenant_slug`, pero se filtra más fácil (id_token_hint en la
-    # URL de logout, registros): no es una credencial de API.
-    if payload.get("typ") != "Bearer":
-        raise InvalidTokenError("typ debe ser 'Bearer' (no se aceptan ID/refresh tokens)")
-    # Cualquier otro cliente del realm con el mapper emitiría tokens válidos en
-    # toda la API: solo los clientes declarados (fail-closed si la lista es vacía).
-    if payload.get("azp") not in settings.allowed_azp_set:
-        raise InvalidTokenError("azp no pertenece a un cliente autorizado")
-
-    return _extract_claims(payload)
+    cifrado, nonce = seal(pem, key=settings.identity_key_bytes, aad=_aad(kid))
+    await conn.execute(
+        "INSERT INTO public.auth_jwt_keys (kid, private_key_cifrado, private_key_nonce, public_jwk)"
+        " VALUES ($1, $2, $3, $4::jsonb)",
+        kid,
+        cifrado,
+        nonce,
+        json.dumps(_jwk_publica(kid, privada)),
+    )
+    return kid
 
 
-def invalidate_jwks_cache() -> None:
-    """Force a refresh on the next call to ``validate_token``.  Useful in tests."""
-    global _jwks_fetched_at
-    _jwks_fetched_at = 0.0
+async def rotar(conn: asyncpg.Connection) -> str:
+    """Retira la clave de firma vigente y crea otra. La retirada sigue en la JWKS."""
+    async with conn.transaction():
+        await conn.execute(
+            "UPDATE public.auth_jwt_keys SET retired_at = now() WHERE retired_at IS NULL"
+        )
+        kid = await generar_clave(conn)
+    olvidar()
+    return kid
+
+
+async def _leer(conn: asyncpg.Connection) -> None:
+    filas = await conn.fetch(_VIGENTES, float(settings.jwt_key_overlap_s))
+    if not any(f["retired_at"] is None for f in filas):
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", _CERROJO)
+            hay = await conn.fetchval(
+                "SELECT 1 FROM public.auth_jwt_keys WHERE retired_at IS NULL LIMIT 1"
+            )
+            if not hay:
+                await generar_clave(conn)
+        filas = await conn.fetch(_VIGENTES, float(settings.jwt_key_overlap_s))
+    publicas: dict[str, Any] = {}
+    jwks: list[dict[str, Any]] = []
+    firma: tuple[str, ec.EllipticCurvePrivateKey] | None = None
+    for f in filas:
+        jwk = f["public_jwk"]
+        if isinstance(jwk, str):
+            jwk = json.loads(jwk)
+        publicas[f["kid"]] = ECAlgorithm.from_jwk(json.dumps(jwk))
+        jwks.append(dict(jwk))
+        if firma is None and f["retired_at"] is None:
+            pem = unseal(
+                bytes(f["private_key_cifrado"]),
+                nonce=bytes(f["private_key_nonce"]),
+                key=settings.identity_key_bytes,
+                aad=_aad(f["kid"]),
+            )
+            privada = serialization.load_pem_private_key(pem, password=None)
+            assert isinstance(privada, ec.EllipticCurvePrivateKey)
+            firma = (f["kid"], privada)
+    _llavero.publicas = publicas
+    _llavero.jwks = jwks
+    _llavero.firma = firma
+    _llavero.leido = time.monotonic()
+
+
+async def _al_dia(conn: asyncpg.Connection, *, kid: str | None = None) -> None:
+    ahora = time.monotonic()
+    vencido = ahora - _llavero.leido > _TTL_S
+    falta = kid is not None and kid not in _llavero.publicas
+    if not vencido and not (falta and ahora - _llavero.leido > _RELECTURA_MIN_S):
+        return
+    async with _llavero.cerrojo:
+        ahora = time.monotonic()
+        vencido = ahora - _llavero.leido > _TTL_S
+        falta = kid is not None and kid not in _llavero.publicas
+        if vencido or (falta and ahora - _llavero.leido > _RELECTURA_MIN_S):
+            await _leer(conn)
+
+
+async def jwks(conn: asyncpg.Connection) -> dict[str, Any]:
+    """El documento JWKS: la clave de firma y las retiradas aún en solapamiento."""
+    await _al_dia(conn)
+    return {"keys": list(_llavero.jwks)}
+
+
+async def firmar(conn: asyncpg.Connection, claims: dict[str, Any], *, vida_s: int) -> str:
+    """Firma `claims` añadiendo `iss`, `iat`, `exp` y `jti`."""
+    await _al_dia(conn)
+    if _llavero.firma is None:
+        raise RuntimeError("no hay clave de firma de tokens")
+    kid, privada = _llavero.firma
+    ahora = int(time.time())
+    cuerpo = {
+        **claims,
+        "iss": settings.identity_issuer,
+        "iat": ahora,
+        "exp": ahora + vida_s,
+        "jti": secrets.token_urlsafe(16),
+    }
+    return jwt.encode(cuerpo, privada, algorithm=ALG, headers={"kid": kid})
+
+
+async def verificar(conn: asyncpg.Connection, token: str, *, audience: str) -> dict[str, Any]:
+    """Claims de un token firmado aquí para `audience`. Lanza `InvalidTokenError`."""
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except jwt.PyJWTError as exc:
+        raise InvalidTokenError("cabecera ilegible") from exc
+    if not isinstance(kid, str) or not kid:
+        raise InvalidTokenError("sin kid")
+    await _al_dia(conn, kid=kid)
+    clave = _llavero.publicas.get(kid)
+    if clave is None:
+        raise InvalidTokenError(f"kid desconocido: {kid!r}")
+    return jwt.decode(
+        token,
+        clave,
+        algorithms=[ALG],
+        issuer=settings.identity_issuer,
+        audience=audience,
+        options={"require": ["exp", "iat", "iss", "sub", "aud"]},
+    )

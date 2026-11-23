@@ -11,48 +11,33 @@ import logging
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from orpycamcp_common.database import get_conn as get_db_conn
-from orpycamcp_common.database import get_optional_tenant_conn
-from orpycamcp_common.tenant import (
-    ERROR_ESTADO_NO_DISPONIBLE,
-    ERRORES_ENTIDAD,
-    asistente_habilitado,
-    intelligence_provider,
-)
+from orpycamcp_common.database import get_optional_tenant_conn, get_tenant_conn
+from orpycamcp_common.tenant import asistente_habilitado, intelligence_provider
+from orpycamcp_common.usuario import Usuario, ip_de, usuario_actual
 
 from auth.repositories.audit_repository import AuditRepository
 from auth.repositories.rbac_repository import RBACRepository
 from auth.schemas.auth import (
+    LoginRequest,
     LogoutRequest,
+    PasswordChangeRequest,
     RefreshRequest,
-    TokenRequest,
     TokenResponse,
     UserInfoResponse,
-    ValidateResponse,
 )
-from auth.services.auth_service import AuthService, KeycloakError
+from auth.services.auth_service import AuthError, AuthService
 from auth.services.rbac_service import RBACService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
-_auth_service: AuthService | None = None
+_auth_service = AuthService()
 
 
 def get_auth_service() -> AuthService:
-    if _auth_service is None:
-        raise RuntimeError("AuthService not initialised — check app lifespan")
     return _auth_service
-
-
-def set_auth_service(service: AuthService) -> None:
-    global _auth_service
-    _auth_service = service
-
-
-bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -63,8 +48,6 @@ def _client_ip(request: Request) -> str | None:
     `X-Real-Ip` crudos los escribe el cliente: un campo probatorio falsificable
     es peor que uno vacío. Sin IP derivada se usa la dirección del socket.
     """
-    from orpycamcp_common.usuario import ip_de
-
     real_ip = ip_de(request)
     if real_ip:
         return real_ip
@@ -73,66 +56,54 @@ def _client_ip(request: Request) -> str | None:
     return None
 
 
-def _keycloak_error_to_http(exc: KeycloakError) -> HTTPException:
-    error_map = {
-        401: ("invalid_credentials", "Invalid username or password"),
-        403: ("tenant_mismatch", "User does not belong to the specified tenant"),
-    }
-    error_code, detail = error_map.get(exc.status_code, ("keycloak_error", exc.detail))
-    # ADR-035: la entidad no operativa se responde con el MISMO código que el gateway.
-    for estado_http, estado_codigo, estado_detalle in (
-        *ERRORES_ENTIDAD.values(),
-        ERROR_ESTADO_NO_DISPONIBLE,
-    ):
-        if exc.status_code == estado_http and exc.detail == estado_codigo:
-            error_code, detail = estado_codigo, estado_detalle
+def auth_error_to_http(exc: AuthError) -> HTTPException:
+    headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
     return HTTPException(
         status_code=exc.status_code,
-        detail={"error": error_code, "detail": detail, "status": exc.status_code},
+        detail={"error": exc.code, "detail": exc.detail, "status": exc.status_code},
+        headers=headers,
     )
 
 
 @router.post(
-    "/token",
+    "/login",
     response_model=TokenResponse,
     status_code=status.HTTP_200_OK,
-    summary="Obtain access and refresh tokens",
+    summary="Inicia sesión con usuario y contraseña",
 )
-async def token(
-    payload: TokenRequest,
+async def login(
+    payload: LoginRequest,
     request: Request,
     service: AuthService = Depends(get_auth_service),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TokenResponse:
     audit = AuditRepository(conn)
     try:
-        result = await service.login(
-            payload.username, payload.password, payload.tenant_slug, conn=conn
-        )
-        await audit.log(
-            "login_success",
-            username=payload.username,
-            tenant_slug=payload.tenant_slug,
-            ip_address=_client_ip(request),
-            user_agent=request.headers.get("User-Agent"),
-        )
-        return result
-    except KeycloakError as exc:
+        result = await service.login(conn, payload.username, payload.password, payload.tenant_slug)
+    except AuthError as exc:
         await audit.log(
             "login_failure",
             username=payload.username,
             tenant_slug=payload.tenant_slug,
             ip_address=_client_ip(request),
-            detail=exc.detail,
+            detail=exc.code,
         )
-        raise _keycloak_error_to_http(exc)
+        raise auth_error_to_http(exc) from None
+    await audit.log(
+        "login_success",
+        username=payload.username,
+        tenant_slug=payload.tenant_slug,
+        ip_address=_client_ip(request),
+        user_agent=request.headers.get("User-Agent"),
+    )
+    return result
 
 
 @router.post(
     "/refresh",
     response_model=TokenResponse,
     status_code=status.HTTP_200_OK,
-    summary="Refresh an access token",
+    summary="Rota el refresh token y entrega un access token nuevo",
 )
 async def refresh_token(
     payload: RefreshRequest,
@@ -140,19 +111,22 @@ async def refresh_token(
     service: AuthService = Depends(get_auth_service),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> TokenResponse:
-    audit = AuditRepository(conn)
     try:
-        result = await service.refresh(payload.refresh_token, conn=conn)
-        await audit.log("token_refresh", ip_address=_client_ip(request))
-        return result
-    except KeycloakError as exc:
-        raise _keycloak_error_to_http(exc)
+        result = await service.refresh(conn, payload.refresh_token)
+    except AuthError as exc:
+        if exc.code == "refresh_token_reused":
+            await AuditRepository(conn).log(
+                "refresh_token_reused", ip_address=_client_ip(request)
+            )
+        raise auth_error_to_http(exc) from None
+    await AuditRepository(conn).log("token_refresh", ip_address=_client_ip(request))
+    return result
 
 
 @router.post(
     "/logout",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Invalidate a refresh token (logout)",
+    summary="Revoca la sesión del refresh token",
 )
 async def logout(
     payload: LogoutRequest,
@@ -160,132 +134,71 @@ async def logout(
     service: AuthService = Depends(get_auth_service),
     conn: asyncpg.Connection = Depends(get_db_conn),
 ) -> None:
-    audit = AuditRepository(conn)
-    try:
-        await service.logout(payload.refresh_token)
-        await audit.log("logout", ip_address=_client_ip(request))
-    except KeycloakError as exc:
-        raise _keycloak_error_to_http(exc)
+    await service.logout(conn, payload.refresh_token)
+    await AuditRepository(conn).log("logout", ip_address=_client_ip(request))
 
 
-@router.get(
-    "/validate",
-    response_model=ValidateResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Validate a Bearer token — called by api-gateway",
+@router.post(
+    "/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="La persona cambia su contraseña (cierra sus demás sesiones)",
 )
-async def validate(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+async def change_password(
+    payload: PasswordChangeRequest,
+    usuario: Usuario = Depends(usuario_actual),
     service: AuthService = Depends(get_auth_service),
-    conn: asyncpg.Connection = Depends(get_db_conn),
-) -> ValidateResponse:
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "missing_token",
-                "detail": "Falta la cabecera Authorization",
-                "status": 401,
-            },
-            headers={"WWW-Authenticate": "Bearer"},
+    conn: asyncpg.Connection = Depends(get_tenant_conn),
+) -> None:
+    if usuario.id is None:
+        raise auth_error_to_http(AuthError(401, "unauthorized"))
+    try:
+        await service.change_password(
+            conn, usuario.id, payload.current_password, payload.new_password
         )
-
-    audit = AuditRepository(conn)
-    # Pass the connection so validate() can resolve the internal auth_users.id via
-    # lazy provisioning (uses the conn's search_path after switching to tenant schema).
-    result = await service.validate(credentials.credentials, conn)
-
-    # Solo se asienta el RECHAZO, no la validación exitosa.
-    #
-    # El gateway llama a este endpoint en TODA petición no pública, así que
-    # `token_valid` producía **una fila por request** en `public.audit_log` —
-    # un registro con valor probatorio, encadenado por hash y con
-    # `pg_advisory_xact_lock` por tenant en cada escritura. Dos daños distintos:
-    # sepultaba los eventos que de verdad importan (login, firma, reclasificación,
-    # disposición) bajo ruido de varios órdenes de magnitud, haciendo la traza
-    # ilegible justo para quien viene a investigar; y serializaba todas las
-    # peticiones del tenant sobre ese lock.
-    #
-    # Un token válido presentado por su portador no es un acto auditable: el acto
-    # es lo que hace DESPUÉS con él, y eso ya lo audita cada servicio. Un token
-    # inválido sí lo es —es un intento de acceso fallido— y se conserva.
-    if not result.valid:
-        await audit.log(
-            "token_invalid",
-            username=result.username or None,
-            tenant_slug=result.tenant_slug,
-            ip_address=_client_ip(request),
-        )
-
-    return result
+    except AuthError as exc:
+        raise auth_error_to_http(exc) from None
 
 
 @router.get(
     "/me",
     response_model=UserInfoResponse,
     status_code=status.HTTP_200_OK,
-    summary="Return current user info from Bearer token, including effective permissions",
+    summary="Identidad del portador del token y sus permisos efectivos",
 )
 async def me(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    service: AuthService = Depends(get_auth_service),
+    usuario: Usuario = Depends(usuario_actual),
     conn: asyncpg.Connection | None = Depends(get_optional_tenant_conn),
 ) -> UserInfoResponse:
     """Identidad + permisos efectivos del portador del token.
 
-    ``permissions`` es la lista plana de nombres de permiso (compatibilidad con
-    consumidores existentes: store del frontend, otros servicios). Cada nombre
-    tiene un nivel CRUD asociado en `auth_group_permissions.crud` que esta lista
-    NO expone — un permiso en nivel Leer y el mismo en nivel Crear/Borrar son
-    indistinguibles en ``permissions``, aunque los backends gatean por nivel
-    mínimo (``require_permission(name, min_crud=...)``, RF-SEG-03). Por eso se
-    añade ``permission_levels: dict[str, int]`` (mismas claves, nivel 0-5):
+    ``permissions`` es la lista plana de nombres de permiso; ``permission_levels``
+    da el nivel CRUD de cada uno (0-5):
     0=Ninguno 1=Leer 2=Editar 3=Crear/Borrar 4=Nivel_1 5=Nivel_2
     (``services/docuboto/migrations/tenant/020_auth_groups.sql``). ROOT resuelve ``USUA_PERM_ROOT: 5``.
 
     Fail-closed en ambos campos: sin contexto de tenant o con usuario no
-    aprovisionado, ambos quedan vacíos (nunca ausentes ni null) — un consumidor
+    encontrado, ambos quedan vacíos (nunca ausentes ni null) — un consumidor
     que interprete "ausente" como "sin restricción" abriría una fuga.
     """
-    if not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={
-                "error": "missing_token",
-                "detail": "Falta la cabecera Authorization",
-                "status": 401,
-            },
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        user_info = await service.get_current_user(credentials.credentials)
-    except KeycloakError as exc:
-        raise _keycloak_error_to_http(exc)
-
-    # Resolve effective permissions and the internal auth_users.id from the tenant DB.
-    # `user_info.user_id` is the raw Keycloak sub from the JWT claims.
-    # Fail-closed: empty permissions and sub as user_id when:
-    #   - no tenant context (superadmin / no X-Tenant-Slug header), or
-    #   - user is not yet provisioned in the tenant.
+    user_info = UserInfoResponse(
+        user_id=str(usuario.id or ""),
+        username=usuario.username,
+        email="",
+        tenant_slug=usuario.tenant_slug or None,
+    )
     permissions: list[str] = []
     permission_levels: dict[str, int] = {}
-    if conn is not None:
-        repo = RBACRepository(conn)
-        user = await repo.get_user_by_keycloak_sub(user_info.user_id)
-        if user is not None:
-            # Replace keycloak sub with the internal id for coherence with X-User-Id.
-            user_info = user_info.model_copy(update={"user_id": str(user["id"])})
-            rbac = RBACService(conn)
-            # resolve_effective_permissions embeds USUA_PERM_ROOT for root users
-            # (consistent with rbac.py:88 and has_permission() logic).
-            perms = await rbac.resolve_effective_permissions(user["id"])
+    if conn is not None and usuario.id is not None:
+        user = await RBACRepository(conn).get_user(usuario.id)
+        if user is not None and user["is_active"]:
+            user_info = user_info.model_copy(
+                update={"username": user["username"], "email": user["email"] or ""}
+            )
+            perms = await RBACService(conn).resolve_effective_permissions(user["id"])
             permissions = list(perms.keys())
             permission_levels = perms
 
-    # ADR-037: la bandera por entidad viaja con la identidad (la UI no
-    # consultan tenant-service). Falla cerrado: sin tenant o con el registro caído,
-    # apagado — `/me` no se rompe por esto.
+    # ADR-037: la bandera por entidad viaja con la identidad. Falla cerrado.
     asistente = False
     proveedor = "local"
     if conn is not None and user_info.tenant_slug:

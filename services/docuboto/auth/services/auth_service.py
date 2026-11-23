@@ -7,321 +7,263 @@
 # conservando los términos de la GPL del Orfeo original del que deriva. Se entrega
 # SIN GARANTÍA ALGUNA. Véase el archivo LICENSE y <https://www.gnu.org/licenses/>.
 
-"""
-AuthService — orchestrates Keycloak token flows.
+"""El proveedor de identidad del proceso (ADR-048).
 
-Keycloak is the authority for authentication.  This service acts as a thin
-adapter: it forwards credentials, parses responses, and delegates JWT
-validation to ``core.security``.
+Personas: contraseña argon2id contra `auth_users`, access JWT de 15 min y un
+refresh opaco de 12 h que rota en cada uso; presentar uno ya usado revoca toda
+la familia. Máquinas: `client_credentials` contra `public.auth_service_accounts`.
 
-Why use ``api-gateway`` client credentials for ROPC?
-Keycloak requires the client to have ``directAccessGrantsEnabled=true``.  The
-``auth-service`` client is ``bearerOnly=true`` (it only validates tokens, never
-issues them).  The ``api-gateway`` client has the grants flag enabled, so we
-use its credentials to perform the password grant on behalf of the caller.
+La entidad se comprueba al emitir (login y refresh): una entidad sin registro o
+sin schema no emite tokens. El `sub` del access token es `auth_users.id`, así
+que validar no toca la base salvo para leer las claves públicas (en caché).
 """
 
+from __future__ import annotations
+
+import hashlib
 import logging
+import secrets
 import time
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import asyncpg
-import httpx
 from jwt import PyJWTError
-from orpycamcp_common.tenant import (
-    EstadoEntidad,
-    estado_entidad,
-    slug_valido,
-    tenant_schema,
-    veredicto_entidad,
-)
+from orpycamcp_common.tenant import slug_valido, tenant_schema, veredicto_entidad
 
-from auth.core.security import validate_token
-from auth.repositories.rbac_repository import RBACRepository
-from auth.schemas.auth import TokenResponse, UserInfoResponse, ValidateResponse
+from auth.core import passwords, security
+from auth.repositories.identity_repository import IdentityRepository
+from auth.schemas.auth import TokenResponse, ValidateResponse
 from docuboto.config import auth as settings
-
-# Tenant slug regex (same rules enforced by tenant-service).
 
 logger = logging.getLogger(__name__)
 
+PRINCIPAL_USER = "user"
+PRINCIPAL_SERVICE = "service"
 
-class KeycloakError(Exception):
-    """Raised when Keycloak returns a non-2xx response."""
 
-    def __init__(self, status_code: int, detail: str) -> None:
+class AuthError(Exception):
+    """Respuesta de negocio del emisor: `status_code` y `code` van al cuerpo."""
+
+    def __init__(self, status_code: int, code: str, detail: str | None = None) -> None:
         self.status_code = status_code
-        self.detail = detail
-        super().__init__(detail)
+        self.code = code
+        self.detail = detail or code
+        super().__init__(code)
+
+
+def _hash_refresh(token: str) -> bytes:
+    return hashlib.sha256(token.encode()).digest()
+
+
+def _slug_del_refresh(token: str) -> str:
+    slug, _, resto = token.partition(".")
+    if not resto or not slug_valido(slug):
+        raise AuthError(401, "invalid_refresh_token")
+    return slug
+
+
+@asynccontextmanager
+async def _en_entidad(conn: asyncpg.Connection, slug: str) -> AsyncIterator[asyncpg.Connection]:
+    await conn.execute(f'SET search_path = "{tenant_schema(slug)}"')
+    try:
+        yield conn
+    finally:
+        await conn.execute("SET search_path = public")
+
+
+async def _exigir_entidad(conn: asyncpg.Connection, slug: str) -> None:
+    veto = await veredicto_entidad(conn, slug)
+    if veto is not None:
+        raise AuthError(veto[0], veto[1], veto[2])
+
+
+async def emitir_token_servicio(conn: asyncpg.Connection, cuenta: Any) -> TokenResponse:
+    """Token de una cuenta de servicio. `sub` = `client_id`: así lo reconoce el proveedor."""
+    client_id = str(cuenta["client_id"])
+    claims = {
+        "sub": client_id,
+        "client_id": client_id,
+        "azp": client_id,
+        "aud": str(cuenta["audience"]),
+        "tenant_slug": str(cuenta["tenant_slug"]),
+        "scope": " ".join(cuenta["scopes"] or []),
+        "principal_type": PRINCIPAL_SERVICE,
+    }
+    token = await security.firmar(conn, claims, vida_s=settings.service_token_ttl_s)
+    return TokenResponse(
+        access_token=token, refresh_token=None, expires_in=settings.service_token_ttl_s
+    )
 
 
 class AuthService:
-    def __init__(self) -> None:
-        # A single shared async client is more efficient than creating one per
-        # request, but callers must not close it.  We instantiate it here and
-        # the app lifespan manages teardown via ``close()``.
-        self._client = httpx.AsyncClient(timeout=10.0)
-
-    async def close(self) -> None:
-        await self._client.aclose()
-
     # ------------------------------------------------------------------
-    # Token issuance
+    # Personas
     # ------------------------------------------------------------------
 
-    @staticmethod
-    async def _exigir_entidad_operativa(
-        conn: asyncpg.Connection, access_token: str
-    ) -> None:
-        """No se entrega un token de una entidad que no se atiende (ADR-035, B9-N4).
-
-        Se mira la entidad que el TOKEN lleva en su claim (la que el gateway verá), no
-        la del cuerpo. Sin entidad (superadmin global) no hay nada que comprobar.
-        Fail-closed: si el registro no responde, 503 `tenant_estado_no_disponible`.
-        """
-        claims = await validate_token(access_token)
-        slug = claims.get("tenant_slug") or ""
-        if not slug:
-            return
-        veto = await veredicto_entidad(conn, slug)
-        if veto is not None:
-            raise KeycloakError(veto[0], veto[1])
-
-    async def _exigir_entidad_operativa_o_revocar(
-        self, conn: asyncpg.Connection, payload: dict
-    ) -> None:
-        """Veto de entidad no operativa que, al rechazar, REVOCA la sesion recien emitida.
-
-        Keycloak ya emitio el par de tokens antes de que se consulte el estado de la
-        entidad; rechazar sin mas dejaba la sesion (y su refresh token) viva en el
-        realm. Se revoca por el endpoint de logout, best-effort: un fallo al revocar
-        se registra pero no sustituye al rechazo. Es defensa en PROFUNDIDAD: la
-        barrera real es el gateway (vetar por el slug del claim en cada peticion) y
-        la via PKCE del front no pasa por este servicio (ADR-035).
-        """
-        try:
-            await self._exigir_entidad_operativa(conn, payload["access_token"])
-        except KeycloakError:
-            try:
-                await self.logout(payload["refresh_token"])
-            except Exception:  # noqa: BLE001 — revocar es best-effort; el rechazo manda
-                logger.warning("no se pudo revocar la sesion de una entidad no operativa", exc_info=True)
-            raise
+    async def _emitir(
+        self,
+        conn: asyncpg.Connection,
+        user: Any,
+        slug: str,
+        *,
+        family_id: uuid.UUID,
+        expires_at: datetime,
+    ) -> TokenResponse:
+        claims = {
+            "sub": str(user["id"]),
+            "aud": settings.identity_user_audience,
+            "tenant_slug": slug,
+            "preferred_username": user["username"],
+            "email": user["email"] or "",
+            "principal_type": PRINCIPAL_USER,
+        }
+        access = await security.firmar(conn, claims, vida_s=settings.access_token_ttl_s)
+        refresh = f"{slug}.{secrets.token_urlsafe(32)}"
+        await IdentityRepository(conn).insert_refresh(
+            user_id=user["id"],
+            family_id=family_id,
+            token_hash=_hash_refresh(refresh),
+            expires_at=expires_at,
+        )
+        return TokenResponse(
+            access_token=access,
+            refresh_token=refresh,
+            expires_in=settings.access_token_ttl_s,
+        )
 
     async def login(
-        self, username: str, password: str, tenant_slug: str, *, conn: asyncpg.Connection
+        self, conn: asyncpg.Connection, username: str, password: str, tenant_slug: str
     ) -> TokenResponse:
-        """Resource Owner Password Credentials grant via the api-gateway client."""
-        data = {
-            "grant_type": "password",
-            "client_id": settings.keycloak_gateway_client_id,
-            "client_secret": settings.keycloak_gateway_client_secret,
-            "username": username,
-            "password": password,
-            "scope": "openid profile email",
-        }
-        response = await self._client.post(settings.keycloak_token_url, data=data)
+        if not slug_valido(tenant_slug):
+            await passwords.coincide_async(None, password)
+            raise AuthError(401, "invalid_credentials")
+        await _exigir_entidad(conn, tenant_slug)
+        async with _en_entidad(conn, tenant_slug):
+            repo = IdentityRepository(conn)
+            user = await repo.user_by_username(username)
+            if user is None or not user["is_active"]:
+                await passwords.coincide_async(None, password)
+                raise AuthError(401, "invalid_credentials")
+            if user["locked_until"] is not None and user["locked_until"] > datetime.now(UTC):
+                raise AuthError(423, "account_locked", "La cuenta está bloqueada temporalmente.")
+            if not await passwords.coincide_async(user["password_hash"], password):
+                await repo.register_failure(
+                    user["id"],
+                    max_failed=settings.login_max_failed,
+                    lockout_s=settings.login_lockout_seconds,
+                )
+                raise AuthError(401, "invalid_credentials")
+            async with conn.transaction():
+                await repo.register_success(user["id"])
+                return await self._emitir(
+                    conn,
+                    user,
+                    tenant_slug,
+                    family_id=uuid.uuid4(),
+                    expires_at=datetime.now(UTC) + timedelta(seconds=settings.refresh_token_ttl_s),
+                )
 
-        if response.status_code == 401:
-            raise KeycloakError(401, "invalid_credentials")
-        if response.status_code != 200:
-            logger.error("Keycloak login error %s: %s", response.status_code, response.text)
-            raise KeycloakError(response.status_code, "keycloak_error")
+    async def refresh(self, conn: asyncpg.Connection, refresh_token: str) -> TokenResponse:
+        slug = _slug_del_refresh(refresh_token)
+        await _exigir_entidad(conn, slug)
+        rechazo: AuthError | None = None
+        async with _en_entidad(conn, slug):
+            repo = IdentityRepository(conn)
+            async with conn.transaction():
+                fila = await repo.lock_refresh(_hash_refresh(refresh_token))
+                if fila is None:
+                    raise AuthError(401, "invalid_refresh_token")
+                user = await repo.user_by_id(fila["user_id"])
+                if fila["used_at"] is not None or fila["revoked_at"] is not None:
+                    # Reuso: alguien más tiene la cadena. Se corta la familia entera.
+                    await repo.revoke_family(fila["family_id"])
+                    rechazo = AuthError(401, "refresh_token_reused")
+                elif fila["vencido"]:
+                    rechazo = AuthError(401, "invalid_refresh_token")
+                elif user is None or not user["is_active"]:
+                    await repo.revoke_family(fila["family_id"])
+                    rechazo = AuthError(401, "invalid_refresh_token")
+                else:
+                    await repo.mark_refresh_used(fila["id"])
+                    return await self._emitir(
+                        conn,
+                        user,
+                        slug,
+                        family_id=fila["family_id"],
+                        expires_at=fila["expires_at"],
+                    )
+        assert rechazo is not None
+        raise rechazo
 
-        payload = response.json()
-
-        # Verify that the token actually belongs to the claimed tenant.
-        # This prevents a user from logging in with someone else's tenant_slug.
-        claims = await validate_token(payload["access_token"])
-        token_tenant = claims.get("tenant_slug")
-
-        # superadmin users have no tenant restriction
-        if "superadmin" not in claims.get("roles", []):
-            if token_tenant != tenant_slug:
-                raise KeycloakError(403, "tenant_mismatch")
-
-        await self._exigir_entidad_operativa_o_revocar(conn, payload)
-
-        return TokenResponse(
-            access_token=payload["access_token"],
-            refresh_token=payload["refresh_token"],
-            token_type="Bearer",
-            expires_in=payload.get("expires_in", 300),
-        )
-
-    async def refresh(self, refresh_token: str, *, conn: asyncpg.Connection) -> TokenResponse:
-        data = {
-            "grant_type": "refresh_token",
-            "client_id": settings.keycloak_gateway_client_id,
-            "client_secret": settings.keycloak_gateway_client_secret,
-            "refresh_token": refresh_token,
-        }
-        response = await self._client.post(settings.keycloak_token_url, data=data)
-
-        if response.status_code == 400:
-            raise KeycloakError(401, "invalid_refresh_token")
-        if response.status_code != 200:
-            logger.error("Keycloak refresh error %s: %s", response.status_code, response.text)
-            raise KeycloakError(response.status_code, "keycloak_error")
-
-        payload = response.json()
-        await self._exigir_entidad_operativa_o_revocar(conn, payload)
-        return TokenResponse(
-            access_token=payload["access_token"],
-            refresh_token=payload["refresh_token"],
-            token_type="Bearer",
-            expires_in=payload.get("expires_in", 300),
-        )
-
-    async def logout(self, refresh_token: str) -> None:
-        data = {
-            "client_id": settings.keycloak_gateway_client_id,
-            "client_secret": settings.keycloak_gateway_client_secret,
-            "refresh_token": refresh_token,
-        }
-        response = await self._client.post(settings.keycloak_logout_url, data=data)
-
-        # Keycloak returns 204 on success, 400 if token is already invalid.
-        # Either way the session is gone — treat both as success.
-        if response.status_code not in (200, 204, 400):
-            logger.error("Keycloak logout error %s: %s", response.status_code, response.text)
-            raise KeycloakError(response.status_code, "keycloak_error")
-
-    # ------------------------------------------------------------------
-    # Token validation (used by api-gateway)
-    # ------------------------------------------------------------------
-
-    async def validate(
-        self,
-        token: str,
-        conn: asyncpg.Connection | None = None,
-    ) -> ValidateResponse:
-        """Validate JWT and resolve the caller's internal auth_users.id.
-
-        When ``conn`` is provided and the token carries a ``tenant_slug`` claim,
-        the method switches the connection's ``search_path`` to the tenant schema,
-        looks up (or lazy-provisions) the ``auth_users`` row by ``keycloak_sub``,
-        and returns the internal UUID as ``user_id``.
-
-        Fallback to the raw Keycloak ``sub`` when:
-        - no ``tenant_slug`` in the token (e.g. superadmin without a tenant), or
-        - the tenant schema is not yet provisioned (``UndefinedTableError``), or
-        - any other DB error (fail-open: superadmin path is unblocked).
-        """
+    async def logout(self, conn: asyncpg.Connection, refresh_token: str) -> None:
+        """Revoca la familia del refresh. Idempotente: un token desconocido no es error."""
         try:
-            claims = await validate_token(token)
+            slug = _slug_del_refresh(refresh_token)
+        except AuthError:
+            return
+        try:
+            async with _en_entidad(conn, slug):
+                await IdentityRepository(conn).revoke_family_of(_hash_refresh(refresh_token))
+        except (asyncpg.UndefinedTableError, asyncpg.InvalidSchemaNameError):
+            return
 
-            keycloak_sub: str = claims["user_id"]          # raw Keycloak sub
-            username: str = claims.get("username", "")
-            email: str = claims.get("email", "")
-            tenant_slug: str | None = claims.get("tenant_slug")
+    async def change_password(
+        self, conn: asyncpg.Connection, user_id: uuid.UUID, current: str, new: str
+    ) -> None:
+        """La persona cambia su contraseña. `conn` ya está en el schema de su entidad."""
+        repo = IdentityRepository(conn)
+        user = await repo.user_by_id(user_id)
+        if user is None or not await passwords.coincide_async(user["password_hash"], current):
+            raise AuthError(401, "invalid_credentials")
+        await self.set_password(conn, user_id, new)
 
-            # Resolve internal auth_users.id (tenant-aware, lazy provisioning).
-            user_id: str = keycloak_sub                    # default: fall back to sub
+    async def set_password(self, conn: asyncpg.Connection, user_id: uuid.UUID, new: str) -> None:
+        """Fija la contraseña tras la política y cierra las sesiones abiertas."""
+        repo = IdentityRepository(conn)
+        anteriores = await repo.recent_password_hashes(user_id, settings.password_history)
+        try:
+            passwords.exigir_politica(new, anteriores=anteriores)
+        except passwords.PoliticaIncumplida as exc:
+            raise AuthError(422, exc.codigo, exc.detalle) from exc
+        cifrada = passwords.cifrar(new)
+        async with conn.transaction():
+            await repo.set_password(user_id, cifrada)
+            await repo.revoke_user_sessions(user_id)
 
-            # ADR-035: el estado de la entidad va ANTES de tocar su schema. Una
-            # entidad no operativa no aprovisiona `auth_users` (el alta perezosa
-            # crearía usuarios dentro de una entidad suspendida); el veredicto de
-            # servir o no lo toma el api-gateway con este campo.
-            tenant_estado: str | None = None
-            if tenant_slug:
-                tenant_estado = await self._estado_de_la_entidad(conn, tenant_slug)
-
-            if (
-                tenant_slug
-                and conn is not None
-                and tenant_estado == EstadoEntidad.OPERATIVA
-                and slug_valido(tenant_slug)
-            ):
-                schema = tenant_schema(tenant_slug)
-                try:
-                    await conn.execute(f'SET search_path = "{schema}"')
-                    repo = RBACRepository(conn)
-                    user = await repo.get_user_by_keycloak_sub(keycloak_sub)
-                    if user is None:
-                        user = await repo.upsert_user_by_keycloak_sub(
-                            keycloak_sub=keycloak_sub,
-                            username=username,
-                            email=email,
-                        )
-                    if user is not None:
-                        user_id = str(user["id"])
-                except (asyncpg.UndefinedTableError, asyncpg.UndefinedSchemaError):
-                    # Tenant schema not provisioned yet (RBAC tables absent).
-                    # Fail-closed downstream: the raw sub matches no auth_users.id.
-                    logger.warning(
-                        "validate: tenant '%s' not provisioned (RBAC tables absent); "
-                        "falling back to keycloak_sub for user_id",
-                        tenant_slug,
-                    )
-                except asyncpg.UniqueViolationError:
-                    # Lazy provisioning hit a unique constraint other than keycloak_sub
-                    # (typically a username collision with a pre-existing local user).
-                    # Surfaced explicitly: otherwise the user is silently locked out.
-                    logger.warning(
-                        "validate: lazy provisioning conflict for sub=%s in tenant '%s' "
-                        "(likely username collision); falling back to keycloak_sub",
-                        keycloak_sub,
-                        tenant_slug,
-                    )
-                except Exception:
-                    # Unexpected error — keep auth available (fail-closed downstream)
-                    # but make it visible instead of masking it at debug level.
-                    logger.exception(
-                        "validate: unexpected error resolving internal user_id "
-                        "for tenant '%s'; falling back to keycloak_sub",
-                        tenant_slug,
-                    )
-                finally:
-                    try:
-                        await conn.execute("SET search_path = public")
-                    except Exception:
-                        pass
-
-            return ValidateResponse(
-                valid=True,
-                user_id=user_id,
-                username=username,
-                tenant_slug=tenant_slug,
-                roles=claims.get("roles", []),
-                expires_in=max(0, int(claims["exp"]) - int(time.time())),
-                tenant_estado=tenant_estado,
+    async def validate(self, token: str, conn: asyncpg.Connection) -> ValidateResponse:
+        """Verifica un access token de persona. Solo lee las claves públicas."""
+        try:
+            claims = await security.verificar(
+                conn, token, audience=settings.identity_user_audience
             )
         except PyJWTError:
             return ValidateResponse(valid=False)
-
-    @staticmethod
-    async def _estado_de_la_entidad(conn: asyncpg.Connection | None, slug: str) -> str:
-        """Estado de la entidad; `desconocido` si el registro no responde (no se lanza)."""
-        if conn is None:
-            return "desconocido"
-        try:
-            return str(await estado_entidad(conn, slug))
-        except Exception:
-            logger.exception("validate: no se pudo leer el estado de la entidad '%s'", slug)
-            return "desconocido"
-
-    async def get_current_user(self, token: str) -> UserInfoResponse:
-        try:
-            claims = await validate_token(token)
-        except PyJWTError:
-            raise KeycloakError(401, "invalid_token")
-
-        return UserInfoResponse(
-            user_id=claims["user_id"],
-            username=claims["username"],
-            email=claims.get("email", ""),
-            tenant_slug=claims.get("tenant_slug"),
-            roles=claims.get("roles", []),
+        if claims.get("principal_type") != PRINCIPAL_USER:
+            return ValidateResponse(valid=False)
+        return ValidateResponse(
+            valid=True,
+            user_id=str(claims["sub"]),
+            username=str(claims.get("preferred_username") or ""),
+            tenant_slug=claims.get("tenant_slug") or None,
+            expires_in=max(0, int(claims["exp"]) - int(time.time())),
         )
 
     # ------------------------------------------------------------------
-    # Health probe
+    # Máquinas
     # ------------------------------------------------------------------
 
-    async def keycloak_healthy(self) -> bool:
-        """Ping the Keycloak realm endpoint to verify connectivity."""
-        try:
-            response = await self._client.get(settings.keycloak_realm_url, timeout=3.0)
-            return response.status_code == 200
-        except httpx.RequestError:
-            return False
+    async def client_credentials(
+        self, conn: asyncpg.Connection, client_id: str, client_secret: str
+    ) -> TokenResponse:
+        cuenta = await IdentityRepository(conn).service_account(client_id)
+        guardado = cuenta["secret_hash"] if cuenta is not None else None
+        if not await passwords.coincide_async(guardado, client_secret) or not (
+            cuenta and cuenta["is_active"]
+        ):
+            raise AuthError(401, "invalid_client")
+        await _exigir_entidad(conn, str(cuenta["tenant_slug"]))
+        return await emitir_token_servicio(conn, cuenta)

@@ -9,11 +9,10 @@
 
 """Gate de autorización resuelto en la BD del tenant por request (E08, ADR-013).
 
-Keycloak autentica; la BD del tenant autoriza. El api-gateway inyecta la identidad
-ya validada (`X-User-Id` = auth_users.id interno UUID, `X-Tenant-Slug`). Aquí se
-resuelve el usuario local por `auth_users.id` (no por keycloak_sub — que era el
-comportamiento anterior al fix RBAC), se calculan sus permisos efectivos y se exige
-el permiso requerido. ROOT (`USUA_PERM_ROOT`) hace bypass.
+El emisor del proceso autentica (ADR-048); la BD del tenant autoriza.
+`UsuarioActualMiddleware` deja la identidad ya verificada (`sub` = auth_users.id).
+Aquí se resuelve el usuario local por `auth_users.id`, se calculan sus permisos
+efectivos y se exige el permiso requerido. ROOT (`USUA_PERM_ROOT`) hace bypass.
 """
 
 import logging
@@ -46,7 +45,6 @@ class Caller:
     """Identidad autorizada del llamante (resuelta en la BD del tenant)."""
 
     user_id: UUID
-    keycloak_sub: str
     is_root: bool
     permissions: dict[str, int]
 
@@ -69,14 +67,13 @@ async def get_caller(
     tenant. Comparte la conexión con `get_tenant_conn` (FastAPI cachea la dependencia
     por request).
 
-    X-User-Id es el ``auth_users.id`` interno (UUID), resuelto por auth-service
-    ``/validate`` con lazy provisioning. Ya NO es el ``keycloak_sub``.
+    La identidad es el ``sub`` del access token, que ya es ``auth_users.id``.
     """
     from orpycamcp_common.usuario import id_exigido
 
     user_id = id_exigido(request)
     repo = RBACRepository(conn)
-    user = await repo.get_user(user_id)   # looks up by auth_users.id, not keycloak_sub
+    user = await repo.get_user(user_id)
     if user is None:
         # Traza best-effort (opcional, RF-SEG / MoReq): el llamante SÍ mandó un
         # X-User-Id identificable (UUID válido), simplemente no está aprovisionado
@@ -103,7 +100,6 @@ async def get_caller(
     perms = await service.resolve_effective_permissions(user["id"])
     return Caller(
         user_id=user["id"],
-        keycloak_sub=str(user.get("keycloak_sub") or ""),
         is_root=bool(user["is_root"]),
         permissions=perms,
     )

@@ -25,24 +25,22 @@ class RBACRepository:
         *,
         username: str,
         email: str | None,
-        keycloak_sub: str | None,
         is_root: bool,
     ) -> asyncpg.Record:
         return await self._conn.fetchrow(
             """
-            INSERT INTO auth_users (username, email, keycloak_sub, is_root)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, username, email, keycloak_sub, is_root, is_active
+            INSERT INTO auth_users (username, email, is_root)
+            VALUES ($1, $2, $3)
+            RETURNING id, username, email, is_root, is_active
             """,
             username.upper(),
             email,
-            keycloak_sub,
             is_root,
         )
 
     async def get_user(self, user_id: uuid.UUID) -> asyncpg.Record | None:
         return await self._conn.fetchrow(
-            "SELECT id, username, email, keycloak_sub, is_root, is_active "
+            "SELECT id, username, email, is_root, is_active "
             "FROM auth_users WHERE id = $1",
             user_id,
         )
@@ -52,7 +50,7 @@ class RBACRepository:
         a promover a partir de su username (los usernames se guardan en mayúsculas,
         ver `create_user`)."""
         return await self._conn.fetchrow(
-            "SELECT id, username, email, keycloak_sub, is_root, is_active "
+            "SELECT id, username, email, is_root, is_active "
             "FROM auth_users WHERE username = $1",
             username.upper(),
         )
@@ -60,51 +58,16 @@ class RBACRepository:
     async def set_root(self, user_id: uuid.UUID) -> asyncpg.Record:
         """Promueve un usuario a ROOT. Solo invocado por el script de ops
         `grant_root` — la API HTTP nunca voltea `is_root` a true por sí misma
-        (ver el docstring de `upsert_user_by_keycloak_sub` y el hallazgo Alto
-        de auto-escalada que cierra `RBACService.create_user`)."""
+        (ver el hallazgo Alto de auto-escalada que cierra `RBACService.create_user`)."""
         return await self._conn.fetchrow(
             "UPDATE auth_users SET is_root = true WHERE id = $1 "
-            "RETURNING id, username, email, keycloak_sub, is_root, is_active",
+            "RETURNING id, username, email, is_root, is_active",
             user_id,
-        )
-
-    async def get_user_by_keycloak_sub(self, sub: str) -> asyncpg.Record | None:
-        return await self._conn.fetchrow(
-            "SELECT id, username, email, keycloak_sub, is_root, is_active "
-            "FROM auth_users WHERE keycloak_sub = $1",
-            sub,
-        )
-
-    async def upsert_user_by_keycloak_sub(
-        self,
-        *,
-        keycloak_sub: str,
-        username: str,
-        email: str,
-    ) -> asyncpg.Record:
-        """Lazy-provision a user row from Keycloak claims.
-
-        Uses ON CONFLICT (keycloak_sub) to handle concurrent first-login races
-        without a separate SELECT step. Never flips is_root — admin must set it
-        manually. Returns the full row including the internal id.
-        """
-        return await self._conn.fetchrow(
-            """
-            INSERT INTO auth_users (username, email, keycloak_sub, is_root)
-            VALUES ($1, $2, $3, false)
-            ON CONFLICT (keycloak_sub) DO UPDATE
-                SET username = EXCLUDED.username,
-                    email    = EXCLUDED.email
-            RETURNING id, username, email, keycloak_sub, is_root, is_active
-            """,
-            (username.upper() if username else "UNKNOWN"),
-            (email or None),
-            keycloak_sub,
         )
 
     async def list_users(self, *, limit: int, offset: int) -> tuple[list[asyncpg.Record], int]:
         rows = await self._conn.fetch(
-            "SELECT id, username, email, keycloak_sub, is_root, is_active "
+            "SELECT id, username, email, is_root, is_active "
             "FROM auth_users ORDER BY username LIMIT $1 OFFSET $2",
             limit,
             offset,
@@ -284,7 +247,7 @@ class RBACRepository:
         """Usuarios del grupo (espejo de lectura de `add_membership`/`remove_membership`)."""
         rows = await self._conn.fetch(
             """
-            SELECT u.id, u.username, u.email, u.keycloak_sub, u.is_root, u.is_active
+            SELECT u.id, u.username, u.email, u.is_root, u.is_active
             FROM auth_memberships m
             JOIN auth_users u ON u.id = m.user_id
             WHERE m.group_id = $1

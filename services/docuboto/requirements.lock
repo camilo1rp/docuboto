@@ -36,6 +36,7 @@ anyio==4.15.1
 argon2-cffi==23.1.0
     # via
     #   -c /private/tmp/claude-501/-Users-camiloromero-Projects-docuboto--claude-worktrees-adr-047-un-proceso-adf1b8/cc6fe4c4-33e4-4f79-a310-4d20695954c7/scratchpad/cons.txt
+    #   -r services/docuboto/requirements.txt
     #   miniopy-async
 argon2-cffi-bindings==26.1.0
     # via
