@@ -62,7 +62,6 @@ throwaway PostgreSQL and Redis. `./scripts/lint.sh` runs ruff and mypy over the 
 |---|---|---|
 | App API (docs) | http://localhost:19000/docs | — |
 | Frontend (SvelteKit) | http://localhost:19300 | — |
-| Keycloak Admin | http://localhost:19180/admin | admin / orpycamcp_dev |
 | Object store (S3 API) | http://localhost:19900 | orpycamcp / orpycamcp_dev |
 
 > The object store is **RustFS** since ADR-027 (MinIO archived its open-source project and
@@ -78,7 +77,7 @@ A `radicado` is an official document registered with a unique, immutable trackin
 
 ```bash
 # 1. Obtain an access token (against the app, port 19000)
-TOKEN=$(curl -s -X POST 'http://localhost:19000/api/v1/auth/token' \
+TOKEN=$(curl -s -X POST 'http://localhost:19000/api/v1/auth/login' \
   -H 'Content-Type: application/json' \
   -d '{"username": "operador", "password": "orpycamcp_dev", "tenant_slug": "demo"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
@@ -323,10 +322,12 @@ If the browser already holds an active session, `/` **redirects automatically (3
 `/dashboard`**: an authenticated user never sees the landing page. To see it again, sign
 out from the user menu.
 
-From the landing page, "Iniciar sesión" leads to `/login`, which starts the OAuth2
-Authorization Code + PKCE flow against Keycloak (the code exchange and token custody
-happen **server-side**; the JWT lives in an `httpOnly` cookie and is never visible to
-the browser's JavaScript).
+From the landing page, "Iniciar sesión" leads to `/login`, the app's own username and
+password form: the SSR posts it to `POST /api/v1/auth/login` (ADR-048) and token custody
+happens **server-side**; the JWT lives in an `httpOnly` cookie and is never visible to
+the browser's JavaScript. The demo entity's people (`operador`, `jefe`, `secretaria`,
+`archivista`, `consulta`, `e2e1..3`) are created by `scripts/seed_demo.py` with the
+password `orpycamcp_dev`.
 
 ### 2. The personal dashboard (`/dashboard`)
 

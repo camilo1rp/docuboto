@@ -11,9 +11,8 @@
 auth-service — FastAPI application factory.
 
 Responsibilities:
-- Issue JWT tokens via Keycloak ROPC grant (POST /api/v1/auth/token)
-- Refresh and revoke tokens
-- Validate Bearer tokens for the api-gateway (/api/v1/auth/validate)
+- Issue identity (ADR-048): login, refresh and logout for people, and the OIDC
+  issuer (discovery, JWKS, client_credentials) for machines
 - Audit every auth event to PostgreSQL
 """
 
@@ -23,6 +22,7 @@ from auth.routers.audit import router as audit_router
 from auth.routers.auth import router as auth_router
 from auth.routers.clearance import router as clearance_router
 from auth.routers.context import router as context_router
+from auth.routers.oidc import router as oidc_router
 from auth.routers.rbac import pick_router as rbac_pick_router
 from auth.routers.rbac import router as rbac_router
 from auth.routers.signing_key import admin_router as signing_key_admin_router
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 DOMAIN_ROUTERS = (
     auth_router,
+    oidc_router,
     rbac_pick_router,  # D-10: antes de rbac_router (ruta /users/pickable)
     rbac_router,
     urd_router,

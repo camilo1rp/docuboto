@@ -8,20 +8,57 @@
 CREATE TABLE auth_users (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     username character varying(80) NOT NULL,
-    ldap_username character varying(80),
     email character varying(255),
-    keycloak_sub character varying(255),
+    password_hash text,
+    password_changed_at timestamp with time zone,
     is_root boolean DEFAULT false NOT NULL,
     is_active boolean DEFAULT true NOT NULL,
     failed_logins smallint DEFAULT 0 NOT NULL,
     locked_until timestamp with time zone,
-    password_migrated boolean DEFAULT true NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     active_depe_id integer,
-    CONSTRAINT auth_users_keycloak_sub_key UNIQUE (keycloak_sub),
     CONSTRAINT auth_users_pkey PRIMARY KEY (id),
     CONSTRAINT auth_users_username_key UNIQUE (username)
 );
+
+COMMENT ON COLUMN auth_users.password_hash IS 'argon2id (ADR-048). NULL = la persona no puede iniciar sesión hasta que un administrador le fije una contraseña.';
+
+COMMENT ON COLUMN auth_users.failed_logins IS 'Intentos fallidos seguidos. Al llegar a AUTH_LOGIN_MAX_FAILED se fija locked_until; un inicio correcto lo pone en 0.';
+
+-- ── auth_password_history ─────────────────────────────────────────────────────
+
+CREATE TABLE auth_password_history (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    password_hash text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT auth_password_history_pkey PRIMARY KEY (id),
+    CONSTRAINT auth_password_history_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+);
+
+COMMENT ON TABLE auth_password_history IS 'Hashes argon2id de las contraseñas anteriores (ADR-048). Una contraseña nueva no puede repetir ninguna de las últimas AUTH_PASSWORD_HISTORY.';
+
+CREATE INDEX ix_auth_password_history_user ON auth_password_history USING btree (user_id, created_at DESC);
+
+-- ── auth_refresh_tokens ───────────────────────────────────────────────────────
+
+CREATE TABLE auth_refresh_tokens (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid NOT NULL,
+    family_id uuid NOT NULL,
+    token_hash bytea NOT NULL,
+    issued_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    used_at timestamp with time zone,
+    revoked_at timestamp with time zone,
+    CONSTRAINT auth_refresh_tokens_pkey PRIMARY KEY (id),
+    CONSTRAINT auth_refresh_tokens_token_hash_key UNIQUE (token_hash),
+    CONSTRAINT auth_refresh_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+);
+
+COMMENT ON TABLE auth_refresh_tokens IS 'Refresh tokens de sesión (ADR-048), solo su SHA-256. Cada uso rota: la fila se marca used_at y nace otra de la misma familia con el mismo expires_at. Presentar una fila ya usada o revocada revoca toda la familia (detección de reuso).';
+
+CREATE INDEX ix_auth_refresh_tokens_family ON auth_refresh_tokens USING btree (family_id);
 
 -- ── auth_user_totp ────────────────────────────────────────────────────────────
 

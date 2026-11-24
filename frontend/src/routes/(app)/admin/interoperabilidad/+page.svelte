@@ -327,16 +327,15 @@
   // ── El sondeo no puede fingir que hay alguien delante ────────────────────
   //
   // Cada `pollJobStatusOnce` va al servidor de SvelteKit, dispara el refresco
-  // transparente del token y **reinicia el contador de inactividad de
-  // Keycloak** (30 min en producción). Esta pantalla sondea cada 2 s —seis
+  // transparente del token y **reinicia el contador de inactividad de la
+  // sesión** (30 min, ADR-048). Esta pantalla sondea cada 2 s —seis
   // veces más rápido que la bandeja de correo—, así que una pestaña olvidada
-  // aquí mantenía la sesión viva hasta el tope absoluto de 10 h, con la
+  // aquí mantenía la sesión viva hasta el tope absoluto de 12 h, con la
   // pantalla desbloqueada. Y no paraba nunca si el sondeo fallaba o si el
   // trabajo se quedaba en un estado no terminal.
   //
   // Es el mismo defecto que se corrigió en `/correo` en agosto de 2026, en una
-  // pantalla que nadie volvió a mirar. El README de Keycloak deja escrita la
-  // pregunta que había que hacerse: «¿esto renueva la sesión de alguien que no
+  // pantalla que nadie volvió a mirar. La pregunta que había que hacerse: «¿esto renueva la sesión de alguien que no
   // está delante?».
   //
   // La corrección NO es cerrar sesión desde el navegador —sería un control

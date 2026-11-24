@@ -2,6 +2,7 @@
 # `requirements.lock` se genera desde aquí:
 #   uv pip compile services/docuboto/requirements.txt -o services/docuboto/requirements.lock --no-header -p 3.11
 aiosmtplib>=3.0.0
+argon2-cffi>=23.1.0
 asn1crypto>=1.5.1
 asyncpg>=0.29.0
 bagit>=1.8.1

@@ -35,7 +35,6 @@ from archive.main import (
     _indice_reconciliation_loop,
 )
 from auth.jobs.signing_key_maintenance import maintenance_loop
-from auth.routers.auth import set_auth_service
 from auth.services.auth_service import AuthService
 from docuboto import config as settings
 from docuboto.config import variables_retiradas_presentes
@@ -121,6 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "MINIO_SECRET_KEY": settings.storage.minio_secret_key,
             "WEBHOOK_SECRET_KEK": settings.notification.webhook_secret_kek,
             "SIGNATURE_SECRET": settings.signature.signature_secret,
+            "IDENTITY_KEY_ENCRYPTION_KEY": settings.auth.identity_key_encryption_key,
         },
         servicio="docuboto",
     )
@@ -130,8 +130,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             f"{altcha.HMAC_MIN_BYTES} bytes (openssl rand -hex 32)"
         )
     webhook_secrets.validate_kek_at_startup()
-    for warning in settings.auth.issuer_config_warnings():
-        logger.warning(warning)
+    _ = settings.auth.identity_key_bytes  # forma válida o no arranca (ADR-048)
     for retirada, sustituta in variables_retiradas_presentes():
         logger.error(
             "La variable %s ya NO tiene efecto y se ignora: use %s.",
@@ -165,9 +164,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         settings.storage.minio_secret_key,
         settings.storage.minio_use_ssl,
     )
-    auth_service = AuthService()
-    set_auth_service(auth_service)
-    app.state.auth_service = auth_service
+    app.state.auth_service = AuthService()
     app.state.trusted_proxies = os.environ.get("TRUSTED_PROXIES", "")
 
     tareas = BackgroundTasks()
@@ -204,7 +201,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("docuboto shutting down")
     await tareas.stop()
     await salida_http.cerrar_consulta()
-    await auth_service.close()
     await redis_client.aclose()
     unbind_redis()
     await pool.close()

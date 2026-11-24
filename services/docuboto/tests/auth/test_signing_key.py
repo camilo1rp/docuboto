@@ -84,7 +84,7 @@ def _caller(user_id: uuid.UUID = USER_ID) -> Caller:
     # — el caller "normal" de este archivo lo trae por defecto; los tests
     # del gate en sí usan un caller aparte sin el permiso.
     return Caller(
-        user_id=user_id, keycloak_sub="kc-sub", is_root=False, permissions={"PERM_FIRMA": 3}
+        user_id=user_id, is_root=False, permissions={"PERM_FIRMA": 3}
     )
 
 
@@ -120,7 +120,6 @@ def _user_row(user_id: uuid.UUID = USER_ID) -> dict:
         "id": user_id,
         "username": "OPERADOR",
         "email": "operador@demo.orpycamcp.local",
-        "keycloak_sub": "kc-sub",
         "is_root": False,
         "is_active": True,
     }
@@ -362,7 +361,7 @@ async def test_enroll_requires_perm_firma(client: AsyncClient) -> None:
     re-enrolando (y revocando atómicamente) la clave `activo` de otro."""
     conn = _make_conn()
     no_perm_caller = Caller(
-        user_id=USER_ID, keycloak_sub="kc-sub", is_root=False, permissions={}
+        user_id=USER_ID, is_root=False, permissions={}
     )
     _override_public(conn, caller=no_perm_caller)
     try:
@@ -386,7 +385,7 @@ async def test_enroll_with_perm_firma_succeeds(client: AsyncClient) -> None:
     conn = _make_conn()
     conn.fetchrow.side_effect = [None, _user_row(), _key_row()]
     firmante = Caller(
-        user_id=USER_ID, keycloak_sub="kc-sub", is_root=False, permissions={"PERM_FIRMA": 3}
+        user_id=USER_ID, is_root=False, permissions={"PERM_FIRMA": 3}
     )
     _override_public(conn, caller=firmante)
     try:
@@ -758,7 +757,7 @@ async def test_sign_digest_success(
         "updated_at": datetime.now(UTC),
     }
 
-    # get_user_by_keycloak_sub, get_by_user_for_update (signing key),
+    # get_user, get_by_user_for_update (signing key),
     # TotpRepository.get_by_user (dentro de verify), advance_timestep no usa
     # fetchrow (usa execute) -> siguiente fetchrow es None si lo hubiera.
     conn.fetchrow.side_effect = [_user_row(), active_key_row, totp_row]
@@ -1142,7 +1141,7 @@ async def test_self_revoke_wrong_totp_never_revokes(
 async def test_admin_revoke_requires_permission(client: AsyncClient) -> None:
     conn = _make_conn()
     no_perm_caller = Caller(
-        user_id=USER_ID, keycloak_sub="admin-sub", is_root=False, permissions={}
+        user_id=USER_ID, is_root=False, permissions={}
     )
     _override_public(conn, caller=no_perm_caller)
     try:
@@ -1164,7 +1163,6 @@ async def test_admin_revoke_success_atomic_with_audit(
     conn = _make_conn()
     admin_caller = Caller(
         user_id=USER_ID,
-        keycloak_sub="admin-sub",
         is_root=False,
         permissions={"USUA_PERM_ADMIN": 3},
     )
@@ -1212,7 +1210,6 @@ async def test_admin_revoke_fails_closed_without_audit_lib(
     conn = _make_conn()
     admin_caller = Caller(
         user_id=USER_ID,
-        keycloak_sub="admin-sub",
         is_root=False,
         permissions={"USUA_PERM_ADMIN": 3},
     )
@@ -1239,7 +1236,6 @@ async def test_admin_revoke_no_credential_returns_404(
     conn = _make_conn()
     admin_caller = Caller(
         user_id=USER_ID,
-        keycloak_sub="admin-sub",
         is_root=False,
         permissions={"USUA_PERM_ADMIN": 3},
     )
@@ -1309,7 +1305,6 @@ async def test_revoke_rechaza_motivo_fuera_del_vocabulario(
     conn = _make_conn()
     admin_caller = Caller(
         user_id=USER_ID,
-        keycloak_sub="admin-sub",
         is_root=False,
         permissions={"USUA_PERM_ADMIN": 3},
     )

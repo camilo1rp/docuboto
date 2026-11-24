@@ -26,11 +26,9 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWTError
 from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.security import validate_token
 from auth.schemas.totp import (
     TotpActivateRequest,
     TotpActivateResponse,
@@ -70,28 +68,14 @@ async def _resolve_tenant_slug_for_aad(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
 ) -> str:
-    """Resolves the ``tenant_slug`` bound into the AESGCM AAD (``build_aad``)
-    from the caller's OWN bearer JWT claim — the session's tenant, which is
-    what signature passes to ``auth.api.verify_totp`` — instead of the
-    ``X-Tenant-Slug`` header.
+    """`tenant_slug` atado al AAD de AESGCM: el del access token ya verificado.
 
-    In normal operation the header and the claim agree (the gateway derives
-    the header from this very claim via its own call to ``/validate``), but
-    binding the AAD to the header made it a second, independent source of
-    truth: if header and claim ever diverged (misconfig), a code minted here
-    would fail to decrypt in ``verify``. Falls back to the header only if the
-    bearer can't be decoded (e.g. transient JWKS issue) so this never turns
-    an otherwise-authenticated request (already vetted by the gateway) into
-    a hard failure — it only removes the header as an alternate AAD source.
+    Lo deja `UsuarioActualMiddleware` (ADR-048); es el mismo que signature pasa
+    a ``auth.api.verify_totp``.
     """
-    header_slug = request.headers.get("X-Tenant-Slug", "")
-    if credentials is None:
-        return header_slug
-    try:
-        claims = await validate_token(credentials.credentials)
-    except PyJWTError:
-        return header_slug
-    return claims.get("tenant_slug") or header_slug
+    from orpycamcp_common.usuario import slug_de
+
+    return slug_de(request)
 
 
 # ---------------------------------------------------------------------------

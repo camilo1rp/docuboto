@@ -97,6 +97,8 @@ _GLOBALES_CONOCIDOS = {
     "divipola_municipio",
     "schema_migrations",
     "schema_version",
+    "auth_jwt_keys",
+    "auth_service_accounts",
 }
 
 

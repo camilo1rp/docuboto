@@ -9,8 +9,8 @@
 
 """Lógica de autorización y administración RBAC (E08).
 
-Reproduce el comportamiento del legado (plan-argoik/plan-icetex): Keycloak
-autentica, la BD del tenant autoriza. ROOT se comprueba primero (RN-2/RN-3) y los
+Reproduce el comportamiento del legado (plan-argoik/plan-icetex): el emisor de
+identidad del proceso autentica (ADR-048), la BD del tenant autoriza. ROOT se comprueba primero (RN-2/RN-3) y los
 permisos se resuelven como MAX(crud) por nombre.
 
 Toda escritura administrativa (crear usuario/grupo, membresías, permisos de
@@ -29,7 +29,10 @@ import uuid
 import asyncpg
 from fastapi import HTTPException, status
 
+from auth.core import passwords
+from auth.repositories.identity_repository import IdentityRepository
 from auth.repositories.rbac_repository import RBACRepository
+from docuboto.config import auth as auth_settings
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +115,17 @@ def _forbid_root_grant() -> HTTPException:
             "detail": (
                 "USUA_PERM_ROOT no puede auto-concederse: solo un ROOT existente "
                 "puede otorgarlo. El primer ROOT de un tenant se aprovisiona "
-                "fuera de banda (app/ops/grant_root.py), no vía la API."
+                "fuera de banda (auth/ops/grant_root.py), no vía la API."
             ),
             "status": 403,
         },
+    )
+
+
+def _password_rejected(exc: passwords.PoliticaIncumplida) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={"error": exc.codigo, "detail": exc.detalle, "status": 422},
     )
 
 
@@ -177,7 +187,7 @@ class RBACService:
         *,
         username: str,
         email: str | None,
-        keycloak_sub: str | None,
+        password: str | None,
         is_root: bool,
         tenant_slug: str | None,
         actor: str,
@@ -188,12 +198,19 @@ class RBACService:
         # tocar la BD o la auditoría — ver `_forbid_root_grant`.
         if is_root and not caller_is_root:
             raise _forbid_root_grant()
+        if password is not None:
+            try:
+                passwords.exigir_politica(password)
+            except passwords.PoliticaIncumplida as exc:
+                raise _password_rejected(exc) from exc
         _require_audit_available()
         tenant = _audit_tenant(tenant_slug)
         async with self._conn.transaction():
-            row = await self._repo.create_user(
-                username=username, email=email, keycloak_sub=keycloak_sub, is_root=is_root
-            )
+            row = await self._repo.create_user(username=username, email=email, is_root=is_root)
+            if password is not None:
+                await IdentityRepository(self._conn).set_password(
+                    row["id"], passwords.cifrar(password)
+                )
             await _audit.append(
                 self._conn,
                 tenant_slug=tenant,
@@ -206,6 +223,50 @@ class RBACService:
                 canal=_audit.CANAL_PETICION,
             )
         return row
+
+    async def set_password(
+        self,
+        *,
+        user_id: uuid.UUID,
+        password: str,
+        tenant_slug: str | None,
+        actor: str,
+        caller_is_root: bool,
+    ) -> None:
+        """Un administrador fija la contraseña de una persona (ADR-048).
+
+        Cierra sus sesiones y le quita el bloqueo. La contraseña de un ROOT solo
+        la fija otro ROOT: si no, un USUA_PERM_ADMIN tomaría su cuenta.
+        """
+        user = await self._repo.get_user(user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": "not_found", "detail": "Usuario no encontrado", "status": 404},
+            )
+        if user["is_root"] and not caller_is_root:
+            raise _forbid_root_grant()
+        identidad = IdentityRepository(self._conn)
+        anteriores = await identidad.recent_password_hashes(user_id, auth_settings.password_history)
+        try:
+            passwords.exigir_politica(password, anteriores=anteriores)
+        except passwords.PoliticaIncumplida as exc:
+            raise _password_rejected(exc) from exc
+        _require_audit_available()
+        async with self._conn.transaction():
+            await identidad.set_password(user_id, passwords.cifrar(password))
+            await identidad.revoke_user_sessions(user_id)
+            await _audit.append(
+                self._conn,
+                tenant_slug=_audit_tenant(tenant_slug),
+                service=_SERVICE,
+                action="rbac.password_set",
+                object_type="usuario",
+                object_ref=str(user_id),
+                actor=actor,
+                payload={"username": user["username"]},
+                canal=_audit.CANAL_PETICION,
+            )
 
     async def create_group(
         self,

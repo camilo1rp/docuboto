@@ -28,11 +28,9 @@ import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWTError
 from orpycamcp_common.database import get_tenant_conn
 
 from auth.core.authz import Caller, get_caller, require_permission
-from auth.core.security import validate_token
 from auth.schemas.signing_key import (
     AdminSigningKeyRevokeRequest,
     SigningKeyEnrollRequest,
@@ -64,19 +62,10 @@ async def _resolve_tenant_slug_for_aad(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
 ) -> str:
-    """Misma resolución que ``app.routers.totp._resolve_tenant_slug_for_aad``
-    — el ``tenant_slug`` atado al AAD de AESGCM viene del CLAIM del propio
-    bearer del llamante, con el header ``X-Tenant-Slug`` como único fallback
-    (bearer indecodificable — nunca convierte una request ya autenticada por
-    el gateway en un fallo duro)."""
-    header_slug = request.headers.get("X-Tenant-Slug", "")
-    if credentials is None:
-        return header_slug
-    try:
-        claims = await validate_token(credentials.credentials)
-    except PyJWTError:
-        return header_slug
-    return claims.get("tenant_slug") or header_slug
+    """Misma resolución que ``auth.routers.totp._resolve_tenant_slug_for_aad``."""
+    from orpycamcp_common.usuario import slug_de
+
+    return slug_de(request)
 
 
 # ---------------------------------------------------------------------------

@@ -32,27 +32,24 @@ graph TB
         PG[("PostgreSQL 15")]
         REDIS[("Redis<br/>Streams + cache")]
         MINIO[("RustFS<br/>Almacén de objetos S3")]
-        KC["Keycloak<br/>OIDC"]
         MAIL["Mailpit<br/>(solo dev)"]
     end
 
     Cliente --> EDGE
     EDGE -->|JWT Bearer| MW
-    EDGE --> KC
     DOM --> PG
     BG --> PG
     DOM <--> REDIS
     BG <--> REDIS
     DOM --> MINIO
-    DOM --> KC
     DOM --> MAIL
     DOM -.->|PPI, solo con PPI_PROVIDER_URL| PPI["Proveedor de inteligencia<br/>(opcional)"]
 ```
 
 El objetivo de ADR-047 son cuatro contenedores (`app`, `postgres`, `edge`, `frontend`).
-**Todavía no se alcanza**: Keycloak, Redis y el almacén de objetos siguen en los manifiestos
-hasta que los retiren [ADR-048](adr/ADR-048-identidad-emitida-por-docuboto.md),
-[ADR-049](adr/ADR-049-eventos-en-postgresql-sin-redis.md) y
+**Todavía no se alcanza**: Keycloak ya salió ([ADR-048](adr/ADR-048-identidad-emitida-por-docuboto.md):
+la identidad la emite la app), pero Redis y el almacén de objetos siguen en los manifiestos
+hasta que los retiren [ADR-049](adr/ADR-049-eventos-en-postgresql-sin-redis.md) y
 [ADR-050](adr/ADR-050-bytes-en-disco-y-archivo-sellado.md).
 
 Docuboto no llama a ningún modelo de lenguaje
@@ -79,7 +76,7 @@ HTTP, los estados de ciclo de vida de la entidad y su veto en el borde (ADR-047 
 | Módulo | Qué hace |
 |---|---|
 | `main.py` | `create_app()`: único sitio con middleware y manejadores; monta los `DOMAIN_ROUTERS` de cada paquete, `/health` y `/metrics` |
-| `config.py` | `CommonSettings` (base, pool, Redis, Keycloak, log) y una clase `Settings` por dominio; los nombres de las variables de entorno no cambian ni llevan prefijo |
+| `config.py` | `CommonSettings` (base, pool, Redis, log) y una clase `Settings` por dominio; los nombres de las variables de entorno no cambian ni llevan prefijo |
 | `core/lifespan.py` | Un pool de base de datos y el arranque de las tareas de fondo |
 | `core/tasks.py` | `BackgroundTasks`: consumidores, renovación LTA, migración de formato y las colas `trabajo_fuera` (`app`, ligera; `worker`, pesada, que conserva el nombre en el esquema). Lo pesado toma plaza de `heavy_slot()`, un semáforo de `HEAVY_JOBS_CONCURRENCY` (1 por defecto) |
 | `core/security.py` | `SecurityHeadersMiddleware` (`X-Request-Id`, `nosniff`, `DENY`, `no-referrer`) y `UserRateLimitMiddleware` (`RATE_LIMIT_PER_USER`, 120/min por persona) |
@@ -96,15 +93,14 @@ Los nueve paquetes viven al lado (`services/docuboto/<paquete>/`), con sus prueb
 | PostgreSQL | 5432 | **15432** | Base de datos única, multi-schema |
 | Redis | 6379 | **16379** | Streams de eventos + cache (hasta ADR-049) |
 | RustFS (`minio`) | 9000 | **19900** | Almacén de objetos S3 (sustituye a MinIO, ADR-027; hasta ADR-050). Sin consola web: se inspecciona con `aws-cli` |
-| Keycloak | 8080 | **19180** | Identity Provider (OIDC, hasta ADR-048) |
 | Mailpit | 1025 (SMTP) / 8025 (web) | 1025 / 8025 | Captura de correos en desarrollo (perfil `dev`) |
-| `edge` | 80 / 443 | 80 / 443 | Solo producción: nginx con TLS, límite de tasa por IP y proxy a `app`, `frontend` y Keycloak |
+| `edge` | 80 / 443 | 80 / 443 | Solo producción: nginx con TLS, límite de tasa por IP y proxy a `app` y `frontend` |
 
 > El rango 19xxx/15432/16379 evita chocar con otras pilas de desarrollo en la misma máquina.
 
 | Paquete | Responsabilidad |
 |---|---|
-| `auth` | Integración con Keycloak, validación de JWT, RBAC, clearance (RF-SEG-08), TOTP, custodia de llaves de firma |
+| `auth` | Emisor de identidad (login, sesiones, JWT ES256, JWKS y `client_credentials`, ADR-048), RBAC, clearance (RF-SEG-08), TOTP, custodia de llaves de firma |
 | `tenant` | Configuración de la entidad de la instalación, dependencias, catálogos, PINAR |
 | `document` | Radicación E/S/I, anexos, respuestas, anulación, import/export, ingesta IMAP, OAI-PMH/CMIS |
 | `archive` | Expedientes, TRD/CCD, índice electrónico, archivo físico, transferencias, eliminación |
@@ -122,7 +118,8 @@ lo que expone cada uno:
 ### `auth`
 | Router | Qué gestiona |
 |---|---|
-| `auth` | Login/token contra Keycloak |
+| `auth` | Login, refresh, logout y cambio de contraseña (ADR-048) |
+| `oidc` | Descubrimiento OIDC, JWKS y `POST /oauth/token` (`client_credentials`) para cuentas de servicio |
 | `clearance` | Niveles de seguridad (clasificación de usuarios/documentos) |
 | `rbac` | Roles y permisos (admin) |
 | `urd` | Gestión de usuarios (admin) |
@@ -287,15 +284,15 @@ prefijados por entidad (`orpycamcp-{slug}-documents`) hasta ADR-050.
 ```mermaid
 sequenceDiagram
     participant U as Usuario/Frontend
-    participant KC as Keycloak
+    participant L as app — POST /api/v1/auth/login
     participant MW as app — UsuarioActualMiddleware
     participant R as router del paquete
 
-    U->>KC: Authorization Code + PKCE
-    KC-->>U: JWT (claims: tenant_slug, user_id, roles[])
+    U->>L: usuario + contraseña + entidad (desde el SSR)
+    L-->>U: access JWT ES256 (sub = auth_users.id, tenant_slug) + refresh opaco
     U->>MW: request + Authorization: Bearer <JWT>
     MW->>MW: borra X-User-Id, X-Username, X-User-Roles, X-Canal, X-Tenant-Slug del cliente
-    MW->>MW: valida el JWT en proceso; deja el usuario en request.state; repone X-Tenant-Slug
+    MW->>MW: verifica firma, iss y aud con las claves propias; deja el usuario en request.state; repone X-Tenant-Slug
     MW->>R: request
     R->>R: search_path = tenant_{slug}; valida permiso/clearance en BD
 ```

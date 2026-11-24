@@ -56,7 +56,7 @@ export async function load({ cookies, url, fetch }) {
 
   // --- Sin access_token VIGENTE: intentar refresh ---
   // Presencia no es vigencia. La cookie se fija con un `maxAge` que corre
-  // contra el reloj del navegador y el `exp` del token contra el de Keycloak:
+  // contra el reloj del navegador y el `exp` del token contra el del emisor:
   // la cookie sobrevive al token, siempre. Comprobar solo la presencia dejaba
   // pasar sesiones muertas hasta el gateway, que respondía 401 a todo con la
   // pantalla ya montada.

@@ -17,7 +17,7 @@ base. Lo que importa es que un error de lectura NUNCA se vea como «encendido».
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
@@ -25,6 +25,7 @@ from orpycamcp_common.database import get_optional_tenant_conn
 
 from auth.schemas.auth import UserInfoResponse
 from tests.auth.app import app
+from tests.auth.fakes_identidad import como
 
 pytestmark = pytest.mark.asyncio
 
@@ -59,11 +60,7 @@ async def _me(client: AsyncClient, conn: AsyncMock | None, slug: str | None = "d
         user_id=str(uuid.uuid4()), username="u", email="u@x", tenant_slug=slug, roles=[]
     )
     try:
-        with patch(
-            "auth.services.auth_service.AuthService.get_current_user",
-            new_callable=AsyncMock,
-            return_value=info,
-        ):
+        with como(info):
             resp = await client.get(
                 "/api/v1/auth/me",
                 headers={"Authorization": "Bearer x", "X-Tenant-Slug": "demo"},

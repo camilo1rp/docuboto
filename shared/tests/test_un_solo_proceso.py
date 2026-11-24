@@ -195,21 +195,20 @@ def test_la_imagen_app_lleva_lo_que_llevaba_el_worker() -> None:
         assert marca in app, marca
 
 
-def test_postgres_y_keycloak_van_en_la_version_actual() -> None:
+def test_postgres_va_en_la_version_actual_y_keycloak_no_esta() -> None:
     for compose in (COMPOSE_DEV, RAIZ / "infra" / "docker-compose.prod.yml"):
         texto = compose.read_text(encoding="utf-8")
         assert "postgres:17-bookworm@sha256:" in texto
-        assert "keycloak:26.8.1@sha256:" in texto
         assert "postgres:15-" not in texto
-        assert "keycloak:24." not in texto
+        assert "keycloak" not in texto.lower(), "la identidad la emite la app (ADR-048)"
 
 
-#: Lo que un manifiesto puede declarar mientras ADR-048/049/050 no retiren
-#: Keycloak, Redis y el almacén de objetos.
+#: Lo que un manifiesto puede declarar mientras ADR-049/050 no retiren Redis y
+#: el almacén de objetos. Keycloak ya salió (ADR-048).
 _PERMITIDOS = {
-    COMPOSE_DEV: {"migrate-docuboto", "postgres", "redis", "minio", "keycloak", "app", "frontend", "mailpit"},
+    COMPOSE_DEV: {"migrate-docuboto", "postgres", "redis", "minio", "app", "frontend", "mailpit"},
     RAIZ / "infra" / "docker-compose.prod.yml": {
-        "migrate-docuboto", "postgres", "redis", "minio", "keycloak", "app", "frontend", "edge",
+        "migrate-docuboto", "postgres", "redis", "minio", "app", "frontend", "edge",
     },
 }
 

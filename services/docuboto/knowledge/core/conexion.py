@@ -75,8 +75,8 @@ UPDATE intelligence_state
 
 _GUARDAR_RETORNO = """
 INSERT INTO intelligence_credentials
-    (purpose, slot, client_id, ciphertext, nonce, kek_version)
-VALUES ($1, $2, NULL, $3, $4, 1)
+    (purpose, slot, ciphertext, nonce, kek_version)
+VALUES ($1, $2, $3, $4, 1)
 ON CONFLICT (purpose, slot) DO NOTHING
 """
 

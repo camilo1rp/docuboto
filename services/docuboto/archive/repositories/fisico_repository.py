@@ -307,7 +307,7 @@ class FisicoRepository:
 
     # Clearance del usuario interno `$3` (misma expresión que
     # `orpycamcp_common.rbac.resolve_caller_clearance`: root = 3, sin
-    # membresías = 1). Un `sub` de Keycloak no existe en `auth_users` => NULL.
+    # membresías = 1). Un id que no existe en `auth_users` => NULL.
     _CLEARANCE_DE_USER3 = (
         "SELECT CASE WHEN au.is_root THEN 3 ELSE COALESCE(("
         "SELECT MAX(rc.max_level) FROM auth_memberships m "

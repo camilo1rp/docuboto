@@ -232,7 +232,7 @@
   $: unmarkEdited("response_days", responseDays);
   $: unmarkEdited("observations", observations);
 
-  // Cada sondeo renueva la sesión de Keycloak: sin interacción real se para, y
+  // Cada sondeo renueva la sesión: sin interacción real se para, y
   // al volver se retoma si la ingesta seguía en curso.
   const INACTIVIDAD_MS = 5 * 60 * 1000;
   let sondeoPausado = false;

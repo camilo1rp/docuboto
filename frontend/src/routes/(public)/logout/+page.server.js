@@ -12,9 +12,9 @@
  *
  * Pasos:
  *  1. Lee el refresh_token de la cookie httpOnly.
- *  2. Notifica a Keycloak para invalidar la sesión SSO (end_session_endpoint).
+ *  2. Lo revoca en la app (`POST /api/v1/auth/logout`, ADR-048).
  *  3. Elimina las cookies de sesión locales.
- *  4. Redirige al end_session_endpoint de Keycloak, que devuelve a /login.
+ *  4. Redirige a /login.
  *
  * **Por qué ya no hay `load`.** Antes el cierre de sesión se ejecutaba también
  * en el `load` de la ruta, es decir, en un GET. El enlace del topbar era un
@@ -37,38 +37,26 @@ import {
   clearSessionCookies,
   revokeSession,
 } from "$lib/services/auth.server.js";
-import { KEYCLOAK_LOGOUT_URL, KEYCLOAK_CLIENT_ID } from "$lib/utils/config.js";
 
 /** Form action para POST desde un formulario — el ÚNICO camino que cierra sesión */
 export const actions = {
-  default: async ({ cookies, url }) => {
-    await performLogout(cookies, url);
+  default: async ({ cookies }) => {
+    await performLogout(cookies);
   },
 };
 
 /**
- * Lógica de logout compartida entre GET y POST.
+ * Revoca la sesión, borra las cookies y manda a /login.
  * @param {import('@sveltejs/kit').Cookies} cookies
- * @param {URL} url
  */
-async function performLogout(cookies, url) {
+async function performLogout(cookies) {
   const refreshToken = cookies.get(COOKIE_REFRESH_TOKEN);
 
-  // Invalidar sesión en Keycloak (best-effort, no bloquea el logout local)
+  // Revocar en la app (best-effort, no bloquea el logout local)
   if (refreshToken) {
     await revokeSession(refreshToken);
   }
 
-  // Eliminar cookies de sesión locales
   clearSessionCookies(cookies);
-
-  // Construir URL de logout de Keycloak (post_logout_redirect_uri)
-  // Opcional: redirigir al usuario por Keycloak para limpiar SSO en el browser
-  const postLogoutUri = `${url.origin}/login`;
-  const keycloakLogoutUrl = new URL(KEYCLOAK_LOGOUT_URL);
-  keycloakLogoutUrl.searchParams.set("client_id", KEYCLOAK_CLIENT_ID);
-  keycloakLogoutUrl.searchParams.set("post_logout_redirect_uri", postLogoutUri);
-
-  // Redirigir al logout de Keycloak para limpiar también la sesión SSO del browser
-  redirect(302, keycloakLogoutUrl.toString());
+  redirect(303, "/login");
 }

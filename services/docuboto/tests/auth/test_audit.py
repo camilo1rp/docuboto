@@ -36,7 +36,6 @@ class _FakeTx:
 
 _ADMIN = Caller(
     user_id=uuid.uuid4(),
-    keycloak_sub="kc-admin",
     is_root=True,
     permissions={"USUA_PERM_ADMIN": 5},
 )
@@ -218,7 +217,6 @@ async def test_audit_gate_denies_without_admin(client: AsyncClient) -> None:
         conn,
         Caller(
             user_id=uuid.uuid4(),
-            keycloak_sub="kc-op",
             is_root=False,
             permissions={"PERM_RADI": 3},
         ),
@@ -244,7 +242,6 @@ async def test_admin_sin_clearance_recorta_por_no_read_up(client: AsyncClient) -
         conn,
         Caller(
             user_id=uuid.uuid4(),
-            keycloak_sub="kc-admin-sin-clearance",
             is_root=False,
             permissions={"USUA_PERM_ADMIN": 5},
         ),
@@ -284,7 +281,6 @@ async def test_audit_missing_tenant_is_400(client: AsyncClient) -> None:
 
 _LECTOR_N1 = Caller(
     user_id=uuid.uuid4(),
-    keycloak_sub="kc-n1",
     is_root=False,
     permissions={"USUA_PERM_ADMIN": 1},
 )
@@ -338,7 +334,6 @@ async def test_verify_root_conserva_el_detalle_sin_consultar_clearance(
     conn.fetchval.return_value = 1
     root = Caller(
         user_id=uuid.uuid4(),
-        keycloak_sub="kc-root",
         is_root=True,
         permissions={"USUA_PERM_ADMIN": 3},
     )

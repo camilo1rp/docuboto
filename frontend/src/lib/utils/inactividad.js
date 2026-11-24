@@ -11,15 +11,15 @@
  * Detector de INACTIVIDAD REAL de la persona.
  *
  * **Para qué existe, que no es lo que parece.** Esto NO implementa un cierre de
- * sesión por inactividad: ese control ya existe y vive donde debe, en Keycloak
- * (`ssoSessionIdleTimeout`, 30 min en producción), y un cierre decidido por el
+ * sesión por inactividad: ese control ya existe y vive donde debe, en el servidor
+ * (un refresh_token sin rotar en 30 min deja de valer, ADR-048), y un cierre decidido por el
  * navegador sería un control falso — se salta desactivando JavaScript.
  *
  * Lo que hace es **quitar de en medio lo que anulaba ese control**. La bandeja
  * de correo sondea cada 12 s mientras la pestaña esté abierta; cada sondeo pasa
  * por el `handle` del servidor, dispara el refresco transparente del token y
- * **reinicia el contador de inactividad de Keycloak**. Efecto: una pestaña
- * olvidada en una mesa mantenía la sesión viva hasta el tope absoluto (10 h),
+ * **reinicia el contador de inactividad de la sesión**. Efecto: una pestaña
+ * olvidada en una mesa mantenía la sesión viva hasta el tope absoluto (12 h),
  * con la pantalla desbloqueada. El servidor tenía la política correcta y el
  * cliente la desactivaba sin que nadie lo hubiera decidido.
  *

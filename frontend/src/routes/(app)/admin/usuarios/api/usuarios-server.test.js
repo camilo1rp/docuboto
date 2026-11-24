@@ -11,7 +11,7 @@
  * usuarios-server.test.js — Proxies BFF de /admin/usuarios/api (D-05, E08).
  *
  * Cubre: guard 401 en los 5 handlers, allowlist anti mass-assignment de
- * POST /admin/usuarios/api (username/email/keycloak_sub/is_root — nunca
+ * POST /admin/usuarios/api (username/email/password/is_root — nunca
  * id/is_active ni campos ajenos como tenant_slug), cabeceras X-User-Id/
  * X-Tenant-Slug tomadas de locals (nunca del body), escapado de [id]/[urdId]
  * en la URL del gateway, y propagación de códigos de error.
@@ -73,7 +73,7 @@ describe("POST /admin/usuarios/api", () => {
     expect((await res.json()).error).toBe("validation_error");
   });
 
-  it("allowlist: solo username/email/keycloak_sub/is_root viajan; is_active/id/tenant_slug NUNCA (mass-assignment)", async () => {
+  it("allowlist: solo username/email/password/is_root viajan; is_active/id/tenant_slug NUNCA (mass-assignment)", async () => {
     let capturedBody;
     let capturedHeaders;
     globalThis.fetch = vi.fn(async (input, init) => {
@@ -88,7 +88,7 @@ describe("POST /admin/usuarios/api", () => {
         json: async () => ({
           username: "ana",
           email: "ana@example.com",
-          keycloak_sub: "kc-1",
+          password: " clave inicial larga ",
           is_root: true,
           // Campos ajenos que un cliente malicioso podría intentar colar:
           id: "otro-id",
@@ -103,7 +103,7 @@ describe("POST /admin/usuarios/api", () => {
     expect(capturedBody).toEqual({
       username: "ana",
       email: "ana@example.com",
-      keycloak_sub: "kc-1",
+      password: " clave inicial larga ",
       is_root: true,
     });
     expect(capturedHeaders.Authorization).toBe("Bearer tok-abc");

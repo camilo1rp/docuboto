@@ -2163,9 +2163,9 @@ class ArchiveService:
         Hasta aquí «lo explícito manda»: el número de radicado, la tipología, la
         dependencia productora, el formato, el tamaño y la huella que escribiera
         quien vincula se sellaban en un índice que luego se FIRMA con XAdES —y
-        ni siquiera se comprobaba que el radicado existiera—. El cliente
-        Keycloak del frontend es público (PKCE), así que el allowlist del BFF no
-        protege el backend, y el asiento de auditoría registra quién lo hizo
+        ni siquiera se comprobaba que el radicado existiera—. Cualquier portador
+        de un token puede llamar al API sin pasar por el BFF, así que su allowlist
+        no protege el backend, y el asiento de auditoría registra quién lo hizo
         pero no impide el dato falso. Regla del sistema: *un dato probatorio lo
         resuelve el servidor*.
 

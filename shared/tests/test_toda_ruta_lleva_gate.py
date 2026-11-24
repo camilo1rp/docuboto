@@ -91,10 +91,15 @@ MOTIVOS = {
 EXCEPCIONES = {
     "pre_auth": frozenset({
         "auth::auth.py::GET /api/v1/auth/me",
-        "auth::auth.py::GET /api/v1/auth/validate",
+        "auth::auth.py::POST /api/v1/auth/login",
         "auth::auth.py::POST /api/v1/auth/logout",
+        "auth::auth.py::POST /api/v1/auth/password",
         "auth::auth.py::POST /api/v1/auth/refresh",
-        "auth::auth.py::POST /api/v1/auth/token",
+        # El emisor OIDC (ADR-048): descubrimiento y JWKS son públicos por
+        # definición; /oauth/token autentica la cuenta de servicio con su secreto.
+        "auth::oidc.py::GET /.well-known/jwks.json",
+        "auth::oidc.py::GET /.well-known/openid-configuration",
+        "auth::oidc.py::POST /oauth/token",
     }),
     "propia": frozenset({
         # Catálogo de causales de la Ley 1712 (C12): es la ley, no un dato de la entidad; solo

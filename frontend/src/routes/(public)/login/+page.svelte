@@ -10,26 +10,27 @@
 -->
 
 <!--
-  /login — Página de inicio de sesión.
+  /login — Página de inicio de sesión (ADR-048).
 
-  La lógica del flujo PKCE está en +page.server.js (redirect a Keycloak).
-  Esta página solo se muestra transitoriamente si JavaScript está deshabilitado
-  o si el redirect es lento — en condiciones normales el usuario no la ve.
+  Un formulario propio: la acción de +page.server.js envía usuario y
+  contraseña a la app y guarda la sesión en cookies httpOnly. Funciona sin
+  JavaScript (envío nativo del formulario). El rediseño visual queda para
+  docs/rediseno-ui.
 
   Es una de las dos únicas pantallas de la aplicación donde va el logotipo
   completo de marca (la otra es la landing pública).
 -->
 <script>
-  // La lógica del flujo PKCE vive en +page.server.js (redirect a Keycloak).
-  // Si /login/callback reenvió un error, `data.error` trae el mensaje en
-  // español ya mapeado (nunca el string crudo de Keycloak) y esta página
-  // se queda quieta en vez de reiniciar el flujo, para no entrar en bucle.
-  /** @type {{ error?: string }} */
+  // Si la acción falló, `form.error` trae el mensaje en español ya mapeado
+  // (nunca el texto crudo del backend) y `form.username` lo tecleado.
+  /** @type {{ pedirEntidad?: boolean }} */
   export let data;
+  /** @type {{ error?: string, username?: string } | null} */
+  export let form;
 </script>
 
 <svelte:head>
-  <title>Iniciando sesión — Docuboto</title>
+  <title>Iniciar sesión — Docuboto</title>
 </svelte:head>
 
 <div class="login-container" role="main">
@@ -59,31 +60,53 @@
       <h1 id="login-heading" class="login-title">OrpycaMCP</h1>
       <p class="login-subtitle">Sistema de Gestión Documental</p>
 
-      {#if data?.error}
+      {#if form?.error}
         <div class="login-error" role="alert">
           <i class="fa-solid fa-circle-exclamation" aria-hidden="true"></i>
-          <span>{data.error}</span>
+          <span>{form.error}</span>
         </div>
-
-        <p class="login-help">
-          <a href="/login" class="login-link">Reintentar</a>
-        </p>
-      {:else}
-        <div class="login-redirect-notice" role="status" aria-live="polite">
-          <span class="login-spinner" aria-hidden="true"></span>
-          <span>Redirigiendo al proveedor de identidad&hellip;</span>
-        </div>
-
-        <p class="login-security-note">
-          <i class="fa-solid fa-shield-halved" aria-hidden="true"></i>
-          Acceso seguro mediante tu proveedor de identidad institucional.
-        </p>
-
-        <p class="login-help">
-          Si no eres redirigido automáticamente,
-          <a href="/login" class="login-link">haz clic aquí</a>.
-        </p>
       {/if}
+
+      <form method="POST" class="login-form">
+        <label class="login-label" for="login-username">Usuario</label>
+        <input
+          id="login-username"
+          class="login-input"
+          name="username"
+          autocomplete="username"
+          autocapitalize="none"
+          required
+          value={form?.username ?? ""}
+        />
+
+        <label class="login-label" for="login-password">Contraseña</label>
+        <input
+          id="login-password"
+          class="login-input"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+
+        {#if data?.pedirEntidad}
+          <label class="login-label" for="login-tenant">Entidad</label>
+          <input
+            id="login-tenant"
+            class="login-input"
+            name="tenant"
+            autocapitalize="none"
+            required
+          />
+        {/if}
+
+        <button type="submit" class="login-submit">Ingresar</button>
+      </form>
+
+      <p class="login-security-note">
+        <i class="fa-solid fa-shield-halved" aria-hidden="true"></i>
+        Si olvidaste tu contraseña, pide al administrador de tu entidad que la restablezca.
+      </p>
     </div>
   </div>
 </div>
@@ -168,29 +191,52 @@
     }
   }
 
-  .login-redirect-notice {
+  .login-form {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    flex-direction: column;
     gap: var(--op-space-2);
-    color: var(--op-text-secondary);
-    font-size: var(--op-font-sm);
+    text-align: left;
     margin-bottom: var(--op-space-5);
   }
 
-  .login-spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid var(--op-border);
-    border-top-color: var(--op-primary);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    flex-shrink: 0;
+  .login-label {
+    font-size: var(--op-font-sm);
+    color: var(--op-text);
   }
 
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
+  .login-input {
+    font: inherit;
+    padding: var(--op-space-2) var(--op-space-3);
+    border: 1px solid var(--op-border);
+    border-radius: var(--op-radius);
+    background: var(--op-surface);
+    color: var(--op-text);
+    margin-bottom: var(--op-space-2);
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary);
+      outline-offset: 1px;
+    }
+  }
+
+  .login-submit {
+    font: inherit;
+    font-weight: var(--op-weight-bold);
+    padding: var(--op-space-3);
+    border: none;
+    border-radius: var(--op-radius);
+    background: var(--op-primary);
+    color: var(--op-surface);
+    cursor: pointer;
+    margin-top: var(--op-space-2);
+
+    &:hover {
+      background: var(--op-primary-dark);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--op-primary-dark);
+      outline-offset: 2px;
     }
   }
 
@@ -207,30 +253,6 @@
     i {
       color: var(--op-primary);
       flex-shrink: 0;
-    }
-  }
-
-  .login-help {
-    font-size: var(--op-font-xs);
-    color: var(--op-text-secondary);
-    margin: 0;
-  }
-
-  .login-link {
-    color: var(--op-primary-dark);
-    text-decoration: underline;
-    // Objetivo táctil >=44px sin distorsionar el texto en línea.
-    display: inline-block;
-    padding: var(--op-space-1) 0;
-
-    &:hover {
-      color: var(--op-primary);
-    }
-
-    &:focus-visible {
-      outline: 2px solid var(--op-primary);
-      outline-offset: 2px;
-      border-radius: var(--op-radius-sm);
     }
   }
 

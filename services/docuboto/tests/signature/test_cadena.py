@@ -15,7 +15,7 @@ Exhaustive integration tests are delegated to the testing-engineer.
 
 Auth model change (RBAC identity fix):
   - All routes now require PERM_FIRMA via require_permission (DB-based, fail-closed).
-  - Actor is read from X-User-Id header (internal auth_users.id UUID, NOT keycloak_sub).
+  - Actor is read from X-User-Id header (internal auth_users.id UUID).
   - The old get_current_user (JWKS/JWT) dependency is gone.
   - conn.fetchval call #1 in each request is the check_permission query (returns True
     for happy-path tests via _make_conn default). Business-logic fetchval calls follow.

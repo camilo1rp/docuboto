@@ -12,7 +12,7 @@
 `/health` has no dependencies: it governs container restarts. `/health/ready`
 decides the 503 on the database and Redis only. Everything the per-domain
 probes used to add is still reported but does not take the process out of
-rotation: Keycloak, the object store, SMTP, next month's `audit_log`
+rotation: the object store, SMTP, next month's `audit_log`
 partition, and each supervised consumer with its dead-letter stream.
 """
 
@@ -26,7 +26,6 @@ from orpycamcp_common import health as health_common
 from orpycamcp_common.database import get_pool
 
 from auth.core.audit_partitions import estado_particion_siguiente
-from auth.routers.auth import get_auth_service
 from docuboto.config import notification as notification_settings
 from notification.workers.stream_worker import DEADLETTER_STREAM as DLQ_NOTIFICATION
 from signature.workers.document_consumer import DEADLETTER_STREAM as DLQ_SIGNATURE
@@ -64,11 +63,6 @@ async def _ping_redis(request: Request) -> None:
     if redis is None:
         raise RuntimeError("redis")
     await redis.ping()
-
-
-async def _ping_keycloak() -> None:
-    if not await get_auth_service().keycloak_healthy():
-        raise RuntimeError("keycloak no responde")
 
 
 async def _ping_storage() -> None:
@@ -119,7 +113,6 @@ async def ready(request: Request) -> JSONResponse:
     }
     listo = all(v == "ok" for v in checks.values())
     informativos = {
-        "keycloak": await health_common.check("keycloak", _ping_keycloak),
         "storage": await health_common.check("storage", _ping_storage),
         "smtp": await health_common.check("smtp", _ping_smtp),
     }

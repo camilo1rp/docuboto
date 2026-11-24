@@ -17,15 +17,20 @@ from pydantic import BaseModel, Field
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=1, max_length=80)
     email: str | None = None
-    keycloak_sub: str | None = None
+    #: Contraseña inicial (ADR-048). Sin ella la persona no inicia sesión hasta
+    #: que un administrador se la fije con `PUT /users/{id}/password`.
+    password: str | None = Field(default=None, max_length=1024)
     is_root: bool = False
+
+
+class PasswordSet(BaseModel):
+    password: str = Field(..., min_length=1, max_length=1024)
 
 
 class UserResponse(BaseModel):
     id: uuid.UUID
     username: str
     email: str | None
-    keycloak_sub: str | None
     is_root: bool
     is_active: bool
 

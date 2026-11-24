@@ -260,8 +260,8 @@ class TerceroService:
     ) -> dict:
         """Concilia una ficha provisional: vincular, confirmar o descartar.
 
-        Atómico con su asiento. `actor` es `auth_users.id` (el `X-User-Id` que
-        FIRMA el gateway), nunca el `sub` de Keycloak; sin actor no se concilia.
+        Atómico con su asiento. `actor` es `auth_users.id` (el `sub` del access
+        token, ADR-048); sin actor no se concilia.
         El número del radicado no se toca: ni `radicados` ni `radicado_actor` se
         escriben (el trigger de `radicado_actor` lo impide de todos modos).
 

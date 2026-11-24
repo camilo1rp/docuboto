@@ -75,7 +75,6 @@ def _make_conn() -> AsyncMock:
 def _admin(permissions: dict | None = None) -> Caller:
     return Caller(
         user_id=ADMIN_ID,
-        keycloak_sub="kc-admin",
         is_root=False,
         permissions=permissions if permissions is not None else {"USUA_PERM_ADMIN": 3},
     )

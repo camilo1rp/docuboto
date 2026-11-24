@@ -17,10 +17,11 @@ del que él mismo es miembro. `RBACService.create_user`/`set_group_permission`
 (``auth/services/rbac_service.py``) ahora RECHAZAN ambas vías con 403 salvo que
 el llamante YA sea ROOT.
 
-Cerrar esas dos vías sin más deja un punto muerto: `rbac_repository.py` nunca
-voltea `is_root` desde la API (`upsert_user_by_keycloak_sub` — "Never flips
-is_root — admin must set it manually"), así que **ningún tenant podría tener
-jamás su primer ROOT**. Este script es la contraparte deliberada: la única vía
+Cerrar esas dos vías sin más deja un punto muerto: la API nunca voltea
+`is_root` por sí misma, así que **ningún tenant podría tener jamás su primer
+ROOT**. Con la identidad emitida por Docuboto (ADR-048) tampoco hay alta
+perezosa en el primer login: el primer usuario de una entidad nace aquí, con
+`--create`. Este script es la contraparte deliberada: la única vía
 de conceder ROOT es fuera de banda, por quien tiene acceso directo a la base
 de datos (no HTTP, no expuesto por el gateway) — igual que
 `purge_revoked_signing_keys.py`/`rewrap_signing_keys.py` son las únicas vías
@@ -28,17 +29,20 @@ de mutar material de firma sin pasar por un endpoint.
 
 Uso::
 
-    python -m app.ops.grant_root --tenant icetex --user jdoe             # concede ROOT
-    python -m app.ops.grant_root --tenant icetex --user jdoe --dry-run   # solo informa
+    python -m auth.ops.grant_root --tenant icetex --user jdoe             # concede ROOT
+    python -m auth.ops.grant_root --tenant icetex --user jdoe --dry-run   # solo informa
+    GRANT_ROOT_PASSWORD=... python -m auth.ops.grant_root --tenant icetex --user jdoe \
+        --create --email jdoe@entidad.gov.co   # crea el primer usuario y lo hace ROOT
 
 INVARIANTES (fail-closed):
  - `--tenant` es OBLIGATORIO y designa UN solo tenant — a diferencia de
    `purge_revoked_signing_keys`/`rewrap_signing_keys` (que barren todos los
    tenants por defecto), conceder ROOT es un acto puntual y nunca debe poder
    aplicarse "a todos" por omisión de flag.
- - El usuario debe existir YA en el tenant (creado con `is_root=false` vía
-   `POST /auth/users`, o auto-aprovisionado por `/validate` en su primer
-   login). Este script NO crea usuarios, solo promueve uno existente.
+ - Sin `--create`, el usuario debe existir YA en el tenant (creado vía
+   `POST /auth/users`). Con `--create` y un usuario inexistente, lo crea con la
+   contraseña de `GRANT_ROOT_PASSWORD` (o la pide por terminal), que cumple la
+   misma política que la API (ADR-048).
  - Idempotente: si el usuario ya es ROOT, no vuelve a escribir ni a auditar —
    informa y sale con código 0.
  - Deja asiento `rbac.root_otorgado_fuera_de_banda` en `public.audit_log`
@@ -57,12 +61,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import os
 import sys
 
 import asyncpg
 from orpycamcp_common.tenant import slug_valido, tenant_schema
 
+from auth.core import passwords
+from auth.repositories.identity_repository import IdentityRepository
 from auth.repositories.rbac_repository import RBACRepository
 
 try:
@@ -102,16 +109,66 @@ def _schema_for(slug: str) -> str:
     return tenant_schema(slug)
 
 
-async def _grant(conn: asyncpg.Connection, *, tenant: str, username: str, dry_run: bool) -> int:
+def _password() -> str:
+    clave = os.environ.get("GRANT_ROOT_PASSWORD", "")
+    if clave:
+        return clave
+    return getpass.getpass("Contraseña del usuario nuevo: ")
+
+
+async def _crear(
+    conn: asyncpg.Connection, *, tenant: str, username: str, email: str | None, clave: str
+) -> asyncpg.Record:
+    passwords.exigir_politica(clave)
+    async with conn.transaction():
+        user = await RBACRepository(conn).create_user(
+            username=username, email=email, is_root=False
+        )
+        await IdentityRepository(conn).set_password(user["id"], passwords.cifrar(clave))
+        await _audit.append(
+            conn,
+            tenant_slug=tenant,
+            service=_SERVICE,
+            action="rbac.usuario_creado",
+            object_type="usuario",
+            object_ref=str(user["id"]),
+            actor="system:ops-grant-root",
+            payload={"username": user["username"], "is_root": False},
+            canal="system",
+        )
+    return user
+
+
+async def _grant(
+    conn: asyncpg.Connection,
+    *,
+    tenant: str,
+    username: str,
+    dry_run: bool,
+    create: bool = False,
+    email: str | None = None,
+    clave: str | None = None,
+) -> int:
     schema = _schema_for(tenant)
     await conn.execute(f'SET search_path = "{schema}"')
     repo = RBACRepository(conn)
     user = await repo.get_user_by_username(username)
+    if user is None and create and not dry_run:
+        try:
+            user = await _crear(
+                conn,
+                tenant=tenant,
+                username=username,
+                email=email,
+                clave=clave if clave is not None else _password(),
+            )
+        except passwords.PoliticaIncumplida as exc:
+            print(f"ERROR: {exc.detalle}", file=sys.stderr)
+            return 1
     if user is None:
         print(
             f"ERROR: usuario '{username}' no existe en el tenant '{tenant}' "
-            "(debe crearse antes vía POST /auth/users o el auto-aprovisionamiento "
-            "de /validate)",
+            "(créelo vía POST /auth/users o con --create)",
             file=sys.stderr,
         )
         return 1
@@ -147,6 +204,12 @@ async def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--tenant", required=True, help="slug del tenant (obligatorio, nunca 'todos')")
     parser.add_argument("--user", required=True, help="username del usuario a promover a ROOT")
     parser.add_argument("--dry-run", action="store_true", help="solo informa, no muta")
+    parser.add_argument(
+        "--create",
+        action="store_true",
+        help="si el usuario no existe, lo crea (contraseña de GRANT_ROOT_PASSWORD o por terminal)",
+    )
+    parser.add_argument("--email", default=None, help="correo del usuario que crea --create")
     args = parser.parse_args(argv)
 
     if not args.dry_run and not _AUDIT_AVAILABLE:
@@ -157,7 +220,14 @@ async def run(argv: list[str] | None = None) -> int:
 
     conn = await asyncpg.connect(dsn=_require_dsn())
     try:
-        return await _grant(conn, tenant=args.tenant, username=args.user, dry_run=args.dry_run)
+        return await _grant(
+            conn,
+            tenant=args.tenant,
+            username=args.user,
+            dry_run=args.dry_run,
+            create=args.create,
+            email=args.email,
+        )
     finally:
         await conn.execute("SET search_path = public")
         await conn.close()
