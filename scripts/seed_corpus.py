@@ -68,6 +68,7 @@ from typing import Any
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
 
 from seed_demo import (  # noqa: E402
+    DEPENDENCIAS,
     Api,
     Fallo,
     aviso,
@@ -443,6 +444,7 @@ async def radicados(
     creados: list[dict[str, Any]] = [r for v in ya.values() for r in v]
     por_crear = cuantos - total_previos
     deps = [d[2] for d in DEPENDENCIAS_EXTRA]
+    codigos = [d[0] for d in DEPENDENCIAS_EXTRA]
 
     for i in range(por_crear):
         r = RNG.random()
@@ -473,11 +475,21 @@ async def radicados(
             "sender_entity": (persona or {}).get("entidad") or "Ciudadano",
             "origin_dept": deps[indice % len(deps)],
             "dest_dept": deps[(indice + 1) % len(deps)],
+            # Acuerdo AGN 060/2001 §5.2: la API exige el CÓDIGO de la dependencia
+            # (destino en E/I, origen en S); el nombre solo no basta.
+            "origin_dept_code": codigos[indice % len(codigos)],
+            "dest_dept_code": codigos[(indice + 1) % len(codigos)],
             "pages": RNG.randint(1, 25),
             "observations": f"Radicado del corpus de pruebas {MARCA}.",
             "nivel_seguridad": nivel,
             "response_days": RNG.choice([10, 15, 30]),
         }
+        # Una Salida solo se emite desde una dependencia PROPIA de quien radica
+        # (`origen_fuera_de_sus_dependencias`): el siembrador es `operador`, con
+        # URD solo en la Ventanilla del demo.
+        if tipo == "S":
+            cuerpo["origin_dept_code"], _, cuerpo["origin_dept"] = DEPENDENCIAS[0]
+
         # El actor POR REFERENCIA al catálogo, no solo su nombre en texto.
         # Hasta 2026-09 el corpus sembraba 40 terceros y CERO vínculos: la tabla
         # `radicado_actor` quedaba vacía y el eje entero —copia congelada,
